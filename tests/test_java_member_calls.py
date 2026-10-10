@@ -282,3 +282,106 @@ def test_unqualified_call_still_resolves(tmp_path: Path):
     other = _find(result, ".other()", "checkout")
     assert (run, helper) in calls
     assert (run, other) in calls
+
+
+def test_inherited_method_resolves_for_this_field_and_parameter_receivers(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Base.java": "class Base { void start() {} }\n",
+        "Worker.java": (
+            "class Worker extends Base {\n"
+            "    void viaThis() { this.start(); }\n"
+            "}\n"
+        ),
+        "Service.java": (
+            "class Service {\n"
+            "    Worker worker;\n"
+            "    void viaField() { worker.start(); }\n"
+            "    void viaParam(Worker w) { w.start(); }\n"
+            "}\n"
+        ),
+    })
+
+    start = _find(result, ".start()", "base_start")
+    assert (_find(result, ".viaThis()", "worker_viathis"), start) in calls
+    assert (_find(result, ".viaField()", "service_viafield"), start) in calls
+    assert (_find(result, ".viaParam()", "service_viaparam"), start) in calls
+
+
+def test_nearest_declaration_on_the_superclass_chain_wins(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Chain.java": (
+            "class Root { void start() {} void stop() {} }\n"
+            "class Middle extends Root { void stop() {} }\n"
+            "class Leaf extends Middle {}\n"
+            "class Client { void run(Leaf leaf) { leaf.start(); leaf.stop(); } }\n"
+        ),
+    })
+
+    run = _find(result, ".run()", "client_run")
+    assert (run, _find(result, ".start()", "root_start")) in calls
+    assert (run, _find(result, ".stop()", "middle_stop")) in calls
+    assert (run, _find(result, ".stop()", "root_stop")) not in calls
+
+
+def test_super_call_resolves_to_the_superclass_declaration(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Base.java": "class Base { void close() {} }\n",
+        "Worker.java": (
+            "class Worker extends Base {\n"
+            "    void close() { super.close(); }\n"
+            "}\n"
+        ),
+    })
+
+    worker_close = _find(result, ".close()", "worker_close")
+    base_close = _find(result, ".close()", "base_close")
+    assert (worker_close, base_close) in calls
+    assert any(
+        edge.get("relation") == "calls"
+        and (edge["source"], edge["target"]) == (worker_close, base_close)
+        and edge.get("confidence") == "EXTRACTED"
+        for edge in result["edges"]
+    )
+
+
+def test_ancestor_outside_the_corpus_leaves_inherited_call_unresolved(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Named.java": "interface Named { String name(); }\n",
+        "Entity.java": (
+            "import org.example.Identified;\n"
+            "interface Entity extends Identified, Named {}\n"
+        ),
+        "Client.java": "class Client { void run(Entity e) { e.name(); } }\n",
+    })
+
+    run = _find(result, ".run()", "client_run")
+    assert not any(source == run for source, _ in calls)
+
+
+def test_super_call_is_not_bound_back_to_the_calling_class(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "lib/Handler.java": "package lib;\npublic class Handler { public void handle() {} }\n",
+        "app/Handler.java": (
+            "package app;\n"
+            "public class Handler extends lib.Handler {\n"
+            "    public void handle() {}\n"
+            "    public void retry() { super.handle(); }\n"
+            "}\n"
+        ),
+    })
+
+    retry = _find(result, ".retry()", "handler_retry")
+    assert not any(source == retry for source, _ in calls)
+
+
+def test_inherited_call_is_not_bound_to_another_language(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Worker.java": (
+            "import org.lib.*;\n"
+            "class Worker extends Base { void run() { this.start(); super.start(); } }\n"
+        ),
+        "tools/base.py": "class Base:\n    def start(self):\n        pass\n",
+    })
+
+    run = _find(result, ".run()", "worker_run")
+    assert not any(source == run for source, _ in calls)

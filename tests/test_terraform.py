@@ -449,3 +449,33 @@ output "bucket_name" {
     dumped = _json.dumps(r["nodes"])
     for secret in ("hunter2-default", "tok-in-output", "marked-sensitive"):
         assert secret not in dumped
+
+
+def test_terraform_name_value_pair_secret_is_redacted(tmp_path):
+    """The name/value-pair idiom (ECS `environment` / `secrets`, any
+    `[{ name, value }]` list) names the secret in the `name` LITERAL, while the
+    credential sits under the generic key `value`. Key-name matching never sees
+    that signal, so `{ name = "DB_PASSWORD", value = "hunter2" }` reached
+    graph.json verbatim (#3787). Ordinary name/value config stays intact."""
+    body = """\
+resource "aws_ecs_task_definition" "app" {
+  family = "app"
+  environment = [
+    { name = "DB_PASSWORD", value = "hunter2" },
+    { name = "LOG_LEVEL", value = "debug" },
+  ]
+  env_refs = [{ name = "API_KEY", valueFrom = "arn:aws:ssm:us-east-1:1:parameter/api" }]
+  single = { name = "client_secret", value = "in-a-map" }
+}
+"""
+    r = extract_terraform(_write(tmp_path, "ecs.tf", body))
+    node = next(n for n in r["nodes"] if n["label"] == "aws_ecs_task_definition.app")
+    attrs = node["attributes"]
+    assert attrs["environment"][0] == {"name": "DB_PASSWORD", "value": "[redacted]"}
+    assert attrs["environment"][1] == {"name": "LOG_LEVEL", "value": "debug"}
+    assert attrs["env_refs"][0] == {"name": "API_KEY", "valueFrom": "[redacted]"}
+    assert attrs["single"] == {"name": "client_secret", "value": "[redacted]"}
+    import json as _json
+    dumped = _json.dumps(node)
+    for secret in ("hunter2", "in-a-map", "parameter/api"):
+        assert secret not in dumped

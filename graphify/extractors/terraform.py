@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_source_bytes
 from graphify.security import (
     _CONTROL_CHAR_RE,
     _METADATA_MAX_ATTRIBUTES,
@@ -32,6 +32,7 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _REDACTED = "[redacted]"
+_PAIRED_VALUE_KEYS = frozenset({"value", "valuefrom", "value_from"})
 
 
 def _redact_value(key: str, value: object) -> object:
@@ -52,7 +53,18 @@ def _redact_value(key: str, value: object) -> object:
     if _SENSITIVE_KEY_RE.search(key):
         return _REDACTED
     if isinstance(value, dict):
-        return {k: _redact_value(str(k), v) for k, v in value.items()}
+        redacted = {k: _redact_value(str(k), v) for k, v in value.items()}
+        # Name/value-pair idiom (ECS `environment`/`secrets`, `[{name, value}]`):
+        # the secret signal is the `name` literal, not a key, so key matching
+        # alone let `{ name = "DB_PASSWORD", value = "hunter2" }` leak (#3787).
+        if any(
+            str(k).lower() == "name" and isinstance(v, str) and _SENSITIVE_KEY_RE.search(v)
+            for k, v in value.items()
+        ):
+            for k in redacted:
+                if str(k).lower() in _PAIRED_VALUE_KEYS:
+                    redacted[k] = _REDACTED
+        return redacted
     if isinstance(value, (list, tuple)):
         return [_redact_value(key, item) for item in value]
     return value
@@ -185,7 +197,7 @@ def extract_terraform(path: Path) -> dict:
     try:
         language = Language(tshcl.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

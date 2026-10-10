@@ -136,12 +136,26 @@ def test_cargo_parses_name_version_and_deps(tmp_path):
     assert {"pkg_serde", "pkg_tokio"} <= deps  # inline-table dep keyed by name
 
 
-def test_cargo_virtual_workspace_manifest_emits_no_package(tmp_path):
+def test_cargo_virtual_workspace_manifest_emits_no_package(tmp_path, capsys):
     # A virtual workspace root has no [package] table, so it declares no package
-    # of its own — it must not fabricate a node.
+    # of its own — it must not fabricate a node, and is skipped by design (#3910).
     p = _write(tmp_path / "Cargo.toml", '[workspace]\nmembers = ["a", "b"]\n')
     r = extract_package_manifest(p)
     assert _pkg_nodes(r) == []
+    assert r.get("skipped") == "virtual workspace root Cargo.toml"
+
+    # In extract(): must not emit zero-node warning, must not be marked failed, and must be cached
+    result = extract([p], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "zero nodes" not in err
+    assert result.get("failed_sources") == []
+
+    # Caching verification: load_cached returns the skipped result
+    from graphify.cache import load_cached
+    cached = load_cached(p, tmp_path, cache_root=tmp_path)
+    assert cached is not None
+    assert cached.get("skipped") == "virtual workspace root Cargo.toml"
+    assert cached.get("nodes") == []
 
 
 def test_cargo_target_conditional_deps_are_collected(tmp_path):

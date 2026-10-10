@@ -1,0 +1,21 @@
+# Code owners for graphify.
+#
+# Owners are automatically requested for review on pull requests that touch
+# matching paths. This file is advisory review routing; it does not by itself
+# block merges unless "Require review from Code Owners" is enabled in branch
+# protection.
+#
+# See: https://docs.github.com/articles/about-code-owners
+
+# Default owner for everything in the repo.
+*                               @safishamsi
+
+# Skill generation is roundtrip-sensitive (monolith sanctioned diffs); flag it.
+/tools/skillgen/                @safishamsi
+/graphify/skill*.md             @safishamsi
+/graphify/skills/               @safishamsi
+
+# Release, security, and CI configuration.
+/.github/workflows/             @safishamsi
+/SECURITY.md                    @safishamsi
+/RELEASING.md                   @safishamsi
