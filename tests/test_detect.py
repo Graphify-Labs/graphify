@@ -34,6 +34,32 @@ def test_classify_python():
 def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
+@pytest.mark.parametrize("suffix", [".vh", ".VH"])
+def test_detect_verilog_headers(tmp_path, suffix):
+    header = tmp_path / f"defs{suffix}"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+
+    assert classify_file(header) == FileType.CODE
+    result = detect(tmp_path)
+    assert header.resolve() in {Path(path).resolve() for path in result["files"]["code"]}
+
+def test_detect_incremental_requeues_changed_verilog_header(tmp_path):
+    header = tmp_path / "defs.vh"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+
+    full = detect(tmp_path)
+    save_manifest(full["files"], manifest_path, root=tmp_path, kind="ast")
+
+    warm = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert warm["new_total"] == 0
+
+    header.write_text("`define WIDTH 16\n", encoding="utf-8")
+    changed = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert header.resolve() in {
+        Path(path).resolve() for path in changed["new_files"]["code"]
+    }
+
 def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
     assert classify_file(Path("Utils.psm1")) == FileType.CODE
@@ -1296,6 +1322,177 @@ def test_negation_ancestor_itself_reincluded(tmp_path):
     assert not _is_ignored(f, tmp_path, patterns)
 
 
+# --- a pattern without a slash names one path component, as in gitignore ---
+#
+# It is compared with the name of the entry under test, never with a path or a
+# path prefix. _is_ignored already tests every ancestor on its own, so a
+# directory re-included with `!dir/` brings its files back, `*` cannot reach
+# across a "/", and `!name` re-includes the entry called `name`, not what is
+# below it.
+
+def _touch(root, *rels):
+    for rel in rels:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1\n")
+
+
+def _ignored_among(root, ignore_text, rels):
+    (root / ".graphifyignore").write_text(ignore_text)
+    patterns = _load_graphifyignore(root)
+    return {rel for rel in rels if _is_ignored(root / rel, root, patterns)}
+
+
+@pytest.mark.parametrize(
+    ("ignore_text", "ignored", "kept"),
+    [
+        pytest.param(
+            ".*\n!.github/\n",
+            [".cache/junk.py", ".hidden.py", ".github/.local.py"],
+            [".github/scripts/release.py", ".github/CODEOWNERS", "app.py"],
+            id="dot-directory",
+        ),
+        pytest.param(
+            "tags\n!tags/\n",  # github/gitignore, Global/Tags.gitignore
+            ["tags"],
+            ["src/tags/handler.py", "src/tags/sub/deep.py"],
+            id="tags-template",
+        ),
+        pytest.param(
+            "cache*\n!cache_keep/\n",
+            ["cache.db", "cache_old/a.txt"],
+            ["cache_keep/a.txt"],
+            id="wildcard-directory",
+        ),
+    ],
+)
+def test_reincluded_directory_brings_its_files_back(tmp_path, ignore_text, ignored, kept):
+    """`!dir/` re-includes the directory and what is in it, unless a pattern names the files themselves."""
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, ignore_text, ignored + kept) == set(ignored)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "ignored", "kept"),
+    [
+        pytest.param(
+            "test_*.py",
+            ["test_one.py", "pkg/test_two.py"],
+            ["test_helpers/util.py", "test_helpers/sub/deep.py"],
+            id="directory-sharing-a-prefix",
+        ),
+        pytest.param(
+            "doc*.md",
+            ["doc.md", "pkg/docs.md"],
+            ["docs/api.md", "docs/guide/readme.md"],
+            id="wildcard-before-suffix",
+        ),
+        pytest.param(
+            "s*c.py",
+            ["sc.py", "pkg/spec.py"],
+            ["src/c.py", "src/a/c.py"],
+            id="star-does-not-cross-slash",
+        ),
+        pytest.param(
+            "*.py\n!vendor",
+            ["c.py", "vendor/a.py", "vendor/sub/b.py"],
+            ["vendor/notes.txt"],
+            id="negation-names-the-entry-not-its-files",
+        ),
+        pytest.param(
+            "*.py\n!test_*.py",
+            ["util.py", "test_helpers/util.py"],
+            ["test_one.py", "pkg/test_two.py"],
+            id="negation-does-not-cross-slash",
+        ),
+        pytest.param(
+            "build\n!vendor",
+            ["build/out.py", "vendor/build/out.py"],
+            ["vendor/ok.py", "pkg/ok.py"],
+            id="negated-ancestor-name-re-includes-nothing-below",
+        ),
+        pytest.param(
+            "build",
+            ["build/out.py", "pkg/build/deep/out.py"],
+            ["build.py", "builder/ok.py", "notbuild/ok.py"],
+            id="plain-name-still-excludes-its-directory",
+        ),
+        pytest.param(
+            "build/",
+            ["build/out.py", "pkg/build/deep/out.py"],
+            ["build.py", "builder/ok.py", "notbuild/ok.py"],
+            id="directory-only-still-excludes-its-directory",
+        ),
+    ],
+)
+def test_unanchored_pattern_matches_a_name_not_a_path(tmp_path, pattern, ignored, kept):
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, f"{pattern}\n", ignored + kept) == set(ignored)
+
+
+def _detected(root):
+    return {
+        Path(p).relative_to(root).as_posix()
+        for paths in detect(root)["files"].values()
+        for p in paths
+    }
+
+
+def test_unanchored_pattern_in_nested_gitignore_matches_a_name(tmp_path):
+    """A .gitignore below the scan root is loaded by the walk itself; its patterns match names too."""
+    _touch(
+        tmp_path,
+        "app.py",
+        "sub/test_one.py",
+        "sub/deeper/test_two.py",
+        "sub/test_helpers/util.py",
+    )
+    (tmp_path / "sub" / ".gitignore").write_text("test_*.py\n")
+
+    assert _detected(tmp_path) == {"app.py", "sub/test_helpers/util.py"}
+
+
+def test_unanchored_pattern_reaches_every_consumer_of_the_engine(tmp_path):
+    """detect(), the extractor's collect_files and ignored_predicate (watch, markdown links) agree."""
+    from graphify.extract import collect_files
+
+    _touch(tmp_path, "app.py", ".github/scripts/release.py", ".cache/junk.py", "test_helpers/util.py", "test_one.py")
+    (tmp_path / ".graphifyignore").write_text(".*\n!.github/\ntest_*.py\n")
+    expected = {"app.py", ".github/scripts/release.py", "test_helpers/util.py"}
+
+    assert _detected(tmp_path) == expected
+    assert {Path(p).relative_to(tmp_path).as_posix() for p in collect_files(tmp_path)} == expected
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    present = {".cache/junk.py", "test_one.py"} | expected
+    assert {rel for rel in present if not ignored(tmp_path / rel)} == expected
+
+
+def test_unanchored_pattern_verdicts_do_not_depend_on_cache_order(tmp_path):
+    """The walk meets directories first and the watcher meets files first; a shared _cache must agree."""
+    expected = {
+        ".github": False,
+        ".github/scripts": False,
+        ".github/scripts/release.py": False,
+        ".cache/junk.py": True,
+        "test_helpers": False,
+        "test_helpers/util.py": False,
+        "test_one.py": True,
+    }
+    _touch(tmp_path, ".github/scripts/release.py", ".cache/junk.py", "test_helpers/util.py", "test_one.py")
+    (tmp_path / ".graphifyignore").write_text(".*\n!.github/\ntest_*.py\n")
+    patterns = _load_graphifyignore(tmp_path)
+
+    rels = list(expected)
+    uncached = {rel: _is_ignored(tmp_path / rel, tmp_path, patterns) for rel in rels}
+    assert uncached == expected
+    for order in (rels, rels[::-1]):
+        cache: dict = {}
+        cached = {rel: _is_ignored(tmp_path / rel, tmp_path, patterns, _cache=cache) for rel in order}
+        assert cached == expected
+
+
 def test_negation_does_not_disable_directory_pruning(tmp_path, monkeypatch):
     """A single `!` re-include must not switch off pruning of *unrelated* ignored dirs.
 
@@ -2123,6 +2320,167 @@ def test_detect_skips_nested_worktrees_dir(tmp_path):
     assert not any("worktrees" in f for f in code)
 
 
+# Regression tests for #4057 - graphify's own installed skill folder is not project content
+
+def _all_detected(result) -> list[str]:
+    return as_posix_list(f for files in result["files"].values() for f in files)
+
+
+def test_detect_skips_installed_graphify_skill(tmp_path):
+    """The skill `graphify install --project --platform claude` writes (SKILL.md
+    plus references/) is never indexed; the user's code and their own skills
+    in the same .claude/skills/ dir still are (#4057)."""
+    from graphify.install import _copy_skill_file
+
+    (tmp_path / "auth.py").write_text("def login():\n    return 1\n")
+    skill = _copy_skill_file("claude", project=True, project_dir=tmp_path)
+    assert (skill.parent / "references").is_dir()  # the real packaged bundle
+    mine = tmp_path / ".claude" / "skills" / "deploy" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("# Deploy\n\nHow we ship this project.\n")
+
+    found = _all_detected(detect(tmp_path))
+    assert any(f.endswith("/auth.py") for f in found)
+    assert any(f.endswith("/.claude/skills/deploy/SKILL.md") for f in found)
+    assert not any("/skills/graphify/" in f for f in found), found
+
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    assert ignored(skill)
+    assert not ignored(mine)
+
+
+def test_detect_skips_graphify_skill_for_every_project_platform(tmp_path):
+    """Every project-scope skill destination install.py knows about is pruned,
+    so a new platform with a new layout fails here instead of silently being
+    indexed (#4057)."""
+    from graphify.install import _PLATFORM_CONFIG, _platform_skill_destination
+
+    platforms = [*_PLATFORM_CONFIG, "gemini"]
+    for name in platforms:
+        dst = _platform_skill_destination(name, project=True, project_dir=tmp_path)
+        (dst.parent / "references").mkdir(parents=True, exist_ok=True)
+        dst.write_text("# graphify\n\nInstalled skill.\n")
+        (dst.parent / "references" / "query.md").write_text("# Query\n\nRef.\n")
+    (tmp_path / "app.py").write_text("x = 1\n")
+
+    found = _all_detected(detect(tmp_path))
+    assert any(f.endswith("/app.py") for f in found)
+    leaked = [f for f in found if "/graphify/" in f]
+    assert leaked == [], leaked
+
+
+def test_detect_keeps_skills_graphify_source_layouts(tmp_path):
+    """Only graphify's installed skill path shape is pruned, not the bare names
+    "skills" or "graphify" (#2479): graphify's own repo layout
+    (graphify/skills/<host>/references/), a top-level skills/graphify/ as
+    published by a skills repo, and similar names outside a hidden dir stay."""
+    keep = [
+        "graphify/skill.md",
+        "graphify/skills/claude/references/query.md",
+        "graphify/skills/codex/references/update.md",
+        "graphify/detect.py",
+        "skills/graphify/SKILL.md",
+        "src/skills/graphify/loader.py",
+        "docs/agent/skills/graphify/notes.md",
+        ".claude/skills/graphify-extras/SKILL.md",
+        ".claude/graphify/notes.md",
+    ]
+    for rel in keep:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("def f():\n    return 1\n" if rel.endswith(".py") else "# Title\n\nText.\n")
+
+    found = _all_detected(detect(tmp_path))
+    for rel in keep:
+        assert any(f.endswith("/" + rel) for f in found), rel
+
+
+# Files graphify only adds its own section or entry to. They belong to the
+# user, so they stay in the corpus (how to treat graphify's section in the
+# instruction files is an open question on #4057).
+_USER_FILES_GRAPHIFY_EDITS = {
+    "AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md", "GEMINI.md", "CODEBUDDY.md",
+    ".github/copilot-instructions.md",
+    ".claude/settings.json", ".codebuddy/settings.json", ".codex/hooks.json",
+    ".gemini/settings.json", ".kilo/kilo.json", ".opencode/opencode.json",
+}
+
+
+def test_detect_skips_every_file_graphify_install_writes(tmp_path, monkeypatch):
+    """Run every project install in install.py (plus the CLI installers that
+    write into the project directly) and check that nothing graphify wrote
+    whole is indexed: skill folders, always-on rules/steering/workflow files
+    and hook plugins. A new platform that writes a new file fails here (#4057)."""
+    from graphify import install as inst
+    from graphify.extract import collect_files
+
+    proj = tmp_path / "proj"  # HOME is sandboxed by conftest
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    (proj / "app.py").write_text("def main():\n    return 1\n")
+
+    for name in [*inst._PLATFORM_CONFIG, "gemini", "cursor"]:
+        inst._project_install(name, proj)
+    inst._kilo_install(proj)         # .kilo/plugins/graphify.js
+    inst.codebuddy_install(proj)     # CODEBUDDY.md, .codebuddy/settings.json
+    inst.vscode_install(proj)        # .github/copilot-instructions.md
+
+    found = {
+        Path(f).relative_to(proj).as_posix()
+        for files in detect(proj)["files"].values()
+        for f in files
+    }
+    assert "app.py" in found
+    assert found - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(found)
+
+    ignored = detect_mod.ignored_predicate(proj)
+    for parts in detect_mod._GRAPHIFY_INSTALLED_FILES:
+        written = proj.joinpath(*parts)
+        assert written.is_file(), f"no installer writes {written} any more"
+        assert ignored(written), written
+    collected = {p.relative_to(proj).as_posix() for p in collect_files(proj)}
+    assert "app.py" in collected
+    assert collected - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(collected)
+
+
+def test_detect_keeps_files_named_like_graphify_installs(tmp_path):
+    """The single-file rule matches the holder dir plus the exact path, never a
+    bare graphify.md/graphify.js, and leaves the user's other rules alone."""
+    keep = [
+        "docs/graphify.md",
+        "rules/graphify.md",
+        "steering/graphify.md",
+        "src/plugins/graphify.js",
+        "plugins/graphify.js",
+        ".github/rules/graphify.md",
+        ".opencode/plugins/team.js",
+        ".kiro/steering/product.md",
+        ".agents/rules/style.md",
+        ".windsurf/rules/graphify-notes.md",
+    ]
+    for rel in keep:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("export function f() { return 1 }\n" if rel.endswith(".js") else "# Title\n\nText.\n")
+
+    found = _all_detected(detect(tmp_path))
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    for rel in keep:
+        assert any(f.endswith("/" + rel) for f in found), rel
+        assert not ignored(tmp_path / rel), rel
+
+    from graphify.extract import collect_files
+    collected = {p.relative_to(tmp_path).as_posix() for p in collect_files(tmp_path)}
+    assert {"src/plugins/graphify.js", "plugins/graphify.js", ".opencode/plugins/team.js"} <= collected
+
+
+def test_is_noise_dir_graphify_skill_needs_parent():
+    """Without a parent the path shape cannot be verified, so keep the dir."""
+    assert detect_mod._is_noise_dir("graphify") is False
+    assert detect_mod._is_noise_dir("skills") is False
+    assert detect_mod._is_noise_dir("graphify", Path("..") / "skills") is False
+
+
 def test_detect_extra_excludes_pattern(tmp_path):
     """extra_excludes patterns exclude matching files from detect() (#947)."""
     (tmp_path / "main.py").write_text("x = 1")
@@ -2516,6 +2874,164 @@ def test_load_manifest_passes_through_legacy_absolute_keys(tmp_path):
     assert abs_key in loaded
 
 
+def test_load_manifest_prefers_the_more_recently_seen_duplicate(tmp_path):
+    """#1964: a manifest written across a mix of call sites — some passing
+    root (relative keys), some not (an outdated installed skill runbook,
+    for one) — can end up with both an absolute and a relative key for the
+    same file, each carrying different data. load_manifest must keep
+    whichever was more recently seen, not whichever raw key happens to
+    iterate last in the on-disk JSON."""
+    import json
+    from graphify.detect import load_manifest
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("def x(): pass\n")
+    abs_key = str((tmp_path / "src" / "foo.py").resolve())
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+
+    # Stale entry (absolute key) written first, fresh entry (relative key)
+    # written second -- the fresh one iterates last and should win either way.
+    manifest_path.write_text(json.dumps({
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+        "src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+    }))
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert loaded[abs_key]["ast_hash"] == "fresh"
+
+    # Same two entries, opposite on-disk order: the stale one now iterates
+    # last, so a plain "keep whichever is seen last" collapse would wrongly
+    # keep it. The seen timestamp must still pick the fresh one.
+    manifest_path.write_text(json.dumps({
+        "src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+    }))
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert loaded[abs_key]["ast_hash"] == "fresh", (
+        "the entry with the later seen timestamp must win regardless of "
+        "on-disk key order"
+    )
+    assert loaded[abs_key]["semantic_hash"] == "fresh_sem"
+
+
+def test_load_manifest_collapses_a_relative_key_with_a_dot_dot_segment(tmp_path):
+    """Review finding on #1964: _to_absolute_from_storage joined a relative
+    key onto the resolved root with a plain Path '/' , which never collapses
+    a '..' segment the way .resolve() does. A relative key like
+    'sub/../foo.py' (the kind of format mismatch this function exists to
+    tolerate, per its own docstring on mixed call sites/versions) then
+    canonicalized to a different string than the plain absolute key for the
+    same file, so the two entries never collapsed at all."""
+    import json
+    from graphify.detect import load_manifest
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("def x(): pass\n")
+    abs_key = str((tmp_path / "src" / "foo.py").resolve())
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+        "src/../src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+    }))
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert len(loaded) == 1, (
+        f"the dotted-segment key must canonicalize onto the same absolute "
+        f"path and collapse with the plain one, got {list(loaded)!r}"
+    )
+    assert loaded[abs_key]["ast_hash"] == "fresh"
+
+
+def test_to_absolute_from_storage_recognizes_a_foreign_platform_absolute_key(tmp_path):
+    """Review finding on #1964: Path.is_absolute() only recognizes the
+    CURRENT platform's own syntax, so a manifest genuinely moved between
+    platforms (this module's own stated scope) could carry a key like
+    'C:/Users/x/foo.py' or '\\\\server\\share\\foo.py' loaded on POSIX, or
+    '/abs/path' loaded on Windows. Pre-fix, such a key was wrongly judged
+    relative and joined onto root, producing a nonsense path like
+    '<root>/C:/Users/x/foo.py' instead of being left alone."""
+    from graphify.detect import _looks_absolute, _to_absolute_from_storage
+
+    for foreign_key in (
+        "C:/Users/x/foo.py",
+        "C:\\Users\\x\\foo.py",
+        "\\\\server\\share\\foo.py",
+        "/abs/path/foo.py",
+    ):
+        assert _looks_absolute(foreign_key), foreign_key
+
+    result = _to_absolute_from_storage("C:/Users/x/foo.py", tmp_path)
+    assert str(tmp_path) not in result, (
+        f"a foreign-platform absolute key must not be joined onto root, got {result!r}"
+    )
+    assert _looks_absolute("src/foo.py") is False
+
+
+def test_to_absolute_from_storage_keeps_a_foreign_key_in_its_own_syntax(tmp_path):
+    """Review finding on #1964: a foreign-platform absolute key went through
+    os.path.normpath, which applies the CURRENT platform's rules -- on
+    Windows '/home/u/foo.py' became '\\\\home\\\\u\\\\foo.py', which POSIX
+    cannot read back. Dot segments must still collapse, but under the
+    key's own syntax, so every platform canonicalizes it identically."""
+    from graphify.detect import _to_absolute_from_storage
+
+    assert _to_absolute_from_storage("/home/u/foo.py", tmp_path) == "/home/u/foo.py"
+    assert _to_absolute_from_storage("/home/u/sub/../foo.py", tmp_path) == "/home/u/foo.py"
+    assert (
+        _to_absolute_from_storage("C:\\Users\\x\\sub\\..\\foo.py", tmp_path)
+        == "C:\\Users\\x\\foo.py"
+    )
+
+
+def test_save_manifest_relativize_step_collapses_seeded_duplicates(tmp_path, monkeypatch):
+    """#1964: the same collapse must happen on the WRITE side too. If the
+    seeded rows hold two keys for a file untouched by this save (#917) that
+    relativize to the same stored key, the relativize step must not silently
+    keep the stale one just because it happens to iterate last.
+
+    load_manifest already collapses duplicates it can canonicalize, so a
+    real on-disk manifest never reaches save_manifest's own collapse with
+    both rows (the save side only sees keys that differ in ways relpath
+    normalizes but load does not, e.g. case on Windows). Stub load_manifest
+    to hand over the un-collapsed rows directly, so this test fails if the
+    save-side collapse regresses to last-wins even while load's is intact."""
+    import json
+    import os
+    import graphify.detect as detect
+
+    (tmp_path / "src").mkdir()
+    tracked = tmp_path / "src" / "foo.py"
+    tracked.write_text("def x(): pass\n")
+    other = tmp_path / "bar.py"
+    other.write_text("def y(): pass\n")
+    abs_key = str(tracked.resolve())
+    # Same file, different string: relpath collapses the '..', load's
+    # canonical form would too, but the stub bypasses that.
+    dotted_key = os.path.join(str(tmp_path.resolve()), "src", "..", "src", "foo.py")
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    # Fresh entry iterates first, stale entry last -- save_manifest's own
+    # collapse must still prefer the fresher one.
+    seeded = {
+        dotted_key: {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+    }
+    monkeypatch.setattr(detect, "load_manifest", lambda *a, **kw: dict(seeded))
+
+    # Save touching only a DIFFERENT file, so foo.py's row is only seeded
+    # through, never freshly stamped -- isolates the relativize collapse.
+    detect.save_manifest({"code": [str(other)]}, str(manifest_path), root=tmp_path)
+
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert raw["src/foo.py"]["ast_hash"] == "fresh", (
+        "the seed step must keep the more recently seen duplicate when "
+        "collapsing keys, not whichever iterates last"
+    )
+
+
 def test_save_manifest_out_of_root_keeps_absolute(tmp_path):
     """Files outside ``root`` (e.g. symlinked external corpora) are stored
     absolute so they round-trip on the saving machine even when they can't
@@ -2838,6 +3354,41 @@ def test_detect_office_conversion_respects_cache_root(tmp_path, monkeypatch):
     import hashlib
     expected_hash = hashlib.sha256(unicodedata.normalize("NFC", "spec.docx").encode()).hexdigest()[:8]
     assert sidecar_path.name == f"spec_{expected_hash}.md"
+
+
+def test_detect_incremental_respects_cache_root(tmp_path, monkeypatch):
+    """#3847: detect_incremental had no cache_root parameter at all, unlike
+    detect(), so an incremental extract run with a --out destination outside
+    the scan root fell back to anchoring the word-count stat index at the
+    scan root itself — leaking graphify-out/cache/stat-index.json into the
+    corpus even though a fresh (non-incremental) run to the same destination
+    stays clean."""
+    from graphify import cache as cache_mod
+
+    monkeypatch.setattr(cache_mod, "_stat_index", {})
+    monkeypatch.setattr(cache_mod, "_stat_index_root", None)
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    cache_out = tmp_path / "cache_out"
+    cache_out.mkdir()
+
+    doc = corpus / "notes.md"
+    doc.write_text("Some notes content here.")
+
+    manifest_path = str(cache_out / "manifest.json")
+    save_manifest({}, manifest_path, root=corpus)
+
+    detect_incremental(corpus, manifest_path=manifest_path, cache_root=cache_out)
+    cache_mod._flush_stat_index()
+
+    assert not (corpus / detect_mod.GRAPHIFY_OUT).exists(), (
+        "detect_incremental() must not write graphify-out into the scanned "
+        "corpus tree when cache_root is provided (#3847)"
+    )
+    assert (cache_out / detect_mod.GRAPHIFY_OUT / "cache" / "stat-index.json").is_file(), (
+        "the word-count stat index must land under cache_root instead"
+    )
 
 
 def test_detect_keeps_env_source_dirs(tmp_path):
@@ -3303,6 +3854,248 @@ def test_save_manifest_subset_save_keeps_out_of_root_deleted_row(tmp_path):
         outside.unlink(missing_ok=True)
 
 
+def _write_checkout_files(checkout: Path) -> list[Path]:
+    """Three files under one checkout: a.py, b.py, and src/c.py (#3581)."""
+    files = [checkout / "a.py", checkout / "b.py", checkout / "src" / "c.py"]
+    (checkout / "src").mkdir(parents=True)
+    files[0].write_text("a = 1\n", encoding="utf-8")
+    files[1].write_text("b = 2\n", encoding="utf-8")
+    files[2].write_text("c = 3\n", encoding="utf-8")
+    return files
+
+
+def _save_checkout_manifest(checkout: Path, files: list[Path], *, root, scan_corpus):
+    manifest_path = str(checkout / "graphify-out" / "manifest.json")
+    save_manifest(
+        {"code": [str(p) for p in files]},
+        manifest_path,
+        kind="both",
+        root=root,
+        scan_corpus=scan_corpus,
+    )
+    return manifest_path
+
+
+def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_set(tmp_path):
+    """A copied graphify-out must not keep the old checkout's absolute keys
+    when the new save passes the full scan corpus (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_subset_save_keeps_other_checkout_absolute_keys(tmp_path):
+    """Omitting scan_corpus is a subset save (#917). It must keep absolute
+    keys that point at the other checkout."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b, scan_corpus=None,
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert {"a.py", "b.py", "src/c.py"} <= set(raw)
+    old = [k for k in raw if k.startswith(str(checkout_a))]
+    assert len(old) == 3, f"a subset save must keep the other checkout, got {set(raw)}"
+
+
+def test_save_manifest_subset_save_keeps_includes_that_share_basenames(tmp_path):
+    """A subset save must keep two include rows whose file names match the
+    files it restamps."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    b.write_text("y = 2\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-includes"
+    outside_dir.mkdir()
+    outside_a = outside_dir / "a.py"
+    outside_b = outside_dir / "b.py"
+    outside_a.write_text("z = 3\n", encoding="utf-8")
+    outside_b.write_text("w = 4\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(b), str(outside_a), str(outside_b)]},
+            manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a), str(b)]}, manifest_path, root=tmp_path,
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert {"a.py", "b.py"} <= set(raw)
+        assert str(outside_a.resolve()) in raw, set(raw)
+        assert str(outside_b.resolve()) in raw, set(raw)
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_save_manifest_move_has_no_absolute_key_when_scan_corpus_is_set(tmp_path):
+    """Deleting the old checkout before the save already yields relative keys
+    when scan_corpus is set (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    shutil.rmtree(checkout_a)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_subset_save_keeps_moved_checkout_keys_even_when_old_root_is_gone(tmp_path):
+    """#3426 superseded the unconditional ``exists()`` prune this test
+    originally relied on: a subset save (no ``scan_corpus``) now preserves
+    every untouched row regardless of disk existence, the same promise #917
+    already makes for an ordinary out-of-root include row, since pruning on
+    a subset save can erase a genuine deletion before detect_incremental()
+    ever gets to report it (there is no scan corpus here to reconcile
+    against the way a full scan does). The old checkout's absolute keys are
+    no exception just because their directory happens to be gone too; the
+    stale-checkout dedup (#3581) that WOULD drop them needs the full scan
+    corpus to tell a duplicate from an untouched row, so it does not run
+    here either. A full scan is what actually reconciles this, exactly like
+    the sibling test above."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    shutil.rmtree(checkout_a)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b, scan_corpus=None,
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert {"a.py", "b.py", "src/c.py"} <= set(raw)
+    old = [k for k in raw if k.startswith(str(checkout_a))]
+    assert len(old) == 3, f"a subset save must keep the other checkout, got {set(raw)}"
+
+
+def test_save_manifest_drops_other_checkout_keys_mixed_with_relative_keys(tmp_path):
+    """A manifest that already holds the new relative keys plus the old
+    absolute keys drops the old checkout on the next save (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    manifest_a = _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    mixed = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    stale = json.loads(Path(manifest_a).read_text(encoding="utf-8"))
+    mixed.update(stale)
+    Path(manifest_b).write_text(json.dumps(mixed), encoding="utf-8")
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_keeps_one_include_that_shares_a_basename(tmp_path):
+    """One include row stays even when its file name matches a project file."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-include-a"
+    outside_dir.mkdir()
+    outside = outside_dir / "a.py"
+    outside.write_text("z = 3\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(outside)]}, manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(outside.resolve()) in raw, (
+            f"a single include row must stay, got {set(raw)}"
+        )
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_save_manifest_keeps_includes_whose_paths_are_not_this_tree(tmp_path):
+    """Two include rows stay when their suffixes are not relative keys this save writes."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-includes"
+    outside_dir.mkdir()
+    notes = outside_dir / "notes.md"
+    extra = outside_dir / "extra.md"
+    notes.write_text("notes\n", encoding="utf-8")
+    extra.write_text("extra\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(notes), str(extra)]},
+            manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(notes.resolve()) in raw
+        assert str(extra.resolve()) in raw
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
 def test_detect_incremental_reports_excluded_not_deleted(tmp_path):
     """A previously-indexed file that becomes excluded (still on disk) must
     land in excluded_files, not deleted_files (#1908)."""
@@ -3364,6 +4157,67 @@ def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
     inc2 = detect_incremental(tmp_path, manifest_path, extra_excludes=["b.py"])
     assert inc2["deleted_files"] == []
     assert inc2["excluded_files"] == []
+
+
+# ── #3785: Multi-directory manifest scoping and out-of-root deletion filter ──
+
+def test_detect_incremental_subfolder_ignores_out_of_root_manifest_entries(tmp_path):
+    """#3785: detect_incremental() on a subfolder must ignore manifest entries
+    belonging to other subdirectories or parent directories, neither reporting
+    them as deleted nor as excluded."""
+    workspace = tmp_path / "workspace"
+    sub_a = workspace / "workflows"
+    sub_b = workspace / "experts"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    wf_file = sub_a / "workflow.py"
+    exp_file = sub_b / "expert.py"
+    wf_file.write_text("def run(): pass\n", encoding="utf-8")
+    exp_file.write_text("def consult(): pass\n", encoding="utf-8")
+
+    manifest_path = str(workspace / "graphify-out" / "manifest.json")
+
+    # Step 1: Workspace root or sibling subfolder is graphed
+    full = detect(workspace)
+    save_manifest(full["files"], manifest_path=manifest_path, root=workspace)
+
+    # Step 2: Incremental update on subfolder A only
+    inc_a = detect_incremental(sub_a, manifest_path=manifest_path)
+    assert inc_a["deleted_files"] == [], f"Unexpected false deletions: {inc_a['deleted_files']}"
+    assert inc_a["excluded_files"] == [], f"Unexpected false exclusions: {inc_a['excluded_files']}"
+
+
+def test_detect_incremental_cross_subfolder_shared_manifest(tmp_path):
+    """#3785: Sequential runs on distinct subfolders against a shared manifest
+    must preserve each other's entries so neither run clobbers the other or
+    reports false deletions."""
+    workspace = tmp_path / "workspace"
+    sub_a = workspace / "workflows"
+    sub_b = workspace / "experts"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    (sub_a / "workflow.py").write_text("def run(): pass\n", encoding="utf-8")
+    (sub_b / "expert.py").write_text("def consult(): pass\n", encoding="utf-8")
+
+    manifest_path = str(workspace / "graphify-out" / "manifest.json")
+
+    # Run 1: Graph sub_b
+    full_b = detect(sub_b)
+    save_manifest(full_b["files"], manifest_path=manifest_path, root=sub_b)
+
+    # Run 2: Incremental update on sub_a
+    inc_a = detect_incremental(sub_a, manifest_path=manifest_path)
+    assert inc_a["deleted_files"] == []
+    assert inc_a["excluded_files"] == []
+    save_manifest(inc_a["files"], manifest_path=manifest_path, root=sub_a)
+
+    # Run 3: Incremental update on sub_b must still find its files unchanged
+    inc_b2 = detect_incremental(sub_b, manifest_path=manifest_path)
+    assert inc_b2["deleted_files"] == []
+    assert inc_b2["excluded_files"] == []
+    assert inc_b2["new_files"]["code"] == []
 
 
 # ── #2838: manifest seen timestamps preserved for unchanged entries ──
