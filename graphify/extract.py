@@ -7956,10 +7956,11 @@ def extract(
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
     _SCAN_ROOT_NAMESPACE_CACHE.clear()
-    # Path-resolution memoization (#3500) is keyed by (path, cwd) with no mtime
-    # component, so — like the alias caches above — a symlink repoint or a path
-    # that starts/stops existing between rebuilds in a long-lived `graphify
-    # watch` / MCP process would otherwise replay a stale result. Clear per run.
+    # Path-resolution memoization (#3500) is keyed by path (plus the cwd for a
+    # relative path) with no mtime component, so — like the alias caches above —
+    # a symlink repoint or a path that starts/stops existing between rebuilds in
+    # a long-lived `graphify watch` / MCP process would otherwise replay a stale
+    # result. Clear per run.
     _cached_realpath.cache_clear()
     _cached_source_key.cache_clear()
 
