@@ -443,12 +443,13 @@ def test_dedup_still_merges_crossfile_true_duplicates():
 
 def test_cross_chunk_id_collision_emits_warning(capsys):
     """When two nodes share the same ID but come from different source files
-    (a cross-chunk LLM ID collision), a WARNING must be printed to stderr
+    (a cross-chunk LLM ID collision that neither file
+    defines; a file-derived ID is disambiguated instead, #4281), a WARNING must be printed to stderr
     and only the first node survives (#1504)."""
     nodes = [
-        {"id": "readme_booking_service", "label": "Booking Service",
+        {"id": "booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-a/README.md"},
-        {"id": "readme_booking_service", "label": "Booking Service",
+        {"id": "booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-b/README.md"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
@@ -458,7 +459,7 @@ def test_cross_chunk_id_collision_emits_warning(capsys):
 
     captured = capsys.readouterr()
     assert "WARNING" in captured.err
-    assert "readme_booking_service" in captured.err
+    assert "booking_service" in captured.err
     assert "module-b/README.md" in captured.err
     assert "module-a/README.md" in captured.err
 
@@ -687,10 +688,15 @@ def test_cross_file_id_collision_does_not_mix_attributes(capsys):
 
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
 
-    assert len(result_nodes) == 1
-    assert result_nodes[0]["source_file"] == "pkg/service.py"
-    assert "summary" not in result_nodes[0]
-    assert "WARNING" in capsys.readouterr().err
+    # pkg/service.py and pkg_service.py both slug to pkg_service_run. They are two
+    # real entities, so each keeps its own node (#4281) with attributes isolated.
+    by_file = {n["source_file"]: n for n in result_nodes}
+    assert len(result_nodes) == 2
+    assert by_file["pkg/service.py"]["id"] == "pkg_service_run"
+    assert "summary" not in by_file["pkg/service.py"]
+    assert by_file["pkg_service.py"]["id"] != "pkg_service_run"
+    assert by_file["pkg_service.py"]["summary"] == "Different function."
+    assert "WARNING" not in capsys.readouterr().err
 
 
 def test_collision_survivor_is_order_independent():
@@ -1550,3 +1556,50 @@ def test_reads_as_file_entity_trusts_the_node_kind_stamp_only():
     del unstamped["node_kind"]
     assert not _reads_as_file_entity(stamped)
     assert _reads_as_file_entity(unstamped)
+
+
+# ── #4281: distinct files that both define an ID keep separate nodes ──────────
+
+def test_same_stem_different_extension_keeps_both_nodes(capsys):
+    """x.py and x.html share an extension-stripped stem; neither may be dropped."""
+    nodes = [
+        {"id": "firmware_lib_portal", "label": "portal.py",
+         "file_type": "code", "source_file": "firmware/lib/portal.py"},
+        {"id": "firmware_lib_portal", "label": "Brick provisioning portal (portal.html)",
+         "file_type": "document", "source_file": "firmware/lib/portal.html"},
+    ]
+    edges = [{"source": "firmware_lib_portal", "target": "firmware_lib_portal",
+              "relation": "serves", "source_file": "firmware/lib/portal.html"}]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    ids = {n["source_file"]: n["id"] for n in result_nodes}
+    assert len(result_nodes) == 2
+    assert ids["firmware/lib/portal.py"] == "firmware_lib_portal"
+    assert ids["firmware/lib/portal.html"] == "firmware_lib_portal_html"
+    assert result_edges[0]["source"] == result_edges[0]["target"] == "firmware_lib_portal_html"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_bare_doc_id_from_two_paths_gets_path_qualified(capsys):
+    """A bare `protocol` id from docs/protocol.md and docs/firmware/protocol.md."""
+    nodes = [
+        {"id": "protocol", "label": "protocol", "file_type": "document",
+         "source_file": "docs/protocol.md"},
+        {"id": "protocol", "label": "protocol (top-level)", "file_type": "document",
+         "source_file": "docs/firmware/protocol.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    ids = {n["source_file"]: n["id"] for n in result_nodes}
+    assert len(result_nodes) == 2
+    assert ids["docs/protocol.md"] == "protocol"
+    assert ids["docs/firmware/protocol.md"] == "docs_firmware_protocol"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_disambiguation_is_order_independent():
+    a = {"id": "x", "label": "x", "file_type": "code", "source_file": "x.py"}
+    b = {"id": "x", "label": "x page", "file_type": "document", "source_file": "x.html"}
+    n1, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
+    n2, _ = deduplicate_entities([dict(b), dict(a)], [], communities={})
+    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}

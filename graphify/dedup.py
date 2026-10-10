@@ -512,6 +512,90 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
             )
 
 
+def _disambiguated_id(node: dict, taken: set[str]) -> str | None:
+    """A distinct ID for a node that DEFINES an ID another file also defines (#4281).
+
+    Two distinct files can legitimately encode the same ID: ``x.py`` / ``x.html``
+    share an extension-stripped stem, and a bare ``protocol`` is a trailing slice
+    of both ``docs/protocol.md`` and ``docs/firmware/protocol.md``. Dropping one
+    loses a real entity, so give the later file its own ID instead: first the
+    canonical full-path form, then the same with the extension appended.
+    Returns None when no free ID exists or the node has no usable path.
+    """
+    nid = node.get("id") or ""
+    source_file = (node.get("source_file") or "").replace("\\", "/")
+    ext_match = _EXTENSION.search(source_file)
+    if not nid or not ext_match:
+        return None
+    segments = [s for s in (normalize_id(p) for p in _EXTENSION.sub("", source_file).split("/")) if s]
+    if not segments:
+        return None
+    full = "_".join(segments)
+    ext = normalize_id(ext_match.group(0))
+    rest = None
+    for prefix in sorted(_id_prefixes(source_file), key=len, reverse=True):
+        if nid == prefix or nid.startswith(f"{prefix}_"):
+            rest = nid[len(prefix):]
+            break
+    if rest is None:
+        return None
+    for candidate in (full + rest, f"{full}_{ext}{rest}"):
+        if candidate != nid and candidate not in taken:
+            return candidate
+    return None
+
+
+def _disambiguate_defining_collisions(
+    nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
+    root: Path | None,
+) -> tuple[list[dict], list[dict]]:
+    """Give each distinct file that defines the same ID its own ID (#4281).
+
+    The best-ranked definer keeps the ID; the others are renamed (see
+    ``_disambiguated_id``). Edges and hyperedges that carry the renamed file's
+    ``source_file`` follow their endpoint; unattributed references keep pointing
+    at the winner. IDs that no file defines (cross-chunk LLM drift, #1504) are
+    left to the existing collapse-and-warn path.
+    """
+    by_id: dict[str, list[dict]] = defaultdict(list)
+    for node in nodes:
+        nid = node.get("id")
+        if nid and node.get("source_file") and _defines_id(node):
+            by_id[nid].append(node)
+    taken = {n.get("id") for n in nodes if n.get("id")}
+    renames: dict[tuple[str, str], str] = {}
+    for nid, definers in by_id.items():
+        files = {d["source_file"] for d in definers}
+        if len(files) < 2:
+            continue
+        winner_file = min(definers, key=lambda d: _collision_rank(d, root))["source_file"]
+        for sf in sorted(files - {winner_file}):
+            sample = next(d for d in definers if d["source_file"] == sf)
+            new_id = _disambiguated_id(sample, taken)
+            if new_id:
+                taken.add(new_id)
+                renames[(nid, sf)] = new_id
+    if not renames:
+        return nodes, edges
+    out_nodes = []
+    for node in nodes:
+        new_id = renames.get((node.get("id"), node.get("source_file")))
+        out_nodes.append(dict(node, id=new_id) if new_id and _defines_id(node) else node)
+    for coll in (edges, hyperedges or []):
+        for item in coll:
+            if not isinstance(item, dict):
+                continue
+            sf = item.get("source_file")
+            for key in ("source", "target"):
+                new_id = renames.get((item.get(key), sf))
+                if new_id:
+                    item[key] = new_id
+            members = item.get("nodes")
+            if isinstance(members, list):
+                item["nodes"] = [renames.get((m, sf), m) if isinstance(m, str) else m for m in members]
+    return out_nodes, edges
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
@@ -608,6 +692,7 @@ def deduplicate_entities(
     # passing cross-reference's. Missing attributes from same-source records are
     # retained so AST structure and semantic enrichment can coexist (#2091).
     # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
+    nodes, edges = _disambiguate_defining_collisions(nodes, edges, hyperedges, root_resolved)
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
