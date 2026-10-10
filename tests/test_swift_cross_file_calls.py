@@ -91,7 +91,7 @@ def test_swift_cross_file_member_calls_have_correct_confidence_and_resolve(tmp_p
         if e.get("relation") != "calls":
             continue
         if tgt_label in inferred_targets:
-            assert e["confidence"] == "INFERRED" and e["confidence_score"] == 0.8
+            assert e["confidence"] == "INFERRED" and e["confidence_score"] == 0.85
             assert e["target"] in node_ids and src_by_id.get(e["target"])
             seen_inferred.add(tgt_label)
         elif tgt_label in extracted_targets:
@@ -295,7 +295,7 @@ def test_environment_attribute_typed_receiver_resolves(tmp_path: Path):
                  and _label(result, e["target"]) == ".reset()"), None)
     assert edge is not None, "store.reset() must resolve to Store.reset"
     assert _label(result, edge["source"]) == ".go()"
-    assert edge["confidence"] == "INFERRED" and edge["confidence_score"] == 0.8
+    assert edge["confidence"] == "INFERRED" and edge["confidence_score"] == 0.85
 
 
 def test_environment_keypath_and_dotted_forms_are_skipped(tmp_path: Path):
@@ -368,7 +368,7 @@ def test_factory_returned_receiver_resolves(tmp_path: Path):
     assert (".local()", "calls", ".go()") in calls    # method-local receiver
     for e in result["edges"]:
         if e.get("relation") == "calls" and _label(result, e["target"]) == ".go()":
-            assert e["confidence"] == "INFERRED" and e["confidence_score"] == 0.8
+            assert e["confidence"] == "INFERRED" and e["confidence_score"] == 0.85
 
 
 def test_factory_receiver_resolves_through_cross_file_extension(tmp_path: Path):
