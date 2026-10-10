@@ -1311,6 +1311,55 @@ def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
             assert lock_path.read_text(encoding="utf-8") == held_contents
 
 
+def _rebuild_lock_holder_for_test(out_dir, name, hold, q):
+    """Module-level so `spawn`-mode multiprocessing can pickle it (#4273)."""
+    with _rebuild_lock(out_dir, blocking=True):
+        q.put((name, "enter", time.monotonic()))
+        time.sleep(hold)
+        q.put((name, "exit", time.monotonic()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="#4273 is a POSIX flock/unlink race")
+def test_rebuild_lock_unlink_does_not_let_a_third_caller_in_while_a_waiter_holds(tmp_path):
+    """#4273: flock() locks the open file's inode, not the path. Unlinking the
+    path on release used to let a blocked waiter end up holding the lock on
+    an orphaned inode while a later caller opened the (recreated) path fresh
+    and acquired an unrelated, never-locked inode immediately — two holders
+    inside the critical section at once.
+
+    A (held briefly) -> B (blocked waiter, acquires once A releases) -> C
+    (arrives after A releases, while B is still holding). C must never enter
+    while B is still inside.
+    """
+    import multiprocessing as mp
+
+    out = tmp_path / "graphify-out"
+    holder = _rebuild_lock_holder_for_test
+    q = mp.Queue()
+    a = mp.Process(target=holder, args=(out, "A", 0.4, q))
+    a.start()
+    time.sleep(0.15)
+    b = mp.Process(target=holder, args=(out, "B", 0.6, q))  # parks in flock() on the old inode
+    b.start()
+    a.join()
+    time.sleep(0.15)  # A has released; B should now hold the lock on a fresh inode
+    c = mp.Process(target=holder, args=(out, "C", 0.2, q))  # must NOT get in until B exits
+    c.start()
+    b.join()
+    c.join()
+
+    events = sorted((q.get() for _ in range(6)), key=lambda e: e[2])
+    intervals = {}
+    for name, kind, t in events:
+        intervals.setdefault(name, {})[kind] = t
+
+    b_enter, b_exit = intervals["B"]["enter"], intervals["B"]["exit"]
+    c_enter = intervals["C"]["enter"]
+    assert not (b_enter < c_enter < b_exit), (
+        f"C entered at {c_enter} while B held the lock ({b_enter}..{b_exit}): {events}"
+    )
+
+
 def test_rebuild_lock_blocks_concurrent_process(tmp_path):
     """#3881: concurrent processes cannot acquire the rebuild lock simultaneously."""
     import subprocess
