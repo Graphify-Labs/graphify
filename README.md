@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Graphify Cloud keeps this graph always-on across your whole SDLC. <a href="https://app.graphify.com/login">Start a free 14-day trial at app.graphify.com &rarr;</a></b>
+  <b>Cut agent token spend by 80%.</b> Graphify Cloud is always-on memory that governs your agents, keeps code quality high, and proves correctness with formal verification. <a href="https://app.graphify.com/login"><b>Start a free 14-day trial &rarr;</b></a>
 </p>
 
 Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
@@ -137,7 +137,7 @@ What you get out of the box:
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
 
 > [!TIP]
-> Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/login) does it continuously, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start a free 14-day trial &rarr;](https://app.graphify.com/login)
+> Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/login) does it continuously and cuts agent token spend by 80%, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start a free 14-day trial &rarr;](https://app.graphify.com/login)
 
 ---
 
@@ -428,6 +428,7 @@ Every command and flag, with examples: **[CLI reference](https://docs.graphify.c
 
 [**Graphify Cloud**](https://app.graphify.com/login) is the always-on layer built on top of graphify. Instead of a graph you rebuild on demand per folder, it keeps one live graph across your entire software development lifecycle:
 
+- **80% fewer tokens** — always-on memory means your agents stop re-reading and re-explaining the codebase every session.
 - **Monorepo and cross-repo** — one connected graph across every service and repository, not a graph per folder.
 - **Formal verification** — check architectural and dependency invariants against the live graph.
 - **Code review with a bird's-eye view of your SDLC** — see how a change ripples across the whole system before you merge.
