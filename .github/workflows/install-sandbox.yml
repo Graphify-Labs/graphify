@@ -1,0 +1,143 @@
+# Cost controls: shorten retention to reduce stored artifact-days.
+# Cost controls: lower compression from 9 if runner time matters more than storage.
+name: Install sandbox
+
+env:
+  INSTALL_SANDBOX_ARTIFACT_RETENTION_DAYS: 14
+  INSTALL_SANDBOX_ARTIFACT_COMPRESSION_LEVEL: 9
+
+on:
+  pull_request:
+    branches: ["v8", "main"]
+    paths:
+      - "graphify/install.py"
+      - "graphify/__main__.py"
+      - "graphify/hooks.py"
+      - "graphify/paths.py"
+      - "graphify/skill*.md"
+      - "graphify/command*.md"
+      - "graphify/skills/**"
+      - "graphify/always_on/**"
+      - "tools/install_sandbox/**"
+      - "tests/install_sandbox/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/install-sandbox.yml"
+  push:
+    branches: ["v8", "main"]
+    paths:
+      - "graphify/install.py"
+      - "graphify/__main__.py"
+      - "graphify/hooks.py"
+      - "graphify/paths.py"
+      - "graphify/skill*.md"
+      - "graphify/command*.md"
+      - "graphify/skills/**"
+      - "graphify/always_on/**"
+      - "tools/install_sandbox/**"
+      - "tests/install_sandbox/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/install-sandbox.yml"
+  schedule:
+    - cron: "27 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-sandbox-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  full-catalog:
+    name: Full catalog (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      - name: Run full install sandbox
+        id: sandbox
+        shell: bash
+        run: |
+          set +e
+          uv run --frozen python tools/install_sandbox/run.py \
+            --repo . \
+            --all \
+            --scope both \
+            --output "$RUNNER_TEMP/graphify-install-sandbox"
+          sandbox_exit=$?
+          set -e
+          printf 'exit_code=%s\n' "$sandbox_exit" >> "$GITHUB_OUTPUT"
+
+      - name: Upload install-sandbox artifacts
+        id: artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-sandbox-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/graphify-install-sandbox
+          if-no-files-found: warn
+          retention-days: ${{ env.INSTALL_SANDBOX_ARTIFACT_RETENTION_DAYS }}
+          compression-level: ${{ env.INSTALL_SANDBOX_ARTIFACT_COMPRESSION_LEVEL }}
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          OUTPUT_DIR: ${{ runner.temp }}/graphify-install-sandbox
+          SANDBOX_EXIT_CODE: ${{ steps.sandbox.outputs.exit_code }}
+        run: |
+          {
+            echo "## Install sandbox"
+            echo
+            echo "- Runner exit code: \`${SANDBOX_EXIT_CODE:-not recorded}\`"
+            if [[ -n "$ARTIFACT_URL" ]]; then
+              echo "- [Download the complete diagnostic bundle]($ARTIFACT_URL)"
+            else
+              echo "- The artifact upload did not provide a download URL."
+            fi
+            echo
+            if [[ -f "$OUTPUT_DIR/report.md" ]]; then
+              cat "$OUTPUT_DIR/report.md"
+            elif [[ -f "$OUTPUT_DIR/run.json" ]]; then
+              echo "The behavioral report is unavailable. Host lifecycle metadata follows:"
+              echo
+              echo '```json'
+              cat "$OUTPUT_DIR/run.json"
+              echo
+              echo '```'
+            else
+              echo "No report.md or run.json was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply install-sandbox result
+        if: always()
+        shell: bash
+        env:
+          RUN_METADATA: ${{ runner.temp }}/graphify-install-sandbox/run.json
+          SANDBOX_EXIT_CODE: ${{ steps.sandbox.outputs.exit_code }}
+        run: |
+          if [[ ! "$SANDBOX_EXIT_CODE" =~ ^[0-9]+$ ]]; then
+            echo "::error::The install-sandbox runner did not record an exit code."
+            exit 1
+          fi
+          uv run --frozen python -m tools.install_sandbox.ci_result \
+            --run-json "$RUN_METADATA" \
+            --runner-exit-code "$SANDBOX_EXIT_CODE"
