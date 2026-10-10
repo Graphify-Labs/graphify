@@ -270,3 +270,29 @@ def test_public_call_reaches_the_member_node_in_either_declaration_order(tmp_pat
                        "export function make(c: Ctx): number { return c.foo(); }\n"),
         })
         assert any("make" in str(s) and "foo" in str(t) for s, t in calls), (i, calls)
+
+
+def test_public_call_never_reaches_a_private_only_member(tmp_path):
+    # `Child` declares only `#run`; its public `run` is inherited from `Base`, so
+    # `c.run()` must not land on the private method's node.
+    calls, _ = _calls(tmp_path, {
+        "base.ts": "export class Base {\n  run(): number { return 0; }\n}\n",
+        "child.ts": ('import { Base } from "./base";\n'
+                     "export class Child extends Base {\n  #run(): number { return 1; }\n}\n"),
+        "use.ts": ('import { Child } from "./child";\n'
+                   "export function go(c: Child): number { return c.run(); }\n"),
+    })
+    assert not any("go" in str(s) and "#run" in str(t) for s, t in calls), calls
+
+
+def test_public_property_sharing_a_private_methods_node_keeps_its_edge(tmp_path):
+    # hono's shape: a public arrow property and a `#` method of the same name.
+    calls, _ = _calls(tmp_path, {
+        "ctx.ts": ("export class Ctx {\n"
+                   "  #respond(): number { return 1; }\n"
+                   "  respond = (): number => this.#respond();\n"
+                   "}\n"),
+        "use.ts": ('import { Ctx } from "./ctx";\n'
+                   "export function go(c: Ctx): number { return c.respond(); }\n"),
+    })
+    assert any("go" in str(s) and "respond" in str(t) for s, t in calls), calls
