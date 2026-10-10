@@ -672,6 +672,52 @@ def test_rust_forward_reference_to_ambiguous_type_name_stays_local(tmp_path):
         assert (after, local) in refs
 
 
+def test_rust_cross_file_reference_skips_impl_blocks_in_other_files(tmp_path):
+    """#4283: an `impl Thing` block in another file adds a second `Thing` node,
+    but only the struct is a declaration. A cross-file reference must bind to
+    that declaration instead of being left on a sourceless stub. Checked cold,
+    then from the warm cache."""
+    (tmp_path / "a.rs").write_text("pub struct Thing {\n    pub n: u32,\n}\n", encoding="utf-8")
+    (tmp_path / "b.rs").write_text(
+        "use crate::a::Thing;\n\nimpl Thing {\n    pub fn new() -> Self {\n"
+        "        Thing { n: 0 }\n    }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.rs").write_text(
+        "use crate::a::Thing;\n\npub fn make(t: Thing) -> u32 {\n    t.n\n}\n",
+        encoding="utf-8",
+    )
+    files = sorted(tmp_path.glob("*.rs"))
+    for _ in range(2):
+        r = extract(files, cache_root=tmp_path, parallel=False)
+        things = [n for n in r["nodes"] if n["label"] == "Thing"]
+        assert all(n["source_file"] for n in things), "sourceless Thing stub left behind"
+        declared = next(n["id"] for n in things if Path(n["source_file"]).name == "a.rs")
+        make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+        refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+        assert (make, declared) in refs
+
+
+def test_rust_cross_file_reference_to_twice_declared_type_keeps_its_stub(tmp_path):
+    """#4283: impl blocks are only skipped in favour of a SINGLE declaration. With
+    two real `struct Thing` declarations a cross-file reference has no one
+    correct target, so it must stay on its sourceless stub (fail closed)."""
+    (tmp_path / "a.rs").write_text("pub struct Thing;\n", encoding="utf-8")
+    (tmp_path / "b.rs").write_text(
+        "pub struct Thing;\n\nimpl Thing {\n    pub fn new() -> Self {\n        Thing\n    }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.rs").write_text("pub fn make(t: Thing) {}\n", encoding="utf-8")
+    r = extract(sorted(tmp_path.glob("*.rs")), cache_root=tmp_path, parallel=False)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+    targets = [
+        by_id[e["target"]] for e in r["edges"]
+        if e["relation"] == "references" and e["source"] == make
+    ]
+    assert [t["source_file"] for t in targets if t["label"] == "Thing"] == [""]
+
+
 # ── extract() dispatch ────────────────────────────────────────────────────────
 
 def test_extract_dispatches_all_languages():
