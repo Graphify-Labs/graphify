@@ -546,3 +546,13 @@ def test_install_from_read_only_package_dir(tmp_path, fake_bundle):
     # The installed sidecar must stay writable, or the next install cannot
     # rmtree it to swap in a new one.
     assert os.access(refs, os.W_OK)
+
+
+import pytest as _pytest_posix
+
+
+@_pytest_posix.fixture(autouse=True)
+def _posix_skill_layout(monkeypatch):
+    """gemini and hermes install to different directories on Windows; these tests
+    assert the POSIX layout, so pin it."""
+    monkeypatch.setattr("platform.system", lambda: "Linux")

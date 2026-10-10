@@ -636,6 +636,70 @@ def test_posix_custom_hookspath_still_works(tmp_path):
     assert (repo / ".husky" / "post-commit").exists()
 
 
+def test_hookspath_outside_repo_falls_back_to_default(tmp_path, capsys):
+    """#3869: an absolute core.hooksPath outside the repo must not be created.
+
+    The setting lives in local git config (a zip of .git can carry it; a clone
+    does not). hook install used to mkdir that path and write post-commit there.
+    """
+    repo = _make_git_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    _set_hookspath(repo, str(outside))
+    msg = install(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not outside.exists()
+    assert (repo / ".git" / "hooks" / "post-commit").exists()
+    assert (repo / ".git" / "hooks" / "post-checkout").exists()
+    assert ".git" in msg and "hooks" in msg
+
+
+def test_hookspath_relative_escape_falls_back_to_default(tmp_path, capsys):
+    """#3869: a relative core.hooksPath that resolves outside the repo is refused."""
+    repo = _make_git_repo(tmp_path / "repo")
+    _set_hookspath(repo, "../escaped")
+    _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not (tmp_path / "escaped").exists()
+    assert _hooks_dir(repo) == (repo / ".git" / "hooks").resolve()
+
+
+def test_linked_worktree_keeps_its_default_hooks_dir(tmp_path):
+    """A linked worktree's hooks live under the common git dir, outside the
+    worktree root. That default must still be used when core.hooksPath is unset."""
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init", str(main)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.email", "t@example.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.name", "t"],
+                   check=True, capture_output=True)
+    (main / "f").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(main), "add", "f"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "commit", "-m", "x"],
+                   check=True, capture_output=True)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+                   check=True, capture_output=True)
+    expected = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--git-path", "hooks"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    got = _hooks_dir(wt)
+    assert got == (wt / expected).resolve()
+    assert _is_within_repo_git(got, main)
+    assert not (wt / ".git" / "hooks").exists()
+
+
+def _is_within_repo_git(hooks: Path, main: Path) -> bool:
+    try:
+        hooks.resolve().relative_to((main / ".git").resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def test_default_hooks_dir_unaffected(tmp_path):
     """No core.hooksPath -> normal .git/hooks install, no rejection."""
     repo = _make_git_repo(tmp_path)
@@ -752,8 +816,10 @@ def test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail(tmp_path):
     mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
-    assert f"RESOLVED={other}" not in res.stdout
+    # sh may print an MSYS-style path on Windows, so compare the home-relative tail
+    resolved = [ln for ln in res.stdout.splitlines() if ln.startswith("RESOLVED=")]
+    assert [ln.endswith(mine.relative_to(home).as_posix()) for ln in resolved] == [True], res.stdout + res.stderr
+    assert other.relative_to(home).as_posix() not in res.stdout
     assert "could not locate" not in res.stderr
 
 
@@ -806,7 +872,8 @@ def test_shebang_parse_requires_leading_hash_bang(tmp_path):
     launcher.chmod(0o755)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    resolved = [ln for ln in res.stdout.splitlines() if ln.startswith("RESOLVED=")]
+    assert [ln.endswith(mine.relative_to(home).as_posix()) for ln in resolved] == [True], res.stdout + res.stderr
     assert "fakepy" not in res.stdout
 
 
@@ -1580,3 +1647,121 @@ def test_commit_hook_still_rebuilds_for_a_source_change(tmp_path):
     result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
     assert result.returncode == 0, result.stderr
     assert _LAUNCH_LINE in result.stdout, result.stdout
+
+
+# Launcher flags a hook installed before the #2253 fix still carries on disk.
+_PRE_2253_FLAGS = "0x00000008 | 0x00000200"  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+
+def _status_line(result: str, name: str) -> str:
+    return next(line for line in result.splitlines() if line.startswith(f"{name}:"))
+
+
+def test_status_flags_a_hook_block_from_an_older_graphify(tmp_path):
+    """Upgrading the package never rewrites hooks already on disk, so a block
+    written by an older release keeps its old launcher (#3771). `status` must
+    say so and name the command that refreshes it, not report "installed"."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    assert "0x08000000 | 0x00000200" in text
+    hook.write_text(text.replace("0x08000000 | 0x00000200", _PRE_2253_FLAGS), encoding="utf-8")
+
+    res = status(repo)
+    assert "out of date" in _status_line(res, "post-commit")
+    assert "graphify hook install" in _status_line(res, "post-commit")
+    assert "out of date" not in _status_line(res, "post-checkout")
+
+    assert "updated existing post-commit hook" in install(repo)
+    assert "out of date" not in status(repo)
+
+
+def test_status_ignores_the_pinned_interpreter(tmp_path):
+    """`_PINNED` is whichever interpreter ran `hook install`. A hook pinned to a
+    different one is not stale, so it must not be reported as out of date."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    repinned = re.sub(r"(?m)^_PINNED='[^']*'$", "_PINNED='/opt/other/bin/python3'", text)
+    assert repinned != text
+    hook.write_text(repinned, encoding="utf-8")
+
+    assert "out of date" not in status(repo)
+
+
+def test_status_compares_only_the_graphify_block(tmp_path):
+    """User commands around the graphify block are not graphify's to judge."""
+    repo = _make_git_repo(tmp_path)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "post-commit").write_text("#!/bin/sh\necho 'user before'\n", encoding="utf-8")
+    install(repo)
+    hook = hooks_dir / "post-commit"
+    hook.write_text(hook.read_text(encoding="utf-8") + "echo 'user after'\n", encoding="utf-8")
+
+    assert "out of date" not in status(repo)
+
+
+# ── git quotes non-ASCII paths in `git diff --name-only` ────────────────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("pkg/plain.py", "pkg/plain.py"),
+    ("ünïcödé/naïve.py", "ünïcödé/naïve.py"),
+    ('"\\303\\274n\\303\\257c\\303\\266d\\303\\251/na\\303\\257ve.py"', "ünïcödé/naïve.py"),
+    ('"\\344\\270\\255\\346\\226\\207/a.py"', "中文/a.py"),
+    ('"say \\"hi\\".py"', 'say "hi".py'),
+    ('"tab\\there.py"', "tab\there.py"),
+    ('"back\\\\slash.py"', "back\\slash.py"),
+])
+def test_unquote_git_path(raw, expected):
+    """git C-quotes some paths in --name-only output; the hook must decode them
+    back to the real file name or the change never reaches the rebuild."""
+    from graphify.hooks import _unquote_git_path
+    assert _unquote_git_path(raw) == expected
+
+
+def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
+    """End-to-end against real git: every path the post-commit hook collects
+    for a commit touching non-ASCII and quote-bearing names must exist on disk
+    after decoding, so the incremental rebuild actually re-extracts them."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    if shutil.which("sh") is None:  # pragma: no cover
+        pytest.skip("sh not available")
+    from graphify.hooks import _HOOK_SCRIPT, _unquote_git_path
+
+    names = ["plain.py", "ünïcödé/naïve.py", "中文/用户.py"]
+    if os.name != "nt":
+        names.append('say "hi".py')
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q", ".")
+    _git("config", "user.email", "t@t.co")
+    _git("config", "user.name", "t")
+    _git("config", "core.quotePath", "true")  # git's default; pin it against user config
+    (tmp_path / "seed.txt").write_text("x")
+    _git("add", "-A")
+    _git("commit", "-qm", "init")
+    for name in names:
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def f():\n    return 1\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-qm", "edit")
+
+    changed_line = next(l for l in _HOOK_SCRIPT.splitlines() if l.startswith("CHANGED=$("))
+    r = subprocess.run(["sh", "-c", changed_line + '\nprintf "%s\\n" "$CHANGED"'],
+                       cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
+    raw = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    # Non-ASCII names come through verbatim (core.quotePath=false)...
+    for name in names:
+        if '"' not in name:
+            assert name in raw
+    # ...and names git still quotes decode back to the real file.
+    got = [_unquote_git_path(l) for l in raw]
+    assert sorted(got) == sorted(names)
+    assert all((tmp_path / g).is_file() for g in got)

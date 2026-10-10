@@ -6,16 +6,29 @@ import os
 import unicodedata
 
 from pathlib import Path
-from graphify.detect import CODE_EXTENSIONS
-from graphify.extractors.base import _file_stem, _make_id
+from urllib.parse import unquote
+from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
-_MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)')
+# A link destination is either <bracketed>, the only CommonMark form that may
+# contain spaces ([t](<My Note.md>)), or a bare run without whitespace. The
+# bracketed form is tried first so a spaced name is captured whole instead of
+# being cut at the first space; callers take whichever group matched. After the
+# `>` it only accepts a CommonMark title ("..", '..' or (..) without a nested
+# paren), so an unclosed `<` falls back to the bare form rather than swallowing
+# the links that follow on the line.
+_MD_INLINE_LINK_RE = re.compile(
+    r'(?<!\!)\[[^\]]*\]\(\s*(?:'
+    r'<([^<>\n]+)>\s*(?:"[^"\n]*"|\'[^\'\n]*\'|\([^()\n]*\))?\s*'
+    r'|<?([^)\s>]+)>?(?:\s+[^)]*)?'
+    r')\)')
 
-_MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
+_MD_REF_DEF_RE = re.compile(
+    r'^\s{0,3}\[[^\]]+\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["\'(]|$))|<?([^\s>]+)>?)')
 
-_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
 
@@ -27,7 +40,8 @@ _MD_CODE_SPAN_RE = re.compile(r'(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)')
 # (``src/pkg/mod.py::Widget::render``) names the defining file and a
 # ``::``-separated symbol chain, exactly as pytest node ids and cite-lint
 # citations do. A bare mention (``Widget``, ``render()``, ``pkg.Widget``) names
-# a symbol with no file evidence, so it resolves only on a unique match.
+# a symbol with no file evidence, so it resolves only on a unique match; the
+# dotted form keeps its qualifiers (``pkg``) as evidence the resolver checks.
 _MD_PATH_MENTION_RE = re.compile(
     r'^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$'
 )
@@ -146,20 +160,27 @@ def _build_link_index(root: Path) -> "dict[str, list[tuple[int, str, Path]]]":
     """Index every linkable document under *root* by NFC-normalized basename.
 
     Each entry maps basename -> [(depth, root-relative posix path, absolute
-    path)]. Directories in detect._SKIP_DIRS and dot-directories are pruned —
-    the same corpus boundary the scanner draws, and Obsidian itself does not
-    index dot-folders.
+    path)]. Directories in detect._SKIP_DIRS, dot-directories, and paths
+    excluded by .graphifyignore/.gitignore are pruned — the same corpus
+    boundary the scanner draws, and Obsidian itself does not index dot-folders
+    or ignored paths (#3822).
     """
-    from graphify.detect import _SKIP_DIRS
+    from graphify.detect import _SKIP_DIRS, ignored_predicate
+    root = Path(root)
+    ignored = ignored_predicate(root)
     index: dict[str, list[tuple[int, str, Path]]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        dp = Path(dirpath)
         dirnames[:] = sorted(
-            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            d for d in dirnames
+            if not d.startswith(".") and d not in _SKIP_DIRS and not ignored(dp / d)
         )
         for fname in filenames:
             if Path(fname).suffix.lower() not in _MD_LINKABLE_EXTS:
                 continue
-            abs_path = Path(dirpath) / fname
+            abs_path = dp / fname
+            if ignored(abs_path):
+                continue
             rel = os.path.relpath(str(abs_path), str(root)).replace("\\", "/")
             index.setdefault(_nfc(fname), []).append(
                 (rel.count("/"), _nfc(rel), abs_path)
@@ -199,6 +220,35 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
     return min(matches)[2]
 
 
+def _percent_decoded(target: str, source_dir: Path) -> str:
+    """Decode a URL-style link destination such as ``My%20Note.md``.
+
+    Inline and reference links are URLs, so a space or a non-ASCII character
+    in a file name is written percent-encoded (the form Obsidian writes when
+    wikilinks are turned off). A file whose name literally contains the
+    escape keeps precedence (``[x](100%25)`` beside ``100%25.md``), so a
+    link that resolved before still resolves to the same file. Wikilinks
+    carry the note name verbatim and never come through here.
+    """
+    if "%" not in target:
+        return target
+    decoded = unquote(target)
+    if decoded == target:
+        return target
+    literal = target if Path(target).suffix else target + ".md"
+    try:
+        if (source_dir / literal).is_file():
+            return target
+    except OSError:
+        pass
+    return decoded
+
+
+def _is_external_link(target: str) -> bool:
+    low = target.lower()
+    return "://" in target or low.startswith(("mailto:", "tel:", "//", "data:"))
+
+
 def _resolve_markdown_link(raw: str, source_dir: Path,
                            wikilink: bool = False) -> "Path | None":
     """Resolve a markdown link target to the absolute path of a sibling document.
@@ -211,7 +261,13 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
 
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
-    Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    Inline and reference destinations are percent-decoded (``My%20Note.md``),
+    see _percent_decoded. Extension-less targets (typical of wikilinks) are
+    treated as sibling ``.md``.
+    A wikilink whose note name itself contains a dot (``[[note.en]]``,
+    ``[[v1.2 release]]``) gets the same ``.md`` completion, but only when that
+    document exists and no file graphify indexes sits at the literal target;
+    otherwise (``[[image.png]]``) it stays skipped.
 
     With ``wikilink=True``, a target whose lexically resolved path does not
     exist is retried as a vault-global lookup across the active scan root (see
@@ -226,15 +282,33 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     target = target.split("#", 1)[0].split("?", 1)[0].strip()
     if not target:
         return None
-    low = target.lower()
-    if "://" in target or low.startswith(("mailto:", "tel:", "//", "data:")):
+    if _is_external_link(target):
         return None
+    if not wikilink:
+        # Decoding can reveal a scheme or a protocol-relative prefix
+        # (%2F%2Fhost), so the external-link guard runs again.
+        target = _percent_decoded(target, source_dir)
+        if _is_external_link(target):
+            return None
     suffix = Path(target).suffix.lower()
     if suffix == "":
         target = target + ".md"
         suffix = ".md"
     if suffix not in _MD_LINKABLE_EXTS:
-        return None
+        if not wikilink:
+            return None
+        # The suffix may be part of the note name ([[v1.2 release]]): try
+        # <name>.md through the same sibling-then-vault resolution and keep
+        # the link only when that document exists. A literal target graphify
+        # indexes itself ([[pic.png]] beside pic.png.md) keeps precedence.
+        literal = Path(os.path.normpath(str(source_dir / target)))
+        try:
+            if literal.is_file() and classify_file(literal) is not None:
+                return None
+            hit = _resolve_markdown_link(target + ".md", source_dir, wikilink=True)
+            return hit if hit is not None and hit.is_file() else None
+        except OSError:
+            return None
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = source_dir / candidate
@@ -257,10 +331,12 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
 
     Returns ``(path, names)``: ``path`` is the cited file for the
     ``path::Name`` form and None for a bare or dotted mention; ``names`` is the
-    symbol chain, outermost first. A trailing ``()`` is dropped from the last
-    name so ``render()`` and ``render`` cite the same symbol. Spans that read
-    as a file (``setup.py``), a shell command, an expression or prose are not
-    mentions and yield None.
+    symbol chain, outermost first, so ``pkg.sub.Widget`` yields
+    ``["pkg", "sub", "Widget"]`` and the resolver can hold the match to that
+    evidence. A trailing ``()`` is dropped from the last name so ``render()``
+    and ``render`` cite the same symbol. Spans that read as a file
+    (``setup.py``, ``README.md``), a shell command, an expression or prose are
+    not mentions and yield None.
     """
     text = span.strip()
     if not text or " " in text:
@@ -272,10 +348,14 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
     if not m:
         return None
     if "." in text:
-        # ``a.b.Name`` is a qualified symbol; ``setup.py`` is a file. A dotted
-        # span whose last segment is a code extension is the latter.
-        if "." + m.group(1) in CODE_EXTENSIONS:
+        # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
+        # are files. A dotted span whose last segment is a code or document
+        # extension is the latter. Other file-like spans (``pyproject.toml``)
+        # classify as a mention and are rejected at resolution, where the
+        # qualifier ``pyproject`` matches no callable's file or owner.
+        if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
             return None
+        return None, text.rstrip("()").split(".")
     return None, [m.group(1)]
 
 
@@ -311,7 +391,9 @@ def extract_markdown(path: Path) -> dict:
     edges: the symbol they cite lives in another file, so the match is made
     once every file is extracted and ids are final, by the
     ``markdown_mentions`` language resolver (see
-    ``graphify.markdown_resolution``). That pass emits
+    ``graphify.markdown_resolution``). The dotted form travels with its
+    qualifiers, which the resolver checks against the match's owners and
+    file path. That pass emits
     heading --references--> code symbol (page --references--> symbol for a
     mention above the first heading): EXTRACTED for the path-qualified form,
     INFERRED for a bare name that matches exactly one code symbol. The shared
@@ -331,7 +413,7 @@ def extract_markdown(path: Path) -> dict:
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -451,12 +533,12 @@ def extract_markdown(path: Path) -> dict:
         # non-fenced line (including heading lines, which the heading branch
         # below `continue`s past) so links anywhere in the doc are captured.
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num)
+            add_link(m.group(1) or m.group(2), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
             add_link(m.group(1), line_num, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
-            add_link(ref_def.group(1), line_num)
+            add_link(ref_def.group(1) or ref_def.group(2), line_num)
 
         # Inside the frontmatter block a leading `#` is a YAML comment, not an
         # H1. Links above are still scanned there on purpose: review workflows
