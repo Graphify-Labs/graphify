@@ -55,6 +55,7 @@ from graphify.install import (  # noqa: E402,F401
     _install_codex_hook,
     _install_gemini_hook,
     _install_kilo_plugin,
+    _install_mimo_plugin,
     _install_opencode_plugin,
     _install_skill_references,
     _kilo_config_path,
@@ -65,6 +66,9 @@ from graphify.install import (  # noqa: E402,F401
     _kiro_install,
     _kiro_uninstall,
     _load_json_like,
+    _mimo_install,
+    _mimo_status,
+    _mimo_uninstall,
     _packaged_skill_refs_dir,
     _platform_skill_destination,
     _print_banner,
@@ -87,6 +91,7 @@ from graphify.install import (  # noqa: E402,F401
     _uninstall_codex_hook,
     _uninstall_gemini_hook,
     _uninstall_kilo_plugin,
+    _uninstall_mimo_plugin,
     _uninstall_opencode_plugin,
     _vscode_skill_destination,
     claude_install,
@@ -116,6 +121,7 @@ from graphify.install import (  # noqa: E402,F401
     _KILO_PLUGIN_PATH,
     _KILO_CONFIG_JSON_PATH,
     _KILO_CONFIG_JSONC_PATH,
+    _MIMO_PLUGIN_JS,
     _OPENCODE_PLUGIN_JS,
     _OPENCODE_PLUGIN_PATH,
     _OPENCODE_CONFIG_PATH,
@@ -1043,6 +1049,15 @@ def _run_cli() -> None:
         )
         print(
             "  antigravity uninstall   remove .agents/rules, .agents/workflows, and skill"
+        )
+        print(
+            "  mimo install            configure Xiaomi MiMo Code (skill + plugin + AGENTS.md)"
+        )
+        print(
+            "  mimo uninstall          remove Xiaomi MiMo Code configuration"
+        )
+        print(
+            "  mimo status             check Xiaomi MiMo Code integration status"
         )
         print(
             "  hermes install          write skill to ~/.hermes/skills/graphify/ (Hermes)"
