@@ -29,6 +29,29 @@ def test_report_contains_corpus_check():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
     assert "## Corpus Check" in report
 
+
+def test_report_surfaces_unclassified_files():
+    """#3511: detect() already tracks files it saw but could not classify
+    (no supported extension), but nothing surfaced them -- a corpus that is
+    mostly an unsupported language got the same "well covered" verdict as
+    one that was actually extracted."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {
+        **detection,
+        "unclassified": ["Main.lean", "Util.lean", "a.toml", "b.toml", "c.toml", "readme"],
+    }
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Unclassified: 6 file(s)" in report
+    assert ".lean 2" in report
+    assert ".toml 3" in report
+
+
+def test_report_omits_unclassified_line_when_none():
+    """Backward compatible: no unclassified files, no new line."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Unclassified:" not in report
+
 def test_report_contains_god_nodes():
     G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")

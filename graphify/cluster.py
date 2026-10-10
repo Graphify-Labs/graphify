@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import io
 import json
+import os
 import sys
 import networkx as nx
 
@@ -90,7 +91,16 @@ def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None
     except Exception:
         return None
 
-    return {id_to_node[node_id]: community for node_id, community in native_partitions.items()}
+    partition = {
+        id_to_node[node_id]: community
+        for node_id, community in native_partitions.items()
+    }
+    next_community = max(partition.values(), default=-1) + 1
+    for node in stable.nodes():
+        if node not in partition:
+            partition[node] = next_community
+            next_community += 1
+    return partition
 
 
 def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
@@ -224,6 +234,7 @@ def cluster(
     G: nx.Graph,
     resolution: float = 1.0,
     exclude_hubs_percentile: float | None = None,
+    ambiguous_scale: float = 0.5,
 ) -> dict[int, list[str]]:
     """Run Leiden community detection. Returns {community_id: [node_ids]}.
 
@@ -238,8 +249,18 @@ def cluster(
         <1.0 = fewer larger communities. Default 1.0.
     exclude_hubs_percentile: if set (0-100), nodes whose degree exceeds this
         percentile are excluded from partitioning and reattached to their
-        majority-vote neighbour community afterwards. Useful for staging/utility
-        super-hubs that inflate god-node rankings (#919).
+        majority-vote neighbour community afterwards. Nodes whose only
+        neighbours are excluded hubs follow them, by the same vote. Useful for
+        staging/utility super-hubs that inflate god-node rankings (#919).
+    ambiguous_scale: multiplier applied to the ``weight`` attribute of
+        ``AMBIGUOUS`` edges before partitioning. Default 0.5 — halves the
+        modularity contribution of low-confidence edges so they do not
+        glue otherwise-independent clusters together. Set to 1.0 to disable
+        (treat AMBIGUOUS edges identically to EXTRACTED/INFERRED), or 0.0
+        to drop them from clustering entirely (they still appear in the
+        graph and in `/graphify path`/`explain` output — only partitioning
+        is affected). Overridden by ``GRAPHIFY_AMBIGUOUS_SCALE`` env var
+        when that is set to a parseable float. See #4199.
     """
     if G.number_of_nodes() == 0:
         return {}
@@ -247,6 +268,24 @@ def cluster(
         G = G.to_undirected()
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
+
+    # #4199 — scale AMBIGUOUS edge weights so they do not warp partitioning.
+    # Env override lets `GRAPHIFY_AMBIGUOUS_SCALE=1.0 graphify ...` restore the
+    # pre-fix behavior without a code change. Malformed values are ignored.
+    env_scale = os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE")
+    if env_scale is not None:
+        try:
+            ambiguous_scale = float(env_scale)
+        except ValueError:
+            pass
+    if ambiguous_scale != 1.0 and any(
+        d.get("confidence") == "AMBIGUOUS" for _, _, d in G.edges(data=True)
+    ):
+        G = G.copy()
+        for u, v, d in G.edges(data=True):
+            if d.get("confidence") == "AMBIGUOUS":
+                base = float(d.get("weight", 1.0))
+                d["weight"] = base * ambiguous_scale
 
     # Compute hub exclusion set before removing anything so degree is based on full graph
     hub_nodes: set[str] = set()
@@ -263,6 +302,21 @@ def cluster(
     excluded = hub_nodes
     isolates = [n for n in G.nodes() if G.degree(n) == 0 and n not in excluded]
     connected_nodes = [n for n in G.nodes() if G.degree(n) > 0 and n not in excluded]
+    # A node whose only neighbours are excluded hubs is isolated in the
+    # partitioned subgraph purely because of the exclusion. Hold it out of the
+    # partition and place it with its hub(s) below, instead of letting it come
+    # back as a singleton cut off from the only node it connects to.
+    stranded: list[str] = []
+    if hub_nodes:
+        # A self-loop is not a neighbour: judge a node by its other neighbours.
+        stranded = [
+            n for n in connected_nodes
+            if (nbs := [nb for nb in G.neighbors(n) if nb != n])
+            and all(nb in hub_nodes for nb in nbs)
+        ]
+        if stranded:
+            _stranded = set(stranded)
+            connected_nodes = [n for n in connected_nodes if n not in _stranded]
     connected = G.subgraph(connected_nodes)
 
     raw: dict[int, list[str]] = {}
@@ -294,6 +348,18 @@ def cluster(
                 raw[next_cid] = [hub]
                 node_community[hub] = next_cid
                 next_cid += 1
+        # Every neighbour of a stranded node is a hub, and every hub is placed
+        # by now, so the same majority vote always has a winner.
+        for node in sorted(stranded, key=str):
+            votes = {}
+            for nb in G.neighbors(node):
+                if nb == node:
+                    continue
+                cid = node_community[nb]
+                votes[cid] = votes.get(cid, 0) + 1
+            best = min(votes, key=lambda c: (-votes[c], c))
+            raw[best].append(node)
+            node_community[node] = best
 
     # Split oversized communities
     max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))
@@ -349,7 +415,14 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
     if n <= 1:
         return 1.0
     subgraph = G.subgraph(community_nodes)
-    actual = subgraph.number_of_edges()
+    # Exclude self-loops. ``build_from_json`` deliberately keeps recursive
+    # ``calls`` self-edges ("real program structure rather than
+    # import-resolution artifacts"), but ``possible`` below counts distinct
+    # node PAIRS only, so a self-loop adds to the numerator without adding to
+    # the denominator and pushes the ratio past 1.0 -- a two-node community
+    # holding one recursive function scores 2.0. Drop them so numerator and
+    # denominator measure the same thing.
+    actual = subgraph.number_of_edges() - nx.number_of_selfloops(subgraph)
     possible = n * (n - 1) / 2
     return actual / possible if possible > 0 else 0.0
 
