@@ -1,0 +1,58 @@
+# Automatically managed pull-request scope labels.
+#
+# The workflow enables sync-labels, so labels declared here are removed when a
+# later PR update no longer matches. Labels outside this file are never managed
+# by actions/labeler.
+
+"area/core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "graphify/*.py"
+          - "graphify/**/*.py"
+
+"area/extractors":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "graphify/extractors/**"
+
+"area/skills":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "graphify/skill*.md"
+          - "graphify/command-kilo.md"
+          - "graphify/skills/**"
+          - "graphify/always_on/**"
+          - "tools/skillgen/**"
+
+"area/tools":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tools/**"
+          - "scripts/**"
+
+"area/tests":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+
+"area/docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+
+"area/ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+"area/packaging":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "pyproject.toml"
+          - "uv.lock"
+          - "Dockerfile"
+          - ".dockerignore"
+          - "LICENSE"
+          - "LICENSE-*"
+          - "NOTICE"
