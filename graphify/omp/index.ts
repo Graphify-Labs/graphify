@@ -90,6 +90,8 @@ export default function graphify(api: ExtensionAPI): void {
   // OMP's passive tool-call context channel emits trusted extension guidance as
   // a separate developer message after the batch. Raw tool output stays
   // untouched, so a file or command cannot forge this instruction channel.
+  // OMP sends that message unlabelled, so wrap it the way Claude Code labels
+  // PreToolUse context; bare text reads as noise and agents ignore it.
   // Every qualifying call carries its own nudge (no dedup).
   let generation = 0;
   let controller = new AbortController();
@@ -154,7 +156,9 @@ export default function graphify(api: ExtensionAPI): void {
       // Optional guidance must not break native tools on missing executables,
       // invalid paths, malformed hook output, timeout, or cancellation.
     }
-    if (contexts.length > 0) return { additionalContext: contexts.join("\n\n") };
+    if (contexts.length > 0) {
+      return { additionalContext: `<system-reminder source="graphify">\n${contexts.join("\n\n")}\n</system-reminder>` };
+    }
   });
 
 }

@@ -343,8 +343,9 @@ runs the installed `graphify hook-guard read|search` CLI. The existing Python
 policy owns fresh/stale graph decisions and strict-mode denials: start OMP with
 `GRAPHIFY_HOOK_STRICT=1` to enable its once-per-session indexed-read block.
 Denials become OMP `block`/`reason`; each qualifying call carries its own
-guidance, appended to that call's persisted tool result (Claude
-`PreToolUse` additionalContext parity), and pending deliveries are cleared for
+guidance through OMP's passive tool-call context channel as one
+`<system-reminder source="graphify">` block (Claude `PreToolUse`
+additionalContext parity), and pending deliveries are cleared for
 each new user run and session navigation. In-flight hooks
 are cancelled on these boundaries. No graph is created or updated automatically.
 The guard package intentionally declares no skills; the existing cross-framework
