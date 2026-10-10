@@ -5054,6 +5054,79 @@ def test_markdown_frontmatter_lands_on_page_node():
     assert "frontmatter" not in heading
 
 
+def test_markdown_frontmatter_description_becomes_body():
+    """#3313 follow-up: a note-per-fact vault often puts the one line that
+    describes the file in frontmatter `description:`/`summary:` rather than
+    a body paragraph. The body tier (#3313) is the one documented place
+    non-extraction free text goes, and it reads a page's `body` attribute —
+    so frontmatter description/summary must land there too, or a query for a
+    term that only appears there finds nothing despite the text being right
+    on the node."""
+    r = _md_extract(
+        "---\n"
+        "description: The retrieval key lives in the vault settings panel.\n"
+        "---\n"
+        "\n"
+        "# Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["body"] == "The retrieval key lives in the vault settings panel."
+
+
+def test_markdown_frontmatter_summary_becomes_body_when_no_description():
+    r = _md_extract(
+        "---\n"
+        "summary: A fallback summary line.\n"
+        "---\n"
+        "\n"
+        "# Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["body"] == "A fallback summary line."
+
+
+def test_markdown_frontmatter_description_wins_over_summary():
+    r = _md_extract(
+        "---\n"
+        "description: The description line.\n"
+        "summary: The summary line.\n"
+        "---\n"
+        "\n"
+        "# Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["body"] == "The description line."
+
+
+def test_markdown_no_body_key_when_frontmatter_has_no_description_or_summary():
+    r = _md_extract(
+        "---\n"
+        "type: decision\n"
+        "---\n"
+        "\n"
+        "# Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert "body" not in page
+
+
+def test_markdown_non_string_frontmatter_description_is_not_used_as_body():
+    """A `description:` block that YAML parses as a list/dict (not a plain
+    scalar) must not crash or be stringified into body - only a real string
+    value is a line of free text."""
+    r = _md_extract(
+        "---\n"
+        "description:\n"
+        "  - one\n"
+        "  - two\n"
+        "---\n"
+        "\n"
+        "# Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert "body" not in page
+
+
 def test_markdown_no_frontmatter_key_when_absent():
     """A plain document must not grow an empty frontmatter dict."""
     r = _md_extract("# Just A Heading\n")
