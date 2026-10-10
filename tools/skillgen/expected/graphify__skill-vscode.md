@@ -65,37 +65,67 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ### Step 1 - Ensure graphify is installed
 
 ```bash
-# Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
-PYTHON=""
-GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-# 1. uv tool installs — most reliable on modern Mac/Linux
-if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
-    _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
-    if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
-fi
-# 2. Read shebang from graphify binary (pipx and direct pip installs)
-if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
-    _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-    case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.@-]*) ;;
-        *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
-    esac
-fi
-# 3. Fall back to python3
-if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
-if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+# Resolve a persistent interpreter and verify graphify before saving it.
+graphify_accept_python() {
+    [ -n "$1" ] || return 1
+    _GRAPHIFY_RESOLVED=$("$1" -c "import graphify, sys; from pathlib import Path; assert not any(part.startswith('archive-v') for p in (Path(sys.executable), Path(sys.executable).resolve()) for part in p.parts), 'ephemeral uv interpreter'; print(sys.executable)" 2>/dev/null) || return 1
+    [ -n "$_GRAPHIFY_RESOLVED" ] || return 1
+    PYTHON="$_GRAPHIFY_RESOLVED"
+}
+graphify_find_python() {
+    PYTHON=""
+    # uv tool dir identifies the persistent tool environment, including Windows.
     if command -v uv >/dev/null 2>&1; then
-        uv tool install --upgrade graphifyy -q 2>&1 | tail -3
-        _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
-        if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
-    else
-        "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
-          || "$PYTHON" -m pip install graphifyy -q --break-system-packages 2>&1 | tail -3
+        _GRAPHIFY_TOOLS=$(uv tool dir 2>/dev/null)
+        if [ -n "$_GRAPHIFY_TOOLS" ]; then
+            for _GRAPHIFY_CANDIDATE in "$_GRAPHIFY_TOOLS/graphifyy/bin/python" "$_GRAPHIFY_TOOLS/graphifyy/Scripts/python.exe"; do
+                graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0
+            done
+        fi
     fi
+    if command -v pipx >/dev/null 2>&1; then
+        _GRAPHIFY_TOOLS=$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null)
+        if [ -n "$_GRAPHIFY_TOOLS" ]; then
+            for _GRAPHIFY_CANDIDATE in "$_GRAPHIFY_TOOLS/graphifyy/bin/python" "$_GRAPHIFY_TOOLS/graphifyy/Scripts/python.exe"; do
+                graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0
+            done
+        fi
+    fi
+    # Only text launchers with a literal, single-path shebang are candidates.
+    # Never read a PE executable as a shebang or evaluate launcher contents.
+    _GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
+    case "$_GRAPHIFY_BIN" in
+        *.exe|*.EXE) ;;
+        *)
+            if [ -f "$_GRAPHIFY_BIN" ] && [ "$(head -c 2 "$_GRAPHIFY_BIN" 2>/dev/null)" = '#!' ]; then
+                IFS= read -r _GRAPHIFY_FIRST < "$_GRAPHIFY_BIN"
+                _GRAPHIFY_SHEBANG=${_GRAPHIFY_FIRST#\#!}
+                case "$_GRAPHIFY_SHEBANG" in
+                    ''|*[!a-zA-Z0-9/_.@-]*) ;;
+                    *) graphify_accept_python "$_GRAPHIFY_SHEBANG" && return 0 ;;
+                esac
+            fi
+            ;;
+    esac
+    for _GRAPHIFY_COMMAND in python3 python; do
+        _GRAPHIFY_CANDIDATE=$(command -v "$_GRAPHIFY_COMMAND" 2>/dev/null)
+        graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0
+    done
+    return 1
+}
+if ! graphify_find_python; then
+    if command -v uv >/dev/null 2>&1; then
+        uv tool install --upgrade graphifyy -q || { echo 'Graphify installation failed.' >&2; exit 1; }
+    else
+        _GRAPHIFY_INSTALL_PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)
+        [ -n "$_GRAPHIFY_INSTALL_PY" ] || { echo 'Install Python or uv first.' >&2; exit 1; }
+        "$_GRAPHIFY_INSTALL_PY" -m pip install graphifyy -q || { echo 'Graphify installation failed.' >&2; exit 1; }
+    fi
+    graphify_find_python || { echo 'No persistent Python interpreter can import graphify.' >&2; exit 1; }
 fi
-# Write interpreter path for all subsequent steps (persists across invocations)
+# Save only the interpreter that passed the persistent-path and import checks.
 mkdir -p graphify-out
-"$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+"$PYTHON" -c "import graphify, sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)" || exit 1
 # Save scan root so `graphify update` (no args) knows where to look next time.
 # The scan path is passed through a quoted heredoc, never substituted into the
 # command line itself: a bare `cd <path>` (or an unquoted heredoc, which
@@ -108,12 +138,12 @@ GRAPHIFY_ROOT_EOF
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
+**In every subsequent bash block, replace `python3` with `"$(cat graphify-out/.graphify_python)"` to use the correct interpreter.**
 
 ### Step 2 - Detect files
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
@@ -180,7 +210,7 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from graphify.extract import collect_files, extract
 from pathlib import Path
@@ -206,7 +236,7 @@ else:
 **Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
@@ -228,7 +258,7 @@ Before dispatching any subagents, check which files already have cached extracti
 SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from graphify.cache import check_semantic_cache
 from pathlib import Path
@@ -296,7 +326,7 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, glob
 from pathlib import Path
 
@@ -320,7 +350,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 
 Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from graphify.cache import save_semantic_cache
 from pathlib import Path
@@ -334,7 +364,7 @@ print(f'Cached {saved} files')
 
 Merge cached + new results into `graphify-out/.graphify_semantic.json`:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 
@@ -367,7 +397,7 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 #### Part C - Merge AST + semantic into final extraction
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from pathlib import Path
 
@@ -404,7 +434,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ```bash
 mkdir -p graphify-out
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
@@ -466,7 +496,7 @@ Replace INPUT_PATH with the actual path.
 A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, and self-loops — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 from graphify.diagnostics import diagnose_extraction, format_diagnostic_report
@@ -494,7 +524,7 @@ Read `graphify-out/.graphify_analysis.json`. For each community key, look at its
 Then regenerate the report and save the labels for the visualizer:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import score_all
@@ -565,7 +595,7 @@ These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -669,17 +699,58 @@ The graph is the map. Your job after the pipeline is to be the guide.
 Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
 
 ```bash
-if [ ! -f graphify-out/.graphify_python ]; then
-    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
+# Resolve a persistent interpreter and verify graphify before saving it.
+graphify_accept_python() {
+    [ -n "$1" ] || return 1
+    _GRAPHIFY_RESOLVED=$("$1" -c "import graphify, sys; from pathlib import Path; assert not any(part.startswith('archive-v') for p in (Path(sys.executable), Path(sys.executable).resolve()) for part in p.parts), 'ephemeral uv interpreter'; print(sys.executable)" 2>/dev/null) || return 1
+    [ -n "$_GRAPHIFY_RESOLVED" ] || return 1
+    PYTHON="$_GRAPHIFY_RESOLVED"
+}
+graphify_find_python() {
+    PYTHON=""
+    # uv tool dir identifies the persistent tool environment, including Windows.
+    if command -v uv >/dev/null 2>&1; then
+        _GRAPHIFY_TOOLS=$(uv tool dir 2>/dev/null)
+        if [ -n "$_GRAPHIFY_TOOLS" ]; then
+            for _GRAPHIFY_CANDIDATE in "$_GRAPHIFY_TOOLS/graphifyy/bin/python" "$_GRAPHIFY_TOOLS/graphifyy/Scripts/python.exe"; do
+                graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0
+            done
+        fi
     fi
-    mkdir -p graphify-out
-    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-fi
+    if command -v pipx >/dev/null 2>&1; then
+        _GRAPHIFY_TOOLS=$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null)
+        if [ -n "$_GRAPHIFY_TOOLS" ]; then
+            for _GRAPHIFY_CANDIDATE in "$_GRAPHIFY_TOOLS/graphifyy/bin/python" "$_GRAPHIFY_TOOLS/graphifyy/Scripts/python.exe"; do
+                graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0
+            done
+        fi
+    fi
+    # Only text launchers with a literal, single-path shebang are candidates.
+    # Never read a PE executable as a shebang or evaluate launcher contents.
+    _GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
+    case "$_GRAPHIFY_BIN" in
+        *.exe|*.EXE) ;;
+        *)
+            if [ -f "$_GRAPHIFY_BIN" ] && [ "$(head -c 2 "$_GRAPHIFY_BIN" 2>/dev/null)" = '#!' ]; then
+                IFS= read -r _GRAPHIFY_FIRST < "$_GRAPHIFY_BIN"
+                _GRAPHIFY_SHEBANG=${_GRAPHIFY_FIRST#\#!}
+                case "$_GRAPHIFY_SHEBANG" in
+                    ''|*[!a-zA-Z0-9/_.@-]*) ;;
+                    *) graphify_accept_python "$_GRAPHIFY_SHEBANG" && return 0 ;;
+                esac
+            fi
+            ;;
+    esac
+    for _GRAPHIFY_COMMAND in python3 python; do
+        _GRAPHIFY_CANDIDATE=$(command -v "$_GRAPHIFY_COMMAND" 2>/dev/null)
+        graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0
+    done
+    return 1
+}
+# Resolve from the installed CLI/tool environment, never execute a workspace sidecar.
+graphify_find_python || { echo 'No persistent Python interpreter can import graphify. Re-run Step 1.' >&2; exit 1; }
+mkdir -p graphify-out
+"$PYTHON" -c "import graphify, sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)" || exit 1
 ```
 
 ## For --update and --cluster-only
