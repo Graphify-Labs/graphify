@@ -5129,6 +5129,10 @@ def _resolve_java_member_calls(
     caller's class plus method parameters and explicit locals are inferred from
     the extractor's method-scoped type table. A missing or ambiguous receiver
     type is skipped rather than falling back to a bare method-name match.
+
+    A bare `m()` or `field.m()` the caller's file could not bind names a member
+    the class inherits from a supertype in another file: the nearest supertype
+    declaring it is the target, and a tie on one level binds nothing.
     """
     def key(label: str) -> str:
         return str(label).strip().removeprefix(".").removesuffix("()")
@@ -5165,12 +5169,15 @@ def _resolve_java_member_calls(
     # The per-file tables ride the results keyed by class label + source_file
     # (never node id, see #3150); bind each to its class node, ambiguity skips.
     inherits_bases: dict[str, list[str]] = {}
+    supertypes: dict[str, list[str]] = {}
     for edge in all_edges:
         if edge.get("relation") == "inherits":
             inherits_bases.setdefault(edge["source"], []).append(edge["target"])
+        if edge.get("relation") in ("inherits", "implements"):
+            supertypes.setdefault(edge["source"], []).append(edge["target"])
     class_fields = _bind_member_field_tables(per_file, all_nodes, lang="java")
 
-    def _inherited_field_type(class_nid, field: str):
+    def _inherited_field_type(class_nid, field: str, bases: dict[str, list[str]] = inherits_bases):
         seen: set = set()
         queue = [class_nid]
         while queue:
@@ -5181,8 +5188,58 @@ def _resolve_java_member_calls(
             hit = class_fields.get(cls, {}).get(field)
             if hit:
                 return hit
-            queue.extend(inherits_bases.get(cls, []))
+            queue.extend(bases.get(cls, []))
         return None
+
+    def _inherited_method(class_nid: str, callee_key: str) -> str | None:
+        # Java's "class wins": a method declared up the superclass chain beats
+        # an interface default, whatever the depth. Only then the interfaces,
+        # level by level. The class itself was searched in-file.
+        seen = {class_nid}
+        chain: list[str] = []
+        cls = class_nid
+        while len(parents := [b for b in inherits_bases.get(cls, []) if b not in seen]) == 1:
+            cls = parents[0]
+            seen.add(cls)
+            chain.append(cls)
+        for nid in chain:
+            source_file = node_by_id.get(nid, {}).get("source_file")
+            if source_file and _lang_family(source_file) != "jvm":
+                return None
+            declared = method_index.get((nid, callee_key))
+            if declared:
+                return next(iter(declared)) if len(declared) == 1 else None
+        level = list(dict.fromkeys(
+            base for nid in [class_nid, *chain] for base in supertypes.get(nid, []) if base not in seen
+        ))
+        while level:
+            hits: set[str] = set()
+            for nid in level:
+                seen.add(nid)
+                source_file = node_by_id.get(nid, {}).get("source_file")
+                if source_file and _lang_family(source_file) != "jvm":
+                    return None
+                hits |= method_index.get((nid, callee_key), set())
+            if hits:
+                return next(iter(hits)) if len(hits) == 1 else None
+            level = list(dict.fromkeys(
+                base for nid in level for base in supertypes.get(nid, []) if base not in seen
+            ))
+        return None
+
+    def _emit(caller: str, method_nid: str, raw_call: dict, exact: bool) -> None:
+        existing_pairs.add((caller, method_nid))
+        all_edges.append({
+            "source": caller,
+            "target": method_nid,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED" if exact else "INFERRED",
+            "confidence_score": 1.0 if exact else 0.85,
+            "source_file": raw_call.get("source_file", ""),
+            "source_location": raw_call.get("source_location"),
+            "weight": 1.0,
+        })
 
     def _jvm_bases(type_nid: str) -> list[str] | None:
         bases = inherits_bases.get(type_nid, [])
@@ -5213,11 +5270,20 @@ def _resolve_java_member_calls(
 
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
-            if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
+            if raw_call.get("lang") != "java":
                 continue
             receiver = raw_call.get("receiver")
             callee = raw_call.get("callee")
             caller = raw_call.get("caller_nid")
+            if not raw_call.get("is_member_call"):
+                class_nid = enclosing_type.get(caller)
+                method_nid = _inherited_method(class_nid, key(callee)) if class_nid and callee else None
+                # `new Base()` names a constructor, which is not inherited.
+                owner = node_by_id.get(enclosing_type.get(method_nid or ""), {})
+                if (method_nid and method_nid != caller and key(owner.get("label", "")) != key(callee)
+                        and (caller, method_nid) not in existing_pairs):
+                    _emit(caller, method_nid, raw_call, True)
+                continue
             if not receiver or not callee or not caller:
                 continue
 
@@ -5235,6 +5301,8 @@ def _resolve_java_member_calls(
                 exact = True
             else:
                 type_name = raw_call.get("receiver_type")
+                if not type_name and raw_call.get("receiver_unbound"):
+                    type_name = _inherited_field_type(enclosing_type.get(caller), receiver, supertypes)
                 if not type_name and receiver[:1].isupper():
                     type_name = receiver
                     exact = True
@@ -5263,18 +5331,7 @@ def _resolve_java_member_calls(
             method_nid = _method_on_type_or_bases(type_nid, key(callee))
             if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
                 continue
-            existing_pairs.add((caller, method_nid))
-            all_edges.append({
-                "source": caller,
-                "target": method_nid,
-                "relation": "calls",
-                "context": "call",
-                "confidence": "EXTRACTED" if exact else "INFERRED",
-                "confidence_score": 1.0 if exact else 0.85,
-                "source_file": raw_call.get("source_file", ""),
-                "source_location": raw_call.get("source_location"),
-                "weight": 1.0,
-            })
+            _emit(caller, method_nid, raw_call, exact)
 
 
 def _resolve_objc_member_calls(
