@@ -863,6 +863,7 @@ graphify cluster-only ./my-project --backend=gemini            # backend for com
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
+graphify label ./my-project --force                            # overwrite a graph that grew during labeling
 ```
 
 `--no-dedup` also skips coalescing distinct non-AST nodes solely because they
