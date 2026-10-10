@@ -5129,6 +5129,10 @@ def _resolve_java_member_calls(
     caller's class plus method parameters and explicit locals are inferred from
     the extractor's method-scoped type table. A missing or ambiguous receiver
     type is skipped rather than falling back to a bare method-name match.
+
+    A receiver that is itself a call (`builder().size(3).build()`), a `new T()`
+    or a cast is typed step by step from the declared return types the
+    extractor put on method nodes (`_java_ret`).
     """
     def key(label: str) -> str:
         return str(label).strip().removeprefix(".").removesuffix("()")
@@ -5211,6 +5215,32 @@ def _resolve_java_member_calls(
             frontier.extend(bases)
         return next(iter(hits)) if len(hits) == 1 else None
 
+    def _type_named(name: str, near: str | None) -> str | None:
+        # A name declared more than once (a nested `Builder` in many classes)
+        # is the one in the file that names it, or none.
+        defs = type_def_nids.get(key(name), [])
+        if len(defs) > 1:
+            here = node_by_id.get(near, {}).get("source_file")
+            defs = [nid for nid in defs if node_by_id.get(nid, {}).get("source_file") == here]
+        return defs[0] if len(defs) == 1 else None
+
+    def _chain_type(chain: list, caller: str, depth: int = 0) -> str | None:
+        kind = chain[0] if chain and depth <= 16 else None
+        if kind == "type":
+            return _type_named(chain[1], caller)
+        if kind == "this":
+            return enclosing_type.get(caller)
+        if kind == "super":
+            bases = _jvm_bases(enclosing_type.get(caller, ""))
+            return bases[0] if bases and len(bases) == 1 else None
+        if kind == "call":
+            owner = (enclosing_type.get(caller) if chain[2] is None
+                     else _chain_type(chain[2], caller, depth + 1))
+            method_nid = _method_on_type_or_bases(owner, key(chain[1])) if owner else None
+            returned = node_by_id.get(method_nid or "", {}).get("_java_ret")
+            return _type_named(returned, method_nid) if returned else None
+        return None
+
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
             if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
@@ -5218,6 +5248,24 @@ def _resolve_java_member_calls(
             receiver = raw_call.get("receiver")
             callee = raw_call.get("callee")
             caller = raw_call.get("caller_nid")
+            chain = raw_call.get("java_receiver_chain")
+            if chain and not receiver and callee and caller:
+                type_nid = _chain_type(chain, caller)
+                method_nid = _method_on_type_or_bases(type_nid, key(callee)) if type_nid else None
+                if method_nid and method_nid != caller and (caller, method_nid) not in existing_pairs:
+                    existing_pairs.add((caller, method_nid))
+                    all_edges.append({
+                        "source": caller,
+                        "target": method_nid,
+                        "relation": "calls",
+                        "context": "call",
+                        "confidence": "INFERRED",
+                        "confidence_score": 0.85,
+                        "source_file": raw_call.get("source_file", ""),
+                        "source_location": raw_call.get("source_location"),
+                        "weight": 1.0,
+                    })
+                continue
             if not receiver or not callee or not caller:
                 continue
 

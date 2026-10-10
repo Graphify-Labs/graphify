@@ -1911,7 +1911,7 @@ def _rebuild_code(
                     # Rust impl identity connects alpha-renamed generic blocks.
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module",
-                        "_rust_impl_key", "_rust_declaration_count",
+                        "_rust_impl_key", "_rust_declaration_count", "_java_ret",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]

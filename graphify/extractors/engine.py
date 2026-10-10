@@ -463,6 +463,60 @@ def _java_receiver_type_name(type_node, source: bytes) -> str | None:
     return name
 
 
+def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
+    """Describe a Java receiver that is itself an expression, for the resolver
+    to type from declared return types: `new T()` / `(T) x` -> ["type", "T"],
+    `f()` -> ["call", "f", None], `x.f()` -> ["call", "f", <x>], and the leaves
+    ["this"], ["super"], ["name", "x"]. None when any part is something else."""
+    if node is None or depth > 16:
+        return None
+    t = node.type
+    if t == "parenthesized_expression":
+        inner = [c for c in node.named_children if c.type != "comment"]
+        return _java_receiver_chain(inner[0], source, depth + 1) if len(inner) == 1 else None
+    if t in ("object_creation_expression", "cast_expression"):
+        name = _java_receiver_type_name(node.child_by_field_name("type"), source)
+        return ["type", name] if name else None
+    if t in ("this", "super"):
+        return [t]
+    if t == "identifier":
+        return ["name", _read_text(node, source)]
+    if t == "field_access":
+        owner, field = node.child_by_field_name("object"), node.child_by_field_name("field")
+        if owner is not None and owner.type == "this" and field is not None:
+            return ["name", f"this.{_read_text(field, source)}"]
+        return None
+    if t == "method_invocation":
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return None
+        receiver = node.child_by_field_name("object")
+        inner = None
+        if receiver is not None:
+            inner = _java_receiver_chain(receiver, source, depth + 1)
+            if inner is None:
+                return None
+        return ["call", _read_text(name_node, source), inner]
+    return None
+
+
+def _java_type_chain_leaf(chain: list, receiver_types: dict) -> list | None:
+    """Replace the ["name", x] leaf of a receiver chain with x's declared type
+    (["type", T]); a capitalized name nothing declares is a type itself
+    (`Foo.create().run()`), as for a plain receiver. None when x is untyped."""
+    if chain[0] == "call":
+        if chain[2] is None:
+            return chain
+        inner = _java_type_chain_leaf(chain[2], receiver_types)
+        return ["call", chain[1], inner] if inner else None
+    if chain[0] == "name":
+        declared = receiver_types.get(chain[1])
+        if declared:
+            return ["type", declared]
+        return ["type", chain[1]] if chain[1][:1].isupper() else None
+    return chain
+
+
 def _java_declarator_names(declaration_node, source: bytes) -> list[str]:
     names: list[str] = []
     for child in declaration_node.children:
@@ -4750,6 +4804,7 @@ def _extract_generic(
     # Java receiver typing is method-scoped: current-class fields are shared,
     # while parameters and locals belong only to their declaring method.
     java_field_types: dict[str, dict[str, str]] = {}
+    java_return_types: dict[str, str] = {}
     java_method_scopes: dict[int, tuple[object, str]] = {}
     # C# receiver typing is method-scoped too (#2299): class fields/properties
     # are shared, parameters and locals belong only to their declaring method —
@@ -6734,6 +6789,14 @@ def _extract_generic(
                             add_edge(func_nid, target_nid, "references",
                                      line, context=ctx)
 
+            if (config.ts_module == "tree_sitter_java" and parent_class_nid
+                    and node.type == "method_declaration"):
+                # Overloads share one node: keep a return type they all declare.
+                ret = _java_receiver_type_name(node.child_by_field_name("type"), source) or ""
+                java_return_types[func_nid] = (
+                    ret if java_return_types.get(func_nid, ret) == ret else ""
+                )
+
             body = _find_body(node, config)
             # JS/TS: capture callable members assigned directly in a function
             # body. Besides constructor-style `this.X = fn`, factories commonly
@@ -7477,6 +7540,7 @@ def _extract_generic(
             kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
             csharp_receiver_chain: list[str] | None = None
+            java_receiver_chain: list | None = None
             lua_self_qualified: bool = False  # Lua self:m() rewritten to Table:m
 
             # Special handling per language
@@ -7857,6 +7921,8 @@ def _extract_generic(
                             if owner is not None and owner.type == "this" and field is not None:
                                 member_receiver = f"this.{_read_text(field, source)}"
                                 is_this_field_call = True
+                        else:
+                            java_receiver_chain = _java_receiver_chain(receiver, source)
             elif config.ts_module == "tree_sitter_ruby":
                 # Ruby's `call` node carries `receiver` and `method` as direct
                 # fields (no intermediate accessor node), so the generic accessor
@@ -8200,6 +8266,13 @@ def _extract_generic(
                             receiver_type = (receiver_types or {}).get(member_receiver or "")
                             if receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
+                            if java_receiver_chain:
+                                chain = _java_type_chain_leaf(
+                                    java_receiver_chain,
+                                    receiver_types if isinstance(receiver_types, dict) else {},
+                                )
+                                if chain:
+                                    rc_entry["java_receiver_chain"] = chain
                         # Kotlin fully-qualified call (#2550): the dotted prefix +
                         # lang tag let _resolve_kotlin_qualified_calls claim it.
                         if kotlin_qualified_prefix:
@@ -8652,6 +8725,9 @@ def _extract_generic(
     ]
     if _field_table_export:
         result["member_field_tables"] = _field_table_export
+    for _n in nodes:
+        if java_return_types.get(_n["id"]):
+            _n["_java_ret"] = java_return_types[_n["id"]]
     # #2551: the parser recovered from syntax errors, so extraction may be
     # partial (in the worst case, nothing but the file node). Record the first
     # error's line so extract() can warn instead of reporting silent success.
