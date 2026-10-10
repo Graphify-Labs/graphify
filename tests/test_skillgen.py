@@ -403,9 +403,15 @@ def test_powershell_hosts_carry_no_bash_only_shell():
         assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in core, (
             f"[{key}] missing the here-string stdin python invocation"
         )
-        # Cleanup went through Remove-Item / Get-ChildItem, not rm/find.
-        assert "Remove-Item -Force -ErrorAction SilentlyContinue" in core
-        assert "Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json'" in core
+        # Cleanup no longer goes through a shell at all (#2790): it is folded
+        # into the tail of the Python program each block already runs, so there
+        # is nothing left for the translator to turn into Remove-Item, and a
+        # host that gates destructive verbs has nothing to deny.
+        assert "Remove-Item" not in core, f"[{key}] cleanup still uses a shell verb"
+        assert "Get-ChildItem" not in core, f"[{key}] cleanup still uses a shell verb"
+        assert "for _chunk in _out.glob('.graphify_chunk_*.json'):" in core, (
+            f"[{key}] lost the Python chunk cleanup"
+        )
 
 
 def test_windows_and_posix_cores_have_step_and_2490_parity():
