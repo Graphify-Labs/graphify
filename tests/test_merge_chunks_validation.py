@@ -114,7 +114,7 @@ def test_merge_chunks_accepts_unicode_id(tmp_path, monkeypatch):
                "edges": [], "hyperedges": []})
     out = tmp_path / "merged.json"
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c), "--out", str(out)])
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert {n["id"] for n in merged["nodes"]} == {"mod_处理数据"}
 
 
