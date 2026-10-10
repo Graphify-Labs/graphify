@@ -16,7 +16,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import extract
+from graphify.extractors.rust import extract_rust
 
 
 def _calls(tmp_path: Path, files: dict[str, str]):
@@ -84,6 +87,323 @@ def test_self_call_same_file_control_is_unaffected(tmp_path: Path):
     caller = _find(result, ".show()", "widget")
     callee = _find(result, ".get()", "widget")
     assert (caller, callee) in calls
+
+
+def test_generic_self_call_resolves_across_alpha_renamed_impls(tmp_path: Path):
+    """Parameter spelling must not split one simple generic impl family."""
+    calls, result = _calls(tmp_path, {
+        "state.rs": "pub struct Bucket<T> { value: T }\n",
+        "read.rs": (
+            "use crate::state::Bucket;\n"
+            "impl<T> Bucket<T> {\n"
+            "    pub fn fetch_value(&self) {}\n"
+            "}\n"
+        ),
+        "run.rs": (
+            "use crate::state::Bucket;\n"
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "run_bucket_u")
+    callee = _find(result, ".fetch_value()", "read_bucket_t")
+    assert (caller, callee) in calls
+    assert calls[(caller, callee)]["confidence"] == "EXTRACTED"
+
+
+def test_generic_self_call_does_not_cross_unrelated_same_named_families(
+    tmp_path: Path,
+):
+    """The marker is not proof when two declarations share owner and arity."""
+    calls, result = _calls(tmp_path, {
+        "a/state.rs": "pub struct Bucket<T> { value: T }\n",
+        "a/read.rs": (
+            "impl<T> Bucket<T> {\n"
+            "    pub fn fetch_value(&self) {}\n"
+            "}\n"
+        ),
+        "b/state.rs": "pub struct Bucket<T> { value: T }\n",
+        "b/run.rs": (
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "b_run_bucket_u")
+    assert not {target for (source, target) in calls if source == caller}
+
+
+def test_generic_self_call_without_a_declaration_fails_closed(tmp_path: Path):
+    """Impl blocks alone do not prove that same-named owners are one family."""
+    calls, result = _calls(tmp_path, {
+        "method.rs": (
+            "impl<T> Bucket<T> { pub fn fetch_value(&self) {} }\n"
+        ),
+        "caller.rs": (
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "caller_bucket_u")
+    assert not {target for (source, target) in calls if source == caller}
+
+
+def test_generic_self_call_counts_collapsed_same_file_declarations(
+    tmp_path: Path,
+):
+    """Nested modules must not hide two unrelated declarations behind one ID."""
+    calls, result = _calls(tmp_path, {
+        "state.rs": (
+            "pub mod a { pub struct Bucket<T>(pub T); }\n"
+            "pub mod b { pub struct Bucket<T>(pub T); }\n"
+        ),
+        "a_impl.rs": (
+            "impl<T> Bucket<T> {\n"
+            "    pub fn fetch_value(&self) {}\n"
+            "}\n"
+        ),
+        "fallback.rs": (
+            "pub trait Fallback { fn fetch_value(&self) {} }\n"
+        ),
+        "b_impl.rs": (
+            "impl<T> Fallback for Bucket<T> {}\n"
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "b_impl_bucket_u")
+    assert not {target for (source, target) in calls if source == caller}
+
+
+@pytest.mark.parametrize(
+    ("declaration", "callee_impl", "caller_impl"),
+    [
+        (
+            "pub struct Bucket<T> { value: T }\n",
+            "impl<T: Clone> Bucket<T>",
+            "impl<U: Clone> Bucket<U>",
+        ),
+        (
+            "pub struct Bucket<T> { value: T }\n",
+            "impl<T> Bucket<T> where T: Clone",
+            "impl<U> Bucket<U> where U: Clone",
+        ),
+        (
+            (
+                "pub struct Bucket<T> { value: T }\n"
+                "trait Fetch { fn fetch_value(&self); }\n"
+            ),
+            "impl<T> Fetch for Bucket<T>",
+            "impl<U> Bucket<U>",
+        ),
+        (
+            "pub struct Bucket<'a, T> { value: &'a T }\n",
+            "impl<'a, T> Bucket<'a, T>",
+            "impl<'b, U> Bucket<'b, U>",
+        ),
+        (
+            "pub struct Bucket<const N: usize> { value: [u8; N] }\n",
+            "impl<const N: usize> Bucket<N>",
+            "impl<const M: usize> Bucket<M>",
+        ),
+        (
+            "pub struct Bucket<T> { value: T }\n",
+            "impl<T> Bucket<Vec<T>>",
+            "impl<U> Bucket<U>",
+        ),
+        (
+            "pub struct Bucket<T> { value: T }\n",
+            "impl Bucket<String>",
+            "impl<U> Bucket<U>",
+        ),
+        (
+            "pub struct Pair<T, U> { left: T, right: U }\n",
+            "impl<T> Pair<T, T>",
+            "impl<X, Y> Pair<X, Y>",
+        ),
+        (
+            "pub struct Pair<T, U> { left: T, right: U }\n",
+            "impl<T, U> Pair<U, T>",
+            "impl<X, Y> Pair<X, Y>",
+        ),
+    ],
+    ids=[
+        "bounded", "where", "trait", "lifetime", "const", "nested",
+        "concrete", "repeated", "permuted",
+    ],
+)
+def test_unsupported_generic_impl_shapes_fail_closed(
+    tmp_path: Path,
+    declaration: str,
+    callee_impl: str,
+    caller_impl: str,
+):
+    """Unsupported type semantics get neither a marker nor a guessed edge."""
+    method = tmp_path / "method.rs"
+    method.write_text(
+        f"{callee_impl} {{\n    pub fn fetch_value(&self) {{}}\n}}\n",
+        encoding="utf-8",
+    )
+    impl_nodes = [
+        node for node in extract_rust(method)["nodes"]
+        if node.get("label", "").startswith(("Bucket", "Pair"))
+    ]
+    assert impl_nodes
+    assert all("_rust_impl_key" not in node for node in impl_nodes)
+
+    calls, result = _calls(tmp_path / "corpus", {
+        "state.rs": declaration,
+        "method.rs": f"{callee_impl} {{\n    pub fn fetch_value(&self) {{}}\n}}\n",
+        "caller.rs": (
+            f"{caller_impl} {{\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "caller")
+    assert not {target for (source, target) in calls if source == caller}
+
+
+@pytest.mark.parametrize("deferred_first", [False, True])
+def test_mixed_simple_and_bounded_impl_blocks_fail_closed(
+    tmp_path: Path,
+    deferred_first: bool,
+):
+    """A shared impl node cannot lend eligibility to a bounded block."""
+    simple_target = "impl<T> Bucket<T> { fn marker_a(&self) {} }\n"
+    bounded_target = (
+        "impl<T: Clone> Bucket<T> { pub fn fetch_value(&self) {} }\n"
+    )
+    simple_caller = "impl<U> Bucket<U> { fn marker_b(&self) {} }\n"
+    bounded_caller = (
+        "impl<U: Clone> Bucket<U> {\n"
+        "    pub fn run(&self) { self.fetch_value(); }\n"
+        "}\n"
+    )
+    def order(simple: str, deferred: str) -> str:
+        return deferred + simple if deferred_first else simple + deferred
+    calls, result = _calls(tmp_path, {
+        "state.rs": "pub struct Bucket<T> { value: T }\n",
+        "target.rs": order(simple_target, bounded_target),
+        "caller.rs": order(simple_caller, bounded_caller),
+    })
+    caller = _find(result, ".run()", "caller_bucket_u")
+    assert not {target for (source, target) in calls if source == caller}
+
+    target_impl = next(
+        node for node in extract_rust(tmp_path / "target.rs")["nodes"]
+        if node.get("label") == "Bucket<T>"
+    )
+    assert "_rust_impl_key" not in target_impl
+    raw_call = next(
+        call for call in extract_rust(tmp_path / "caller.rs")["raw_calls"]
+        if call.get("callee") == "fetch_value"
+    )
+    assert "rust_self_impl_key" not in raw_call
+
+
+def test_mixed_simple_and_trait_impl_target_fails_closed(tmp_path: Path):
+    """A coalesced trait impl must not expose its methods as inherent ones."""
+    calls, result = _calls(tmp_path, {
+        "state.rs": "pub struct Bucket<T> { value: T }\n",
+        "target.rs": (
+            "pub trait Fetch { fn fetch_value(&self); }\n"
+            "impl<T> Bucket<T> { fn marker(&self) {} }\n"
+            "impl<T> Fetch for Bucket<T> {\n"
+            "    fn fetch_value(&self) {}\n"
+            "}\n"
+        ),
+        "caller.rs": (
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "caller_bucket_u")
+    assert not {target for (source, target) in calls if source == caller}
+    target_impl = next(
+        node for node in extract_rust(tmp_path / "target.rs")["nodes"]
+        if node.get("label") == "Bucket<T>"
+    )
+    assert "_rust_impl_key" not in target_impl
+
+
+def test_scoped_self_call_remains_deferred_across_impl_files(tmp_path: Path):
+    """`Self::method()` is a scoped-call form, outside this resolver slice."""
+    calls, result = _calls(tmp_path, {
+        "state.rs": "pub struct Bucket<T> { value: T }\n",
+        "method.rs": (
+            "impl<T> Bucket<T> {\n"
+            "    pub fn fetch_value(&self) {}\n"
+            "}\n"
+        ),
+        "caller.rs": (
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { Self::fetch_value(self); }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".run()", "caller")
+    assert not {target for (source, target) in calls if source == caller}
+
+
+def test_generic_self_call_invalidates_markerless_ast_cache(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A same-version cache from before the marker contract must be missed."""
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+
+    files = {
+        "state.rs": "pub struct Bucket<T> { value: T }\n",
+        "method.rs": (
+            "impl<T> Bucket<T> {\n"
+            "    pub fn fetch_value(&self) {}\n"
+            "}\n"
+        ),
+        "caller.rs": (
+            "impl<U> Bucket<U> {\n"
+            "    pub fn run(&self) { self.fetch_value(); }\n"
+            "}\n"
+        ),
+    }
+    paths = []
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    assert current_schema >= 4
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema - 1)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    for name, body in files.items():
+        path = tmp_path / name
+        path.write_text(body, encoding="utf-8")
+        paths.append(path)
+        stale = extract_rust(path)
+        for node in stale["nodes"]:
+            node.pop("_rust_impl_key", None)
+        for raw_call in stale.get("raw_calls", []):
+            raw_call.pop("rust_self_impl_key", None)
+        save_cached(
+            path,
+            stale,
+            root=tmp_path,
+            cache_root=tmp_path,
+            kind="ast",
+        )
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    result = extract(paths, root=tmp_path, cache_root=tmp_path)
+    caller = _find(result, ".run()", "caller_bucket_u")
+    callee = _find(result, ".fetch_value()", "method_bucket_t")
+    assert any(
+        edge.get("relation") == "calls"
+        and edge.get("source") == caller
+        and edge.get("target") == callee
+        for edge in result["edges"]
+    )
 
 
 def test_self_call_to_ambiguous_type_name_yields_no_edge(tmp_path: Path):
