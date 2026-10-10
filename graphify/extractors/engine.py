@@ -5606,6 +5606,20 @@ def _extract_generic(
                         if target_nid != class_nid:
                             add_edge(class_nid, target_nid, "references",
                                      line, context=ctx)
+                # `derives Show, cats.Eq` (on classes and enums) names typeclasses
+                # the type depends on, like a context bound (#2048). A qualified
+                # name links by its last segment.
+                derive = node.child_by_field_name("derive")
+                for d in derive.children_by_field_name("type") if derive is not None else ():
+                    tail = d if d.type == "type_identifier" else next(
+                        (x for x in reversed(d.children) if x.type == "type_identifier"), None)
+                    if tail is None:
+                        continue
+                    d_line = d.start_point[0] + 1
+                    target_nid = ensure_named_node(_read_text(tail, source), d_line)
+                    if target_nid != class_nid:
+                        add_edge(class_nid, target_nid, "references",
+                                 d_line, context="derives")
 
             # C#: a primary constructor (`class Foo(IBar bar)`, C# 12+) declares
             # its dependencies on the type declaration itself rather than in a
