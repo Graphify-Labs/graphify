@@ -12,9 +12,14 @@ baseUrl is now a resolution root of last resort: tried only after every declared
 alias fails to match, so existing `paths` precedence (#1269, #927, #1531) is
 untouched.
 """
+import json
 from pathlib import Path
 
 from graphify.extract import _make_id, extract
+from graphify.extractors.resolution import (
+    _load_tsconfig_aliases,
+    _load_tsconfig_base_url,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -191,6 +196,116 @@ def test_tsconfig_wins_when_both_configs_present(tmp_path):
     targets = _targets(r)
     assert _cid(tmp_path, ts_hit) in targets
     assert _cid(tmp_path, tmp_path / "js_root" / "mods" / "W.js") not in targets
+
+
+def test_tsconfig_baseurl_is_inherited_from_extended_config(tmp_path):
+    """An inherited baseUrl is relative to the config that declares it (#2200)."""
+    _write(
+        tmp_path / "configs" / "base.json",
+        '{\n'
+        '  "compilerOptions": {\n'
+        '    "baseUrl": "../src"\n'
+        '  }\n'
+        '}\n',
+    )
+    _write(tmp_path / "tsconfig.json", '{"extends": "./configs/base.json"}\n')
+    target = _write(tmp_path / "src" / "mods" / "Widget.js", "export default 1;\n")
+    importer = _write(
+        tmp_path / "packs" / "dashboard.js",
+        "import Widget from 'mods/Widget.js';\n"
+        "export default Widget;\n",
+    )
+
+    result = extract([importer], cache_root=tmp_path)
+
+    assert _cid(tmp_path, target) in _targets(result)
+
+
+def test_tsconfig_child_baseurl_overrides_parent_relative_to_child(tmp_path):
+    """A child baseUrl wins and is resolved from the child config directory (#2200)."""
+    _write(
+        tmp_path / "configs" / "base.json",
+        '{\n'
+        '  "compilerOptions": {"baseUrl": "../parent-src"}\n'
+        '}\n',
+    )
+    _write(
+        tmp_path / "tsconfig.json",
+        '{\n'
+        '  "extends": "./configs/base.json",\n'
+        '  "compilerOptions": {"baseUrl": "./child-src"}\n'
+        '}\n',
+    )
+    parent_target = _write(
+        tmp_path / "parent-src" / "mods" / "Widget.js", "export default 1;\n"
+    )
+    child_target = _write(
+        tmp_path / "child-src" / "mods" / "Widget.js", "export default 2;\n"
+    )
+    importer = _write(
+        tmp_path / "packs" / "dashboard.js",
+        "import Widget from 'mods/Widget.js';\n"
+        "export default Widget;\n",
+    )
+
+    targets = _targets(extract([importer], cache_root=tmp_path))
+
+    assert _cid(tmp_path, child_target) in targets
+    assert _cid(tmp_path, parent_target) not in targets
+
+
+def test_tsconfig_jsonc_parent_and_null_child_options_are_safe(tmp_path):
+    """JSONC parents and ``compilerOptions: null`` must not abort resolution (#2200)."""
+    _write(
+        tmp_path / "configs" / "base.json",
+        '{\n'
+        '  // inherited aliases are valid JSONC\n'
+        '  "compilerOptions": {\n'
+        '    "baseUrl": "../src",\n'
+        '    "paths": {"@shared/*": ["shared/*"],},\n'
+        '  },\n'
+        '}\n',
+    )
+    _write(
+        tmp_path / "tsconfig.json",
+        '{"extends": "./configs/base.json", "compilerOptions": null}\n',
+    )
+    target = _write(tmp_path / "src" / "shared" / "Widget.js", "export default 1;\n")
+    importer = _write(
+        tmp_path / "packs" / "dashboard.js",
+        "import Widget from '@shared/Widget.js';\n"
+        "export default Widget;\n",
+    )
+
+    targets = _targets(extract([importer], cache_root=tmp_path))
+
+    assert _cid(tmp_path, target) in targets
+
+
+def test_absolute_tsconfig_extends_cannot_read_external_config(tmp_path):
+    """Absolute parents must not import baseUrl or aliases from outside the project."""
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external"
+    external_config = _write(
+        external / "base.json",
+        json.dumps(
+            {
+                "compilerOptions": {
+                    "baseUrl": "./src",
+                    "paths": {"@external/*": ["*"]},
+                }
+            }
+        ),
+    )
+    _write(workspace / "tsconfig.json", json.dumps({"extends": str(external_config)}))
+    importer = _write(
+        workspace / "packs" / "dashboard.js",
+        "import Widget from 'mods/Widget.js';\nexport default Widget;\n",
+    )
+    _write(external / "src" / "mods" / "Widget.js", "export default 1;\n")
+
+    assert _load_tsconfig_base_url(importer.parent) is None
+    assert _load_tsconfig_aliases(importer.parent) == {}
 
 
 # --- config edits must survive the per-process caches (#2917) ---------------

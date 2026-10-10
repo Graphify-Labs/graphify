@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
@@ -35,6 +35,24 @@ _PACKAGE_IMPORTS_CACHE: "dict[str, tuple[Path, dict] | None]" = {}
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
 
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
+
+
+def _resolve_tsconfig_extends(base_dir: Path, extends: str) -> Path | None:
+    """Resolve a local relative tsconfig parent; never follow absolute paths.
+
+    Absolute paths (including Windows drive/UNC paths when running elsewhere)
+    can make project config resolution read files outside the workspace.
+    Package specifiers are likewise left to the existing non-local behavior.
+    """
+    if not extends or extends.startswith("@"):
+        return None
+    windows_path = PureWindowsPath(extends)
+    if Path(extends).is_absolute() or windows_path.drive:
+        return None
+    extended_path = _resolve_cached(base_dir / extends)
+    if not extended_path.suffix:
+        extended_path = extended_path.with_suffix(".json")
+    return extended_path if extended_path.exists() else None
 
 def _resolve_js_import_path(candidate: Path) -> Path:
     """Resolve a JS/TS/Svelte import target to a local file when it exists."""
@@ -140,12 +158,8 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         extends_list = []
     for ext in extends_list:
         # Skip scoped npm package configs (e.g. @tsconfig/svelte) — not on disk.
-        if not ext or ext.startswith("@"):
-            continue
-        extended_path = _resolve_cached((base_dir / ext))
-        if not extended_path.suffix:
-            extended_path = extended_path.with_suffix(".json")
-        if extended_path.exists():
+        extended_path = _resolve_tsconfig_extends(base_dir, ext)
+        if extended_path is not None:
             aliases.update(_read_tsconfig_aliases(extended_path, extended_path.parent, seen))
 
     # `references` — the solution-file / `tsc -b` layout (Vite, React, many
@@ -183,9 +197,13 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
     # than <dir>/services. Defaults to "." so configs without baseUrl (paths
     # relative to the tsconfig dir, the TS 4.1+ behavior) keep working.
     compiler_options = data.get("compilerOptions", {})
+    if not isinstance(compiler_options, dict):
+        compiler_options = {}
     base_url = compiler_options.get("baseUrl") or "."
     paths_base = base_dir / base_url
     paths = compiler_options.get("paths", {})
+    if not isinstance(paths, dict):
+        paths = {}
     for alias, targets in paths.items():
         if not targets:
             continue
@@ -261,6 +279,53 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
         _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(config, candidate, seen=set())
     return _TSCONFIG_ALIAS_CACHE[key]
 
+
+def _read_tsconfig_base_url(
+    tsconfig: Path,
+    base_dir: Path,
+    seen: set[str],
+) -> "Path | None":
+    """Read the effective baseUrl from a config and its ``extends`` chain.
+
+    Each config contributes a baseUrl relative to its own directory. Parent
+    configs are processed in declaration order, so a later parent wins; the
+    child config wins over every parent. Missing or non-local parents are
+    ignored, matching the alias resolver's existing extends behavior.
+    """
+    key = str(tsconfig)
+    if key in seen:
+        return None
+    seen.add(key)
+    data = _read_json_config(tsconfig)
+    if not isinstance(data, dict):
+        return None
+
+    inherited: Path | None = None
+    extends = data.get("extends")
+    if isinstance(extends, str):
+        extends_list = [extends]
+    elif isinstance(extends, list):
+        extends_list = [entry for entry in extends if isinstance(entry, str)]
+    else:
+        extends_list = []
+    for ext in extends_list:
+        extended_path = _resolve_tsconfig_extends(base_dir, ext)
+        if extended_path is not None:
+            parent_base_url = _read_tsconfig_base_url(
+                extended_path, extended_path.parent, seen
+            )
+            if parent_base_url is not None:
+                inherited = parent_base_url
+
+    compiler_options = data.get("compilerOptions", {})
+    if not isinstance(compiler_options, dict):
+        compiler_options = {}
+    raw_base = compiler_options.get("baseUrl")
+    if isinstance(raw_base, str) and raw_base:
+        return Path(os.path.normpath(base_dir / raw_base))
+    return inherited
+
+
 def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     """`compilerOptions.baseUrl` of the nearest config, as an absolute directory.
 
@@ -278,11 +343,7 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     key = str(config)
     if key not in _TSCONFIG_BASEURL_CACHE:
         base_url = None
-        data = _read_json_config(config)
-        if data is not None:
-            raw_base = data.get("compilerOptions", {}).get("baseUrl")
-            if isinstance(raw_base, str) and raw_base:
-                base_url = Path(os.path.normpath(candidate / raw_base))
+        base_url = _read_tsconfig_base_url(config, candidate, seen=set())
         _TSCONFIG_BASEURL_CACHE[key] = base_url
     return _TSCONFIG_BASEURL_CACHE[key]
 
