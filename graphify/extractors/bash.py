@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 # Leading `${VAR}` / `$VAR` expansion segment(s) of a `source` path argument. The
@@ -113,7 +113,7 @@ def extract_bash(path: Path) -> dict:
     try:
         language = Language(tsbash.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -174,6 +174,13 @@ def extract_bash(path: Path) -> dict:
 
     _BASH_SOURCE_COMMANDS = frozenset({"source", "."})
     _BASH_SCRIPT_RUNNERS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
+    # Non-shell interpreters a pipeline orchestrator commonly hands a script
+    # path to (#3802): `python3 scripts/stage_one.py`, `node build.js`. A
+    # script run this way is most of what an orchestrator does, and none of
+    # it produced an edge before — the orchestrator looked disconnected from
+    # every stage it runs.
+    _SCRIPT_INVOKERS = frozenset({"python", "python3", "python2", "node", "nodejs", "ruby", "perl"})
+    _INVOKABLE_SCRIPT_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".rb", ".pl", ".sh")
     # Parent node types that mean a contained command is part of a substitution
     # or expansion, not a real function call. Token-level filtering misses
     # these because `$(build)` exposes `build` as a child command whose name
@@ -510,6 +517,47 @@ def extract_bash(path: Path) -> dict:
                             add_edge(caller_nid, _make_id(str(target_path)) + "__entry",
                                      "calls", node.start_point[0] + 1,
                                      context="script_invocation",
+                                     target_file=str(target_path))
+                # python3 scripts/stage_one.py / node build.js / "$PYTHON"
+                # scripts/stage_two.py (#3802): a script run through a
+                # non-shell interpreter, or through a bare variable standing
+                # in for one, is still a real dependency on that file -
+                # independent of the .sh-specific runner/direct-invocation
+                # handling above, so this never interferes with it.
+                is_known_interpreter = (
+                    cmd is not None and cmd in _SCRIPT_INVOKERS
+                    and cmd not in defined_functions
+                )
+                cmd_word = text(cmd_name_node).strip()
+                if cmd_word[0:1] in {"'", '"'} and cmd_word[-1:] == cmd_word[0]:
+                    cmd_word = cmd_word[1:-1]
+                # A bare variable standing in for an interpreter (`$PYTHON x.py`)
+                # has no path separator; `"$DIR/run.sh" x.py` runs run.sh with
+                # x.py as its ARGUMENT, so the `/` guard keeps us from minting a
+                # spurious invokes edge to the argument on top of the real
+                # `calls` edge the .sh runner path already emits.
+                is_interpreter_variable = (
+                    cmd is None and cmd_word.startswith("$")
+                    and "$(" not in cmd_word and "/" not in cmd_word
+                )
+                if (is_known_interpreter or is_interpreter_variable) and args:
+                    invoked_raw = literal(args[0])
+                    if invoked_raw and invoked_raw.endswith(_INVOKABLE_SCRIPT_EXTENSIONS):
+                        resolved = (path.parent / invoked_raw).resolve()
+                        if resolved.is_file():
+                            target_path = resolved
+                            if not path.is_absolute():
+                                try:
+                                    target_path = resolved.relative_to(Path.cwd().resolve())
+                                except ValueError:
+                                    pass
+                            caller_nid = entry_nid if parent_nid == file_nid else parent_nid
+                            tgt_nid = _make_id(str(target_path))
+                            if resolved.suffix == ".sh":
+                                tgt_nid += "__entry"
+                            add_edge(caller_nid, tgt_nid, "invokes",
+                                     node.start_point[0] + 1,
+                                     confidence="INFERRED", context="script_invocation",
                                      target_file=str(target_path))
             return
 
