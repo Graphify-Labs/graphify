@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 
+import hashlib
 from pathlib import Path
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+)
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -92,7 +99,7 @@ def extract_go(path: Path) -> dict:
     try:
         language = Language(tsgo.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -206,6 +213,83 @@ def extract_go(path: Path) -> dict:
                     if tgt != func_nid:
                         add_edge(func_nid, tgt, "references", line, context=ctx)
 
+    # Node IDs are casefolded (ids.py), so `Run` and `run` declared in one file
+    # produce the same id and add_node silently dropped the second — the unexported
+    # half vanished from the graph and its call sites bound by bare name to a
+    # same-named function in another package, which Go's visibility rules make
+    # impossible (#2779). Salt the non-canonical member of a case-only collision
+    # so both survive.
+    #
+    # The EXPORTED member keeps the plain id. Only exported symbols are reachable
+    # across packages, so cross-package edges (and edges cached in graph.json from
+    # files an incremental rebuild does not touch) target the exported one — keeping
+    # its id stable means adding/removing an unexported sibling in an update never
+    # re-points them. Docs likewise reference the exported API, so the casefolded id
+    # a semantic node produces lands on the symbol it actually describes. Calls to
+    # the unexported sibling can only come from the same package and only resolve
+    # once the sibling exists, so salting it re-points nothing. When the collision
+    # has no unique exported member (`Run`/`RUN`), every member is salted rather
+    # than picking one arbitrarily, so the result never depends on declaration order.
+    case_groups: dict[str, set[str]] = {}
+
+    def _receiver_type_of(node) -> str | None:
+        receiver = node.child_by_field_name("receiver")
+        if not receiver:
+            return None
+        for param in receiver.children:
+            if param.type == "parameter_declaration":
+                type_node = param.child_by_field_name("type")
+                if type_node:
+                    return _read_text(type_node, source).lstrip("*").strip()
+                break
+        return None
+
+    def _plain_symbol_nid(node) -> tuple[str, str] | None:
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            return None
+        name = _read_text(name_node, source)
+        if node.type == "method_declaration":
+            receiver_type = _receiver_type_of(node)
+            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
+        else:
+            base = stem
+        return _make_id(base, name), name
+
+    def _scan_declarations(node) -> None:
+        if node.type == "type_spec":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                owner_nid = _make_id(pkg_scope, _read_text(name_node, source))
+                for body in node.children:
+                    if body.type != "interface_type":
+                        continue
+                    for elem in body.children:
+                        if elem.type != "method_elem":
+                            continue
+                        method_name = elem.child_by_field_name("name")
+                        if method_name is not None:
+                            name = _read_text(method_name, source)
+                            plain_nid = _make_id(owner_nid, name)
+                            case_groups.setdefault(plain_nid, set()).add(name)
+        if node.type in ("function_declaration", "method_declaration"):
+            found = _plain_symbol_nid(node)
+            if found:
+                case_groups.setdefault(found[0], set()).add(found[1])
+            return
+        for child in node.children:
+            _scan_declarations(child)
+
+    def symbol_nid(plain_nid: str, name: str) -> str:
+        names = case_groups.get(plain_nid) or set()
+        if len(names) < 2:
+            return plain_nid
+        exported = [n for n in names if n[:1].isupper()]
+        if len(exported) == 1 and name == exported[0]:
+            return plain_nid
+        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+        return _make_id(plain_nid, salt)
+
     def walk(node) -> None:
         t = node.type
 
@@ -214,7 +298,7 @@ def extract_go(path: Path) -> dict:
             if name_node:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
-                func_nid = _make_id(stem, func_name)
+                func_nid = symbol_nid(_make_id(stem, func_name), func_name)
                 add_node(func_nid, f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
@@ -242,11 +326,11 @@ def extract_go(path: Path) -> dict:
             if receiver_type:
                 parent_nid = _make_id(pkg_scope, receiver_type)
                 add_node(parent_nid, receiver_type, line)
-                method_nid = _make_id(parent_nid, method_name)
+                method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
                 add_node(method_nid, f".{method_name}()", line)
                 add_edge(parent_nid, method_nid, "method", line)
             else:
-                method_nid = _make_id(stem, method_name)
+                method_nid = symbol_nid(_make_id(stem, method_name), method_name)
                 add_node(method_nid, f"{method_name}()", line)
                 add_edge(file_nid, method_nid, "contains", line)
 
@@ -307,8 +391,40 @@ def extract_go(path: Path) -> dict:
                                              field.start_point[0] + 1, context=ctx)
                 elif type_body.type == "interface_type":
                     for elem in type_body.children:
+                        if elem.type == "method_elem":
+                            # A method requirement declared in the interface body
+                            # is part of the interface's contract. Emit it as a
+                            # method node so the interface isn't left an empty
+                            # shell and calls against the interface can resolve
+                            # (mirrors receiver methods and the way the other
+                            # extractors capture interface members).
+                            m_name_node = elem.child_by_field_name("name")
+                            if m_name_node is None:
+                                for mc in elem.children:
+                                    if mc.type == "field_identifier":
+                                        m_name_node = mc
+                                        break
+                            if m_name_node is None:
+                                continue
+                            m_name = _read_text(m_name_node, source)
+                            m_line = elem.start_point[0] + 1
+                            m_nid = symbol_nid(_make_id(type_nid, m_name), m_name)
+                            add_node(m_nid, f".{m_name}()", m_line)
+                            add_edge(type_nid, m_nid, "method", m_line)
+                            emit_go_method_refs(elem, m_nid, m_line)
+                            continue
                         if elem.type != "type_elem":
                             continue
+                        # A type_elem that is a generics type-set constraint -
+                        # a union (`A | B`) or an approximation (`~T`) - is NOT
+                        # interface embedding. Go only embeds a lone interface
+                        # type; union/approximation terms can never be embedded,
+                        # so they must not emit `embeds` heritage edges. Keep the
+                        # type link as a `references` (type_constraint) edge.
+                        is_type_set = any(
+                            c.type == "|" or c.type == "negated_type"
+                            for c in elem.children
+                        )
                         refs = []
                         for sub in elem.children:
                             if sub.is_named:
@@ -317,7 +433,10 @@ def extract_go(path: Path) -> dict:
                             tgt = ensure_named_node(ref_name, elem.start_point[0] + 1)
                             if tgt == type_nid:
                                 continue
-                            if role == "type":
+                            if is_type_set:
+                                add_edge(type_nid, tgt, "references",
+                                         elem.start_point[0] + 1, context="type_constraint")
+                            elif role == "type":
                                 add_edge(type_nid, tgt, "embeds",
                                          elem.start_point[0] + 1)
                             else:
@@ -357,6 +476,7 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
+    _scan_declarations(root)
     walk(root)
 
     label_to_nid: dict[str, str] = {}

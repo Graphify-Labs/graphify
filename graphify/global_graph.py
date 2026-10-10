@@ -79,7 +79,8 @@ def _file_hash(path: Path) -> str:
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
-    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped.
+    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped,
+    cross_repo_calls.
     Skipped=True means the source graph hasn't changed since last add.
     """
     from graphify.build import prefix_graph_for_global, prune_repo_from_graph
@@ -100,7 +101,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             file=sys.stderr,
         )
     if existing.get("source_hash") == src_hash:
-        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True}
+        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
+                "cross_repo_calls": 0}
 
     # Load source graph
     from graphify.security import check_graph_file_size_cap
@@ -144,6 +146,13 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             G.add_edge(u, v, **data)
 
     added = prefixed.number_of_nodes() - len(remap)
+    # A member call parked on a caller node (#3152) may be answered by a repo
+    # already in the global graph, or by this one for a repo added earlier. The
+    # pass recomputes its own output, so adding repos one at a time lands where a
+    # single merge-graphs of the same inputs would.
+    from graphify.cross_repo_calls import link_cross_repo_member_calls
+
+    cross_repo_calls = link_cross_repo_member_calls(G)
     _save_global_graph(G)
 
     manifest["repos"][repo_tag] = {
@@ -155,7 +164,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     }
     _save_manifest(manifest)
 
-    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed, "skipped": False}
+    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
+            "skipped": False, "cross_repo_calls": cross_repo_calls}
 
 
 def global_remove(repo_tag: str) -> int:

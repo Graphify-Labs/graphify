@@ -43,6 +43,16 @@ def test_matcher_targets_read_and_glob():
     assert _read_matcher()["matcher"] == "Read|Glob"
 
 
+def test_read_hook_has_a_timeout():
+    # #3314: an unset command hook defaults to Claude Code's 600s timeout, so a
+    # single wedged guard stalls a Read/Glob call -- the highest-frequency
+    # tools an agent uses -- for ten minutes. Guard measures ~170ms warm; a
+    # generous but bounded timeout must be present.
+    entry = _read_matcher()["hooks"][0]
+    assert isinstance(entry.get("timeout"), (int, float))
+    assert 0 < entry["timeout"] <= 30
+
+
 def test_command_has_no_shell_syntax():
     # #522: the command must be a plain exe invocation, not POSIX bash.
     cmd = _read_matcher()["hooks"][0]["command"]
