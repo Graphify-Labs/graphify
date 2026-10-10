@@ -137,6 +137,12 @@ def _print_cloud_cta(out_dir: "Path") -> None:
         pass
 
 
+def _graph_root_for(gp: Path) -> Path:
+    """The analysed repo root for a graph file: <root>/<GRAPHIFY_OUT_NAME>/graph.json, else the file's own directory."""
+    from graphify.paths import GRAPHIFY_OUT_NAME
+    return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+
+
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
@@ -1308,7 +1314,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1320,6 +1326,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        seeds: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -1342,6 +1349,12 @@ def dispatch_command(cmd: str) -> None:
                 i += 2
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--seed" and i + 1 < len(args):
+                seeds.append(args[i + 1])
+                i += 2
+            elif args[i].startswith("--seed="):
+                seeds.append(args[i].split("=", 1)[1])
                 i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -1414,6 +1427,9 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             context_filters=context_filters,
             graph_path=str(gp),
+            seeds=seeds or None,
+            # Same root derivation as `affected` (#2706): <root>/graphify-out/graph.json.
+            seed_root=_graph_root_for(gp),
         )
         querylog.log_query(
             kind="query",
