@@ -192,6 +192,19 @@ class _SSRFGuardedHTTPConnection(http.client.HTTPConnection):
             self._tunnel()
 
 
+class _ProxyAwareHTTPConnection(_SSRFGuardedHTTPConnection):
+    """HTTPConnection that skips SSRF IP validation for the proxy hop."""
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self.host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
 class _SSRFGuardedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPSConnection variant of _SSRFGuardedHTTPConnection.
 
@@ -214,10 +227,28 @@ class _SSRFGuardedHTTPSConnection(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
+class _ProxyAwareHTTPSConnection(_SSRFGuardedHTTPSConnection):
+    """HTTPSConnection that skips SSRF IP validation for the proxy hop."""
+
+    def connect(self) -> None:
+        sock = socket.create_connection(
+            (self.host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
 class _SSRFGuardedHTTPHandler(urllib.request.HTTPHandler):
     """urllib handler that routes http:// through _SSRFGuardedHTTPConnection."""
 
     def http_open(self, req):
+        if req.has_proxy():
+            return self.do_open(_ProxyAwareHTTPConnection, req)
         return self.do_open(_SSRFGuardedHTTPConnection, req)
 
 
@@ -225,6 +256,8 @@ class _SSRFGuardedHTTPSHandler(urllib.request.HTTPSHandler):
     """urllib handler that routes https:// through _SSRFGuardedHTTPSConnection."""
 
     def https_open(self, req):
+        if getattr(req, "_tunnel_host", None) or req.has_proxy():
+            return self.do_open(_ProxyAwareHTTPSConnection, req)
         return self.do_open(_SSRFGuardedHTTPSConnection, req)
 
 
