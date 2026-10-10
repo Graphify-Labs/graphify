@@ -1142,6 +1142,22 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_needs_update_dot_fix_line(line: str) -> bool:
+    """Whether a line is the ``needs_update`` dot-mismatch fix (#2671).
+
+    The cleanup step's ``rm -f`` targeted ``graphify-out/.needs_update`` (with a
+    leading dot), but every writer/reader of the flag — ``watch.py``'s
+    ``needs_update`` path and ``cli.py``'s ``out_path("needs_update")`` check —
+    uses the name WITHOUT a dot. So the cleanup line never matched the real
+    file and any staleness check an agent wrote against the documented
+    (dotted) name silently never fired. Both the old (removed) and new
+    (added) forms of the single ``rm -f`` line match here.
+    """
+    return "rm -f graphify-out/" in line and line.rstrip().endswith(
+        "needs_update 2>/dev/null || true"
+    )
+
+
 def _is_step1_root_marker_fix_line(line: str) -> bool:
     """Whether a line is part of Step 1 writing .graphify_root via quoted heredoc (#3642/#3844).
 
@@ -1241,6 +1257,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_needs_update_dot_fix_line,
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
