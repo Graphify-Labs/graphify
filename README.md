@@ -37,6 +37,7 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
 - **Every edge is explained.** Each connection is tagged `EXTRACTED` (explicit in the source) or `INFERRED` (resolved by graphify), so you can tell what was read directly from what was inferred.
 - **Not a vector index.** No embeddings, no vector store: a real graph you traverse. Ask a question, trace the path between two things, or explain one concept.
 
+> [!NOTE]
 > Want this always-on, updating in the background across your code, docs, and meetings rather than only on demand? That is what we are building at **[graphify.com](https://graphify.com)**, and early access is open now at **[app.graphify.com](https://app.graphify.com/login)**.
 
 <p align="center">
@@ -166,6 +167,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Install
 
+> [!IMPORTANT]
 > **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
 
 The official source repository is [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
@@ -916,6 +918,12 @@ Made with [contrib.rocks](https://contrib.rocks).
 ## Translations
 
 The README is available in 32 languages. Use the language switcher at the top of this file to read it in yours, or browse [`docs/translations/`](docs/translations/). To improve a translation or add a new one, open a pull request against the matching file there.
+
+---
+
+## Building on graphify
+
+Building something in the graphify ecosystem? That is encouraged. If your project uses "graphify" in its name (for example `graphify-dashboard` or `graphify-action`), please add a short note to your README clarifying that it is community-built and not affiliated with or endorsed by Graphify Labs. "graphify" and the graphify logo are marks of Graphify Labs; please do not use them in a way that implies official status.
 
 ---
 
