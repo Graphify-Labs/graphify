@@ -28,6 +28,14 @@ DEFAULT_AFFECTED_RELATIONS = (
     "uses",
     "mixes_in",
     "embeds",
+    # `defines` — emitted when a file declares a named symbol (class, function,
+    # type, etc.). Without it, `affected "<Symbol>"` is blind in languages
+    # where the only incoming edge to a symbol is its `defines` edge from the
+    # source file — Dart/Flutter, Python, Go, etc. — because every other
+    # relation (calls, references, imports) targets the *file* node, not the
+    # symbol node. The reverse walk follows `defines` from the symbol back to
+    # its defining file and then continues through `imports` to consumers.
+    "defines",
     "requires",
 )
 

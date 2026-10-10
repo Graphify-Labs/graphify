@@ -10,6 +10,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 
 from graphify.serve import (
+    _node_arg,
     _strip_diacritics,
     _communities_from_graph,
     _score_nodes,
@@ -1685,6 +1686,30 @@ def test_shortest_path_tool_undirected_opt_in():
     assert "Shortest path (2 hops)" in out
     assert out.count("<--calls--") == 2
     assert "-->" not in out
+
+
+def test_shortest_path_tool_routes_through_a_contains_edge(tmp_path):
+    """#3878 (serve mirror): a directed path from a symbol out to the file that
+    defines a symbol it calls must route through the reverse of the stored
+    file -> symbol `contains` edge, instead of dead-ending at 'No directed
+    path'. The printed hop still shows the real stored direction (`<--contains--`).
+    """
+    G = nx.DiGraph()
+    for n in ("a.py", "b.py", "helper_a", "helper_b"):
+        G.add_node(n, label=n)
+    G.add_edge("a.py", "helper_a", relation="contains")
+    G.add_edge("b.py", "helper_b", relation="contains")
+    G.add_edge("helper_a", "helper_b", relation="calls")
+
+    out = _shortest_path_text(G, {"source": "helper_a", "target": "b.py"})
+    assert "No directed path" not in out
+    assert "Shortest path (2 hops)" in out
+    # calls hop forward, then back out to the file via the reverse contains hop,
+    # printed in its true stored direction.
+    assert "--calls-->" in out
+    assert "<--contains--" in out
+
+
 def test_underscore_query_matches_hyphenated_label():
     r"""Separator-blind seeding: `_` must split like `-` does.
 
@@ -1827,3 +1852,17 @@ def test_query_graph_text_seeds_the_node_whose_rationale_answers_a_why_question(
     )
     header = text.split("\n\n", 1)[0]
     assert "FAB visibility rule" in header, header
+
+
+def test_node_arg_accepts_label_node_id_and_id_aliases():
+    # get_node/get_neighbors must serve a client that passes the node under any of these keys;
+    # a node_id-only call used to raise KeyError('label') instead of resolving.
+    assert _node_arg({"label": "Foo()"}) == "Foo()"
+    assert _node_arg({"node_id": "Foo()"}) == "Foo()"
+    assert _node_arg({"id": "Foo()"}) == "Foo()"
+    # label wins when several are present; a non-string is coerced, not fatal
+    assert _node_arg({"label": "a", "node_id": "b"}) == "a"
+    assert _node_arg({"node_id": 123}) == "123"
+    # nothing usable -> empty string, so the caller can answer with guidance
+    assert _node_arg({}) == ""
+    assert _node_arg({"relation_filter": "calls"}) == ""

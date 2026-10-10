@@ -1,0 +1,56 @@
+name: Welcome and invite to Discord
+
+# Posts a friendly comment when someone opens an issue or a pull request,
+# pointing them to Discord (real-time) and GitHub Discussions (longer-form).
+# pull_request_target is used so the token can comment on PRs from forks;
+# the job only posts a comment and never checks out or runs PR code, so this
+# is safe.
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const isPR = context.eventName === 'pull_request_target';
+            const payload = isPR ? context.payload.pull_request : context.payload.issue;
+            const author = payload.user.login;
+            const number = payload.number;
+
+            // Don't comment on bot-opened issues/PRs (dependabot, etc.).
+            if (author.endsWith('[bot]')) {
+              return;
+            }
+
+            const discord = 'https://discord.gg/XDnKVpzdXB';
+            const discussions = 'https://github.com/Graphify-Labs/graphify/discussions';
+
+            const body = isPR
+              ? `Thanks for the pull request, @${author}. A maintainer will review it soon.\n\n`
+                + `Want to talk it through while it is in review? Come join us on our [Discord server](${discord}). `
+                + `For longer-form discussion there is also [GitHub Discussions](${discussions}).\n\n`
+                + `A couple of things that speed up review: make sure the test suite passes on Python 3.10 and 3.13, `
+                + `and that the change keeps extraction deterministic.`
+              : `Thanks for opening this issue, @${author}. A maintainer will take a look soon.\n\n`
+                + `If you would like to discuss it in real time, come say hi on our [Discord server](${discord}). `
+                + `For longer-form questions and ideas there is also [GitHub Discussions](${discussions}).\n\n`
+                + `To help us triage, please make sure the report includes what you expected, what actually happened, `
+                + `and the steps (and a small sample) to reproduce it.`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              body,
+            });
