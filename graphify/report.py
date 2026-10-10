@@ -30,6 +30,36 @@ def _portable_root_label(root: str) -> str:
     return name or raw
 
 
+def _label_collision_percent(G: nx.Graph) -> float:
+    """#4200 — percentage of structural nodes whose ``label`` is shared by
+    at least one other node with a different ``source_file``.
+
+    Pure code-level collision signal: concept nodes (``source_file`` empty)
+    and nodes without a label are skipped so a doc corpus with repeated
+    H1 text doesn't trigger the banner. Returns a float in ``[0, 100]``.
+    """
+    by_label: dict[str, set[str]] = {}
+    for _, data in G.nodes(data=True):
+        label = data.get("label")
+        src = data.get("source_file")
+        if not label or not src:
+            continue
+        by_label.setdefault(label, set()).add(src)
+    total = sum(1 for _, d in G.nodes(data=True)
+                if d.get("label") and d.get("source_file"))
+    if total == 0:
+        return 0.0
+    colliding = 0
+    for _, d in G.nodes(data=True):
+        label = d.get("label")
+        src = d.get("source_file")
+        if not label or not src:
+            continue
+        if len(by_label.get(label, ())) > 1:
+            colliding += 1
+    return (colliding / total) * 100
+
+
 def _safe_community_name(label: str) -> str:
     """Mirrors export.safe_name so community hub filenames and report wikilinks always agree."""
     cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
@@ -127,6 +157,25 @@ def generate(
 
     lines = [
         f"# Graph Report - {_portable_root_label(root)}  ({today})",
+    ]
+
+    # #4200 — collision banner: when > 0.5% of nodes share a label with a
+    # different source_file, same-name method/class collisions are likely
+    # inflating betweenness and warping community membership. The banner
+    # points the reader at `graphify rebuild`, which replays the semantic
+    # cache and only re-ASTs code (cheap).
+    collision_pct = _label_collision_percent(G)
+    if collision_pct >= 0.5:
+        lines += [
+            "",
+            f"> ⚠️ **Node-ID collisions detected ({collision_pct:.1f}% of nodes).**",
+            "> Same-name files or methods may be collapsed into one node, inflating "
+            "betweenness and distorting community membership.",
+            "> Run `graphify rebuild` to regenerate with path-qualified IDs — "
+            "semantic cache is preserved, only code is re-ASTed.",
+        ]
+
+    lines += [
         "",
         "## Corpus Check",
     ]

@@ -2518,6 +2518,68 @@ def dispatch_command(cmd: str) -> None:
             else:
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated.")
 
+    elif cmd == "rebuild":
+        # #4200 — manifest-reset wrapper over `update`.
+        # Deletes the stamp manifest after backing it up so detect_incremental
+        # treats every file as new (triggering a full re-extract) without
+        # discarding the semantic cache. In practice this is cheap: the
+        # semantic cache is keyed on content+prompt hash, so docs/papers/images
+        # replay from cache and only code re-ASTs.
+        args = sys.argv[2:]
+        rebuild_arg: str | None = None
+        for a in args:
+            if a.startswith("-"):
+                print(f"error: unknown rebuild option: {a}", file=sys.stderr)
+                sys.exit(2)
+            if rebuild_arg is not None:
+                print("error: rebuild accepts at most one path argument", file=sys.stderr)
+                sys.exit(2)
+            rebuild_arg = a
+
+        if rebuild_arg is not None:
+            rebuild_path = Path(rebuild_arg)
+        else:
+            saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
+            if saved.exists():
+                rebuild_path = Path(saved.read_text(encoding="utf-8-sig").strip())
+            else:
+                rebuild_path = Path(".")
+        if not rebuild_path.exists():
+            print(f"error: path not found: {rebuild_path}", file=sys.stderr)
+            sys.exit(1)
+
+        manifest_path = Path(_GRAPHIFY_OUT) / "manifest.json"
+        if manifest_path.exists():
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = manifest_path.with_name(f".manifest-backup-{ts}.json")
+            try:
+                manifest_path.rename(backup)
+                print(f"Backed up manifest to {backup}")
+            except OSError as err:
+                print(f"error: could not back up manifest: {err}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("No manifest.json found — rebuilding from scratch.")
+
+        from graphify.watch import _rebuild_code
+        print(f"Re-extracting ALL files in {rebuild_path} (no LLM needed for code; semantic cache preserved)...")
+        ok = _rebuild_code(rebuild_path, force=False, no_cluster=False, block_on_lock=True)
+        if ok:
+            print("Rebuild complete. Semantic cache (docs/papers/images) replayed from disk; only code was re-ASTed.")
+            if not (
+                os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+                or os.environ.get("GRAPHIFY_NO_TIPS")
+            ):
+                print("Tip: set GEMINI_API_KEY or GOOGLE_API_KEY to use Gemini for semantic extraction.")
+        else:
+            print(
+                "Rebuild failed — check output above. Manifest backup is at the path printed earlier.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
