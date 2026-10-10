@@ -8691,6 +8691,7 @@ def _extract_generic(
     # a name clash (first-binding-wins in the helper).
     if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
         _ts_receiver_type_table(root, source, type_table)
+        _ts_mark_public_twins(root, source, result)
     if config.ts_module == "tree_sitter_swift":
         if type_table or swift_factory_bindings:
             result["swift_type_table"] = {"path": str_path, "table": type_table}
@@ -8705,6 +8706,54 @@ def _extract_generic(
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
     return result
+
+def _ts_mark_public_twins(root, source: bytes, result: dict) -> None:
+    """Mark the member nodes that stand for both a public `name` and `#name`.
+
+    A class's `foo` and `#foo` get one node id (ids drop `#`), labeled after
+    whichever is declared first, and a public property (`newResponse = () => ..`)
+    has no node of its own, so it shares the `#newResponse()` node. A call
+    written `c.foo()` may only reach that node when the class really declares a
+    public `foo`; with `#foo` alone the public `foo` comes from somewhere else (a
+    base class), and the node is not its target. The mark lives on the node so
+    a changed-files rebuild, which reads unchanged files from graph.json, sees it.
+    """
+    shared: dict[str, set[str]] = {}
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "class_body" and n.parent is not None:
+            cls = n.parent.child_by_field_name("name")
+            public: set[str] = set()
+            private: set[str] = set()
+            for member in n.named_children:
+                if member.type not in ("method_definition", "public_field_definition", "field_definition"):
+                    continue
+                name = member.child_by_field_name("name") or member.child_by_field_name("property")
+                if name is None:
+                    continue
+                text = _read_text(name, source)
+                if name.type == "private_property_identifier":
+                    private.add(text.lstrip("#"))
+                elif name.type == "property_identifier":
+                    public.add(text)
+            if cls is not None and public & private:
+                shared.setdefault(_read_text(cls, source), set()).update(public & private)
+        stack.extend(n.children)
+    if not shared:
+        return
+    labels = {n["id"]: n.get("label", "") for n in result.get("nodes", [])}
+    marked = {
+        e["target"]
+        for e in result.get("edges", [])
+        if e.get("relation") == "method"
+        and str(labels.get(e["target"], "")).strip("()").lstrip(".").lstrip("#")
+        in shared.get(str(labels.get(e["source"], "")), set())
+    }
+    for n in result.get("nodes", []):
+        if n["id"] in marked:
+            n["_ts_public_twin"] = True
+
 
 def _python_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a Python `decorator` node.

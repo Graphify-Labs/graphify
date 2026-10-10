@@ -4605,11 +4605,14 @@ def _resolve_typescript_member_calls(
             # (a `references` edge to the type node) was another fabrication
             # vector; skip instead, matching the C# resolver.
             continue
-        # _key() drops the `#`, so `c.newResponse()` also keys onto a private
-        # `#newResponse()`. A `#name` is only reachable as `#name`; never bind
-        # across that difference.
-        method_name = str(node_by_id.get(method_nid, {}).get("label", "")).lstrip(".")
-        if method_name.startswith("#") != str(callee).startswith("#"):
+        # `foo` and `#foo` share a node labeled after the first one declared. A
+        # public `c.foo()` reaches a `#foo`-labeled node only when the class also
+        # declares a public `foo` (the node is marked); otherwise its `foo` comes
+        # from elsewhere and the private method is not the target.
+        method_node = node_by_id.get(method_nid, {})
+        if (str(method_node.get("label", "")).lstrip(".").startswith("#")
+                and not str(callee).startswith("#")
+                and not method_node.get("_ts_public_twin")):
             continue
         if method_nid == caller or (caller, method_nid) in existing_pairs:
             continue

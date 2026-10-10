@@ -255,15 +255,44 @@ def test_same_named_type_the_import_cannot_decide_emits_no_edge(tmp_path):
     assert not _hits(calls, "neither")
 
 
-def test_a_public_call_never_binds_to_a_private_hash_method(tmp_path):
-    # `_key()` folds `#newResponse` and `newResponse` together; a `#name` is only
-    # reachable as `#name`, so `c.newResponse()` must not land on it.
+def test_public_call_reaches_the_member_node_in_either_declaration_order(tmp_path):
+    # `foo()` and `#foo()` share one node (ids drop `#`), labeled after whichever is
+    # declared first. `c.foo()` can only mean the public one, so it must keep its
+    # edge to that node in both orders.
+    orders = (
+        "  foo(): number { return 1; }\n  #foo(): number { return 2; }\n",
+        "  #foo(): number { return 2; }\n  foo(): number { return 1; }\n",
+    )
+    for i, members in enumerate(orders):
+        calls, _ = _calls(tmp_path / f"order{i}", {
+            "ctx.ts": "export class Ctx {\n" + members + "}\n",
+            "use.ts": ('import { Ctx } from "./ctx";\n'
+                       "export function make(c: Ctx): number { return c.foo(); }\n"),
+        })
+        assert any("make" in str(s) and "foo" in str(t) for s, t in calls), (i, calls)
+
+
+def test_public_call_never_reaches_a_private_only_member(tmp_path):
+    # `Child` declares only `#run`; its public `run` is inherited from `Base`, so
+    # `c.run()` must not land on the private method's node.
+    calls, _ = _calls(tmp_path, {
+        "base.ts": "export class Base {\n  run(): number { return 0; }\n}\n",
+        "child.ts": ('import { Base } from "./base";\n'
+                     "export class Child extends Base {\n  #run(): number { return 1; }\n}\n"),
+        "use.ts": ('import { Child } from "./child";\n'
+                   "export function go(c: Child): number { return c.run(); }\n"),
+    })
+    assert not any("go" in str(s) and "#run" in str(t) for s, t in calls), calls
+
+
+def test_public_property_sharing_a_private_methods_node_keeps_its_edge(tmp_path):
+    # hono's shape: a public arrow property and a `#` method of the same name.
     calls, _ = _calls(tmp_path, {
         "ctx.ts": ("export class Ctx {\n"
-                   "  #newResponse(): number { return 1; }\n"
-                   "  build(): number { return this.#newResponse(); }\n"
+                   "  #respond(): number { return 1; }\n"
+                   "  respond = (): number => this.#respond();\n"
                    "}\n"),
         "use.ts": ('import { Ctx } from "./ctx";\n'
-                   "export function make(c: Ctx): number { return c.newResponse(); }\n"),
+                   "export function go(c: Ctx): number { return c.respond(); }\n"),
     })
-    assert not _hits(calls, "make", "newResponse")
+    assert any("go" in str(s) and "respond" in str(t) for s, t in calls), calls
