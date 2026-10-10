@@ -2865,6 +2865,13 @@ def extract_corpus_parallel(
             "returned a response but omitted them; a re-run will retry them.",
             file=sys.stderr,
         )
+
+    # Reconcile cross-file semantic similarity across collected chunks (#3948)
+    from graphify.semantic_similarity import reconcile_semantic_similarity
+    merged["edges"] = reconcile_semantic_similarity(
+        merged.get("nodes", []), merged.get("edges", [])
+    )
+
     return merged
 
 
