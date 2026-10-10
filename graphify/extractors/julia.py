@@ -84,32 +84,102 @@ def extract_julia(path: Path) -> dict:
             })
         return nid
 
+    def _type_name_of(node) -> str | None:
+        """Read a type name, unwrapping a parametric head.
+
+        A parametric declaration (`Box{T}`, `Shape{T}`) wraps the real name in a
+        `parametrized_type_expression`; a plain declaration is a bare identifier.
+        """
+        if node is None:
+            return None
+        if node.type == "identifier":
+            return _read_text(node, source)
+        if node.type == "parametrized_type_expression":
+            ident = next((c for c in node.children if c.type == "identifier"), None)
+            return _read_text(ident, source) if ident else None
+        return None
+
     def _type_head_names(type_head) -> tuple[str | None, str | None]:
         """Return (type_name, supertype_name) from a Julia `type_head`.
 
         A bare declaration (`Foo`) exposes an `identifier`; a subtyping
         declaration (`Foo <: Bar`) wraps both names in a `binary_expression`.
-        Both the struct and abstract-type paths need this, so parse it once.
+        Either name may itself be parametric (`Box{T}`, `Sq{T} <: Shape{T}`), so
+        the operands are read through `_type_name_of`. Both the struct and
+        abstract-type paths need this, so parse it once.
         """
         bin_expr = next(
             (c for c in type_head.children if c.type == "binary_expression"), None
         )
         if bin_expr:
-            identifiers = [c for c in bin_expr.children if c.type == "identifier"]
-            if identifiers:
-                name = _read_text(identifiers[0], source)
-                super_name = _read_text(identifiers[-1], source) if len(identifiers) >= 2 else None
+            operands = [
+                c for c in bin_expr.children
+                if c.type in ("identifier", "parametrized_type_expression")
+            ]
+            if operands:
+                name = _type_name_of(operands[0])
+                super_name = _type_name_of(operands[-1]) if len(operands) >= 2 else None
                 return name, super_name
             return None, None
-        name_node = next((c for c in type_head.children if c.type == "identifier"), None)
-        return (_read_text(name_node, source) if name_node else None), None
+        name_node = next(
+            (c for c in type_head.children
+             if c.type in ("identifier", "parametrized_type_expression")), None
+        )
+        return _type_name_of(name_node), None
+
+    def _type_head_params(type_head) -> set[str]:
+        """Type-parameter names declared in a parametric head (`{T}`, `{T,U}`,
+        `{T<:Number}`). These are not real types, so they must not become phantom
+        field-type reference nodes (e.g. a struct field `value::T`)."""
+        pte = None
+        for c in type_head.children:
+            if c.type == "parametrized_type_expression":
+                pte = c
+                break
+            if c.type == "binary_expression":
+                pte = next(
+                    (cc for cc in c.children if cc.type == "parametrized_type_expression"),
+                    None,
+                )
+                break
+        if pte is None:
+            return set()
+        curly = next((c for c in pte.children if c.type == "curly_expression"), None)
+        if curly is None:
+            return set()
+        params: set[str] = set()
+        for c in curly.children:
+            if c.type == "identifier":
+                params.add(_read_text(c, source))
+            elif c.type == "binary_expression":  # constrained param `T <: Number`
+                first = next((cc for cc in c.children if cc.type == "identifier"), None)
+                if first:
+                    params.add(_read_text(first, source))
+        return params
+
+    def _unwrap_call_expression(node):
+        """Return the `call_expression` at or under `node`, unwrapping a
+        `where_expression` (`f(x::T) where {T}` nests the call head one level
+        deeper); otherwise None."""
+        if node is None:
+            return None
+        if node.type == "call_expression":
+            return node
+        if node.type == "where_expression":
+            return next((c for c in node.children if c.type == "call_expression"), None)
+        return None
 
     def _func_name_from_signature(sig_node) -> str | None:
-        """Extract function name from a Julia signature node (call_expression > identifier)."""
+        """Extract function name from a Julia signature node (call_expression > identifier).
+
+        A `where` clause wraps the call head in a `where_expression`, so unwrap
+        that before reading the callee identifier.
+        """
         for child in sig_node.children:
-            if child.type == "call_expression":
-                callee = child.children[0] if child.children else None
-                if callee and callee.type == "identifier":
+            call = _unwrap_call_expression(child)
+            if call is not None and call.children:
+                callee = call.children[0]
+                if callee.type == "identifier":
                     return _read_text(callee, source)
         return None
 
@@ -170,12 +240,15 @@ def extract_julia(path: Path) -> dict:
                 add_edge(struct_nid, ensure_named_node(super_name, line),
                          "inherits", line, confidence="EXTRACTED")
             # Field types: each `name::Type` lowers to a typed_expression child of struct_definition
+            type_params = _type_head_params(type_head)
             for child in node.children:
                 if child.type == "typed_expression":
                     type_ids = [c for c in child.children if c.type == "identifier"]
                     if len(type_ids) >= 2:
                         field_line = child.start_point[0] + 1
                         type_name = _read_text(type_ids[-1], source)
+                        if type_name in type_params:
+                            continue  # a declared type parameter, not a real type
                         type_nid = ensure_named_node(type_name, field_line)
                         edges.append(_semantic_reference_edge(
                             struct_nid, type_nid, "field", str_path, field_line))
@@ -290,11 +363,12 @@ def extract_julia(path: Path) -> dict:
                 walk(child, scope_nid)
             return
 
-        # Short function: foo(x) = expr
+        # Short function: foo(x) = expr  (and the `where` form: g(x::T) where {T} = expr)
         if t == "assignment":
             lhs = node.children[0] if node.children else None
-            if lhs and lhs.type == "call_expression" and lhs.children:
-                callee = lhs.children[0]
+            call = _unwrap_call_expression(lhs)
+            if call is not None and call.children:
+                callee = call.children[0]
                 if callee.type == "identifier":
                     func_name = _read_text(callee, source)
                     func_nid = _make_id(stem, func_name)

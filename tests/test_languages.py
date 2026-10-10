@@ -2427,6 +2427,57 @@ def test_julia_macro_definition_is_extracted(tmp_path):
     assert ("@sayhello", "@sayhello") not in _edge_labels(r, "calls")
 
 
+def test_julia_where_clause_functions_are_extracted(tmp_path):
+    """Methods with a `where` clause (long and short form) must be extracted with
+    their body calls. The `where` clause wraps the call head in a
+    `where_expression`, so the name lookup missed it and the whole method (and its
+    calls) was dropped (#4126)."""
+    f = tmp_path / "where.jl"
+    f.write_text(
+        "function combine(a::Vector{T}, b::Vector{T}) where {T<:Number}\n"
+        "    merge_all(a, b)\n"
+        "end\n"
+        "function merge_all(a, b)\n"
+        "    return a\n"
+        "end\n"
+        "short(x::T) where {T} = merge_all(x, x)\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "combine()" in labels, "long-form where method dropped"
+    assert "short()" in labels, "short-form where method dropped"
+    calls = _edge_labels(r, "calls")
+    assert ("combine", "merge_all") in calls
+    assert ("short", "merge_all") in calls
+
+
+def test_julia_parametric_types_are_extracted(tmp_path):
+    """Parametric type definitions (`struct Box{T}`, `abstract type Shape{T}`,
+    `struct Sq{T} <: Shape{T}`, `mutable struct M{T,U}`) must be extracted. The
+    name sits inside a `parametrized_type_expression`, so the head-name lookup
+    missed it and dropped the type entirely (#4128). A declared type parameter
+    (`value::T`) must not leak out as a phantom field-type reference node."""
+    f = tmp_path / "params.jl"
+    f.write_text(
+        "struct Box{T}\n"
+        "    value::T\n"
+        "end\n"
+        "abstract type Shape{T} end\n"
+        "struct Sq{T} <: Shape{T}\n"
+        "end\n"
+        "mutable struct M{T,U}\n"
+        "    a::T\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert {"Box", "Shape", "Sq", "M"} <= set(labels), f"parametric type dropped: {labels}"
+    assert ("Sq", "Shape") in _edge_labels(r, "inherits")
+    assert "T" not in labels, "type parameter leaked as a phantom field-type node"
+
+
 def test_julia_enum_and_members_are_extracted(tmp_path):
     """`@enum` defines a type and its members across the inline, begin/end block,
     explicit-value, and typed forms. The whole macrocall was previously ignored,
@@ -2624,6 +2675,78 @@ def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
     methods = _edge_labels(r, "method", "type_bound_procedure")
     assert ("circle", "circle_area") in methods
     assert ("circle", "scale") in methods
+
+
+def test_fortran_named_generic_interface_is_extracted(tmp_path):
+    """A named generic interface introduces a callable generic name that overloads
+    the listed specific procedures. The `interface` node had no walk branch, so the
+    generic name was dropped and a call to it dangled (#4141)."""
+    src = tmp_path / "shapes.f90"
+    src.write_text(
+        "module shapes\n"
+        "  implicit none\n"
+        "  interface area\n"
+        "      module procedure area_circle, area_square\n"
+        "  end interface area\n"
+        "contains\n"
+        "  real function area_circle(r)\n"
+        "      real :: r\n"
+        "      area_circle = 3.14 * r * r\n"
+        "  end function area_circle\n"
+        "  real function area_square(s)\n"
+        "      real :: s\n"
+        "      area_square = s * s\n"
+        "  end function area_square\n"
+        "  subroutine report(x)\n"
+        "      real :: x, a\n"
+        "      a = area(x)\n"
+        "  end subroutine report\n"
+        "end module shapes\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert "area" in [n["label"].rstrip("()") for n in r["nodes"]], "generic interface node dropped"
+    # the call to the generic name now resolves instead of dangling
+    assert ("report", "area") in _edge_labels(r, "calls")
+    # the generic dispatches to each listed specific procedure
+    dispatch = _edge_labels(r, "calls", "generic_dispatch")
+    assert ("area", "area_circle") in dispatch
+    assert ("area", "area_square") in dispatch
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids and e["target"] in node_ids, e
+
+
+def test_fortran_operator_and_unnamed_interfaces_make_no_generic_node(tmp_path):
+    """An `operator(+)`/`assignment(=)` interface and an unnamed interface carry no
+    generic name, so they must not mint a generic node; an unnamed interface body's
+    explicit procedure declaration is still extracted (no regression to #4141)."""
+    src = tmp_path / "ops.f90"
+    src.write_text(
+        "module m\n"
+        "  implicit none\n"
+        "  interface operator(+)\n"
+        "      module procedure add_vec\n"
+        "  end interface\n"
+        "  interface\n"
+        "      subroutine ext(x)\n"
+        "          real :: x\n"
+        "      end subroutine ext\n"
+        "  end interface\n"
+        "contains\n"
+        "  function add_vec(a, b) result(c)\n"
+        "      real :: a, b, c\n"
+        "      c = a + b\n"
+        "  end function add_vec\n"
+        "end module m\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    labels = {n["label"].rstrip("()") for n in r["nodes"]}
+    assert "ext" in labels, "unnamed-interface body procedure dropped"
+    assert not ({"+", "operator", "assignment", ""} & labels), "spurious generic node for operator/unnamed interface"
 
 
 def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
