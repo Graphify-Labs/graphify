@@ -1520,8 +1520,23 @@ def _strip_json_comments(raw: str) -> str:
         if ch == '"':
             in_string = True
         i += 1
+    # Remove trailing commas only outside JSON strings. A regex applied to the
+    # complete document would also alter values containing sequences such as
+    # `,}` or `,]`.
+    no_comments = "".join(result)
+    parts: list[str] = []
+    last_end = 0
+    for match in re.finditer(r'"(?:\\.|[^"\\])*"', no_comments, re.DOTALL):
+        non_string = no_comments[last_end : match.start()]
+        parts.append(re.sub(r",(\s*[}\]])", r"\1", non_string))
+        parts.append(match.group(0))
+        last_end = match.end()
 
-    return re.sub(r",(\s*[}\]])", r"\1", "".join(result))
+    non_string = no_comments[last_end:]
+    parts.append(re.sub(r",(\s*[}\]])", r"\1", non_string))
+    return "".join(parts)
+
+
 def _load_json_like(config_file: Path) -> dict:
     if not config_file.exists():
         return {}

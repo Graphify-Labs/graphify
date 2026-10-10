@@ -827,11 +827,25 @@ def test_mimo_uninstall_windows_paths(tmp_path, monkeypatch):
 
 def test_mimo_install_jsonc_strings_with_syntax_chars():
     """JSONC strings containing ,} and ,] remain unchanged."""
-    from graphify.install import _preserve_jsonc_plugin_add
     raw = '{\n  "custom_regex": "match,}or,]here",\n  "plugin": []\n}'
-    res = _preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
-    assert '"custom_regex": "match,}or,]here"' in res
-    assert '"./plugins/graphify.js"' in res
+    result = _preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
+
+    assert '"custom_regex": "match,}or,]here"' in result
+    assert '"./plugins/graphify.js"' in result
+
+    # Parse the result to ensure string values survive comment/trailing-comma cleanup.
+    parsed = json.loads(_strip_json_comments(result))
+    assert parsed["custom_regex"] == "match,}or,]here"
+    assert parsed["plugin"] == ["./plugins/graphify.js"]
+
+
+def test_strip_json_comments_does_not_normalize_repeated_commas():
+    from graphify.install import _strip_json_comments
+
+    for raw in ('{"theme": "dark",,}', '{"items": [1,,]}'):
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(_strip_json_comments(raw))
+
 
 def test_mimo_install_invalid_jsonc_trailing_commas(tmp_path, monkeypatch):
     """Repeated trailing commas remain invalid and invalid config bytes remain unchanged."""
