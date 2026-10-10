@@ -1681,6 +1681,8 @@ def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
     after decoding, so the incremental rebuild actually re-extracts them."""
     if shutil.which("git") is None:  # pragma: no cover
         pytest.skip("git not available")
+    if shutil.which("sh") is None:  # pragma: no cover
+        pytest.skip("sh not available")
     from graphify.hooks import _HOOK_SCRIPT, _unquote_git_path
 
     names = ["plain.py", "ünïcödé/naïve.py", "中文/用户.py"]
