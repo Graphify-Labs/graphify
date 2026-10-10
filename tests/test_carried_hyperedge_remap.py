@@ -32,6 +32,16 @@ UNRELATED_CHUNK = {
     "nodes": [{"id": "delta_node", "label": "Delta", "file_type": "concept", "source_file": "notes/d.md"}],
     "edges": [], "hyperedges": [],
 }
+# Under #3477, existing nodes from untouched files are protected from collapsing.
+# To test carried hyperedge remapping, the duplicate must arrive via an incoming
+# re-extracted chunk so it folds into the untouched protected survivor `alpha_a`.
+RE_EXTRACTED_CHUNK = {
+    "nodes": [{"id": "alpha_concept_long_variant_id", "label": "alpha_concept", "file_type": "concept",
+               "source_file": "notes/b.md"}],
+    "edges": [{"source": "alpha_concept_long_variant_id", "target": "beta_node", "relation": "references",
+               "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "notes/b.md"}],
+    "hyperedges": [],
+}
 
 
 def _baseline(tmp_path: Path) -> Path:
@@ -48,7 +58,7 @@ def _hyperedges(G):
 
 
 def test_a_carried_hyperedge_is_remapped_onto_the_dedup_survivor(tmp_path):
-    G = build_merge([UNRELATED_CHUNK], _baseline(tmp_path))
+    G = build_merge([RE_EXTRACTED_CHUNK], _baseline(tmp_path))
     survivors = set(G.nodes)
     assert "alpha_concept_long_variant_id" not in survivors  # merged away
     he = _hyperedges(G)["the_group"]
@@ -58,7 +68,7 @@ def test_a_carried_hyperedge_is_remapped_onto_the_dedup_survivor(tmp_path):
 
 
 def test_the_written_graph_has_no_dangling_hyperedge_member(tmp_path):
-    G = build_merge([UNRELATED_CHUNK], _baseline(tmp_path))
+    G = build_merge([RE_EXTRACTED_CHUNK], _baseline(tmp_path))
     out = tmp_path / "merged.json"
     to_json(G, {0: list(G.nodes)}, str(out), force=True)
     data = json.loads(out.read_text(encoding="utf-8"))
@@ -70,7 +80,7 @@ def test_the_written_graph_has_no_dangling_hyperedge_member(tmp_path):
 def test_edges_and_hyperedges_agree_on_the_survivor(tmp_path):
     """The edge endpoint and the hyperedge member came from the same
     merged-away node; both must now name the same survivor."""
-    G = build_merge([UNRELATED_CHUNK], _baseline(tmp_path))
+    G = build_merge([RE_EXTRACTED_CHUNK], _baseline(tmp_path))
     edge_ends = {u for u, v in G.edges} | {v for u, v in G.edges}
     assert "alpha_a" in edge_ends
     assert "alpha_a" in _hyperedges(G)["the_group"]["nodes"]
