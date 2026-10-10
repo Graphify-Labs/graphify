@@ -147,6 +147,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_js_module_path,
     _resolve_lua_import_target,
     _probe_python_module_candidate,
+    _PYTHON_STDLIB_MODULE_NAMES,
     _resolve_python_module_path,
     _resolve_python_namespace_dir,
     _resolve_tsconfig_alias,
@@ -536,6 +537,10 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
             # Sibling package directory inside parent_dir (parent_dir / subpkg / __init__.py)
             pkg_dir = p_res.parent
             parent_dir = pkg_dir.parent
+            # A loose package named like a stdlib module (e.g. `logging/`) must not
+            # capture a bare `import logging`, which means the stdlib module (#4261).
+            if pkg_dir.name in _PYTHON_STDLIB_MODULE_NAMES:
+                continue
             if not (parent_dir / "__init__.py").is_file() and not (parent_dir / "__init__.pyi").is_file():
                 mod_key = _make_id(pkg_dir.name)
                 dir_siblings.setdefault(parent_dir, {}).setdefault(mod_key, set()).add(file_node)
@@ -545,6 +550,11 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
         # PEP 328 guard: if the directory is a package, implicit relative imports
         # are forbidden in Python 3. Do not index packages as loose sibling directories.
         if (d / "__init__.py").is_file() or (d / "__init__.pyi").is_file():
+            continue
+
+        # A loose module named like a stdlib module (e.g. `logging.py`) must not
+        # capture a bare `import logging`, which means the stdlib module (#4261).
+        if p_res.stem in _PYTHON_STDLIB_MODULE_NAMES:
             continue
 
         mod_key = _make_id(p_res.stem)
@@ -3455,7 +3465,11 @@ _LANGUAGE_BUILTIN_BASE_CLASSES_CI: dict[str, frozenset[str]] = {
 
 def _node_label_key(node: dict, fold: bool = False) -> str:
     label = str(node.get("label", "")).strip()
-    key = re.sub(r"[^a-zA-Z0-9]+", "", label)
+    # Keep underscores: they are significant identifier characters, so a private
+    # `_Response` must not share a key with an external `Response` and absorb its
+    # reference during stub rewiring (#4269). Only drop call/generic punctuation
+    # (`()`, `<>`, `.`, whitespace) so `Foo()` and `Foo` still match.
+    key = re.sub(r"[^a-zA-Z0-9_]+", "", label)
     return key.lower() if fold else key
 
 

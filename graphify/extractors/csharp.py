@@ -486,37 +486,46 @@ def _resolve_csharp_type_references(
                 return alias
         return stem or None
 
+    # One canonical sourceless stub per undeclared type NAME, shared across every
+    # file that references it (#4247). An external type the corpus uses but never
+    # declares (`List`, `System.Type`, Unity's `VisualElement`) used to get a
+    # separate per-file placeholder (`a_cs_list`, `b_cs_list`, ...) because the
+    # extractor mints one provisional placeholder per file and the arbiter kept
+    # whichever one each edge already pointed at. Coalesce them all onto a single
+    # name-keyed stub so a query for the type returns one node that connects the
+    # files sharing it.
+    canonical_stub_by_label: dict[str, str] = {}
+
+    def _canonical_stub_matches(nid: object, label: str) -> bool:
+        node = node_by_id.get(nid)
+        return _is_placeholder(node) and node.get("label") == label
+
     def _dangling_stub_id(label: str, current_target: object) -> str:
-        current = node_by_id.get(current_target)
-        if _is_placeholder(current) and current.get("label") == label:
-            return str(current_target)
+        cached = canonical_stub_by_label.get(label)
+        if cached is not None:
+            return cached
 
-        for node in all_nodes:
-            nid = node.get("id")
-            if (
-                isinstance(nid, str)
-                and node.get("label") == label
-                and _is_placeholder(node)
-            ):
-                return nid
-
-        stem = _make_id(label)
-        stub_id = stem
-        if stub_id in node_by_id:
+        stub_id = _make_id(label)
+        # Never shadow a real (sourced) node or a differently-labelled node; a
+        # placeholder already keyed by this bare name is reused as the canonical.
+        if stub_id in node_by_id and not _canonical_stub_matches(stub_id, label):
             stub_id = _make_id("csharp_type_ref", label)
             suffix = 2
-            while stub_id in node_by_id:
+            while stub_id in node_by_id and not _canonical_stub_matches(stub_id, label):
                 stub_id = _make_id("csharp_type_ref", label, str(suffix))
                 suffix += 1
-        node = {
-            "id": stub_id,
-            "label": label,
-            "file_type": "code",
-            "source_file": "",
-            "source_location": "",
-        }
-        all_nodes.append(node)
-        node_by_id[stub_id] = node
+
+        if stub_id not in node_by_id:
+            node = {
+                "id": stub_id,
+                "label": label,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            }
+            all_nodes.append(node)
+            node_by_id[stub_id] = node
+        canonical_stub_by_label[label] = stub_id
         return stub_id
 
     REPOINT_RELATIONS = {"implements", "inherits", "references"}

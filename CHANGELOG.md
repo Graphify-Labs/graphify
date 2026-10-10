@@ -2,6 +2,19 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.84 (2026-10-10)
+
+A correctness batch picked directly from open issues, plus an OpenCode plugin fix.
+
+- Fix: **PowerShell** functions (and classes/enums) defined inside a file-scope `begin {}` / `process {}` / `end {}` block are now extracted. These blocks parse as pseudo-commands rather than named blocks, so the walker returned before descending and dropped everything inside — the common `[CmdletBinding()]` advanced-function layout (#4270).
+- Fix: **R** every backtick-quoted binding now gets a collision-free id. A partially-symbolic name like `` `%foo%` `` (or an S3 method `` `[.cls` ``, or a dotted `` `my.op` ``) normalized to the same id as an ordinary identifier and was silently dropped on merge; such names now use the reserved operator namespace (#4253). (The separate infinite-loop reported in that issue was already fixed in 0.9.83.)
+- Fix: `graphify path` and the MCP `shortest_path` tool now fail closed on a `file::symbol` endpoint whose file defines no such symbol, instead of falling back to scoring the bare name and answering from a same-named symbol in another file; the refusal lists the files that do define it (#4264).
+- Fix: **OpenCode** the plugin now loads on OpenCode 2 (a default export with `setup()`) while keeping the v1 `server()` hook, and `graphify install` refreshes an already-installed v1-only copy, so the graph tools appear again for users upgraded past the v1 plugin contract (#3554, #3732, thanks @bercedev).
+- Fix: **Python** a bare `import logging` is no longer captured by a loose same-named module (`scripts/logging.py`) in a non-package directory — it resolves to the stdlib module. Guarded by a vendored, deterministic stdlib-name set across the module resolver, the sibling-repoint pass, and the build-time stem-alias index; a deliberate package shadow (`logging/__init__.py`) still resolves (#4261).
+- Fix: **Python** a qualified external annotation (`httpx.Response`) no longer binds to an unrelated private local class (`_Response`). The stub-rewire match key now preserves underscores, so `_Response` and `Response` are distinct identifiers (#4269).
+- Fix: **C#** an external type the corpus references but never declares (`List<T>`, `System.Type`, Unity's `VisualElement`) now gets one shared, name-keyed placeholder instead of a separate per-file stub (`a_cs_list`, `b_cs_list`), so a query returns one node and the files sharing the type connect through it (#4247).
+- Internal: added regression coverage locking in cross-module binding of a singly-defined type through re-export chains and the unique-stub rewire; the reported failure (#4262) no longer reproduces on this line.
+
 ## 0.9.83 (2026-10-09)
 
 A C# resolution and determinism batch, plus Windows test-suite fixes.

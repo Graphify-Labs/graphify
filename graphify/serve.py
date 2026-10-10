@@ -1698,6 +1698,36 @@ def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> st
     )
 
 
+def _no_scoped_match_message(G: nx.Graph, path_part: str, symbol_part: str) -> str:
+    """Refusal for a `file::symbol` endpoint whose file defines no such symbol (#4264).
+
+    Fail closed like `explain` instead of scoring the bare name across other
+    files, and name the files that DO define the symbol so the user can retarget.
+    """
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    others: set[str] = set()
+    for _nid, d in G.nodes(data=True):
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            sf = d.get("source_file") or ""
+            if sf:
+                others.add(sf)
+    msg = (
+        f"No node matching '{path_part}::{symbol_part}' found; "
+        f"{path_part} defines no '{symbol_part}'."
+    )
+    if others:
+        msg += "\n" + "\n".join(f"  defined in {s}" for s in sorted(others))
+    return msg
+
+
 def _resolve_path_endpoint(
     G: nx.Graph, query: str
 ) -> tuple[str | None, list[tuple[float, str]], str | None]:
@@ -1733,6 +1763,14 @@ def _resolve_path_endpoint(
         if len(hits) > 1 and not file_query:
             return None, [], _same_file_ambiguity_message(G, query, hits)
         return hits[0], [], None
+    # A deliberately file-scoped endpoint (`file::symbol`) that matched no symbol
+    # in that file must NOT fall back to scoring the bare name across other files
+    # (#4264) — that reintroduces the cross-file guess the qualifier forbids. Fail
+    # closed like `explain`. A native `::` label (Rust/C++) that matched resolves
+    # via the exact tier above (hits non-empty) and never reaches here.
+    path_part, sep, symbol_part = query.partition("::")
+    if sep and path_part.strip() and symbol_part.strip():
+        return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None

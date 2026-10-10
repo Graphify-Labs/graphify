@@ -1339,3 +1339,45 @@ def test_csharp_static_import_vs_namespace_conflict_dangles(tmp_path: Path):
     result = extract([other, layer, consumer], cache_root=tmp_path)
     resolved = [t for t in _targets(result, "references", "Record") if t.get("source_file")]
     assert not resolved, f"conflict between namespace and static import must fail closed: {resolved}"
+
+
+def test_csharp_external_type_shares_one_placeholder_across_files(tmp_path: Path):
+    # #4247: an external type referenced from several files must get ONE sourceless
+    # placeholder keyed by its name, shared by every file -- not a separate
+    # per-file placeholder (`a_cs_list`, `b_cs_list`) that leaves the files
+    # unconnected.
+    a = _write(
+        tmp_path / "A.cs",
+        "using System.Collections.Generic;\n"
+        "namespace Demo { public class A { public List<int> Items; } }\n",
+    )
+    b = _write(
+        tmp_path / "B.cs",
+        "using System.Collections.Generic;\n"
+        "namespace Demo { public class B { public List<string> Names; } }\n",
+    )
+    result = extract([a, b], cache_root=tmp_path)
+
+    list_stubs = [
+        n for n in result["nodes"]
+        if n.get("label") == "List" and not n.get("source_file")
+    ]
+    assert len(list_stubs) == 1, (
+        f"expected one shared sourceless List placeholder, got {len(list_stubs)}: "
+        f"{[n.get('id') for n in list_stubs]}"
+    )
+    stub_id = list_stubs[0]["id"]
+
+    referring_files = {
+        e.get("source_file") for e in result["edges"]
+        if e.get("relation") == "references" and e.get("target") == stub_id
+    }
+    # Both A.cs and B.cs reach the one shared placeholder, so the files connect.
+    assert len({str(f).replace("\\", "/").rsplit("/", 1)[-1] for f in referring_files}) == 2, (
+        f"both files must reference the shared List placeholder: {referring_files}"
+    )
+    # No per-file placeholder survives alongside the canonical one.
+    assert not any(
+        n.get("label") == "List" and not n.get("source_file") and n.get("id") != stub_id
+        for n in result["nodes"]
+    )

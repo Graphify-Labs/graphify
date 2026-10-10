@@ -1375,6 +1375,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # the header silently dropping out of the race and leaving the PHP file as
     # the lone (wrong) "unambiguous" winner.
     from graphify.extractors.base import _file_stem as _fs
+    from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
     _alias_candidates: dict[str, set[str]] = {}
     for nid in node_set:
         attrs = G.nodes[nid]
@@ -1385,6 +1386,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if _is_abs(str(sf)):
             continue
         new_stem = make_id(_fs(rel))
+        # A Python module whose bare stem is a stdlib name (e.g. `scripts/logging.py`)
+        # must not claim the collapsed bare-stem alias ("logging"): that alias would
+        # capture a genuine external `import logging` / `logging.getLogger()` edge
+        # and bind it to this same-named local file (#4261). The directory-scoped
+        # alias form ("scripts_logging") is still registered, so a real stale-id
+        # reference to this file keeps healing.
+        is_py_stdlib_stem = (
+            rel.suffix.lower() in (".py", ".pyi")
+            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
+        )
         if str(attrs.get("label", "")) == rel.name:
             suffix = ""  # this node IS the file, whatever its (possibly salted) id
         else:
@@ -1393,6 +1404,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
+                continue
+            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
                 continue
             alias = old_stem + suffix
             _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
