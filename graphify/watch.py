@@ -21,6 +21,7 @@ from graphify.paths import (
 
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
+_PENDING_FULL_FILENAME = ".pending_full"
 _PENDING_DRAIN_MAX_PASSES = 20
 
 
@@ -76,6 +77,26 @@ def _drain_pending(out_dir: Path) -> list[Path]:
         seen.add(s)
         out.append(Path(s))
     return out
+
+
+def _queue_pending_full(out_dir: Path) -> None:
+    """Record that a full-corpus rebuild was requested but could not run.
+
+    Full requests (watcher, post-checkout hook) have no path list to append to
+    ``.pending_changes``, so they leave a marker file instead. The lock-holder
+    consumes it and runs one more full pass before releasing (#4274).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / _PENDING_FULL_FILENAME).touch()
+
+
+def _drain_pending_full(out_dir: Path) -> bool:
+    """Consume the full-rebuild marker. Returns True if one was queued."""
+    try:
+        (out_dir / _PENDING_FULL_FILENAME).unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 # Build options that must survive into later rebuilds. The initial `extract`
@@ -1650,29 +1671,32 @@ def _rebuild_code(
 
     out = watch_path / _GRAPHIFY_OUT
     if acquire_lock:
-        # #1059: incremental (changed_paths is not None) hooks must not drop
-        # their change set when another rebuild is already running. Queue
-        # before attempting the lock so a non-blocking failure still records
-        # the work; the lock-holder drains the queue and merges it in. Full-
-        # corpus rebuilds skip the queue entirely — they already cover every
-        # file, so there is nothing to merge.
-        if changed_paths is not None and not block_on_lock:
-            _queue_pending(out, list(changed_paths))
+        # #1059: a hook must not drop its request when another rebuild is
+        # already running. Queue before attempting the lock so a non-blocking
+        # failure still records the work; the lock-holder drains the queue.
+        # Incremental requests append their paths to .pending_changes; full-
+        # corpus requests leave a .pending_full marker (#4274).
+        queued = False
+        if not block_on_lock:
+            if changed_paths is None:
+                _queue_pending_full(out)
+                queued = True
+            elif changed_paths:
+                _queue_pending(out, list(changed_paths))
+                queued = True
         with _rebuild_lock(out, blocking=block_on_lock) as got:
             if not got:
                 print("[graphify watch] Rebuild already in progress for "
-                      f"{watch_path.resolve()} - changes queued.")
+                      f"{watch_path.resolve()} - "
+                      f"{'changes queued' if queued else 'nothing to queue'}.")
                 return False
             # Lock acquired. Drain anything queued by earlier contenders
-            # (including, importantly, the paths we just queued ourselves)
-            # and merge with our own change set so a single rebuild covers
-            # everything outstanding.
-            if changed_paths is not None:
-                merged = _merge_changed_paths(changed_paths, _drain_pending(out))
-            else:
-                # Full-corpus rebuild supersedes any queued incremental work.
-                _drain_pending(out)
-                merged = None
+            # (including, importantly, what we just queued ourselves). A
+            # queued full request upgrades this run to a full rebuild, which
+            # supersedes any incremental work queued before it starts.
+            full = _drain_pending_full(out) or changed_paths is None
+            pending = _drain_pending(out)
+            merged = None if full else _merge_changed_paths(changed_paths, pending)
             ok = _rebuild_code(
                 watch_path,
                 changed_paths=merged,
@@ -1682,22 +1706,23 @@ def _rebuild_code(
                 acquire_lock=False,
             )
             # Late-arrival drain: another hook may have queued work while we
-            # were rebuilding. Loop up to _PENDING_DRAIN_MAX_PASSES times so a
-            # storm of commits eventually quiesces without livelocking. A full
-            # rebuild already saw everything, so skip this for changed_paths is None.
-            if merged is not None:
-                for _ in range(_PENDING_DRAIN_MAX_PASSES):
-                    late = _drain_pending(out)
-                    if not late:
-                        break
-                    ok = _rebuild_code(
-                        watch_path,
-                        changed_paths=late,
-                        follow_symlinks=follow_symlinks,
-                        force=force,
-                        no_cluster=no_cluster,
-                        acquire_lock=False,
-                    ) and ok
+            # were rebuilding — even a full rebuild only saw files as they were
+            # when it walked the corpus (#4274). Loop up to
+            # _PENDING_DRAIN_MAX_PASSES times so a storm of commits eventually
+            # quiesces without livelocking.
+            for _ in range(_PENDING_DRAIN_MAX_PASSES):
+                late_full = _drain_pending_full(out)
+                late = _drain_pending(out)
+                if not late_full and not late:
+                    break
+                ok = _rebuild_code(
+                    watch_path,
+                    changed_paths=None if late_full else late,
+                    follow_symlinks=follow_symlinks,
+                    force=force,
+                    no_cluster=no_cluster,
+                    acquire_lock=False,
+                ) and ok
             return ok
 
     watch_root = watch_path.resolve()

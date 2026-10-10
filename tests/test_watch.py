@@ -2210,8 +2210,111 @@ def test_rebuild_code_full_corpus_skips_pending_queue(tmp_path, monkeypatch):
     # Full-corpus rebuild passes None to the inner call (does not merge in
     # the queued paths — a full rebuild already covers them).
     assert seen == [None]
-    # The queue still gets drained on entry so stale entries don't leak,
-    # but no late-arrival loop runs for the full-corpus path.
+    # The queue is drained on entry so stale entries don't leak; nothing
+    # arrived mid-run, so the late-arrival loop has nothing to do.
+    assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_full_request_queues_marker_on_contention(tmp_path, capsys):
+    """#4274: a full-corpus request that loses the lock must leave a
+    .pending_full marker instead of being dropped behind a 'queued' log."""
+    from graphify.watch import _rebuild_code, _rebuild_lock, _PENDING_FULL_FILENAME
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    with _rebuild_lock(out, blocking=False) as outer_got:
+        assert outer_got is True
+        assert _rebuild_code(tmp_path) is False
+        assert "changes queued" in capsys.readouterr().out
+        assert (out / _PENDING_FULL_FILENAME).exists()
+
+
+def test_rebuild_code_empty_change_set_does_not_claim_queued(tmp_path, capsys):
+    """#4274: 'changes queued' is printed only when something was queued."""
+    from graphify.watch import _rebuild_code, _rebuild_lock, _PENDING_FILENAME
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    with _rebuild_lock(out, blocking=False) as outer_got:
+        assert outer_got is True
+        assert _rebuild_code(tmp_path, changed_paths=[]) is False
+        assert "changes queued" not in capsys.readouterr().out
+        assert not (out / _PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_holder_runs_queued_full_pass(tmp_path, monkeypatch):
+    """#4274: a full request queued while an incremental rebuild holds the
+    lock must make the holder run one more full pass before releasing."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            paths = kwargs.get("changed_paths")
+            seen.append(None if paths is None else [p.as_posix() for p in paths])
+            if len(seen) == 1:
+                watch_mod._queue_pending_full(out)
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path, changed_paths=[Path("own.py")]) is True
+    assert seen == [["own.py"], None]
+    assert not (out / watch_mod._PENDING_FULL_FILENAME).exists()
+
+
+def test_rebuild_code_full_pass_upgrades_from_queued_marker(tmp_path, monkeypatch):
+    """#4274: an incremental holder that finds a full marker already queued
+    runs a full rebuild instead of its incremental one."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    watch_mod._queue_pending_full(out)
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            seen.append(kwargs.get("changed_paths"))
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path, changed_paths=[Path("own.py")]) is True
+    assert seen == [None]
+    assert not (out / watch_mod._PENDING_FULL_FILENAME).exists()
+    assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_full_rebuild_drains_late_arrivals(tmp_path, monkeypatch):
+    """#4274: incremental work queued after a full rebuild walked the corpus
+    must be applied by that rebuild's holder before it releases the lock."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            paths = kwargs.get("changed_paths")
+            seen.append(None if paths is None else [p.as_posix() for p in paths])
+            if len(seen) == 1:
+                watch_mod._queue_pending(out, [Path("late.py")])
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path) is True
+    assert seen == [None, ["late.py"]]
     assert not (out / watch_mod._PENDING_FILENAME).exists()
 
 
