@@ -2944,3 +2944,39 @@ def detect_incremental(
     full["deleted_files"] = deleted_files
     full["excluded_files"] = excluded_files
     return full
+
+
+def summarize_incremental_changes(result: dict, *, limit: int = 5) -> list[dict]:
+    """Top directory boundaries when more than half the corpus has changed.
+
+    Use only the already detected changed paths; never walk the corpus again.
+    Missing files retain their count with zero bytes. Outside-root targets are
+    excluded, including symlinks that have changed since detection.
+    """
+    total = result.get("total_files", 0)
+    if total <= 0 or result.get("new_total", 0) <= total / 2 or limit <= 0:
+        return []
+    root = Path(result.get("scan_root", ".")).resolve()
+    groups: dict[str, dict] = {}
+    seen: set[Path] = set()
+    for files in result.get("new_files", {}).values():
+        for name in files:
+            path = Path(name)
+            if not path.is_absolute():
+                path = root / path
+            try:
+                path = path.resolve()
+                relative = path.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            if path in seen or not relative.parts:
+                continue
+            seen.add(path)
+            directory = relative.parts[0] if len(relative.parts) > 1 else "(root)"
+            group = groups.setdefault(directory, {"directory": directory, "files": 0, "bytes": 0})
+            group["files"] += 1
+            try:
+                group["bytes"] += os.stat(_os_path(path)).st_size
+            except OSError:
+                pass
+    return sorted(groups.values(), key=lambda g: (-g["files"], -g["bytes"], g["directory"]))[:limit]

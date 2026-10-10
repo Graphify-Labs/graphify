@@ -1180,6 +1180,12 @@ def _is_watch_injection_fix_line(line: str) -> bool:
     )
 
 
+_UPDATE_BOUNDARY_LINES = ('from graphify.detect import summarize_incremental_changes', 'boundary_summary = summarize_incremental_changes(result)', 'if boundary_summary:', "print('Changed directory boundaries (files and bytes):', json.dumps(boundary_summary, ensure_ascii=False))", 'If the changed directory boundary summary appears (more than half the corpus changed), show the top directory counts and byte sizes and ask whether the dominant directories belong to the intended corpus before any semantic dispatch. If the user chooses exclusions, add only the agreed patterns to `.graphifyignore` and rerun detection before proceeding; do not exclude directories automatically.')
+
+def _is_update_boundary_line(line: str) -> bool:
+    """Allow only the boundary-summary insertion for #3945."""
+    return line.strip() in _UPDATE_BOUNDARY_LINES
+
 def _is_graph_diff_direction_fix_line(line: str) -> bool:
     """Whether a line is part of the --update graph-diff direction fix (#4067).
 
@@ -1232,6 +1238,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_community_label_export_fix_line,
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
+    _is_update_boundary_line,
+
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
 )
