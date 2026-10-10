@@ -25,6 +25,9 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `export.py` | `to_json`, `to_html`, `to_obsidian`, `to_svg`, `to_graphml`, `to_canvas`, `to_cypher` | graph → graph.json, graph.html, Obsidian vault, graph.svg, … one function per format |
 | `wiki.py` | `to_wiki(G, communities, output_dir, ...)` | graph → one markdown article per community + `index.md` |
 | `callflow_html.py` | `write_callflow_html(...)` | graphify-out files → Mermaid architecture/call-flow HTML |
+| `review_source.py` | `git_target(...)`, `pr_target(...)`, `materialize_snapshot(...)` | fixed Git/PR revisions → isolated source evidence; no checkout or project execution |
+| `review.py` | `build_review(...)`, `save_review(...)` | fixed target → review-local dict → JSON/HTML; optional inference never enters canonical extraction |
+| `review_html.py` | `render_review(...)` | validated review dict → offline progressive-disclosure HTML with directed SVG graphs |
 | `ingest.py` | `ingest(url, target_dir, ...)` | URL → file saved to corpus dir |
 | `cache.py` | `check_semantic_cache(files, root)`, `save_semantic_cache(nodes, edges, ...)` | files → cached nodes / edges / hyperedges + the list of files still needing extraction |
 | `security.py` | `validate_url`, `safe_fetch`, `validate_graph_path`, `sanitize_label` | URL / path / label → validated value, or raises |
@@ -77,6 +80,42 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 | `EXTRACTED` | Relationship is explicitly stated in the source (e.g., an import statement, a direct call) |
 | `INFERRED` | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
 | `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md |
+
+## Human review artifacts
+
+`prs --review` dispatches before the legacy open-PR dashboard. Source collection
+pins base-tip, merge base, and head, reads committed blobs, applies existing
+corpus boundaries, and builds equivalent AST-only graphs under temporary roots.
+`graph_diff()` supplies topology changes; side-specific node/edge attributes are
+rehydrated for provenance. Text hunks remain evidence when topology is unchanged.
+Physical LF lines and Git modes/object IDs preserve source identity; invalid
+UTF-8 paths never alias a display-decoded name. Collection and diff-work budgets
+are explicit, unreadable ignore rules fail closed, and omitted stories are counted.
+`affected_nodes()` provides bounded incoming dependency context. Existing
+community clustering supplies side-local groupings; counts never imply defects.
+
+The review model connects changed-file stories to source evidence, focused
+base/head graphs, optional behavior explanations, blast radius, and coverage.
+Python source spans include decorators and come from `ast`; unavailable ranges fall back explicitly to
+file membership. `--infer` calls the existing backend resolver and `_call_llm`
+with bounded untrusted evidence, validates story/citation IDs and side support,
+and labels every explanation `INFERRED`. Provider failure retains structural
+output. No canonical graph/cache is modified by review generation.
+
+The pure renderer uses NetworkX topology for bounded, shared before/after layout
+and Graphify's stable ID helper. It renders directed SVG with source links,
+confidence/diff styling, and accessible relationship lists. Required diagrams
+work offline without a new layout dependency or packaged JavaScript. Existing
+CDN callflow rendering and undirected static SVG export remain compatible.
+All repository/model strings are escaped; no scripts or external assets are
+required. Explanations, graphs, dependency details, source, and raw diffs form
+successive disclosure layers. Coverage gaps remain visible before expansion.
+Blast diagrams retain class-member bridges without inflating affected counts.
+Private output staging rejects static symlinked review paths and preserves recovery
+data on a failed restore. It assumes a trusted local output tree: path checks do
+not protect against a concurrent process replacing directory ancestors.
+Inference retries clear stale results; invalid Unicode,
+unsupported source sides, and invented absent-side behavior are rejected.
 
 ## Adding a new language extractor
 

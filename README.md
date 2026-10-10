@@ -423,11 +423,84 @@ graphify merge-graphs a.json b.json              # combine two graphs
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
+graphify prs 42 --review           # offline review: graphs, pseudocode, blast radius
+graphify prs 42 --review --infer   # add evidence-backed behavior interpretation
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
 graphify prs --conflicts           # PRs sharing graph communities — merge-order risk
 ```
 
 See the [full command reference](#full-command-reference) below.
+
+### Human-readable PR reviews
+
+```bash
+graphify prs 42 --review
+graphify prs 42 --review --infer --backend ollama --model <configured-model>
+graphify prs --review --base main --head feature --depth 2
+```
+
+The review is a portable `review.html` rendered from `review.json` under
+`graphify-out/reviews/pr-42/` (or `git-<base>-<head>/` for local comparisons).
+`GRAPHIFY_OUT` overrides the output root. Open the HTML in a browser; its graphs,
+styles, pseudocode and source excerpts work offline, with no CDN or server.
+
+Review through progressive disclosure: start with **change stories**, inspect
+before/after pseudocode and focused dependency graphs, expand **blast radius**
+and affected communities, then follow a graph node, relationship or explanation
+to the exact base/head source. Before/after graph positions remain consistent;
+added/removed relationships and existing confidence labels remain visible.
+Source diffs and coverage are available even when graph topology is unchanged.
+
+The default makes no model call. `--infer` reuses Graphify's configured backends;
+behavioral explanations are always **INFERRED**, cite supplied source evidence,
+and remain outside canonical graph data. Missing providers, invalid responses,
+or insufficient evidence leave the structural artifact usable with an explicit
+analysis status. Citation validation checks references, not semantic correctness.
+PR descriptions are shown as authored context, not extracted intent.
+
+PR reviews require `git`, authenticated `gh`, and a checkout of that repository.
+The requested PR is fetched directly, including closed PRs. Commit objects may
+be fetched from the repository's HTTPS URL; the worktree and index are not switched or modified.
+Local comparisons require neither GitHub nor a model. Both compare the merge
+base to the fixed head and retain the base-tip ID separately.
+
+Two equivalent AST snapshots are built in temporary directories. Graphify's
+graph-specific ignore, noise and sensitive-file boundaries apply; symlinks,
+gitlinks, binary/non-UTF-8 files and nonportable paths are disclosed as omitted.
+Tracked source remains tracked even when matched by a Git-only ignore rule.
+Limits are 5,000 regular files / 64 MB per snapshot, 1 MB per file, 24 hunks per
+changed file, and 100 lines per excerpt. Reviews retain at most 500 changed-file
+stories and disclose omissions; impact covers the retained stories. Git metadata
+is capped at 16 MB / 100,000 paths. Ignore rules have a separate 1 MB / 1,024-file
+budget and must be readable; sensitive and ignored paths do not consume admitted-source slots.
+Marker-based generated-directory pruning uses pinned metadata, including binary
+or oversized markers, with a separate 1,024-marker limit. Directory structure
+has a 10,000-directory limit, and directory-only ignore rules apply before admission.
+Expensive line matching uses a bounded linear middle-region fallback, with
+conservative ranges disclosed. Physical LF lines, final-newline/CRLF changes,
+and Git file modes remain visible. Focused graphs show up to 12 nodes;
+blast traversal uses at most 100 seeds and depth 0–6 (default 2), with bounded
+detail lists and visible omissions. Python seeds use actual AST spans, including decorators, where
+available; other cases explicitly use changed-file membership. Dependents are
+potential structural impact, not predicted failures or proven execution paths.
+Community IDs are snapshot-local. Existing extractor and relation-collapse
+limitations remain, and dynamic dispatch may be incomplete.
+Records whose IDs embed a temporary snapshot path are excluded from comparison
+and counted in coverage, so path-dependent extractor records cannot masquerade
+as architectural additions/removals. Canonical extraction and IDs are unchanged.
+Extraction failures that cannot be mapped to admitted snapshot source are counted
+separately in coverage, without inventing source citations or aborting the review.
+
+The two outputs are rendered before writing and individually replaced atomically.
+Both are staged privately before replacing either output; symlinked review paths
+are rejected. A reported JSON swap failure restores the previous HTML by rename.
+If restoration also fails, the prior HTML is retained at the reported recovery
+path. Output assumes no adversarial local process concurrently changes the checkout
+or output directories; static symlink checks do not pin directory ancestors.
+Do not run with elevated privileges in an attacker-writable directory.
+This is not a multi-file power-loss transaction; the HTML's model digest identifies its JSON.
+Shallow history must contain a provable merge base; otherwise the command asks
+for the required history instead of guessing a comparison.
 
 ---
 
@@ -838,6 +911,9 @@ graphify global path                                  # print path to the global
 
 graphify prs                              # PR dashboard: CI, review, worktree, graph impact
 graphify prs 42                           # deep dive on PR #42
+graphify prs 42 --review                  # self-contained human review artifact
+graphify prs 42 --review --infer          # cited before/after behavioral pseudocode
+graphify prs --review --base main --head feature  # local merge-base comparison
 graphify prs --triage                     # AI triage ranking (auto-detects backend from env)
 graphify prs --worktrees                  # worktree → branch → PR mapping
 graphify prs --conflicts                  # PRs sharing graph communities (merge-order risk)

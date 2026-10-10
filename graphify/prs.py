@@ -7,6 +7,9 @@ Opus-powered triage ranking.
 Usage:
   graphify prs                   # dashboard of all open PRs
   graphify prs <number>          # deep dive on one PR
+  graphify prs <number> --review # offline human review: graphs, pseudocode, impact
+  graphify prs <number> --review --infer  # add cited behavior interpretation
+  graphify prs --review --base <ref> --head <ref>  # fixed local comparison
   graphify prs --triage          # Opus ranks your review queue
   graphify prs --worktrees       # show worktree → branch → PR mapping
   graphify prs --conflicts       # PRs sharing graph communities (merge-order risk)
@@ -688,6 +691,10 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def cmd_prs(argv: list[str]) -> None:
+    if "--review" in argv:
+        from graphify.review import cmd_review
+        cmd_review(argv)
+        return
     base: str | None = None  # auto-detected from repo if not given
     repo: str | None = None
     do_triage = False
