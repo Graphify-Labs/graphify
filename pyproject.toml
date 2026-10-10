@@ -101,7 +101,10 @@ pascal = ["tree-sitter-pascal"]
 # tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
 # must compile from source (needs a C toolchain + python3-dev). Keeping it optional
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
-dm = ["tree-sitter-dm"]
+# Capped <0.26: the 0.26.0 grammar changed the type-path node shape, so
+# extract_dm() stops finding type definitions (a fresh `uvx --from graphifyy[dm]`
+# would otherwise pull it and silently break DM extraction). uv.lock pins 0.25.1.
+dm = ["tree-sitter-dm>=0.25,<0.26"]
 terraform = ["tree-sitter-hcl"]
 # tree-sitter-ocaml ships prebuilt abi3 wheels for every platform, so no C
 # toolchain is needed; kept optional because OCaml is a niche corpus language.
@@ -120,7 +123,7 @@ vbnet = ["tree-sitter-vb-dotnet==0.3.0"]
 r = ["tree-sitter-language-pack==0.11.0"]
 erlang = ["tree-sitter-language-pack==0.11.0"]
 solidity = ["tree-sitter-solidity==1.2.13"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.16.1", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "graspologic-native>=1.3.1,<2; python_version >= '3.13'", "python-docx", "openpyxl", "psycopg[binary]", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.7.4", "matplotlib", "pillow>=12.3.0", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba; python_version < '3.12'", "jieba-py>=0.46.12,<1; python_version >= '3.12'", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0", "tree-sitter-vb-dotnet==0.3.0", "tree-sitter-language-pack==0.11.0", "tree-sitter-solidity==1.2.13"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.16.1", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "graspologic-native>=1.3.1,<2; python_version >= '3.13'", "python-docx", "openpyxl", "psycopg[binary]", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.7.4", "matplotlib", "pillow>=12.3.0", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba; python_version < '3.12'", "jieba-py>=0.46.12,<1; python_version >= '3.12'", "tree-sitter-dm>=0.25,<0.26", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0", "tree-sitter-vb-dotnet==0.3.0", "tree-sitter-language-pack==0.11.0", "tree-sitter-solidity==1.2.13"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
