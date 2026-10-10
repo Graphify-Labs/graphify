@@ -321,6 +321,19 @@ This writes a small config file that tells your assistant to consult the knowled
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
+### CLI skills or MCP instructions?
+
+The instructions installed by `graphify install` and those supplied with a Graphify MCP connection describe different ways to query a graph:
+
+| Setup | Guidance to use | Query access |
+|---|---|---|
+| Local CLI and installed assistant skill | The platform instructions written by `graphify install` | Run `graphify query`, `graphify path`, and `graphify explain` against the local graph (`graphify-out/` by default). |
+| Connected Graphify MCP server | The connection's instructions and the tools listed by that server | Call the listed MCP tools against the graph served by that connection. Tool names and descriptions come from the server. |
+
+Both encourage scoped graph queries before broad source searches. Choose the instructions that match the tools your assistant can actually access; neither block establishes a universal precedence rule for your assistant's instruction files. If you use both integrations, identify which graph each queries and choose a primary query path instead of copying two unconditional instruction blocks into `AGENTS.md`.
+
+`graphify install` installs the local assistant integration; it does not establish an MCP connection. An MCP client does not need to run local CLI queries to use its connected server. A locally hosted server still needs its own Graphify installation and graph, while a hosted connection may serve a graph that is not present in the client's working directory. If the expected tools are missing, check the relevant CLI installation or MCP connection rather than treating the other setup's instructions as interchangeable.
+
 ---
 
 ## What's in the report
