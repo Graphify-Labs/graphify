@@ -289,8 +289,12 @@ def extract_elixir(path: Path) -> dict:
         # node and a call to it (e.g. a macro invoked elsewhere) had nothing to
         # resolve to. Handle them identically to def/defp; they are already in the
         # call-pass _SKIP_KEYWORDS so their own keyword is never mistaken for a call.
+        # `defdelegate name(args), to: Mod` also defines a named, invocable member
+        # with the same `call` head shape (its body is delegated, so there is no
+        # do-block to walk). It was dropped, so the delegated function was missing
+        # and same-module calls to it dangled (#4132).
         if keyword in ("def", "defp", "defmacro", "defmacrop",
-                       "defguard", "defguardp"):
+                       "defguard", "defguardp", "defdelegate"):
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
@@ -367,7 +371,7 @@ def extract_elixir(path: Path) -> dict:
     raw_calls: list[dict] = []
     _SKIP_KEYWORDS = frozenset({
         "def", "defp", "defmodule", "defmacro", "defmacrop",
-        "defstruct", "defprotocol", "defimpl", "defguard",
+        "defstruct", "defprotocol", "defimpl", "defguard", "defdelegate",
         "alias", "import", "require", "use",
         "if", "unless", "case", "cond", "with", "for",
     })
