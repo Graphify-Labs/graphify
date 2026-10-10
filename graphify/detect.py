@@ -1614,18 +1614,15 @@ def _is_ignored(
     if not patterns:
         return False
 
-    root_nparts = len(root.parts)
-
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path.
 
         Everything derivable from ``target`` alone — its parts, its relative
-        path per anchor, the root-relative path, the split segments and their
-        "/"-joined prefixes, the NFC name, the is_dir() stat — is computed at
-        most ONCE per call, no matter how many patterns are evaluated. The
-        previous shape rebuilt pathlib objects (``relative_to``) and re-split
-        strings per PATTERN per entry, which pinned real scans for tens of
-        minutes (see CHANGELOG).
+        path per anchor, the NFC name, the is_dir() stat — is computed at most
+        ONCE per call, no matter how many patterns are evaluated. The previous
+        shape rebuilt pathlib objects (``relative_to``) and re-split strings
+        per PATTERN per entry, which pinned real scans for tens of minutes
+        (see CHANGELOG).
         """
         if _cache is not None and target in _cache:
             return _cache[target]
@@ -1633,44 +1630,22 @@ def _is_ignored(
         target_parts = target.parts
         target_name_nfc: str | None = None
         target_is_dir: bool | None = None
-        rel_root_known = False
-        rel_root: str | None = None
-        # rel string (or None = outside anchor) and part-count per distinct
-        # anchor; patterns overwhelmingly share a handful of anchors.
-        rel_by_anchor: dict[Path, tuple[str | None, int]] = {}
-        # split segments + accumulated "/" prefixes per distinct rel string.
-        segs_by_rel: dict[str, tuple[list[str], list[str]]] = {}
-
-        def _segments(rel: str) -> tuple[list[str], list[str]]:
-            got = segs_by_rel.get(rel)
-            if got is None:
-                parts = rel.split("/")
-                prefixes: list[str] = []
-                acc = ""
-                for part in parts:
-                    acc = part if not acc else acc + "/" + part
-                    prefixes.append(acc)
-                got = (parts, prefixes)
-                segs_by_rel[rel] = got
-            return got
+        # rel string (or None = outside anchor) per distinct anchor; patterns
+        # overwhelmingly share a handful of anchors.
+        rel_by_anchor: dict[Path, str | None] = {}
 
         def _matches(rel: str, p: str, path_relative: bool) -> bool:
             nonlocal target_name_nfc
             if path_relative:
                 return _match_anchored_ignore_pattern(rel, p)
-            if fnmatch.fnmatch(rel, p):
-                return True
+            # A pattern without a slash names one path component, so it is
+            # compared with the target's own name only. Ancestors are tested
+            # one by one by _is_ignored's parent-exclusion walk; matching them
+            # again here let `*` cross "/" and left a directory re-included
+            # with `!dir/` without its files.
             if target_name_nfc is None:
                 target_name_nfc = _nfc(target.name)
-            if fnmatch.fnmatch(target_name_nfc, p):
-                return True
-            parts, prefixes = _segments(rel)
-            for part, prefix in zip(parts, prefixes):
-                if fnmatch.fnmatch(part, p):
-                    return True
-                if fnmatch.fnmatch(prefix, p):
-                    return True
-            return False
+            return fnmatch.fnmatch(target_name_nfc, p)
 
         result = False
         for anchor, pattern in patterns:
@@ -1683,26 +1658,14 @@ def _is_ignored(
             # let e.g. .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo
             # (detect() returned 0 files). The anchor dir itself is exempt — an
             # ignore file governs its directory's contents, not the directory.
-            cached_rel = rel_by_anchor.get(anchor)
-            if cached_rel is None:
-                cached_rel = (
-                    _lexical_relative(target, target_parts, anchor),
-                    len(anchor.parts),
-                )
-                rel_by_anchor[anchor] = cached_rel
-            rel_anchor, anchor_nparts = cached_rel
+            if anchor not in rel_by_anchor:
+                rel_by_anchor[anchor] = _lexical_relative(target, target_parts, anchor)
+            rel_anchor = rel_by_anchor[anchor]
             if rel_anchor is None:
                 continue  # target outside this pattern's anchor: cannot match
             matched = False
             if rel_anchor != ".":
-                rel = rel_anchor
-                if not path_relative and root_nparts > anchor_nparts:
-                    if not rel_root_known:
-                        rel_root_known = True
-                        rel_root = _lexical_relative(target, target_parts, root)
-                    if rel_root is not None:
-                        rel = rel_root
-                matched = _matches(rel, p, path_relative=path_relative)
+                matched = _matches(rel_anchor, p, path_relative=path_relative)
                 if matched and directory_only:
                     if target_is_dir is None:
                         target_is_dir = target.is_dir()
