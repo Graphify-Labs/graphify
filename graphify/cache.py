@@ -17,14 +17,16 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
 # content means extractor fixes shipped in a new release keep serving stale
-# pre-fix results. The AST cache is therefore namespaced by package version
-# and cache-key schema (cache/ast/v{version}-s{schema}/), with entries from
-# other versions or schemas removed on first
-# use. The semantic cache is deliberately NOT versioned — its entries are
+# pre-fix results. The AST cache is therefore namespaced by package version,
+# cache-key schema and tree-sitter grammar versions
+# (cache/ast/v{version}-s{schema}-g{grammars}/), with entries from other
+# versions, schemas, or grammar sets removed on first use. The semantic cache
+# is deliberately NOT versioned — its entries are
 # produced by the LLM from file contents, and invalidating them on every
 # release would re-bill extraction for unchanged files.
 try:
@@ -35,14 +37,54 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 2
+_AST_CACHE_SCHEMA = 7  # Python opaque-base/super(args) raw-call markers and nested-class enclosing ids.
+
+
+# Per-process memo: distributions() scans site-packages metadata, which is
+# far too expensive to redo on every cache_dir() call during a run.
+_GRAMMAR_FINGERPRINT_CACHE: "str | None" = None
+
+
+def _grammar_fingerprint() -> str:
+    """Short stable fingerprint of the installed tree-sitter grammar set.
+
+    AST output depends on the grammar packages, not just graphify's own
+    version: upgrading ``tree-sitter-swift`` changes what the extractor
+    produces for the same file, so the cache namespace must change too,
+    otherwise stale pre-upgrade extractions are served indefinitely
+    (#4236). Covers the ``tree-sitter`` runtime, every ``tree-sitter-*``
+    distribution, and bundled packs like ``tree-sitter-language-pack``."""
+    global _GRAMMAR_FINGERPRINT_CACHE
+    if _GRAMMAR_FINGERPRINT_CACHE is not None:
+        return _GRAMMAR_FINGERPRINT_CACHE
+    parts: list[str] = []
+    try:
+        from importlib.metadata import distributions
+
+        for dist in distributions():
+            try:
+                name = (dist.metadata.get("Name") or "").lower()
+            except Exception:
+                continue
+            if name == "tree-sitter" or name.startswith("tree-sitter-") or name.startswith("tree_sitter"):
+                parts.append(f"{name}=={dist.version}")
+    except Exception:
+        _GRAMMAR_FINGERPRINT_CACHE = "unknown"
+        return _GRAMMAR_FINGERPRINT_CACHE
+    if not parts:
+        _GRAMMAR_FINGERPRINT_CACHE = "none"
+        return _GRAMMAR_FINGERPRINT_CACHE
+    digest = hashlib.sha256(";".join(sorted(parts)).encode("utf-8")).hexdigest()
+    _GRAMMAR_FINGERPRINT_CACHE = digest[:12]
+    return _GRAMMAR_FINGERPRINT_CACHE
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
 
 
 def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
-    """Remove AST cache entries left behind by other graphify versions.
+    """Remove AST cache entries left behind by other graphify versions or
+    grammar sets.
 
     Sweeps sibling ``v*/`` directories and unversioned ``*.json`` entries
     (the pre-versioning layout) under ``cache/ast/``. Best-effort: failures
@@ -204,6 +246,14 @@ _stat_index_root: Path | None = None
 # (cache_root, #1774) — the two differ under --out and must not be conflated.
 _stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+_stat_index_atexit_registered: bool = False
+# The resolved on-disk path for the CURRENTLY bound root, captured at bind
+# time (#3989). A mid-process root switch must flush the OUTGOING root to
+# the file it was actually loaded from, not wherever the live _GRAPHIFY_OUT
+# happens to point by the time the switch is detected — a caller following
+# the documented one-root-per-call pattern (set _GRAPHIFY_OUT, then call)
+# has already moved it on to the NEW root before the switch is noticed.
+_stat_index_path: Path | None = None
 
 
 # Filesystem mtime granularity, in nanoseconds. A stat signature only proves a
@@ -327,8 +377,31 @@ def _stat_index_file(root: Path) -> Path:
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
+    global _stat_index_atexit_registered, _stat_index_path
+    new_root = Path(cache_root if cache_root is not None else root).resolve()
     if _stat_index_root is not None:
-        return
+        if _stat_index_root == new_root:
+            return
+        # A later call in the same process named a DIFFERENT cache root
+        # (#3989): the index was bound to the first root ever seen and never
+        # re-bound, so every root after the first served (on read) whatever
+        # the first root's file happened to contain, and (on write/exit)
+        # deposited its own freshly-computed entries into the FIRST root's
+        # file instead of its own — silently poisoning one project's
+        # stat-index.json with paths from a completely different project.
+        # Flush the outgoing root's own pending entries to its own file
+        # before switching, then load the new root fresh, so each root's
+        # file only ever holds that root's own entries.
+        warnings.warn(
+            f"stat index switched from cache root {str(_stat_index_root)!r} to "
+            f"{str(new_root)!r} within one process; each root's "
+            "stat-index.json now only reflects its own files, but library "
+            "callers crossing project roots in one process should still use "
+            "a fresh process per root to avoid losing the fastpath (#3989).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        _flush_stat_index()
     # _stat_index_root determines the cache FILE location, so honoring an
     # explicit cache_root keeps detect()'s word-count cache under the requested
     # --out dir instead of polluting the scanned corpus with a stray
@@ -336,9 +409,10 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
-    _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_root = new_root
     _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index_path = p
     _stat_index = {}
     if p.exists():
         try:
@@ -356,14 +430,23 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
                         _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    atexit.register(_flush_stat_index)
+    _stat_index_dirty = False
+    if not _stat_index_atexit_registered:
+        atexit.register(_flush_stat_index)
+        _stat_index_atexit_registered = True
 
 
 def _flush_stat_index() -> None:
     global _stat_index_dirty, _stat_index_root
     if not _stat_index_dirty or _stat_index_root is None:
         return
-    p = _stat_index_file(_stat_index_root)
+    # Use the path captured when this root was bound (#3989), not a fresh
+    # _stat_index_file(_stat_index_root) call: a mid-process root switch runs
+    # this to flush the OUTGOING root, by which point a caller following the
+    # documented set-_GRAPHIFY_OUT-then-call pattern has already pointed
+    # _GRAPHIFY_OUT at the NEW root, and re-deriving here would flush the old
+    # root's entries into the new root's file instead of its own.
+    p = _stat_index_path if _stat_index_path is not None else _stat_index_file(_stat_index_root)
     # Build the on-disk form (#2199): prune entries whose file is gone (the
     # index otherwise grows without bound), then store in-anchor keys as
     # forward-slash relative paths so the index survives a corpus move/clone.
@@ -399,7 +482,7 @@ def _flush_stat_index() -> None:
         try:
             os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
-            os.replace(tmp, p)
+            _os_replace_with_fallback(tmp, p)
         except Exception:
             try:
                 os.close(fd)
@@ -937,8 +1020,8 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     "semantic-deep" (#1894). Separate subdirectories prevent semantic cache
     entries from overwriting AST cache entries for the same source_file (#582).
 
-    AST entries live in graphify-out/cache/ast/v{version}-s{schema}/, namespaced
-    by graphify version and cache-key schema because they depend on extractor
+    AST entries live in graphify-out/cache/ast/v{version}-s{schema}-g{grammars}/, namespaced
+    by graphify version, cache-key schema, and tree-sitter grammar set because they depend on extractor
     code and key semantics, not just file contents. Semantic entries are still
     NOT version-namespaced (re-extraction
     costs LLM calls, #1252): they live in graphify-out/cache/semantic/, with
@@ -953,7 +1036,7 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
     d = base / "cache" / kind
     if kind == "ast":
-        d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}"
+        d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}-g{_grammar_fingerprint()}"
         _cleanup_stale_ast_entries(d.parent, d)
     elif prompt_fp:
         d = d / f"p{prompt_fp}"
@@ -1063,8 +1146,47 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
             # id-remap cannot fix because they match none of its current-path
             # keys. Order is free — source_file never carries the marker.
             _absolutize_ids_in(result, path, root)
+            targets = result.pop(_CACHED_TARGETS_KEY, None)
+            if isinstance(targets, list) and not all(
+                _target_file_present(t, root) for t in targets if isinstance(t, str)
+            ):
+                return None
         return result
     return None
+
+
+# Cross-file edges (imports, re-exports, links) carry a ``target_file`` stamp
+# naming the file they resolved to. An AST entry is keyed by its own file's
+# content only, so a hit replays that resolution after the target is renamed or
+# deleted: the edge keeps the id minted from the target's absolute path, which
+# extract() maps to a portable id only for targets that exist, so the checkout
+# path reached graph.json and a warm build differed from a cold one. The entry
+# records the targets that existed when it was written; a hit whose recorded
+# target is gone is a miss and the file is extracted again.
+_CACHED_TARGETS_KEY = "_cached_target_files"
+
+
+def _target_file_present(target: str, root: Path) -> bool:
+    candidate = Path(target)
+    if not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _present_target_files(result: dict, root: Path) -> list[str]:
+    """The ``target_file`` stamps in ``result`` that name an existing file."""
+    present: set[str] = set()
+    for edge in result.get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        target = edge.get("target_file")
+        if isinstance(target, str) and target and target not in present:
+            if _target_file_present(target, root):
+                present.add(target)
+    return sorted(present)
 
 
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
@@ -1113,6 +1235,10 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     if isinstance(result, dict):
         import copy as _copy
         on_disk = _copy.deepcopy(result)
+        if kind == "ast":
+            targets = _present_target_files(on_disk, root)
+            if targets:
+                on_disk[_CACHED_TARGETS_KEY] = targets
         _relativize_source_files_in(on_disk, root)
         # Then replace the absolute root inside the ids and remaining paths, so
         # the entry replays portably under any root (#2257). Strictly after the
@@ -1126,14 +1252,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     try:
         os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
-        try:
-            os.replace(tmp_path, entry)
-        except PermissionError:
-            # Windows: os.replace can fail with WinError 5 if the target is
-            # briefly locked. Fall back to copy-then-delete.
-            import shutil
-            shutil.copy2(tmp_path, entry)
-            os.unlink(tmp_path)
+        _os_replace_with_fallback(tmp_path, entry)
     except Exception:
         try:
             os.close(fd)
@@ -1496,6 +1615,31 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {source_path(path) for path in allowed_source_files}
 
+    def _recover_group_path(fpath: str) -> tuple[Path, Path]:
+        """Return ``(cache_path, resolved_path)`` for one ``by_file`` group,
+        recovering an unresolvable ``source_file`` via an unambiguous
+        basename match against ``allowed_paths`` when one is available (#2973).
+
+        The adaptive-retry split path (``llm.py``'s bisect-and-retry on a
+        chunk that overflowed a weak/local backend's context) sometimes
+        re-prompts with a reduced file subset and loses track of which of
+        the original chunk's files a given node came from, so its
+        ``source_file`` never resolves to a real path at all. Recovering it
+        against the known-good, already-dispatched allowlist -- and ONLY
+        when the basename is unambiguous there -- lets that group's nodes
+        and edges reach the cache instead of silently vanishing on every
+        incremental run. A genuinely bogus or ambiguous basename still
+        falls through unrecovered to the existing skip behavior below.
+        """
+        cache_path = source_path(fpath)
+        resolved = resolved_source_path(fpath)
+        if not resolved.is_file() and allowed_paths is not None:
+            candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            if len(candidates) == 1:
+                cache_path = candidates[0]
+                resolved = candidates[0]
+        return cache_path, resolved
+
     partial_paths = None
     if partial_source_files is not None:
         partial_paths = {source_path(path) for path in partial_source_files}
@@ -1512,9 +1656,9 @@ def save_semantic_cache(
 
     def group_skipped(fpath: str) -> bool:
         """Mirror the write-loop skip condition for one source_file group."""
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         return not p.is_file() or (
-            allowed_paths is not None and source_path(fpath) not in allowed_paths
+            allowed_paths is not None and cache_path not in allowed_paths
         )
 
     # Dangling-reference pruning (#1916). A node group is skipped by the write
@@ -1571,9 +1715,26 @@ def save_semantic_cache(
     saved = 0
     skipped_not_file = 0
     for fpath, result in by_file.items():
-        cache_path = source_path(fpath)
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         if p.is_file():
+            if cache_path != source_path(fpath):
+                # #2973: recovery only redirected the WRITE KEY. Each item in
+                # this group still carries the original unresolvable
+                # source_file string, and _semantic_entry_matches_path
+                # rejects an entry on read if any item's source_file doesn't
+                # match the path it was loaded under -- so leaving the old
+                # value in place would write a "successful" entry that can
+                # never actually be read back, silently reproducing the same
+                # loss this recovery exists to fix.
+                corrected = _normalize_value(str(cache_path))
+                result = {
+                    **result,
+                    "nodes": [{**n, "source_file": corrected} for n in result["nodes"]],
+                    "edges": [{**e, "source_file": corrected} for e in result["edges"]],
+                    "hyperedges": [
+                        {**h, "source_file": corrected} for h in result["hyperedges"]
+                    ],
+                }
             if allowed_paths is not None and cache_path not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "

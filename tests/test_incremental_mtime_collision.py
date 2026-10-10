@@ -44,6 +44,13 @@ def test_same_size_rewrite_in_one_tick_is_requeued(corpus):
 
     src, manifest = corpus
     det.save_manifest(det.detect(src)["files"], manifest, root=src, kind="semantic")
+    # The gate only distrusts an mtime stamped within a tick of the row's `seen`.
+    # How long save_manifest took is machine-dependent, so stamp the same tick
+    # explicitly instead of relying on a fast disk.
+    rows = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    for row in rows.values():
+        row["seen"] = row["mtime"]
+    Path(manifest).write_text(json.dumps(rows), encoding="utf-8")
 
     target = src / "f1.md"
     stat_before = target.stat()
