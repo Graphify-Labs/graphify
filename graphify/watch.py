@@ -1912,6 +1912,7 @@ def _rebuild_code(
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module",
                         "_rust_impl_key", "_rust_declaration_count",
+                        "_ts_fields", "_ts_static_fields",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
@@ -1944,10 +1945,12 @@ def _rebuild_code(
                 # #2437: the member-call resolvers map receiver type -> owning
                 # class -> method through contains/method edges; hand over the
                 # unchanged corpus's, scoped exactly like the nodes above so a
-                # deleted/re-extracted file's edges can never resurrect.
+                # deleted/re-extracted file's edges can never resurrect. Import
+                # edges come too: a TS field inherited from an unchanged file is
+                # typed by that file's imports, as in a full build.
                 for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
                     if edge.get("relation") not in (
-                        "contains", "method", "inherits"
+                        "contains", "method", "inherits", "imports", "imports_from"
                     ):
                         continue
                     if not _is_ast_tier(edge):

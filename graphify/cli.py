@@ -4040,6 +4040,7 @@ def dispatch_command(cmd: str) -> None:
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module",
                             "_rust_impl_key", "_rust_declaration_count",
+                            "_ts_fields", "_ts_static_fields",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4069,11 +4070,13 @@ def dispatch_command(cmd: str) -> None:
                             if _fwd_metadata:
                                 _ctx_node["metadata"] = _fwd_metadata
                         _ctx_nodes.append(_ctx_node)
+                    # Import edges come too: a TS field inherited from an unchanged file
+                    # is typed by that file's imports, as in a full build.
                     for _edge in _ctx_graph.get(
                         "links", _ctx_graph.get("edges", [])
                     ):
                         if _edge.get("relation") not in (
-                            "contains", "method", "inherits"
+                            "contains", "method", "inherits", "imports", "imports_from"
                         ):
                             continue
                         if not _ctx_is_ast_tier(_edge):

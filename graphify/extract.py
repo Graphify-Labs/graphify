@@ -4495,16 +4495,24 @@ def _resolve_typescript_member_calls(
     contained in a module the caller's file imports. Otherwise EMIT NOTHING —
     a false call edge is worse than a missing one (the C++ resolver's bar).
     """
+    def _key(label: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
+
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         tt = result.get("ts_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
-    if not type_table_by_file:
+    # Class fields live on class nodes (`_ts_fields`). One id can carry several
+    # nodes (`class UsecaseVisitor` and `const usecaseVisitor` fold together), so
+    # gather the fields of every node with that id.
+    ts_fields_by_id: dict[tuple[str, bool], dict[str, str]] = {}
+    for n in all_nodes:
+        for static, attr in ((False, "_ts_fields"), (True, "_ts_static_fields")):
+            for fname, ftype in (n.get(attr) or {}).items():
+                ts_fields_by_id.setdefault((str(n.get("id")), static), {}).setdefault(fname, ftype)
+    if not type_table_by_file and not ts_fields_by_id:
         return
-
-    def _key(label: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
@@ -4516,6 +4524,7 @@ def _resolve_typescript_member_calls(
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
+    class_of_method: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
@@ -4523,6 +4532,8 @@ def _resolve_typescript_member_calls(
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
+        if isinstance(src, str) and isinstance(tgt, str):
+            class_of_method[tgt] = src
 
     # Origin maps (#2553), built like the Python resolver's module arm: key on
     # stable NODE ids, not source_file strings (raw_calls keep their original
@@ -4547,6 +4558,35 @@ def _resolve_typescript_member_calls(
         if e.get("relation") in ("imports", "imports_from"):
             imported_by_filenode.setdefault(e.get("source"), set()).add(e.get("target"))
 
+    # `class B extends A`: a field A declares is B's too. Bases are matched by
+    # their node, else by a unique class of that label carrying fields.
+    bases: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") == "inherits":
+            bases.setdefault(str(e.get("source")), []).append(str(e.get("target")))
+    field_classes_by_key: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if ((n.get("_ts_fields") or n.get("_ts_static_fields"))
+                and n["id"] not in field_classes_by_key.get(_key(n.get("label", "")), [])):
+            field_classes_by_key.setdefault(_key(n.get("label", "")), []).append(n["id"])
+
+    def _field_type(class_nid: str, field: str, static: bool, depth: int = 0) -> tuple[str, str] | None:
+        # (field type, the class that declares the field)
+        found = ts_fields_by_id.get((class_nid, static), {}).get(field)
+        if found:
+            return found, class_nid
+        if depth >= 8:
+            return None
+        for base in bases.get(class_nid, []):
+            base_nid = base if (base, static) in ts_fields_by_id else None
+            if base_nid is None:
+                same = field_classes_by_key.get(_key(node_by_id.get(base, {}).get("label", "")), [])
+                base_nid = same[0] if len(same) == 1 else None
+            hit = _field_type(base_nid, field, static, depth + 1) if base_nid else None
+            if hit:
+                return hit
+        return None
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -4560,12 +4600,23 @@ def _resolve_typescript_member_calls(
         caller = rc.get("caller_nid")
         if not receiver or not callee or not caller:
             continue
+        declaring_nid: str | None = None
         if receiver[:1].isupper():
             type_name = receiver
             type_qualified = True  # the receiver names the type in source
         else:
             type_qualified = False
-            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+            type_name = None
+            owner_nid = class_of_method.get(caller) if rc.get("ts_this_field") else None
+            if owner_nid is not None:
+                # `this.x` in a method of a known class reads that class's fields
+                # (declared, parameter properties, constructor assignments), then
+                # its base classes': the file table would hand it another class's
+                # field or a local that merely shares the name.
+                hit = _field_type(owner_nid, str(receiver), bool(rc.get("ts_static_this")))
+                type_name, declaring_nid = hit if hit else (None, None)
+            else:
+                type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name:
             continue
         # A builtin global receiver type (Date, Promise, Map, ...) must not resolve
@@ -4584,7 +4635,9 @@ def _resolve_typescript_member_calls(
         # a class in one file and an interface in two others, and the caller's
         # import says which one its `c: Context` means. Exactly one visible
         # definition is required; none or several still emit nothing.
-        caller_file = file_of_node.get(caller)
+        # An inherited field's type is judged from the file declaring the field:
+        # `class Child extends Base` need not import what `Base` holds.
+        caller_file = file_of_node.get(declaring_nid or caller)
         imported = imported_by_filenode.get(caller_file, set())
 
         def _visible(nid: str) -> bool:
