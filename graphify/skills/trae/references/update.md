@@ -84,6 +84,12 @@ fi
 
 Then:
 
+For semantic changes, Step B3's collection commands apply the existing
+`scope_semantic_result` guard to fresh semantic chunks using the files dispatched
+from `.graphify_uncached.txt`, before caching or mixing them with cached/AST
+results. `source_file` is a destructive replacement key: an undispatched file's
+stub must never reach `build_merge` and replace that file's existing contribution.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
