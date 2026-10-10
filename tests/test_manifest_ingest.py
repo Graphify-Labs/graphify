@@ -64,7 +64,7 @@ def test_gomod_parses_module_and_requires(tmp_path):
     assert "pkg_github_com_x_y" in deps and "pkg_github_com_a_b" in deps
 
 
-def test_pom_parses_artifact_and_deps(tmp_path):
+def test_namespaced_pom_parses_artifact_and_deps(tmp_path):
     p = _write(tmp_path / "pom.xml",
                '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
                '  <groupId>com.acme</groupId>\n  <artifactId>widget</artifactId>\n  <version>2.0</version>\n'
@@ -73,6 +73,15 @@ def test_pom_parses_artifact_and_deps(tmp_path):
     r = extract_package_manifest(p)
     assert _pkg_nodes(r)[0]["label"] == "com.acme:widget"
     assert any(e["target"] == "pkg_org_lib_core" for e in r["edges"])
+
+
+def test_pom_with_internal_entity_is_rejected_before_parsing(tmp_path):
+    p = _write(tmp_path / "pom.xml",
+               '<!DOCTYPE project [<!ENTITY artifact "expanded-widget">]>\n'
+               '<project><artifactId>&artifact;</artifactId></project>\n')
+    r = extract_package_manifest(p)
+    assert r["nodes"] == [] and r["edges"] == []
+    assert r["error"] == "manifest parse error: refusing XML with DOCTYPE/ENTITY declaration"
 
 
 # ── #1377: a package referenced by N manifests is ONE node ───────────────────
