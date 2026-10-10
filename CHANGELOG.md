@@ -4,7 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.85 (2026-10-10)
 
-A language-extraction and tooling batch: six extractor/exporter fixes picked from open issues, plus nine community pull requests.
+A language-extraction and tooling batch: six extractor/exporter fixes picked from open issues, plus fourteen community pull requests.
 
 - Fix: **Julia** functions with a `where` clause (long and short form) and parametric type definitions (`struct Box{T}`, `abstract type Shape{T}`, `struct Sq{T} <: Shape{T}`) are now extracted. The name sat inside a `where_expression` / `parametrized_type_expression` wrapper that the name lookup skipped, so the whole method/type was dropped; a declared type parameter (`value::T`) no longer leaks as a phantom field-type node (#4126, #4128).
 - Fix: **Fortran** a named generic `interface` now gets a callable node and a `dispatches_to` edge to each listed `module procedure`, so a call to the generic name resolves instead of dangling; unnamed and operator/assignment interfaces are unaffected (#4141, #4142, thanks @rajatnagda45).
