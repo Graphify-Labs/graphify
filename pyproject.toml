@@ -15,6 +15,7 @@ dependencies = [
     "networkx>=3.4",
     "numpy>=1.21",
     "rapidfuzz>=3.0",
+    "json-repair>=0.30",
     "tomli>=2.0.1; python_version < '3.11'",
     # Runtime floor is 0.25, not 0.23: 0.23/0.24 cap out at ABI 14
     # (LANGUAGE_VERSION=14) while the grammars pinned below ship ABI 15
