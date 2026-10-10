@@ -881,6 +881,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
 
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_command(project_dir if project else Path("."))
 
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
@@ -1702,6 +1703,35 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
 
     if _drop_opencode_config_entry(project_dir):
         print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
+_OPENCODE_COMMAND_PATH = Path(".opencode") / "commands" / "graphify.md"
+def _install_opencode_command(project_dir: Path) -> None:
+    """Write the native OpenCode /graphify slash command.
+
+    OpenCode skills are NOT slash commands — they're loaded on-demand by the
+    agent via the skill tool based on description matching. Only a markdown
+    file under .opencode/commands/ (or ~/.config/opencode/commands/ globally)
+    becomes a `/`-menu entry. Installing only the skill and the reminder
+    plugin (as before) left /graphify absent from the TUI's command menu even
+    though the skill loaded correctly and the docs told users to type it
+    (#2709).
+    """
+    command_src = Path(__file__).parent / "command-opencode.md"
+    if not command_src.exists():
+        print(
+            "error: command-opencode.md not found in package - reinstall graphify",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    command_dst = project_dir / _OPENCODE_COMMAND_PATH
+    command_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(command_src, command_dst)
+    print(f"  {_OPENCODE_COMMAND_PATH}  ->  /graphify command installed")
+def _uninstall_opencode_command(project_dir: Path) -> None:
+    """Remove the native OpenCode /graphify slash command."""
+    command_file = project_dir / _OPENCODE_COMMAND_PATH
+    if command_file.exists():
+        command_file.unlink()
+        print(f"  {_OPENCODE_COMMAND_PATH}  ->  removed")
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
@@ -1813,6 +1843,7 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         _install_codex_hook(project_dir or Path("."), project=project)
     elif platform == "opencode":
         _install_opencode_plugin(project_dir or Path("."))
+        _install_opencode_command(project_dir or Path("."))
     elif platform == "kilo":
         _install_kilo_plugin(project_dir or Path("."))
 
@@ -1964,6 +1995,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         print("No AGENTS.md found in current directory - nothing to do")
         if platform == "opencode":
             _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_command(project_dir or Path("."))
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -1974,6 +2006,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         print("graphify section not found in AGENTS.md - nothing to do")
         if platform == "opencode":
             _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_command(project_dir or Path("."))
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -1988,6 +2021,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
 
     if platform == "opencode":
         _uninstall_opencode_plugin(project_dir or Path("."))
+        _uninstall_opencode_command(project_dir or Path("."))
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
 def _kilo_uninstall_global() -> list[str]:
@@ -2129,6 +2163,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
+    _uninstall_opencode_command(pd)
     _uninstall_codex_hook(pd)
 
     # Git hook

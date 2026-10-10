@@ -982,13 +982,14 @@ _NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
 # Files graphify only adds a section or entry to (AGENTS.md, CLAUDE.md,
 # settings.json, ...) belong to the user and are not listed here.
 _GRAPHIFY_INSTALLED_FILES = frozenset({
-    (".agents", "rules", "graphify.md"),      # antigravity
-    (".agents", "workflows", "graphify.md"),  # antigravity
-    (".cursor", "rules", "graphify.mdc"),     # cursor
-    (".kilo", "plugins", "graphify.js"),      # kilo
-    (".kiro", "steering", "graphify.md"),     # kiro
-    (".opencode", "plugins", "graphify.js"),  # opencode
-    (".windsurf", "rules", "graphify.md"),    # devin
+    (".agents", "rules", "graphify.md"),       # antigravity
+    (".agents", "workflows", "graphify.md"),   # antigravity
+    (".cursor", "rules", "graphify.mdc"),      # cursor
+    (".kilo", "plugins", "graphify.js"),       # kilo
+    (".kiro", "steering", "graphify.md"),      # kiro
+    (".opencode", "plugins", "graphify.js"),   # opencode
+    (".opencode", "commands", "graphify.md"),  # opencode /graphify slash command
+    (".windsurf", "rules", "graphify.md"),     # devin
 })
 
 

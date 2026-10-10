@@ -1255,6 +1255,32 @@ def test_opencode_agents_uninstall_removes_plugin(tmp_path):
     assert _json.loads(config_file.read_text()) == {}
 
 
+def test_opencode_install_writes_native_slash_command(tmp_path):
+    """#2709: OpenCode skills are not slash commands — only a markdown file
+    under .opencode/commands/ (or ~/.config/opencode/commands/ globally)
+    becomes a `/`-menu entry. Installing only the skill + reminder plugin (as
+    before) left /graphify absent from the TUI command menu."""
+    _agents_install(tmp_path, "opencode")
+    command_file = tmp_path / ".opencode" / "commands" / "graphify.md"
+    assert command_file.exists()
+    body = command_file.read_text()
+    assert "$ARGUMENTS" in body
+
+
+def test_opencode_uninstall_removes_native_slash_command(tmp_path):
+    _agents_install(tmp_path, "opencode")
+    _agents_uninstall(tmp_path, platform="opencode")
+    command_file = tmp_path / ".opencode" / "commands" / "graphify.md"
+    assert not command_file.exists()
+
+
+def test_opencode_command_file_exists_in_package():
+    import graphify
+
+    pkg = Path(graphify.__file__).parent
+    assert (pkg / "command-opencode.md").exists()
+
+
 def test_kilo_agents_install_writes_agents_md(tmp_path):
     _agents_install(tmp_path, "kilo")
     assert (tmp_path / "AGENTS.md").exists()
