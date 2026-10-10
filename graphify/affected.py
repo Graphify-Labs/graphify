@@ -42,6 +42,12 @@ class AffectedHit:
     # existing constructors/tests working; None falls back to the node's def line.
     via_file: "str | None" = None
     via_location: "str | None" = None
+    # The traversed edge's confidence, taken from the same edge dict as
+    # via_relation (#2352). `confidence` is a required edge field
+    # (validate.VALID_CONFIDENCES), but hand-built graphs may omit it, so both
+    # default to None and every consumer treats that as "unknown".
+    via_confidence: "str | None" = None
+    via_confidence_score: "float | None" = None
 
 
 def _node_label(graph: nx.Graph, node_id: str) -> str:
@@ -55,6 +61,20 @@ def _format_location(data: dict) -> str:
     if source_location:
         return f"{source_file}:{source_location}"
     return str(source_file)
+
+
+def _coerce_score(value: object) -> "float | None":
+    """An edge's confidence_score as a float, or None when absent/unparseable.
+
+    Bools are rejected explicitly: they are ints in Python, so `float(True)`
+    would silently turn a mis-typed flag into a 1.0 score.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _bare_name(label: str) -> str:
@@ -243,16 +263,64 @@ def affected_nodes(
             # Carry the matched edge's location (taken from the SAME edge dict
             # whose relation passed the filter, so relation and location stay
             # consistent) — that is the call/import/reference site in `source`'s
-            # own file, which is where the user should click (#BUG1).
+            # own file, which is where the user should click (#BUG1). Confidence
+            # comes off that same dict for the same reason (#2352): a node can be
+            # reached by several edges, so the confidence reported must be the
+            # one belonging to the edge actually traversed.
             hit = AffectedHit(
                 source, current_depth + 1, relation,
                 via_file=str(data.get("source_file") or "") or None,
                 via_location=str(data.get("source_location") or "") or None,
+                via_confidence=str(data.get("confidence") or "") or None,
+                via_confidence_score=_coerce_score(data.get("confidence_score")),
             )
             hits.append(hit)
             queue.append((source, current_depth + 1))
 
     return hits
+
+
+def _hit_source(graph: nx.Graph, hit: AffectedHit) -> tuple[str | None, str | None]:
+    """(source_file, source_location) for a hit: the relation SITE when the
+    traversed edge stored one, the node's own definition line otherwise."""
+    data = graph.nodes[hit.node_id]
+    if hit.via_location:
+        return (hit.via_file or data.get("source_file") or None, hit.via_location)
+    return (data.get("source_file") or None, data.get("source_location") or None)
+
+
+def affected_records(
+    graph: nx.Graph,
+    query: str,
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    depth: int = 2,
+) -> list[dict]:
+    """Affected nodes as structured rows, ready to be serialized as JSON (#2352).
+
+    Field-for-field this mirrors what `format_affected` renders, so the text and
+    machine-readable views can never drift. `confidence`/`confidence_score` are
+    the traversed edge's, and are None when the edge did not record them.
+    """
+    seed = resolve_seed(graph, query)
+    if seed is None:
+        return []
+    records: list[dict] = []
+    for hit in affected_nodes(graph, seed, relations=relations, depth=depth):
+        source_file, source_location = _hit_source(graph, hit)
+        records.append(
+            {
+                "id": hit.node_id,
+                "label": _node_label(graph, hit.node_id),
+                "depth": hit.depth,
+                "relation": hit.via_relation,
+                "confidence": hit.via_confidence,
+                "confidence_score": hit.via_confidence_score,
+                "source_file": source_file,
+                "source_location": source_location,
+            }
+        )
+    return records
 
 
 def format_affected(
@@ -286,8 +354,16 @@ def format_affected(
             location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
         else:
             location = _format_location(data)  # honest fallback: the node's own def line
+        # #2352: an affected list mixes EXTRACTED facts with INFERRED guesses, and
+        # dropping the distinction made every hit look equally certain. Show the
+        # edge's confidence next to its relation; omit it entirely (rather than
+        # printing a placeholder) when the edge carried none, so the tag always
+        # means something.
+        marker = hit.via_relation
+        if hit.via_confidence:
+            marker = f"{marker}, {hit.via_confidence}"
         lines.append(
-            f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}"
+            f"- {_node_label(graph, hit.node_id)} [{marker}] {location}"
         )
     return "\n".join(lines)
 
