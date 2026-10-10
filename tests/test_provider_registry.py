@@ -109,6 +109,30 @@ def test_project_local_providers_loaded_with_optin(tmp_path, monkeypatch):
     assert "lab" in loaded
 
 
+def test_local_path_that_is_the_global_file_is_not_local(tmp_path, monkeypatch, capsys):
+    """Running from $HOME, ./.graphify/providers.json IS ~/.graphify/providers.json.
+
+    The user's own trusted global file must load without the project-local
+    warning — a false positive there only trains people to export the
+    GRAPHIFY_ALLOW_LOCAL_PROVIDERS bypass and disarm the F1 gate for real.
+    """
+    shared = tmp_path / ".graphify" / "providers.json"
+    shared.parent.mkdir()
+    shared.write_text(json.dumps({
+        "mine": {"base_url": "https://gateway.example/v1", "default_model": "m", "env_key": "K"}
+    }), encoding="utf-8")
+
+    from graphify import llm
+    monkeypatch.setattr(llm, "_custom_providers_path",
+                        lambda global_=True: shared if global_ else tmp_path / ".graphify" / "providers.json")
+    monkeypatch.setattr(llm, "BACKENDS", {**llm.BACKENDS})
+    monkeypatch.delenv("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", raising=False)
+
+    loaded = llm._load_custom_providers()
+    assert "mine" in loaded
+    assert "ignoring project-local" not in capsys.readouterr().err
+
+
 def test_non_http_provider_base_url_rejected(tmp_path, monkeypatch):
     """A provider whose base_url uses a non-http(s) scheme is skipped on load (F1)."""
     providers_file = tmp_path / "providers.json"
