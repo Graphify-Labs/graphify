@@ -98,6 +98,7 @@ def test_a_parked_call_binds_to_the_one_declaration_in_another_repo():
     data = G.edges["a::app_run", "b::greeter_greet"]
     assert data["relation"] == "calls"
     assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.85
     assert data["context"] == "cross_repo"
     assert data["source_location"] == "L10"
 
