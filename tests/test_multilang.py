@@ -718,6 +718,43 @@ def test_rust_cross_file_reference_to_twice_declared_type_keeps_its_stub(tmp_pat
     assert [t["source_file"] for t in targets if t["label"] == "Thing"] == [""]
 
 
+def _thing_targets_of_make(tmp_path, files):
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    r = extract(sorted(tmp_path.iterdir()), cache_root=tmp_path, parallel=False)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+    return [
+        by_id[e["target"]]["source_file"] for e in r["edges"]
+        if e["relation"] == "references" and e["source"] == make
+        and by_id[e["target"]]["label"] == "Thing"
+    ]
+
+
+def test_rust_declaration_tiebreak_keeps_stub_beside_another_language(tmp_path):
+    """#4283: `_rust_declaration_count` only tells a Rust declaration from a Rust
+    impl block. A same-named TypeScript class is a declaration too, so a Rust
+    declaration plus a TS class is still ambiguous and the stub stays."""
+    targets = _thing_targets_of_make(tmp_path, {
+        "a.rs": "pub struct Thing;\n",
+        "b.ts": "export class Thing {}\n",
+        "c.rs": "pub fn make(t: Thing) {}\n",
+    })
+    assert targets == [""]
+
+
+def test_rust_declaration_tiebreak_keeps_stub_for_declarations_folded_in_one_node(tmp_path):
+    """#4283: two inline modules declaring `Thing` in one file fold into a single
+    node with `_rust_declaration_count == 2`. That is two declarations, so an
+    impl block elsewhere must not let the reference bind to the folded node."""
+    targets = _thing_targets_of_make(tmp_path, {
+        "a.rs": "mod x {\n    pub struct Thing;\n}\nmod y {\n    pub struct Thing;\n}\n",
+        "b.rs": "impl Thing {\n    pub fn new() {}\n}\n",
+        "c.rs": "pub fn make(t: Thing) {}\n",
+    })
+    assert targets == [""]
+
+
 # ── extract() dispatch ────────────────────────────────────────────────────────
 
 def test_extract_dispatches_all_languages():

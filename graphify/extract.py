@@ -3543,14 +3543,19 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         if not stub_id:
             continue
         candidates = real_by_label.get(_node_label_key(stub), [])
-        if len(candidates) > 1:
+        if len(candidates) > 1 and all(
+            _lang_family(c.get("source_file")) == "rust" for c in candidates
+        ):
             # #4283: a Rust type with `impl` blocks in other files has one node per
             # file, but only its struct/enum/trait declaration carries
-            # `_rust_declaration_count`. One declaration is one type, so bind to it;
-            # two or more stay ambiguous and keep the stub (same rule as the
-            # split-impl-block pass).
+            # `_rust_declaration_count`. Exactly one declaration in total is one
+            # type, so bind to it. Two or more (in separate nodes, or folded into
+            # one node by same-file inline modules) stay ambiguous and keep the
+            # stub, the same rule as the split-impl-block pass. The marker only
+            # tells a Rust declaration from a Rust impl block, so a same-named
+            # candidate in another language leaves the stub alone.
             declared = [c for c in candidates if c.get("_rust_declaration_count")]
-            if len(declared) == 1:
+            if len(declared) == 1 and declared[0].get("_rust_declaration_count") == 1:
                 candidates = declared
         if len(candidates) != 1:
             # No unique exact type match — fall back to a case-insensitive match, but
