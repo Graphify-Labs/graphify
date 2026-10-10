@@ -747,6 +747,8 @@ If graphify saved you time, consider supporting it: https://github.com/sponsors/
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
 
+If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
+
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes
 - Surprising Connections
