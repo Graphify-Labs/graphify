@@ -7,7 +7,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import graphify.llm as llm
+
+# The client is the openai SDK; it ships with the optional [ollama] extra.
+pytest.importorskip("openai")
 
 
 def _capture_client_kwargs(monkeypatch):

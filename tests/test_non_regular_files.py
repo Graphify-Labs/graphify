@@ -34,6 +34,17 @@ def test_regular_source_file_is_accepted(tree):
     assert _is_regular_file(tree / "src" / "module.py") is True
 
 
+needs_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes on this platform")
+
+
+def _symlink(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError as exc:  # Windows without Developer Mode / admin
+        pytest.skip(f"cannot create symlinks here: {exc}")
+
+
+@needs_fifo
 def test_fifo_is_rejected(tree):
     """The shape that hangs the whole run."""
     fifo = tree / "src" / "pipe.py"
@@ -42,6 +53,7 @@ def test_fifo_is_rejected(tree):
     assert _is_regular_file(fifo) is False
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets on this platform")
 def test_unix_socket_is_rejected(tree):
     sock_path = tree / "src" / "sock.py"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -61,22 +73,23 @@ def test_directory_named_like_a_source_file_is_rejected(tree):
 def test_symlink_to_a_regular_file_is_accepted(tree):
     target = tree / "src" / "module.py"
     link = tree / "src" / "alias.py"
-    link.symlink_to(target)
+    _symlink(link, target)
     assert _is_regular_file(link) is True
 
 
+@needs_fifo
 def test_symlink_pointing_at_a_fifo_is_rejected(tree):
     """A link to a FIFO blocks exactly like the FIFO, so stat must follow it."""
     fifo = tree / "src" / "real.py"
     os.mkfifo(fifo)
     link = tree / "src" / "link.py"
-    link.symlink_to(fifo)
+    _symlink(link, fifo)
     assert _is_regular_file(link) is False
 
 
 def test_broken_symlink_is_rejected_without_raising(tree):
     link = tree / "src" / "dangling.py"
-    link.symlink_to(tree / "src" / "does-not-exist.py")
+    _symlink(link, tree / "src" / "does-not-exist.py")
     assert _is_regular_file(link) is False
 
 
