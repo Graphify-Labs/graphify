@@ -944,6 +944,18 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+def _memo_cwd(path_str: str) -> str:
+    """The cwd part of a path-memo key: empty for an absolute path (#perf).
+
+    An absolute path resolves the same from any working directory, so only a
+    relative one keys on the cwd. That saves an ``os.getcwd()`` syscall on
+    every memo hit. Host rules are the right ones here: a driveless ``\\x``
+    on Windows depends on the current drive, and ``Path.is_absolute()``
+    keeps it keyed on the cwd.
+    """
+    return "" if Path(path_str).is_absolute() else os.getcwd()
+
+
 @functools.lru_cache(maxsize=65536)
 def _cached_source_key(source_file: str, root_str: str, _cwd: str) -> str:
     """Resolve-and-relativize one source path, memoized (#perf).
@@ -968,7 +980,7 @@ def _cached_source_key(source_file: str, root_str: str, _cwd: str) -> str:
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
-    return _cached_source_key(source_file, str(root), os.getcwd())
+    return _cached_source_key(source_file, str(root), _memo_cwd(source_file))
 
 def _node_disambiguation_source_key(node: dict, root: Path) -> str:
     source_file = str(node.get("source_file", ""))
@@ -1135,7 +1147,7 @@ def _cached_realpath(path_str: str, _cwd: str) -> Path:
 
 
 def _resolve_cached(path: "Path | str") -> Path:
-    """``Path.resolve()`` with a per-(path, cwd) memo (#perf).
+    """``Path.resolve()`` with a per-path memo, cwd-keyed when relative (#perf).
 
     The symbol-resolution passes resolve the same few hundred corpus paths
     once per FACT — per import, per export, per use, per node — which on
@@ -1147,7 +1159,8 @@ def _resolve_cached(path: "Path | str") -> Path:
     ``Path.resolve()`` — callers keep their own try/except — and an
     exception is never cached.
     """
-    return _cached_realpath(str(path), os.getcwd())
+    path_str = str(path)
+    return _cached_realpath(path_str, _memo_cwd(path_str))
 
 
 def _js_source_path(source_file: str, root: Path) -> Path | None:
