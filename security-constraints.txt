@@ -1,0 +1,10 @@
+# Minimum patched versions for pip-based installs and Docker builds.
+# Keep in sync with tool.uv.constraint-dependencies in pyproject.toml.
+# Constraints do not install optional dependencies that are not requested.
+anyio>=4.14.2
+cryptography>=50.0.0
+pyjwt>=2.14.0
+pypdf>=6.19.0
+soupsieve>=2.8.4
+urllib3>=2.8.0
+virtualenv>=21.7.13
