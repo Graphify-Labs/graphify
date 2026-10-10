@@ -16,6 +16,8 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import errno
+import functools
 import json
 import os
 import re
@@ -24,6 +26,78 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+
+def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
+    """``os.replace(src, dst)``, falling back to a copy for a known set of
+    Windows quirks (#3508) that raise even when ``src``/``dst`` are the same
+    directory on the same drive: ``PermissionError`` (WinError 5/32 --
+    destination briefly locked by another handle, antivirus, an open reader)
+    and WinError 17 ("cannot move to a different disk drive", observed on some
+    Windows/filesystem combinations despite textbook same-volume semantics).
+    WinError 17 maps to a plain ``OSError`` in Python, not ``PermissionError``,
+    so it's checked via ``winerror`` rather than the exception type. Any other
+    failure is a real one and is re-raised.
+
+    ``os.replace`` atomically swaps whatever sits at ``dst`` -- including a
+    symlink, which it REPLACES in place rather than following (some callers,
+    e.g. install.py's managed skill symlinks, #3286, rely on exactly this).
+    A naive ``shutil.copy2(src, dst)`` does the opposite when ``dst`` is a
+    symlink: opening it for writing follows the link and overwrites its
+    TARGET's content instead. So the fallback copies to a fresh temp file in
+    ``dst``'s directory first, renames whatever is currently at ``dst`` (link
+    or file) aside as a backup rather than deleting it outright, and only
+    then renames the temp copy into ``dst``'s place -- matching replace's
+    "whatever was there is gone, a plain file replaces it" semantics. If that
+    final rename fails, the backup is renamed straight back so a mid-swap
+    failure leaves the original in place rather than leaving ``dst`` missing.
+    """
+    try:
+        os.replace(src, dst)
+        return
+    except OSError as exc:
+        if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
+            raise
+    import shutil
+    dst = os.fspath(dst)
+    if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
+        # Replacing a path with itself needs no swap at all; the rename-aside-
+        # then-back sequence below would rename src out from under itself via
+        # the "back up dst" step and then crash unlinking a path that no
+        # longer exists at the end.
+        return
+    dst_dir = os.path.dirname(dst) or "."
+    fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp_copy)
+        backup = None
+        if os.path.lexists(dst):
+            bfd, backup = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-bak-", suffix=".tmp")
+            os.close(bfd)
+            os.unlink(backup)  # reserve the name only; rename needs it free on Windows
+            os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
+        try:
+            os.rename(tmp_copy, dst)
+        except BaseException:
+            if backup is not None:
+                try:
+                    os.rename(backup, dst)
+                except OSError:
+                    pass  # best-effort restore; the swap failure below still propagates
+            raise
+        if backup is not None:
+            try:
+                os.unlink(backup)
+            except OSError:
+                pass
+    except BaseException:
+        try:
+            os.unlink(tmp_copy)
+        except OSError:
+            pass
+        raise
+    os.unlink(src)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
@@ -63,15 +137,13 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
-        try:
-            os.replace(tmp, str(real))
-        except PermissionError:
-            # Windows: os.replace fails (WinError 5/32) when the destination is
-            # briefly locked by another handle (antivirus, an open reader). Fall
-            # back to copy-then-delete, matching graphify.cache's atomic writer.
-            import shutil
-            shutil.copy2(tmp, str(real))
-            os.unlink(tmp)
+        # On Windows os.replace refuses a read-only destination and the fallback
+        # would rename it aside and clobber it. Refuse here instead, for this
+        # generic write path only: install/cache callers of the fallback must
+        # still be able to replace their own (possibly read-only) copies.
+        if os.name == "nt" and real.is_file() and not os.access(real, os.W_OK):
+            raise PermissionError(errno.EACCES, "destination is read-only", str(real))
+        os_replace_with_fallback(tmp, str(real))
     except BaseException:
         try:
             os.unlink(tmp)
@@ -91,6 +163,29 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
 def write_text_atomic(path: "str | Path", text: str) -> None:
     """Atomically write ``text`` (UTF-8) to ``path``. See :func:`_atomic_replace`."""
     _atomic_replace(path, lambda f: f.write(text))
+
+
+def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
+    """Atomically write ``text`` only if it differs from what is already on disk;
+    return ``True`` if a write happened, ``False`` if the file was left untouched.
+
+    Exporters regenerate their whole page set on every ``graph.json`` change and
+    used to rewrite every file unconditionally — tens of thousands of identical
+    pages per run, which also fires inotify / re-index / sync on unchanged
+    content (#3060). Skipping the atomic replace when nothing changed avoids the
+    rename entirely, so mtime and inode are preserved.
+
+    The comparison is on DECODED text, never bytes: :func:`write_text_atomic`
+    writes in text mode and (on Windows) translates ``\\n`` to ``\\r\\n`` while
+    :func:`Path.read_text` translates it back, so a byte compare would report
+    every file as changed. A missing or non-UTF-8 destination counts as changed."""
+    try:
+        if Path(os.path.realpath(str(path))).read_text(encoding="utf-8") == text:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    write_text_atomic(path, text)
+    return True
 
 
 def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
@@ -166,6 +261,18 @@ def _is_test_path(path: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=65536)
+def _parent_parts(source_file: str) -> tuple[str, ...]:
+    """Segments of ``source_file``'s parent directory, POSIX-normalized.
+
+    `_path_proximity_winner` compares every candidate's directory against the
+    call site's, and an ambiguous name (``run``, ``get``) brings the same
+    candidate files back on every call site, so the parse is memoized. Equal
+    tuples here mean equal ``PurePosixPath(...).parent`` values.
+    """
+    return PurePosixPath(source_file.replace("\\", "/")).parent.parts
+
+
 def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str]) -> str | None:
     """Pick the candidate whose source file is closest to the call site.
 
@@ -183,7 +290,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     if not call_site_file:
         return None
     call_norm = str(call_site_file).replace("\\", "/")
-    call_dir = PurePosixPath(call_norm).parent
+    call_parts = _parent_parts(call_norm)
 
     # Tier 1: exact same file.
     same_file = [cid for cid, f in candidate_files.items()
@@ -195,7 +302,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 2: same directory.
     same_dir = [cid for cid, f in candidate_files.items()
-                if PurePosixPath(str(f).replace("\\", "/")).parent == call_dir]
+                if _parent_parts(str(f)) == call_parts]
     if len(same_dir) == 1:
         return same_dir[0]
     if len(same_dir) > 1:
@@ -203,10 +310,8 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 3: longest common path-prefix, computed over path segments. The
     # winner must be a strict unique maximum, else we bail (guard holds).
-    call_parts = call_dir.parts
-
     def _common_prefix_len(f: str) -> int:
-        parts = PurePosixPath(str(f).replace("\\", "/")).parent.parts
+        parts = _parent_parts(str(f))
         n = 0
         for a, b in zip(call_parts, parts):
             if a != b:
@@ -407,6 +512,25 @@ def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def restore_arc_direction(data: dict) -> dict:
+    """Stamp each link's stored direction as ``_src``/``_tgt`` before loading.
+
+    graph.json is written ``directed: false`` but carries true direction in arc
+    order (#563), or in ``_src``/``_tgt`` markers on legacy canonicalized files.
+    An undirected ``node_link_graph`` load re-orders endpoints by node-list
+    position, so readers recover direction from these markers. Existing markers
+    win (#2309). Same idiom as the query and merge-graphs loaders (#2261).
+    """
+    links = data.get("links")
+    if not isinstance(links, list):
+        return data
+    return dict(data, links=[
+        {**link, "_src": link.get("_src", link.get("source")), "_tgt": link.get("_tgt", link.get("target"))}
+        if isinstance(link, dict) else link
+        for link in links
+    ])
+
+
 def load_node_link_graph(path_or_data):
     """Load a graphify graph.json into a networkx graph, accepting both writers.
 
@@ -430,6 +554,8 @@ def load_node_link_graph(path_or_data):
         data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    if isinstance(data, dict):
+        data = restore_arc_direction(data)
     try:
         return json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"
