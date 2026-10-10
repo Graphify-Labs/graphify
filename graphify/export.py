@@ -16,7 +16,13 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
-from graphify.paths import stem_filename_budget, write_json_atomic, write_text_atomic
+from graphify.paths import (
+    os_replace_with_fallback,
+    stem_filename_budget,
+    write_json_atomic,
+    write_text_atomic,
+    write_text_atomic_if_changed,
+)
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -166,6 +172,20 @@ from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from graphify.exporters.html import to_html  # noqa: E402,F401
 
 
+# Increment when the persisted graph structure changes incompatibly for consumers.
+GRAPH_SCHEMA_VERSION = 1
+
+
+def _graphify_version() -> str | None:
+    """Return the installed graphify version for graph provenance."""
+    try:
+        from importlib.metadata import version
+
+        return version("graphifyy")
+    except Exception:
+        return None
+
+
 # Fallback scores for an edge that carries a confidence tier but no
 # confidence_score. The INFERRED default was 0.5, which references/extraction-spec.md
 # rules out in as many words — "never omit it, never use 0.5 as a default" — and
@@ -263,7 +283,11 @@ def existing_graph_node_count(path: "str | Path"):
     return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
+    # Drop #3774 accounting before any write. Extract pops these first; every
+    # other caller of to_json (the documented build_merge persist path) does not.
+    from graphify.build import take_shrink_accounting
+    take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -336,6 +360,30 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if cid is not None and _labels:
             node["community_name"] = _labels.get(cid, f"Community {cid}")
         node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
+    if original_links is not None:
+        # A simple Graph keeps one edge per node pair, so re-deriving the link
+        # list from G after a reload-and-recluster (cluster-only/label) would
+        # silently drop a second edge on a pair that stayed connected by
+        # another (e.g. an `imports` and a `calls` edge between the same two
+        # nodes, #3999). Community is purely a node attribute, so clustering
+        # never needs to add or remove an edge; write back every original
+        # link verbatim instead, dropping only one whose endpoint no longer
+        # exists in G. This also sidesteps any endpoint-order canonicalization
+        # undirected storage would otherwise apply when deriving from G.
+        #
+        # The endpoint-existence filter below assumes original_links carry the
+        # SAME ids as G's post-load nodes. That holds because build_from_json
+        # rewrites a legacy node id to its canonical stem (_semantic_id_remap /
+        # _doc_twin_remap) IN PLACE on the shared link dicts the caller then
+        # passes here, so a remapped endpoint already matches node_ids rather
+        # than being silently dropped (regression-tested in test_cli_export.py:
+        # test_cluster_only_preserves_parallel_edges_across_an_id_remap).
+        node_ids = {n["id"] for n in data["nodes"]}
+        data["links"] = [
+            dict(link) for link in original_links
+            if isinstance(link, dict)
+            and link.get("source") in node_ids and link.get("target") in node_ids
+        ]
     for link in data["links"]:
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
@@ -399,6 +447,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
+    graph_metadata = data.setdefault("graph", {})
+    graph_metadata["schema_version"] = GRAPH_SCHEMA_VERSION
+    graphify_version = _graphify_version()
+    if graphify_version is not None:
+        graph_metadata["graphify_version"] = graphify_version
     # Fallback provenance comes from the repo the graph is being written INTO
     # (output_path lives in <target>/graphify-out/), never the shell's cwd —
     # the same cwd-anchoring mistake #2316 fixed for `update`.
@@ -483,6 +536,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
     lines.append("")
     for u, v, data in G.edges(data=True):
+        u, v = data.get("_src", u), data.get("_tgt", v)
         rel = _cypher_label(
             (data.get("relation", "RELATES_TO") or "RELATES_TO").upper(),
             "RELATES_TO",
@@ -720,13 +774,20 @@ def to_obsidian(
 
     def _owned_write(rel_name: str, content: str) -> bool:
         """Write a graphify-owned file, refusing to overwrite a pre-existing file
-        graphify didn't create. Returns True if written."""
+        graphify didn't create. Returns True if the note is owned/current (whether
+        or not it was physically written).
+
+        The disk write is skipped when the content is byte-identical to what is
+        already there (#3060) — an export re-runs on every graph.json change, and
+        rewriting an unchanged note churns disk and fires inotify / re-index /
+        sync for nothing. The note is still recorded in ``_written`` so it stays
+        owned and is neither pruned as stale nor dropped from the manifest."""
         target = out / rel_name
         if target.exists() and rel_name not in _owned:
             _skipped.append(rel_name)
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(target, content)
+        write_text_atomic_if_changed(target, content)
         _written.append(rel_name)
         return True
 
@@ -1182,6 +1243,7 @@ def to_canvas(
     # Generate edges - only between nodes both in canvas, cap at 200 highest-weight
     all_edges_weighted: list[tuple[float, str, str, str]] = []
     for u, v, edata in G.edges(data=True):
+        u, v = edata.get("_src", u), edata.get("_tgt", v)
         if u in all_canvas_nodes and v in all_canvas_nodes:
             weight = edata.get("weight", 1.0)
             relation = edata.get("relation", "")
@@ -1270,7 +1332,7 @@ def to_graphml(
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))
-        os.replace(str(tmp), str(out))
+        os_replace_with_fallback(str(tmp), str(out))
     finally:
         if tmp.exists():
             try:
@@ -1328,7 +1390,8 @@ def to_svg(
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
                            node_size=node_sizes, alpha=0.9)
     nx.draw_networkx_labels(G, pos, ax=ax,
-                            labels={n: G.nodes[n].get("label", n) for n in G.nodes()},
+                            labels={n: _strip_xml_illegal(str(G.nodes[n].get("label", n)))
+                                    for n in G.nodes()},
                             font_size=7, font_color="white")
 
     # Legend
@@ -1336,7 +1399,7 @@ def to_svg(
         patches = [
             mpatches.Patch(
                 color=COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)],
-                label=f"{label} ({len(communities.get(cid, []))})",
+                label=_strip_xml_illegal(f"{label} ({len(communities.get(cid, []))})"),
             )
             for cid, label in sorted(community_labels.items())
         ]

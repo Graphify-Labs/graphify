@@ -285,3 +285,60 @@ def test_ts_normalizer_does_not_mask_import_text_in_literals_or_comments():
     assert b'import(\\\"./text\\\")' in normalized
     assert b'import("./comment")' in normalized
     assert b'import("./types")' not in normalized
+
+
+def test_ts_normalizer_scales_linearly_on_large_files():
+    """#3359: the match/type-argument-range filters must not be O(matches x ranges).
+
+    A large monorepo file mixes thousands of generic calls (each a
+    ``type_arguments`` range) with thousands of ``import(...)`` types. Filtering
+    each match by scanning every range made extraction quadratic, so `extract`
+    spun at 100% CPU in the regex/scan path and never finished.
+
+    Assert on scaling, not absolute wall-clock, so the test is not
+    machine-dependent: doubling the input must not roughly quadruple the time.
+    Measure CPU time (``process_time``), not wall-clock (``perf_counter``): under
+    a busy full-suite run the process is preempted, and wall-clock would count
+    time slices spent scheduled off-CPU — inflating the larger measurement and
+    flaking the ratio. CPU time counts only work actually done, so it isolates
+    the algorithmic scaling regardless of load.
+    """
+    import gc
+    import time
+
+    def build(n: int) -> bytes:
+        lines = []
+        for i in range(n):
+            lines.append(f"const a{i} = fn<Foo{i}, Bar{i}>(x);")
+            lines.append(f"type T{i} = import('./m{i}').Thing;")
+        return "\n".join(lines).encode()
+
+    def timed(n: int) -> float:
+        source = build(n)
+        # A GC pause lands in process_time and, on a small measurement, inflates
+        # the ratio enough to flake (#3154 CI hit 3.2x on a noisy runner). Disable
+        # it for the measured section so we time only the normalizer's own work.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            start = time.process_time()
+            _normalize_ts_import_types(source)
+            return time.process_time() - start
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    # Measure at larger sizes than the smoke case: at ~1k the per-call fixed
+    # overhead is a big fraction of the tiny (~0.03s) measurement, so the ratio
+    # is noisy; at 4k/8k the O(n) work dominates and linear scaling converges
+    # toward a clean ~2x. min() over repeats takes the least-preempted run.
+    timed(500)  # warm the grammar/parser import off the measured path
+    small = min(timed(4000) for _ in range(5))
+    large = min(timed(8000) for _ in range(5))
+
+    # Linear work doubles (~2x). Quadratic work quadruples (~4x). A 3.5x ceiling
+    # separates the two with enough headroom to survive CI scheduling noise.
+    assert large < small * 3.5, (
+        f"scaling looks super-linear: {small:.4f}s -> {large:.4f}s "
+        f"({large / small:.1f}x for 2x input)"
+    )
