@@ -4471,6 +4471,384 @@ def _resolve_python_member_calls(
             _emit_call(caller, children[0], rc)
 
 
+# stdlib_module_names | builtin_module_names of CPython 3.10/3.12/3.13/3.14: a deliberate superset.
+_PYTHON_STDLIB_MODULE_NAMES = frozenset({
+    "__future__", "_abc", "_aix_support", "_android_support", "_apple_support", "_ast",
+    "_ast_unparse", "_asyncio", "_bisect", "_blake2", "_bootsubprocess", "_bz2", "_codecs",
+    "_codecs_cn", "_codecs_hk", "_codecs_iso2022", "_codecs_jp", "_codecs_kr", "_codecs_tw",
+    "_collections", "_collections_abc", "_colorize", "_compat_pickle", "_compression",
+    "_contextvars", "_crypt", "_csv", "_ctypes", "_curses", "_curses_panel", "_datetime", "_dbm",
+    "_decimal", "_elementtree", "_frozen_importlib", "_frozen_importlib_external", "_functools",
+    "_gdbm", "_hashlib", "_heapq", "_hmac", "_imp", "_interpchannels", "_interpqueues",
+    "_interpreters", "_io", "_ios_support", "_json", "_locale", "_lsprof", "_lzma", "_markupbase",
+    "_md5", "_msi", "_multibytecodec", "_multiprocessing", "_opcode", "_opcode_metadata",
+    "_operator", "_osx_support", "_overlapped", "_pickle", "_posixshmem", "_posixsubprocess",
+    "_py_abc", "_py_warnings", "_pydatetime", "_pydecimal", "_pyio", "_pylong", "_pyrepl", "_queue",
+    "_random", "_remote_debugging", "_scproxy", "_sha1", "_sha2", "_sha256", "_sha3", "_sha512",
+    "_signal", "_sitebuiltins", "_socket", "_sqlite3", "_sre", "_ssl", "_stat", "_statistics",
+    "_string", "_strptime", "_struct", "_suggestions", "_symtable", "_sysconfig",
+    "_testinternalcapi", "_thread", "_threading_local", "_tkinter", "_tokenize", "_tracemalloc",
+    "_types", "_typing", "_uuid", "_warnings", "_weakref", "_weakrefset", "_winapi", "_wmi",
+    "_xxsubinterpreters", "_xxtestfuzz", "_zoneinfo", "_zstd", "abc", "aifc", "annotationlib",
+    "antigravity", "argparse", "array", "ast", "asynchat", "asyncio", "asyncore", "atexit",
+    "audioop", "base64", "bdb", "binascii", "binhex", "bisect", "builtins", "bz2", "cProfile",
+    "calendar", "cgi", "cgitb", "chunk", "cmath", "cmd", "code", "codecs", "codeop", "collections",
+    "colorsys", "compileall", "compression", "concurrent", "configparser", "contextlib",
+    "contextvars", "copy", "copyreg", "crypt", "csv", "ctypes", "curses", "dataclasses", "datetime",
+    "dbm", "decimal", "difflib", "dis", "distutils", "doctest", "email", "encodings", "ensurepip",
+    "enum", "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions",
+    "ftplib", "functools", "gc", "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib",
+    "grp", "gzip", "hashlib", "heapq", "hmac", "html", "http", "idlelib", "imaplib", "imghdr",
+    "imp", "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "lib2to3",
+    "linecache", "locale", "logging", "lzma", "mailbox", "mailcap", "marshal", "math", "mimetypes",
+    "mmap", "modulefinder", "msilib", "msvcrt", "multiprocessing", "netrc", "nis", "nntplib", "nt",
+    "ntpath", "nturl2path", "numbers", "opcode", "operator", "optparse", "os", "ossaudiodev",
+    "pathlib", "pdb", "pickle", "pickletools", "pipes", "pkgutil", "platform", "plistlib", "poplib",
+    "posix", "posixpath", "pprint", "profile", "pstats", "pty", "pwd", "py_compile", "pyclbr",
+    "pydoc", "pydoc_data", "pyexpat", "queue", "quopri", "random", "re", "readline", "reprlib",
+    "resource", "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve",
+    "shlex", "shutil", "signal", "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver",
+    "spwd", "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat", "statistics",
+    "string", "stringprep", "struct", "subprocess", "sunau", "symtable", "sys", "sysconfig",
+    "syslog", "tabnanny", "tarfile", "telnetlib", "tempfile", "termios", "textwrap", "this",
+    "threading", "time", "timeit", "tkinter", "token", "tokenize", "tomllib", "trace", "traceback",
+    "tracemalloc", "tty", "turtle", "turtledemo", "types", "typing", "unicodedata", "unittest",
+    "urllib", "uu", "uuid", "venv", "warnings", "wave", "weakref", "webbrowser", "winreg",
+    "winsound", "wsgiref", "xdrlib", "xml", "xmlrpc", "xxsubtype", "zipapp", "zipfile", "zipimport",
+    "zlib", "zoneinfo",
+})
+
+
+# Engine facts a file's extraction stores for link_python_constructors.
+_PY_CTOR_FACTS = ("_py_ctor_chain", "_py_ctor_base_binding", "_py_proven_calls")
+
+
+def is_python_constructor_edge(edge: dict) -> bool:
+    """An edge link_python_constructors adds (Python `Foo(...)` -> `__init__`)."""
+    return (
+        edge.get("relation") == "calls"
+        and edge.get("context") == "constructor"
+        and str(edge.get("source_file", "")).lower().endswith(".py")
+    )
+
+
+def link_python_constructors(
+    nodes: list[dict], edges: list[dict], root: str | Path | None
+) -> list[dict]:
+    """Link each resolved Python `Foo(...)` call site to the `__init__` it runs.
+
+    v8 binds `Foo(...)` to the class node only, and call reachability does not
+    follow the class's `method` edge, so nothing `__init__` calls was reachable
+    from the call site. For each EXTRACTED `calls` edge (context "call") from a
+    .py caller to a class node, walk the class chain: every class must carry
+    the engine's `_py_ctor_chain` marker, each `single_base` step must have
+    exactly one `inherits` edge, no class may own a `__new__` method, and the
+    walk ends at a `root` class. The nearest `__init__` method on that chain
+    gets an INFERRED `calls` edge from the caller (context "constructor"), at
+    the call site's location. Any break in the chain, or a chain without
+    `__init__` (object.__init__ runs), adds nothing.
+
+    A `single_base` step counts only if its `inherits` edge targets the class
+    its own file binds the base name to (`_py_ctor_base_binding`): a class
+    statement in the same file, or a `from m import` statement whose `imports`
+    edge targets a class with the imported name in `m`'s own file. v8 binds a
+    base by bare label, so `from somelib import Widget` + `class X(Widget)`
+    lands on any unique project `Widget`.
+
+    The call site itself must be proven: v8 binds `Foo()` (and `mod.Foo()`) to a
+    project class even when a parameter or local named `Foo` (or `mod`) shadows
+    it, when `Foo` is imported only inside some other function, binds
+    `self.Foo()` to a same-file class whatever the attribute holds, and
+    matches `mod.settings()` to a class `_Settings` after case folding. The
+    engine records each call whose callee provably reads one binding, with that
+    binding's kind and statement line (`_py_proven_calls` on the file node).
+    The class edge's line must hold such a call naming exactly that class, and
+    the binding statement must identify the class: the class statement itself
+    in the caller's file, the `imports` edge of that import statement, or, for
+    `mod.Foo()`, the import edge of `mod` to the module file defining `Foo`.
+    An import must name the module that defines the class: a re-export hop
+    (`from pkg import Foo` where pkg/__init__.py imports Foo) can rebind the
+    name after the re-export, so it proves nothing. The engine already marks an
+    import unprovable when its line holds a second import statement.
+
+    Every input is a node or edge of the graph or a fact one file's extraction
+    stores on its own nodes, and every import is resolved again against the
+    files on disk. extract() runs this over a fresh extraction; an incremental
+    merge runs it again over the merged graph (relink_python_constructors), so
+    where an incremental build leaves a base as a file-local stub the chain
+    breaks and nothing is added. A graph written before these facts existed
+    adds nothing until its files are re-extracted (the #2438 degradation
+    contract). Constructor edges already in `edges` are ignored. Returns the
+    new edges and changes nothing; with no `root` to resolve imports against,
+    none.
+    """
+    if root is None:
+        return []
+    root_dir = Path(root)
+    by_id: dict[str, dict] = {n["id"]: n for n in nodes if n.get("id")}
+    edges = [e for e in edges if not is_python_constructor_edge(e)]
+
+    def _source_path(source_file: object) -> Path | None:
+        if not source_file:
+            return None
+        path = Path(str(source_file))
+        try:
+            return (path if path.is_absolute() else root_dir / path).resolve()
+        except OSError:
+            return None
+
+    defined_in: dict[tuple[str, str], Path | None] = {}
+
+    def _imported_directly(importer: object, module: str, cls_node: dict) -> bool:
+        """Importing `module` in `importer` reads the file defining the class.
+
+        An absolute import of a standard-library or built-in name proves
+        nothing: built-in and frozen modules win over a local file of the same
+        name, and for a script run from its own directory so can the rest of
+        the standard library."""
+        key = (str(importer), module)
+        if key not in defined_in:
+            importer_path = _source_path(importer)
+            name = module.lstrip(".")
+            stdlib = name == module and name.split(".")[0] in _PYTHON_STDLIB_MODULE_NAMES
+            target = (
+                _resolve_python_module_path(name, importer_path, root_dir, len(module) - len(name))
+                if importer_path is not None and module and not stdlib else None
+            )
+            defined_in[key] = target.resolve() if target is not None else None
+        target = defined_in[key]
+        return target is not None and target == _source_path(cls_node.get("source_file"))
+
+    imports_at = {
+        (e.get("source_file"), e.get("target"), e.get("source_location"))
+        for e in edges if e.get("relation") == "imports"
+    }
+    import_targets: dict[tuple[str, str], list[str]] = {}
+    inherits: dict[str, set[str]] = {}
+    methods: dict[str, set[str]] = {}
+    for e in edges:
+        source, target, relation = e.get("source"), e.get("target"), e.get("relation")
+        if relation in ("imports", "imports_from"):
+            import_targets.setdefault(
+                (str(e.get("source_file", "")), str(e.get("source_location"))), []
+            ).append(str(target))
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        if relation == "inherits":
+            inherits.setdefault(source, set()).add(target)
+        elif relation == "method":
+            methods.setdefault(source, set()).add(target)
+    proven_calls: dict[str, dict[int, list[tuple[str, str, int, str, str]]]] = {}
+    for n in nodes:
+        for call in n.get("_py_proven_calls") or ():
+            if not (
+                isinstance(call, (list, tuple)) and len(call) == 6
+                and isinstance(call[0], int) and isinstance(call[3], int)
+            ):
+                continue  # not a record this version wrote: prove nothing
+            line, name, kind, bline, origin, module = call
+            proven_calls.setdefault(str(n.get("source_file", "")), {}).setdefault(
+                line, []
+            ).append((str(name), str(kind), bline, str(origin), str(module)))
+
+    def _base_verified(n: dict) -> bool:
+        kind, _, rest = str(n.get("_py_ctor_base_binding") or "").partition(":")
+        line, _, rest = rest.partition(":")
+        module, _, origin = rest.rpartition(":")
+        bases = inherits.get(n["id"], set())
+        base = by_id.get(next(iter(bases))) if len(bases) == 1 else None
+        if base is None or base.get("label") != origin:
+            return False
+        if kind == "class":
+            return (
+                base.get("source_file") == n.get("source_file")
+                and base.get("source_location") == line
+            )
+        return (
+            kind == "import"
+            and (n.get("source_file"), base["id"], line) in imports_at
+            and _imported_directly(n.get("source_file"), module, base)
+        )
+
+    # One id can hold two files' definitions in a merged graph: an incremental
+    # build mints a new file's ids without the stored files, so `a_models.py`
+    # can reuse `a/models.py`'s. Edges then leave the node from both files,
+    # and no chain counts through it. (The engine refuses one file's own
+    # collisions when it sets the marker.)
+    merged = {
+        e.get("source") for e in edges
+        if e.get("source") in by_id
+        and e.get("source_file") != by_id[e["source"]].get("source_file")
+    }
+    chain = {
+        nid: n["_py_ctor_chain"] for nid, n in by_id.items()
+        if nid not in merged and (
+            n.get("_py_ctor_chain") == "root"
+            or (n.get("_py_ctor_chain") == "single_base" and _base_verified(n))
+        )
+    }
+
+    def _label(nid: str) -> str:
+        return str(by_id.get(nid, {}).get("label", ""))
+
+    def _proven(caller_file: str, line: int, cls: str) -> bool:
+        node = by_id.get(cls, {})
+        for name, kind, bline, origin, module in proven_calls.get(caller_file, {}).get(line, ()):
+            if name != node.get("label"):
+                continue
+            evidence = import_targets.get((caller_file, f"L{bline}"), ())
+            if kind == "class":
+                if node.get("source_file") == caller_file and node.get("source_location") == f"L{bline}":
+                    return True
+            elif kind == "import":
+                if cls in evidence and _imported_directly(caller_file, module, node):
+                    return True
+            elif kind == "module" and _imported_directly(caller_file, origin, node):
+                stem = origin.rsplit(".", 1)[-1]
+                for target in evidence:
+                    module_node = by_id.get(target, {})
+                    if (
+                        not module_node.get("_callable")
+                        and module_node.get("source_file") == node.get("source_file")
+                        and Path(str(module_node.get("label", ""))).stem == stem
+                    ):
+                        return True
+        return False
+
+    entries: dict[str, str | None] = {}
+
+    def _entry(cls: str) -> str | None:
+        found: str | None = None
+        seen: set[str] = set()
+        cur = cls
+        while cur not in seen:  # a cycle is not a valid MRO
+            seen.add(cur)
+            kind = chain.get(cur)
+            if kind is None:
+                return None
+            owned = methods.get(cur, set())
+            if any(_label(m) == ".__new__()" for m in owned):
+                return None
+            inits = [m for m in owned if _label(m) == ".__init__()"]
+            if len(inits) > 1 or merged.intersection(inits):
+                return None
+            if found is None and inits:
+                found = inits[0]
+            if kind == "root":
+                return found
+            bases = inherits.get(cur, set())
+            if len(bases) != 1:
+                return None
+            cur = next(iter(bases))
+        return None
+
+    # A graph keeps one edge per node pair (and an undirected one per unordered
+    # pair), so a pair that already has an edge either way is left to it.
+    linked = {(e.get("source"), e.get("target")) for e in edges}
+    added: list[dict] = []
+    for e in edges:
+        if (
+            e.get("relation") != "calls"
+            or e.get("context") != "call"
+            or e.get("confidence") != "EXTRACTED"
+            or not str(e.get("source_file", "")).lower().endswith(".py")
+        ):
+            continue
+        cls, caller = e.get("target"), e.get("source")
+        if not isinstance(cls, str) or not isinstance(caller, str) or cls not in chain:
+            continue
+        if cls not in entries:
+            entries[cls] = _entry(cls)
+        init = entries[cls]
+        if init is None or init == caller or (caller, init) in linked or (init, caller) in linked:
+            continue
+        location = str(e.get("source_location") or "")
+        caller_file = str(by_id.get(caller, {}).get("source_file", ""))
+        if not (location[1:].isascii() and location[1:].isdigit()):
+            continue
+        if not _proven(caller_file, int(location[1:]), cls):
+            continue
+        linked.add((caller, init))
+        added.append({
+            "source": caller,
+            "target": init,
+            "relation": "calls",
+            # Implied by `Foo(...)`, not written at the call site: INFERRED,
+            # at the rubric's 0.85 tier like the other derived call edges.
+            "context": "constructor",
+            "confidence": "INFERRED",
+            "confidence_score": 0.85,
+            "source_file": e.get("source_file", ""),
+            "source_location": e.get("source_location"),
+            "weight": 1.0,
+        })
+    return added
+
+
+def relink_python_constructors(
+    nodes: list[dict], edges: list[dict], root: str | Path | None
+) -> list[dict]:
+    """`edges` with its Python constructor edges linked again over the graph.
+
+    An incremental merge (watch, `graphify extract`, and build_merge through
+    link_python_constructors_in_graph) re-extracts only the changed files, but
+    a constructor edge depends on every class in the called class's chain,
+    which can live in a file the batch did not touch. The merge's constructor
+    edges are dropped and linked again over the merged graph from the facts
+    each file's extraction stored, so they are what a full build would link
+    from the same graph, and no other edge or node changes. On any failure the
+    result has no constructor edge.
+    """
+    kept = [e for e in edges if not is_python_constructor_edge(e)]
+    try:
+        return kept + link_python_constructors(nodes, kept, root)
+    except Exception:
+        return kept
+
+
+def link_python_constructors_in_graph(G: Any, root: str | Path | None) -> None:
+    """relink_python_constructors for a built graph (build_merge), whose stored
+    constructor edges the caller dropped before building it."""
+    nodes = [{**d, "id": n} for n, d in G.nodes(data=True)]
+    edges = [
+        {**d, "source": d.get("_src", u), "target": d.get("_tgt", v)}
+        for u, v, d in G.edges(data=True)
+    ]
+    try:
+        added = link_python_constructors(nodes, edges, root)
+    except Exception:
+        return
+    for e in added:
+        attrs = {k: v for k, v in e.items() if k not in ("source", "target")}
+        G.add_edge(e["source"], e["target"], **attrs, _src=e["source"], _tgt=e["target"])
+
+
+def _keep_python_call_records(
+    nodes: list[dict], edges: list[dict], context_nodes: list[dict] | None
+) -> None:
+    """Store on each file node only the call records a call edge can use.
+
+    The engine records every proven call; link_python_constructors reads only
+    those at the line of a `calls` edge (context "call") to a node with the
+    record's name, possibly a resolution-context node, and an unchanged
+    file's edges stay as they were, so the rest would only grow graph.json.
+    """
+    labels = {n.get("id"): n.get("label") for n in [*(context_nodes or ()), *nodes]}
+    files = {n.get("id"): str(n.get("source_file", "")) for n in nodes}
+    wanted = {
+        (files.get(e.get("source")), str(e.get("source_location")), labels.get(e.get("target")))
+        for e in edges if e.get("relation") == "calls" and e.get("context") == "call"
+    }
+    for n in nodes:
+        if "_py_proven_calls" in n:
+            source_file = str(n.get("source_file", ""))
+            kept = [c for c in n["_py_proven_calls"] if (source_file, f"L{c[0]}", c[1]) in wanted]
+            if kept:
+                n["_py_proven_calls"] = kept
+            else:
+                del n["_py_proven_calls"]
+
+
 def _resolve_typescript_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -9331,6 +9709,21 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+
+    # Python `Foo(...)` -> the `__init__` it runs. After every call resolver so
+    # each resolved class edge (bare, imported, `mod.Foo()`) is visible.
+    # The engine's facts stay on the nodes (graph.json stores them) so an
+    # incremental merge can link again (relink_python_constructors).
+    try:
+        constructor_edges = link_python_constructors(all_nodes, all_edges, root)
+        _keep_python_call_records(all_nodes, all_edges, resolution_context_nodes)
+        all_edges.extend(constructor_edges)
+    except Exception:
+        # Constructor edges are only an addition: on any failure none is
+        # committed, and none of the engine's facts is stored half-checked.
+        for n in all_nodes:
+            for key in _PY_CTOR_FACTS:
+                n.pop(key, None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a

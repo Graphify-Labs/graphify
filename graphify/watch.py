@@ -2071,6 +2071,12 @@ def _rebuild_code(
             return False
 
         _relativize_source_files(result, project_root, scope=watch_root)
+        # A Python constructor edge depends on classes in files this batch may
+        # not have re-extracted: link them again over the merged graph.
+        from graphify.extract import relink_python_constructors
+        result["edges"] = relink_python_constructors(
+            result.get("nodes", []), result.get("edges", []), project_root
+        )
         # Source files re-extracted this run — their symbol sets may legitimately
         # shrink (a removed function), so the shrink-guard should not block the
         # write when every lost node belongs to one of them (or a deleted file).
