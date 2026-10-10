@@ -2541,6 +2541,17 @@ def _ts_receiver_type_table(
             return _read_text(idents[0], source)
         return None
 
+    def _class_name(class_body) -> str | None:
+        # `class Foo { .. }` -> "Foo"; an unnamed class expression -> None
+        owner = class_body.parent if class_body is not None and class_body.type == "class_body" else None
+        name = owner.child_by_field_name("name") if owner is not None else None
+        return _read_text(name, source) if name is not None else None
+
+    def _new_type(new_expr) -> str | None:
+        ctor = new_expr.child_by_field_name("constructor")
+        return _read_text(ctor, source) if ctor is not None and ctor.type in ("identifier", "type_identifier") else None
+
+    assigned: dict[str, dict[str, str]] = {}
     stack = [root]
     while stack:
         n = stack.pop()
@@ -2570,28 +2581,132 @@ def _ts_receiver_type_table(
             # same as a constructor parameter property. It is recorded under its
             # own class only, so two classes in one file with a same-named field
             # of different types never borrow each other's type. Static fields are
-            # read as `Cls.field`, not `this.field`, so they are skipped.
+            # kept apart: only a static method reads them as `this.field`.
             name_n = n.child_by_field_name("name") or n.child_by_field_name("property")
-            owner = n.parent.parent if n.parent is not None else None
-            owner_name = owner.child_by_field_name("name") if owner is not None else None
-            if (name_n is not None and owner_name is not None
-                    and name_n.type in ("property_identifier", "private_property_identifier")
-                    and not any(c.type == "static" for c in n.children)):
+            owner_name = _class_name(n.parent)
+            if owner_name is not None and any(c.type == "static" for c in n.children):
+                owner_name += _TS_STATIC_SUFFIX
+            if (name_n is not None
+                    and name_n.type in ("property_identifier", "private_property_identifier")):
                 ann = n.child_by_field_name("type")
                 value = n.child_by_field_name("value")
                 tname = None
                 if ann is not None:
                     tname = _bare_type_ident(ann) or _optional_type_ident(ann)
                 elif value is not None and value.type == "new_expression":
-                    ctor = value.child_by_field_name("constructor")
-                    if ctor is not None and ctor.type in ("identifier", "type_identifier"):
-                        tname = _read_text(ctor, source)
+                    tname = _new_type(value)
                 name = _read_text(name_n, source)
-                fields = field_table.setdefault(_read_text(owner_name, source), {})
-                if name and tname and name not in fields:
-                    fields[name] = tname
+                if name and tname:
+                    if owner_name is not None:
+                        field_table.setdefault(owner_name, {}).setdefault(name, tname)
+                    elif name not in table:
+                        # An unnamed class (`export default class { .. }`) has no
+                        # node to key its fields by, and its methods have no class
+                        # either: keep the file table they read.
+                        table[name] = tname
+        elif t == "method_definition" and field_table is not None:
+            # The constructor declares fields too: parameter properties
+            # (`constructor(private repo: Repo)`) and `this.repo = repo` /
+            # `this.repo = new Repo()`. A declared field type wins over an
+            # assignment (merged after the walk).
+            mname = n.child_by_field_name("name")
+            owner_name = _class_name(n.parent)
+            accessor = next((c.type for c in n.children if c.type in ("get", "set")), None)
+            if mname is not None and owner_name is not None and accessor is not None:
+                # `get repo(): Repo` / `set repo(r: Repo)` read and write a
+                # `this.repo` of that type, like a field.
+                tname = None
+                if accessor == "get":
+                    ret = n.child_by_field_name("return_type")
+                    tname = (_bare_type_ident(ret) or _optional_type_ident(ret)) if ret is not None else None
+                else:
+                    params = n.child_by_field_name("parameters")
+                    first = next((p for p in params.named_children if p.type in ("required_parameter", "optional_parameter")), None) if params is not None else None
+                    ann = first.child_by_field_name("type") if first is not None else None
+                    tname = (_bare_type_ident(ann) or _optional_type_ident(ann)) if ann is not None else None
+                if tname:
+                    field_table.setdefault(owner_name, {}).setdefault(_read_text(mname, source), tname)
+            if (mname is not None and owner_name is not None
+                    and _read_text(mname, source) == "constructor"):
+                params = n.child_by_field_name("parameters")
+                typed: dict[str, str] = {}
+                for p in params.named_children if params is not None else ():
+                    if p.type not in ("required_parameter", "optional_parameter"):
+                        continue
+                    pat, ann = p.child_by_field_name("pattern"), p.child_by_field_name("type")
+                    if pat is None or pat.type != "identifier" or ann is None:
+                        continue
+                    tname = _bare_type_ident(ann) or _optional_type_ident(ann)
+                    if not tname:
+                        continue
+                    pname = _read_text(pat, source)
+                    typed[pname] = tname
+                    if any(c.type in ("accessibility_modifier", "readonly") for c in p.children):
+                        field_table.setdefault(owner_name, {}).setdefault(pname, tname)
+                body = n.child_by_field_name("body")
+                for stmt in body.named_children if body is not None else ():
+                    expr = stmt.named_children[0] if stmt.type == "expression_statement" and stmt.named_children else None
+                    if expr is None or expr.type != "assignment_expression":
+                        continue
+                    left, right = expr.child_by_field_name("left"), expr.child_by_field_name("right")
+                    if left is None or right is None or left.type != "member_expression":
+                        continue
+                    obj, prop = left.child_by_field_name("object"), left.child_by_field_name("property")
+                    if obj is None or obj.type != "this" or prop is None:
+                        continue
+                    tname = (typed.get(_read_text(right, source)) if right.type == "identifier"
+                             else _new_type(right) if right.type == "new_expression" else None)
+                    if tname:
+                        assigned.setdefault(owner_name, {}).setdefault(_read_text(prop, source), tname)
         for c in n.children:
             stack.append(c)
+    if field_table is not None:
+        for cls, fields in assigned.items():
+            for name, tname in fields.items():
+                field_table.setdefault(cls, {}).setdefault(name, tname)
+
+_TS_STATIC_SUFFIX = "\x00static"
+
+
+def _ts_attach_class_fields(result: dict, field_table: dict[str, dict[str, str]], str_path: str) -> None:
+    """Put each class's field types on its node as `_ts_fields`.
+
+    Node ids are casefolded, so `class UsecaseVisitor` and `const usecaseVisitor`
+    in one file are one node, labeled after either name; classes are matched the
+    same way, and two classes folding together keep only the fields they type
+    alike."""
+    def _fold(label: str) -> str:
+        return "".join(c for c in str(label) if c.isascii() and c.isalnum()).lower()
+
+    by_key: dict[tuple[str, bool], dict[str, str]] = {}
+    for cls, fields in field_table.items():
+        static = cls.endswith(_TS_STATIC_SUFFIX)
+        merged = by_key.setdefault((_fold(cls.removesuffix(_TS_STATIC_SUFFIX)), static), {})
+        for name, tname in fields.items():
+            merged[name] = tname if merged.get(name, tname) == tname else ""
+    if not by_key:
+        return
+    for node in result.get("nodes", []):
+        if node.get("source_file") != str_path:
+            continue
+        for static, attr in ((False, "_ts_fields"), (True, "_ts_static_fields")):
+            fields = by_key.get((_fold(node.get("label", "")), static))
+            kept = {k: v for k, v in sorted((fields or {}).items()) if v}
+            if kept:
+                node[attr] = kept
+
+
+def _ts_in_static_method(node) -> bool:
+    """Whether ``node`` runs in a `static` method, where `this` is the class.
+    Arrow functions keep the enclosing `this`; other functions end the search."""
+    while node is not None:
+        if node.type == "method_definition":
+            return any(c.type == "static" for c in node.children)
+        if node.type in _TS_FUNCTION_NODES and node.type != "arrow_function":
+            return False
+        node = node.parent
+    return False
+
 
 _TS_FUNCTION_NODES = frozenset({
     "arrow_function", "method_definition", "function_declaration", "function_expression",
@@ -8229,6 +8344,8 @@ def _extract_generic(
                             "tree_sitter_javascript", "tree_sitter_typescript",
                         ):
                             rc_entry["ts_this_field"] = True
+                            if _ts_in_static_method(node):
+                                rc_entry["ts_static_this"] = True
                         # Tag the C++ raw_call's language so the cross-file C++ resolver
                         # claims it unambiguously: a `.h` file routes to extract_cpp or
                         # extract_objc by content, and both resolvers see `.h` in their
@@ -8750,14 +8867,13 @@ def _extract_generic(
     # a call on a typed param (incl. inside a closure) resolve (#1630). The
     # constructor-injection entries are populated during the walk above and win on
     # a name clash (first-binding-wins in the helper).
-    # Class fields go to their own per-class table (`this.x` only reads the
-    # caller's class), never into the file-wide name table.
+    # Class fields go on their class node (`_ts_fields`), never into the
+    # file-wide name table: `this.x` reads the caller's class and its bases, which
+    # may live in files a changed-files rebuild does not re-extract.
     ts_field_types: dict[str, dict[str, str]] = {}
     if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
         _ts_receiver_type_table(root, source, type_table, ts_field_types)
-        ts_field_types = {cls: f for cls, f in ts_field_types.items() if f}
-        if ts_field_types and not type_table:
-            result["ts_type_table"] = {"path": str_path, "table": {}, "fields": ts_field_types}
+        _ts_attach_class_fields(result, ts_field_types, str_path)
     if config.ts_module == "tree_sitter_swift":
         if type_table or swift_factory_bindings:
             result["swift_type_table"] = {"path": str_path, "table": type_table}
@@ -8769,8 +8885,6 @@ def _extract_generic(
     elif type_table:
         if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
             result["ts_type_table"] = {"path": str_path, "table": type_table}
-            if ts_field_types:
-                result["ts_type_table"]["fields"] = ts_field_types
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
     return result
