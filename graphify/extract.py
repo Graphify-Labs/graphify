@@ -5,7 +5,6 @@ import hashlib
 import importlib
 import json
 import os
-import functools
 import re
 import sys
 import textwrap
@@ -5874,15 +5873,16 @@ def _resolve_rust_self_member_calls(
         })
 
 
-@functools.lru_cache(maxsize=None)
-def _rust_crate_dir(source_file: str) -> str:
-    """The crate a Rust file belongs to: the path before its `src/`, `tests/`,
-    `benches/` or `examples/` directory (`crates/core/src/x.rs` -> `crates/core`)."""
-    parts = str(source_file).replace("\\", "/").split("/")
-    for i in range(len(parts) - 1, -1, -1):
-        if parts[i] in ("src", "tests", "benches", "examples"):
-            return "/".join(parts[:i])
-    return "/".join(parts[:-1])
+def _rust_crate_roots(paths) -> frozenset[str]:
+    """The crate roots of a Rust corpus: every directory holding the `src/` of a
+    `.rs` file in it (`crates/core/src/x.rs` -> `crates/core`)."""
+    roots: set[str] = set()
+    for path in paths:
+        parts = path.split("/")
+        for i, segment in enumerate(parts[:-1]):
+            if segment == "src":
+                roots.add("/".join(parts[:i]))
+    return frozenset(roots)
 
 
 def _resolve_rust_typed_member_calls(
@@ -5958,10 +5958,26 @@ def _resolve_rust_typed_member_calls(
     def _is_abs(path: str) -> bool:
         return path.startswith("/") or bool(re.match(r"^[A-Za-z]:/", path))
 
-    relative_crates = {
-        c for c in (_rust_crate_dir(_file(nid)) for nid in node_by_id)
-        if c and not _is_abs(c)
-    }
+    # A file belongs to the deepest crate root above it, so a `tests` module in
+    # `src/` and a crate's own `tests/`, `benches/` and `examples/` stay with
+    # their crate, and a checkout that itself sits under a `src` folder does not
+    # merge every crate into one.
+    rust_paths = {f for f in (_file(nid) for nid in node_by_id) if f.endswith(".rs")}
+    rust_paths |= {str(rc.get("source_file", "")).replace("\\", "/") for rc in raw}
+    crate_roots = _rust_crate_roots(rust_paths)
+    crate_of: dict[str, str] = {}
+
+    def _crate(path: str) -> str:
+        if path not in crate_of:
+            best: str | None = None
+            for root in crate_roots:
+                inside = path.startswith(root + "/") if root else not _is_abs(path)
+                if inside and (best is None or len(root) > len(best)):
+                    best = root
+            crate_of[path] = best if best is not None else path.rsplit("/", 1)[0] if "/" in path else ""
+        return crate_of[path]
+
+    relative_crates = {c for c in crate_roots if c and not _is_abs(c)}
 
     def _same(a: str, b: str, crate: bool = False) -> bool:
         if a == b:
@@ -5975,7 +5991,7 @@ def _resolve_rust_typed_member_calls(
         return crate and not any(absolute.endswith("/" + c) for c in relative_crates)
 
     def _same_crate(a: str, b: str) -> bool:
-        return _same(_rust_crate_dir(a), _rust_crate_dir(b), crate=True)
+        return _same(_crate(a), _crate(b), crate=True)
 
     def _pick(nids: list[str], from_file: str) -> str | None:
         # One definition, or the one in the caller's file, or in its crate.

@@ -343,9 +343,19 @@ class _RustReceiverTyper:
                     self._add_params(cparams, n)
             elif n.type in ("for_expression", "let_condition", "match_arm"):
                 # `for x in`, `if let Some(x) =`, `Ok(x) =>` bind names the
-                # receiver lookup cannot type; they still hide an outer `x`.
-                scope = n.parent if n.type == "let_condition" and n.parent is not None else n
-                self._add_opaque(n.child_by_field_name("pattern"), n.start_byte, scope)
+                # receiver lookup cannot type; they still hide an outer `x`, but
+                # only after the value they bind from: in `for x in x.iter()` and
+                # `if let Some(x) = x.next()` that value still reads the outer `x`.
+                pattern = n.child_by_field_name("pattern")
+                value = n.child_by_field_name("value")
+                if n.type == "let_condition":
+                    scope = n.parent if n.parent is not None else n
+                    start = n.end_byte
+                elif n.type == "for_expression":
+                    scope, start = n, (value.end_byte if value is not None else n.start_byte)
+                else:
+                    scope, start = n, (pattern.end_byte if pattern is not None else n.start_byte)
+                self._add_opaque(pattern, start, scope)
             stack.extend(n.children)
 
     def _add_params(self, params, scope) -> None:
