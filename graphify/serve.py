@@ -13,7 +13,7 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.security import sanitize_label, check_graph_file_size_cap
+from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
@@ -74,6 +74,11 @@ def _load_graph(graph_path: str) -> nx.Graph:
         except TypeError:
             G = json_graph.node_link_graph(data)
         G.graph["_logical_directed"] = _logical_directed
+        # node_link_graph drops top-level keys other than data["graph"], so the
+        # build commit export.to_json writes there is stashed by hand (#3354).
+        _commit = data.get("built_at_commit")
+        if isinstance(_commit, str) and _commit.strip():
+            G.graph["_built_at_commit"] = _commit.strip()
         # Attach the work-memory overlay (derived sidecar next to graph.json) so
         # the query/MCP read surface can annotate NODE lines display-only. Empty
         # when no sidecar exists, leaving un-annotated output byte-identical.
@@ -178,6 +183,18 @@ class _GraphContextCache:
                 while len(self._entries) > self._max_contexts:
                     self._entries.popitem(last=False)
             return entry["G"], entry["communities"]
+
+
+def _node_arg(arguments: dict) -> str:
+    """The node identifier a lookup tool was called with.
+
+    ``get_node``/``get_neighbors`` historically read ``arguments["label"]`` only, so a client that
+    passes the node under ``node_id`` (or ``id``) — several of the agent frameworks graphify targets
+    do — raised ``KeyError('label')`` instead of being served. Accept the common spellings; callers
+    treat an empty string as "no identifier given" and answer with guidance rather than a traceback.
+    """
+    v = arguments.get("label") or arguments.get("node_id") or arguments.get("id") or ""
+    return v if isinstance(v, str) else str(v)
 
 
 def _strip_diacritics(text: str | None) -> str:
@@ -323,6 +340,34 @@ _RATIONALE_MATCH_BONUS = 0.75
 # hundred characters of prose matches many query terms, so a page that
 # merely mentions the words ties with the page that is actually about them.
 _BODY_MATCH_BONUS = 0.35
+_ATTRIBUTE_MATCH_BONUS = 0.75
+
+
+def _flatten_attr_text(val, parts: list[str]) -> None:
+    if isinstance(val, dict):
+        for k, v in val.items():
+            parts.append(str(k))
+            _flatten_attr_text(v, parts)
+    elif isinstance(val, (list, tuple)):
+        for item in val:
+            _flatten_attr_text(item, parts)
+    elif val is not None:
+        parts.append(str(val))
+
+
+def _node_attributes_text(data: dict) -> tuple[str, str]:
+    """The node's `attributes` key-value pairs normalized and tokenized for search."""
+    attrs = data.get("attributes")
+    if not isinstance(attrs, dict) or not attrs:
+        return "", ""
+    parts: list[str] = []
+    _flatten_attr_text(attrs, parts)
+    if not parts:
+        return "", ""
+    raw_text = " ".join(parts)
+    norm = _strip_diacritics(raw_text).lower()
+    tokens = " ".join(_search_tokens(norm))
+    return norm, tokens
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -432,6 +477,9 @@ def _node_search_text(data: dict, nid: str) -> str:
     body = _node_body_text(data)
     if body:
         fields += (body,)
+    attr_norm, attr_tokens = _node_attributes_text(data)
+    if attr_norm:
+        fields += (attr_norm, attr_tokens)
     return "\x00".join(fields)
 
 
@@ -622,6 +670,7 @@ def _score_query(
         source = (data.get("source_file") or "").lower()
         rationale = _node_rationale_text(data)
         body = _node_body_text(data)
+        attr_norm, attr_tokens = _node_attributes_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -696,6 +745,11 @@ def _score_query(
             if body and t in body:
                 body_value = _BODY_MATCH_BONUS * w
                 score += body_value
+            # Attribute tier (#3625): recall for questions naming attributes or literal values.
+            attr_value = 0.0
+            if attr_norm and (t in attr_norm or t in attr_tokens):
+                attr_value = _ATTRIBUTE_MATCH_BONUS * w
+                score += attr_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -714,7 +768,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value + rationale_value + body_value
+                singleton += tier_value + substr_value + source_value + rationale_value + body_value + attr_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -1142,12 +1196,38 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        attrs = d.get("attributes")
+        attrs_suffix = ""
+        if isinstance(attrs, dict) and attrs:
+            pairs = []
+            for k, v in sorted(attrs.items()):
+                if isinstance(v, (dict, list)):
+                    v_str = json.dumps(v, sort_keys=True)
+                elif isinstance(v, str):
+                    v_str = f'"{v}"'
+                elif isinstance(v, bool):
+                    v_str = "true" if v else "false"
+                elif v is None:
+                    v_str = "null"
+                else:
+                    v_str = str(v)
+                if len(v_str) > 60:
+                    v_str = v_str[:57] + "..."
+                pairs.append(f"{k}={v_str}")
+                if len(pairs) >= 10:
+                    pairs.append("...")
+                    break
+            attrs_summary = ", ".join(pairs)
+            if len(attrs_summary) > 200:
+                attrs_summary = attrs_summary[:197] + "..."
+            attrs_suffix = f" attrs={{{sanitize_label(attrs_summary)}}}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"{learning_suffix}"
+            f"{attrs_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -1322,17 +1402,24 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
     fold there too; letting networkx assign the keys keeps both, and nothing
     downstream reads the key.
 
-    A fresh copy per query rather than a cached one: `_filter_graph_by_context`
-    already copies per query when a filter applies, and the copy shares node
-    data dicts with `G`, so only the edge dicts are duplicated.
+    Built once per graph object and cached on `G.graph`, like the trigram index.
+    It used to be rebuilt on every query, copying every edge of the graph, which
+    was most of a warm `query_graph` call. Sharing it is safe because nothing
+    downstream writes to it: `_filter_graph_by_context` builds a new graph when
+    a filter applies, and the traversals and the renderer only read. A hot
+    reload swaps in a fresh `G`, so a cached view never outlives its graph.
     """
     if not G.is_directed():
         return G
+    cached = G.graph.get("_traversal_view")
+    if cached is not None:
+        return cached
     H = nx.MultiGraph() if G.is_multigraph() else nx.Graph()
     H.graph.update(G.graph)
     H.add_nodes_from(G.nodes(data=True))
     for u, v, d in G.edges(data=True):
         H.add_edge(u, v, **{**d, "_src": d.get("_src", u), "_tgt": d.get("_tgt", v)})
+    G.graph["_traversal_view"] = H
     return H
 
 def _query_graph_text(
@@ -1602,14 +1689,18 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     nodes; this covers the symbol case it does not reach.
     """
     for tier in _find_node_tiers(G, label):
-        if not tier:
-            continue
-        by_source: dict[str, str] = {}
-        for nid in tier:
-            source = str(G.nodes[nid].get("source_file") or "")
-            by_source.setdefault(source, nid)
-        return list(by_source.values()) if len(by_source) > 1 else []
+        if tier:
+            return _rivals_across_files(G, tier)
     return []
+
+
+def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
+    """One node id per distinct source file in *tier*, or `[]` for a single file."""
+    by_source: dict[str, str] = {}
+    for nid in tier:
+        source = str(G.nodes[nid].get("source_file") or "")
+        by_source.setdefault(source, nid)
+    return list(by_source.values()) if len(by_source) > 1 else []
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
@@ -1626,16 +1717,165 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
         return None, f"No node matching '{label}' found."
     rivals = find_node_ambiguity(G, label)
     if rivals:
-        listing = "\n".join(
-            f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-        )
-        return None, (
-            f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
-            f"{listing}\n"
-            f"Retry with path::symbol using one of the paths above (e.g. "
-            f"<path>::{label}) or the full node id."
-        )
+        return None, _ambiguity_message(G, label, rivals)
     return matches[0], None
+
+
+def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
+    listing = "\n".join(
+        f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+    )
+    # The example names the matched node's own label: echoing the query would
+    # nest a path-scoped one (`index.ts::foo()`) behind a second path.
+    symbol = G.nodes[rivals[0]].get("label") or label
+    return (
+        f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+        f"{listing}\n"
+        f"Retry with path::symbol using one of the paths above (e.g. "
+        f"<path>::{symbol}) or the full node id."
+    )
+
+
+def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> str:
+    source = G.nodes[hits[0]].get("source_file")
+    where = f"in {source}" if source else "with no source file"
+    listing = "\n".join(
+        f"  {G.nodes[h].get('source_location') or G.nodes[h].get('label', h)}\n    id: {h}"
+        for h in hits
+    )
+    return (
+        f"Ambiguous: '{label}' matches {len(hits)} nodes {where}.\n"
+        f"{listing}\n"
+        f"Retry with the full node id."
+    )
+
+
+def _no_scoped_match_message(G: nx.Graph, path_part: str, symbol_part: str) -> str:
+    """Refusal for a `file::symbol` endpoint whose file defines no such symbol (#4264).
+
+    Fail closed like `explain` instead of scoring the bare name across other
+    files, and name the files that DO define the symbol so the user can retarget.
+    """
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    others: set[str] = set()
+    for _nid, d in G.nodes(data=True):
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            sf = d.get("source_file") or ""
+            if sf:
+                others.add(sf)
+    msg = (
+        f"No node matching '{path_part}::{symbol_part}' found; "
+        f"{path_part} defines no '{symbol_part}'."
+    )
+    if others:
+        msg += "\n" + "\n".join(f"  defined in {s}" for s in sorted(others))
+    return msg
+
+
+def _resolve_path_endpoint(
+    G: nx.Graph, query: str
+) -> tuple[str | None, list[tuple[float, str]], str | None]:
+    """Resolve one endpoint of the `path` CLI / `shortest_path` tool (#3913).
+
+    A hit in `_find_node`'s exact tiers — the `path::symbol` form, a full node
+    id, an exact label or source path — names the node outright, so it is used
+    as-is, and refused with the candidate list when it spans several files (the
+    answer `explain` gives). Scoring alone tokenized those forms instead: the
+    path half of `path::symbol` pulled the route to the file node, and an id's
+    tokens to its containing class. Only a query without an exact hit falls
+    through to `_score_nodes`, which ranks the multi-word and partial labels
+    the tiers cannot.
+
+    Several hits in one file are refused too, unless the query is a file path
+    (whose tier is the file node followed by its members): two same-named
+    symbols of one file were split by graph order behind a score-tie warning,
+    and `path::symbol` cannot separate them — only the node id can.
+
+    Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
+    score fallback picked the node; ``(None, [], message)`` when ambiguous; and
+    ``(None, [], None)`` when nothing matches.
+    """
+    source_exact, exact, _, _ = _find_node_tiers(G, query)
+    hits = source_exact or exact
+    if hits:
+        rivals = _rivals_across_files(G, hits)
+        if rivals:
+            return None, [], _ambiguity_message(G, query, rivals)
+        # A `path::symbol` hit also lands in `source_exact`; only a plain path
+        # query makes that tier a file lookup.
+        file_query = bool(source_exact) and "::" not in query
+        if len(hits) > 1 and not file_query:
+            return None, [], _same_file_ambiguity_message(G, query, hits)
+        return hits[0], [], None
+    # A deliberately file-scoped endpoint (`file::symbol`) that matched no symbol
+    # in that file must NOT fall back to scoring the bare name across other files
+    # (#4264) — that reintroduces the cross-file guess the qualifier forbids. Fail
+    # closed like `explain`. A native `::` label (Rust/C++) that matched resolves
+    # via the exact tier above (hits non-empty) and never reaches here.
+    path_part, sep, symbol_part = query.partition("::")
+    if sep and path_part.strip() and symbol_part.strip():
+        return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
+    scored = _score_nodes(G, [t.lower() for t in query.split()])
+    if not scored:
+        return None, [], None
+    return _pick_scored_endpoint(G, scored, query), scored, None
+
+
+def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
+    """The sorted, materialized graph `_shortest_path_text` searches.
+
+    Deterministic path (#2074): the hash-seeded undirected view picked an
+    arbitrary route among equal-length paths, so the search runs on a graph
+    built from sorted node and edge lists, which makes the chosen path
+    canonical. Serve's shared G is left untouched (its degree feeds query-seed
+    tie-breaks).
+
+    Built once per graph object and direction mode, and cached on `G.graph`
+    like the trigram index: rebuilding it from every edge was nearly all of a
+    `shortest_path` call. Only `nx.shortest_path` reads it, and a hot reload
+    swaps in a fresh `G`, so a cached graph never outlives its source.
+    """
+    cache = G.graph.setdefault("_path_search_graphs", {})
+    cached = cache.get(undirected)
+    if cached is not None:
+        return cached
+    if undirected:
+        H = nx.Graph()
+        H.add_nodes_from(sorted(G.nodes))
+        H.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+    else:
+        # Directed by default (#2487). True direction is NOT raw arc
+        # order: legacy canonicalized files persist a flipped arc with
+        # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
+        # (falling back to the loaded arc) rather than to_directed().
+        H = nx.DiGraph()
+        H.add_nodes_from(sorted(G.nodes))
+        H.add_edges_from(sorted(
+            (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+        ))
+        # A `contains` edge only runs file -> symbol; there is no stored
+        # edge back out to the containing file, so a route that reaches a
+        # symbol (via an `imports`/`calls`/`references` hop) can never
+        # continue on to the file that defines it, and a file-to-file
+        # dependency routed through a shared symbol finds no path at all
+        # even though both halves exist (#3878). Add the implied reverse hop
+        # for traversal only — the printed segment still recovers the real
+        # stored `contains` edge and its true direction from G below.
+        H.add_edges_from(sorted(
+            (d.get("_tgt", v), d.get("_src", u))
+            for u, v, d in G.edges(data=True)
+            if d.get("relation") == "contains"
+        ))
+    cache[undirected] = H
+    return H
 
 
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
@@ -1645,14 +1885,16 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     Directed by default (#2487): the returned path must follow stored
     caller→callee direction; pass ``undirected=True`` to ignore it.
     """
-    src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-    tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-    if not src_scored:
+    src_nid, src_scored, src_err = _resolve_path_endpoint(G, arguments["source"])
+    if src_err:
+        return src_err
+    if src_nid is None:
         return f"No node matching source '{arguments['source']}' found."
-    if not tgt_scored:
+    tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, arguments["target"])
+    if tgt_err:
+        return tgt_err
+    if tgt_nid is None:
         return f"No node matching target '{arguments['target']}' found."
-    src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
-    tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
     # Ambiguity guard: when both queries resolve to the same node, the
     # shortest path is trivially zero hops, which is almost never what the
     # caller wanted (see bug #828).
@@ -1678,26 +1920,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     max_hops = int(arguments.get("max_hops", 8))
     undirected = bool(arguments.get("undirected", False))
     try:
-        # Deterministic path (#2074): the hash-seeded undirected view picked an
-        # arbitrary route among equal-length paths. Build a sorted, materialized
-        # graph so the chosen path is canonical. Serve's shared G is left
-        # untouched (its degree feeds query-seed tie-breaks).
-        if undirected:
-            _und = nx.Graph()
-            _und.add_nodes_from(sorted(G.nodes))
-            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
-        else:
-            # Directed by default (#2487). True direction is NOT raw arc
-            # order: legacy canonicalized files persist a flipped arc with
-            # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
-            # (falling back to the loaded arc) rather than to_directed().
-            _dg = nx.DiGraph()
-            _dg.add_nodes_from(sorted(G.nodes))
-            _dg.add_edges_from(sorted(
-                (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
-            ))
-            path_nodes = nx.shortest_path(_dg, src_nid, tgt_nid)
+        path_nodes = nx.shortest_path(_path_search_graph(G, undirected), src_nid, tgt_nid)
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         src_label = G.nodes[src_nid].get("label", src_nid)
         tgt_label = G.nodes[tgt_nid].get("label", tgt_nid)
@@ -1879,8 +2102,10 @@ def _build_server(graph_path: str):
                 description="Get full details for a specific node by label or ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
-                    "required": ["label"],
+                    "properties": {
+                        "label": {"type": "string", "description": "Node label or ID to look up"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                    },
                 },
             ),
             types.Tool(
@@ -1890,10 +2115,10 @@ def _build_server(graph_path: str):
                     "type": "object",
                     "properties": {
                         "label": {"type": "string"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
                         "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
                     },
-                    "required": ["label"],
                 },
             ),
             types.Tool(
@@ -2038,11 +2263,21 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
         d = G.nodes[nid]
+        attrs = d.get("attributes")
+        attrs_line = []
+        if isinstance(attrs, dict) and attrs:
+            raw_attrs = json.dumps(attrs, sort_keys=True)
+            if len(raw_attrs) > 1000:
+                raw_attrs = raw_attrs[:997] + "..."
+            attrs_line = [f"  Attributes: {_CONTROL_CHAR_RE.sub('', raw_attrs)}"]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
@@ -2057,10 +2292,14 @@ def _build_server(graph_path: str):
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
+            *attrs_line,
         ])
 
     def _tool_get_neighbors(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         rel_filter = arguments.get("relation_filter", "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:
@@ -2137,6 +2376,29 @@ def _build_server(graph_path: str):
             f"EXTRACTED: {round(confs.count('EXTRACTED')/total*100)}%\n"
             f"INFERRED: {round(confs.count('INFERRED')/total*100)}%\n"
             f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%\n"
+            f"{_build_commit_line()}"
+        )
+
+    def _build_commit_line() -> str:
+        """Which commit the graph was built from, and whether HEAD has moved on.
+
+        An MCP client cannot stat graph.json, so this is its only staleness
+        signal (#3354). HEAD is read at query time from the repo holding the
+        graph (the same anchor export.to_json stamps from); no git or no repo
+        just drops the HEAD comparison. Empty when the graph has no commit.
+        """
+        commit = getattr(G, "graph", {}).get("_built_at_commit")
+        if not commit:
+            return ""
+        from graphify.export import _git_head
+        head = _git_head(Path(active_graph_path).parent)
+        if not head:
+            return f"Built at commit: {commit}\n"
+        if head == commit:
+            return f"Built at commit: {commit} (matches HEAD)\n"
+        return (
+            f"Built at commit: {commit}\n"
+            f"HEAD is {head[:7]}, graph built at {commit[:7]}: graph may be stale\n"
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
