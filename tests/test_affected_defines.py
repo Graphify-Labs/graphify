@@ -1,4 +1,4 @@
-"""#XXXX — affected <Symbol> must reach callers through its defining file.
+"""#4288 — affected <Symbol> must reach callers through its defining file.
 
 Dart/Flutter (and Python, Go, and other file-module languages) extract a class
 or function as a symbol node with a ``defines`` edge from its source file.
