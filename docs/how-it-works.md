@@ -25,7 +25,7 @@ Markdown sidecars under `graphify-out/converted/`. Office files (`.docx`,
 
 ## How community detection works
 
-Communities are found using the [Leiden algorithm](https://www.nature.com/articles/s41598-019-41695-z) — a graph-clustering method that groups nodes by edge density. Nodes with many connections between them end up in the same community.
+Communities are found using the [Leiden algorithm](https://www.nature.com/articles/s41598-019-41695-z) when the optional `leiden` extra is installed — a graph-clustering method that groups nodes by edge density. Nodes with many connections between them end up in the same community. Without that extra, graphify falls back to NetworkX Louvain. The algorithms can produce different partitions, so install the extra before generating labels you intend to keep; changing algorithms requires a full `graphify label` refresh.
 
 **No embeddings needed.** The semantic similarity edges that Claude extracts (`semantically_similar_to`) are already in the graph, so they influence community shape directly. The graph structure is the similarity signal — there's no separate embedding step or vector database.
 
