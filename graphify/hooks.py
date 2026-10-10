@@ -137,6 +137,42 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
 fi
 """
 
+_GIT_C_ESCAPES = {
+    "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92,
+}
+
+
+def _unquote_git_path(name: str) -> str:
+    """Decode a path as printed by ``git diff --name-only``.
+
+    Even with ``core.quotePath=false`` git wraps a name containing a double
+    quote, backslash or control character in double quotes and C-escapes it,
+    spelling raw bytes as ``\\ooo`` octal. Unquoted names are returned as-is.
+    """
+    if len(name) < 2 or not (name.startswith('"') and name.endswith('"')):
+        return name
+    body = name[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\" or i + 1 >= len(body):
+            out += ch.encode("utf-8")
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt in "0123" and i + 3 < len(body) and all(c in "01234567" for c in body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        elif nxt in _GIT_C_ESCAPES:
+            out.append(_GIT_C_ESCAPES[nxt])
+            i += 2
+        else:
+            out += ch.encode("utf-8")
+            i += 1
+    return os.fsdecode(bytes(out))
+
+
 # The Python that the rebuild runs, shared by both hooks. Embedded verbatim into
 # the launcher below and re-executed in the detached child. Must not contain the
 # double-quote, $, backtick or backslash characters: it is carried inside a
@@ -145,8 +181,10 @@ _REBUILD_BODY_COMMIT = """\
 import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
+from graphify.hooks import _unquote_git_path
+
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
-changed = [Path(f.strip()) for f in changed_raw.strip().splitlines() if f.strip()]
+changed = [Path(_unquote_git_path(f.strip())) for f in changed_raw.strip().splitlines() if f.strip()]
 
 if not changed:
     sys.exit(0)
@@ -410,7 +448,10 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + """
-CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
+# core.quotePath=false: by default git prints a non-ASCII path as a quoted
+# octal-escaped string, which matches no file on disk, so the edit was silently
+# left out of the rebuild. Names git still quotes are decoded in the rebuild.
+CHANGED=$(git -c core.quotePath=false diff --name-only HEAD~1 HEAD 2>/dev/null || git -c core.quotePath=false diff --name-only HEAD 2>/dev/null)
 if [ -z "$CHANGED" ]; then
     exit 0
 fi
