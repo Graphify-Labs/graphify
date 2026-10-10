@@ -111,3 +111,13 @@ def test_project_uninstall_codebuddy_spares_global(tmp_path):
     assert (global_tree / ".graphify_version").exists()
     assert not (project_tree / "SKILL.md").exists()
     assert not project_tree.exists()
+
+
+import pytest as _pytest_posix
+
+
+@_pytest_posix.fixture(autouse=True)
+def _posix_skill_layout(monkeypatch):
+    """gemini and hermes install to different directories on Windows; these tests
+    assert the POSIX layout, so pin it."""
+    monkeypatch.setattr("platform.system", lambda: "Linux")
