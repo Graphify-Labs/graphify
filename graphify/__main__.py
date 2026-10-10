@@ -910,6 +910,7 @@ def _run_cli() -> None:
         print("    --budget N              cap output at N tokens (default 2000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
+        print("                            X: label, node id, file path, Class.method, or path::symbol")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
