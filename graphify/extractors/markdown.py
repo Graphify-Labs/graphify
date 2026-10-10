@@ -1,4 +1,4 @@
-"""Markdown extractor. Moved verbatim from graphify/extract.py."""
+"""Markdown (and AsciiDoc) extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
 import re
@@ -30,7 +30,7 @@ _MD_REF_DEF_RE = re.compile(
 
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
-_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc"}
 
 # Inline code spans, single or double backtick delimited. Fenced blocks are
 # skipped before this runs, so a span here is prose citing a symbol by name.
@@ -365,7 +365,8 @@ def extract_markdown(path: Path) -> dict:
     Produces nodes for:
     - The file itself, tagged ``node_kind: "page"``, carrying any YAML
       frontmatter under ``frontmatter``
-    - Each heading (# / ## / ### etc.), tagged ``node_kind: "heading"``
+    - Each heading (Markdown ``#`` / ``##`` / ``###`` etc. and AsciiDoc
+      ``=`` / ``==`` / ``===`` etc.), tagged ``node_kind: "heading"``
 
     ``node_kind`` exists because ``file_type`` cannot carry this distinction:
     it is a closed enum (build.py rewrites anything outside
@@ -547,8 +548,13 @@ def extract_markdown(path: Path) -> dict:
         if line_num_0 < body_start:
             continue
 
-        # Detect headings: # Heading, ## Heading, etc.
+        # Detect headings: Markdown (# Heading, ## Heading, ...) and
+        # AsciiDoc (= Heading, == Heading, ...) styles (#3238). A bare run
+        # of `=` with no trailing text is not a heading (it is a Markdown
+        # setext underline), so both forms require text after the marker.
         heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
+        if heading_match is None:
+            heading_match = re.match(r'^(={1,6})\s+(.+)', line_text)
         if heading_match:
             level = len(heading_match.group(1))
             title = heading_match.group(2).strip()

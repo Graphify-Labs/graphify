@@ -7346,6 +7346,8 @@ _DISPATCH: dict[str, Any] = {
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
     ".skill": extract_markdown,
+    ".adoc": extract_markdown,
+    ".asciidoc": extract_markdown,
     ".pas": extract_pascal,
     ".pp": extract_pascal,
     ".dpr": extract_pascal,
