@@ -1187,6 +1187,45 @@ def test_scala_enum_definition_cases_and_methods(tmp_path):
     assert any(_normalize_symbol_label(l) == "run" for l in labels)
 
 
+def test_scala_given_instance_methods_do_not_leak(tmp_path):
+    """A Scala 3 `given name: T with { ... }` instance is a class-like
+    container; its methods must be namespaced under it.
+
+    `given_definition` was not in the Scala class_types, so its body was never
+    a scope: the methods leaked to the file. An instance like
+    `given intShow: Show[Int] with { def show ... }` minted a file-level
+    `show` node that collided with the same-named trait method, corrupting the
+    trait node with the given's call/reference edges. The given must instead be
+    its own node, owning its methods, so the trait stays clean.
+    """
+    f = tmp_path / "given.scala"
+    f.write_text(
+        "trait Show[A]:\n"
+        "  def show(a: A): String\n"
+        "\n"
+        "given intShow: Show[Int] with\n"
+        "  def show(a: Int): String = helper(a)\n"
+        "  def helper(a: Int): String = a.toString\n"
+    )
+    r = extract_scala(f)
+    assert "error" not in r
+    nodes = {n["id"]: n["label"] for n in r["nodes"]}
+    given_nid = next((nid for nid, label in nodes.items() if label == "intShow"), None)
+    assert given_nid is not None, "given instance node dropped"
+    # Both of the given's methods are attributed to the given, not the file.
+    given_methods = {
+        e["target"] for e in r["edges"]
+        if e["relation"] == "method" and e["source"] == given_nid
+    }
+    assert len(given_methods) == 2, "given methods not namespaced under the given"
+    # The show -> helper call stays entirely inside the given (no collision with
+    # the trait's same-named `show`).
+    calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
+    assert calls, "call between the given's methods dropped"
+    assert all(src in given_methods and tgt in given_methods for src, tgt in calls), \
+        "a call leaked out of the given (trait/given method collision)"
+
+
 def test_scala_var_definition_field_context():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("HttpClient", "BaseClient") in _edge_labels(r, "references", "field")
