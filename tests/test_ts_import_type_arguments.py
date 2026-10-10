@@ -303,6 +303,7 @@ def test_ts_normalizer_scales_linearly_on_large_files():
     flaking the ratio. CPU time counts only work actually done, so it isolates
     the algorithmic scaling regardless of load.
     """
+    import gc
     import time
 
     def build(n: int) -> bytes:
@@ -314,17 +315,30 @@ def test_ts_normalizer_scales_linearly_on_large_files():
 
     def timed(n: int) -> float:
         source = build(n)
-        start = time.process_time()
-        _normalize_ts_import_types(source)
-        return time.process_time() - start
+        # A GC pause lands in process_time and, on a small measurement, inflates
+        # the ratio enough to flake (#3154 CI hit 3.2x on a noisy runner). Disable
+        # it for the measured section so we time only the normalizer's own work.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            start = time.process_time()
+            _normalize_ts_import_types(source)
+            return time.process_time() - start
+        finally:
+            if gc_was_enabled:
+                gc.enable()
 
-    timed(200)  # warm the grammar/parser import off the measured path
-    small = min(timed(1000) for _ in range(5))
-    large = min(timed(2000) for _ in range(5))
+    # Measure at larger sizes than the smoke case: at ~1k the per-call fixed
+    # overhead is a big fraction of the tiny (~0.03s) measurement, so the ratio
+    # is noisy; at 4k/8k the O(n) work dominates and linear scaling converges
+    # toward a clean ~2x. min() over repeats takes the least-preempted run.
+    timed(500)  # warm the grammar/parser import off the measured path
+    small = min(timed(4000) for _ in range(5))
+    large = min(timed(8000) for _ in range(5))
 
-    # Linear work doubles (~2x). Quadratic work quadruples (~4x). A generous
-    # 3x ceiling separates the two without being flaky under load.
-    assert large < small * 3, (
+    # Linear work doubles (~2x). Quadratic work quadruples (~4x). A 3.5x ceiling
+    # separates the two with enough headroom to survive CI scheduling noise.
+    assert large < small * 3.5, (
         f"scaling looks super-linear: {small:.4f}s -> {large:.4f}s "
         f"({large / small:.1f}x for 2x input)"
     )

@@ -98,9 +98,9 @@ def test_cpp_instance_member_call_resolves(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("main()", "calls", "bar", "INFERRED") in calls
+    assert ("main()", "calls", ".bar()", "INFERRED") in calls
     # Exactly one bar call edge from main (no fan-out, no duplicate).
-    bar_calls = [c for c in calls if c[0] == "main()" and c[2] == "bar"]
+    bar_calls = [c for c in calls if c[0] == "main()" and c[2] == ".bar()"]
     assert len(bar_calls) == 1
 
 
@@ -113,7 +113,7 @@ def test_cpp_pointer_member_call_resolves(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("main()", "calls", "bar", "INFERRED") in calls
+    assert ("main()", "calls", ".bar()", "INFERRED") in calls
 
 
 def test_cpp_qualified_member_call_is_extracted(tmp_path: Path):
@@ -125,7 +125,88 @@ def test_cpp_qualified_member_call_is_extracted(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("main()", "calls", "bar", "EXTRACTED") in calls
+    assert ("main()", "calls", ".bar()", "EXTRACTED") in calls
+
+
+def test_cpp_qualified_call_resolves_to_a_qualified_only_definition(tmp_path: Path):
+    """#2348: a macro heavy class body (Unreal's UCLASS()/GENERATED_BODY()) can
+    defeat the bundled grammar's error recovery badly enough that the in-class
+    method declaration is never parsed as a member at all -- the out-of-line
+    .cpp definition then has nothing to attach to and the extractor falls back
+    to a node labeled with the qualified name ("AHelper::FindNearest()")
+    contained by its FILE rather than a bare-labeled one contained by its
+    class. A Foo::bar() call site must still resolve to that qualified only
+    node instead of silently dropping the edge."""
+    base = tmp_path / "src"
+    _write(base / "helper.h", (
+        "#pragma once\n"
+        '#include "CoreMinimal.h"\n'
+        '#include "helper.generated.h"\n'
+        "UCLASS()\n"
+        "class AHelper : public AActor {\n"
+        "    GENERATED_BODY()\n"
+        "public:\n"
+        "    UFUNCTION()\n"
+        "    static AHelper* FindNearest(UWorld* W);\n"
+        "};\n"
+    ))
+    _write(base / "helper.cpp", (
+        '#include "helper.h"\n'
+        "AHelper* AHelper::FindNearest(UWorld* W) { return nullptr; }\n"
+    ))
+    _write(base / "caller.cpp", (
+        '#include "helper.h"\n'
+        "void useIt(UWorld* W) {\n"
+        "    AHelper* h = AHelper::FindNearest(W);\n"
+        "    (void)h;\n"
+        "}\n"
+    ))
+    result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
+
+    calls = _call_edges(result)
+    assert ("useIt()", "calls", "AHelper::FindNearest()", "EXTRACTED") in calls
+
+
+def test_cpp_qualified_only_call_stays_ambiguous_across_two_classes(tmp_path: Path):
+    """The exactly-one-candidate guard still applies to the qualified-only
+    fallback: two DIFFERENT classes that both fail header parsing and both
+    happen to share a class name and a method name must not let a call
+    resolve to either one."""
+    base = tmp_path / "src"
+    header = (
+        "#pragma once\n"
+        '#include "a.generated.h"\n'
+        "UCLASS()\n"
+        "class AFoo : public AActor {\n"
+        "    GENERATED_BODY()\n"
+        "public:\n"
+        "    UFUNCTION()\n"
+        "    static AFoo* FindNearest(UWorld* W);\n"
+        "};\n"
+    )
+    body = (
+        '#include "a.h"\n'
+        "AFoo* AFoo::FindNearest(UWorld* W) { return nullptr; }\n"
+    )
+    _write(base / "a.h", header)
+    _write(base / "a.cpp", body)
+    _write(base / "sub" / "a.h", header)
+    _write(base / "sub" / "a.cpp", body)
+    _write(base / "caller.cpp", (
+        '#include "a.h"\n'
+        "void useIt(UWorld* W) {\n"
+        "    AFoo* h = AFoo::FindNearest(W);\n"
+        "    (void)h;\n"
+        "}\n"
+    ))
+    paths = sorted(base.glob("*")) + sorted((base / "sub").glob("*"))
+    result = extract(paths, cache_root=tmp_path / "cache")
+
+    calls = _call_edges(result)
+    assert not any(
+        rel == "calls" and src == "useIt()"
+        for src, rel, _, _ in calls
+    )
 
 
 def test_cpp_this_member_call_resolves_to_enclosing_class(tmp_path: Path):
@@ -137,7 +218,7 @@ def test_cpp_this_member_call_resolves_to_enclosing_class(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("baz", "calls", "bar", "EXTRACTED") in calls
+    assert (".baz()", "calls", ".bar()", "EXTRACTED") in calls
 
 
 def test_cpp_godnode_guard_ambiguous_and_unknown_receiver(tmp_path: Path):
@@ -157,7 +238,7 @@ def test_cpp_godnode_guard_ambiguous_and_unknown_receiver(tmp_path: Path):
         e for e in result["edges"]
         if e.get("relation") == "calls"
         and _label(result, e["source"]) == "main()"
-        and _label(result, e["target"]) == "run"
+        and _label(result, e["target"]) == ".run()"
     ]
     # Exactly one resolved run() call, and it targets A's run (not B's, not both).
     assert len(run_calls) == 1
