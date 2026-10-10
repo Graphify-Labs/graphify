@@ -87,6 +87,38 @@ def resolve_pascal_inherited_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
 
+    # Global singleton receivers (#3101): `var mm: TMainModule;` in one unit's
+    # interface, `mm.ServerReport(...)` from another. Join the receiver name
+    # to its declared type across every file's interface globals, the type to
+    # the one class of that name in the corpus, and the method name to that
+    # class's one method. Any ambiguity at any step - two units declaring the
+    # same global with different types, two classes with the same name, two
+    # same-named methods on the class - yields no edge rather than a guess.
+    global_types: dict[str, set[str]] = {}
+    for result in per_file:
+        if not isinstance(result, dict):
+            continue
+        for var_name, type_lower in (result.get("pascal_globals") or {}).items():
+            global_types.setdefault(str(var_name).lower(), set()).add(str(type_lower).lower())
+    class_by_name: dict[str, set[str]] = {}
+    for owner in class_procs:
+        onode = node_by_id.get(owner)
+        if onode is None:
+            continue
+        class_by_name.setdefault(str(onode.get("label", "")).lower(), set()).add(owner)
+
+    def _resolve_via_receiver(receiver: str, name_lower: str) -> str | None:
+        types = global_types.get(receiver)
+        if not types or len(types) != 1:
+            return None
+        classes = class_by_name.get(next(iter(types)))
+        if not classes or len(classes) != 1:
+            return None
+        candidates = class_procs.get(next(iter(classes)), {}).get(name_lower)
+        if candidates and len(candidates) == 1:
+            return candidates[0]
+        return None
+
     def _resolve(owner: str, name_lower: str) -> str | None:
         seen_bases: set[str] = set()
         queue = list(class_bases.get(owner, []))
@@ -106,10 +138,16 @@ def resolve_pascal_inherited_calls(
         name_lower = rc.get("callee")
         if not caller or not name_lower:
             continue
-        owner = owner_of.get(caller)
-        if not owner:
-            continue
-        target = _resolve(str(owner), str(name_lower))
+        receiver = rc.get("receiver")
+        if receiver:
+            # A qualified call names its receiver; it is not an inherited
+            # call, so the caller's ancestor chain must not be consulted.
+            target = _resolve_via_receiver(str(receiver).lower(), str(name_lower))
+        else:
+            owner = owner_of.get(caller)
+            if not owner:
+                continue
+            target = _resolve(str(owner), str(name_lower))
         if not target or target == caller:
             continue
         pair = (caller, target)
