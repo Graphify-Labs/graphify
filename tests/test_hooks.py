@@ -1655,3 +1655,66 @@ def test_status_compares_only_the_graphify_block(tmp_path):
     hook.write_text(hook.read_text(encoding="utf-8") + "echo 'user after'\n", encoding="utf-8")
 
     assert "out of date" not in status(repo)
+
+
+# ── git quotes non-ASCII paths in `git diff --name-only` ────────────────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("pkg/plain.py", "pkg/plain.py"),
+    ("ünïcödé/naïve.py", "ünïcödé/naïve.py"),
+    ('"\\303\\274n\\303\\257c\\303\\266d\\303\\251/na\\303\\257ve.py"', "ünïcödé/naïve.py"),
+    ('"\\344\\270\\255\\346\\226\\207/a.py"', "中文/a.py"),
+    ('"say \\"hi\\".py"', 'say "hi".py'),
+    ('"tab\\there.py"', "tab\there.py"),
+    ('"back\\\\slash.py"', "back\\slash.py"),
+])
+def test_unquote_git_path(raw, expected):
+    """git C-quotes some paths in --name-only output; the hook must decode them
+    back to the real file name or the change never reaches the rebuild."""
+    from graphify.hooks import _unquote_git_path
+    assert _unquote_git_path(raw) == expected
+
+
+def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
+    """End-to-end against real git: every path the post-commit hook collects
+    for a commit touching non-ASCII and quote-bearing names must exist on disk
+    after decoding, so the incremental rebuild actually re-extracts them."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    if shutil.which("sh") is None:  # pragma: no cover
+        pytest.skip("sh not available")
+    from graphify.hooks import _HOOK_SCRIPT, _unquote_git_path
+
+    names = ["plain.py", "ünïcödé/naïve.py", "中文/用户.py"]
+    if os.name != "nt":
+        names.append('say "hi".py')
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q", ".")
+    _git("config", "user.email", "t@t.co")
+    _git("config", "user.name", "t")
+    _git("config", "core.quotePath", "true")  # git's default; pin it against user config
+    (tmp_path / "seed.txt").write_text("x")
+    _git("add", "-A")
+    _git("commit", "-qm", "init")
+    for name in names:
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def f():\n    return 1\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-qm", "edit")
+
+    changed_line = next(l for l in _HOOK_SCRIPT.splitlines() if l.startswith("CHANGED=$("))
+    r = subprocess.run(["sh", "-c", changed_line + '\nprintf "%s\\n" "$CHANGED"'],
+                       cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
+    raw = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    # Non-ASCII names come through verbatim (core.quotePath=false)...
+    for name in names:
+        if '"' not in name:
+            assert name in raw
+    # ...and names git still quotes decode back to the real file.
+    got = [_unquote_git_path(l) for l in raw]
+    assert sorted(got) == sorted(names)
+    assert all((tmp_path / g).is_file() for g in got)
