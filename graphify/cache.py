@@ -37,7 +37,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 7  # Python opaque-base/super(args) raw-call markers and nested-class enclosing ids.
+_AST_CACHE_SCHEMA = 8  # Rust receiver-type facts (rust_receiver, _rust_ret/_rust_ret_ok, _rust_fields).
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is
