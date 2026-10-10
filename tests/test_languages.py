@@ -2427,6 +2427,32 @@ def test_julia_macro_definition_is_extracted(tmp_path):
     assert ("@sayhello", "@sayhello") not in _edge_labels(r, "calls")
 
 
+def test_julia_where_clause_function_is_extracted(tmp_path):
+    """`function f(x::T) where T ... end` must yield a definition and the calls
+    made from its body.
+
+    The signature path only read a `call_expression` child directly, but a
+    parametric method wraps that call head in a `where_expression`, so the name
+    was never found and the whole function — node, `defines` edge, and every
+    call it made — was dropped. `where` clauses are pervasive in generic Julia.
+    """
+    f = tmp_path / "where.jl"
+    f.write_text(
+        "function combine(a::Vector{T}, b::Vector{T}) where {T<:Number}\n"
+        "    merge_all(a, b)\n"
+        "end\n"
+        "function merge_all(a, b)\n"
+        "    return a\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "combine()" in labels, "where-clause function dropped"
+    assert ("combine", "merge_all") in _edge_labels(r, "calls"), \
+        "call from a where-clause function body dropped"
+
+
 def test_julia_enum_and_members_are_extracted(tmp_path):
     """`@enum` defines a type and its members across the inline, begin/end block,
     explicit-value, and typed forms. The whole macrocall was previously ignored,

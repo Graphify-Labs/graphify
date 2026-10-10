@@ -105,8 +105,19 @@ def extract_julia(path: Path) -> dict:
         return (_read_text(name_node, source) if name_node else None), None
 
     def _func_name_from_signature(sig_node) -> str | None:
-        """Extract function name from a Julia signature node (call_expression > identifier)."""
+        """Extract function name from a Julia signature node (call_expression > identifier).
+
+        A parametric method (`function f(x::T) where T`) wraps the
+        call_expression in a `where_expression`, so the call head is one level
+        deeper. Without unwrapping it the name was never found and the whole
+        function — node, `defines` edge, and every call made from its body —
+        was dropped; `where` clauses are pervasive in idiomatic Julia.
+        """
         for child in sig_node.children:
+            if child.type == "where_expression":
+                name = _func_name_from_signature(child)
+                if name:
+                    return name
             if child.type == "call_expression":
                 callee = child.children[0] if child.children else None
                 if callee and callee.type == "identifier":
