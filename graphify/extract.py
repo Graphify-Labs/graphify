@@ -2558,7 +2558,7 @@ def extract_svelte(path: Path) -> dict:
         # resolve yields the same (source, target, relation) edge twice, which
         # build.dedupe_edges collapses — same as the Astro path (#3902).
         script_re = _re.compile(
-            r"<script\b[^>]*>([\s\S]*?)</script\s*>", _re.IGNORECASE
+            r"<script\b[^>]*>([\s\S]*?)</script(?:\s+[^>]*)?>", _re.IGNORECASE
         )
         static_import_re = _re.compile(
             r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""
@@ -2659,7 +2659,7 @@ def extract_astro(path: Path) -> dict:
             r"\A\s*---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|\Z)"
         )
         script_re = _re.compile(
-            r"<script\b[^>]*>([\s\S]*?)</script\s*>", _re.IGNORECASE
+            r"<script\b[^>]*>([\s\S]*?)</script\b[^>]*>", _re.IGNORECASE
         )
         static_import_re = _re.compile(
             r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""

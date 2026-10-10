@@ -82,13 +82,21 @@ class DigestAuth(Auth):
         """Compute the Authorization header value for a digest challenge."""
         self._nonce_count += 1
         nc = f"{self._nonce_count:08x}"
-        cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
         realm = challenge.get("realm", "")
         nonce = challenge.get("nonce", "")
+        algorithm = challenge.get("algorithm", "SHA-256").upper()
 
-        ha1 = hashlib.md5(f"{self.username}:{realm}:{self.password}".encode()).hexdigest()
-        ha2 = hashlib.md5(f"{request.method}:{request.url.path}".encode()).hexdigest()
-        response_hash = hashlib.md5(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}".encode()).hexdigest()
+        def _hash_hex(value: str) -> str:
+            data = value.encode()
+            if algorithm in ("SHA-256", "SHA-256-SESS"):
+                return hashlib.sha256(data).hexdigest()
+            raise ValueError(f"Unsupported or weak digest algorithm: {algorithm}")
+
+        cnonce = _hash_hex(str(time.time()))[:8]
+
+        ha1 = _hash_hex(f"{self.username}:{realm}:{self.password}")
+        ha2 = _hash_hex(f"{request.method}:{request.url.path}")
+        response_hash = _hash_hex(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}")
 
         return (
             f'Digest username="{self.username}", realm="{realm}", '
