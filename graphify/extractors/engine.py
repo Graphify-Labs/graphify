@@ -476,6 +476,41 @@ def _java_declarator_names(declaration_node, source: bytes) -> list[str]:
     return names
 
 
+_JAVA_NAMED_BINDINGS = frozenset({
+    "formal_parameter", "variable_declarator", "enhanced_for_statement",
+    "resource", "catch_formal_parameter", "instanceof_expression",
+})
+_JAVA_LISTED_BINDINGS = frozenset({
+    "inferred_parameters", "record_pattern_component", "type_pattern",
+})
+
+
+def _java_bound_names(method_node, source: bytes) -> set[str]:
+    """Every name a Java method binds itself, typed or not: parameters, locals
+    (`var` too), lambda, catch, for-each, resource and pattern variables.
+
+    A receiver outside this set and the class's own fields can only be a field
+    the class inherits (or one of an enclosing class), never a local."""
+    names: set[str] = set()
+    stack = [method_node.child_by_field_name("parameters"), method_node.child_by_field_name("body")]
+    while stack:
+        node = stack.pop()
+        if node is None:
+            continue
+        if node.type in _JAVA_NAMED_BINDINGS:
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                names.add(_read_text(name_node, source))
+        elif node.type in _JAVA_LISTED_BINDINGS:
+            names.update(_read_text(c, source) for c in node.children if c.type == "identifier")
+        elif node.type == "lambda_expression":
+            params = node.child_by_field_name("parameters")
+            if params is not None and params.type == "identifier":
+                names.add(_read_text(params, source))
+        stack.extend(node.children)
+    return names
+
+
 def _java_lambda_parameters(
     lambda_node,
     source: bytes,
@@ -4750,6 +4785,7 @@ def _extract_generic(
     # Java receiver typing is method-scoped: current-class fields are shared,
     # while parameters and locals belong only to their declaring method.
     java_field_types: dict[str, dict[str, str]] = {}
+    java_field_names: dict[str, set[str]] = {}
     java_method_scopes: dict[int, tuple[object, str]] = {}
     # C# receiver typing is method-scoped too (#2299): class fields/properties
     # are shared, parameters and locals belong only to their declaring method —
@@ -5928,6 +5964,9 @@ def _extract_generic(
         if (config.ts_module == "tree_sitter_java"
                 and t == "field_declaration"
                 and parent_class_nid):
+            java_field_names.setdefault(parent_class_nid, set()).update(
+                _java_declarator_names(node, source)
+            )
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 receiver_type = _java_receiver_type_name(type_node, source)
@@ -7210,6 +7249,18 @@ def _extract_generic(
         )
         for body_id, (method_node, class_nid) in java_method_scopes.items()
     }
+    # Names a Java receiver can be without being an inherited field. Keyed by
+    # caller node: overloads share one node, so their names are pooled.
+    java_bound_names: dict[str, set[str]] = {}
+    _java_body_caller = {id(body): nid for nid, body in function_bodies}
+    _java_field_name_tables = {c: dict.fromkeys(names, "") for c, names in java_field_names.items()}
+    for body_id, (method_node, class_nid) in java_method_scopes.items():
+        caller = _java_body_caller.get(body_id)
+        if caller:
+            java_bound_names.setdefault(caller, set()).update(
+                _java_bound_names(method_node, source),
+                _fields_up_chain(_java_field_name_tables, class_nid),
+            )
     csharp_receiver_types = {
         body_id: _csharp_method_receiver_types(
             method_node,
@@ -8200,6 +8251,13 @@ def _extract_generic(
                             receiver_type = (receiver_types or {}).get(member_receiver or "")
                             if receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
+                            elif (is_member_call and member_receiver
+                                    and member_receiver.isidentifier()
+                                    and member_receiver not in java_bound_names.get(caller_nid, ())):
+                                # Not a local, a parameter or a field of the class
+                                # here: a field it inherits from another file, whose
+                                # type only the resolver can see.
+                                rc_entry["receiver_unbound"] = True
                         # Kotlin fully-qualified call (#2550): the dotted prefix +
                         # lang tag let _resolve_kotlin_qualified_calls claim it.
                         if kotlin_qualified_prefix:

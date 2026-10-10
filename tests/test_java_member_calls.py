@@ -385,3 +385,134 @@ def test_inherited_call_is_not_bound_to_another_language(tmp_path: Path):
 
     run = _find(result, ".run()", "worker_run")
     assert not any(source == run for source, _ in calls)
+
+
+# A name declared by two unrelated classes, so no corpus-wide unique-name match
+# can stand in for the supertype lookup.
+_TWO_GATEWAYS = {
+    "Gateway.java": "class Gateway { void charge() {} }\n",
+    "Audit.java": "class Audit { void charge() {} boolean isRegistered() { return false; } }\n",
+}
+
+
+def test_bare_call_reaches_a_method_inherited_from_another_file(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_TWO_GATEWAYS,
+        "Base.java": "abstract class Base { boolean isRegistered() { return true; } }\n",
+        "Child.java": "class Child extends Base { boolean check() { return isRegistered(); } }\n",
+    })
+
+    check = _find(result, ".check()", "child_check")
+    assert (check, _find(result, ".isRegistered()", "base_isregistered")) in calls
+    assert (check, _find(result, ".isRegistered()", "audit_isregistered")) not in calls
+
+
+def test_bare_call_reaches_an_interface_default_method(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_TWO_GATEWAYS,
+        "Registry.java": "interface Registry { default boolean isRegistered() { return true; } }\n",
+        "Child.java": "class Child implements Registry { boolean check() { return isRegistered(); } }\n",
+    })
+
+    check = _find(result, ".check()", "child_check")
+    assert (check, _find(result, ".isRegistered()", "registry_isregistered")) in calls
+
+
+def test_bare_call_takes_the_nearest_supertype_declaring_it(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Root.java": "class Root { void stop() {} }\n",
+        "Middle.java": "class Middle extends Root { void stop() {} }\n",
+        "Leaf.java": "class Leaf extends Middle { void run() { stop(); } }\n",
+    })
+
+    run = _find(result, ".run()", "leaf_run")
+    assert (run, _find(result, ".stop()", "middle_stop")) in calls
+    assert (run, _find(result, ".stop()", "root_stop")) not in calls
+
+
+def test_bare_call_declared_twice_on_one_level_binds_nothing(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Base.java": "class Base { void log() {} }\n",
+        "Loud.java": "interface Loud { default void log() {} }\n",
+        "Child.java": "class Child extends Base implements Loud { void run() { log(); } }\n",
+    })
+
+    run = _find(result, ".run()", "child_run")
+    assert not any(source == run and "log" in target for source, target in calls)
+
+
+def test_base_constructor_call_is_not_an_inherited_method(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Base.java": "class Base { Base() {} Base copy() { return new Base(); } }\n",
+        "Child.java": "class Child extends Base { Base make() { return new Base(); } }\n",
+    })
+
+    make = _find(result, ".make()", "child_make")
+    assert (make, _find(result, ".Base()", "base_base_base")) not in calls
+
+
+def test_bare_field_receiver_inherited_from_another_file(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_TWO_GATEWAYS,
+        "Base.java": "abstract class Base { protected Gateway gateway; }\n",
+        "Child.java": "class Child extends Base { void pay() { gateway.charge(); } }\n",
+    })
+
+    pay = _find(result, ".pay()", "child_pay")
+    assert (pay, _find(result, ".charge()", "gateway_charge")) in calls
+    assert (pay, _find(result, ".charge()", "audit_charge")) not in calls
+
+
+def test_local_names_shadow_an_inherited_field(tmp_path: Path):
+    # A parameter, a `var` local and a lambda parameter named like the inherited
+    # field are not the field: none of these calls may reach Gateway.charge().
+    calls, result = _calls(tmp_path, {
+        **_TWO_GATEWAYS,
+        "Base.java": "abstract class Base { protected Gateway gateway; }\n",
+        "Child.java": (
+            "import java.util.List;\n"
+            "class Child extends Base {\n"
+            "    void viaParam(Audit gateway) { gateway.charge(); }\n"
+            "    void viaVar() { var gateway = new Audit(); gateway.charge(); }\n"
+            "    void viaLambda(List<Audit> xs) { xs.forEach(gateway -> gateway.charge()); }\n"
+            "}\n"
+        ),
+    })
+
+    gateway_charge = _find(result, ".charge()", "gateway_charge")
+    for caller in ("viaParam", "viaVar", "viaLambda"):
+        assert (_find(result, f".{caller}()", caller.lower()), gateway_charge) not in calls, caller
+    assert (_find(result, ".viaParam()", "viaparam"), _find(result, ".charge()", "audit_charge")) in calls
+
+
+def test_schema_bump_retires_java_entries_cached_without_the_unbound_marker(tmp_path: Path, monkeypatch):
+    """An entry from schema 7 has no `receiver_unbound` marker; replaying it would
+    leave `gateway.charge()` on an inherited field unlinked."""
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+    from graphify.extract import extract_java
+
+    files = {
+        **_TWO_GATEWAYS,
+        "Base.java": "abstract class Base { protected Gateway gateway; }\n",
+        "Child.java": "class Child extends Base { void pay() { gateway.charge(); } }\n",
+    }
+    paths = []
+    for name, body in files.items():
+        (tmp_path / name).write_text(body, encoding="utf-8")
+        paths.append(tmp_path / name)
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 7)  # last schema without the marker
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    for p in paths:
+        stale = extract_java(p)
+        for raw_call in stale.get("raw_calls", []):
+            raw_call.pop("receiver_unbound", None)
+        save_cached(p, stale, root=tmp_path, cache_root=tmp_path, kind="ast")
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    r = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
+    assert (_find(r, ".pay()", "child_pay"), _find(r, ".charge()", "gateway_charge")) in calls
