@@ -2015,6 +2015,33 @@ def _ts_mask_candidate_is_malformed(
     return False
 
 
+_TS_EXPORT_TYPE_STAR_RE = re.compile(rb"\bexport\s+(type)\s*\*")
+
+
+def _normalize_ts_export_type_star(source: bytes) -> bytes | None:
+    """Rewrite ``export type * from "..."`` to a plain ``export * from "..."``.
+
+    TS 5.0's type-only star re-export has no equivalent in tree-sitter-typescript
+    0.23 (the latest release as of #3942): the grammar raises an ERROR on the
+    ``type`` keyword in this position and the whole file is dropped, losing
+    every symbol, not just the one statement. The construct is erased at
+    compile time, the same as ``import type`` / ``export type { X }``, so the
+    graph only needs the re-export edge, not the type-only distinction —
+    blank out ``type`` (keeping every other byte and offset identical) so the
+    grammar parses the ordinary, already-supported ``export * from "..."``
+    form instead. Unlike ``import(...)``, this prefix is never ambiguous with
+    a runtime expression, so no AST-based disambiguation pass is needed here.
+    """
+    matches = list(_TS_EXPORT_TYPE_STAR_RE.finditer(source))
+    if not matches:
+        return None
+    masked = bytearray(source)
+    for match in matches:
+        start, end = match.span(1)
+        masked[start:end] = b" " * (end - start)
+    return bytes(masked)
+
+
 def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | None:
     """Rewrite only syntactic TypeScript ``import(...)`` type arguments.
 
@@ -2128,7 +2155,11 @@ def extract_js(path: Path) -> dict:
     if is_ts:
         try:
             source = _read_source_bytes(path)
-            source_override = _normalize_ts_import_types(source, tsx=suffix == ".tsx")
+            working = _normalize_ts_export_type_star(source) or source
+            normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
+            source_override = normalized if normalized is not None else (
+                working if working is not source else None
+            )
         except OSError:
             pass
     result = _extract_generic(path, config, source_override=source_override)
