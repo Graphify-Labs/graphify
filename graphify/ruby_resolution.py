@@ -11,7 +11,8 @@ It resolves three shapes, at EXTRACTED (1.0) confidence and only when the
 target is certain (single owning class, single owned method) — bail otherwise:
 
   * ``Processor.new``          -> a ``calls`` edge to the ``Processor`` class
-  * ``p.run`` where ``p`` is a ``Processor`` -> a ``calls`` edge to ``Processor#run``
+  * ``p.run`` where ``p`` is a ``Processor`` -> a ``calls`` edge to the direct
+    or safely inherited ``Processor#run`` instance method
   * bare ``run`` in a subclass -> promote the existing inferred edge when the
     same-kind method is uniquely proven by the extracted inheritance chain
 
@@ -22,8 +23,9 @@ disambiguation, so node ids and raw_call caller_nids are final.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
+
+from .build import _is_file_node_label
 
 
 def _key(label: str) -> str:
@@ -91,7 +93,7 @@ def resolve_ruby_member_calls(
         node
         for node in all_nodes
         if str(node.get("source_file", "")).endswith((".rb", ".rake"))
-        and node.get("label") == Path(str(node.get("source_file"))).name
+        and _is_file_node_label(node.get("label"), node.get("source_file"))
     ]
     ruby_context_complete = bool(ruby_file_nodes) and all(
         isinstance(node.get("metadata"), dict)
@@ -510,6 +512,13 @@ def resolve_ruby_member_calls(
         if class_nid is None:
             continue
         method_nid = method_index.get((class_nid, str(callee)))
+        if (
+            method_nid is None
+            and ruby_context_complete
+            and not unsafe_ruby_files
+            and not external_method_owners
+        ):
+            method_nid = _inherited_method(class_nid, str(callee), "instance")
         if method_nid is None:
             continue
         _emit(caller, method_nid, rc)
