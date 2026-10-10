@@ -101,11 +101,19 @@ fi
 # Scan the uv tool envs directly; UV_TOOL_DIR overrides the default
 # location. A tool env is adopted only if its python passes the probe, so a
 # co-installed tool without graphify never satisfies it.
+#
+# The snap roots matter because an install made from inside a snap-confined
+# editor lands in that snap's private HOME, which the plain $HOME roots above
+# never see once the hook runs from an ordinary shell. Revisions are globbed
+# rather than pinned: snap rotates them on update, which is exactly what makes
+# a pinned path unsafe (see _is_rotating_prefix).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
     for _GFY_TOOLS in \
         "${UV_TOOL_DIR:-}" \
         "$HOME/.local/share/uv/tools" \
-        "$HOME/AppData/Roaming/uv/tools"; do
+        "$HOME/AppData/Roaming/uv/tools" \
+        "$HOME"/snap/*/current/.local/share/uv/tools \
+        "$HOME"/snap/*/[0-9]*/.local/share/uv/tools; do
         [ -n "$_GFY_TOOLS" ] || continue
         for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
             [ -x "$_GFY_CAND" ] || continue
@@ -129,6 +137,42 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
 fi
 """
 
+_GIT_C_ESCAPES = {
+    "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92,
+}
+
+
+def _unquote_git_path(name: str) -> str:
+    """Decode a path as printed by ``git diff --name-only``.
+
+    Even with ``core.quotePath=false`` git wraps a name containing a double
+    quote, backslash or control character in double quotes and C-escapes it,
+    spelling raw bytes as ``\\ooo`` octal. Unquoted names are returned as-is.
+    """
+    if len(name) < 2 or not (name.startswith('"') and name.endswith('"')):
+        return name
+    body = name[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\" or i + 1 >= len(body):
+            out += ch.encode("utf-8")
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt in "0123" and i + 3 < len(body) and all(c in "01234567" for c in body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        elif nxt in _GIT_C_ESCAPES:
+            out.append(_GIT_C_ESCAPES[nxt])
+            i += 2
+        else:
+            out += ch.encode("utf-8")
+            i += 1
+    return os.fsdecode(bytes(out))
+
+
 # The Python that the rebuild runs, shared by both hooks. Embedded verbatim into
 # the launcher below and re-executed in the detached child. Must not contain the
 # double-quote, $, backtick or backslash characters: it is carried inside a
@@ -137,8 +181,10 @@ _REBUILD_BODY_COMMIT = """\
 import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
+from graphify.hooks import _unquote_git_path
+
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
-changed = [Path(f.strip()) for f in changed_raw.strip().splitlines() if f.strip()]
+changed = [Path(_unquote_git_path(f.strip())) for f in changed_raw.strip().splitlines() if f.strip()]
 
 if not changed:
     sys.exit(0)
@@ -180,7 +226,20 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                # Python 3.13 no longer raises on a symlink loop (resolve returns
+                # the path unresolved), so require a real directory: a loop or a
+                # dangling target is not a dir and correctly falls back.
+                _in_repo = (_resolved == _cwd or _cwd in _resolved.parents) and _resolved.is_dir()
+            except (OSError, RuntimeError):
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[graphify hook] ignoring out-of-repo .graphify_root: {_txt}')
     _rebuild_code(_root, changed_paths=changed, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -242,7 +301,20 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                # Python 3.13 no longer raises on a symlink loop (resolve returns
+                # the path unresolved), so require a real directory: a loop or a
+                # dangling target is not a dir and correctly falls back.
+                _in_repo = (_resolved == _cwd or _cwd in _resolved.parents) and _resolved.is_dir()
+            except (OSError, RuntimeError):
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[graphify] ignoring out-of-repo .graphify_root: {_txt}')
     _rebuild_code(_root, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -376,13 +448,28 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + """
-CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
+# core.quotePath=false: by default git prints a non-ASCII path as a quoted
+# octal-escaped string, which matches no file on disk, so the edit was silently
+# left out of the rebuild. Names git still quotes are decoded in the rebuild.
+CHANGED=$(git -c core.quotePath=false diff --name-only HEAD~1 HEAD 2>/dev/null || git -c core.quotePath=false diff --name-only HEAD 2>/dev/null)
 if [ -z "$CHANGED" ]; then
     exit 0
 fi
 
-# Skip when only graphify-out/ artifacts changed (avoids rebuild loop when graph outputs are tracked in git)
-_NON_GRAPH=$(echo "$CHANGED" | grep -v '^graphify-out/' || true)
+# Skip when only output-dir artifacts changed (avoids rebuild loop when graph
+# outputs are tracked in git). The dir is whatever GRAPHIFY_OUT names, the same
+# source the rebuild body reads (#1423): a literal graphify-out/ here let a
+# commit touching only a renamed output dir's graph.json trigger a full rebuild.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+_GFY_OUT="${_GFY_OUT%/}"
+# The leading ( on each pattern is POSIX and keeps bash 3.2 (macOS /bin/sh)
+# from mis-parsing the pattern's ) as the end of the $(...) substitution.
+_NON_GRAPH=$(printf '%s\n' "$CHANGED" | while IFS= read -r _GFY_F; do
+    case "$_GFY_F" in
+        ("$_GFY_OUT"/*) ;;
+        (*) printf '%s\n' "$_GFY_F" ;;
+    esac
+done)
 if [ -z "$_NON_GRAPH" ]; then
     exit 0
 fi
@@ -434,8 +521,11 @@ fi
 # branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
 [ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
 
-# Only run if graphify-out/ exists (graph has been built before)
-if [ ! -d "graphify-out" ]; then
+# Only run if the output dir exists (graph has been built before). Resolve it
+# from GRAPHIFY_OUT like the rebuild body does (#1423): a literal graphify-out/
+# here made the branch-switch rebuild a silent no-op for every renamed output dir.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+if [ ! -d "${_GFY_OUT%/}" ]; then
     exit 0
 fi
 
@@ -527,6 +617,66 @@ def _reject_windows_path(value: str, source: str) -> None:
         )
 
 
+def _is_within(child: Path, parent: Path) -> bool:
+    """True if `child` is `parent` or a path underneath it."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _rev_parse_path(root: Path, flag: str) -> Path | None:
+    """Resolve one ``git rev-parse`` path flag against ``root``.
+
+    ``-c core.hooksPath=`` is not used: an empty value makes ``--git-path hooks``
+    print ``./`` instead of the real hooks directory.
+    """
+    import subprocess as _sp
+    try:
+        res = _sp.run(
+            ["git", "-C", str(root), "rev-parse", flag],
+            capture_output=True, text=True,
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    if res.returncode != 0:
+        return None
+    raw = res.stdout.strip()
+    if not raw or any(c in raw for c in ("\n", "\r", "\x00")):
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def _builtin_hooks_dir(root: Path) -> Path | None:
+    """Git's own hooks directory, ignoring core.hooksPath.
+
+    ``--git-path hooks`` follows core.hooksPath, so the default is derived from
+    the common git dir. A linked worktree's hooks live in the main repo's
+    ``.git/hooks``, which is outside the worktree root.
+    """
+    for flag in ("--git-common-dir", "--git-dir"):
+        git_dir = _rev_parse_path(root, flag)
+        if git_dir is not None:
+            return (git_dir / "hooks").resolve()
+    return None
+
+
+def _hooks_path_allowed(root: Path, candidate: Path) -> bool:
+    """Allow in-repo hook dirs (Husky) and git's own hooks dir only.
+
+    A core.hooksPath that resolves anywhere else is repository-controlled
+    local config. Honoring it makes `hook install` write outside the repo (#3869).
+    """
+    if _is_within(candidate, root):
+        return True
+    builtin = _builtin_hooks_dir(root)
+    return builtin is not None and candidate.resolve() == builtin.resolve()
+
+
 def _hooks_dir(root: Path) -> Path:
     """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky).
 
@@ -567,8 +717,19 @@ def _hooks_dir(root: Path) -> Path:
             if raw and not any(c in raw for c in ("\n", "\r", "\x00")):
                 _reject_windows_path(raw, "git rev-parse --git-path hooks")
                 d = (root / raw).resolve()
-                d.mkdir(parents=True, exist_ok=True)
-                return d
+                if _hooks_path_allowed(root, d):
+                    d.mkdir(parents=True, exist_ok=True)
+                    return d
+                print(
+                    f"[graphify hooks] refusing hooks path {d}: it is outside "
+                    f"{root.resolve()}. Installing into the default git hooks "
+                    f"directory instead (#3869).",
+                    file=sys.stderr,
+                )
+                default = _builtin_hooks_dir(root)
+                if default is not None:
+                    default.mkdir(parents=True, exist_ok=True)
+                    return default
     except (OSError, FileNotFoundError):
         pass
     d = root / ".git" / "hooks"
@@ -647,7 +808,29 @@ def _pinned_python() -> str:
     """
     if re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable):
         return ""
+    if _is_rotating_prefix(sys.executable):
+        return ""
     return sys.executable
+
+
+# ``~/snap/<app>/<revision>/`` — snap swaps <revision> on every package update and
+# prunes the old tree, so anything under it is a path with an expiry date.
+_ROTATING_PREFIX_RE = re.compile(r"/snap/[^/]+/(\d+|current)/")
+
+
+def _is_rotating_prefix(path: str) -> bool:
+    """True if `path` lives under a directory the packaging system rotates.
+
+    A pin is only worth writing if it will still resolve tomorrow. An interpreter
+    inside a snap revision will not: the revision number changes on update and the
+    old tree is removed, which silently kills every hook pinned to it — observed
+    across 15 repositories at once when an editor snap moved past its revision.
+
+    Returning "" here is the documented safe degradation: the hook falls through to
+    its other probes, including the uv-tools scan, which searches snap-confined
+    homes too.
+    """
+    return bool(_ROTATING_PREFIX_RE.search(path.replace("\\", "/")))
 
 
 def _merge_attr_line() -> str:
@@ -834,6 +1017,23 @@ def uninstall(path: Path = Path(".")) -> str:
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
+# The two per-install values in a graphify block: the interpreter that ran
+# `hook install` and the .graphifyrc viz limit (status checks that one itself).
+_PINNED_LINE_RE = re.compile(r"^_PINNED='[^'\n]*'$", re.MULTILINE)
+_VIZ_EXPORT_LINE_RE = re.compile(r"^export GRAPHIFY_VIZ_NODE_LIMIT=.*\n", re.MULTILINE)
+
+
+def _comparable_block(text: str, marker: str, marker_end: str) -> str | None:
+    """The graphify block in *text* with its per-install values blanked out, or
+    None when the block has no end marker (install cannot rewrite those either)."""
+    start = text.find(marker)
+    end = text.find(marker_end, start) if start != -1 else -1
+    if end == -1:
+        return None
+    block = text[start:end + len(marker_end)]
+    return _VIZ_EXPORT_LINE_RE.sub("", _PINNED_LINE_RE.sub("_PINNED=''", block))
+
+
 def status(path: Path = Path(".")) -> str:
     """Check if graphify hooks are installed."""
     root = _git_root(path)
@@ -849,7 +1049,7 @@ def status(path: Path = Path(".")) -> str:
         print(f"  warning: {exc}")
     cfg_limit = cfg.get("viz_node_limit")
 
-    def _check(name: str, marker: str) -> str:
+    def _check(name: str, marker: str, marker_end: str, script: str) -> str:
         p = hooks_dir / name
         if not p.exists():
             return "not installed"
@@ -871,10 +1071,16 @@ def status(path: Path = Path(".")) -> str:
                     f"{installed_limit if installed_limit is not None else 'unset'}, "
                     f".graphifyrc has {cfg_limit})"
                 )
+        # Upgrading the package does not touch hooks already on disk, so a block
+        # from an older release keeps running its old script (#3771).
+        installed = _comparable_block(text, marker, marker_end)
+        current = _comparable_block(script.replace("__VIZ_LIMIT_EXPORT__", ""), marker, marker_end)
+        if installed is not None and installed != current:
+            return "installed (out of date: run `graphify hook install` to refresh it)"
         return "installed"
 
-    commit = _check("post-commit", _HOOK_MARKER)
-    checkout = _check("post-checkout", _CHECKOUT_MARKER)
+    commit = _check("post-commit", _HOOK_MARKER, _HOOK_MARKER_END, _HOOK_SCRIPT)
+    checkout = _check("post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END, _CHECKOUT_SCRIPT)
     merge = _merge_driver_status(root)
 
     res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"

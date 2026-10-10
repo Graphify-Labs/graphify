@@ -1,10 +1,18 @@
 use std::collections::HashMap;
 
+pub static RETRY_LIMIT: usize = 3;
+pub const DEFAULT_MODE: &str = "fast";
+const NODE_LIMIT: Limit = Limit(3);
+
+struct Limit(usize);
+
 struct Graph {
     nodes: HashMap<String, Vec<String>>,
 }
 
 impl Graph {
+    const CAPACITY: usize = 16;
+
     fn new() -> Self {
         Graph { nodes: HashMap::new() }
     }
