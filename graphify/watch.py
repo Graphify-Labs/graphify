@@ -210,6 +210,50 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
             except BlockingIOError:
                 yield False
                 return
+            # flock locks the open file's INODE, not the path (#4273). The
+            # release below unlinks the path (so a poller watching for the
+            # file's absence unblocks promptly), but a blocking waiter that
+            # was already parked in flock() when that unlink happened ends up
+            # holding the lock on an orphaned inode with no path at all — a
+            # LATER caller then opens the path fresh, gets a brand-new inode
+            # that was never locked, and flock succeeds on it immediately.
+            # Two holders are then inside the rebuild at once. Guard against
+            # this directly: after flock succeeds, confirm the fd we locked
+            # is still the file CURRENTLY at lock_path. If not — we won a
+            # race for an inode the path has already moved on from — drop
+            # this lock and retry against whatever is at the path now.
+            for _ in range(100):
+                try:
+                    fh_stat = os.fstat(fh.fileno())
+                    path_stat = os.stat(lock_path)
+                except OSError:
+                    same_file = False
+                else:
+                    same_file = (
+                        fh_stat.st_dev == path_stat.st_dev
+                        and fh_stat.st_ino == path_stat.st_ino
+                    )
+                if same_file:
+                    break
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+                fh = open(lock_path, "a+", encoding="utf-8")
+                try:
+                    fcntl.flock(fh.fileno(), flags)
+                except BlockingIOError:
+                    fh.close()
+                    yield False
+                    return
+            else:
+                # Pathological unlink/recreate storm — give up rather than
+                # spin forever; the caller gets the same outcome as losing
+                # the non-blocking race.
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+                yield False
+                return
         else:
             if blocking:
                 while True:
@@ -240,6 +284,17 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     finally:
         if acquired:
             if fcntl is not None:
+                # Unlink BEFORE unlocking (#4273): flock() only ever wakes a
+                # blocked waiter at the LOCK_UN call below, so doing the
+                # unlink first guarantees it has already happened by the
+                # time any waiter's flock() can return — closing the window
+                # the retry check above relies on. The other order (unlock
+                # then unlink) lets a waiter's flock() return, and its
+                # stat-based check run, in the gap before the unlink syscall
+                # actually lands — a false "still valid" read moments before
+                # the path disappears under it.
+                with contextlib.suppress(OSError):
+                    lock_path.unlink()
                 try:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
                 except OSError:
@@ -253,7 +308,9 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
         fh.close()
         # Signal "rebuild done" by removing the lock file. Only the holder
         # unlinks; a non-acquiring caller leaves the existing lock in place.
-        if acquired:
+        # The fcntl branch above already did this (order matters there,
+        # #4273); this covers msvcrt and the no-fcntl-no-match fallback.
+        if acquired and fcntl is None:
             with contextlib.suppress(OSError):
                 lock_path.unlink()
 
