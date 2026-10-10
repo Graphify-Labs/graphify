@@ -237,18 +237,51 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         validate_url(newurl)          # raises ValueError if scheme is wrong
+        old_origin = urllib.parse.urlsplit(req.full_url)
+        new_origin = urllib.parse.urlsplit(newurl)
+        request_headers = {
+            header.lower()
+            for header in (*req.headers, *req.unredirected_hdrs)
+        }
+        has_credentials = bool(
+            request_headers & {"authorization", "cookie", "proxy-authorization"}
+        )
+        if has_credentials and (
+            old_origin.scheme.lower(),
+            old_origin.hostname,
+            old_origin.port,
+        ) != (
+            new_origin.scheme.lower(),
+            new_origin.hostname,
+            new_origin.port,
+        ):
+            raise ValueError("Blocked cross-origin redirect for credentialed request.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _build_opener() -> urllib.request.OpenerDirector:
+class _SchemeValidationHandler(urllib.request.BaseHandler):
+    """Reject non-HTTP(S) requests before protocol-specific handlers run."""
+
+    def default_open(self, req):
+        validate_url(req.full_url)
+        return None
+
+
+def build_safe_opener() -> urllib.request.OpenerDirector:
+    """Build a urllib opener with DNS-rebinding and redirect SSRF guards."""
     # build_opener replaces the default HTTP(S)Handlers with our SSRF-guarded
     # subclasses, so every connection resolves+validates DNS once and connects
     # to that exact IP. Thread-safe: no process-global state is mutated.
     return urllib.request.build_opener(
+        _SchemeValidationHandler,
         _SSRFGuardedHTTPHandler,
         _SSRFGuardedHTTPSHandler,
         _NoFileRedirectHandler,
     )
+
+
+# Backward-compatible alias for callers/tests that used the original private helper.
+_build_opener = build_safe_opener
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +305,7 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
         OSError               - size cap exceeded
     """
     validate_url(url)
-    opener = _build_opener()
+    opener = build_safe_opener()
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
 
     with opener.open(req, timeout=timeout) as resp:
