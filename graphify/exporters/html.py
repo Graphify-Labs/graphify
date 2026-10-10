@@ -248,6 +248,46 @@ document.addEventListener('click', e => {{
   if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
 }});
 
+// Sidebar tooltips reuse vis-network's .vis-tooltip style and 100ms tooltipDelay.
+// Names get one only when CSS ellipsis truncates them (the full text is still in
+// the DOM); counts always get one, to say what the number is. Text is set with
+// textContent only (labels are untrusted). Delegated on document so rows rebuilt
+// later (search results, showInfo()) are covered.
+const sidebarTip = document.createElement('div');
+sidebarTip.className = 'vis-tooltip';
+sidebarTip.style.cssText = 'white-space: normal; max-width: 360px; overflow-wrap: break-word;';
+document.body.appendChild(sidebarTip);
+let sidebarTipTimer = null;
+let sidebarTipEl = null;
+function hideSidebarTip() {{
+  clearTimeout(sidebarTipTimer);
+  sidebarTip.style.visibility = 'hidden';
+  sidebarTipEl = null;
+}}
+document.addEventListener('mouseover', e => {{
+  const el = e.target.closest && e.target.closest('.legend-label, .legend-count, .search-item, .neighbor-link');
+  if (!el || el === sidebarTipEl) return;
+  hideSidebarTip();
+  const isCount = el.classList.contains('legend-count');
+  if (!isCount && el.scrollWidth <= el.clientWidth) return;
+  const text = isCount ? `${{el.textContent}} ${{el.textContent === '1' ? 'node' : 'nodes'}}` : el.textContent;
+  sidebarTipEl = el;
+  const x = e.clientX, y = e.clientY;
+  sidebarTipTimer = setTimeout(() => {{
+    sidebarTip.textContent = text;
+    sidebarTip.style.left = sidebarTip.style.top = '0px';  // measure at full max-width
+    sidebarTip.style.visibility = 'visible';
+    const w = sidebarTip.offsetWidth, h = sidebarTip.offsetHeight;
+    sidebarTip.style.left = Math.max(4, Math.min(x + 12, window.innerWidth - w - 4)) + 'px';
+    sidebarTip.style.top = (y + 16 + h > window.innerHeight ? Math.max(4, y - h - 8) : y + 16) + 'px';
+  }}, 100);
+}});
+document.addEventListener('mouseout', e => {{
+  if (sidebarTipEl && !sidebarTipEl.contains(e.relatedTarget)) hideSidebarTip();
+}});
+// A click rebuilds or hides the row (showInfo(), search pick) without a mouseout.
+document.addEventListener('mousedown', hideSidebarTip);
+
 // Track hovered node — hover detection is more reliable than click params
 let hoveredNodeId = null;
 network.on('hoverNode', params => {{

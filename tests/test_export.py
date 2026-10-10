@@ -1278,6 +1278,7 @@ const mockElem = () => ({{
 }});
 
 const doc = {{
+  body: mockElem(),
   elements: {{
     'info-content': mockElem(),
     'graph': mockElem(),
@@ -1385,3 +1386,108 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
     assert '<div class="field">Degree: 1</div>' in info_html
     assert "Type: unknown" not in info_html
     assert "Source: -" not in info_html
+
+
+def _run_sidebar_harness(html_content: str, epilogue: str):
+    """Run graph.html's client script in Node.js with DOM mocks that record
+    children and listeners, then run `epilogue` and return what it prints as JSON."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
+    assert m, "vis script block not found in html"
+    harness = """
+const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remove() {} }, children: [], listeners: {},
+  appendChild(c) { this.children.push(c); }, addEventListener(t, f) { this.listeners[t] = f; }, prepend() {} });
+const els = {};
+const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
+  createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
+const window = { innerWidth: 1280, innerHeight: 800 };
+class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
+  get(id) { return this.map.get(id); } update() {} }
+const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}
+  getConnectedNodes(id) { return RAW_NODES.map(n => n.id).filter(x => x !== id); } } };
+""" + m.group(1) + "\n" + epilogue
+    proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def _parse_html_fragment(fragment: str) -> list:
+    """Return (tag, attrs dict, text) for each start tag; HTMLParser decodes entities."""
+    from html.parser import HTMLParser
+    tags: list = []
+    open_: list = []
+
+    class _P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tags.append([tag, dict(attrs), ""])
+            open_.append(tags[-1])
+
+        def handle_endtag(self, tag):
+            if open_:
+                open_.pop()
+
+        def handle_data(self, data):
+            if open_:
+                open_[-1][2] += data
+
+    _P(convert_charrefs=True).feed(fragment)
+    return tags
+
+
+def test_to_html_legend_label_escaped_once_without_title(tmp_path):
+    """The legend label is HTML-escaped once for the innerHTML sink, so its DOM
+    text (what the sidebar tooltip shows) is the raw label; no title attributes."""
+    import networkx as nx
+    G = nx.Graph()
+    for nid in ("n1", "n2", "n3", "n4"):
+        G.add_node(nid, label=nid, file_type="code", source_file=f"{nid}.py")
+    label = "Team \"A\" & <B> 'c'"
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"], 1: ["n4"]}, str(out), community_labels={0: label, 1: "Solo"})
+    items = _run_sidebar_harness(out.read_text(encoding="utf-8"),
+                                 "console.log(JSON.stringify(legendEl.children.map(c => c.innerHTML)));")
+    assert "&amp;amp;" not in items[0]
+    tags = [t for frag in items for t in _parse_html_fragment(frag)]
+    assert {t[0] for t in tags} == {"div", "span"}
+    assert not any("title" in t[1] for t in tags)
+    assert [t[2] for t in tags if t[1].get("class") == "legend-label"] == [label, "Solo"]
+    assert [t[2] for t in tags if t[1].get("class") == "legend-count"] == ["3", "1"]
+
+
+def test_to_html_sidebar_tooltip_shows_truncated_text_and_node_counts(tmp_path):
+    """One shared .vis-tooltip: names only when truncated, counts always as
+    'N node(s)'; text set via textContent so & " ' < > show literally."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="a", file_type="code", source_file="a.py")
+    label = "Team \"A\" & <b>B</b> 'c' <img src=x onerror=alert(1)>"
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+    assert "sidebarTip.innerHTML" not in content
+    assert "max-width: 360px; overflow-wrap: break-word" in content
+    result = _run_sidebar_harness(content, """
+globalThis.setTimeout = f => f();
+const tips = document.body.children.filter(c => c.className === 'vis-tooltip');
+const hover = (cls, text, truncated) => {
+  const row = { textContent: text, scrollWidth: truncated ? 300 : 100, clientWidth: 100,
+    classList: { contains: c => c === cls }, contains: o => o === row,
+    closest: sel => (sel.split(', ').includes('.' + cls) ? row : null) };
+  document.listeners.mouseover({ target: row, clientX: 100, clientY: 100 });
+  const shown = tips[0].style.visibility === 'visible' ? tips[0].textContent : null;
+  document.listeners.mouseout({ target: row, relatedTarget: null });
+  return [shown, tips[0].style.visibility, tips[0].innerHTML];
+};
+const L = %s;
+console.log(JSON.stringify({ count: tips.length, hovers: [
+  hover('legend-label', L, true), hover('search-item', L, true), hover('neighbor-link', L, true),
+  hover('legend-label', 'short', false), hover('search-item', 'short', false), hover('neighbor-link', 'short', false),
+  hover('legend-count', '3', false), hover('legend-count', '1', false)] }));""" % json.dumps(label))
+    assert result["count"] == 1
+    assert result["hovers"] == [[label, "hidden", ""]] * 3 + [[None, "hidden", ""]] * 3 + [
+        ["3 nodes", "hidden", ""], ["1 node", "hidden", ""]]
