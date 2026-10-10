@@ -18,6 +18,7 @@ promote AST `uses` edges to EXTRACTED/1.0, which is a semantic judgement about
 what the extractor knows; snapping the scores onto the documented scale fixes
 the stated violation without making that call.
 """
+import ast
 from pathlib import Path
 
 import pytest
@@ -63,19 +64,78 @@ def test_extracted_and_ambiguous_defaults_are_unchanged():
 # No emission site ships an off-rubric literal
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("rel_path", [
-    "extract.py",
-    "symbol_resolution.py",
-    "extractors/engine.py",
-    "extractors/resolution.py",
+def _literal_scores(expr):
+    """Read only emitted literals, including both branches of a ternary.
+
+    Calls and lookups are consumers of scores, not literal emission sites.
+    Parsing Python also avoids matching examples in strings or comments.
+    """
+    if isinstance(expr, ast.Constant) and type(expr.value) in (int, float):
+        yield expr.value
+    elif isinstance(expr, ast.IfExp):
+        yield from _literal_scores(expr.body)
+        yield from _literal_scores(expr.orelse)
+
+
+def _emitted_score_exprs(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "confidence_score":
+                    yield value
+        elif isinstance(node, ast.keyword) and node.arg == "confidence_score":
+            yield node.value
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "confidence_score"
+            for target in node.targets
+        ):
+            yield node.value
+        elif isinstance(node, ast.AnnAssign) and (
+            isinstance(node.target, ast.Name) and node.target.id == "confidence_score"
+        ) and node.value is not None:
+            yield node.value
+
+
+def test_no_module_hardcodes_an_off_rubric_score():
+    """Cover every Python module and spelling, not a fixed list of resolvers.
+
+    EXTRACTED/1.0 and AMBIGUOUS/0.2 are valid too. Keep the separate
+    runtime checks below to verify that INFERRED edges use the INFERRED set.
+    """
+    allowed = RUBRIC | {1.0, 0.2}
+    violations = []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for expr in _emitted_score_exprs(tree):
+            for score in _literal_scores(expr):
+                if score not in allowed:
+                    violations.append(f"{path.relative_to(SRC)}:{expr.lineno}: {score}")
+    assert not violations, "Off-rubric emitted scores:\n" + "\n".join(violations)
+
+
+@pytest.mark.parametrize("source", [
+    '{"confidence_score": 0.8}',
+    'emit(confidence_score=0.8)',
+    'confidence_score = 0.8',
+    'confidence_score: float = 0.8',
+    '{"confidence_score": 1.0 if exact else 0.8}',
 ])
-def test_no_module_hardcodes_an_off_rubric_inferred_score(rel_path):
-    """0.8 was the value in the tree and is not on the scale. Catch it and the
-    forbidden 0.5 as literals, so a future edit cannot reintroduce either."""
-    text = (SRC / rel_path).read_text(encoding="utf-8")
-    for forbidden in ('"confidence_score": 0.8,', '"confidence_score": 0.5,',
-                      "confidence_score = 0.8\n", "confidence_score = 0.5\n"):
-        assert forbidden not in text, f"{rel_path} still emits {forbidden.strip()}"
+def test_emission_guard_recognizes_all_literal_spellings(source):
+    scores = [
+        score
+        for expr in _emitted_score_exprs(ast.parse(source))
+        for score in _literal_scores(expr)
+    ]
+    assert 0.8 in scores
+
+
+def test_emission_guard_ignores_comments_strings_and_score_consumers():
+    tree = ast.parse(
+        '# "confidence_score": 0.8\n'
+        'example = \'{"confidence_score": 0.8}\'\n'
+        'score = edge.get("confidence_score", 0.5)\n'
+    )
+    assert list(_emitted_score_exprs(tree)) == []
 
 
 # ---------------------------------------------------------------------------

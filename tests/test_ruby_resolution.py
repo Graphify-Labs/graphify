@@ -69,6 +69,19 @@ def _call_edges_matching(graph: dict, src_label: str, tgt_label: str) -> list[di
     ]
 
 
+def _owned_method_nid(graph: dict, owner_label: str, method_label: str) -> str:
+    labels = _labels(graph["nodes"])
+    matches = [
+        str(edge["target"])
+        for edge in graph["edges"]
+        if edge.get("relation") == "method"
+        and labels.get(edge.get("source")) == owner_label
+        and labels.get(edge.get("target")) == method_label
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def _only_call(graph: dict, target_label: str = ".helper()") -> dict:
     matches = _call_edges_matching(graph, ".call()", target_label)
     assert len(matches) == 1
@@ -182,6 +195,217 @@ def test_resolution_is_type_based_not_name_luck(tmp_path: Path) -> None:
     # the method node id is prefixed by its owning class (helper_processor_run)
     assert "processor" in tgt_id.lower(), f"expected Processor#run, got {tgt_id}"
     assert "worker" not in tgt_id.lower()
+
+
+def test_typed_member_call_resolves_to_inherited_instance_method(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "parent.rb", "class Parent\n  def run; :parent; end\nend\n")
+    _write(tmp_path, "child.rb", "class Child < Parent\nend\n")
+    _write(tmp_path, "other.rb", "class Other\n  def run; :other; end\nend\n")
+    _write(
+        tmp_path,
+        "main.rb",
+        "def process_all\n  worker = Child.new\n  worker.run\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    parent_run = _owned_method_nid(graph, "Parent", ".run()")
+    labels = _labels(graph["nodes"])
+    matches = [
+        edge
+        for edge in graph["edges"]
+        if edge.get("relation") == "calls"
+        and labels.get(edge.get("source")) == "process_all()"
+        and edge.get("target") == parent_run
+    ]
+
+    assert len(matches) == 1
+    assert matches[0]["confidence"] == "EXTRACTED"
+    assert matches[0]["confidence_score"] == 1.0
+
+
+def test_typed_member_call_prefers_direct_override(tmp_path: Path) -> None:
+    _write(tmp_path, "parent.rb", "class Parent\n  def run; :parent; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Parent\n  def run; :child; end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "main.rb",
+        "def process_all\n  worker = Child.new\n  worker.run\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    child_run = _owned_method_nid(graph, "Child", ".run()")
+    labels = _labels(graph["nodes"])
+
+    assert any(
+        edge.get("relation") == "calls"
+        and labels.get(edge.get("source")) == "process_all()"
+        and edge.get("target") == child_run
+        and edge.get("confidence") == "EXTRACTED"
+        for edge in graph["edges"]
+    )
+
+
+def test_typed_member_call_stays_unresolved_when_any_ruby_file_is_unsafe(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "parent.rb", "class Parent\n  def run; :parent; end\nend\n")
+    _write(tmp_path, "child.rb", "class Child < Parent\nend\n")
+    _write(
+        tmp_path,
+        "refinement.rb",
+        "module R\n  refine Parent do\n    def other; :refined; end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "main.rb",
+        "def process_all\n  worker = Child.new\n  worker.run\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    parent_run = _owned_method_nid(graph, "Parent", ".run()")
+    labels = _labels(graph["nodes"])
+
+    assert not any(
+        edge.get("relation") == "calls"
+        and labels.get(edge.get("source")) == "process_all()"
+        and edge.get("target") == parent_run
+        for edge in graph["edges"]
+    )
+
+
+def test_typed_member_call_stays_unresolved_with_external_owner_alias(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "parent.rb", "class Parent\n  def run; :parent; end\nend\n")
+    _write(tmp_path, "child.rb", "class Child < Parent\nend\n")
+    _write(
+        tmp_path,
+        "patch.rb",
+        "AliasChild ||= Child\nAliasChild.class_eval { attr_reader :run }\n",
+    )
+    _write(
+        tmp_path,
+        "main.rb",
+        "def process_all\n  worker = Child.new\n  worker.run\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    parent_run = _owned_method_nid(graph, "Parent", ".run()")
+
+    assert not any(
+        edge.get("relation") == "calls" and edge.get("target") == parent_run
+        for edge in graph["edges"]
+    )
+
+
+def _typed_member_inheritance_edges(
+    file_nodes: list[dict],
+    *,
+    caller_source: str = "child.rb",
+) -> list[dict]:
+    nodes = [
+        *file_nodes,
+        {
+            "id": "parent",
+            "label": "Parent",
+            "source_file": "parent.rb",
+        },
+        {
+            "id": "child",
+            "label": "Child",
+            "source_file": "child.rb",
+        },
+        {"id": "caller", "label": ".process_all()", "source_file": caller_source},
+        {
+            "id": "run",
+            "label": ".run()",
+            "source_file": "parent.rb",
+            "metadata": {"ruby_method_kind": "instance"},
+        },
+    ]
+    edges = [
+        {"source": "parent", "target": "run", "relation": "method"},
+        {
+            "source": "child",
+            "target": "parent",
+            "relation": "inherits",
+            "metadata": {
+                "ruby_superclass_ref": "Parent",
+                "ruby_lexical_scopes": [],
+            },
+        },
+    ]
+    raw_call = {
+        "caller_nid": "caller",
+        "callee": "run",
+        "is_member_call": True,
+        "receiver_type": "Child",
+        "source_file": caller_source,
+        "source_location": "L3",
+    }
+
+    resolve_ruby_member_calls([{"raw_calls": [raw_call]}], nodes, edges)
+    return edges
+
+
+def test_typed_member_inheritance_requires_complete_ruby_schema() -> None:
+    file_nodes = [
+        {
+            "id": "parent_file",
+            "label": "parent.rb",
+            "source_file": "parent.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {
+            "id": "child_file",
+            "label": "child.rb",
+            "source_file": "child.rb",
+            "metadata": {},
+        },
+    ]
+
+    edges = _typed_member_inheritance_edges(file_nodes)
+
+    assert not any(edge.get("relation") == "calls" for edge in edges)
+
+
+def test_typed_member_inheritance_recognizes_disambiguated_unsafe_file() -> None:
+    file_nodes = [
+        {
+            "id": "parent_file",
+            "label": "parent.rb",
+            "source_file": "parent.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {
+            "id": "child_file",
+            "label": "child.rb",
+            "source_file": "child.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {
+            "id": "caller_file",
+            "label": "app/main.rb",
+            "source_file": "project/app/main.rb",
+            "metadata": {
+                "ruby_resolution_schema": 1,
+                "ruby_lookup_unsafe": True,
+            },
+        },
+    ]
+
+    edges = _typed_member_inheritance_edges(
+        file_nodes,
+        caller_source="project/app/main.rb",
+    )
+
+    assert not any(edge.get("relation") == "calls" for edge in edges)
 
 
 def test_no_false_positive_when_type_unknown(tmp_path: Path) -> None:

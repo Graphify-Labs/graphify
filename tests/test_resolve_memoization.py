@@ -68,3 +68,22 @@ def test_exception_paths_match_resolve(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     weird = "a/../b/./c.py"
     assert _resolve_cached(weird) == Path(weird).resolve()
+
+
+@needs_cache
+def test_absolute_path_lookup_skips_getcwd(tmp_path, monkeypatch):
+    """An absolute path resolves the same from any cwd, so its key leaves the
+    cwd out and a lookup never calls os.getcwd() (a syscall per call)."""
+    target = tmp_path / "a.py"
+    expected = target.resolve()
+    assert _resolve_cached is not None
+    calls = []
+    real_getcwd = os.getcwd
+    monkeypatch.chdir(tmp_path)
+    assert _resolve_cached("a.py") == expected  # warm the memo
+    monkeypatch.setattr(os, "getcwd", lambda: calls.append(1) or real_getcwd())
+    assert _resolve_cached(target) == expected
+    assert _resolve_cached(str(target)) == expected
+    assert calls == []
+    assert _resolve_cached("a.py") == expected
+    assert calls, "a relative path keys on the cwd, even on a memo hit"
