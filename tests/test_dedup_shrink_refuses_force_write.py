@@ -97,10 +97,19 @@ def _run():
     return 0
 
 
-def test_complete_run_refuses_a_same_file_dedup_shrink(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize(
+    ("extra_argv", "env_force"),
+    [((), False), (("--force",), False), ((), True), (("--allow-partial",), False)],
+)
+def test_complete_run_refuses_a_same_file_dedup_shrink(
+    monkeypatch, tmp_path, capsys, extra_argv, env_force
+):
     """Two same-file duplicates plus one keeper. Dedup merges the pair.
     The file on disk must keep all three nodes."""
-    graph_path = _arm(monkeypatch, tmp_path, nodes=_notes(tmp_path))
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    if env_force:
+        monkeypatch.setenv("GRAPHIFY_FORCE", "1")
+    graph_path = _arm(monkeypatch, tmp_path, nodes=_notes(tmp_path), extra_argv=extra_argv)
     code = _run()
     err = capsys.readouterr().err
     assert code not in (None, 0)
