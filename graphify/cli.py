@@ -4282,12 +4282,32 @@ def dispatch_command(cmd: str) -> None:
                 _omitted_files = list(fresh.get("uncovered_files") or [])
                 if _omitted_files or _partial_semantic_files:
                     _extraction_incomplete = True
+                    _coverage_note = ""
+                    if _omitted_files and not _partial_semantic_files:
+                        # #4101: every omitted file here came back from a
+                        # chunk that was NOT truncated or hollow — the model
+                        # returned a complete, well-formed response that
+                        # simply did not address every dispatched file. A
+                        # bare "a re-run will retry them" reads as transient,
+                        # but re-sending the same oversized chunk reproduces
+                        # the same omission every time, so a retry loop with
+                        # no --token-budget change looks like extraction
+                        # never finishing rather than what it actually is: a
+                        # coverage gap at this chunk size.
+                        _coverage_note = (
+                            " None of this run's chunks came back truncated — the "
+                            "model returned complete, well-formed responses that "
+                            "simply did not address every file. Retrying with the "
+                            "same --token-budget will likely omit the same files "
+                            "again; try a smaller --token-budget to split the "
+                            "corpus into more, smaller chunks."
+                        )
                     print(
                         f"[graphify extract] semantic extraction is incomplete: "
                         f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
-                        f"{len(_partial_semantic_files)} came back truncated or hollow. "
-                        f"The shrink guard stays armed for this write; pass "
-                        f"--allow-partial to overwrite a larger existing graph anyway.",
+                        f"{len(_partial_semantic_files)} came back truncated or hollow."
+                        f"{_coverage_note} The shrink guard stays armed for this write; "
+                        f"pass --allow-partial to overwrite a larger existing graph anyway.",
                         file=sys.stderr,
                     )
                 try:
