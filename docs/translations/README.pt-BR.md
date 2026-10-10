@@ -14,11 +14,11 @@
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
 </p>
 
-**Uma habilidade para assistentes de código IA.** Digite `/graphify` no Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro ou Google Antigravity — ele lê seus arquivos, constrói um grafo de conhecimento e devolve a você estrutura que você não sabia que existia. Entenda uma base de código mais rapidamente. Encontre o "porquê" por trás das decisões arquiteturais.
+**Uma habilidade para assistentes de código IA.** Digite `/graphify` no Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro ou Google Antigravity — ele lê seus arquivos, constrói um grafo de conhecimento e devolve uma estrutura que você nem sabia que existia. Entenda uma base de código mais rapidamente. Encontre o "porquê" por trás das decisões arquiteturais.
 
-Totalmente multimodal. Adicione código, PDFs, markdown, capturas de tela, diagramas, fotos de quadros brancos, imagens em outros idiomas, ou arquivos de vídeo e áudio — graphify extrai conceitos e relações de tudo isso e os conecta em um único grafo. Vídeos são transcritos localmente com Whisper usando um prompt adaptado ao domínio derivado do seu corpus. 25 linguagens de programação suportadas via tree-sitter AST (Python, JS, TS, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Lua, Zig, PowerShell, Elixir, Objective-C, Julia, Verilog, SystemVerilog, Vue, Svelte, Dart).
+Totalmente multimodal. Adicione código, PDFs, markdown, capturas de tela, diagramas, fotos de quadros brancos, imagens em outros idiomas, ou arquivos de vídeo e áudio — o graphify extrai conceitos e relações de tudo isso e os conecta em um único grafo. Vídeos são transcritos localmente com Whisper usando um prompt adaptado ao domínio derivado do seu corpus. 25 linguagens de programação suportadas via tree-sitter AST (Python, JS, TS, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Lua, Zig, PowerShell, Elixir, Objective-C, Julia, Verilog, SystemVerilog, Vue, Svelte, Dart).
 
-> Andrej Karpathy mantém uma pasta `/raw` onde deposita papers, tweets, capturas de tela e notas. graphify é a resposta para esse problema — 71,5x menos tokens por consulta versus ler os arquivos brutos, persistente entre sessões, honesto sobre o que foi encontrado versus inferido.
+> Andrej Karpathy mantém uma pasta `/raw` onde deposita papers, tweets, capturas de tela e anotações. graphify é a resposta para esse problema — 71,5x menos tokens por consulta versus ler os arquivos brutos, persistente entre sessões, honesto sobre o que foi encontrado versus inferido.
 
 ```
 /graphify .                        # funciona em qualquer pasta — seu código, notas, papers, tudo
@@ -26,10 +26,10 @@ Totalmente multimodal. Adicione código, PDFs, markdown, capturas de tela, diagr
 
 ```
 graphify-out/
-├── graph.html       grafo interativo — abrir em qualquer navegador, clicar em nós, pesquisar
-├── GRAPH_REPORT.md  nós deus, conexões surpreendentes, perguntas sugeridas
-├── graph.json       grafo persistente — consultar semanas depois sem reler
-└── cache/           cache SHA256 — re-execuções processam apenas arquivos modificados
+├── graph.html       grafo interativo — abra em qualquer navegador, clique nos nós, pesquise
+├── GRAPH_REPORT.md  nós centrais, conexões surpreendentes, perguntas sugeridas
+├── graph.json       grafo persistente — consulte semanas depois sem precisar reler tudo
+└── cache/           cache SHA256 — novas execuções processam apenas os arquivos modificados
 ```
 
 Adicione um arquivo `.graphifyignore` para excluir pastas:
@@ -46,9 +46,9 @@ Mesma sintaxe do `.gitignore`.
 
 ## Como funciona
 
-graphify executa em três passes. Primeiro, uma passagem AST determinística extrai estrutura de arquivos de código (classes, funções, importações, grafos de chamadas, docstrings, comentários de justificativa) sem LLM. Segundo, arquivos de vídeo e áudio são transcritos localmente com faster-whisper. Terceiro, subagentes Claude executam em paralelo sobre documentos, papers, imagens e transcrições para extrair conceitos, relações e justificativas de design. Os resultados são mesclados em um grafo NetworkX, agrupados com detecção de comunidades Leiden, e exportados como HTML interativo, JSON consultável e um relatório de auditoria em linguagem natural.
+O graphify executa em três etapas. Primeiro, uma análise determinística de AST extrai a estrutura de arquivos de código (classes, funções, importações, grafos de chamadas, docstrings, comentários de justificativa) sem LLM. Segundo, arquivos de vídeo e áudio são transcritos localmente com o faster-whisper. Terceiro, subagentes Claude executam em paralelo sobre documentos, papers, imagens e transcrições para extrair conceitos, relações e justificativas de design. Os resultados são mesclados em um grafo NetworkX, agrupados com detecção de comunidades Leiden, e exportados como HTML interativo, JSON consultável e um relatório de auditoria em linguagem natural.
 
-**O clustering é baseado em topologia de grafo — sem embeddings.** Leiden encontra comunidades por densidade de arestas. As arestas de similaridade semântica que Claude extrai (`semantically_similar_to`, marcadas INFERRED) já estão no grafo. A estrutura do grafo é o sinal de similaridade — nenhum passo de embedding separado ou banco de dados vetorial é necessário.
+**O clustering é baseado na topologia do grafo — sem embeddings.** Leiden encontra comunidades por densidade de arestas. As arestas de similaridade semântica que Claude extrai (`semantically_similar_to`, marcadas INFERRED) já estão no grafo. A estrutura do grafo é o sinal de similaridade — nenhum passo de embedding separado ou banco de dados vetorial é necessário.
 
 Cada relação é marcada como `EXTRACTED` (encontrada diretamente na fonte), `INFERRED` (inferência razoável com pontuação de confiança) ou `AMBIGUOUS` (marcada para revisão).
 
@@ -117,7 +117,7 @@ Após construir um grafo, execute isso uma vez no seu projeto:
 /graphify ./raw                    # pasta específica
 /graphify ./raw --mode deep        # extração de arestas INFERRED mais agressiva
 /graphify ./raw --update           # re-extrair apenas arquivos modificados
-/graphify ./raw --directed         # grafo dirigido
+/graphify ./raw --directed         # grafo direcionado
 /graphify ./raw --cluster-only     # re-executar clustering no grafo existente
 /graphify ./raw --no-viz           # sem HTML, apenas relatório + JSON
 /graphify ./raw --obsidian         # gerar vault do Obsidian (opt-in)
@@ -135,17 +135,17 @@ graphify watch ./src               # atualização automática do grafo
 
 ## O que você obtém
 
-**Nós deus** — conceitos com maior grau (por onde tudo passa)
+**Nós centrais** — conceitos com maior grau (por onde tudo passa)
 
 **Conexões surpreendentes** — classificadas por pontuação composta. Arestas código-paper pontuam mais alto. Cada resultado inclui um porquê em linguagem natural.
 
-**Perguntas sugeridas** — 4-5 perguntas que o grafo está em posição única de responder
+**Perguntas sugeridas** — 4-5 perguntas que o grafo está em uma posição única para responder
 
 **O "porquê"** — docstrings, comentários inline (`# NOTE:`, `# IMPORTANT:`, `# HACK:`, `# WHY:`), e justificativas de design extraídas como nós `rationale_for`.
 
 **Pontuações de confiança** — cada aresta INFERRED tem um `confidence_score` (0,0-1,0).
 
-**Benchmark de tokens** — impresso automaticamente após cada execução. Em um corpus misto: **71,5x** menos tokens por consulta vs arquivos brutos.
+**Benchmark de tokens** — impresso automaticamente após cada execução. Em um corpus misto: **71,5x** menos tokens por consulta em comparação aos arquivos brutos.
 
 **Sincronização automática** (`--watch`) — atualiza o grafo automaticamente quando o código muda.
 
@@ -153,13 +153,13 @@ graphify watch ./src               # atualização automática do grafo
 
 ## Privacidade
 
-graphify envia conteúdo de arquivos para a API do modelo do seu assistente IA para extração semântica de documentos, papers e imagens. Arquivos de código são processados localmente via tree-sitter AST. Arquivos de vídeo e áudio são transcritos localmente com faster-whisper. Sem telemetria, sem rastreamento de uso.
+O graphify envia conteúdo de arquivos para a API do modelo do seu assistente IA para extração semântica de documentos, papers e imagens. Arquivos de código são processados localmente via tree-sitter AST. Arquivos de vídeo e áudio são transcritos localmente com faster-whisper. Sem telemetria, sem rastreamento de uso.
 
 ## Stack técnico
 
 NetworkX + Leiden (graspologic) + tree-sitter + vis.js. Extração semântica via Claude, GPT-4 ou o modelo da sua plataforma. Transcrição de vídeo via faster-whisper + yt-dlp (opcional).
 
-## Construído sobre graphify — Penpax
+## Construído sobre o graphify — Penpax
 
 [**Penpax**](https://safishamsi.github.io/penpax.ai) é a camada enterprise sobre o graphify. Onde o graphify transforma uma pasta de arquivos em um grafo de conhecimento, o Penpax aplica o mesmo grafo a toda a sua vida profissional — continuamente.
 
