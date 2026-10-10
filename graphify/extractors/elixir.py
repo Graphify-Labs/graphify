@@ -289,8 +289,14 @@ def extract_elixir(path: Path) -> dict:
         # node and a call to it (e.g. a macro invoked elsewhere) had nothing to
         # resolve to. Handle them identically to def/defp; they are already in the
         # call-pass _SKIP_KEYWORDS so their own keyword is never mistaken for a call.
+        # `defdelegate name(args), to: Mod` defines a real, public module
+        # function (it delegates the body to another module). Its head is the
+        # same `call` shape as `def` — the first argument is the function
+        # signature — so it belongs in this branch. It was absent, so the
+        # delegated function was never a node and intra-module calls to it had
+        # nothing to resolve to. Delegation is a common public-API idiom.
         if keyword in ("def", "defp", "defmacro", "defmacrop",
-                       "defguard", "defguardp"):
+                       "defguard", "defguardp", "defdelegate"):
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
@@ -367,7 +373,7 @@ def extract_elixir(path: Path) -> dict:
     raw_calls: list[dict] = []
     _SKIP_KEYWORDS = frozenset({
         "def", "defp", "defmodule", "defmacro", "defmacrop",
-        "defstruct", "defprotocol", "defimpl", "defguard",
+        "defstruct", "defprotocol", "defimpl", "defguard", "defdelegate",
         "alias", "import", "require", "use",
         "if", "unless", "case", "cond", "with", "for",
     })
