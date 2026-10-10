@@ -158,29 +158,58 @@ def extract_julia(path: Path) -> dict:
         return params
 
     def _unwrap_call_expression(node):
-        """Return the `call_expression` at or under `node`, unwrapping a
-        `where_expression` (`f(x::T) where {T}` nests the call head one level
-        deeper); otherwise None."""
-        if node is None:
-            return None
-        if node.type == "call_expression":
+        """Return the `call_expression` at or under `node`, unwrapping any
+        `where_expression` (`f(x::T) where {T}`) and `typed_expression`
+        (`f(x)::Float64`) wrappers around the call head; otherwise None."""
+        while node is not None and node.type in ("where_expression", "typed_expression"):
+            node = node.children[0] if node.children else None
+        if node is not None and node.type == "call_expression":
             return node
-        if node.type == "where_expression":
-            return next((c for c in node.children if c.type == "call_expression"), None)
         return None
 
-    def _func_name_from_signature(sig_node) -> str | None:
-        """Extract function name from a Julia signature node (call_expression > identifier).
+    def _def_name(call) -> tuple[str, str] | None:
+        """(bare_name, label) for the callee of a method definition.
 
-        A `where` clause wraps the call head in a `where_expression`, so unwrap
-        that before reading the callee identifier.
+        Handles `foo`, `+`, `Base.show`, `Base.:+`, and functors `(c::Circle)(x)`.
+        The id uses the bare name so methods of one generic function share a node
+        (multiple dispatch) and in-file calls resolve to it; the label keeps the
+        qualifier so `Base.show()` extensions stay recognisable.
+        """
+        if call is None or not call.children:
+            return None
+        callee = call.children[0]
+        if callee.type in ("identifier", "operator"):
+            name = _read_text(callee, source)
+            return name, name
+        if callee.type == "field_expression" and callee.children:
+            last = callee.children[-1]
+            if last.type == "quote_expression":  # Base.:+
+                last = next((c for c in last.children
+                             if c.type in ("operator", "identifier")), None)
+            if last is not None and last.type in ("identifier", "operator"):
+                return _read_text(last, source), _read_text(callee, source)
+            return None
+        if callee.type == "parenthesized_expression":
+            # functor: (c::Circle)(x) or (::Circle)(x) -> call operator on Circle
+            typed = next((c for c in callee.children
+                          if c.type in ("typed_expression", "unary_typed_expression")), None)
+            if typed is not None:
+                ids = [c for c in typed.children if c.type == "identifier"]
+                if ids:
+                    tname = _read_text(ids[-1], source)
+                    return tname + "#call", f"({tname})"
+        return None
+
+    def _func_name_from_signature(sig_node) -> tuple[str, str] | None:
+        """(bare_name, label) from a Julia `signature` node, or None.
+
+        `where` clauses and `::RetType` annotations wrap the call head, so
+        unwrap those before reading the callee.
         """
         for child in sig_node.children:
             call = _unwrap_call_expression(child)
-            if call is not None and call.children:
-                callee = call.children[0]
-                if callee.type == "identifier":
-                    return _read_text(callee, source)
+            if call is not None:
+                return _def_name(call)
         return None
 
     def walk_calls(body_node, func_nid: str) -> None:
@@ -204,6 +233,18 @@ def extract_julia(path: Path) -> dict:
                 target_nid = _make_id(stem, method_name)
                 add_edge(func_nid, target_nid, "calls", body_node.start_point[0] + 1,
                          confidence="EXTRACTED", context="call")
+        # Broadcast call: foo.(xs)
+        elif t == "broadcast_call_expression" and body_node.children:
+            callee = body_node.children[0]
+            if callee.type == "identifier":
+                add_edge(func_nid, _make_id(stem, _read_text(callee, source)), "calls",
+                         body_node.start_point[0] + 1, confidence="EXTRACTED", context="call")
+        # Pipe: x |> foo, xs .|> foo
+        elif t == "binary_expression" and len(body_node.children) == 3:
+            op, rhs = body_node.children[1], body_node.children[2]
+            if _read_text(op, source) in ("|>", ".|>") and rhs.type == "identifier":
+                add_edge(func_nid, _make_id(stem, _read_text(rhs, source)), "calls",
+                         body_node.start_point[0] + 1, confidence="EXTRACTED", context="call")
         for child in body_node.children:
             walk_calls(child, func_nid)
 
@@ -278,11 +319,12 @@ def extract_julia(path: Path) -> dict:
         if t == "function_definition":
             sig_node = next((c for c in node.children if c.type == "signature"), None)
             if sig_node:
-                func_name = _func_name_from_signature(sig_node)
-                if func_name:
+                named = _func_name_from_signature(sig_node)
+                if named:
+                    func_name, label = named
                     func_nid = _make_id(stem, func_name)
                     line = node.start_point[0] + 1
-                    add_node(func_nid, f"{func_name}()", line)
+                    add_node(func_nid, f"{label}()", line)
                     add_edge(scope_nid, func_nid, "defines", line)
                     function_bodies.append((func_nid, node))
             return
@@ -294,7 +336,8 @@ def extract_julia(path: Path) -> dict:
         if t == "macro_definition":
             sig_node = next((c for c in node.children if c.type == "signature"), None)
             if sig_node:
-                macro_name = _func_name_from_signature(sig_node)
+                named = _func_name_from_signature(sig_node)
+                macro_name = named[0] if named else None
                 if macro_name:
                     macro_nid = _make_id(stem, "@" + macro_name)
                     line = node.start_point[0] + 1
@@ -366,19 +409,17 @@ def extract_julia(path: Path) -> dict:
         # Short function: foo(x) = expr  (and the `where` form: g(x::T) where {T} = expr)
         if t == "assignment":
             lhs = node.children[0] if node.children else None
-            call = _unwrap_call_expression(lhs)
-            if call is not None and call.children:
-                callee = call.children[0]
-                if callee.type == "identifier":
-                    func_name = _read_text(callee, source)
-                    func_nid = _make_id(stem, func_name)
-                    line = node.start_point[0] + 1
-                    add_node(func_nid, f"{func_name}()", line)
-                    add_edge(scope_nid, func_nid, "defines", line)
-                    # Only walk the RHS (index 2 after lhs and operator) to avoid self-loops
-                    rhs = node.children[-1] if len(node.children) >= 3 else None
-                    if rhs:
-                        function_bodies.append((func_nid, rhs))
+            named = _def_name(_unwrap_call_expression(lhs))
+            if named:
+                func_name, label = named
+                func_nid = _make_id(stem, func_name)
+                line = node.start_point[0] + 1
+                add_node(func_nid, f"{label}()", line)
+                add_edge(scope_nid, func_nid, "defines", line)
+                # Only walk the RHS (index 2 after lhs and operator) to avoid self-loops
+                rhs = node.children[-1] if len(node.children) >= 3 else None
+                if rhs:
+                    function_bodies.append((func_nid, rhs))
             return
 
         # Using / Import
