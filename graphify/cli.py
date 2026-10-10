@@ -4039,7 +4039,7 @@ def dispatch_command(cmd: str) -> None:
                         # these markers cannot be reconstructed from labels.
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module",
-                            "_rust_impl_key", "_rust_declaration_count",
+                            "_rust_impl_key", "_rust_declaration_count", "_java_ret",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
