@@ -4,13 +4,13 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 
 
 def extract_dart(path: Path) -> dict:
     """Extract classes, mixins, functions, imports, generic calls, and annotations from a .dart file using regex."""
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"error": f"cannot read {path}"}
 
@@ -45,6 +45,7 @@ def extract_dart(path: Path) -> dict:
     # Check if this is a part-of file and redirect to parent
     part_of_match = re.search(r"^\s*part\s+of\s+['\"]([^'\"]+)['\"]", src_clean, re.MULTILINE)
     is_part = False
+    part_of_line = None
     if part_of_match:
         parent_ref = part_of_match.group(1)
         if parent_ref.endswith(".dart"):
@@ -54,13 +55,16 @@ def extract_dart(path: Path) -> dict:
                     stem = _file_stem(parent_path)
                     file_nid = _make_id(str(parent_path))
                     is_part = True
+                    part_of_line = _line_at(part_of_match.start(1))
             except Exception:
                 pass
 
-    nodes = []
-    if not is_part:
-        nodes.append({"id": file_nid, "label": path.name, "file_type": "code",
-                      "source_file": str(path), "source_location": None})
+    # Every scanned file keeps its own file node. For a part file the symbols
+    # still belong to the library (file_nid above); the part's node is linked
+    # from the library and to its symbols at the end of extraction.
+    own_nid = _make_id(str(path))
+    nodes = [{"id": own_nid, "label": path.name, "file_type": "code",
+              "source_file": str(path), "source_location": None}]
     edges = []
     defined: set[str] = set()
 
@@ -535,17 +539,28 @@ def extract_dart(path: Path) -> dict:
                           line=_line_at(brace_pos + om.start(1)))
 
     # 6. Imports and Exports
-    for m in re.finditer(r"""^\s*import\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "imports", line=_line_at(m.start(1)))
-
-    for m in re.finditer(r"""^\s*export\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "exports", line=_line_at(m.start(1)))
+    # A directive may carry configurable URIs that pick a platform-specific
+    # library: `export 'x_stub.dart' if (dart.library.io) 'x_io.dart';`. The
+    # default URI keeps its plain edge; every `if (...)` alternative is emitted
+    # too, tagged context="conditional_uri", because the real implementation
+    # usually lives there. A string literal inside the condition itself
+    # (`if (dart.library.io == 'true')`) is part of the test, not a URI.
+    quoted = r"""(?:'[^']*'|"[^"]*")"""
+    condition = rf"""if\s*\(\s*[\w.]+\s*(?:==\s*{quoted}\s*)?\)\s*"""
+    branch_re = re.compile(rf"""{condition}(['"])(?P<uri>[^'"]+)\1""")
+    for kind, relation in (("import", "imports"), ("export", "exports")):
+        directive_re = re.compile(
+            rf"""^\s*{kind}\s+(['"])(?P<uri>[^'"]+)\1(?P<branches>(?:\s*{condition}{quoted})*)""",
+            re.MULTILINE,
+        )
+        for m in directive_re.finditer(src_clean):
+            uris: list[tuple[str, int, str | None]] = [(m.group("uri"), m.start("uri"), None)]
+            for bm in branch_re.finditer(m.group("branches")):
+                uris.append((bm.group("uri"), m.start("branches") + bm.start("uri"), "conditional_uri"))
+            for pkg, offset, context in uris:
+                tgt_nid = _make_id(pkg)
+                add_node(tgt_nid, pkg, source_file=None)
+                add_edge(file_nid, tgt_nid, relation, context=context, line=_line_at(offset))
 
     # 7. Generic Invocations / Type Lookups (Universal Dependency Lookup)
     # Matches any method call with type parameters: methodName<Type>() or object.methodName<Type>()
@@ -560,5 +575,15 @@ def extract_dart(path: Path) -> dict:
             add_node(target_nid, clean_name, source_file=None)
             add_edge(file_nid, target_nid, "references", context="type_lookup",
                       line=_line_at(m.start(1)))
+
+    if is_part:
+        # The library includes this part; the part physically contains the
+        # declarations the library defines from it. Ids stay in the library's
+        # namespace, so the library is not split in two.
+        part_edges = [{**e, "source": own_nid, "relation": "contains"}
+                      for e in edges
+                      if e["source"] == file_nid and e["relation"] == "defines"]
+        add_edge(file_nid, own_nid, "includes", line=part_of_line)
+        edges.extend(part_edges)
 
     return {"nodes": nodes, "edges": edges}
