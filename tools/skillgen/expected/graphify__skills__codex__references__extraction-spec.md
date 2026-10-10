@@ -29,3 +29,23 @@ Output exactly this JSON (no other text):
 
 source_file RULE: set source_file to the FILE_LIST path for that file VERBATIM (absolute, no shortening to basename, no re-relativizing, no separator change). Keeps full build and --update on one base so build_merge's replace matches instead of duplicating.
 ```
+
+
+---
+
+## Chunking and agent reliability
+
+**Pack chunks by BYTES, not file count.** ~250 KB for markup, **~110 KB for
+prose** — documentation is much denser in extractable concepts than markup.
+Packing by count handed one agent ~1 MB and killed it at a session limit twice.
+Split an oversized file by line range; node ids are deterministic from the label,
+so a concept straddling a boundary merges rather than duplicating.
+
+**Tell every agent to write its JSON early, then refine it.** Across three waves,
+**ten** agents reported `failed` on a rate limit having already written a
+complete, valid chunk. ⚠️ Never treat a `failed` status as meaning no output —
+list the chunk files and validate them before re-running anything.
+
+**Validate hyperedge members, not just edge endpoints.** An agent will name a
+member id it never emitted as a node; that only surfaces later as a dangling
+hyperedge in the merged graph.
