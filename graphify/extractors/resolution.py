@@ -18,12 +18,18 @@ import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
 # compilerOptions.baseUrl per config path, as an absolute dir (#2153).
 _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
+
+# The compilerOptions that decide how tsc resolves package.json `exports`
+# (customConditions, moduleResolution, ...) per config path, after `extends`.
+# Same lifetime rule as _TSCONFIG_ALIAS_CACHE: extract() clears it per run.
+_TSCONFIG_EXPORTS_OPTIONS_CACHE: "dict[str, dict[str, Any] | None]" = {}
 
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
@@ -285,6 +291,156 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
                 base_url = Path(os.path.normpath(candidate / raw_base))
         _TSCONFIG_BASEURL_CACHE[key] = base_url
     return _TSCONFIG_BASEURL_CACHE[key]
+
+_TSCONFIG_EXPORTS_OPTION_KEYS = (
+    "customConditions", "module", "moduleResolution", "target", "resolvePackageJsonExports",
+    "moduleSuffixes", "outDir", "declarationDir", "paths", "baseUrl", "rootDirs", "typeRoots",
+)
+
+# Path-valued options whose `${configDir}` templates are not expanded here.
+# (`baseUrl`, `outDir` and `declarationDir` are refused outright.)
+_TSCONFIG_PATH_OPTION_KEYS = ("paths", "rootDirs", "typeRoots")
+
+def _read_tsconfig_exports_options(config: Path, stack: tuple = ()) -> "dict[str, Any] | None":
+    """The _TSCONFIG_EXPORTS_OPTION_KEYS a config sets, merged over `extends`.
+
+    Follows tsc: each parent is merged in full, in `extends` order, later
+    parents over earlier ones, and the config's own keys win. Cycles are
+    detected on the active chain (`stack`); a finished merge is cached per
+    config path, so a parent shared by many branches is read once and applied
+    in each. Paths stay lexical, as in tsc. Returns None when the result is
+    not known the way tsc knows it: a config that does not parse, a cycle, a
+    missing parent, a package-name `extends` (which needs node_modules
+    resolution), or a config file that is a symlink or is reached through a
+    symlinked directory (its lexical and real paths differ, and relative
+    options would be read from the wrong place). The cache has no mtime
+    component, so extract() clears it per run (#2917).
+    """
+    key = str(config)
+    if key in stack or _resolve_cached(config) != Path(os.path.normpath(config)):
+        return None
+    if key in _TSCONFIG_EXPORTS_OPTIONS_CACHE:
+        return _TSCONFIG_EXPORTS_OPTIONS_CACHE[key]
+    result = _merge_tsconfig_exports_options(config, (*stack, key))
+    _TSCONFIG_EXPORTS_OPTIONS_CACHE[key] = result
+    return result
+
+def _merge_tsconfig_exports_options(config: Path, stack: tuple) -> "dict[str, Any] | None":
+    """One uncached step of _read_tsconfig_exports_options."""
+    data = _read_json_config(config)
+    if data is None:
+        return None
+    extends = data.get("extends", [])
+    if isinstance(extends, str):
+        extends = [extends]
+    if not isinstance(extends, list):
+        return None
+    merged: dict[str, Any] = {}
+    for ext in extends:
+        if not isinstance(ext, str):
+            return None
+        ext = ext.replace("\\", "/")
+        if not (ext.startswith(("./", "../")) or os.path.isabs(ext)):
+            return None
+        parent = Path(os.path.normpath(config.parent / ext))
+        if not parent.is_file() and parent.suffix != ".json":
+            parent = Path(f"{parent}.json")
+        inherited = _read_tsconfig_exports_options(parent, stack)
+        if inherited is None:
+            return None
+        merged.update(inherited)
+    options = data.get("compilerOptions", {})
+    if not isinstance(options, dict):
+        return None
+    merged.update((k, options[k]) for k in _TSCONFIG_EXPORTS_OPTION_KEYS if k in options)
+    conditions = options.get("customConditions")
+    if isinstance(conditions, list):
+        # _strip_jsonc can alter strings (its trailing-comma pass turns
+        # "custom,}" into "custom}"), so keep a condition only if it appears
+        # verbatim as a string literal in this config's text.
+        raw = config.read_text(encoding="utf-8", errors="replace")
+        if not all(
+            isinstance(c, str) and json.dumps(c, ensure_ascii=False) in raw for c in conditions
+        ):
+            merged["customConditions"] = None
+    return merged
+
+def _tsconfig_resolves_exports(options: dict[str, Any]) -> bool:
+    """Whether tsc reads package.json `exports` under these compilerOptions.
+
+    Mirrors tsc 5.9: moduleResolution defaults from `module` (node16/18/20 ->
+    node16, nodenext -> nodenext, preserve -> bundler, commonjs -> node10,
+    anything else -> classic), and `module` defaults from `target`.
+    `exports` are read only under node16, nodenext and bundler, unless
+    `resolvePackageJsonExports` says otherwise.
+    """
+    resolution = options.get("moduleResolution")
+    if isinstance(resolution, str):
+        resolution = resolution.lower()
+    else:
+        module = options.get("module")
+        if isinstance(module, str):
+            module = module.lower()
+        else:
+            target = options.get("target")
+            old_target = not isinstance(target, str) or target.lower() in ("es3", "es5")
+            module = "commonjs" if old_target else "es2015"
+        resolution = {
+            "node16": "node16", "node18": "node16", "node20": "node16",
+            "nodenext": "nodenext", "preserve": "bundler", "commonjs": "node10",
+        }.get(module, "classic")
+    if resolution not in ("node16", "nodenext", "bundler"):
+        return False
+    flag = options.get("resolvePackageJsonExports")
+    return flag if isinstance(flag, bool) else True
+
+def _tsconfig_paths_may_match(options: dict[str, Any], specifier: str) -> bool:
+    """Whether a `paths` key could take `specifier` before tsc reaches the
+    package's `exports`."""
+    paths = options.get("paths")
+    if paths is not None and not isinstance(paths, dict):
+        return True
+    for pattern in paths or {}:
+        if not isinstance(pattern, str) or pattern == specifier:
+            return True
+        prefix, star, suffix = pattern.partition("*")
+        if star and specifier.startswith(prefix) and specifier.endswith(suffix):
+            return True
+    return False
+
+def _load_tsconfig_custom_conditions(start_dir: Path, specifier: str) -> tuple[str, ...]:
+    """customConditions tsc applies when start_dir imports the workspace
+    package `specifier`, or () when the fallback must not run.
+
+    A project that sets `"customConditions": ["@zod/source"]` resolves
+    workspace packages through `"@zod/source": "./src/index.ts"`. Returns ()
+    when the options are not known (_read_tsconfig_exports_options), when tsc
+    would not read `exports` (_tsconfig_resolves_exports), when a `paths` key
+    could take the specifier first, and in cases whose lookups are not
+    modelled: any `baseUrl` (tsc tries `<baseUrl>/<specifier>` with its
+    extension swaps before node_modules), a `${configDir}`-style template in
+    a path-valued option, `moduleSuffixes` other than `[]`/`[""]` (tsc tries
+    `x.ios.ts` before `x.ts`), and any outDir or declarationDir, even `""`
+    (on a self-import tsc maps output paths back to sources).
+    """
+    found = _find_js_config(start_dir)
+    if found is None:
+        return ()
+    config = found[0]
+    options = _read_tsconfig_exports_options(config)
+    if options is None or "${" in json.dumps([options.get(k) for k in _TSCONFIG_PATH_OPTION_KEYS]):
+        return ()
+    conditions = options.get("customConditions")
+    if not isinstance(conditions, list) or not _tsconfig_resolves_exports(options):
+        return ()
+    suffixes = options.get("moduleSuffixes", [])
+    if not isinstance(suffixes, list) or any(suffix != "" for suffix in suffixes):
+        return ()
+    if "outDir" in options or "declarationDir" in options:
+        return ()
+    if "baseUrl" in options or _tsconfig_paths_may_match(options, specifier):
+        return ()
+    return tuple(c for c in conditions if c)
 
 def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str, bool] | None":
     """Return (specificity, captured text, is_wildcard) when pattern matches raw.
@@ -634,6 +790,101 @@ def _is_build_output_path(path: Path, package_dir: Path) -> bool:
     except ValueError:
         return False
 
+# tsc's file lookups for an `exports` target, by the target's extension
+# (loadFileNameFromPackageJsonField / tryAddingExtensions). None means the
+# exact path only. No extension is ever appended to an extensionless target
+# and a directory never resolves to its index file.
+_EXPORT_TARGET_LOOKUPS: "tuple[tuple[str, tuple[str, ...] | None], ...]" = (
+    (".d.ts", None), (".d.mts", None), (".d.cts", None),
+    (".mts", None), (".cts", None), (".tsx", None), (".ts", None),
+    (".mjs", (".mts", ".d.mts", ".mjs")),
+    (".cjs", (".cts", ".d.cts", ".cjs")),
+    (".jsx", (".tsx", ".ts", ".d.ts", ".jsx", ".js")),
+    (".js", (".ts", ".tsx", ".d.ts", ".js", ".jsx")),
+)
+
+_EXPORT_TS_IMPLEMENTATION_SUFFIXES = (".ts", ".tsx", ".mts", ".cts")
+
+_DECLARATION_FILE_RE = re.compile(r"\.d\.([^.]+\.)?[cm]?ts$")
+
+def _resolve_custom_condition_export(
+    package_dir: Path,
+    subpath: str,
+    custom_conditions: tuple[str, ...],
+) -> Path | None:
+    """Source file named by the importer's custom condition, for one shape.
+
+    zod maps `"@zod/source": "./src/index.ts"` beside `import`/`require`
+    targets that exist only after a build, so the fixed walk over
+    _EXPORT_CONDITION_PRIORITY finds no file. Only this shape is handled: the
+    exact `exports` entry for the subpath (or the root condition object for
+    `"."`) is a condition object whose FIRST key is one of the custom
+    conditions and whose value is a string. Everything else (nested objects,
+    arrays, `null`, `*` patterns, integer-like keys, which JavaScript
+    enumerates before all others, and requests containing `*` or ending in
+    `/`, which tsc matches against patterns) returns None.
+
+    tsc's first lookup pass, for TypeScript and declaration files, reads the
+    keys in order, so when this key's target leads to a TypeScript
+    implementation file, tsc picks that file. A target that leads only to
+    JavaScript or a declaration returns None: tsc could still prefer a
+    TypeScript file under a later key. The target must start with `./`, have
+    no backslash and no empty, `.`, `..` or `node_modules` segment (checked
+    before any normalization). Only tsc's per-extension lookups count, and
+    the file must be reached without a symlink inside the package and lie
+    outside build-output directories.
+    """
+    if "*" in subpath or subpath.endswith("/"):
+        return None
+    manifest = _read_json_config(package_dir / "package.json")
+    exports = manifest.get("exports") if manifest is not None else None
+    if not isinstance(exports, dict) or not exports:
+        return None
+    request = "./" + subpath if subpath else "."
+    dotted = [isinstance(key, str) and key.startswith(".") for key in exports]
+    if all(dotted):
+        value = exports.get(request)
+    elif request == "." and not any(dotted):
+        value = exports
+    else:
+        return None
+    if not isinstance(value, dict) or not value:
+        return None
+    if any(key.isascii() and key.isdigit() and str(int(key)) == key for key in value):
+        return None
+    first_key, target = next(iter(value.items()))
+    if first_key not in custom_conditions or not isinstance(target, str):
+        return None
+    if not target.startswith("./") or "\\" in target:
+        return None
+    for segment in target[2:].split("/"):
+        if unquote(segment).lower() in ("", ".", "..", "node_modules"):
+            return None
+    candidate = package_dir / target[2:]
+    name = candidate.name
+    for ext, swaps in _EXPORT_TARGET_LOOKUPS:
+        if name.endswith(ext):
+            break
+    else:
+        # Extensionless and non-JS/TS targets never reach a source file in tsc.
+        return None
+    files = [candidate] if swaps is None else [
+        candidate.with_name(name[:-len(ext)] + swap) for swap in swaps
+    ]
+    found = next((f for f in files if f.is_file()), None)
+    if (found is None
+            or not found.name.endswith(_EXPORT_TS_IMPLEMENTATION_SUFFIXES)
+            or _DECLARATION_FILE_RE.search(found.name)
+            or _is_build_output_path(found, package_dir)):
+        return None
+    # The real path must be the in-package path itself: this refuses targets
+    # that leave the package through a symlink, and symlinks inside it, whose
+    # real file tsc would report instead.
+    relative = found.relative_to(package_dir)
+    if _resolve_cached(found) != _resolve_cached(package_dir) / relative:
+        return None
+    return found
+
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
     platform = _importer_platform(start_dir)
@@ -653,6 +904,17 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
                         build_fallback = resolved
                 else:
                     return resolved
+        # The fixed walk reached no source file: the import is about to land
+        # on build output or become an external stub. Only then does the
+        # importer's tsconfig `customConditions` get a say, so an import that
+        # already resolves to source never changes.
+        custom_conditions = _load_tsconfig_custom_conditions(start_dir, raw)
+        if custom_conditions:
+            custom_hit = _resolve_custom_condition_export(
+                package_dir, subpath, custom_conditions
+            )
+            if custom_hit is not None:
+                return custom_hit
         if build_fallback is not None:
             return build_fallback
     return None
