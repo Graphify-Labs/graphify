@@ -1209,6 +1209,17 @@ def _is_persisted_scan_options_fix_line(line: str) -> bool:
     )
 
 
+def _is_worktree_visibility_note_line(line: str) -> bool:
+    """Whether a line is the Step 9 working-tree note (#3941).
+
+    Step 9's report never told the user that ``graphify-out/`` was written into
+    their working tree, so a repository that does not ignore it was left with
+    untracked machine-local files in ``git status`` and no explanation. The report
+    now adds one sentence saying so, with the two ways to handle it.
+    """
+    return "`graphify-out/` was written into the working tree" in line
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1234,6 +1245,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
+    _is_worktree_visibility_note_line,
 )
 
 
