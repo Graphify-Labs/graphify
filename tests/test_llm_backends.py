@@ -811,6 +811,26 @@ def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
+def test_ollama_thinking_disabled_via_env_survives_num_ctx(monkeypatch):
+    # The ollama num_ctx/keep_alive defaults must be merged into extra_body, not
+    # assigned over it, or the env toggle is silently dropped on ollama (#3988).
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_NUM_CTX", "65536")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "u", temperature=0, max_completion_tokens=8192, backend="ollama",
+    )
+
+    assert captured["extra_body"] == {
+        "thinking": {"type": "disabled"},
+        "options": {"num_ctx": 65536},
+        "keep_alive": "30m",
+    }
+
+
 def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeypatch):
     # An explicit extra_body means "I own this request shape" — Ollama's
     # num_ctx auto-derive (a default) must step aside or we'd clobber it.

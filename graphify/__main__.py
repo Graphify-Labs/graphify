@@ -1,13 +1,16 @@
 """graphify CLI - `graphify install` sets up the Claude Code skill."""
 
 from __future__ import annotations
+import contextlib
 import errno
 import functools
+import io
 import json
 import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,6 +88,7 @@ from graphify.install import (  # noqa: E402,F401
     _uninstall_gemini_hook,
     _uninstall_kilo_plugin,
     _uninstall_opencode_plugin,
+    _vscode_skill_destination,
     claude_install,
     claude_uninstall,
     codebuddy_install,
@@ -115,7 +119,12 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_JS,
     _OPENCODE_PLUGIN_PATH,
     _OPENCODE_CONFIG_PATH,
+    _OPENCODE_PLUGIN_HEADER,
+    _drop_opencode_config_entry,
+    _opencode_config_names_plugin,
+    _opencode_plugin_is_v1_only,
     _PLATFORM_CONFIG,
+    _skill_lock,
 )
 from graphify.cli import (  # noqa: E402,F401
     dispatch_command,
@@ -175,7 +184,7 @@ def _check_skill_version(skill_dst: Path, platform_names: "list[str] | None" = N
     if platform_names is None:
         try:
             platform_names = [
-                name for name in _PLATFORM_CONFIG
+                name for name in _skill_platforms()
                 if _platform_skill_destination(name) == skill_dst
             ]
         except Exception:
@@ -251,6 +260,236 @@ def _version_tuple(version: str) -> tuple[int, ...]:
                 break
         parts.append(int(digits) if digits else 0)
     return tuple(parts)
+
+
+def _refresh_stale_skills() -> None:
+    """Refresh user-scope skills left behind by a package upgrade (#1805).
+
+    Upgrading the package (``uv tool upgrade graphifyy``, ``pip install -U``)
+    does not touch the installed skill copies, and a plain ``graphify install``
+    refreshes only the detected platform, so every other platform (codex,
+    opencode, gemini, ...) kept running the old skill instructions until each
+    was reinstalled by hand. On the first CLI run after an upgrade, re-copy
+    every user-scope skill whose ``.graphify_version`` stamp is older than the
+    running package - exactly the copies the stale-skill warning would tell the
+    user to reinstall.
+
+    Only copies graphify installed are touched (a stamp and SKILL.md exist);
+    nothing is installed that was not there before. Left alone, so the
+    warning still fires for them:
+
+    * a stamp NEWER than the package - installing would downgrade it (#1568);
+    * a directory written by more than one installer (gemini + agents on
+      Windows, copilot + ``graphify vscode install``) - the stamp does not
+      record which variant is there, and guessing would swap it.
+
+    Directories are grouped by their resolved path, so two platforms sharing
+    one directory through a symlink count as shared too.
+
+    A locally edited SKILL.md is kept as ``SKILL.md.bak`` by _copy_skill_file
+    (#3144). Output goes to stderr so piped stdout (``--json``, the MCP stdio
+    server) stays clean. Set ``GRAPHIFY_NO_AUTO_REFRESH=1`` to opt out, e.g.
+    for pinned or centrally managed skill directories.
+    """
+    if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+        return
+    if __version__ == "unknown":
+        return
+    # 'claude'/'windows' and 'antigravity'/'antigravity-windows' write one
+    # directory and differ only in the host shell; keep the variant a plain
+    # `graphify install` picks on this OS rather than calling the pair ambiguous.
+    if platform.system() == "Windows":
+        other_os = {"claude", "antigravity"}
+    else:
+        other_os = {"windows", "antigravity-windows"}
+    candidates = [("vscode", _vscode_skill_destination)]
+    candidates += [
+        (name, functools.partial(_platform_skill_destination, name))
+        for name in _skill_platforms() if name not in other_os
+    ]
+    writers: dict[Path, list[tuple[str, Path]]] = {}
+    for name, destination in candidates:
+        try:
+            skill_dst = destination()
+        except Exception:
+            continue  # one unresolvable platform must not cancel the others
+        try:
+            real = skill_dst.resolve()
+        except (OSError, RuntimeError):  # symlink loop: the is_file checks skip it
+            real = skill_dst
+        writers.setdefault(real, []).append((name, skill_dst))
+    for entries in writers.values():
+        if len(entries) != 1 or entries[0][0] == "vscode":
+            continue
+        name, skill_dst = entries[0]
+        if _stale_stamp(skill_dst) is None:
+            continue
+        # Without waiting: when another process holds the directory (a refresh,
+        # an install, an uninstall) this one skips it and leaves it to them.
+        with _skill_lock(skill_dst.parent, wait=False) as owned:
+            # Read the stamp again under the lock: a process that refreshed
+            # this directory in the meantime has already brought it current,
+            # and one that uninstalled it has left nothing to refresh.
+            installed = _stale_stamp(skill_dst) if owned else None
+            if installed is not None:
+                _refresh_one_skill(name, skill_dst, installed)
+
+
+def _stale_stamp(skill_dst: Path) -> str | None:
+    """The version stamped beside ``skill_dst`` if it is older than the package."""
+    version_file = skill_dst.parent / ".graphify_version"
+    try:
+        if not (version_file.is_file() and skill_dst.is_file()):
+            return None
+        installed = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if installed == __version__ or _version_tuple(installed) > _version_tuple(__version__):
+        return None
+    return installed
+
+
+# gemini installs through gemini_install, not _PLATFORM_CONFIG, but
+# _platform_skill_destination and _copy_skill_file both handle it.
+def _skill_platforms() -> list[str]:
+    """Every platform with a user-scope skill directory, gemini included."""
+    return list(dict.fromkeys([*_PLATFORM_CONFIG, "gemini"]))
+
+
+def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
+    """Re-copy one platform's skill and report it in one line on stderr."""
+    backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(captured):
+            _copy_skill_file(name)
+    except (Exception, SystemExit) as exc:
+        # _copy_skill_file exits on a broken package (after printing why);
+        # a refresh must never take the user's actual command down with it.
+        # The stamp stays old, so the version warning names the manual fix.
+        detail = "" if isinstance(exc, SystemExit) else f": {exc}"
+        print(
+            f"graphify: could not refresh skill at {skill_dst.parent} "
+            f"({installed} -> {__version__}){detail}",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"graphify: refreshed skill at {skill_dst.parent} ({installed} -> {__version__}); "
+        f"set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+        file=sys.stderr,
+    )
+    # Of _copy_skill_file's per-file lines, only the backup notice matters here.
+    for line in captured.getvalue().splitlines():
+        if str(backup) in line:
+            print(line, file=sys.stderr)
+
+
+def _opencode_loads_current_plugin() -> bool:
+    """True when the ``opencode`` on PATH can load the plugin graphify writes now.
+
+    That plugin is a default export, which OpenCode reads from 1.3.4 on. Older
+    OpenCode 1 releases call every export as a function and fail on it, while
+    the plugin they already have keeps working, so it must be left alone.
+    Unknown (no ``opencode`` on PATH, no version in its output) counts as no:
+    the refresh is a convenience, ``graphify opencode install`` still rewrites.
+    """
+    exe = shutil.which("opencode")
+    if exe is None:
+        return False
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    found = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return found is not None and tuple(int(part) for part in found.groups()) >= (1, 3, 4)
+
+
+def _refresh_v1_opencode_plugins() -> None:
+    """Rewrite OpenCode plugins an older release left behind (#3554, #3732).
+
+    Releases up to 0.9.74 wrote a plugin only OpenCode 1 can load, and an
+    opencode.json entry OpenCode 2 fails on. Upgrading OpenCode to 2 turns both
+    into a load error on every start, and upgrading graphify touches neither.
+    So on a CLI run, replace such a plugin with the current one and drop the
+    entry.
+
+    Two directories are checked: the working directory, where the install
+    writes the plugin, and the home directory, where it lands when the install
+    was run from there (OpenCode then loads it for every project below home).
+    Only a plugin graphify wrote is touched. The entry is dropped beside a
+    current plugin too: a checkout or a failed write can bring it back alone.
+
+    An old plugin is replaced only when the installed OpenCode can load the new
+    one (see _opencode_loads_current_plugin), and under the directory's lock,
+    without waiting: when another graphify process is already at it, this one
+    leaves it to them. ``GRAPHIFY_NO_AUTO_REFRESH=1`` opts out, as it does for
+    skills.
+    """
+    if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+        return
+    try:
+        directories = dict.fromkeys(d.resolve() for d in (Path.cwd(), Path.home()))
+    except (OSError, RuntimeError):
+        return
+    loadable: "bool | None" = None  # asked once, and only when an old plugin is found
+    for directory in directories:
+        plugin_file = directory / _OPENCODE_PLUGIN_PATH
+
+        def pending() -> "bool | None":
+            """True for an old plugin, False for a stale entry only, None for neither."""
+            try:
+                body = plugin_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return None  # no plugin here
+            if not body.startswith(_OPENCODE_PLUGIN_HEADER):
+                return None  # not graphify's
+            if _opencode_plugin_is_v1_only(body):
+                return True
+            return False if _opencode_config_names_plugin(directory) else None
+
+        stale = pending()
+        if stale is None:
+            continue
+        if stale:
+            if loadable is None:
+                loadable = _opencode_loads_current_plugin()
+            if not loadable:
+                continue
+        with _skill_lock(plugin_file.parent, wait=False) as owned:
+            # Look again under the lock: a process that held it may have finished the job.
+            stale = pending() if owned else None
+            if stale is None:
+                continue
+            captured = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(captured):
+                    if stale:
+                        _install_opencode_plugin(directory)
+                        dropped = False
+                    else:
+                        dropped = _drop_opencode_config_entry(directory)
+            except Exception as exc:
+                # A refresh must never take the user's actual command down with it.
+                print(f"graphify: could not refresh {plugin_file}: {exc}", file=sys.stderr)
+                continue
+        if stale:
+            print(
+                f"graphify: refreshed {plugin_file} so OpenCode 2 can load it; "
+                f"set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+            # Of the install's own lines, only the one asking for a manual edit matters here.
+            for line in captured.getvalue().splitlines():
+                if "by hand" in line:
+                    print(line, file=sys.stderr)
+        elif dropped:
+            print(
+                f"graphify: removed the stale graphify entry from "
+                f"{directory / _OPENCODE_CONFIG_PATH}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+
 
 
 
@@ -528,13 +767,32 @@ def _pin_hash_seed_if_needed() -> None:
         # launcher on Windows is a native .exe with no .py content, so
         # `python.exe <that .exe path>` fails outright with "can't open
         # file" -- every command this function touches (#3779).
-        os.execvpe(
-            sys.executable,
+        _reexec(
             [sys.executable, "-m", "graphify", *sys.argv[1:]],
             {**os.environ, "PYTHONHASHSEED": "0"},
         )
     except OSError:
         pass
+
+
+def _reexec(argv: list[str], env: dict[str, str], windows: bool | None = None) -> None:
+    """Replace the current command with `argv` run under `env`.
+
+    On POSIX this is a real os.execvpe. On Windows os.exec* does not replace
+    the process: CPython spawns a new one and the calling process exits at
+    once, so the caller sees the command "finish" while the work continues
+    detached, and the exiting parent intermittently dies with an access
+    violation (exit 139 / 0xC0000005) instead (#3799). There the child is
+    run with subprocess and waited for, and its exit status is propagated.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        import subprocess
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise SystemExit(subprocess.run(argv, env=env).returncode)
+    os.execvpe(argv[0], argv, env)
 
 
 def main() -> None:
@@ -574,10 +832,15 @@ def _run_cli() -> None:
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
     if not any(arg in _silent_cmds for arg in sys.argv):
+        # A package upgrade leaves every installed skill at the old version;
+        # refresh them first, so the check below only fires for copies the
+        # refresh could not or must not touch (#1805).
+        _refresh_stale_skills()
+        _refresh_v1_opencode_plugins()
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
-        for skill_dst in {_platform_skill_destination(name) for name in _PLATFORM_CONFIG}:
+        for skill_dst in {_platform_skill_destination(name) for name in _skill_platforms()}:
             _check_skill_version(skill_dst)
 
     if len(sys.argv) >= 2 and sys.argv[1] in ("-v", "--version", "version"):
@@ -585,6 +848,7 @@ def _run_cli() -> None:
         return
 
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "-?"):
+        _print_banner()
         print("Usage: graphify <command>")
         print()
         print("Commands:")
@@ -593,6 +857,9 @@ def _run_cli() -> None:
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --directed              force a directed search (the default;")
+        print("                            the JSON 'directed' flag is NOT consulted)")
+        print("    --undirected            ignore edge direction")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  diagnose multigraph    report same-endpoint edge collapse risk in graph.json")
@@ -609,6 +876,9 @@ def _run_cli() -> None:
         print("  merge-driver <base> <current> <other>  git merge driver: union-merge two graph.json files (set up via hook install)")
         print("  merge-graphs <g1> <g2>  merge two or more graph.json files into one cross-repo graph")
         print("    --out <path>            output path (default: graphify-out/merged-graph.json)")
+        print("    --previous <path>       restore the previous merged clustering's community ids")
+        print("                            (by node id) instead of each input's own per-source ids,")
+        print("                            so a later cluster-only run reuses labels correctly")
         print("    --branch <branch>       checkout a specific branch (default: repo default)")
         print("    --out <dir>             clone to a custom directory (default: ~/.graphify/repos/<owner>/<repo>)")
         print("  add <url>               fetch a URL and save it to ./raw, then update the graph")
@@ -786,6 +1056,9 @@ def _run_cli() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print()
+        print("Prefer a hosted version? Try the graphify platform free for 14 days:")
+        print("https://app.graphify.com")
         print()
         return
 
