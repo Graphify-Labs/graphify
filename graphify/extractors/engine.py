@@ -2504,7 +2504,10 @@ def _csharp_scoped_receiver_type(
         return inner[0][2]
     return None
 
-def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
+def _ts_receiver_type_table(
+    root, source: bytes, table: dict[str, str],
+    field_table: "dict[str, dict[str, str]] | None" = None,
+) -> None:
     """Add TS/JS receiver bindings to ``table`` (name -> TypeName), for member-call
     resolution beyond the constructor-injected `this.field` case (#1630):
 
@@ -2561,13 +2564,17 @@ def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
                 name = _read_text(pat, source)
                 if name and tname and name not in table:
                     table[name] = tname
-        elif t in ("public_field_definition", "field_definition"):
+        elif t in ("public_field_definition", "field_definition") and field_table is not None:
             # A class field (`protected repo: Repo`, `#root: Node = new Node()`,
             # `private logger = new Logger()`) is what `this.repo.m()` reads, the
-            # same as a constructor parameter property. Static fields are read as
-            # `Cls.field`, not `this.field`, so they are skipped.
+            # same as a constructor parameter property. It is recorded under its
+            # own class only, so two classes in one file with a same-named field
+            # of different types never borrow each other's type. Static fields are
+            # read as `Cls.field`, not `this.field`, so they are skipped.
             name_n = n.child_by_field_name("name") or n.child_by_field_name("property")
-            if (name_n is not None
+            owner = n.parent.parent if n.parent is not None else None
+            owner_name = owner.child_by_field_name("name") if owner is not None else None
+            if (name_n is not None and owner_name is not None
                     and name_n.type in ("property_identifier", "private_property_identifier")
                     and not any(c.type == "static" for c in n.children)):
                 ann = n.child_by_field_name("type")
@@ -2580,10 +2587,51 @@ def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
                     if ctor is not None and ctor.type in ("identifier", "type_identifier"):
                         tname = _read_text(ctor, source)
                 name = _read_text(name_n, source)
-                if name and tname and name not in table:
-                    table[name] = tname
+                fields = field_table.setdefault(_read_text(owner_name, source), {})
+                if name and tname and name not in fields:
+                    fields[name] = tname
         for c in n.children:
             stack.append(c)
+
+_TS_FUNCTION_NODES = frozenset({
+    "arrow_function", "method_definition", "function_declaration", "function_expression",
+    "generator_function_declaration", "generator_function",
+})
+
+
+def _ts_field_destructured_from_this(ident, name: str, source: bytes) -> str | None:
+    """The `this` field that ``name`` was destructured from, or None.
+
+    `const { creator } = this` and `const { creator: c } = this` in the function
+    around the call (or around an arrow function holding it, since an arrow keeps
+    the outer `this`) make `creator` / `c` the `creator` field. The search stops at
+    the first function that binds its own `this`, and only reads declarations of
+    that function itself, not of functions nested in it."""
+    node = ident.parent
+    while node is not None:
+        if node.type in _TS_FUNCTION_NODES:
+            body = node.child_by_field_name("body")
+            stack = [body] if body is not None else []
+            while stack:
+                n = stack.pop()
+                if n.type == "variable_declarator":
+                    pattern, value = n.child_by_field_name("name"), n.child_by_field_name("value")
+                    if (pattern is not None and pattern.type == "object_pattern"
+                            and value is not None and value.type == "this"):
+                        for p in pattern.named_children:
+                            if p.type == "shorthand_property_identifier_pattern" and _read_text(p, source) == name:
+                                return name
+                            if p.type == "pair_pattern":
+                                key, val = p.child_by_field_name("key"), p.child_by_field_name("value")
+                                if (key is not None and val is not None and val.type == "identifier"
+                                        and _read_text(val, source) == name):
+                                    return _read_text(key, source)
+                stack.extend(c for c in n.children if c.type not in _TS_FUNCTION_NODES)
+            if node.type != "arrow_function":
+                return None
+        node = node.parent
+    return None
+
 
 def _find_require_call(value_node):
     """Return the call_expression node if `value_node` is a `require(...)` call
@@ -7920,6 +7968,13 @@ def _extract_generic(
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
+                                if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+                                    # `const { creator } = this; creator.m()` reads the
+                                    # field the same way `this.creator.m()` does.
+                                    _this_field = _ts_field_destructured_from_this(obj, member_receiver, source)
+                                    if _this_field:
+                                        member_receiver = _this_field
+                                        is_this_field_call = True
                             elif (
                                 obj is not None
                                 and obj.type in ("this", "super")
@@ -8168,6 +8223,12 @@ def _extract_generic(
                             _sargs = _sobj.child_by_field_name("arguments") if _sobj is not None else None
                             if _sargs is not None and any(c.is_named for c in _sargs.children):
                                 rc_entry["_python_super_args"] = True
+                        # TS/JS `this.x.m()`: the receiver is a field of the caller's
+                        # own class, which the per-class field table types.
+                        if is_this_field_call and config.ts_module in (
+                            "tree_sitter_javascript", "tree_sitter_typescript",
+                        ):
+                            rc_entry["ts_this_field"] = True
                         # Tag the C++ raw_call's language so the cross-file C++ resolver
                         # claims it unambiguously: a `.h` file routes to extract_cpp or
                         # extract_objc by content, and both resolvers see `.h` in their
@@ -8689,8 +8750,14 @@ def _extract_generic(
     # a call on a typed param (incl. inside a closure) resolve (#1630). The
     # constructor-injection entries are populated during the walk above and win on
     # a name clash (first-binding-wins in the helper).
+    # Class fields go to their own per-class table (`this.x` only reads the
+    # caller's class), never into the file-wide name table.
+    ts_field_types: dict[str, dict[str, str]] = {}
     if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
-        _ts_receiver_type_table(root, source, type_table)
+        _ts_receiver_type_table(root, source, type_table, ts_field_types)
+        ts_field_types = {cls: f for cls, f in ts_field_types.items() if f}
+        if ts_field_types and not type_table:
+            result["ts_type_table"] = {"path": str_path, "table": {}, "fields": ts_field_types}
     if config.ts_module == "tree_sitter_swift":
         if type_table or swift_factory_bindings:
             result["swift_type_table"] = {"path": str_path, "table": type_table}
@@ -8702,6 +8769,8 @@ def _extract_generic(
     elif type_table:
         if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
             result["ts_type_table"] = {"path": str_path, "table": type_table}
+            if ts_field_types:
+                result["ts_type_table"]["fields"] = ts_field_types
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
     return result

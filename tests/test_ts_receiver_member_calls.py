@@ -267,3 +267,48 @@ def test_a_public_call_never_binds_to_a_private_hash_method(tmp_path):
                    "export function make(c: Ctx): number { return c.newResponse(); }\n"),
     })
     assert not _hits(calls, "make", "newResponse")
+
+
+def test_same_named_fields_in_two_classes_of_one_file_keep_their_own_type(tmp_path):
+    # Fields are scoped to their class: B's `repo: RepoB` must not type A's `this.repo`.
+    _, r = _calls(tmp_path, {
+        "repos.ts": ("export class RepoA {\n  save(): number { return 1; }\n}\n"
+                     "export class RepoB {\n  save(): number { return 2; }\n}\n"),
+        "two.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class A {\n  repo: RepoA = new RepoA();\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class B {\n  repo: RepoB = new RepoB();\n  run(): number { return this.repo.save(); }\n}\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    pairs = {(owner.get(e["source"]), owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert pairs == {("A", "RepoA"), ("B", "RepoB")}, pairs
+
+
+def test_field_destructured_from_this_types_the_local(tmp_path):
+    # `const { repo } = this` (also inside an arrow) and `{ repo: r } = this` read
+    # the field exactly as `this.repo` does.
+    calls, _ = _calls(tmp_path, {
+        "repo.ts": "export class Repo {\n  save(): number { return 1; }\n}\n",
+        "svc.ts": ('import { Repo } from "./repo";\n'
+                   "export class Svc {\n"
+                   "  private repo = new Repo();\n"
+                   "  a(): number { const { repo } = this; return repo.save(); }\n"
+                   "  b(): number { const { repo: r } = this; return [1].map(() => r.save())[0]; }\n"
+                   "}\n"),
+    })
+    assert _caller_hits(calls, "a", "save") and _caller_hits(calls, "b", "save"), calls
+
+
+def test_class_sharing_its_node_with_a_same_named_value_keeps_its_fields(tmp_path):
+    # `class Visitor` and `const visitor` fold into one node id; the class's
+    # fields must still type its `this.repo` calls.
+    calls, _ = _calls(tmp_path, {
+        "repo.ts": "export class Repo {\n  save(): number { return 1; }\n}\n",
+        "visitor.ts": ('import { Repo } from "./repo";\n'
+                       "export const visitor = 1;\n"
+                       "class Visitor {\n"
+                       "  private repo = new Repo();\n"
+                       "  a(): number { return this.repo.save(); }\n"
+                       "}\n"),
+    })
+    assert _caller_hits(calls, "a", "save"), calls
