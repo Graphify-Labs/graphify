@@ -315,6 +315,32 @@ def test_rust_calls_are_extracted():
             assert e["confidence"] == "EXTRACTED"
 
 
+def test_rust_finds_static_and_const_items():
+    r = extract_rust(FIXTURES / "sample.rs")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(by_id.values())
+    for name in ("RETRY_LIMIT", "DEFAULT_MODE", "NODE_LIMIT"):
+        assert name in labels, name
+        assert any(
+            e["relation"] == "contains" and by_id.get(e["target"]) == name
+            for e in r["edges"]
+        ), f"{name} has no file-level contains edge"
+    # An associated const is attributed to its impl, like a method.
+    assert ".CAPACITY" in labels
+    assert any(
+        e["relation"] == "contains"
+        and by_id.get(e["source"]) == "Graph"
+        and by_id.get(e["target"]) == ".CAPACITY"
+        for e in r["edges"]
+    )
+    # The declared type is referenced like a struct field type.
+    assert any(
+        e["relation"] == "references"
+        and by_id.get(e["source"]) == "NODE_LIMIT"
+        and by_id.get(e["target"]) == "Limit"
+        for e in r["edges"]
+    )
+
 def test_rust_import_edges_have_import_context():
     r = extract_rust(FIXTURES / "sample.rs")
     import_edges = _edges_with_relation(r, "imports", "imports_from")
@@ -341,6 +367,31 @@ def test_rust_trait_impl_emits_implements():
     assert ("DataProcessor", "Processor") in _edge_labels(r, "implements")
 
 
+def test_rust_trait_method_declarations_are_captured():
+    # #3366: signature-only trait method declarations (and default-bodied ones)
+    # were dropped because trait bodies were never walked. Both `Processor.run`
+    # and `Logger.log` are declaration-only trait methods in the fixture.
+    r = extract_rust(FIXTURES / "sample.rs")
+    method_pairs = _edge_labels(r, "method")
+    assert ("Processor", "run") in method_pairs
+    assert ("Logger", "log") in method_pairs
+
+
+def test_rust_trait_decl_method_is_distinct_from_impl_method():
+    # #3366: the trait-declared `Processor.run` must be its own node, not collide
+    # onto the impl `DataProcessor.run` — the crux of the fix.
+    r = extract_rust(FIXTURES / "sample.rs")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    run_targets = {
+        e["target"]
+        for e in r["edges"]
+        if e["relation"] == "method"
+        and _normalize_symbol_label(by_id.get(e["target"], "")) == "run"
+    }
+    # one `run()` declared in `trait Processor`, one defined in the impl — two ids
+    assert len(run_targets) >= 2
+
+
 def test_rust_supertrait_emits_inherits():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("Logger", "Processor") in _edge_labels(r, "inherits")
@@ -357,6 +408,24 @@ def test_rust_enum_variant_references():
     refs = _edge_labels(r, "references")
     assert ("GraphEvent", "Graph") in refs, "tuple-variant reference missing"
     assert ("GraphEvent", "DataProcessor") in refs, "struct-variant reference missing"
+
+
+def test_rust_enum_variants_emit_case_of_nodes():
+    """Each enum variant must become a node with a `case_of` edge to its enum.
+
+    The enum handler only walked variants to collect their payload type
+    references; the variants themselves (`NodeAdded`, `Processed`) never became
+    nodes, so the enum was left a memberless leaf. Every other language with
+    enums (Java #1719, Kotlin #1738, Swift, Scala) emits a node per member with
+    a `case_of` edge; this brings Rust to parity.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    labels = {n["label"] for n in r["nodes"]}
+    assert "NodeAdded" in labels
+    assert "Processed" in labels
+    case_of = _edge_labels(r, "case_of")
+    assert ("GraphEvent", "NodeAdded") in case_of
+    assert ("GraphEvent", "Processed") in case_of
 
 
 def test_rust_struct_field_emits_field_context():
@@ -404,6 +473,286 @@ def test_rust_no_cross_crate_spurious_edges():
     assert cross_crate_calls == [], (
         f"Spurious cross-crate edges: {cross_crate_calls}"
     )
+
+
+def test_rust_forward_type_reference_resolves_to_local_declaration(tmp_path):
+    """#3782: a struct, enum or trait used above its declaration in the same file
+    must resolve to that declaration, not to a sourceless stub."""
+    p = tmp_path / "engine.rs"
+    p.write_text(
+        "fn before(s: &Sink) -> Mode { Mode::A }\n"
+        "\n"
+        "struct Sink {\n"
+        "    n: u32,\n"
+        "}\n"
+        "\n"
+        "impl Handler for Sink {}\n"
+        "\n"
+        "enum Mode {\n"
+        "    A,\n"
+        "}\n"
+        "\n"
+        "trait Handler {}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    assert [n["label"] for n in r["nodes"] if not n["source_file"]] == []
+    assert ("before", "Sink") in _edge_labels(r, "references", "parameter_type")
+    assert ("before", "Mode") in _edge_labels(r, "references", "return_type")
+    assert ("Sink", "Handler") in _edge_labels(r, "implements")
+
+
+def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path):
+    """#3782: only struct/enum/trait declarations become nodes, so only they may
+    resolve a forward reference. A `type` alias, a `union`, a struct declared in a
+    function body, a name declared nowhere in the file and a generic type that only
+    an `impl` names produce no node of that name here; references to them must keep
+    their sourceless stub instead of being dropped."""
+    p = tmp_path / "shapes.rs"
+    p.write_text(
+        "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere, w: &Wrapper<u8>) {}\n"
+        "\n"
+        "type Alias = u32;\n"
+        "\n"
+        "union Bits { a: u32, b: f32 }\n"
+        "\n"
+        "fn host() {\n"
+        "    struct Local;\n"
+        "}\n"
+        "\n"
+        "trait Tr {}\n"
+        "\n"
+        "impl<T> Tr for Wrapper<T> {}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    targets = {
+        by_id[e["target"]]["label"]: by_id[e["target"]]
+        for e in r["edges"]
+        if e["relation"] == "references" and e["target"] in by_id
+    }
+    for name in ("Alias", "Bits", "Local", "Elsewhere", "Wrapper"):
+        assert name in targets, f"reference to {name} was dropped"
+        assert targets[name]["source_file"] == "", name
+
+
+def test_rust_forward_reference_resolves_into_an_inline_module(tmp_path):
+    """#3782: the pre-scan reaches the same items walk() does, so a type declared
+    in an inline `mod` below its use resolves like a use placed after it."""
+    p = tmp_path / "nested.rs"
+    p.write_text(
+        "use inner::Sink;\n"
+        "\n"
+        "fn before(s: &Sink) {}\n"
+        "\n"
+        "mod inner {\n"
+        "    pub struct Sink;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    sink = next(n for n in r["nodes"] if n["label"] == "Sink")
+    before = next(n for n in r["nodes"] if n["label"] == "before()")
+    assert sink["source_file"] == str(p)
+    assert any(
+        e["relation"] == "references" and e["source"] == before["id"] and e["target"] == sink["id"]
+        for e in r["edges"]
+    )
+
+
+def test_rust_forward_reference_skips_items_in_const_and_static_initializers(tmp_path):
+    """#3782: walk() never enters a const or static initializer, so a struct
+    declared there is no node; a reference to it keeps its sourceless stub."""
+    p = tmp_path / "initializers.rs"
+    p.write_text(
+        "fn before(a: &Hidden, b: &Guarded) {}\n"
+        "\n"
+        "const _: () = {\n"
+        "    struct Hidden;\n"
+        "};\n"
+        "\n"
+        "static GUARD: () = {\n"
+        "    struct Guarded;\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    targets = {
+        by_id[e["target"]]["label"]: by_id[e["target"]]["source_file"]
+        for e in r["edges"]
+        if e["relation"] == "references" and e["target"] in by_id
+    }
+    assert targets == {"Hidden": "", "Guarded": ""}
+
+
+def test_rust_forward_reference_to_a_casefold_colliding_type_keeps_its_stub(tmp_path):
+    """#3782: ids are casefolded, so `fn handle` (also in an `extern` block),
+    `const HANDLE`, `struct HANDLE` or an `impl` for `HANDLE` share the id of
+    `struct Handle` and walk() keeps whichever comes first, and a `type HANDLE`
+    alias shares it without being a node. A reference above the declarations must
+    keep the sourceless stub v8's extractor gives it, instead of binding to another
+    item."""
+    extern_fn = 'extern "C" {\n    fn handle();\n}'
+    impl_for_alias = "type HANDLE = usize;\n\ntrait Tr {}\n\nimpl Tr for HANDLE {}"
+    for name, user, other, label in (
+        ("fn_collision.rs", "fn user(h: &Handle) {}", "fn handle() {}", "Handle"),
+        ("extern_fn_collision.rs", "fn user(h: &Handle) {}", extern_fn, "Handle"),
+        ("const_collision.rs", "fn user(h: &Handle) {}", "const HANDLE: u32 = 0;", "Handle"),
+        ("static_collision.rs", "fn user(h: &Handle) {}", "static HANDLE: u32 = 0;", "Handle"),
+        ("type_collision.rs", "fn user(h: &Handle) {}", "struct HANDLE;", "Handle"),
+        ("impl_collision.rs", "fn user(h: &Handle) {}", impl_for_alias, "Handle"),
+        ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE"),
+    ):
+        p = tmp_path / name
+        p.write_text(
+            f"{user}\n\n{other}\n\nstruct Handle {{\n    n: u32,\n}}\n", encoding="utf-8"
+        )
+        r = extract_rust(p)
+        by_id = {n["id"]: n for n in r["nodes"]}
+        targets = [
+            (by_id[e["target"]]["label"], by_id[e["target"]]["source_file"])
+            for e in r["edges"]
+            if e["relation"] == "references" and e["target"] in by_id
+        ]
+        assert targets == [(label, "")], name
+
+
+def test_rust_forward_reference_resolves_when_no_other_item_shares_the_id(tmp_path):
+    """#3782: the collision rule only withholds a type whose id another item
+    shares. A function with another name, `#[cfg]` twins of the type itself (one
+    node in walk()), an `impl` for the type itself or a method named like the type
+    (its id is qualified by the impl) still let the reference above resolve to it."""
+    impl_for_type = (
+        "struct Handle<'a> {\n    s: &'a str,\n}\n\ntrait Tr {}\n\n"
+        "impl Tr for Handle<'_> {}\n\nimpl Tr for &Handle<'_> {}\n"
+    )
+    for name, source in (
+        ("no_collision.rs", "struct Handle {\n    n: u32,\n}\n\nfn other() {}\n"),
+        ("cfg_twins.rs", "#[cfg(unix)]\nstruct Handle;\n\n#[cfg(not(unix))]\nstruct Handle;\n"),
+        ("impl_for_type.rs", impl_for_type),
+        ("method_like_type.rs", "struct Handle;\n\nimpl Handle {\n    fn handle(&self) {}\n}\n"),
+    ):
+        p = tmp_path / name
+        p.write_text("fn user(h: &Handle) {}\n\n" + source, encoding="utf-8")
+        r = extract_rust(p)
+        handle = next(n for n in r["nodes"] if n["label"] == "Handle")
+        user = next(n for n in r["nodes"] if n["label"] == "user()")
+        assert handle["source_file"] == str(p), name
+        assert any(
+            e["relation"] == "references"
+            and e["source"] == user["id"]
+            and e["target"] == handle["id"]
+            for e in r["edges"]
+        ), name
+
+
+def test_rust_forward_reference_to_ambiguous_type_name_stays_local(tmp_path):
+    """#3782: when two files declare the same struct, the corpus-level rewire
+    declines the ambiguous stub, so the reference above the declaration must
+    already point at the local struct. Checked cold, then from the warm cache."""
+    (tmp_path / "engine_a.rs").write_text(
+        "fn before(s: &Sink) {}\n\nstruct Sink {\n    n: u32,\n}\n\nfn after(s: &Sink) {}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "engine_b.rs").write_text(
+        "struct Sink {\n    n: u32,\n}\n", encoding="utf-8",
+    )
+    files = sorted(tmp_path.glob("*.rs"))
+    for _ in range(2):
+        r = extract(files, cache_root=tmp_path, parallel=False)
+        sinks = [n for n in r["nodes"] if n["label"] == "Sink"]
+        assert all(n["source_file"] for n in sinks), "sourceless Sink stub left behind"
+        local = next(n["id"] for n in sinks if Path(n["source_file"]).name == "engine_a.rs")
+        before = next(n["id"] for n in r["nodes"] if n["label"] == "before()")
+        after = next(n["id"] for n in r["nodes"] if n["label"] == "after()")
+        refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+        assert (before, local) in refs
+        assert (after, local) in refs
+
+
+def test_rust_cross_file_reference_skips_impl_blocks_in_other_files(tmp_path):
+    """#4283: an `impl Thing` block in another file adds a second `Thing` node,
+    but only the struct is a declaration. A cross-file reference must bind to
+    that declaration instead of being left on a sourceless stub. Checked cold,
+    then from the warm cache."""
+    (tmp_path / "a.rs").write_text("pub struct Thing {\n    pub n: u32,\n}\n", encoding="utf-8")
+    (tmp_path / "b.rs").write_text(
+        "use crate::a::Thing;\n\nimpl Thing {\n    pub fn new() -> Self {\n"
+        "        Thing { n: 0 }\n    }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.rs").write_text(
+        "use crate::a::Thing;\n\npub fn make(t: Thing) -> u32 {\n    t.n\n}\n",
+        encoding="utf-8",
+    )
+    files = sorted(tmp_path.glob("*.rs"))
+    for _ in range(2):
+        r = extract(files, cache_root=tmp_path, parallel=False)
+        things = [n for n in r["nodes"] if n["label"] == "Thing"]
+        assert all(n["source_file"] for n in things), "sourceless Thing stub left behind"
+        declared = next(n["id"] for n in things if Path(n["source_file"]).name == "a.rs")
+        make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+        refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+        assert (make, declared) in refs
+
+
+def test_rust_cross_file_reference_to_twice_declared_type_keeps_its_stub(tmp_path):
+    """#4283: impl blocks are only skipped in favour of a SINGLE declaration. With
+    two real `struct Thing` declarations a cross-file reference has no one
+    correct target, so it must stay on its sourceless stub (fail closed)."""
+    (tmp_path / "a.rs").write_text("pub struct Thing;\n", encoding="utf-8")
+    (tmp_path / "b.rs").write_text(
+        "pub struct Thing;\n\nimpl Thing {\n    pub fn new() -> Self {\n        Thing\n    }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.rs").write_text("pub fn make(t: Thing) {}\n", encoding="utf-8")
+    r = extract(sorted(tmp_path.glob("*.rs")), cache_root=tmp_path, parallel=False)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+    targets = [
+        by_id[e["target"]] for e in r["edges"]
+        if e["relation"] == "references" and e["source"] == make
+    ]
+    assert [t["source_file"] for t in targets if t["label"] == "Thing"] == [""]
+
+
+def _thing_targets_of_make(tmp_path, files):
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    r = extract(sorted(tmp_path.iterdir()), cache_root=tmp_path, parallel=False)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+    return [
+        by_id[e["target"]]["source_file"] for e in r["edges"]
+        if e["relation"] == "references" and e["source"] == make
+        and by_id[e["target"]]["label"] == "Thing"
+    ]
+
+
+def test_rust_declaration_tiebreak_keeps_stub_beside_another_language(tmp_path):
+    """#4283: `_rust_declaration_count` only tells a Rust declaration from a Rust
+    impl block. A same-named TypeScript class is a declaration too, so a Rust
+    declaration plus a TS class is still ambiguous and the stub stays."""
+    targets = _thing_targets_of_make(tmp_path, {
+        "a.rs": "pub struct Thing;\n",
+        "b.ts": "export class Thing {}\n",
+        "c.rs": "pub fn make(t: Thing) {}\n",
+    })
+    assert targets == [""]
+
+
+def test_rust_declaration_tiebreak_keeps_stub_for_declarations_folded_in_one_node(tmp_path):
+    """#4283: two inline modules declaring `Thing` in one file fold into a single
+    node with `_rust_declaration_count == 2`. That is two declarations, so an
+    impl block elsewhere must not let the reference bind to the folded node."""
+    targets = _thing_targets_of_make(tmp_path, {
+        "a.rs": "mod x {\n    pub struct Thing;\n}\nmod y {\n    pub struct Thing;\n}\n",
+        "b.rs": "impl Thing {\n    pub fn new() {}\n}\n",
+        "c.rs": "pub fn make(t: Thing) {}\n",
+    })
+    assert targets == [""]
 
 
 # ── extract() dispatch ────────────────────────────────────────────────────────
@@ -480,6 +829,37 @@ def test_sql_create_table_inside_transaction_block():
         for s, t in refs
     )
 
+
+def test_sql_create_table_before_do_block_in_transaction(tmp_path):
+    """#3886: with a bare `BEGIN;`, a later `DO $$ ... END $$;` makes the parser
+    read the transaction as a block ending at the DO body's END. Tables inside
+    that block were dropped because the top-level loop skipped block nodes.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "BEGIN;\n"
+        "\n"
+        "CREATE TABLE users (\n"
+        "    id BIGSERIAL PRIMARY KEY\n"
+        ");\n"
+        "\n"
+        "DO $$\n"
+        "BEGIN\n"
+        "    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 't') THEN\n"
+        "        CREATE TRIGGER t BEFORE UPDATE ON users\n"
+        "        FOR EACH ROW EXECUTE FUNCTION touch();\n"
+        "    END IF;\n"
+        "END $$;\n"
+        "\n"
+        "COMMIT;\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "users" in labels
+
+
 def test_sql_finds_view():
     r = _extract_sql_or_skip()
     labels = [n["label"] for n in r["nodes"]]
@@ -505,6 +885,143 @@ def test_sql_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
+
+def test_sql_create_index_emits_index_node_linked_to_its_table(tmp_path):
+    """#3467: CREATE [UNIQUE] INDEX parsed fine but the walk never dispatched
+    on create_index, so every index was silently dropped."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE public.profiles (id uuid PRIMARY KEY, owner uuid NOT NULL);\n"
+        "CREATE INDEX profiles_owner_idx ON public.profiles (owner);\n"
+        "CREATE UNIQUE INDEX IF NOT EXISTS profiles_id_uniq ON public.profiles (id);\n"
+        "CREATE INDEX CONCURRENTLY orders_customer_idx ON public.orders (customer_id);\n"
+        'CREATE INDEX "quoted idx" ON public.profiles (owner);\n'
+        "CREATE INDEX ON public.profiles (owner);\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    for name in ("profiles_owner_idx", "profiles_id_uniq", "orders_customer_idx", "quoted idx"):
+        assert name in by_label, name
+        assert by_label[name]["source_file"] == str(p)
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    profiles = by_label["public.profiles"]["id"]
+    assert (by_label["profiles_owner_idx"]["id"], "indexes", profiles) in edges
+    assert (by_label["profiles_id_uniq"]["id"], "indexes", profiles) in edges
+    assert (by_label["quoted idx"]["id"], "indexes", profiles) in edges
+    # An index on a table defined in another file links to a sourceless stub,
+    # the same way a trigger does (#2324).
+    orders = by_label["public.orders"]
+    assert orders["source_file"] == ""
+    assert (by_label["orders_customer_idx"]["id"], "indexes", orders["id"]) in edges
+    # The unnamed index is skipped and nothing dangles.
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+    assert sum(1 for e in r["edges"] if e["relation"] == "indexes") == 4
+
+
+def test_sql_clean_trigger_links_to_its_on_table(tmp_path):
+    """A trigger's subject table follows ON, not FOR.
+
+    The create_trigger branch read the table off keyword_for, but `FOR EACH ROW`
+    carries no table — so a cleanly-parsed trigger got a node with no link to the
+    table it fires on.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users EXECUTE FUNCTION log_it();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "audit_ins" in by_label
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
+
+
+def test_sql_trigger_links_to_the_function_it_executes(tmp_path):
+    """A trigger exists to run a function, yet the EXECUTE FUNCTION/PROCEDURE
+    target was never linked. Only the ON table got an edge, so the trigger's
+    whole reason to exist — the routine it fires — was dropped from the graph.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE FUNCTION log_it() RETURNS TRIGGER AS 'SELECT 1';\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users\n"
+        "  FOR EACH ROW EXECUTE FUNCTION log_it();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "audit_ins" in by_label and "log_it()" in by_label
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    # The trigger fires on its ON table ...
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
+    # ... and executes the function it names.
+    assert (by_label["audit_ins"]["id"], "executes", by_label["log_it()"]["id"]) in edges
+    # Nothing dangles.
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_trigger_executing_an_undefined_function_fails_closed(tmp_path):
+    """When the executed routine is not defined in this file, link nothing
+    rather than mint a bare-name stub that could never rewire onto the real
+    `name()` function node. The ON-table edge is unaffected.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users EXECUTE FUNCTION elsewhere();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in {
+        (e["source"], e["relation"], e["target"]) for e in r["edges"]
+    }
+    # No executes edge, and the unresolved routine was not minted as a node.
+    assert not any(e["relation"] == "executes" for e in r["edges"])
+    assert "elsewhere()" not in by_label
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_procedural_body_trigger_is_recovered(tmp_path):
+    """A trigger with a `FOR EACH ROW BEGIN ... END` body has no grammar parse,
+    so the statement lands in ERROR recovery. TRIGGER was excluded from the
+    routine-recovery pattern, so the whole trigger — and its table — was dropped.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TABLE stats (cnt INT);\n"
+        "CREATE TRIGGER trg_after AFTER INSERT ON users\n"
+        "FOR EACH ROW\n"
+        "BEGIN\n"
+        "  UPDATE stats SET cnt = cnt + 1;\n"
+        "END;\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "trg_after" in by_label, "procedural-body trigger dropped"
+    # a trigger is not callable — its label carries no ()
+    assert by_label["trg_after"]["label"] == "trg_after"
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    assert (by_label["trg_after"]["id"], "triggers", by_label["users"]["id"]) in edges
+    # exactly one triggers edge, and nothing dangles
+    assert sum(1 for e in r["edges"] if e["relation"] == "triggers") == 1
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
 
 def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.
@@ -1576,14 +2093,19 @@ def test_sql_regex_recovery_survives_invalid_utf8_bytes_earlier_in_file(tmp_path
     assert "dbo.GetCustomer()" in labels, f"got {labels}"
 
 def test_sql_regex_recovery_name_uses_replacement_char_not_question_mark(tmp_path):
-    """A regex-recovered name whose OWN content carries one of src_text's
-    surrogate-escaped invalid bytes was sanitized via
-    text.encode(errors="replace").decode(), but that specific error
-    handler turns a lone surrogate into a bare "?", not the U+FFFD every
-    other invalid-byte path in this module produces (bytes.decode
-    (errors="replace") on a malformed sequence, as _read still uses) --
-    an inconsistent placeholder character for the same underlying
-    condition."""
+    """A regex-recovered name whose OWN content carries a byte invalid in the
+    extractor's own UTF-8 input used to reach the sanitizer as a lone
+    surrogate and come out as a bare "?", not the U+FFFD every other
+    invalid-byte path in this module produces -- an inconsistent placeholder
+    for the same underlying condition.
+
+    #4146 now reads a non-UTF-8 source file as cp1252 (falling back to
+    latin-1, which cannot fail) before anything in this module sees it, so a
+    stray high byte like 0xFF decodes to a real character (here, 'ÿ') rather
+    than reaching the extractor as an invalid byte at all -- there is no
+    placeholder to be inconsistent about for this input anymore. This test
+    now guards that outcome: the name comes out whole, not mangled into a
+    "?" or a stray backtick."""
     pytest.importorskip("tree_sitter_sql")
     p = tmp_path / "schema.sql"
     p.write_bytes(
@@ -1596,9 +2118,10 @@ def test_sql_regex_recovery_name_uses_replacement_char_not_question_mark(tmp_pat
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"]]
-    assert "dbo.Wei�rd()" in labels, f"got {labels}"
+    assert "dbo.Weiÿrd()" in labels, f"got {labels}"
     assert not any("?" in l for l in labels), f"got {labels}"
     assert not any("`" in l for l in labels), f"backtick leaked into a label: {labels}"
+    assert not any("�" in l for l in labels), f"got a replacement char: {labels}"
 
 def test_sql_firebird_reference_recovery_ignores_string_literal_content(tmp_path):
     """The Firebird CREATE TABLE/REFERENCES fallback used to scan raw
