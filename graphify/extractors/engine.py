@@ -1272,6 +1272,32 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
             if c.is_named:
                 _cpp_collect_type_refs(c, source, generic, out)
 
+def _scala_given_synthetic_name(node, source: bytes) -> str | None:
+    """A stable label for an anonymous Scala 3 given (`given Show[Int] with`).
+
+    Derived from the implemented type's base name so the given instance gets its
+    own scope (`given Show` -> id `..._given_show`), distinct from the trait type
+    node `Show` (`..._show`); otherwise its members would be dropped or leak to
+    file scope (#4130). Deterministic (no line numbers): two anonymous givens for
+    the same type in one file are a Scala ambiguity error, so no real collision.
+    """
+    for c in node.children:
+        base = None
+        if c.type == "generic_type":
+            base = next(
+                (cc for cc in c.children
+                 if cc.type in ("type_identifier", "stable_type_identifier", "identifier")),
+                None,
+            )
+        elif c.type in ("type_identifier", "stable_type_identifier"):
+            base = c
+        if base is not None:
+            text = _read_text(base, source).strip()
+            if text:
+                return f"given {text}"
+    return "given"
+
+
 def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Scala type expression; append (name, role) tuples.
     Handles type_identifier, generic_type (List[T]), and common type wrappers."""
@@ -4924,9 +4950,17 @@ def _extract_generic(
                     if child.type in config.name_fallback_child_types:
                         name_node = child
                         break
+            synthetic_name = None
             if not name_node:
-                return
-            class_name = _read_text(name_node, source)
+                # A Scala 3 anonymous given (`given Show[Int] with`) has no
+                # identifier child. Synthesize a stable name from the implemented
+                # type so its members stay scoped to the given instead of being
+                # dropped (or leaking to file scope) (#4130).
+                if config.ts_module == "tree_sitter_scala" and t == "given_definition":
+                    synthetic_name = _scala_given_synthetic_name(node, source)
+                if not synthetic_name:
+                    return
+            class_name = synthetic_name if synthetic_name else _read_text(name_node, source)
             ruby_absolute_declaration = (
                 config.ts_module == "tree_sitter_ruby" and class_name.startswith("::")
             )
