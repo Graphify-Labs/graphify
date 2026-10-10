@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 def extract_ocaml(path: Path) -> dict:
@@ -26,7 +26,7 @@ def extract_ocaml(path: Path) -> dict:
         else:
             language = Language(tsocaml.language_ocaml())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -42,9 +42,15 @@ def extract_ocaml(path: Path) -> dict:
     # once in the file is marked ambiguous and never resolved locally.
     local_defs: dict[str, str] = {}
     ambiguous: set[str] = set()
-    # (caller_nid, callee_name, line) recorded on pass 1, resolved on pass 2 so
-    # that forward references (e.g. `let rec ... and ...`) resolve correctly.
-    call_sites: list[tuple[str, str, int]] = []
+    # Names of modules DEFINED in this file. Used to decide whether a qualified
+    # call `M.f` may bind to a local `f`: if `M` is not a local module it is an
+    # external library (e.g. `Reg_spec.create`), so binding to a same-named local
+    # `f` would be a false edge (and a self-loop when the caller is that `f`).
+    local_modules: set[str] = set()
+    # (caller_nid, callee_name, qualifier_root_module_or_None, full_path_text,
+    # line) recorded on pass 1, resolved on pass 2 so that forward references
+    # (e.g. `let rec ... and ...`) resolve correctly.
+    call_sites: list[tuple[str, str, str | None, str, int]] = []
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -95,6 +101,19 @@ def extract_ocaml(path: Path) -> dict:
     def line_of(node) -> int:
         return node.start_point[0] + 1
 
+    def _find_object_body(binding):
+        """Locate the `object ... end` body of a class binding. It is the
+        `object_expression` in an implementation and the `class_body_type` in an
+        interface; a parametric class (`class c x = object ... end`) nests it a
+        level deeper, so search descendants rather than direct children."""
+        stack = list(binding.children)
+        while stack:
+            n = stack.pop()
+            if n.type in ("object_expression", "class_body_type"):
+                return n
+            stack.extend(n.children)
+        return None
+
     def named_child_text(node, child_type: str) -> str | None:
         for child in node.children:
             if child.type == child_type:
@@ -111,6 +130,23 @@ def extract_ocaml(path: Path) -> dict:
             if n.type in ("value_name", "module_name", "constructor_name"):
                 found = _read_text(n, source)
         return found
+
+    def path_root_module(path_node) -> str | None:
+        """Leftmost (outermost) module segment qualifying a *_path node:
+        `Reg_spec.create` -> `Reg_spec`, `Stdlib.List.map` -> `Stdlib`. Returns
+        None when the path is unqualified (`create`), which has no child
+        module_path."""
+        mp = next((c for c in path_node.children if c.type == "module_path"), None)
+        if mp is None:
+            return None
+        node = mp
+        while True:
+            inner = next((c for c in node.children if c.type == "module_path"), None)
+            if inner is None:
+                break
+            node = inner
+        mn = next((c for c in node.children if c.type == "module_name"), None)
+        return _read_text(mn, source) if mn is not None else None
 
     def register_def(name: str, nid: str) -> None:
         if name in ambiguous:
@@ -166,6 +202,7 @@ def extract_ocaml(path: Path) -> dict:
                     add_edge(container_nid, mnid,
                              "defines" if container_nid == file_nid else "contains", line)
                     register_def(mname, mnid)
+                    local_modules.add(mname)
                     for child in binding.children:
                         walk(child, mnid, enclosing_value)
                     return
@@ -179,6 +216,7 @@ def extract_ocaml(path: Path) -> dict:
                 add_edge(container_nid, mnid,
                          "defines" if container_nid == file_nid else "contains", line)
                 register_def(mname, mnid)
+                local_modules.add(mname)
                 for child in node.children:
                     walk(child, mnid, enclosing_value)
                 return
@@ -226,13 +264,68 @@ def extract_ocaml(path: Path) -> dict:
                     emit_type(binding, container_nid)
             return
 
+        if t == "class_definition":
+            # OCaml classes: `class c = object ... end` (.ml) and class-type
+            # signatures `class c : object ... end` (.mli). Without this branch
+            # the whole class -- its methods and instance variables -- was
+            # dropped, so a module made only of classes yielded no nodes at all.
+            # tree-sitter nests the name and the `object` body under a
+            # class_binding; the body is an `object_expression` in .ml and a
+            # `class_body_type` in .mli.
+            binding = next((c for c in node.children
+                            if c.type == "class_binding"), None)
+            if binding is not None:
+                cname = named_child_text(binding, "class_name")
+                if cname:
+                    line = line_of(node)
+                    cnid = _make_id(stem, cname)
+                    add_node(cnid, cname, line)
+                    add_edge(container_nid, cnid,
+                             "defines" if container_nid == file_nid else "contains", line)
+                    register_def(cname, cnid)
+                    body = _find_object_body(binding)
+                    if body is not None:
+                        for member in body.children:
+                            if member.type in ("method_definition", "method_specification"):
+                                mname = named_child_text(member, "method_name")
+                                if not mname:
+                                    continue
+                                mline = line_of(member)
+                                mnid = _make_id(stem, cname, mname)
+                                add_node(mnid, mname, mline)
+                                # A method is a callable class member, so use the
+                                # "method" relation every other extractor emits
+                                # (an instance `val` stays "contains" - it's a
+                                # field). This keeps OCaml methods first-class in
+                                # the call-flow view and caller/callee index,
+                                # which key on "method" not "contains".
+                                add_edge(cnid, mnid, "method", mline)
+                                # Attribute calls in the method body to the
+                                # method. Methods are NOT registered as local
+                                # defs: they are only reachable through `obj#m`,
+                                # never as a bare `m ...`, so binding a bare call
+                                # to a same-named method would be a false edge.
+                                for child in member.children:
+                                    walk(child, cnid, mnid)
+                            elif member.type in ("instance_variable_definition",
+                                                 "instance_variable_specification"):
+                                vname = named_child_text(member, "instance_variable_name")
+                                if not vname:
+                                    continue
+                                vline = line_of(member)
+                                vnid = _make_id(stem, cname, vname)
+                                add_node(vnid, vname, vline)
+                                add_edge(cnid, vnid, "contains", vline)
+                    return
+
         if t == "application_expression":
             fn = node.named_children[0] if node.named_children else None
             if fn is not None and fn.type == "value_path":
                 callee = last_name(fn)
                 if callee:
                     caller = enclosing_value if enclosing_value else file_nid
-                    call_sites.append((caller, callee, line_of(node)))
+                    call_sites.append((caller, callee, path_root_module(fn),
+                                       _read_text(fn, source), line_of(node)))
             # Fall through: arguments may contain further applications/definitions.
 
         for child in node.children:
@@ -240,8 +333,22 @@ def extract_ocaml(path: Path) -> dict:
 
     walk(root, file_nid, "")
 
-    for caller, callee, line in call_sites:
-        if callee in local_defs:
+    for caller, callee, qualifier, full_path, line in call_sites:
+        # A qualified call `M.f` where `M` is NOT a module defined in this file
+        # is an external-library call (e.g. `Reg_spec.create`). Binding it to a
+        # same-named local `f` would be a false edge (and a `create -> create`
+        # self-loop when the caller is that local `f`), so keep it distinct: a
+        # stub keyed by the FULL qualified name (`Reg_spec.create`) never
+        # collapses onto the local `f` in the corpus rewire. Unqualified calls,
+        # and qualified calls into a locally-defined module, still resolve to a
+        # local definition; a bare-name stub still allows the cross-file rewire
+        # to collapse `Geo.area` onto another file's `area` (#hardcaml).
+        if qualifier is not None and qualifier not in local_modules:
+            if callee in local_defs:
+                add_edge(caller, ref_stub(full_path), "calls", line, confidence="INFERRED")
+            else:
+                add_edge(caller, ref_stub(callee), "calls", line, confidence="INFERRED")
+        elif callee in local_defs:
             add_edge(caller, local_defs[callee], "calls", line)
         else:
             add_edge(caller, ref_stub(callee), "calls", line, confidence="INFERRED")

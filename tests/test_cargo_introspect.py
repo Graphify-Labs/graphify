@@ -455,3 +455,229 @@ tokio_rt = { version = "1", package = "tokio" }
 
     assert {node["id"] for node in result["nodes"]} == {"crate:app"}
     assert result["edges"] == []
+
+
+def test_cargo_introspect_discovers_a_manifest_in_a_subdirectory(tmp_path):
+    """#3678: a Tauri-style layout keeps Cargo.toml in src-tauri/, not at the
+    scan root. introspect_cargo must find it rather than erroring as if no
+    crate existed at all."""
+    tauri = tmp_path / "src-tauri"
+    tauri.mkdir()
+    _write_manifest(
+        tauri / "Cargo.toml",
+        """
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+""",
+    )
+
+    result = introspect_cargo(tmp_path)
+
+    assert {node["id"] for node in result["nodes"]} == {"crate:app"}
+    node = next(n for n in result["nodes"] if n["id"] == "crate:app")
+    assert node["source_file"] == "src-tauri/Cargo.toml", (
+        f"the discovered manifest's source_file should stay relative to the "
+        f"scan root, not the crate subdirectory; got {node['source_file']!r}"
+    )
+
+
+def test_cargo_introspect_discovery_resolves_workspace_members_from_the_manifest(tmp_path):
+    """A discovered workspace manifest's own members are still resolved
+    relative to ITS directory, not the outer scan root (#3678)."""
+    tauri = tmp_path / "src-tauri"
+    tauri.mkdir()
+    _write_manifest(
+        tauri / "Cargo.toml",
+        """
+[workspace]
+members = ["core"]
+""",
+    )
+    core = tauri / "core"
+    core.mkdir()
+    _write_manifest(
+        core / "Cargo.toml",
+        """
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+""",
+    )
+
+    result = introspect_cargo(tmp_path)
+
+    assert {node["id"] for node in result["nodes"]} == {"crate:core"}
+    node = next(n for n in result["nodes"] if n["id"] == "crate:core")
+    assert node["source_file"] == "src-tauri/core/Cargo.toml"
+
+
+def test_cargo_introspect_discovery_skips_noise_directories(tmp_path):
+    """A Cargo.toml sitting inside node_modules/ (a vendored or example crate
+    pulled in by an npm dependency) must never win over a real, non-noise
+    subdirectory (#3678)."""
+    noise = tmp_path / "node_modules" / "some-pkg"
+    noise.mkdir(parents=True)
+    _write_manifest(
+        noise / "Cargo.toml",
+        """
+[package]
+name = "decoy"
+version = "0.1.0"
+edition = "2021"
+""",
+    )
+    real = tmp_path / "src-tauri"
+    real.mkdir()
+    _write_manifest(
+        real / "Cargo.toml",
+        """
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+""",
+    )
+
+    result = introspect_cargo(tmp_path)
+
+    assert {node["id"] for node in result["nodes"]} == {"crate:app"}, (
+        "discovery must never search into node_modules/"
+    )
+
+
+def test_cargo_introspect_discovery_does_not_search_past_the_depth_cap(tmp_path):
+    """A manifest nested deeper than the discovery cap is left unfound rather
+    than searched for indefinitely (#3678)."""
+    deep = tmp_path / "a" / "b" / "c" / "d"
+    deep.mkdir(parents=True)
+    _write_manifest(
+        deep / "Cargo.toml",
+        """
+[package]
+name = "too_deep"
+version = "0.1.0"
+edition = "2021"
+""",
+    )
+
+    with pytest.raises(FileNotFoundError):
+        introspect_cargo(tmp_path)
+
+
+@pytest.mark.parametrize("root_package", [False, True], ids=["virtual", "root-package"])
+def test_cargo_inherited_rename_uses_workspace_dependency_identity(tmp_path, root_package):
+    root_header = '[package]\nname = "root-app"\nversion = "0.1.0"\n' if root_package else ""
+    root_dependency = '[dependencies]\ndb.workspace = true\n' if root_package else ""
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        root_header
+        + '[workspace]\nmembers = ["app", "storage"]\n'
+        + '[workspace.dependencies]\n'
+        + 'db = { path = "storage", package = "internal-storage" }\n'
+        + root_dependency,
+    )
+    app = tmp_path / "app"
+    storage = tmp_path / "storage"
+    app.mkdir()
+    storage.mkdir()
+    _write_manifest(
+        app / "Cargo.toml",
+        '[package]\nname = "app"\nversion = "0.1.0"\n'
+        '[dependencies]\ndb = { workspace = true, features = ["fast"] }\n',
+    )
+    _write_manifest(
+        storage / "Cargo.toml",
+        '[package]\nname = "internal-storage"\nversion = "0.1.0"\n'
+        '[features]\nfast = []\n',
+    )
+
+    result = introspect_cargo(tmp_path)
+    expected_sources = {"crate:app"}
+    if root_package:
+        expected_sources.add("crate:root-app")
+    assert {node["id"] for node in result["nodes"]} == expected_sources | {"crate:internal-storage"}
+    assert len(result["edges"]) == len(expected_sources)
+    assert {(edge["source"], edge["target"]) for edge in result["edges"]} == {
+        (source, "crate:internal-storage") for source in expected_sources
+    }
+    for edge in result["edges"]:
+        assert edge["source_file"] == ("Cargo.toml" if edge["source"] == "crate:root-app" else "app/Cargo.toml")
+        assert edge["relation"] == "crate_depends_on"
+        assert edge["context"] == "cargo_dependency"
+        assert edge["confidence"] == "EXTRACTED"
+    assert introspect_cargo(tmp_path) == result
+
+
+@pytest.mark.parametrize(
+    ("root_declaration", "member_declaration", "expected"),
+    [
+        ('db = { path = "db" }', 'db.workspace = true', True),
+        ('db = "1"', 'db.workspace = true', False),
+        ('db = { version = "1" }', 'db.workspace = true', False),
+        ('db = { git = "https://example.com/db" }', 'db.workspace = true', False),
+        ('db = { path = "missing" }', 'db.workspace = true', False),
+        ('db = { path = "app" }', 'db.workspace = true', False),
+        ('db = { path = 42 }', 'db.workspace = true', False),
+        ('db = false', 'db.workspace = true', False),
+        ('', 'db.workspace = true', False),
+        ('db = { path = "db" }', 'db.workspace = false', False),
+        ('db = { path = "db" }', 'db.workspace = "true"', False),
+        ('db = { path = "missing" }', 'db = { path = "../db" }', True),
+    ],
+)
+def test_cargo_inherited_dependency_requires_matching_local_path(
+    tmp_path, root_declaration, member_declaration, expected
+):
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        '[workspace]\nmembers = ["app", "db"]\n'
+        '[workspace.dependencies]\n' + root_declaration + '\n',
+    )
+    for name in ("app", "db"):
+        crate = tmp_path / name
+        crate.mkdir()
+        _write_manifest(
+            crate / "Cargo.toml",
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\n'
+            + (f'[dependencies]\n{member_declaration}\n' if name == "app" else ""),
+        )
+
+    result = introspect_cargo(tmp_path)
+    assert {node["id"] for node in result["nodes"]} == {"crate:app", "crate:db"}
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == (
+        [("crate:app", "crate:db")] if expected else []
+    )
+
+
+@pytest.mark.parametrize("root_path", [".", ""])
+def test_cargo_inherited_dependency_can_target_root_package(tmp_path, root_path):
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "db"\nversion = "0.1.0"\n'
+        '[workspace]\nmembers = ["app"]\n'
+        f'[workspace.dependencies]\ndb = {{ path = "{root_path}" }}\n',
+    )
+    app = tmp_path / "app"
+    app.mkdir()
+    _write_manifest(
+        app / "Cargo.toml",
+        '[package]\nname = "app"\nversion = "0.1.0"\n'
+        '[dependencies]\ndb.workspace = true\n',
+    )
+    result = introspect_cargo(tmp_path)
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == [
+        ("crate:app", "crate:db")
+    ]
+
+
+@pytest.mark.parametrize("workspace", ["", "workspace = false\n", "[workspace]\n", "[workspace]\ndependencies = false\n"])
+def test_cargo_missing_or_malformed_workspace_dependencies_are_ignored(tmp_path, workspace):
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        workspace + '[package]\nname = "db"\nversion = "0.1.0"\n'
+        '[dependencies]\ndb.workspace = true\n',
+    )
+    assert introspect_cargo(tmp_path)["edges"] == []

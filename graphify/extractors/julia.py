@@ -1,7 +1,7 @@
 """julia — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 from graphify.extractors.engine import _semantic_reference_edge
 from pathlib import Path
 
@@ -17,7 +17,7 @@ def extract_julia(path: Path) -> dict:
     try:
         language = Language(tsjulia.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -84,12 +84,102 @@ def extract_julia(path: Path) -> dict:
             })
         return nid
 
+    def _type_name_of(node) -> str | None:
+        """Read a type name, unwrapping a parametric head.
+
+        A parametric declaration (`Box{T}`, `Shape{T}`) wraps the real name in a
+        `parametrized_type_expression`; a plain declaration is a bare identifier.
+        """
+        if node is None:
+            return None
+        if node.type == "identifier":
+            return _read_text(node, source)
+        if node.type == "parametrized_type_expression":
+            ident = next((c for c in node.children if c.type == "identifier"), None)
+            return _read_text(ident, source) if ident else None
+        return None
+
+    def _type_head_names(type_head) -> tuple[str | None, str | None]:
+        """Return (type_name, supertype_name) from a Julia `type_head`.
+
+        A bare declaration (`Foo`) exposes an `identifier`; a subtyping
+        declaration (`Foo <: Bar`) wraps both names in a `binary_expression`.
+        Either name may itself be parametric (`Box{T}`, `Sq{T} <: Shape{T}`), so
+        the operands are read through `_type_name_of`. Both the struct and
+        abstract-type paths need this, so parse it once.
+        """
+        bin_expr = next(
+            (c for c in type_head.children if c.type == "binary_expression"), None
+        )
+        if bin_expr:
+            operands = [
+                c for c in bin_expr.children
+                if c.type in ("identifier", "parametrized_type_expression")
+            ]
+            if operands:
+                name = _type_name_of(operands[0])
+                super_name = _type_name_of(operands[-1]) if len(operands) >= 2 else None
+                return name, super_name
+            return None, None
+        name_node = next(
+            (c for c in type_head.children
+             if c.type in ("identifier", "parametrized_type_expression")), None
+        )
+        return _type_name_of(name_node), None
+
+    def _type_head_params(type_head) -> set[str]:
+        """Type-parameter names declared in a parametric head (`{T}`, `{T,U}`,
+        `{T<:Number}`). These are not real types, so they must not become phantom
+        field-type reference nodes (e.g. a struct field `value::T`)."""
+        pte = None
+        for c in type_head.children:
+            if c.type == "parametrized_type_expression":
+                pte = c
+                break
+            if c.type == "binary_expression":
+                pte = next(
+                    (cc for cc in c.children if cc.type == "parametrized_type_expression"),
+                    None,
+                )
+                break
+        if pte is None:
+            return set()
+        curly = next((c for c in pte.children if c.type == "curly_expression"), None)
+        if curly is None:
+            return set()
+        params: set[str] = set()
+        for c in curly.children:
+            if c.type == "identifier":
+                params.add(_read_text(c, source))
+            elif c.type == "binary_expression":  # constrained param `T <: Number`
+                first = next((cc for cc in c.children if cc.type == "identifier"), None)
+                if first:
+                    params.add(_read_text(first, source))
+        return params
+
+    def _unwrap_call_expression(node):
+        """Return the `call_expression` at or under `node`, unwrapping a
+        `where_expression` (`f(x::T) where {T}` nests the call head one level
+        deeper); otherwise None."""
+        if node is None:
+            return None
+        if node.type == "call_expression":
+            return node
+        if node.type == "where_expression":
+            return next((c for c in node.children if c.type == "call_expression"), None)
+        return None
+
     def _func_name_from_signature(sig_node) -> str | None:
-        """Extract function name from a Julia signature node (call_expression > identifier)."""
+        """Extract function name from a Julia signature node (call_expression > identifier).
+
+        A `where` clause wraps the call head in a `where_expression`, so unwrap
+        that before reading the callee identifier.
+        """
         for child in sig_node.children:
-            if child.type == "call_expression":
-                callee = child.children[0] if child.children else None
-                if callee and callee.type == "identifier":
+            call = _unwrap_call_expression(child)
+            if call is not None and call.children:
+                callee = call.children[0]
+                if callee.type == "identifier":
                     return _read_text(callee, source)
         return None
 
@@ -139,19 +229,7 @@ def extract_julia(path: Path) -> dict:
             type_head = next((c for c in node.children if c.type == "type_head"), None)
             if not type_head:
                 return
-            struct_name: str | None = None
-            super_name: str | None = None
-            bin_expr = next((c for c in type_head.children if c.type == "binary_expression"), None)
-            if bin_expr:
-                identifiers = [c for c in bin_expr.children if c.type == "identifier"]
-                if identifiers:
-                    struct_name = _read_text(identifiers[0], source)
-                    if len(identifiers) >= 2:
-                        super_name = _read_text(identifiers[-1], source)
-            else:
-                name_node = next((c for c in type_head.children if c.type == "identifier"), None)
-                if name_node:
-                    struct_name = _read_text(name_node, source)
+            struct_name, super_name = _type_head_names(type_head)
             if not struct_name:
                 return
             struct_nid = _make_id(stem, struct_name)
@@ -162,12 +240,15 @@ def extract_julia(path: Path) -> dict:
                 add_edge(struct_nid, ensure_named_node(super_name, line),
                          "inherits", line, confidence="EXTRACTED")
             # Field types: each `name::Type` lowers to a typed_expression child of struct_definition
+            type_params = _type_head_params(type_head)
             for child in node.children:
                 if child.type == "typed_expression":
                     type_ids = [c for c in child.children if c.type == "identifier"]
                     if len(type_ids) >= 2:
                         field_line = child.start_point[0] + 1
                         type_name = _read_text(type_ids[-1], source)
+                        if type_name in type_params:
+                            continue  # a declared type parameter, not a real type
                         type_nid = ensure_named_node(type_name, field_line)
                         edges.append(_semantic_reference_edge(
                             struct_nid, type_nid, "field", str_path, field_line))
@@ -175,16 +256,22 @@ def extract_julia(path: Path) -> dict:
 
         # Abstract type
         if t == "abstract_definition":
-            # type_head > identifier
+            # type_head is a bare `identifier` (`abstract type Foo end`) or a
+            # `binary_expression` for the subtyping form (`abstract type Foo <: Bar end`).
+            # The latter was dropped entirely — abstract types are the backbone of
+            # Julia's dispatch hierarchies, so an intermediate `Foo <: Bar` vanishing
+            # broke the inheritance chain and lost the type node itself.
             type_head = next((c for c in node.children if c.type == "type_head"), None)
             if type_head:
-                name_node = next((c for c in type_head.children if c.type == "identifier"), None)
-                if name_node:
-                    abs_name = _read_text(name_node, source)
+                abs_name, super_name = _type_head_names(type_head)
+                if abs_name:
                     abs_nid = _make_id(stem, abs_name)
                     line = node.start_point[0] + 1
                     add_node(abs_nid, abs_name, line)
                     add_edge(scope_nid, abs_nid, "defines", line)
+                    if super_name:
+                        add_edge(abs_nid, ensure_named_node(super_name, line),
+                                 "inherits", line, confidence="EXTRACTED")
             return
 
         # Function: function foo(...) ... end
@@ -200,11 +287,88 @@ def extract_julia(path: Path) -> dict:
                     function_bodies.append((func_nid, node))
             return
 
-        # Short function: foo(x) = expr
+        # Macro: macro foo(...) ... end. Same grammar shape as a function (a
+        # `signature` wrapping a call_expression). Without this branch every
+        # macro definition was dropped, even though macros are first-class,
+        # heavily used definitions in Julia.
+        if t == "macro_definition":
+            sig_node = next((c for c in node.children if c.type == "signature"), None)
+            if sig_node:
+                macro_name = _func_name_from_signature(sig_node)
+                if macro_name:
+                    macro_nid = _make_id(stem, "@" + macro_name)
+                    line = node.start_point[0] + 1
+                    add_node(macro_nid, f"@{macro_name}", line)
+                    add_edge(scope_nid, macro_nid, "defines", line)
+                    function_bodies.append((macro_nid, node))
+            return
+
+        # @enum: `@enum Name a b c` or `@enum Name begin a; b end`. This lowers
+        # to a macrocall_expression; the first identifier in the argument list is
+        # the enum type, the rest (including those inside a begin/end block) are
+        # its members. Other macro calls fall through so definitions nested in
+        # e.g. an `@testset begin ... end` are still walked.
+        if t == "macrocall_expression":
+            macro_id = next((c for c in node.children if c.type == "macro_identifier"), None)
+            macro_name = None
+            if macro_id is not None:
+                id_node = next((c for c in macro_id.children if c.type == "identifier"), None)
+                if id_node is not None:
+                    macro_name = _read_text(id_node, source)
+            if macro_name == "enum":
+                arglist = next((c for c in node.children if c.type == "macro_argument_list"), None)
+                # First positional arg is the enum type; the rest are members.
+                # A member can be a bare `identifier` (`red`) or an `assignment`
+                # for an explicit value (`red = 1`); the block form nests them in
+                # a `compound_statement`. The type may itself be a
+                # `typed_expression` for a typed enum (`Color::UInt8`).
+                arg_nodes = []
+                if arglist is not None:
+                    for c in arglist.children:
+                        if c.type in ("identifier", "typed_expression", "assignment"):
+                            arg_nodes.append(c)
+                        elif c.type == "compound_statement":
+                            arg_nodes.extend(
+                                cc for cc in c.children
+                                if cc.type in ("identifier", "assignment")
+                            )
+
+                def _member_ident(n):
+                    # bare identifier, or the LHS identifier of `name = value`,
+                    # or the base name of a typed head `Color::UInt8`
+                    if n.type == "identifier":
+                        return n
+                    return next((cc for cc in n.children if cc.type == "identifier"), None)
+
+                type_node = _member_ident(arg_nodes[0]) if arg_nodes else None
+                if type_node is not None:
+                    enum_name = _read_text(type_node, source)
+                    line = node.start_point[0] + 1
+                    enum_nid = _make_id(stem, enum_name)
+                    add_node(enum_nid, enum_name, line)
+                    add_edge(scope_nid, enum_nid, "defines", line)
+                    for member in arg_nodes[1:]:
+                        m_node = _member_ident(member)
+                        if m_node is None:
+                            continue
+                        m_name = _read_text(m_node, source)
+                        m_line = m_node.start_point[0] + 1
+                        m_nid = _make_id(stem, enum_name, m_name)
+                        add_node(m_nid, m_name, m_line)
+                        # enum members use `case_of` (the tree-sitter convention
+                        # shared by C#/Java/Kotlin/Swift/TS), not `contains`.
+                        add_edge(enum_nid, m_nid, "case_of", m_line)
+                return
+            for child in node.children:
+                walk(child, scope_nid)
+            return
+
+        # Short function: foo(x) = expr  (and the `where` form: g(x::T) where {T} = expr)
         if t == "assignment":
             lhs = node.children[0] if node.children else None
-            if lhs and lhs.type == "call_expression" and lhs.children:
-                callee = lhs.children[0]
+            call = _unwrap_call_expression(lhs)
+            if call is not None and call.children:
+                callee = call.children[0]
                 if callee.type == "identifier":
                     func_name = _read_text(callee, source)
                     func_nid = _make_id(stem, func_name)
@@ -265,7 +429,7 @@ def extract_julia(path: Path) -> dict:
         # the boundary check returning early on the top-level node itself.
         # Skip the "signature" child — it contains the function's own call_expression
         # which would create a self-loop.
-        if body_node.type == "function_definition":
+        if body_node.type in ("function_definition", "macro_definition"):
             for child in body_node.children:
                 if child.type != "signature":
                     walk_calls(child, func_nid)

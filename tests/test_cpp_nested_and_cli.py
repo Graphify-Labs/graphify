@@ -1,0 +1,461 @@
+"""C++ nested types and C++/CLI keep their symbols (#2876)."""
+from pathlib import Path
+
+import pytest
+
+from graphify.extract import _normalize_cpp_cli, extract_cpp
+
+pytest.importorskip("tree_sitter_cpp")
+
+
+def _labels(path: Path) -> list[str]:
+    return [n["label"] for n in extract_cpp(path)["nodes"]]
+
+
+def test_cpp_enum_specifier_members_are_extracted(tmp_path):
+    """An `enum` / `enum class` is a class-like container whose members must be
+    nodes. `enum_specifier` was missing from the C++ class_types, so the enum
+    type and all of its enumerators produced no nodes at all — the whole type
+    vanished. Each enumerator must become a node with a `case_of` edge (parity
+    with Java #1719 / Swift / Scala enums).
+    """
+    p = tmp_path / "colors.hpp"
+    p.write_text(
+        "enum class Color { Red, Green = 2, Blue };\n"
+        "enum Old { X, Y };\n"
+        "typedef enum { A, B } Flag;\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    labels = {n["label"] for n in result["nodes"]}
+    assert {"Color", "Red", "Green", "Blue", "Old", "X", "Y"} <= labels
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    case_of = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "case_of"
+    }
+    assert ("Color", "Red") in case_of
+    assert ("Color", "Green") in case_of
+    assert ("Color", "Blue") in case_of
+    assert ("Old", "X") in case_of
+    assert ("Old", "Y") in case_of
+    # An anonymous enum (`typedef enum { A, B } Flag`) has no type name, so it is
+    # skipped rather than emitting a nameless node; its members do not appear.
+    assert "A" not in labels
+    assert "Flag" not in labels
+
+
+def test_cpp_enum_nested_in_class_and_namespace_is_extracted(tmp_path):
+    """Putting `enum_specifier` in class_types also recovers a nested enum inside
+    a class or namespace body: the enum is `contains`-ed by its enclosing type
+    and its enumerators get `case_of` edges (the branch that used to skip them)."""
+    p = tmp_path / "nested_enum.hpp"
+    p.write_text(
+        "class Widget {\n"
+        "public:\n"
+        "    enum class State { Idle, Active };\n"
+        "};\n"
+        "namespace net {\n"
+        "    enum Proto { Tcp, Udp };\n"
+        "}\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    labels = set(ids.values())
+    assert {"Widget", "State", "Idle", "Active", "Proto", "Tcp", "Udp"} <= labels
+    contains = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "contains"
+    }
+    case_of = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "case_of"
+    }
+    # the class-nested enum is contained by its class, members hang off the enum
+    assert ("Widget", "State") in contains
+    assert ("State", "Idle") in case_of
+    assert ("State", "Active") in case_of
+    # the namespace-nested enum's members resolve too
+    assert ("Proto", "Tcp") in case_of
+    assert ("Proto", "Udp") in case_of
+
+
+def test_cpp_union_specifier_is_extracted(tmp_path):
+    """A named `union` is a class-like container whose type node and data members
+    must survive. `union_specifier` was missing from the C++ class_types, so a
+    `union { ... }` and everything it declared produced no nodes at all — the whole
+    type vanished. It shares struct_specifier's name/body fields (type_identifier +
+    field_declaration_list), so it must get a type node and its members, like a
+    struct. An anonymous union has no type name and is skipped, like an anonymous
+    enum.
+    """
+    p = tmp_path / "value.hpp"
+    p.write_text(
+        "union Value { int i; float f; };\n"
+        "struct Point { int x; };\n"
+        "typedef union { int a; char b; } Anon;\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    labels = set(ids.values())
+    # Pre-fix the whole `union Value { ... }` declaration vanished.
+    assert {"Value", "i", "f"} <= labels
+    contains = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "contains"
+    }
+    defines = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "defines"
+    }
+    assert ("value.hpp", "Value") in contains
+    assert ("Value", "i") in defines
+    assert ("Value", "f") in defines
+    # An anonymous union (`typedef union { ... } Anon`) has no type name, so it is
+    # skipped rather than emitting a nameless node, like an anonymous enum.
+    assert "Anon" not in labels
+
+
+def test_cpp_union_member_function_is_a_method(tmp_path):
+    """A union's method declaration must not become a data field."""
+    source = tmp_path / "value.hpp"
+    source.write_text("union Value { int i; int get() const; };\n", encoding="utf-8")
+    result = extract_cpp(source)
+    assert result.get("parse_errors") is None
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    relationships = {(labels.get(e["source"]), labels.get(e["target"]), e["relation"])
+                     for e in result["edges"]}
+    assert ("Value", ".get()", "method") in relationships
+    assert ("Value", "i", "defines") in relationships
+    assert ("Value", "get", "defines") not in relationships
+    assert "get" not in labels.values()
+
+
+def test_nested_cpp_class_is_extracted(tmp_path):
+    # A nested type is a field_declaration whose `type` field IS the
+    # class_specifier; the member-variable branch used to consume it and return
+    # before the walk could descend, dropping Inner with no parse error.
+    p = tmp_path / "nested.h"
+    p.write_text(
+        "namespace N {\n"
+        "    class Outer\n"
+        "    {\n"
+        "    public:\n"
+        "        class Inner\n"
+        "        {\n"
+        "        public:\n"
+        "            static void Method() { }\n"
+        "        };\n"
+        "    };\n"
+        "}\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    assert [n["label"] for n in result["nodes"]] == [
+        "nested.h", "Outer", "Inner", ".Method()",
+    ]
+    # Inner is contained by Outer, not by the file (#2040).
+    outer = next(n["id"] for n in result["nodes"] if n["label"] == "Outer")
+    inner = next(n["id"] for n in result["nodes"] if n["label"] == "Inner")
+    assert any(
+        e["source"] == outer and e["target"] == inner and e["relation"] == "contains"
+        for e in result["edges"]
+    )
+
+
+def test_nested_type_declared_with_an_instance(tmp_path):
+    """`class Inner { } inst;` declares both a type and a member."""
+    p = tmp_path / "both.h"
+    p.write_text(
+        "class Outer\n"
+        "{\n"
+        "public:\n"
+        "    class Inner { int x; } inst;\n"
+        "};\n"
+    )
+    labels = _labels(p)
+    assert "Inner" in labels
+    assert "inst" in labels
+
+
+def test_cpp_cli_class_body_survives(tmp_path):
+    p = tmp_path / "cli.h"
+    p.write_text(
+        "namespace N {\n"
+        "    public ref class Wrapper\n"
+        "    {\n"
+        "    public:\n"
+        "        static void Init() { }\n"
+        '        static System::String^ Name() { return gcnew System::String(""); }\n'
+        "    };\n"
+        "}\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    labels = [n["label"] for n in result["nodes"]]
+    assert "Wrapper" in labels
+    assert ".Init()" in labels
+    assert ".Name()" in labels
+    # recovery no longer invents a `Wrapper()` free function or a `public` node
+    assert "Wrapper()" not in labels
+    assert "public" not in labels
+
+
+def test_cli_normalization_preserves_byte_offsets(tmp_path):
+    src = (
+        '[assembly:AssemblyVersion("1.0")];\n'
+        "public ref struct S { void F(System::Object^ o, int% n) { gcnew S(); } };\n"
+    ).encode()
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert len(out) == len(src)
+    # every line still starts at the same offset
+    assert [i for i, b in enumerate(src) if b == 0x0A] == [
+        i for i, b in enumerate(out) if b == 0x0A
+    ]
+    assert b"ref struct" not in out
+    assert b"gcnew" not in out
+    assert b"assembly" not in out
+
+
+def test_plain_cpp_is_not_rewritten(tmp_path):
+    src = b"int f(int a, int b) { return (a ^ b) % 7; }\n"
+    assert _normalize_cpp_cli(src) is None
+
+
+def test_operators_survive_in_a_cli_file(tmp_path):
+    """The `^`/`%` rewrite only touches the suffix spelling, not the operators."""
+    src = b"ref class C { int f(int a, int b) { return (a ^ b) % 7; } };\n"
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert b"(a ^ b) % 7" in out
+
+
+def test_multiline_cli_attribute_keeps_line_numbers(tmp_path):
+    """A removed token that spans lines must keep its line breaks.
+
+    `[assembly:AssemblyVersion(\n    "1.0"\n)]` is ordinary formatting. Blanking
+    its newlines preserved byte length but merged source lines, so every symbol
+    below it reported a line number that was too low.
+    """
+    p = tmp_path / "cli.h"
+    p.write_text(
+        "[assembly:AssemblyVersion(\n"
+        '    "1.0.0.0"\n'
+        ")];\n"
+        "namespace N {\n"
+        "    public ref class Wrapper\n"
+        "    {\n"
+        "    public:\n"
+        "        static void Init() { }\n"
+        "    };\n"
+        "}\n"
+    )
+    nodes = {n["label"]: n["source_location"] for n in extract_cpp(p)["nodes"]}
+    assert nodes["Wrapper"] == "L5"
+    assert nodes[".Init()"] == "L8"
+
+
+def test_cli_normalization_preserves_line_breaks(tmp_path):
+    src = (
+        "[assembly:AssemblyVersion(\n"
+        '    "1.0.0.0"\n'
+        ")];\n"
+        "namespace N {\n"
+        "    public\n"          # access specifier split from the keyword
+        "    ref class W { };\n"
+        "}\n"
+    ).encode()
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert [i for i, b in enumerate(src) if b == 0x0A] == [
+        i for i, b in enumerate(out) if b == 0x0A
+    ]
+    assert b"ref class" not in out
+    assert b"assembly" not in out
+
+
+def test_attached_arithmetic_is_not_mistaken_for_a_handle(tmp_path):
+    """`a% b` and `hash^ mask` are modulo and XOR, not CLI type suffixes.
+
+    Attachment to the preceding token does not separate the two readings —
+    `String^ s` and `a^ b` are lexically identical — so rewriting on
+    attachment alone turned arithmetic into `a  b` and broke the statement.
+    """
+    p = tmp_path / "ops.h"
+    p.write_text(
+        "namespace N {\n"
+        "    public ref class Hasher\n"
+        "    {\n"
+        "    public:\n"
+        '        static System::String^ Name() { return gcnew System::String(""); }\n'
+        "        static int Mix(int a, int b) { return a% b; }\n"
+        "        static int Fold(int hash, int mask) { return hash^ mask; }\n"
+        "        static void Track(System::Object^ o, int% n) { }\n"
+        "    };\n"
+        "}\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    labels = [n["label"] for n in result["nodes"]]
+    for expected in ("Hasher", ".Name()", ".Mix()", ".Fold()", ".Track()"):
+        assert expected in labels
+
+    # The operator characters themselves survive in the parsed source.
+    out = _normalize_cpp_cli(p.read_bytes())
+    assert b"return a% b;" in out
+    assert b"return hash^ mask;" in out
+
+
+def test_screaming_case_constants_stay_arithmetic(tmp_path):
+    """`MASK^ value` is XOR against a constant, not a `MASK^` handle.
+
+    SCREAMING_CASE is the macro/constant convention and never a .NET type
+    name, so a capitalized left side must also carry a lowercase letter. A
+    lone capital stays a type position for generic parameters (`T^ x`).
+    """
+    p = tmp_path / "consts.h"
+    p.write_text(
+        '''namespace N {
+    public ref class Hasher
+    {
+    public:
+        static int Fold(int value) { return MASK^ value; }
+        static int Trim(int value) { return LIMIT% value; }
+        static System::Object^ Box(T^ item) { return gcnew System::Object(); }
+    };
+}
+'''
+    )
+    out = _normalize_cpp_cli(p.read_bytes())
+    assert b"return MASK^ value;" in out
+    assert b"return LIMIT% value;" in out
+    assert b"System::Object  Box(T  item)" in out
+
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    assert ".Fold()" in _labels(p)
+
+
+@pytest.mark.parametrize("expr", [
+    b"int m = a% b;",
+    b"int x = hash^ mask;",
+    b"int c = count% 2;",
+    b"int d = (a ^ b) % 7;",
+    b"int e = a^*p;",
+    b"int f = a^&b;",
+    b"x %= y;",
+])
+def test_arithmetic_forms_survive(expr):
+    src = b"ref class C { void f() { " + expr + b" } };"
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert expr in out, f"{expr!r} was rewritten"
+
+
+@pytest.mark.parametrize("decl,rewritten", [
+    (b"System::String^ s;", b"System::String  s;"),
+    (b"List<int>^ items;", b"List<int>  items;"),
+    (b"DataTable^ t;", b"DataTable  t;"),
+    (b"int% n;", b"int  n;"),
+    (b"void F(String^, int);", b"void F(String , int);"),
+    (b"array<String^>^ a;", b"array<String >  a;"),
+])
+def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
+    src = b"ref class C { " + decl + b" };"
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert rewritten in out
+
+def test_cpp_export_macros_survive(tmp_path):
+    """Verify that classes with export macros extract correctly, including inherits edges."""
+    p = tmp_path / "export.h"
+    p.write_text(
+        "class MODULE_API Widget : public BaseWidget {\n"
+        "public:\n"
+        "    void DoThing() {}\n"
+        "};\n"
+        "class SOME_OTHER_MACRO Widget2 {};\n"
+        "class MODULE_API Widget3 final : public BaseWidget {};\n"
+        "class API FINAL Foo {};\n"
+        "struct EXPORT S {};\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "Widget" in labels
+    assert ".DoThing()" in labels
+    assert "Widget2" in labels
+    assert "Widget3" in labels
+    assert "Foo" in labels
+    assert "S" in labels
+
+    # assertion that the inherits edge actually reappears
+    edges = result.get("edges", [])
+    nodes = {n["id"]: n["label"] for n in result["nodes"]}
+    inherits_edges = [e for e in edges if e["relation"] == "inherits"]
+
+    # We should have Widget -> BaseWidget, Widget3 -> BaseWidget
+    widget_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget_inherits, "Widget -> BaseWidget inherits edge should reappear after macro blanking"
+
+    widget3_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget3" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget3_inherits, "Widget3 -> BaseWidget inherits edge should reappear after macro blanking"
+
+
+def test_cpp_export_macro_does_not_break_variables(tmp_path):
+    """Ensure elaborated type variable declarations don't trigger macro stripping."""
+    p = tmp_path / "vars.h"
+    p.write_text(
+        "void F() {\n"
+        "    for (class MODULE_API var: container) {}\n"
+        "    class MODULE_API var2{1};\n"
+        "    class MODULE_API v {1};\n"
+        "}\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    # The extraction should just parse normally. We don't extract local vars, but
+    # we ensure there are no parse_errors.
+    assert result.get("parse_errors") is None
+
+
+def test_cpp_export_macro_normalization_preserves_byte_offsets(tmp_path):
+    src = (
+        '#define API\n'
+        "class API \n"
+        "Widget : public Base {\n"
+        "  int x;\n"
+        "};\n"
+    ).encode()
+    from graphify.extract import _normalize_cpp_export_macros
+    out = _normalize_cpp_export_macros(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert b"class     \nWidget : public Base" in out
+
+    # Check that newlines are preserved exactly
+    assert out.count(b"\n") == src.count(b"\n")
+
+
+def test_cpp_export_macro_all_caps_class_final(tmp_path):
+    """Ensure an ALL-CAPS class name marked as final is not mistaken for a macro."""
+    p = tmp_path / "final.h"
+    p.write_text(
+        "class MY_WIDGET final : public Base {};\n"
+        "class MACRO Foo final : public Base {};\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "MY_WIDGET" in labels, "MY_WIDGET was stripped as a macro!"
+    assert "Foo" in labels
