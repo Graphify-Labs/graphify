@@ -5279,6 +5279,38 @@ def test_pure_export_no_from_not_treated_as_reexport():
     assert reexports == [], f"Pure export should not create re_exports: {reexports}"
 
 
+def test_export_default_string_not_treated_as_import(tmp_path):
+    from graphify.extract import extract_js
+    src = tmp_path / "logo.js"
+    src.write_text("export default 'data:image/png;base64,AAAA';\n")
+    result = extract_js(src)
+    imports = [e for e in result["edges"] if e["relation"] == "imports_from"]
+    assert imports == [], f"export default string should not create imports_from: {imports}"
+
+
+def test_export_default_long_string_with_base_url_does_not_crash(tmp_path):
+    from graphify.extract import extract_js
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {"baseUrl": "."}}')
+    src = tmp_path / "src" / "logo.js"
+    src.parent.mkdir()
+    src.write_text("export default 'data:image/png;base64," + "A" * 5000 + "';\n")
+    result = extract_js(src)
+    assert "error" not in result
+    assert [e for e in result["edges"] if e["relation"] == "imports_from"] == []
+    extract([src])
+
+
+def test_overlong_import_specifier_with_base_url_does_not_crash(tmp_path):
+    from graphify.extract import extract_js
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {"baseUrl": "."}}')
+    src = tmp_path / "src" / "main.js"
+    src.parent.mkdir()
+    src.write_text("import x from '" + "a" * 5000 + "';\n")
+    result = extract_js(src)
+    assert "error" not in result
+    extract([src])
+
+
 def test_dart_child_node_ids_are_stem_based(tmp_path):
     """Dart child node IDs must be built from _file_stem rather than absolute path."""
     from graphify.extract import extract_dart, _file_stem, _make_id

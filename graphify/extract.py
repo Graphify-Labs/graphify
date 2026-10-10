@@ -901,10 +901,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
     if is_reexport:
         has_from = any(child.type == "from" or (_read_text(child, source) == "from") for child in node.children if child.type in ("from", "identifier"))
         if not has_from:
-            # Check for string child (source path) as a more reliable indicator
-            has_from = any(child.type == "string" for child in node.children)
-            if not has_from:
-                return
+            return
 
     # `import type {...} from` / `export type {...} from` are erased by the
     # TypeScript compiler: no runtime emit, no module-graph edge. The
@@ -941,7 +938,11 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # `_resolve_js_import_path` returns the attempted path when no
             # local file exists. Static ES imports must treat that as unresolved
             # rather than minting a checkout-specific target ID (#2457).
-            if resolved_path is not None and not resolved_path.is_file():
+            try:
+                is_file = resolved_path is not None and resolved_path.is_file()
+            except OSError:
+                is_file = False
+            if resolved_path is not None and not is_file:
                 tgt_nid = _make_id("ref", raw)
                 resolved_path = None
             edge = {
