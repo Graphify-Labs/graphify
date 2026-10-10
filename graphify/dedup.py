@@ -512,87 +512,95 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
             )
 
 
-def _disambiguated_id(node: dict, taken: set[str]) -> str | None:
-    """A distinct ID for a node that DEFINES an ID another file also defines (#4281).
+def _full_stem(source_file: str) -> str:
+    """The extension-stripped, slugified full-path stem a file's own IDs start with."""
+    stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
+    return "_".join(s for s in (normalize_id(p) for p in stem.split("/")) if s)
 
-    Two distinct files can legitimately encode the same ID: ``x.py`` / ``x.html``
-    share an extension-stripped stem, and a bare ``protocol`` is a trailing slice
-    of both ``docs/protocol.md`` and ``docs/firmware/protocol.md``. Dropping one
-    loses a real entity, so give the later file its own ID instead: first the
-    canonical full-path form, then the same with the extension appended.
-    Returns None when no free ID exists or the node has no usable path.
+
+def _extension_qualified_id(node: dict) -> str | None:
+    """``x.html``'s own spelling of an ID it shares with ``x.py`` (#4281).
+
+    Only applies when the ID is spelled with the node's FULL path stem, i.e.
+    the ID collides because the extension was stripped. Returns None for an ID
+    that only matches a trailing path slice (a bare ``protocol``): that is a
+    reference to another file's entity, not a distinct entity, and is left to
+    the collapse-and-warn path.
     """
     nid = node.get("id") or ""
-    source_file = (node.get("source_file") or "").replace("\\", "/")
-    ext_match = _EXTENSION.search(source_file)
-    if not nid or not ext_match:
+    source_file = node.get("source_file") or ""
+    ext_match = _EXTENSION.search(source_file.replace("\\", "/"))
+    full = _full_stem(source_file)
+    if not (nid and full and ext_match):
         return None
-    segments = [s for s in (normalize_id(p) for p in _EXTENSION.sub("", source_file).split("/")) if s]
-    if not segments:
+    if nid != full and not nid.startswith(f"{full}_"):
         return None
-    full = "_".join(segments)
-    ext = normalize_id(ext_match.group(0))
-    rest = None
-    for prefix in sorted(_id_prefixes(source_file), key=len, reverse=True):
-        if nid == prefix or nid.startswith(f"{prefix}_"):
-            rest = nid[len(prefix):]
-            break
-    if rest is None:
-        return None
-    for candidate in (full + rest, f"{full}_{ext}{rest}"):
-        if candidate != nid and candidate not in taken:
-            return candidate
-    return None
+    return f"{full}_{normalize_id(ext_match.group(0))}{nid[len(full):]}"
 
 
 def _disambiguate_defining_collisions(
     nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
     root: Path | None,
 ) -> tuple[list[dict], list[dict]]:
-    """Give each distinct file that defines the same ID its own ID (#4281).
+    """Keep ``x.py`` and ``x.html`` apart when both derive the same ID (#4281).
 
-    The best-ranked definer keeps the ID; the others are renamed (see
-    ``_disambiguated_id``). Edges and hyperedges that carry the renamed file's
-    ``source_file`` follow their endpoint; unattributed references keep pointing
-    at the winner. IDs that no file defines (cross-chunk LLM drift, #1504) are
-    left to the existing collapse-and-warn path.
+    The ID is built from the extension-stripped path, so two files that differ
+    only by extension mint the same ID. The best-ranked file keeps it; the
+    others get an extension-qualified ID. Edges and hyperedges follow the
+    renamed node by ``source_file``, compared in root-relative form because
+    semantic edges can still carry an absolute path here while nodes were
+    already made relative. Anything else (an ID no file derives from its own
+    path, or a bare ID shared across different paths) is left to the existing
+    collapse-and-warn path.
     """
+    def key(sf):
+        return _rank_path(sf, root) if sf else ""
+
     by_id: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
         nid = node.get("id")
-        if nid and node.get("source_file") and _defines_id(node):
+        if nid and node.get("source_file") and _extension_qualified_id(node):
             by_id[nid].append(node)
     taken = {n.get("id") for n in nodes if n.get("id")}
     renames: dict[tuple[str, str], str] = {}
     for nid, definers in by_id.items():
-        files = {d["source_file"] for d in definers}
-        if len(files) < 2:
+        if len({key(d["source_file"]) for d in definers}) < 2:
             continue
-        winner_file = min(definers, key=lambda d: _collision_rank(d, root))["source_file"]
-        for sf in sorted(files - {winner_file}):
-            sample = next(d for d in definers if d["source_file"] == sf)
-            new_id = _disambiguated_id(sample, taken)
-            if new_id:
+        winner = min(definers, key=lambda d: _collision_rank(d, root))
+        for d in sorted(definers, key=lambda d: key(d["source_file"])):
+            k = key(d["source_file"])
+            if k == key(winner["source_file"]) or (nid, k) in renames:
+                continue
+            # Same full stem only: x.py vs x.html, never a/x vs b/x.
+            if _full_stem(d["source_file"]) != _full_stem(winner["source_file"]):
+                continue
+            # The extension is what tells them apart; same-extension slug twins
+            # (pkg/service.py vs pkg_service.py) stay on the collapse-and-warn path.
+            if _EXTENSION.search(d["source_file"]) and _EXTENSION.search(winner["source_file"]) and                     _EXTENSION.search(d["source_file"]).group(0).lower() ==                     _EXTENSION.search(winner["source_file"]).group(0).lower():
+                continue
+            new_id = _extension_qualified_id(d)
+            if new_id and new_id not in taken:
                 taken.add(new_id)
-                renames[(nid, sf)] = new_id
+                renames[(nid, k)] = new_id
     if not renames:
         return nodes, edges
-    out_nodes = []
-    for node in nodes:
-        new_id = renames.get((node.get("id"), node.get("source_file")))
-        out_nodes.append(dict(node, id=new_id) if new_id and _defines_id(node) else node)
+    out_nodes = [
+        dict(node, id=renames[(node.get("id"), key(node.get("source_file")))])
+        if (node.get("id"), key(node.get("source_file"))) in renames else node
+        for node in nodes
+    ]
     for coll in (edges, hyperedges or []):
         for item in coll:
             if not isinstance(item, dict):
                 continue
-            sf = item.get("source_file")
-            for key in ("source", "target"):
-                new_id = renames.get((item.get(key), sf))
+            k = key(item.get("source_file"))
+            for end in ("source", "target"):
+                new_id = renames.get((item.get(end), k))
                 if new_id:
-                    item[key] = new_id
+                    item[end] = new_id
             members = item.get("nodes")
             if isinstance(members, list):
-                item["nodes"] = [renames.get((m, sf), m) if isinstance(m, str) else m for m in members]
+                item["nodes"] = [renames.get((m, k), m) if isinstance(m, str) else m for m in members]
     return out_nodes, edges
 
 

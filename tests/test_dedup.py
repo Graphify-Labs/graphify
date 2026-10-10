@@ -443,13 +443,12 @@ def test_dedup_still_merges_crossfile_true_duplicates():
 
 def test_cross_chunk_id_collision_emits_warning(capsys):
     """When two nodes share the same ID but come from different source files
-    (a cross-chunk LLM ID collision that neither file
-    defines; a file-derived ID is disambiguated instead, #4281), a WARNING must be printed to stderr
+    (a cross-chunk LLM ID collision), a WARNING must be printed to stderr
     and only the first node survives (#1504)."""
     nodes = [
-        {"id": "booking_service", "label": "Booking Service",
+        {"id": "readme_booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-a/README.md"},
-        {"id": "booking_service", "label": "Booking Service",
+        {"id": "readme_booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-b/README.md"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
@@ -459,7 +458,7 @@ def test_cross_chunk_id_collision_emits_warning(capsys):
 
     captured = capsys.readouterr()
     assert "WARNING" in captured.err
-    assert "booking_service" in captured.err
+    assert "readme_booking_service" in captured.err
     assert "module-b/README.md" in captured.err
     assert "module-a/README.md" in captured.err
 
@@ -688,15 +687,10 @@ def test_cross_file_id_collision_does_not_mix_attributes(capsys):
 
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
 
-    # pkg/service.py and pkg_service.py both slug to pkg_service_run. They are two
-    # real entities, so each keeps its own node (#4281) with attributes isolated.
-    by_file = {n["source_file"]: n for n in result_nodes}
-    assert len(result_nodes) == 2
-    assert by_file["pkg/service.py"]["id"] == "pkg_service_run"
-    assert "summary" not in by_file["pkg/service.py"]
-    assert by_file["pkg_service.py"]["id"] != "pkg_service_run"
-    assert by_file["pkg_service.py"]["summary"] == "Different function."
-    assert "WARNING" not in capsys.readouterr().err
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "pkg/service.py"
+    assert "summary" not in result_nodes[0]
+    assert "WARNING" in capsys.readouterr().err
 
 
 def test_collision_survivor_is_order_independent():
@@ -1558,7 +1552,7 @@ def test_reads_as_file_entity_trusts_the_node_kind_stamp_only():
     assert _reads_as_file_entity(unstamped)
 
 
-# ── #4281: distinct files that both define an ID keep separate nodes ──────────
+# ── #4281: same stem, different extension keeps both nodes ────────────────────
 
 def test_same_stem_different_extension_keeps_both_nodes(capsys):
     """x.py and x.html share an extension-stripped stem; neither may be dropped."""
@@ -1580,8 +1574,17 @@ def test_same_stem_different_extension_keeps_both_nodes(capsys):
     assert "WARNING" not in capsys.readouterr().err
 
 
-def test_bare_doc_id_from_two_paths_gets_path_qualified(capsys):
-    """A bare `protocol` id from docs/protocol.md and docs/firmware/protocol.md."""
+def test_extension_rename_is_order_independent():
+    a = {"id": "x", "label": "x", "file_type": "code", "source_file": "x.py"}
+    b = {"id": "x", "label": "x page", "file_type": "document", "source_file": "x.html"}
+    n1, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
+    n2, _ = deduplicate_entities([dict(b), dict(a)], [], communities={})
+    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}
+
+
+def test_bare_id_across_different_paths_still_collapses_with_warning(capsys):
+    """A bare `protocol` shared by docs/protocol.md and docs/firmware/protocol.md is
+    a reference to another file's entity, not a second entity: it is not renamed."""
     nodes = [
         {"id": "protocol", "label": "protocol", "file_type": "document",
          "source_file": "docs/protocol.md"},
@@ -1589,17 +1592,33 @@ def test_bare_doc_id_from_two_paths_gets_path_qualified(capsys):
          "source_file": "docs/firmware/protocol.md"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-
-    ids = {n["source_file"]: n["id"] for n in result_nodes}
-    assert len(result_nodes) == 2
-    assert ids["docs/protocol.md"] == "protocol"
-    assert ids["docs/firmware/protocol.md"] == "docs_firmware_protocol"
-    assert "WARNING" not in capsys.readouterr().err
+    assert len(result_nodes) == 1
+    assert "WARNING" in capsys.readouterr().err
 
 
-def test_disambiguation_is_order_independent():
-    a = {"id": "x", "label": "x", "file_type": "code", "source_file": "x.py"}
-    b = {"id": "x", "label": "x page", "file_type": "document", "source_file": "x.html"}
-    n1, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
-    n2, _ = deduplicate_entities([dict(b), dict(a)], [], communities={})
-    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}
+def test_build_with_absolute_edge_paths_moves_edges_to_renamed_node(tmp_path):
+    """Semantic edges reach dedup with an ABSOLUTE source_file while nodes are already
+    root-relative; the renamed node must still receive its edges (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    py = str(root / "firmware" / "lib" / "portal.py")
+    html = str(root / "firmware" / "lib" / "portal.html")
+    ext = {
+        "nodes": [
+            {"id": "firmware_lib_portal", "label": "portal.py", "file_type": "code",
+             "source_file": py},
+            {"id": "firmware_lib_portal", "label": "Portal page", "file_type": "document",
+             "source_file": html},
+            {"id": "card_a", "label": "Card A", "file_type": "document", "source_file": html},
+        ],
+        "edges": [
+            {"source": "firmware_lib_portal", "target": "card_a", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": html},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert "firmware_lib_portal" in G and "firmware_lib_portal_html" in G
+    assert G.has_edge("firmware_lib_portal_html", "card_a")
+    assert not G.has_edge("firmware_lib_portal", "card_a")
