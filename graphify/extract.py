@@ -4605,12 +4605,6 @@ def _resolve_typescript_member_calls(
             # (a `references` edge to the type node) was another fabrication
             # vector; skip instead, matching the C# resolver.
             continue
-        # _key() drops the `#`, so `c.newResponse()` also keys onto a private
-        # `#newResponse()`. A `#name` is only reachable as `#name`; never bind
-        # across that difference.
-        method_name = str(node_by_id.get(method_nid, {}).get("label", "")).lstrip(".")
-        if method_name.startswith("#") != str(callee).startswith("#"):
-            continue
         if method_nid == caller or (caller, method_nid) in existing_pairs:
             continue
         existing_pairs.add((caller, method_nid))
