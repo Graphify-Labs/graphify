@@ -1370,6 +1370,9 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
     G.graph["_traversal_view"] = H
     return H
 
+_QUERY_NO_MATCH = "No matching nodes found."
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1403,7 +1406,7 @@ def _query_graph_text(
         }
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
     if not start_nodes:
-        return "No matching nodes found."
+        return _QUERY_NO_MATCH
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
@@ -1686,6 +1689,14 @@ def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool)
     return None
 
 
+_AMBIGUOUS = "Ambiguous: "
+
+
+def _is_ambiguity_refusal(message: str | None) -> bool:
+    """True for a refusal that lists candidates, False for a miss (no node matched)."""
+    return message is not None and message.startswith(_AMBIGUOUS)
+
+
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
     listing = "\n".join(
         f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
@@ -1694,7 +1705,7 @@ def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
     # nest a path-scoped one (`index.ts::foo()`) behind a second path.
     symbol = G.nodes[rivals[0]].get("label") or label
     return (
-        f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+        f"{_AMBIGUOUS}'{label}' matches {len(rivals)} nodes in different files.\n"
         f"{listing}\n"
         f"Retry with path::symbol using one of the paths above (e.g. "
         f"<path>::{symbol}) or the full node id."
@@ -1709,7 +1720,7 @@ def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> st
         for h in hits
     )
     return (
-        f"Ambiguous: '{label}' matches {len(hits)} nodes {where}.\n"
+        f"{_AMBIGUOUS}'{label}' matches {len(hits)} nodes {where}.\n"
         f"{listing}\n"
         f"Retry with the full node id."
     )

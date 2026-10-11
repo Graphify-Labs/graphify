@@ -909,6 +909,8 @@ def _run_cli() -> None:
         print("    --context C             explicit edge-context filter (repeatable)")
         print("    --budget N              cap output at N tokens (default 2000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("  query, path and explain exit 0 with an answer, 3 when a name is ambiguous")
+        print("  (the candidates are listed), 4 when no node matches")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")

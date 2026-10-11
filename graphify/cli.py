@@ -84,6 +84,11 @@ _GEMINI_NUDGE_TEXT = (
 
 _DEFAULT_NUDGE_GRAPH = "graphify-out/graph.json"
 
+# Exit codes of the lookups (explain, path, query), so a script can tell a
+# refusal from an answer: 0 answered, 3 ambiguous name, 4 no matching node.
+EXIT_AMBIGUOUS = 3
+EXIT_NOT_FOUND = 4
+
 
 def _nudge_for_out(nudge: str) -> str:
     """Name the effective graph.json in a hook-guard reminder (#4040).
@@ -1311,7 +1316,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _query_graph_text
+        from graphify.serve import _QUERY_NO_MATCH, _query_graph_text
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
@@ -1428,6 +1433,8 @@ def dispatch_command(cmd: str) -> None:
         )
         _touch_query_stamp(gp)
         print(_result)
+        if _result == _QUERY_NO_MATCH:
+            sys.exit(EXIT_NOT_FOUND)
     elif cmd == "affected":
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
@@ -1662,7 +1669,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _resolve_path_endpoint
+        from graphify.serve import _is_ambiguity_refusal, _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -1721,7 +1728,7 @@ def dispatch_command(cmd: str) -> None:
         ):
             if _err or _nid is None:
                 print(_err or f"No node matching '{_label}' found.", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(_err) else EXIT_NOT_FOUND)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -1731,7 +1738,7 @@ def dispatch_command(cmd: str) -> None:
                 f"node '{src_nid}'. Use a more specific label or the exact node ID.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(EXIT_AMBIGUOUS)
         for _name, _scored, _nid in (
             ("source", src_scored, src_nid),
             ("target", tgt_scored, tgt_nid),
@@ -1838,7 +1845,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node, _resolve_single_node
+        from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -1864,7 +1871,7 @@ def dispatch_command(cmd: str) -> None:
         nid, refusal = _resolve_single_node(G, label)
         if nid is None:
             print(refusal)
-            sys.exit(1 if _find_node(G, label) else 0)
+            sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(refusal) else EXIT_NOT_FOUND)
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")

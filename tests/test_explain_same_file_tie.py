@@ -11,6 +11,7 @@ import networkx as nx
 import pytest
 
 import graphify.__main__ as mainmod
+from graphify.cli import EXIT_AMBIGUOUS
 from graphify.serve import _resolve_single_node
 
 
@@ -73,7 +74,7 @@ def test_explain_refuses_same_file_twins(monkeypatch, tmp_path, capsys, label):
     assert "src_x_alphaclient_nonce" in out
     assert "src_x_betaclient_nonce" in out
     assert "Node: .nonce()" not in out
-    assert code == 1
+    assert code == EXIT_AMBIGUOUS
 
 
 def test_explain_refuses_sourceless_stubs(monkeypatch, tmp_path, capsys):
@@ -82,7 +83,7 @@ def test_explain_refuses_sourceless_stubs(monkeypatch, tmp_path, capsys):
     assert "tests_a_php_entitymanagerinterface" in out
     assert "tests_b_php_entitymanagerinterface" in out
     assert "Node: EntityManagerInterface" not in out
-    assert code == 1
+    assert code == EXIT_AMBIGUOUS
 
 
 def test_explain_refusal_does_not_depend_on_node_order(monkeypatch, tmp_path, capsys):
