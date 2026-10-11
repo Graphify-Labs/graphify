@@ -337,18 +337,27 @@ def test_codex_uses_compact_extraction_windows_uses_verbose():
 
 
 def test_every_platform_query_has_expansion_and_fallback():
-    """#1325: the unified query reference ships BOTH the vocab-expansion step and
-    the inline NetworkX fallback to every platform (previously split so no host
-    got both — Claude had expansion but no fallback; the rest the reverse)."""
+    """#1325: the unified query reference ships the vocab-expansion step and the
+    path/explain flows to every platform.
+
+    The inline NetworkX traversal fallback was removed with #197: it ran as an
+    inline `python -c` block, which is exactly what this change eliminates, and the
+    graphify CLI is guaranteed present by Step 1. The query reference now uses the
+    `graphify query` / `graphify path` / `graphify explain` commands directly.
+    """
     for key in ("claude", "codex", "windows", "opencode"):
         core, refs = _platform_artifacts(key)
-        # Core stub mentions both the vocab-expansion step and the inline fallback.
+        # Core stub points at the vocab-expansion step.
         assert "expand the question against the graph's own vocabulary" in core
-        assert "NetworkX traversal" in core
-        # The query reference carries expansion, fallback, and path/explain.
+        assert "NetworkX traversal" not in core, (
+            "the inline NetworkX fallback was removed (#197); the stub must not promise it"
+        )
+        # The query reference carries expansion and path/explain, via the CLI.
         q = refs["query.md"]
         assert "Constrained query expansion" in q
-        assert "If the CLI is unavailable" in q
+        assert "graphify pipeline vocab" in q
+        assert "If the CLI is unavailable" not in q
+        assert "graphify query" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q
 
@@ -385,11 +394,21 @@ def _powershell_platform_keys():
     return keys
 
 
+def _pipeline_steps(core: str) -> list[str]:
+    """Every `graphify pipeline <step>` invocation in a rendered core, in order."""
+    import re
+
+    return re.findall(r"graphify pipeline ([a-z][a-z-]*)", core)
+
+
 def test_powershell_hosts_carry_no_bash_only_shell():
     """#2528: the Windows variant had a PowerShell Step 1 but bash for Steps 2+
     (``$(cat ...) -c``, ``rm -f``, ``find ... -delete``, ``2>/dev/null``), so a
-    strict-PowerShell host failed at Step 2. Every powershell-shell render must
-    now be free of bash-only tokens and carry the here-string stdin invocation."""
+    strict-PowerShell host failed at Step 2.
+
+    The pipeline now runs as `graphify pipeline <step>` subcommands, so no step
+    carries bash-only syntax in either shell and the windows render needs no
+    bash translation for them."""
     import re
 
     platforms = gen.load_platforms()
@@ -398,49 +417,40 @@ def test_powershell_hosts_carry_no_bash_only_shell():
         for token in _BASH_ONLY_TOKENS:
             assert token not in core, f"[{key}] bash-only token survived: {token!r}"
         assert re.search(r"\bfind\b[^\n]*-delete", core) is None, f"[{key}] find -delete survived"
-        # The PowerShell invocation pattern replaces $(cat ...) -c "..." everywhere.
         assert "```powershell" in core
-        assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in core, (
-            f"[{key}] missing the here-string stdin python invocation"
-        )
-        # Cleanup went through Remove-Item / Get-ChildItem, not rm/find.
-        assert "Remove-Item -Force -ErrorAction SilentlyContinue" in core
-        assert "Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json'" in core
+        # The pipeline is delivered as subcommands, so there is no inline python
+        # invocation (POSIX here-string or otherwise) left to translate.
+        assert "graphify pipeline " in core, f"[{key}] pipeline subcommands missing"
+        assert gen._PY_INVOKE_POSIX not in core
+        # Cleanup is a subcommand now, so no rm -f / find -delete / Remove-Item.
+        assert "graphify pipeline cleanup" in core, f"[{key}] cleanup step missing"
 
 
 def test_windows_and_posix_cores_have_step_and_2490_parity():
-    """Both shells run the same pipeline: every step heading and the #2490
-    curated-labels re-export line appear in skill.md AND skill-windows.md."""
+    """Both shells run the same pipeline: every step heading, every
+    `graphify pipeline <step>` call, and the #2490 curated-labels step appear in
+    skill.md AND skill-windows.md."""
     claude_core, _ = _platform_artifacts("claude")
     windows_core, _ = _platform_artifacts("windows")
     for heading in _STEP_HEADINGS:
         assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
         assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
-    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
-    assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
-    assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
+    # #2490: the curated-labels re-export is now the `label` subcommand, which
+    # internally calls to_json(..., community_labels=...). Both shells must call it.
+    assert "graphify pipeline label" in claude_core, "skill.md lost the #2490 label step"
+    assert "graphify pipeline label" in windows_core, "skill-windows.md lost the #2490 label step"
 
 
-def test_windows_python_step_bodies_match_posix_verbatim():
-    """Parity by construction: every inline python body in the POSIX core appears
-    verbatim (modulo the bash ``\\"`` unescape) in the windows here-strings, so the
-    two variants cannot drift step semantics apart."""
+def test_windows_pipeline_steps_match_posix_verbatim():
+    """Parity by construction: every POSIX pipeline subcommand appears verbatim in
+    the windows render, so the two variants cannot drift step semantics apart."""
     claude_core, _ = _platform_artifacts("claude")
     windows_core, _ = _platform_artifacts("windows")
-    bodies = []
-    current = None
-    for line in claude_core.splitlines():
-        if line == gen._PY_INVOKE_POSIX:
-            current = []
-        elif current is not None and line == '"':
-            bodies.append("\n".join(gen._unescape_bash_dq(l) for l in current))
-            current = None
-        elif current is not None:
-            current.append(line)
-    assert len(bodies) >= 12, f"expected the 12 inline python steps, found {len(bodies)}"
-    for body in bodies:
-        assert body in windows_core, (
-            "a POSIX python step body is missing from the windows render:\n" + body[:200]
+    steps = _pipeline_steps(claude_core)
+    assert len(steps) >= 12, f"expected the ~14 pipeline steps, found {len(steps)}"
+    for line in ("graphify pipeline " + s for s in steps):
+        assert line in windows_core, (
+            f"a POSIX pipeline step is missing from the windows render: {line!r}"
         )
 
 
@@ -461,11 +471,13 @@ def test_powershell_translator_rejects_unknown_bash():
 
 
 def test_posix_hosts_keep_their_bash_invocations():
-    """The translation is scoped to powershell-shell hosts: the POSIX core keeps
-    its ``$(cat ...) -c`` blocks and bash fences byte-for-byte."""
+    """The translation is scoped to powershell-shell hosts: the POSIX core still
+    carries its bash fences and `graphify pipeline` steps, and no PowerShell-only
+    construct leaks in."""
     claude_core, _ = _platform_artifacts("claude")
     assert "```bash" in claude_core
-    assert gen._PY_INVOKE_POSIX in claude_core
+    assert "graphify pipeline " in claude_core
+    assert gen._PY_INVOKE_POSIX not in claude_core, "inline python must be gone (#197)"
     assert "'@ | & (Get-Content" not in claude_core
 
 
@@ -670,21 +682,25 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     the manifest to the scan root via root='INPUT_PATH'. This guards the actual
     shipped artifacts; --check keeps them in sync with the fragments.
     """
-    targets = [
-        REPO_ROOT / "graphify" / "skill.md",
-        REPO_ROOT / "graphify" / "skill-aider.md",
-        REPO_ROOT / "graphify" / "skill-devin.md",
-    ]
-    targets += sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    # The full-build and --update manifest stamping moved into the pipeline steps
+    # (#197), so the guard follows it there; the aider/devin monoliths still inline
+    # it and must keep root= too.
+    pipeline_src = (REPO_ROOT / "graphify" / "pipeline.py").read_text(encoding="utf-8")
+    for fn in ("def step_save_manifest", "def step_update_merge"):
+        body = pipeline_src.split(fn, 1)[1].split("\ndef ", 1)[0]
+        assert "save_manifest(" in body, f"{fn} must call save_manifest"
+        assert "root=" in body, f"{fn}: save_manifest must pass root= so keys stay relative (#1417)"
+
     checked = 0
-    for path in targets:
+    for path in (REPO_ROOT / "graphify" / "skill-aider.md",
+                 REPO_ROOT / "graphify" / "skill-devin.md"):
         for ln in path.read_text(encoding="utf-8").splitlines():
             if "save_manifest(" in ln and "import" not in ln:
                 checked += 1
                 assert "root=" in ln, (
                     f"{path.relative_to(REPO_ROOT)}: save_manifest without root= (#1417): {ln.strip()!r}"
                 )
-    assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
+    assert checked >= 2, f"expected save_manifest calls in the monoliths, found {checked}"
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
@@ -1081,15 +1097,20 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
     platforms = gen.load_platforms()
     arts = gen.render_all(platforms)
     bodies = [a for a in arts
-              if "check_semantic_cache(" in a.content
+              if "graphify pipeline cache-check" in a.content
               and "references/extraction-spec.md" in a.content]
-    assert bodies, "no rendered split-host skill body calls check_semantic_cache"
+    assert bodies, "no rendered split-host skill body runs the semantic cache step"
     for a in bodies:
-        for call in ("check_semantic_cache(", "save_semantic_cache("):
-            line = next(ln for ln in a.content.splitlines() if call in ln and "import" not in ln)
-            assert "prompt_file='SPEC_PATH'" in line, (
-                f"{a.path}: {call} must pass prompt_file so entries are attributed "
-                f"to the extraction prompt (#1939) — got: {line.strip()}"
+        # The read (cache-check) and the write (save-cache) must both name the
+        # extraction prompt, or the run replays old-prompt entries and strands its
+        # own where the next read won't look (#1939).
+        for step in ("cache-check", "save-cache"):
+            line = next(ln for ln in a.content.splitlines()
+                        if f"graphify pipeline {step}" in ln)
+            assert "--prompt-file SPEC_PATH" in line, (
+                f"{a.path}: `graphify pipeline {step}` must pass --prompt-file so "
+                f"entries are attributed to the extraction prompt (#1939) — got: "
+                f"{line.strip()}"
             )
         # The placeholder is inert unless the body tells the agent what to substitute.
         assert "SPEC_PATH below is the **absolute** path" in a.content, a.path

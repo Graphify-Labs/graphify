@@ -59,22 +59,24 @@ graphify export graphml
 ### Step 7d - MCP server (only if --mcp flag)
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify.serve graphify-out/graph.json
+graphify-mcp graphify-out/graph.json
 ```
 
 This starts a stdio MCP server that exposes tools: `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`. Add to Claude Desktop or any MCP-compatible agent orchestrator so other agents can query the graph live.
 
-To configure in Claude Desktop, add to `claude_desktop_config.json`. Claude Desktop can't run `$(...)`, and under `uv tool install` the system `python3` can't import graphify — so set `command` to the **absolute interpreter path** printed by `cat graphify-out/.graphify_python`:
+To configure in Claude Desktop, add to `claude_desktop_config.json` — point `command` at the `graphify-mcp` console script and `args` at the absolute graph path:
 ```json
 {
   "mcpServers": {
     "graphify": {
-      "command": "<absolute path from: cat graphify-out/.graphify_python>",
-      "args": ["-m", "graphify.serve", "/absolute/path/to/graphify-out/graph.json"]
+      "command": "graphify-mcp",
+      "args": ["/absolute/path/to/graphify-out/graph.json"]
     }
   }
 }
 ```
+
+A GUI-launched Claude Desktop may not inherit the `PATH` that has `graphify-mcp`. If so, set `command` to the **absolute interpreter path** recorded in `graphify-out/.graphify_python` and `args` to `["-m", "graphify.serve", "/absolute/path/to/graphify-out/graph.json"]`.
 
 ### Step 8 - Token reduction benchmark (only if total_words > 5000)
 
