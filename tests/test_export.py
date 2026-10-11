@@ -1401,6 +1401,7 @@ def _run_sidebar_harness(html_content: str, epilogue: str):
     assert m, "vis script block not found in html"
     harness = """
 const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remove() {} }, children: [], listeners: {},
+  offsetWidth: 200, offsetHeight: 30,
   appendChild(c) { this.children.push(c); }, addEventListener(t, f) { this.listeners[t] = f; }, prepend() {} });
 const els = {};
 const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
@@ -1471,23 +1472,124 @@ def test_to_html_sidebar_tooltip_shows_truncated_text_and_node_counts(tmp_path):
     content = out.read_text(encoding="utf-8")
     assert "sidebarTip.innerHTML" not in content
     assert "max-width: 360px; overflow-wrap: break-word" in content
-    result = _run_sidebar_harness(content, """
-globalThis.setTimeout = f => f();
-const tips = document.body.children.filter(c => c.className === 'vis-tooltip');
+    result = _run_sidebar_harness(content, _SIDEBAR_DOM_JS + """
 const hover = (cls, text, truncated) => {
-  const row = { textContent: text, scrollWidth: truncated ? 300 : 100, clientWidth: 100,
-    classList: { contains: c => c === cls }, contains: o => o === row,
-    closest: sel => (sel.split(', ').includes('.' + cls) ? row : null) };
-  document.listeners.mouseover({ target: row, clientX: 100, clientY: 100 });
-  const shown = tips[0].style.visibility === 'visible' ? tips[0].textContent : null;
-  document.listeners.mouseout({ target: row, relatedTarget: null });
-  return [shown, tips[0].style.visibility, tips[0].innerHTML];
+  const el = cls.startsWith('legend-') ? legendRow(cls === 'legend-label' ? text : 'x', truncated, text)[cls]
+    : domNode(cls, text, null, truncated);
+  document.listeners.mouseover({ target: el, clientX: 100, clientY: 100 });
+  const shown = tip.style.visibility === 'visible' ? tip.textContent : null;
+  const pos = [tip.style.left, tip.style.top];
+  document.listeners.mouseout({ target: el, relatedTarget: null });
+  return [shown, tip.style.visibility, tip.innerHTML, tip.textContent, shown === null ? null : pos];
 };
 const L = %s;
 console.log(JSON.stringify({ count: tips.length, hovers: [
   hover('legend-label', L, true), hover('search-item', L, true), hover('neighbor-link', L, true),
   hover('legend-label', 'short', false), hover('search-item', 'short', false), hover('neighbor-link', 'short', false),
-  hover('legend-count', '3', false), hover('legend-count', '1', false)] }));""" % json.dumps(label))
+  hover('legend-count', '3', false), hover('legend-count', '1', false)], styles: tip.styleLog }));""" % json.dumps(label))
     assert result["count"] == 1
-    assert result["hovers"] == [[label, "hidden", ""]] * 3 + [[None, "hidden", ""]] * 3 + [
-        ["3 nodes", "hidden", ""], ["1 node", "hidden", ""]]
+    # Shown 12px right of and 16px below the cursor at (100, 100); hidden and
+    # emptied again on mouseout.
+    at = ["112px", "116px"]
+    assert result["hovers"] == [[label, "hidden", "", "", at]] * 3 + [[None, "hidden", "", "", None]] * 3 + [
+        ["3 nodes", "hidden", "", "", at], ["1 node", "hidden", "", "", at]]
+    assert result["styles"] and not any("NaN" in v for v in result["styles"])
+
+
+# Parent-linked DOM nodes for the sidebar tooltip tests: enough of closest(),
+# contains() and querySelector() to hover any part of a real legend row, which
+# the client builds as checkbox + dot + label + count inside a .legend-item.
+# `tip` is the shared tooltip; tip.styleLog records every left/top it is given.
+_SIDEBAR_DOM_JS = """
+globalThis.setTimeout = f => f();
+const tips = document.body.children.filter(c => c.className === 'vis-tooltip');
+const tip = tips[0];
+tip.styleLog = [];
+tip.style = new Proxy(tip.style, { set(s, k, v) { if (k === 'left' || k === 'top') tip.styleLog.push(String(v));
+  s[k] = v; return true; } });
+const domNode = (cls, text, parent, truncated) => {
+  const el = { textContent: text, parent, kids: [], scrollWidth: truncated ? 300 : 100, clientWidth: 100,
+    classList: { contains: c => c === cls },
+    contains(o) { for (let x = o; x; x = x.parent) if (x === el) return true; return false; },
+    closest(sel) { const want = sel.split(', ').map(s => s.slice(1));
+      for (let x = el; x; x = x.parent) if (want.some(w => x.classList.contains(w))) return x; return null; },
+    querySelector(sel) { const q = [...el.kids];
+      while (q.length) { const k = q.shift(); if (k.classList.contains(sel.slice(1))) return k; q.push(...k.kids); }
+      return null; } };
+  if (parent) parent.kids.push(el);
+  return el;
+};
+const legendRow = (label, truncated, count = '3') => {
+  const row = domNode('legend-item', '', null, false);
+  return { 'legend-item': row, 'legend-cb': domNode('legend-cb', '', row, false),
+    'legend-dot': domNode('legend-dot', '', row, false), 'legend-label': domNode('legend-label', label, row, truncated),
+    'legend-count': domNode('legend-count', count, row, false) };
+};
+const move = (from, to, x = 100, y = 100) => {
+  if (from) document.listeners.mouseout({ target: from, relatedTarget: to });
+  const afterOut = tip.style.visibility;
+  if (to) document.listeners.mouseover({ target: to, clientX: x, clientY: y });
+  return [afterOut, tip.style.visibility, tip.textContent];
+};
+"""
+
+
+def _sidebar_tip_graph_html(tmp_path, label: str = "Core") -> str:
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="a", file_type="code", source_file="a.py")
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: label})
+    return out.read_text(encoding="utf-8")
+
+
+def test_to_html_sidebar_tooltip_stays_inside_viewport_near_edges(tmp_path):
+    """Near the right/bottom edge of the 1280x800 window the 200x30 tooltip is
+    clamped left and flipped above the cursor instead of overflowing."""
+    result = _run_sidebar_harness(_sidebar_tip_graph_html(tmp_path), _SIDEBAR_DOM_JS + """
+const at = (x, y) => { const c = legendRow('x', false)['legend-count']; move(null, c, x, y);
+  const r = [tip.style.left, tip.style.top]; move(c, null); return r; };
+console.log(JSON.stringify({ size: [tip.offsetWidth, tip.offsetHeight],
+  edges: [at(1270, 790), at(1270, 100), at(100, 790), at(0, 0)], styles: tip.styleLog }));""")
+    w, h = result["size"]
+    assert result["edges"] == [["1076px", "752px"], ["1076px", "116px"], ["112px", "752px"], ["12px", "16px"]]
+    for left, top in result["edges"]:
+        assert 0 <= int(left[:-2]) and int(left[:-2]) + w <= 1280
+        assert 0 <= int(top[:-2]) and int(top[:-2]) + h <= 800
+    assert not any("NaN" in v for v in result["styles"])
+
+
+def test_to_html_legend_row_hover_shows_label_anywhere_but_count(tmp_path):
+    """The whole legend row (checkbox, dot, gaps/padding) shows the truncated
+    name; the count still says 'N nodes'; moving inside the row never hides it."""
+    result = _run_sidebar_harness(_sidebar_tip_graph_html(tmp_path), _SIDEBAR_DOM_JS + """
+const long = legendRow('A very long community name', true);
+const short = legendRow('Short', false, '1');
+console.log(JSON.stringify({
+  padding: move(null, long['legend-item']),
+  toDot: move(long['legend-item'], long['legend-dot']),
+  toCheckbox: move(long['legend-dot'], long['legend-cb']),
+  toLabel: move(long['legend-cb'], long['legend-label']),
+  toCount: move(long['legend-label'], long['legend-count']),
+  backToDot: move(long['legend-count'], long['legend-dot']),
+  leave: move(long['legend-dot'], null),
+  shortPadding: move(null, short['legend-item']),
+  shortDot: move(short['legend-item'], short['legend-dot']),
+  shortCount: move(short['legend-dot'], short['legend-count']),
+  shortLeave: move(short['legend-count'], null) }));""")
+    name = "A very long community name"
+    assert result == {
+        "padding": [None, "visible", name],  # never shown before: no visibility set yet
+        # Same row, same text: the tooltip is not hidden between children.
+        "toDot": ["visible", "visible", name],
+        "toCheckbox": ["visible", "visible", name],
+        "toLabel": ["visible", "visible", name],
+        "toCount": ["visible", "visible", "3 nodes"],
+        "backToDot": ["hidden", "visible", name],
+        "leave": ["hidden", "hidden", ""],
+        # A name that fits gets no tooltip from anywhere on its row.
+        "shortPadding": ["hidden", "hidden", ""],
+        "shortDot": ["hidden", "hidden", ""],
+        "shortCount": ["hidden", "visible", "1 node"],
+        "shortLeave": ["hidden", "hidden", ""],
+    }

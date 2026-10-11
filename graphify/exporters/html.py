@@ -258,20 +258,26 @@ sidebarTip.className = 'vis-tooltip';
 sidebarTip.style.cssText = 'white-space: normal; max-width: 360px; overflow-wrap: break-word;';
 document.body.appendChild(sidebarTip);
 let sidebarTipTimer = null;
-let sidebarTipEl = null;
+let sidebarTipEl = null;    // element whose text the tooltip shows
+let sidebarTipZone = null;  // element the pointer must leave to hide it
 function hideSidebarTip() {{
   clearTimeout(sidebarTipTimer);
   sidebarTip.style.visibility = 'hidden';
-  sidebarTipEl = null;
+  sidebarTip.textContent = '';
+  sidebarTipEl = sidebarTipZone = null;
 }}
 document.addEventListener('mouseover', e => {{
-  const el = e.target.closest && e.target.closest('.legend-label, .legend-count, .search-item, .neighbor-link');
+  const zone = e.target.closest && e.target.closest('.legend-count, .legend-item, .search-item, .neighbor-link');
+  // Anywhere on a legend row except its count (dot, checkbox, gaps, padding)
+  // stands for the row's name, so moving within the row never re-triggers it.
+  const el = zone && zone.classList.contains('legend-item') ? zone.querySelector('.legend-label') : zone;
   if (!el || el === sidebarTipEl) return;
   hideSidebarTip();
   const isCount = el.classList.contains('legend-count');
   if (!isCount && el.scrollWidth <= el.clientWidth) return;
   const text = isCount ? `${{el.textContent}} ${{el.textContent === '1' ? 'node' : 'nodes'}}` : el.textContent;
   sidebarTipEl = el;
+  sidebarTipZone = zone;
   const x = e.clientX, y = e.clientY;
   sidebarTipTimer = setTimeout(() => {{
     sidebarTip.textContent = text;
@@ -283,7 +289,7 @@ document.addEventListener('mouseover', e => {{
   }}, 100);
 }});
 document.addEventListener('mouseout', e => {{
-  if (sidebarTipEl && !sidebarTipEl.contains(e.relatedTarget)) hideSidebarTip();
+  if (sidebarTipZone && !sidebarTipZone.contains(e.relatedTarget)) hideSidebarTip();
 }});
 // A click rebuilds or hides the row (showInfo(), search pick) without a mouseout.
 document.addEventListener('mousedown', hideSidebarTip);
