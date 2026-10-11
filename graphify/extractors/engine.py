@@ -1829,13 +1829,14 @@ def _same_node(a, b) -> bool:
 
 
 def _python_attribute_is_store(node) -> bool:
-    """`x.a = ...`, `x.a += ...`, `for x.a in ...`, `del x.a`: not a read of `a`."""
+    """`x.a = ...`, `for x.a in ...`, `del x.a`: not a read of `a`. `x.a += ...`
+    is: it reads `a` (the getter runs) before it writes it."""
     child, parent = node, node.parent
     while parent is not None and parent.type in ("pattern_list", "tuple_pattern", "list_pattern"):
         child, parent = parent, parent.parent
     if parent is None:
         return False
-    if parent.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+    if parent.type in ("assignment", "for_statement", "for_in_clause"):
         return _same_node(parent.child_by_field_name("left"), child)
     return parent.type == "delete_statement"
 

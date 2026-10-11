@@ -80,6 +80,15 @@ def test_fields_method_references_and_stores_are_not_reads(tmp_path: Path):
     assert not any(e[0] == "poke()" and e[3] == "property_read" for e in edges), edges
 
 
+def test_augmented_assignment_reads_the_property(tmp_path: Path):
+    # `r.text += x` runs the getter before the setter.
+    edges = _edges(tmp_path, {
+        "resp.py": _RESPONSE,
+        "use.py": "from resp import Response\n\n\ndef extend():\n    r = Response()\n    r.text += 'x'\n",
+    })
+    assert ("extend()", "Response", ".text()", "property_read") in edges
+
+
 def test_underscored_field_does_not_reach_the_property_without_underscore(tmp_path: Path):
     # `_items` and `items` fold to one key in the resolver; the read names `_items`.
     edges = _edges(tmp_path, {
