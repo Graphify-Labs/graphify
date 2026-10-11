@@ -167,6 +167,23 @@ def extract_julia(path: Path) -> dict:
             return node
         return None
 
+    def _functor_type_name(node) -> str | None:
+        """Bare type name of a functor's receiver annotation, or None.
+
+        Handles `Box`, parametric `Box{T}`, qualified `Mod.Box` and
+        `Mod.Box{T}`. Any other node yields None.
+        """
+        while node is not None:
+            if node.type == "identifier":
+                return _read_text(node, source)
+            if node.type == "parametrized_type_expression":
+                node = node.children[0] if node.children else None
+            elif node.type == "field_expression":
+                node = node.children[-1] if node.children else None
+            else:
+                return None
+        return None
+
     def _def_name(call) -> tuple[str, str] | None:
         """(bare_name, label) for the callee of a method definition.
 
@@ -193,13 +210,10 @@ def extract_julia(path: Path) -> dict:
             # functor: (c::Circle)(x) or (::Circle)(x) -> call operator on Circle
             typed = next((c for c in callee.children
                           if c.type in ("typed_expression", "unary_typed_expression")), None)
-            if typed is not None:
-                # The type is the last operand; it may be parametric (`(b::Box{T})`),
-                # so read it through `_type_name_of` rather than the last identifier,
-                # which would be the variable `b`.
-                operands = [c for c in typed.children
-                            if c.type in ("identifier", "parametrized_type_expression")]
-                tname = _type_name_of(operands[-1]) if operands else None
+            if typed is not None and typed.children:
+                # The type is always the last child. Never fall back to another
+                # identifier: in `(b::Mod.Box)` that would be the variable `b`.
+                tname = _functor_type_name(typed.children[-1])
                 if tname:
                     return tname + "#call", f"({tname})"
         return None

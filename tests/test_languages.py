@@ -5742,3 +5742,17 @@ def test_julia_parametric_functor_uses_type_not_variable(tmp_path):
     call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
     # All three methods of the Box functor share one node labelled by the type.
     assert [n["label"] for n in call_nodes] == ["(Box)()"]
+
+
+def test_julia_qualified_functor_uses_type_not_variable(tmp_path):
+    f = tmp_path / "functor.jl"
+    f.write_text(
+        "(b::Mod.Box)(x) = x\n"
+        "(b::Mod.Box{T})(x, y) where T = x\n"
+        "(::Mod.Box)(x, y, z) = x\n"
+        "(b::A.B.Box)(x, y, z, w) = x\n"
+    )
+    r = extract_julia(f)
+    call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
+    # Module-qualified receiver types resolve to the bare type, never the variable.
+    assert [n["label"] for n in call_nodes] == ["(Box)()"]
