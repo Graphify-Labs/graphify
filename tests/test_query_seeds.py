@@ -134,3 +134,26 @@ def test_query_cli_logs_the_seeds(monkeypatch, tmp_path, capsys):
     capsys.readouterr()
     record = json.loads(log.read_text().strip().splitlines()[-1])
     assert record.get("seeds") == ["build"]
+
+
+def _star_with_answer(n_spokes=40):
+    """A high-degree hub with many spokes plus one low-degree node, so a degree-sorted cut would drop that node."""
+    G = nx.Graph()
+    G.add_node("hub", label="Hub", source_file="hub.py", source_location="L1", community=0)
+    for i in range(n_spokes):
+        G.add_node(f"s{i}", label=f"spoke{i}", source_file=f"s{i}.py", source_location="L1", community=0)
+        G.add_edge("hub", f"s{i}", relation="calls", confidence="EXTRACTED")
+    G.add_node("answer", label="CompanySpacingGate", source_file="gate.py", source_location="L12", community=0)
+    G.add_edge("s0", "answer", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+def test_given_seed_renders_first_and_survives_truncation():
+    """A seed given with --seed reaches the renderer as a seed (seeds=start_nodes), so it is the first NODE line and
+    is still shown when the token budget cuts the output."""
+    G = _star_with_answer()
+    text = _query_graph_text(G, "hub", mode="bfs", depth=2, token_budget=40, seeds=["answer"])
+    assert "Start (given): ['CompanySpacingGate']" in text
+    node_lines = [line for line in text.splitlines() if line.startswith("NODE ")]
+    assert node_lines and "CompanySpacingGate" in node_lines[0], "the given seed must render first"
+    assert "TRUNCATED" in text
