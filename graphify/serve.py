@@ -1260,12 +1260,16 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
         # wrapper lines, like the existing end marker).
+        # Smallest budget whose cut keeps every NODE line; past that, edges are never dropped.
+        node_chars = sum(len(l) + 1 for l in lines if l.startswith("NODE "))
+        full_budget = (min(node_chars, len(output)) + 2) // 3
         output = (
             f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
             f"(~{token_budget}-token budget). The answer may be among the "
-            f"{cut_count} cut nodes — raise the token budget (CLI: --budget) or "
-            f"narrow the query (e.g. context_filter=['call'], or get_node for a "
-            f"specific symbol).\n\n"
+            f"{cut_count} cut nodes — raise the token budget to {full_budget} to get "
+            f"all {total_nodes} (CLI: --budget {full_budget}, MCP: "
+            f"token_budget={full_budget}) or narrow the query (e.g. "
+            f"context_filter=['call'], or get_node for a specific symbol).\n\n"
             + output[:cut_at]
             + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
             f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
@@ -1286,12 +1290,14 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     kept = output[:cut_at]
     shown = kept.count("\n") + 1
     cut_count = len(lines) - shown
+    full_budget = (len(output) + 2) // 3
     # Announce truncation at the TOP as well, matching _subgraph_to_text — a
     # bottom-only marker reads as silence/absence (the BUG-2 fix rationale). The
     # notice sits outside char_budget by design (one bounded wrapper line).
     return (
         f"[!] TRUNCATED: showing {shown} of {len(lines)} lines "
-        f"(~{token_budget}-token budget). {narrow_hint}\n\n"
+        f"(~{token_budget}-token budget). Raise the token budget to {full_budget} "
+        f"to get all {len(lines)} (token_budget={full_budget}). {narrow_hint}\n\n"
         + kept
         + f"\n... (truncated — {cut_count} more lines cut by ~{token_budget}-token budget. "
         + narrow_hint
