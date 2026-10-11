@@ -1329,6 +1329,45 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+def _git_global_excludes(vcs_root: Path) -> Path | None:
+    """Resolve git's user-wide excludes file (``core.excludesFile``).
+
+    This is where people keep machine-wide rules for local settings and secret
+    files so they don't repeat them in every repo; git ignores those files but
+    graphify read them (#4335). Asks git for the configured path (``--path``
+    expands ``~``) and falls back to git's default,
+    ``$XDG_CONFIG_HOME/git/ignore`` or ``~/.config/git/ignore``, when the key
+    is unset or git is unavailable. Only applies inside a git repo, like git.
+    Returns None when there is no readable file.
+    """
+    if not (vcs_root / ".git").exists():
+        return None
+    configured = ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vcs_root), "config", "--path", "--get", "core.excludesFile"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+        if proc.returncode == 0:
+            configured = proc.stdout.decode("utf-8", errors="replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = vcs_root / path
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
+        path = base / "git" / "ignore"
+    return path if path.is_file() else None
+
+
 _warned_ignore_encodings: set[str] = set()
 
 
@@ -1439,6 +1478,15 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     dirs.reverse()  # ceiling first, scan root last
 
     patterns: list[tuple[Path, str]] = []
+
+    # git's user-wide excludes file ranks below info/exclude, so it goes first
+    # of all, anchored at the VCS root like info/exclude (#4335).
+    global_excludes = _git_global_excludes(ceiling) if gitignore else None
+    if global_excludes is not None:
+        for raw in _read_ignore_text(global_excludes).splitlines():
+            line = _parse_gitignore_line(raw)
+            if line:
+                patterns.append((ceiling, line))
 
     # $GIT_DIR/info/exclude is repo-root-scoped and, per git, ranks below every
     # per-directory .gitignore/.graphifyignore — so load it first (lowest priority
