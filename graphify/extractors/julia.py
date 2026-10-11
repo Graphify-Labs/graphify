@@ -194,9 +194,13 @@ def extract_julia(path: Path) -> dict:
             typed = next((c for c in callee.children
                           if c.type in ("typed_expression", "unary_typed_expression")), None)
             if typed is not None:
-                ids = [c for c in typed.children if c.type == "identifier"]
-                if ids:
-                    tname = _read_text(ids[-1], source)
+                # The type is the last operand; it may be parametric (`(b::Box{T})`),
+                # so read it through `_type_name_of` rather than the last identifier,
+                # which would be the variable `b`.
+                operands = [c for c in typed.children
+                            if c.type in ("identifier", "parametrized_type_expression")]
+                tname = _type_name_of(operands[-1]) if operands else None
+                if tname:
                     return tname + "#call", f"({tname})"
         return None
 
