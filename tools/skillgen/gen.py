@@ -110,6 +110,37 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "When the user types `/graphify`, use the installed graphify skill or instructions "
             "before doing anything else.",
         ),
+        # #3177: none of the always-on blocks named `affected`, and in 262
+        # measured sessions it went uncalled while query/explain (the verbs
+        # the block names) were used daily. The block is what the agent
+        # actually reaches for; name the blast-radius verb there.
+        ('- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.',
+         '- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.\n- Before modifying a symbol or judging a change\'s impact, run `graphify affected "<symbol-or-file>"` — the blast radius (reverse dependencies), which query/path/explain do not show.'),
+    ),
+    # #3177 (see _AGENTS_MD_SECTION note above)
+    "_CLAUDE_MD_SECTION": (
+        ('- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.',
+         '- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.\n- Before modifying a symbol or judging a change\'s impact, run `graphify affected "<symbol-or-file>"` — the blast radius (reverse dependencies), which query/path/explain do not show.'),
+    ),
+    # #3177 (see _AGENTS_MD_SECTION note above)
+    "_GEMINI_MD_SECTION": (
+        ('- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.',
+         '- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.\n- Before modifying a symbol or judging a change\'s impact, run `graphify affected "<symbol-or-file>"` — the blast radius (reverse dependencies), which query/path/explain do not show.'),
+    ),
+    # #3177 (see _AGENTS_MD_SECTION note above)
+    "_ANTIGRAVITY_RULES": (
+        ('- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (CLI) or `query_graph` (MCP). Use `graphify path "<A>" "<B>"` / `shortest_path` for relationships and `graphify explain "<concept>"` / `get_node` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.',
+         '- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (CLI) or `query_graph` (MCP). Use `graphify path "<A>" "<B>"` / `shortest_path` for relationships and `graphify explain "<concept>"` / `get_node` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.\n- Before modifying a symbol or judging a change\'s impact, run `graphify affected "<symbol-or-file>"` — the blast radius (reverse dependencies), which query/path/explain do not show.'),
+    ),
+    # #3177 (see _AGENTS_MD_SECTION note above)
+    "_KIRO_STEERING": (
+        ('These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Read `GRAPH_REPORT.md` only for broad architecture review or when those commands do not surface enough context.',
+         'These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Read `GRAPH_REPORT.md` only for broad architecture review or when those commands do not surface enough context. Before modifying a symbol, run `graphify affected "<symbol-or-file>"` for its blast radius (reverse dependencies).'),
+    ),
+    # #3177 (see _AGENTS_MD_SECTION note above)
+    "_VSCODE_INSTRUCTIONS_SECTION": (
+        ('These return a scoped subgraph, usually much smaller than the full\nreport or raw grep output.\n',
+         'These return a scoped subgraph, usually much smaller than the full\nreport or raw grep output. Before modifying a symbol or assessing a change\'s impact, run\n`graphify affected "<symbol-or-file>"` for its blast radius (reverse dependencies).\n'),
     ),
 }
 
