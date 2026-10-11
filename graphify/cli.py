@@ -4300,7 +4300,7 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
-                            "_ts_public_twin", "_py_property", "_py_fixture",
+                            "_py_fixture",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]

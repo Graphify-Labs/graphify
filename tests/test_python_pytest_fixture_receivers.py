@@ -171,3 +171,42 @@ def test_schema_bump_retires_entries_cached_without_fixture_markers(tmp_path: Pa
     nodes = {n["id"]: n for n in r["nodes"]}
     assert any(e["relation"] == "calls" and nodes[e["source"]]["label"] == "test_run()"
                and nodes[e["target"]]["label"] == ".invoke()" for e in r["edges"])
+
+
+def test_rebuild_after_the_imported_class_moves_matches_a_full_build(tmp_path: Path):
+    # The unchanged conftest.py still imports CliRunner from app.testing, which
+    # no longer defines it: the forwarded import edge is evidence only, and with
+    # the class gone from that module both builds leave the fixture call unlinked.
+    # (Only the fixture arm's edges are compared: the unchanged conftest's own
+    # `CliRunner()` call is not re-resolved on a changed-files rebuild, the
+    # same on 0.9.85, #3570.)
+    from graphify.watch import _rebuild_code
+
+    files = {
+        "app/__init__.py": "",
+        "app/testing.py": _RUNNER,
+        "tests/conftest.py": _CONFTEST,
+        "tests/test_cli.py": "def test_run(runner):\n    runner.invoke(None)\n",
+    }
+    roots = []
+    for name in ("inc", "full"):
+        root = tmp_path / name
+        for fname, body in files.items():
+            (root / fname).parent.mkdir(parents=True, exist_ok=True)
+            (root / fname).write_text(body, encoding="utf-8")
+        roots.append(root)
+    inc, full = roots
+    assert _rebuild_code(inc, no_cluster=True, acquire_lock=False, force=True)
+    for root in roots:
+        (root / "app" / "testing.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+        (root / "app" / "moved.py").write_text(_RUNNER, encoding="utf-8")
+    assert _rebuild_code(inc, changed_paths=[inc / "app" / "testing.py", inc / "app" / "moved.py"],
+                         no_cluster=True, acquire_lock=False)
+    assert _rebuild_code(full, no_cluster=True, acquire_lock=False, force=True)
+
+    def fixture_calls(root):
+        g = json.loads((root / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+        return {(e["source"], e["target"]) for e in g.get("links", g.get("edges", []))
+                if e["relation"] == "calls" and e["source"].endswith("test_run")}
+
+    assert fixture_calls(inc) == fixture_calls(full) == set()
