@@ -16,8 +16,19 @@ from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
 result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
-print(json.dumps(result, indent=2, ensure_ascii=False))
+# Print a summary only - do NOT print the full result. It lists every path in the
+# corpus, and every later step reads it from the sidecar written below, so a full
+# dump only floods the agent context (#3944; Step 2 forbids the same for detect()).
+print(json.dumps({
+    'new_total': new_total,
+    'new_by_type': {t: len(v) for t, v in result.get('new_files', {}).items() if v},
+    'deleted': len(result.get('deleted_files', [])),
+    'total_files': result.get('total_files', 0),
+    'total_words': result.get('total_words', 0),
+    'skipped_sensitive': result.get('skipped_sensitive', []),
+}, indent=2, ensure_ascii=False))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
+print('Full result: graphify-out/.graphify_incremental.json')
 deleted = list(result.get('deleted_files', []))
 if new_total == 0 and not deleted:
     print('No files changed since last run. Nothing to update.')
