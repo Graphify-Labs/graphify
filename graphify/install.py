@@ -914,7 +914,30 @@ def _canonical_platform(platform_name: str) -> str:
 _SECTION_END_MARKER = "<!-- graphify-section-end -->"
 
 _ATX_HEADING_RE = re.compile(r"^#{1,6}\s")
-_FENCE_RE = re.compile(r"^(```|~~~)")
+_FENCE_RE = re.compile(r"^(```+|~~~+)")
+
+
+def _toggle_fence(stripped: str, fence_char: str | None) -> str | None:
+    """Advance fence state by one line; returns the new ``fence_char``.
+
+    A CommonMark fence only closes on a LINE of the SAME character
+    (backtick or tilde) it opened with -- a backtick fence is untouched by a
+    tilde line and vice versa, so a fenced example showing the other fence
+    style as literal text (e.g. a tilde-fenced block demonstrating backtick
+    fences) must not be mistaken for this fence's own close (PR 3803 review
+    follow up). Returns the still-open delimiter when ``stripped`` is a
+    fence line of the OTHER character while already inside a fence (no state
+    change: that line is this fence's literal content), the matching
+    delimiter's absence (None) when it correctly closes, or a new delimiter
+    when it opens one from unfenced ground.
+    """
+    m = _FENCE_RE.match(stripped)
+    if not m:
+        return fence_char
+    this_char = m.group(1)[0]
+    if fence_char is None:
+        return this_char
+    return None if this_char == fence_char else fence_char
 
 
 def _has_heading_before_eof(lines: "list[str]", start: int) -> bool:
@@ -934,13 +957,13 @@ def _has_heading_before_eof(lines: "list[str]", start: int) -> bool:
     sample with an ordinary comment line makes this return True for content
     that is not ambiguous at all (PR 3803 review).
     """
-    in_fence = False
+    fence_char: str | None = None
     for line in lines[start + 1:]:
         stripped = line.strip()
         if _FENCE_RE.match(stripped):
-            in_fence = not in_fence
+            fence_char = _toggle_fence(stripped, fence_char)
             continue
-        if not in_fence and _ATX_HEADING_RE.match(stripped):
+        if fence_char is None and _ATX_HEADING_RE.match(stripped):
             return True
     return False
 
@@ -1029,7 +1052,7 @@ def _replace_or_append_section(
     # unrelated end marker swallow it (PR 3803 review).
     _marker_is_top_level = boundary_prefix.rstrip() == "#"
     end = None
-    in_fence = False
+    fence_char: str | None = None
     for j in range(start + 1, len(lines)):
         stripped = lines[j].strip()
         if stripped == _SECTION_END_MARKER:
@@ -1040,10 +1063,17 @@ def _replace_or_append_section(
             # comment in an example) must never be mistaken for a heading
             # boundary, or a top-level marker's replace/remove would split the
             # fence in two (PR 3803 review).
-            in_fence = not in_fence
+            fence_char = _toggle_fence(stripped, fence_char)
             continue
-        if not in_fence and (
-            lines[j].startswith(boundary_prefix) or (
+        # stripped, not the raw line: up to a few spaces of leading
+        # indentation before a heading is still a real ATX heading per
+        # CommonMark (and _ATX_HEADING_RE below already strips to check it),
+        # so matching boundary_prefix against the raw line missed an
+        # indented sibling heading that the ATX check would have caught for
+        # a top-level marker, an inconsistency between the two branches of
+        # this same condition (PR 3803 review follow up).
+        if fence_char is None and (
+            stripped.startswith(boundary_prefix) or (
                 _marker_is_top_level and _ATX_HEADING_RE.match(stripped)
             )
         ):
@@ -1124,7 +1154,7 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
             break
         start = starts[-1]
         end = None
-        in_fence = False
+        fence_char: str | None = None
         for j in range(start + 1, len(lines)):
             stripped = lines[j].strip()
             if stripped == _SECTION_END_MARKER:
@@ -1134,10 +1164,10 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
                 # See _replace_or_append_section's matching note: a fenced
                 # code block's own content must never be mistaken for a
                 # heading boundary (PR 3803 review).
-                in_fence = not in_fence
+                fence_char = _toggle_fence(stripped, fence_char)
                 continue
-            if not in_fence and (
-                lines[j].startswith(boundary_prefix) or (
+            if fence_char is None and (
+                stripped.startswith(boundary_prefix) or (
                     _marker_is_top_level and _ATX_HEADING_RE.match(stripped)
                 )
             ):
