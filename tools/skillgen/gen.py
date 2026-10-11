@@ -1261,16 +1261,21 @@ def _is_save_result_answer_file_fix_line(line: str) -> bool:
     backtick, or dollar sign anywhere in a normal explanation broke or
     hijacked the command. ANSWER is now captured through a single quoted
     heredoc into a temp file first, then passed via --answer-file instead,
-    never re-parsed as shell syntax. The heredoc's own opener, its ANSWER
-    placeholder body, and its closing EOF marker are new lines with no
+    never re-parsed as shell syntax. The heredoc uses a distinctive
+    GRAPHIFY_ANSWER_EOF delimiter, not the bare "EOF" every shell heredoc
+    reaches for by reflex (#3621 review follow up): ANSWER is itself free
+    text an LLM wrote, and a bare "EOF" is plausible boilerplate inside an
+    explanation, closing the heredoc early and letting the rest of ANSWER
+    execute as shell commands. The heredoc's own opener, its ANSWER
+    placeholder body, and its closing delimiter are new lines with no
     counterpart in pristine v8; the changed save-result command line itself
     already matches _is_quoted_interpreter_cat_fix_line.
     """
     stripped = line.strip()
     return (
-        stripped == "cat > graphify-out/.save_result_answer.tmp <<'EOF'"
+        stripped == "cat > graphify-out/.save_result_answer.tmp <<'GRAPHIFY_ANSWER_EOF'"
         or stripped == "ANSWER"
-        or stripped == "EOF"
+        or stripped == "GRAPHIFY_ANSWER_EOF"
     )
 
 
@@ -1282,21 +1287,28 @@ def _is_ingest_add_file_fix_line(line: str) -> bool:
     contributor='CONTRIBUTOR'). A value containing an embedded quote breaks
     out of the literal, and since AUTHOR/CONTRIBUTOR can be free text lifted
     from a fetched page, this is not just a corruption risk. Each value is
-    now captured through its own single quoted heredoc into a temp file
-    first, then read back as a plain string, never re-parsed as Python
-    source. The three heredoc openers, their placeholder bodies, the three
-    read_text lines, and both the old and new ingest(...) call lines are new
-    or changed with no counterpart in pristine v8.
+    now captured through its own single quoted heredoc, using its own
+    distinctive GRAPHIFY_URL_EOF/GRAPHIFY_AUTHOR_EOF/GRAPHIFY_CONTRIBUTOR_EOF
+    delimiter rather than a bare "EOF" (#3621 review follow up): a page's own
+    text plausibly contains a line that is just "EOF", which would otherwise
+    close the heredoc early and let the rest of the fetched content execute
+    as shell commands. Each is written into a temp file first, then read
+    back as a plain string, never re-parsed as Python source. The three
+    heredoc openers, their placeholder bodies, the three read_text lines, and
+    both the old and new ingest(...) call lines are new or changed with no
+    counterpart in pristine v8.
     """
     stripped = line.strip()
     if stripped in (
-        "cat > graphify-out/.ingest_url.tmp <<'EOF'",
-        "cat > graphify-out/.ingest_author.tmp <<'EOF'",
-        "cat > graphify-out/.ingest_contributor.tmp <<'EOF'",
+        "cat > graphify-out/.ingest_url.tmp <<'GRAPHIFY_URL_EOF'",
+        "cat > graphify-out/.ingest_author.tmp <<'GRAPHIFY_AUTHOR_EOF'",
+        "cat > graphify-out/.ingest_contributor.tmp <<'GRAPHIFY_CONTRIBUTOR_EOF'",
         "URL",
         "AUTHOR",
         "CONTRIBUTOR",
-        "EOF",
+        "GRAPHIFY_URL_EOF",
+        "GRAPHIFY_AUTHOR_EOF",
+        "GRAPHIFY_CONTRIBUTOR_EOF",
     ):
         return True
     return "graphify-out/.ingest_" in line or "ingest(_url, Path" in line or "ingest('URL', Path" in line

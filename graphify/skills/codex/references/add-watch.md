@@ -7,15 +7,15 @@ Load this when the user ran `/graphify add <url>` or passed `--watch`. Neither i
 Fetch a URL and add it to the corpus, then update the graph.
 
 ```bash
-cat > graphify-out/.ingest_url.tmp <<'EOF'
+cat > graphify-out/.ingest_url.tmp <<'GRAPHIFY_URL_EOF'
 URL
-EOF
-cat > graphify-out/.ingest_author.tmp <<'EOF'
+GRAPHIFY_URL_EOF
+cat > graphify-out/.ingest_author.tmp <<'GRAPHIFY_AUTHOR_EOF'
 AUTHOR
-EOF
-cat > graphify-out/.ingest_contributor.tmp <<'EOF'
+GRAPHIFY_AUTHOR_EOF
+cat > graphify-out/.ingest_contributor.tmp <<'GRAPHIFY_CONTRIBUTOR_EOF'
 CONTRIBUTOR
-EOF
+GRAPHIFY_CONTRIBUTOR_EOF
 "$(cat graphify-out/.graphify_python)" -c "
 import sys
 from graphify.ingest import ingest
