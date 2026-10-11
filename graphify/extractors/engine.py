@@ -1844,6 +1844,131 @@ def _python_param_names(params_node, source: bytes) -> set[str]:
                 out.add(_read_text(name_n, source))
     return out
 
+# pytest fixtures (#ISSUE). A test or fixture names a fixture as a parameter:
+# `def test_x(runner): runner.invoke(cli)`, with `runner` defined in the same
+# file or a conftest.py above it. The parameter has no annotation, so it is
+# typed from what the fixture returns.
+_PYTEST_FIXTURE_DECORATORS = frozenset({"pytest.fixture", "fixture", "pytest_asyncio.fixture"})
+_PYTHON_ITERATOR_WRAPPERS = frozenset({
+    "Iterator", "Iterable", "Generator", "AsyncIterator", "AsyncIterable", "AsyncGenerator",
+})
+# A fixture whose returned type is unknown still shadows one further up.
+PYTEST_FIXTURE_UNTYPED = "?"
+
+
+def _python_is_pytest_fixture(func_node, source: bytes) -> bool:
+    parent = func_node.parent
+    if parent is None or parent.type != "decorated_definition":
+        return False
+    for dec in parent.children:
+        if dec.type != "decorator":
+            continue
+        expr = next(iter(dec.named_children), None)
+        if expr is not None and expr.type == "call":
+            expr = expr.child_by_field_name("function")
+        if expr is not None and _read_text(expr, source) in _PYTEST_FIXTURE_DECORATORS:
+            return True
+    return False
+
+
+def _python_annotation_class(type_node, source: bytes) -> str | None:
+    """`Client`, `mod.Client`, or the item of `Iterator[Client]` /
+    `Generator[Client, None, None]` (a yield fixture); anything else is None."""
+    node = type_node
+    while node is not None and node.type == "type":
+        node = next(iter(node.named_children), None)
+    if node is None:
+        return None
+    if node.type == "generic_type":
+        head = next((c for c in node.named_children if c.type in ("identifier", "attribute")), None)
+        params = next((c for c in node.named_children if c.type == "type_parameter"), None)
+        if head is None or params is None:
+            return None
+        if _read_text(head, source).rsplit(".", 1)[-1] not in _PYTHON_ITERATOR_WRAPPERS:
+            return None
+        return _python_annotation_class(next(iter(params.named_children), None), source)
+    if node.type not in ("identifier", "attribute"):
+        return None
+    name = _read_text(node, source).rsplit(".", 1)[-1]
+    return name if name[:1].isupper() else None
+
+
+def _python_fixture_type(func_node, source: bytes, local_types: dict[str, str | None]) -> str:
+    """The class a fixture returns or yields: its return annotation, else every
+    `return` / `yield` naming one class (`return CliRunner()`, `yield client`
+    after `client = Client()`). Anything else is PYTEST_FIXTURE_UNTYPED."""
+    ret = func_node.child_by_field_name("return_type")
+    if ret is not None:
+        return _python_annotation_class(ret, source) or PYTEST_FIXTURE_UNTYPED
+    found: set[str | None] = set()
+    body = func_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in ("function_definition", "class_definition", "lambda"):
+            continue
+        value = None
+        if node.type == "return_statement":
+            value = next(iter(node.named_children), None)
+        elif node.type == "yield":
+            value = next(iter(node.named_children), None)
+        else:
+            stack.extend(node.children)
+            continue
+        if value is None:
+            continue
+        if value.type == "call":
+            fn = value.child_by_field_name("function")
+            name = _read_text(fn, source).rsplit(".", 1)[-1] if fn is not None and fn.type in ("identifier", "attribute") else ""
+            found.add(name if name[:1].isupper() else None)
+        elif value.type == "identifier":
+            found.add(local_types.get(_read_text(value, source)))
+        else:
+            found.add(None)
+    if len(found) == 1:
+        only = next(iter(found))
+        if only:
+            return only
+    return PYTEST_FIXTURE_UNTYPED
+
+
+def _python_untouched_params(func_node, source: bytes) -> set[str]:
+    """Parameters with no annotation and no default that the body never rebinds:
+    the ones pytest may fill with a fixture."""
+    params = func_node.child_by_field_name("parameters")
+    names: set[str] = set()
+    if params is not None:
+        for child in params.children:
+            if child.type == "identifier":
+                names.add(_read_text(child, source))
+    rebound: set[str] = set()
+    body = func_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in ("function_definition", "class_definition", "lambda"):
+            continue
+        if node.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+            _python_collect_assignment_targets(node.child_by_field_name("left"), source, rebound)
+        elif node.type == "named_expression":
+            _python_collect_assignment_targets(node.child_by_field_name("name"), source, rebound)
+        elif node.type in ("as_pattern_target", "global_statement", "nonlocal_statement", "delete_statement"):
+            stack_ids = [node]
+            while stack_ids:
+                cur = stack_ids.pop()
+                if cur.type == "identifier":
+                    rebound.add(_read_text(cur, source))
+                stack_ids.extend(cur.children)
+        stack.extend(node.children)
+    return names - rebound - {"self", "cls"}
+
+
+def _python_is_test_module(str_path: str) -> bool:
+    name = str_path.replace("\\", "/").rsplit("/", 1)[-1]
+    return name == "conftest.py" or (name.startswith("test_") and name.endswith(".py")) or name.endswith("_test.py")
+
+
+
 def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> None:
     """Identifiers bound as `pattern` targets under a Python AST subtree.
 
@@ -8169,6 +8294,9 @@ def _extract_generic(
     # Python: per-function `name -> ClassName` for typed parameters and locals,
     # stamped on member calls so the corpus resolver can type `obj.method()`.
     python_var_types: dict[str, dict[str, str | None]] = {}
+    # caller -> parameters pytest may fill with a fixture (tests and fixtures in
+    # test modules / conftest.py only)
+    python_fixture_params: dict[str, set[str]] = {}
     # Ruby: per-method set of bound local/parameter names, so the call-walk can
     # tell a paren-less self-send (`build`) from a plain variable read (`x`).
     ruby_local_names: dict[str, frozenset[str]] = {}
@@ -9253,6 +9381,10 @@ def _extract_generic(
                             _py_type = python_var_types.get(caller_nid, {}).get(member_receiver)
                             if _py_type:
                                 rc_entry["receiver_type"] = _py_type
+                            elif member_receiver in python_fixture_params.get(caller_nid, ()):
+                                # A fixture parameter: typed by the resolver from the
+                                # fixture pytest would pick for it.
+                                rc_entry["_python_fixture_param"] = True
                         # `super(Cls, obj).m()` starts the MRO after Cls, not after the
                         # caller's class; only bare `super()` may walk the caller's bases.
                         if member_receiver == "super" and config.ts_module == "tree_sitter_python":
@@ -9624,12 +9756,24 @@ def _extract_generic(
 
     if config.ts_module == "tree_sitter_python":
         _py_node_by_id = {n["id"]: n for n in nodes}
+        _py_test_module = _python_is_test_module(str_path)
         for caller_nid, body_node in function_bodies:
             python_var_types[caller_nid] = _python_local_class_bindings(body_node, source)
             func = getattr(body_node, "parent", None)
-            if (func is not None and func.type == "function_definition"
-                    and caller_nid in _py_node_by_id and _python_is_property(func, source)):
+            if func is None or func.type != "function_definition":
+                continue
+            if caller_nid in _py_node_by_id and _python_is_property(func, source):
                 _py_node_by_id[caller_nid]["_py_property"] = True
+            if not _py_test_module:
+                continue
+            is_fixture = _python_is_pytest_fixture(func, source)
+            if is_fixture and caller_nid in _py_node_by_id:
+                _py_node_by_id[caller_nid]["_py_fixture"] = _python_fixture_type(
+                    func, source, python_var_types[caller_nid]
+                )
+            name_n = func.child_by_field_name("name")
+            if is_fixture or (name_n is not None and _read_text(name_n, source).startswith("test")):
+                python_fixture_params[caller_nid] = _python_untouched_params(func, source)
 
     # C++: build the per-file `var -> ClassName` table from local declarations in
     # every function body so the cross-file member-call pass can type a receiver

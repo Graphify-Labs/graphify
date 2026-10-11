@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import os
+import posixpath
 import re
 import sys
 import textwrap
@@ -177,7 +178,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 
 from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
 
-from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
@@ -4683,6 +4684,33 @@ def _resolve_swift_member_calls(
         })
 
 
+def _stamp_python_fixture_paths(per_file: "list[dict | None]", root: Path) -> None:
+    """Repo-relative locations for the pytest-fixture arm of
+    _resolve_python_member_calls. A re-extracted file carries absolute paths while
+    an unchanged file's context node (changed-files rebuild) is repo-relative; the
+    arm walks directories, so it gets one form. In memory only: results were cached
+    before resolution."""
+    def rel(source_file: str) -> str:
+        path = Path(source_file)
+        if not path.is_absolute():
+            return path.as_posix()
+        try:
+            return path.resolve().relative_to(root).as_posix()
+        except (OSError, ValueError):
+            return path.as_posix()
+
+    for result in per_file:
+        if not result:
+            continue
+        for rc in result.get("raw_calls", []):
+            if rc.get("_python_fixture_param") and rc.get("source_file"):
+                rc["_python_test_file"] = rel(str(rc["source_file"]))
+        located = {n["id"]: rel(str(n["source_file"])) for n in result.get("nodes", [])
+                   if n.get("_py_fixture") and n.get("source_file")}
+        if located:
+            result["_python_fixture_files"] = located
+
+
 def _resolve_python_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4790,6 +4818,40 @@ def _resolve_python_member_calls(
         src, tgt = e.get("source"), e.get("target")
         if e.get("relation") == "method" and isinstance(src, str) and isinstance(tgt, str):
             method_class[tgt] = src
+
+    # pytest fixture nodes by name, for the fixture arm, with their repo-relative
+    # file: stamped on re-extracted files (_stamp_python_fixture_paths), already
+    # relative on an unchanged file's context node.
+    fixture_locations: dict[str, str] = {}
+    for result in per_file:
+        fixture_locations.update(result.get("_python_fixture_files") or {})
+    fixtures_by_name: dict[str, list[tuple[str, dict]]] = {}
+    for n in all_nodes:
+        if n.get("_py_fixture") and n.get("source_file"):
+            where = fixture_locations.get(n["id"]) or str(n["source_file"]).replace("\\", "/")
+            name = str(n.get("label", "")).strip().lstrip(".").removesuffix("()")
+            fixtures_by_name.setdefault(name, []).append((where, n))
+
+    def _nearest_fixture(test_file: str, name: str) -> dict | None:
+        # pytest's order: the module itself, then the conftest.py of its
+        # directory and of each directory above it; the nearest one wins.
+        candidates = fixtures_by_name.get(name, [])
+        if not test_file or not candidates:
+            return None
+        here = [n for where, n in candidates if where == test_file]
+        directory = test_file
+        while not here:
+            parent = posixpath.dirname(directory)
+            if parent == directory:
+                return None
+            directory = parent
+            conftest = posixpath.join(directory, "conftest.py") if directory else "conftest.py"
+            here = [n for where, n in candidates if where == conftest]
+            if not directory:
+                break
+        if here:
+            return here[0] if len(here) == 1 else None
+        return None
 
     def _file_node(nid: str) -> "str | None":
         # Climb `contains` / `method` parents to the top, which is the file: a
@@ -4930,6 +4992,25 @@ def _resolve_python_member_calls(
                 continue
             if targets:
                 continue
+        if rc.get("_python_fixture_param"):
+            # Fixture arm: `runner.invoke()` in a test whose parameter `runner` is a
+            # pytest fixture. pytest's lookup: the caller's own module, then the
+            # conftest.py of its directory and of each directory above it; the
+            # nearest definition wins, a typed or not. Its returned class goes
+            # through the typed-receiver gate below, judged from the FIXTURE's
+            # file, which is the one importing the class.
+            fixture = _nearest_fixture(str(rc.get("_python_test_file") or ""), receiver)
+            fixture_type = fixture.get("_py_fixture") if fixture is not None else None
+            if fixture is not None and fixture_type and fixture_type != PYTEST_FIXTURE_UNTYPED:
+                class_nids = class_def_nids.get(_key(fixture_type), [])
+                fixture_file = _file_node(fixture["id"])
+                if len(class_nids) == 1 and fixture_file is not None:
+                    cls = class_nids[0]
+                    imported = imported_by_filenode.get(fixture_file, set())
+                    cls_file = _file_node(cls)
+                    if cls_file == fixture_file or cls in imported or (cls_file is not None and cls_file in imported):
+                        _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+            continue
         receiver_type = rc.get("receiver_type")
         if receiver_type and not receiver[:1].isupper():
             # Typed-receiver arm: `request.read()` where the extractor typed the
@@ -10662,6 +10743,7 @@ def extract(
     # results: raw_calls come solely from `paths`, so nothing sourced by an
     # unchanged file is ever emitted, and the ambiguity guards count the same
     # candidates a full build would (the context is the whole unchanged corpus).
+    _stamp_python_fixture_paths(per_file, root)
     if resolution_context_nodes or resolution_context_edges:
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
