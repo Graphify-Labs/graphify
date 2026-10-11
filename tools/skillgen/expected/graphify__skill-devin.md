@@ -1160,6 +1160,22 @@ else:
         subgraph_nodes.update(next_frontier)
         frontier = next_frontier
 
+# Edge collection is separate from node discovery. BFS/DFS record an edge only
+# when they reach an unvisited neighbour, so the walk above is a traversal tree:
+# an edge between two already-visited nodes (two seeds, a triangle chord, a
+# cross-link) is never appended. The visited set controls expansion only, so
+# complete the edge list over the visited set and emit every relationship
+# between included nodes (#4314). Scans edges incident to the subgraph, so cost
+# tracks the subgraph, not the whole graph.
+_directed = G.is_directed()
+_seen = {(u, v) if _directed else frozenset((u, v)) for u, v in subgraph_edges}
+for u, v in G.edges(sorted(subgraph_nodes)):
+    if u != v and u in subgraph_nodes and v in subgraph_nodes:
+        _key = (u, v) if _directed else frozenset((u, v))
+        if _key not in _seen:
+            _seen.add(_key)
+            subgraph_edges.append((u, v))
+
 # Token-budget aware output: rank by relevance, cut at budget (~4 chars/token)
 token_budget = BUDGET  # default 2000
 char_budget = token_budget * 4

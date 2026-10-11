@@ -1220,6 +1220,35 @@ def _is_worktree_visibility_note_line(line: str) -> bool:
     return "`graphify-out/` was written into the working tree" in line
 
 
+def _is_query_induced_edges_fix_line(line: str) -> bool:
+    """Whether a line is part of the inline-fallback induced-edge completion (#4314).
+
+    The monoliths' inline NetworkX fallback for ``/graphify query`` recorded an
+    edge only when BFS/DFS discovered an *unvisited* neighbour, so an edge between
+    two already-visited nodes (two seeds, a triangle chord, a cross-link) was
+    dropped. The completion pass mirrors ``graphify.serve._complete_induced_edges``
+    (the #2323 CLI fix) so the fallback emits the induced subgraph over the visited
+    set. Only added lines; nothing is removed.
+    """
+    return line.strip() in (
+        "# Edge collection is separate from node discovery. BFS/DFS record an edge only",
+        "# when they reach an unvisited neighbour, so the walk above is a traversal tree:",
+        "# an edge between two already-visited nodes (two seeds, a triangle chord, a",
+        "# cross-link) is never appended. The visited set controls expansion only, so",
+        "# complete the edge list over the visited set and emit every relationship",
+        "# between included nodes (#4314). Scans edges incident to the subgraph, so cost",
+        "# tracks the subgraph, not the whole graph.",
+        "_directed = G.is_directed()",
+        "_seen = {(u, v) if _directed else frozenset((u, v)) for u, v in subgraph_edges}",
+        "for u, v in G.edges(sorted(subgraph_nodes)):",
+        "if u != v and u in subgraph_nodes and v in subgraph_nodes:",
+        "_key = (u, v) if _directed else frozenset((u, v))",
+        "if _key not in _seen:",
+        "_seen.add(_key)",
+        "subgraph_edges.append((u, v))",
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1246,6 +1275,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
+    _is_query_induced_edges_fix_line,
 )
 
 
