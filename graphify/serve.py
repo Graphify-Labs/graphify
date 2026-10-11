@@ -41,53 +41,60 @@ class ToolError(Exception):
     """
 
 
+def _read_graph(graph_path: str) -> nx.Graph:
+    """Load graph.json exactly as the MCP server does, raising on a bad path
+    or file (ValueError, FileNotFoundError, json.JSONDecodeError) so a library
+    caller such as the benchmark can handle it."""
+    resolved = Path(graph_path).resolve()
+    if resolved.suffix != ".json":
+        raise ValueError(f"Graph path must be a .json file, got: {graph_path!r}")
+    if not resolved.exists():
+        raise FileNotFoundError(f"Graph file not found: {resolved}")
+    check_graph_file_size_cap(resolved)
+    safe = resolved
+    data = json.loads(safe.read_text(encoding="utf-8"))
+    if "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    # Stash the on-disk logical flag before the load-time override below:
+    # `directed: True` exists only so renderers can recover stored arc
+    # order (#2309); tools that care about logical direction (#2487) must
+    # not mistake the override for graph truth.
+    _logical_directed = bool(data.get("directed", False))
+    data = {**data, "directed": True}
+    try:
+        from graphify.build import graph_has_legacy_ids as _legacy
+        if _legacy(data.get("nodes", [])):
+            print(
+                "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                "rebuild with `graphify extract --force` for path-qualified IDs.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+    try:
+        G = json_graph.node_link_graph(data, edges="links")
+    except TypeError:
+        G = json_graph.node_link_graph(data)
+    G.graph["_logical_directed"] = _logical_directed
+    # node_link_graph drops top-level keys other than data["graph"], so the
+    # build commit export.to_json writes there is stashed by hand (#3354).
+    _commit = data.get("built_at_commit")
+    if isinstance(_commit, str) and _commit.strip():
+        G.graph["_built_at_commit"] = _commit.strip()
+    # Attach the work-memory overlay (derived sidecar next to graph.json) so
+    # the query/MCP read surface can annotate NODE lines display-only. Empty
+    # when no sidecar exists, leaving un-annotated output byte-identical.
+    try:
+        from graphify.reflect import load_learning_overlay as _llo
+        G.graph["_learning_overlay"] = _llo(resolved)
+    except Exception:
+        G.graph["_learning_overlay"] = {}
+    return G
+
+
 def _load_graph(graph_path: str) -> nx.Graph:
     try:
-        resolved = Path(graph_path).resolve()
-        if resolved.suffix != ".json":
-            raise ValueError(f"Graph path must be a .json file, got: {graph_path!r}")
-        if not resolved.exists():
-            raise FileNotFoundError(f"Graph file not found: {resolved}")
-        check_graph_file_size_cap(resolved)
-        safe = resolved
-        data = json.loads(safe.read_text(encoding="utf-8"))
-        if "links" not in data and "edges" in data:
-            data = dict(data, links=data["edges"])
-        # Stash the on-disk logical flag before the load-time override below:
-        # `directed: True` exists only so renderers can recover stored arc
-        # order (#2309); tools that care about logical direction (#2487) must
-        # not mistake the override for graph truth.
-        _logical_directed = bool(data.get("directed", False))
-        data = {**data, "directed": True}
-        try:
-            from graphify.build import graph_has_legacy_ids as _legacy
-            if _legacy(data.get("nodes", [])):
-                print(
-                    "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                    "rebuild with `graphify extract --force` for path-qualified IDs.",
-                    file=sys.stderr,
-                )
-        except Exception:
-            pass
-        try:
-            G = json_graph.node_link_graph(data, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(data)
-        G.graph["_logical_directed"] = _logical_directed
-        # node_link_graph drops top-level keys other than data["graph"], so the
-        # build commit export.to_json writes there is stashed by hand (#3354).
-        _commit = data.get("built_at_commit")
-        if isinstance(_commit, str) and _commit.strip():
-            G.graph["_built_at_commit"] = _commit.strip()
-        # Attach the work-memory overlay (derived sidecar next to graph.json) so
-        # the query/MCP read surface can annotate NODE lines display-only. Empty
-        # when no sidecar exists, leaving un-annotated output byte-identical.
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            G.graph["_learning_overlay"] = _llo(resolved)
-        except Exception:
-            G.graph["_learning_overlay"] = {}
-        return G
+        return _read_graph(graph_path)
     except json.JSONDecodeError as exc:
         print(f"error: graph.json is corrupted ({exc}). Re-run /graphify to rebuild.", file=sys.stderr)
         sys.exit(1)
