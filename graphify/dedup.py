@@ -18,12 +18,38 @@ from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _is_label_char(ch: str) -> bool:
+    """True for a character that belongs to a word in a label.
+
+    Letters and digits, plus combining marks (Unicode category M*). ``\\w`` does
+    not match marks, so the old ``[\\W_]+`` separator class deleted every vowel
+    sign and virama: ``हिंदी`` became ``ह द`` and ``कि``/``की``/``के`` all
+    collapsed to ``क``, merging distinct words.
+    """
+    return ch.isalnum() or unicodedata.category(ch).startswith("M")
+
+
 def _norm(label: str | None) -> str:
-    """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
+    """Lowercase + collapse non-word runs to space (Unicode-aware).
+
+    Combining marks stay part of the word (see ``_is_label_char``); punctuation,
+    underscores and whitespace collapse to a single space as before. Known gap:
+    ZWJ/ZWNJ (category Cf) still count as separators.
+    """
     if not isinstance(label, str):
         label = "" if label is None else str(label)
-    label = unicodedata.normalize("NFKC", label)
-    return re.sub(r"[\W_]+", " ", label.casefold(), flags=re.UNICODE).strip()
+    label = unicodedata.normalize("NFKC", label).casefold()
+    out: list[str] = []
+    pending_sep = False
+    for ch in label:
+        if _is_label_char(ch):
+            if pending_sep and out:
+                out.append(" ")
+            pending_sep = False
+            out.append(ch)
+        else:
+            pending_sep = True
+    return "".join(out)
 
 
 def _entropy(label: str) -> float:
