@@ -1652,21 +1652,38 @@ def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
-    """Shared node resolution for the get_node / get_neighbors tools.
+    """Shared node resolution for `explain` and the get_node / get_neighbors tools.
 
     Returns ``(node_id, None)`` when *label* resolves to a single winner via the
     tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
-    the winning tier spans several source files. Routing both tools through this
-    keeps get_node from silently returning a `G.nodes()` iteration-order match for
-    a hub name while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+    the winning tier holds several nodes, in different files or in one, as the
+    `path` endpoints refuse them. Routing both tools through this keeps get_node
+    from silently returning a `G.nodes()` iteration-order match for a hub name
+    while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
     """
-    matches = _find_node(G, label)
-    if not matches:
+    source_exact, exact, prefix, substring = _find_node_tiers(G, label)
+    tier = source_exact or exact or prefix or substring
+    if not tier:
         return None, f"No node matching '{label}' found."
-    rivals = find_node_ambiguity(G, label)
+    refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
+    if refusal:
+        return None, refusal
+    return tier[0], None
+
+
+def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool) -> str | None:
+    """Refusal message when the winning *tier* names more than one node, else None.
+
+    Shared by `explain`, get_node / get_neighbors and the `path` endpoints so all
+    of them refuse the same lookups. A file-path query is the one exception: its
+    tier is the file node followed by its members, which is precedence, not a tie.
+    """
+    rivals = _rivals_across_files(G, tier)
     if rivals:
-        return None, _ambiguity_message(G, label, rivals)
-    return matches[0], None
+        return _ambiguity_message(G, label, rivals)
+    if len(tier) > 1 and not file_query:
+        return _same_file_ambiguity_message(G, label, tier)
+    return None
 
 
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
@@ -1754,14 +1771,13 @@ def _resolve_path_endpoint(
     source_exact, exact, _, _ = _find_node_tiers(G, query)
     hits = source_exact or exact
     if hits:
-        rivals = _rivals_across_files(G, hits)
-        if rivals:
-            return None, [], _ambiguity_message(G, query, rivals)
         # A `path::symbol` hit also lands in `source_exact`; only a plain path
         # query makes that tier a file lookup.
-        file_query = bool(source_exact) and "::" not in query
-        if len(hits) > 1 and not file_query:
-            return None, [], _same_file_ambiguity_message(G, query, hits)
+        refusal = _tier_refusal(
+            G, query, hits, file_query=bool(source_exact) and "::" not in query
+        )
+        if refusal:
+            return None, [], refusal
         return hits[0], [], None
     # A deliberately file-scoped endpoint (`file::symbol`) that matched no symbol
     # in that file must NOT fall back to scoring the bare name across other files

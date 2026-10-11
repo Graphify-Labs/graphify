@@ -1838,7 +1838,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _ambiguity_message, _find_node, find_node_ambiguity
+        from graphify.serve import _find_node, _resolve_single_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -1861,15 +1861,10 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        matches = _find_node(G, label)
-        if not matches:
-            print(f"No node matching '{label}' found.")
-            sys.exit(0)
-        rivals = find_node_ambiguity(G, label)
-        if rivals:
-            print(_ambiguity_message(G, label, rivals))
-            sys.exit(1)
-        nid = matches[0]
+        nid, refusal = _resolve_single_node(G, label)
+        if nid is None:
+            print(refusal)
+            sys.exit(1 if _find_node(G, label) else 0)
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")
