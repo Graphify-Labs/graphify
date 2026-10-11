@@ -1379,7 +1379,31 @@ def _query_graph_text(
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
+    seeds: list[str] | None = None,
+    seed_root: Path | None = None,
 ) -> str:
+    # Explicit start nodes: an external ranker -- embeddings, a learned
+    # retriever, grep -- can choose where the traversal begins instead of the
+    # question's keyword matches. Each value resolves exactly as `affected`
+    # resolves its seed (node id, unique label, or repo-relative / absolute file
+    # path; `seed_root` anchors absolute paths), so there is one interpretation
+    # of a node reference. Fail closed: a value that does not resolve to exactly
+    # one node is reported and skipped, never guessed.
+    unresolved: list[str] = []
+    if seeds:
+        from graphify.affected import resolve_seed
+        start_nodes: list[str] = []
+        for value in seeds:
+            nid = resolve_seed(G, value, seed_root)
+            if nid is None:
+                if value not in unresolved:
+                    unresolved.append(value)
+            elif nid not in start_nodes:
+                start_nodes.append(nid)
+        if not start_nodes:
+            return "No unique node match for --seed: " + ", ".join(seeds)
+        return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
+                             context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
@@ -1404,13 +1428,32 @@ def _query_graph_text(
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
+    return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
+                         context_filters=context_filters, graph_path=graph_path)
+
+
+def _render_query(
+    G: nx.Graph,
+    question: str,
+    start_nodes: list[str],
+    *,
+    mode: str,
+    depth: int,
+    token_budget: int,
+    context_filters: list[str] | None,
+    graph_path: str | None,
+    given: bool = False,
+    unresolved: list[str] | None = None,
+) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
-        f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
+        f"Start{' (given)' if given else ''}: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    if unresolved:
+        header_parts.append(f"Unresolved seeds (skipped): {unresolved}")
     # Name the graph this answer came from. `graphify-out/` resolves against the
     # CWD, so running a query from a parent project while thinking about a
     # vendored subproject silently answers from the wrong corpus — the output is
