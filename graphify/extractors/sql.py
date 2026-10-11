@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 
 # Recovers CREATE FUNCTION/PROCEDURE statements the grammar could not parse
 # structurally. Used by BOTH recovery sites — the walk-time ERROR-node scan and
@@ -312,7 +312,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         source = (
             content.encode("utf-8") if isinstance(content, str)
             else content if content is not None
-            else path.read_bytes()
+            else _read_source_bytes(path)
         )
         tree = parser.parse(source)
         root = tree.root_node

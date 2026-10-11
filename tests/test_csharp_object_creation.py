@@ -18,6 +18,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from graphify.build import build_from_json, edge_data
 from graphify.extract import extract
 
 
@@ -236,6 +237,38 @@ def test_qualified_construction_resolves_when_the_method_also_declares_the_type(
     sourceless = {n["id"] for n in r["nodes"]
                   if n["label"] == "Cache" and not n.get("source_file")}
     assert not any(target in sourceless for _, target in calls)
+
+
+def test_factory_constructing_its_own_type_keeps_the_method_edge(tmp_path):
+    # `Fault` both belongs to `Report` and constructs it. On the default
+    # undirected graph those are one pair, and the `calls` edge used to be
+    # the one that survived, so `Report` had no `method` edge to `Fault`.
+    # The siblings that do not call the type were never affected.
+    _, r = _extract(tmp_path, {"Report.cs": (
+        "namespace Demo\n"
+        "{\n"
+        "    public sealed class Report\n"
+        "    {\n"
+        "        public string Verb;\n"
+        "        public static Report Fault(string verb) { return new Report { Verb = verb }; }\n"
+        "        public static string NotImplementedJson(string verb) { return verb; }\n"
+        "        public string ToJson() { return Verb; }\n"
+        "    }\n"
+        "}\n"
+    )})
+    report = _find(r, "Report", "report")
+    fault = _find(r, ".Fault()", "fault")
+    G = build_from_json(r)
+    kept = edge_data(G, report, fault)
+    assert kept.get("relation") == "method"
+    assert (kept.get("_src"), kept.get("_tgt")) == (report, fault)
+    assert edge_data(G, report, _find(r, ".NotImplementedJson()", "notimplemented")).get(
+        "relation") == "method"
+    assert edge_data(G, report, _find(r, ".ToJson()", "tojson")).get("relation") == "method"
+    # Directed storage has room for both facts.
+    D = build_from_json(r, directed=True)
+    assert edge_data(D, report, fault).get("relation") == "method"
+    assert edge_data(D, fault, report).get("relation") == "calls"
 
 
 def test_qualified_construction_of_a_foreign_type_makes_no_stub_edge(tmp_path):

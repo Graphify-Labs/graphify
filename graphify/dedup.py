@@ -512,6 +512,98 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
             )
 
 
+def _full_stem(source_file: str) -> str:
+    """The extension-stripped, slugified full-path stem a file's own IDs start with."""
+    stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
+    return "_".join(s for s in (normalize_id(p) for p in stem.split("/")) if s)
+
+
+def _extension_qualified_id(node: dict) -> str | None:
+    """``x.html``'s own spelling of an ID it shares with ``x.py`` (#4281).
+
+    Only applies when the ID is spelled with the node's FULL path stem, i.e.
+    the ID collides because the extension was stripped. Returns None for an ID
+    that only matches a trailing path slice (a bare ``protocol``): that is a
+    reference to another file's entity, not a distinct entity, and is left to
+    the collapse-and-warn path.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    ext_match = _EXTENSION.search(source_file.replace("\\", "/"))
+    full = _full_stem(source_file)
+    if not (nid and full and ext_match):
+        return None
+    if nid != full and not nid.startswith(f"{full}_"):
+        return None
+    return f"{full}_{normalize_id(ext_match.group(0))}{nid[len(full):]}"
+
+
+def _disambiguate_defining_collisions(
+    nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
+    root: Path | None,
+) -> tuple[list[dict], list[dict]]:
+    """Keep ``x.py`` and ``x.html`` apart when both derive the same ID (#4281).
+
+    The ID is built from the extension-stripped path, so two files that differ
+    only by extension mint the same ID. The best-ranked file keeps it; the
+    others get an extension-qualified ID. Edges and hyperedges follow the
+    renamed node by ``source_file``, compared in root-relative form because
+    semantic edges can still carry an absolute path here while nodes were
+    already made relative. Anything else (an ID no file derives from its own
+    path, or a bare ID shared across different paths) is left to the existing
+    collapse-and-warn path.
+    """
+    def key(sf):
+        return _rank_path(sf, root) if sf else ""
+
+    by_id: dict[str, list[dict]] = defaultdict(list)
+    for node in nodes:
+        nid = node.get("id")
+        if nid and node.get("source_file") and _extension_qualified_id(node):
+            by_id[nid].append(node)
+    taken = {n.get("id") for n in nodes if n.get("id")}
+    renames: dict[tuple[str, str], str] = {}
+    for nid, definers in by_id.items():
+        if len({key(d["source_file"]) for d in definers}) < 2:
+            continue
+        winner = min(definers, key=lambda d: _collision_rank(d, root))
+        for d in sorted(definers, key=lambda d: key(d["source_file"])):
+            k = key(d["source_file"])
+            if k == key(winner["source_file"]) or (nid, k) in renames:
+                continue
+            # Same full stem only: x.py vs x.html, never a/x vs b/x.
+            if _full_stem(d["source_file"]) != _full_stem(winner["source_file"]):
+                continue
+            # The extension is what tells them apart; same-extension slug twins
+            # (pkg/service.py vs pkg_service.py) stay on the collapse-and-warn path.
+            if _EXTENSION.search(d["source_file"]) and _EXTENSION.search(winner["source_file"]) and                     _EXTENSION.search(d["source_file"]).group(0).lower() ==                     _EXTENSION.search(winner["source_file"]).group(0).lower():
+                continue
+            new_id = _extension_qualified_id(d)
+            if new_id and new_id not in taken:
+                taken.add(new_id)
+                renames[(nid, k)] = new_id
+    if not renames:
+        return nodes, edges
+    out_nodes = [
+        dict(node, id=renames[(node.get("id"), key(node.get("source_file")))])
+        if (node.get("id"), key(node.get("source_file"))) in renames else node
+        for node in nodes
+    ]
+    for coll in (edges, hyperedges or []):
+        for item in coll:
+            if not isinstance(item, dict):
+                continue
+            k = key(item.get("source_file"))
+            for end in ("source", "target"):
+                new_id = renames.get((item.get(end), k))
+                if new_id:
+                    item[end] = new_id
+            members = item.get("nodes")
+            if isinstance(members, list):
+                item["nodes"] = [renames.get((m, k), m) if isinstance(m, str) else m for m in members]
+    return out_nodes, edges
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
@@ -608,6 +700,7 @@ def deduplicate_entities(
     # passing cross-reference's. Missing attributes from same-source records are
     # retained so AST structure and semantic enrichment can coexist (#2091).
     # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
+    nodes, edges = _disambiguate_defining_collisions(nodes, edges, hyperedges, root_resolved)
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:

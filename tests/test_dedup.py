@@ -1550,3 +1550,75 @@ def test_reads_as_file_entity_trusts_the_node_kind_stamp_only():
     del unstamped["node_kind"]
     assert not _reads_as_file_entity(stamped)
     assert _reads_as_file_entity(unstamped)
+
+
+# ── #4281: same stem, different extension keeps both nodes ────────────────────
+
+def test_same_stem_different_extension_keeps_both_nodes(capsys):
+    """x.py and x.html share an extension-stripped stem; neither may be dropped."""
+    nodes = [
+        {"id": "firmware_lib_portal", "label": "portal.py",
+         "file_type": "code", "source_file": "firmware/lib/portal.py"},
+        {"id": "firmware_lib_portal", "label": "Brick provisioning portal (portal.html)",
+         "file_type": "document", "source_file": "firmware/lib/portal.html"},
+    ]
+    edges = [{"source": "firmware_lib_portal", "target": "firmware_lib_portal",
+              "relation": "serves", "source_file": "firmware/lib/portal.html"}]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    ids = {n["source_file"]: n["id"] for n in result_nodes}
+    assert len(result_nodes) == 2
+    assert ids["firmware/lib/portal.py"] == "firmware_lib_portal"
+    assert ids["firmware/lib/portal.html"] == "firmware_lib_portal_html"
+    assert result_edges[0]["source"] == result_edges[0]["target"] == "firmware_lib_portal_html"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_extension_rename_is_order_independent():
+    a = {"id": "x", "label": "x", "file_type": "code", "source_file": "x.py"}
+    b = {"id": "x", "label": "x page", "file_type": "document", "source_file": "x.html"}
+    n1, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
+    n2, _ = deduplicate_entities([dict(b), dict(a)], [], communities={})
+    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}
+
+
+def test_bare_id_across_different_paths_still_collapses_with_warning(capsys):
+    """A bare `protocol` shared by docs/protocol.md and docs/firmware/protocol.md is
+    a reference to another file's entity, not a second entity: it is not renamed."""
+    nodes = [
+        {"id": "protocol", "label": "protocol", "file_type": "document",
+         "source_file": "docs/protocol.md"},
+        {"id": "protocol", "label": "protocol (top-level)", "file_type": "document",
+         "source_file": "docs/firmware/protocol.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_build_with_absolute_edge_paths_moves_edges_to_renamed_node(tmp_path):
+    """Semantic edges reach dedup with an ABSOLUTE source_file while nodes are already
+    root-relative; the renamed node must still receive its edges (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    py = str(root / "firmware" / "lib" / "portal.py")
+    html = str(root / "firmware" / "lib" / "portal.html")
+    ext = {
+        "nodes": [
+            {"id": "firmware_lib_portal", "label": "portal.py", "file_type": "code",
+             "source_file": py},
+            {"id": "firmware_lib_portal", "label": "Portal page", "file_type": "document",
+             "source_file": html},
+            {"id": "card_a", "label": "Card A", "file_type": "document", "source_file": html},
+        ],
+        "edges": [
+            {"source": "firmware_lib_portal", "target": "card_a", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": html},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert "firmware_lib_portal" in G and "firmware_lib_portal_html" in G
+    assert G.has_edge("firmware_lib_portal_html", "card_a")
+    assert not G.has_edge("firmware_lib_portal", "card_a")

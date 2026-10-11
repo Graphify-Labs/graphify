@@ -74,6 +74,11 @@ def _load_graph(graph_path: str) -> nx.Graph:
         except TypeError:
             G = json_graph.node_link_graph(data)
         G.graph["_logical_directed"] = _logical_directed
+        # node_link_graph drops top-level keys other than data["graph"], so the
+        # build commit export.to_json writes there is stashed by hand (#3354).
+        _commit = data.get("built_at_commit")
+        if isinstance(_commit, str) and _commit.strip():
+            G.graph["_built_at_commit"] = _commit.strip()
         # Attach the work-memory overlay (derived sidecar next to graph.json) so
         # the query/MCP read surface can annotate NODE lines display-only. Empty
         # when no sidecar exists, leaving un-annotated output byte-identical.
@@ -1345,17 +1350,24 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
     fold there too; letting networkx assign the keys keeps both, and nothing
     downstream reads the key.
 
-    A fresh copy per query rather than a cached one: `_filter_graph_by_context`
-    already copies per query when a filter applies, and the copy shares node
-    data dicts with `G`, so only the edge dicts are duplicated.
+    Built once per graph object and cached on `G.graph`, like the trigram index.
+    It used to be rebuilt on every query, copying every edge of the graph, which
+    was most of a warm `query_graph` call. Sharing it is safe because nothing
+    downstream writes to it: `_filter_graph_by_context` builds a new graph when
+    a filter applies, and the traversals and the renderer only read. A hot
+    reload swaps in a fresh `G`, so a cached view never outlives its graph.
     """
     if not G.is_directed():
         return G
+    cached = G.graph.get("_traversal_view")
+    if cached is not None:
+        return cached
     H = nx.MultiGraph() if G.is_multigraph() else nx.Graph()
     H.graph.update(G.graph)
     H.add_nodes_from(G.nodes(data=True))
     for u, v, d in G.edges(data=True):
         H.add_edge(u, v, **{**d, "_src": d.get("_src", u), "_tgt": d.get("_tgt", v)})
+    G.graph["_traversal_view"] = H
     return H
 
 def _query_graph_text(
@@ -1686,6 +1698,36 @@ def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> st
     )
 
 
+def _no_scoped_match_message(G: nx.Graph, path_part: str, symbol_part: str) -> str:
+    """Refusal for a `file::symbol` endpoint whose file defines no such symbol (#4264).
+
+    Fail closed like `explain` instead of scoring the bare name across other
+    files, and name the files that DO define the symbol so the user can retarget.
+    """
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    others: set[str] = set()
+    for _nid, d in G.nodes(data=True):
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            sf = d.get("source_file") or ""
+            if sf:
+                others.add(sf)
+    msg = (
+        f"No node matching '{path_part}::{symbol_part}' found; "
+        f"{path_part} defines no '{symbol_part}'."
+    )
+    if others:
+        msg += "\n" + "\n".join(f"  defined in {s}" for s in sorted(others))
+    return msg
+
+
 def _resolve_path_endpoint(
     G: nx.Graph, query: str
 ) -> tuple[str | None, list[tuple[float, str]], str | None]:
@@ -1721,10 +1763,67 @@ def _resolve_path_endpoint(
         if len(hits) > 1 and not file_query:
             return None, [], _same_file_ambiguity_message(G, query, hits)
         return hits[0], [], None
+    # A deliberately file-scoped endpoint (`file::symbol`) that matched no symbol
+    # in that file must NOT fall back to scoring the bare name across other files
+    # (#4264) — that reintroduces the cross-file guess the qualifier forbids. Fail
+    # closed like `explain`. A native `::` label (Rust/C++) that matched resolves
+    # via the exact tier above (hits non-empty) and never reaches here.
+    path_part, sep, symbol_part = query.partition("::")
+    if sep and path_part.strip() and symbol_part.strip():
+        return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None
     return _pick_scored_endpoint(G, scored, query), scored, None
+
+
+def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
+    """The sorted, materialized graph `_shortest_path_text` searches.
+
+    Deterministic path (#2074): the hash-seeded undirected view picked an
+    arbitrary route among equal-length paths, so the search runs on a graph
+    built from sorted node and edge lists, which makes the chosen path
+    canonical. Serve's shared G is left untouched (its degree feeds query-seed
+    tie-breaks).
+
+    Built once per graph object and direction mode, and cached on `G.graph`
+    like the trigram index: rebuilding it from every edge was nearly all of a
+    `shortest_path` call. Only `nx.shortest_path` reads it, and a hot reload
+    swaps in a fresh `G`, so a cached graph never outlives its source.
+    """
+    cache = G.graph.setdefault("_path_search_graphs", {})
+    cached = cache.get(undirected)
+    if cached is not None:
+        return cached
+    if undirected:
+        H = nx.Graph()
+        H.add_nodes_from(sorted(G.nodes))
+        H.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+    else:
+        # Directed by default (#2487). True direction is NOT raw arc
+        # order: legacy canonicalized files persist a flipped arc with
+        # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
+        # (falling back to the loaded arc) rather than to_directed().
+        H = nx.DiGraph()
+        H.add_nodes_from(sorted(G.nodes))
+        H.add_edges_from(sorted(
+            (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+        ))
+        # A `contains` edge only runs file -> symbol; there is no stored
+        # edge back out to the containing file, so a route that reaches a
+        # symbol (via an `imports`/`calls`/`references` hop) can never
+        # continue on to the file that defines it, and a file-to-file
+        # dependency routed through a shared symbol finds no path at all
+        # even though both halves exist (#3878). Add the implied reverse hop
+        # for traversal only — the printed segment still recovers the real
+        # stored `contains` edge and its true direction from G below.
+        H.add_edges_from(sorted(
+            (d.get("_tgt", v), d.get("_src", u))
+            for u, v, d in G.edges(data=True)
+            if d.get("relation") == "contains"
+        ))
+    cache[undirected] = H
+    return H
 
 
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
@@ -1769,39 +1868,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     max_hops = int(arguments.get("max_hops", 8))
     undirected = bool(arguments.get("undirected", False))
     try:
-        # Deterministic path (#2074): the hash-seeded undirected view picked an
-        # arbitrary route among equal-length paths. Build a sorted, materialized
-        # graph so the chosen path is canonical. Serve's shared G is left
-        # untouched (its degree feeds query-seed tie-breaks).
-        if undirected:
-            _und = nx.Graph()
-            _und.add_nodes_from(sorted(G.nodes))
-            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
-        else:
-            # Directed by default (#2487). True direction is NOT raw arc
-            # order: legacy canonicalized files persist a flipped arc with
-            # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
-            # (falling back to the loaded arc) rather than to_directed().
-            _dg = nx.DiGraph()
-            _dg.add_nodes_from(sorted(G.nodes))
-            _dg.add_edges_from(sorted(
-                (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
-            ))
-            # A `contains` edge only runs file -> symbol; there is no stored
-            # edge back out to the containing file, so a route that reaches a
-            # symbol (via an `imports`/`calls`/`references` hop) can never
-            # continue on to the file that defines it, and a file-to-file
-            # dependency routed through a shared symbol finds no path at all
-            # even though both halves exist (#3878). Add the implied reverse hop
-            # for traversal only — the printed segment still recovers the real
-            # stored `contains` edge and its true direction from G below.
-            _dg.add_edges_from(sorted(
-                (d.get("_tgt", v), d.get("_src", u))
-                for u, v, d in G.edges(data=True)
-                if d.get("relation") == "contains"
-            ))
-            path_nodes = nx.shortest_path(_dg, src_nid, tgt_nid)
+        path_nodes = nx.shortest_path(_path_search_graph(G, undirected), src_nid, tgt_nid)
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         src_label = G.nodes[src_nid].get("label", src_nid)
         tgt_label = G.nodes[tgt_nid].get("label", tgt_nid)
@@ -2257,6 +2324,29 @@ def _build_server(graph_path: str):
             f"EXTRACTED: {round(confs.count('EXTRACTED')/total*100)}%\n"
             f"INFERRED: {round(confs.count('INFERRED')/total*100)}%\n"
             f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%\n"
+            f"{_build_commit_line()}"
+        )
+
+    def _build_commit_line() -> str:
+        """Which commit the graph was built from, and whether HEAD has moved on.
+
+        An MCP client cannot stat graph.json, so this is its only staleness
+        signal (#3354). HEAD is read at query time from the repo holding the
+        graph (the same anchor export.to_json stamps from); no git or no repo
+        just drops the HEAD comparison. Empty when the graph has no commit.
+        """
+        commit = getattr(G, "graph", {}).get("_built_at_commit")
+        if not commit:
+            return ""
+        from graphify.export import _git_head
+        head = _git_head(Path(active_graph_path).parent)
+        if not head:
+            return f"Built at commit: {commit}\n"
+        if head == commit:
+            return f"Built at commit: {commit} (matches HEAD)\n"
+        return (
+            f"Built at commit: {commit}\n"
+            f"HEAD is {head[:7]}, graph built at {commit[:7]}: graph may be stale\n"
         )
 
     def _tool_shortest_path(arguments: dict) -> str:

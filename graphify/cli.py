@@ -71,7 +71,8 @@ _READ_DENY = json.dumps({
 _HOOK_SOURCE_EXTS = (
     '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.go',
     '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
-    '.swift', '.php', '.scala', '.lua', '.sh', '.md', '.rst', '.txt', '.mdx',
+    '.swift', '.php', '.scala', '.lua', '.ps1', '.psm1', '.psd1',  # #4271: PowerShell sources are graphable too
+    '.sh', '.md', '.rst', '.txt', '.mdx',
 )
 _GEMINI_NUDGE_TEXT = (
     'graphify: knowledge graph at graphify-out/. For focused questions, run '
@@ -102,6 +103,39 @@ def _nudge_for_out(nudge: str) -> str:
     out = d["hookSpecificOutput"]
     out["additionalContext"] = out["additionalContext"].replace(_DEFAULT_NUDGE_GRAPH, ref)
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _print_cloud_cta(out_dir: "Path") -> None:
+    """Nudge toward Graphify Cloud once after a successful local graph build.
+
+    Kept precise and shown only to humans running the CLI interactively:
+    suppressed in non-interactive/CI runs (stdout is not a TTY, which also
+    covers the AI-assistant pipeline), when the user opts out
+    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``), and after the first time per
+    project (a marker under ``graphify-out/``) so repeat builds stay quiet.
+    """
+    if os.environ.get("GRAPHIFY_NO_TIPS") or os.environ.get("GRAPHIFY_NO_CTA"):
+        return
+    try:
+        if not sys.stdout.isatty():
+            return
+    except Exception:
+        return
+    marker = out_dir / ".cloud-cta-shown"
+    try:
+        if marker.exists():
+            return
+    except Exception:
+        return
+    print()
+    print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
+    print("  and PR review, with your whole SDLC mapped and always current.")
+    print("  Connect a repo at https://app.graphify.com")
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("1", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _default_graph_path() -> str:
@@ -4031,6 +4065,7 @@ def dispatch_command(cmd: str) -> None:
                                     "ruby_resolution_schema",
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
+                                    "python_opaque_bases",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
                                     # Erlang remote-call resolution keys (#3714):
@@ -4261,12 +4296,32 @@ def dispatch_command(cmd: str) -> None:
                 _omitted_files = list(fresh.get("uncovered_files") or [])
                 if _omitted_files or _partial_semantic_files:
                     _extraction_incomplete = True
+                    _coverage_note = ""
+                    if _omitted_files and not _partial_semantic_files:
+                        # #4101: every omitted file here came back from a
+                        # chunk that was NOT truncated or hollow — the model
+                        # returned a complete, well-formed response that
+                        # simply did not address every dispatched file. A
+                        # bare "a re-run will retry them" reads as transient,
+                        # but re-sending the same oversized chunk reproduces
+                        # the same omission every time, so a retry loop with
+                        # no --token-budget change looks like extraction
+                        # never finishing rather than what it actually is: a
+                        # coverage gap at this chunk size.
+                        _coverage_note = (
+                            " None of this run's chunks came back truncated — the "
+                            "model returned complete, well-formed responses that "
+                            "simply did not address every file. Retrying with the "
+                            "same --token-budget will likely omit the same files "
+                            "again; try a smaller --token-budget to split the "
+                            "corpus into more, smaller chunks."
+                        )
                     print(
                         f"[graphify extract] semantic extraction is incomplete: "
                         f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
-                        f"{len(_partial_semantic_files)} came back truncated or hollow. "
-                        f"The shrink guard stays armed for this write; pass "
-                        f"--allow-partial to overwrite a larger existing graph anyway.",
+                        f"{len(_partial_semantic_files)} came back truncated or hollow."
+                        f"{_coverage_note} The shrink guard stays armed for this write; "
+                        f"pass --allow-partial to overwrite a larger existing graph anyway.",
                         file=sys.stderr,
                     )
                 try:
@@ -4528,6 +4583,11 @@ def dispatch_command(cmd: str) -> None:
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            # Same endpoint rules as build_from_json (#2873): an import of an
+            # external module gets a typed stub node, and any other edge without
+            # two declared endpoints is dropped instead of shipping a phantom.
+            from graphify.build import finalize_raw_graph_endpoints as _finalize_raw_graph_endpoints
+            _finalize_raw_graph_endpoints(merged)
             # Backfill source_file from endpoint nodes — this raw path bypasses
             # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
             _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
@@ -4565,7 +4625,14 @@ def dispatch_command(cmd: str) -> None:
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
-            _write_json_atomic(graph_json_path, merged, indent=2)
+            from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
+            # merge_raw_extraction above has consumed them; graph.json must not
+            # carry this run's absolute input paths.
+            _write_json_atomic(
+                graph_json_path,
+                {k: v for k, v in merged.items() if k not in _RUN_ONLY_KEYS},
+                indent=2,
+            )
             try:
                 # Record the scan root so a later build_merge / update runbook can
                 # relativize deleted-file paths correctly even for a custom --out
@@ -4842,6 +4909,7 @@ def dispatch_command(cmd: str) -> None:
             f"`graphify cluster-only {graphify_out.parent}` "
             "to generate GRAPH_REPORT.md and name communities"
         )
+        _print_cloud_cta(graphify_out)
         stages.total()
 
     elif cmd == "cache-check":

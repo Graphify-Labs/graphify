@@ -117,7 +117,9 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-result = detect(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 # Write the sidecar from Python, not a shell redirect, so the same block renders
 # on PowerShell hosts without console-encoding drift (#2528).
 Path('graphify-out/.graphify_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
@@ -645,6 +647,8 @@ Graph complete. Outputs in PATH_TO_DIR/graphify-out/
 If graphify saved you time, consider supporting it: https://github.com/sponsors/safishamsi
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
+
+If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
 
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes

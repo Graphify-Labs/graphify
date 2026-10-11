@@ -124,7 +124,9 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-result = detect(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 print(json.dumps(result))
 " > graphify-out/.graphify_detect.json
 ```
@@ -864,6 +866,8 @@ If graphify saved you time, consider supporting it: https://github.com/sponsors/
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
 
+If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
+
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes
 - Surprising Connections
@@ -911,7 +915,9 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result))
@@ -993,7 +999,7 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
-from networkx.readwrite import json_graph
+from graphify.paths import load_node_link_graph
 import networkx as nx
 from pathlib import Path
 
@@ -1002,7 +1008,7 @@ new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text()
 G_new = build_from_json(new_extract, directed=IS_DIRECTED)
 
 if old_data:
-    G_old = json_graph.node_link_graph(old_data, edges='links')
+    G_old = load_node_link_graph(old_data)
     diff = graph_diff(G_old, G_new)
     print(diff['summary'])
     if diff['new_nodes']:

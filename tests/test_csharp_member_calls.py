@@ -353,6 +353,53 @@ def test_null_conditional_cross_file_receiver_resolves(tmp_path):
     assert not any("commit" in s and "cache_save" in t for s, t in calls)
 
 
+_STORE = (
+    "public interface IStore { void Save(); }\n"
+    "public class Store : IStore { public void Save() { } }\n"
+)
+
+
+def _store_call(tmp_path, editor_body: str):
+    """Call `IStore.Save()` from another file; return (calls, caller, IStore.Save, Store.Save)."""
+    calls, r = _calls(tmp_path, {
+        "Store.cs": _STORE,
+        "Editor.cs": (
+            "public class Editor {\n"
+            "    object _obj;\n"
+            "    IStore Store => (IStore)_obj;\n"
+            f"    public void Run() {{ {editor_body} }}\n"
+            "}\n"
+        ),
+    })
+    run = _find(r, ".Run()", "editor")
+    istore_save = _find(r, ".Save()", "istore")
+    store_save = next(n["id"] for n in r["nodes"]
+                      if n["label"] == ".Save()" and n["id"] != istore_save)
+    return calls, run, istore_save, store_save
+
+
+def test_cast_receiver_resolves_to_cast_type(tmp_path):
+    """`((IStore)_obj).Save()`: the cast names the receiver type (#3797)."""
+    calls, run, istore_save, store_save = _store_call(tmp_path, "((IStore)_obj).Save();")
+    assert (run, istore_save) in calls
+    assert (run, store_save) not in calls
+
+
+def test_as_cast_receiver_resolves_to_cast_type(tmp_path):
+    """`(_obj as IStore).Save()` types the receiver the same way (#3797)."""
+    calls, run, istore_save, store_save = _store_call(tmp_path, "(_obj as IStore).Save();")
+    assert (run, istore_save) in calls
+    assert (run, store_save) not in calls
+
+
+def test_property_receiver_shadows_same_named_type(tmp_path):
+    """`IStore Store => ...; Store.Save()`: inside Editor `Store` is the
+    property, so the call is IStore.Save, not the class Store's (#3797)."""
+    calls, run, istore_save, store_save = _store_call(tmp_path, "Store.Save();")
+    assert (run, istore_save) in calls
+    assert (run, store_save) not in calls
+
+
 def test_base_receiver_resolves_to_base_class_method(tmp_path):
     calls, r = _calls(tmp_path, {
         "Base.cs": "public class BaseSvc { public bool Ping() => true; }\n",

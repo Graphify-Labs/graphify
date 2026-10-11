@@ -502,3 +502,60 @@ def test_ambiguity_hint_names_symbol_not_query(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "(e.g. <path>::foo())" in out
     assert "<path>::index.ts::" not in out
+
+
+def _cross_file_symbol_graph(tmp_path):
+    """`readRoute` defined in two files; admin/route.ts defines no readRoute.
+    Only billing's readRoute reaches chargeCard, so a wrong-file answer would
+    still print a route (makes the #4264 fail-open observable)."""
+    return _write_nodes(tmp_path, [
+        ("src_billing_route", "route.ts", "src/billing/route.ts", "L1"),
+        ("src_billing_route_readroute", "readRoute()", "src/billing/route.ts", "L3"),
+        ("src_seats_route", "route.ts", "src/seats/route.ts", "L1"),
+        ("src_seats_route_readroute", "readRoute()", "src/seats/route.ts", "L3"),
+        ("src_admin_route", "route.ts", "src/admin/route.ts", "L1"),
+        ("src_admin_route_listadmins", "listAdmins()", "src/admin/route.ts", "L3"),
+        ("src_billing_charge_chargecard", "chargeCard()", "src/billing/charge.ts", "L2"),
+    ], [
+        ("src_billing_route", "src_billing_route_readroute", "contains"),
+        ("src_seats_route", "src_seats_route_readroute", "contains"),
+        ("src_admin_route", "src_admin_route_listadmins", "contains"),
+        ("src_billing_charge", "src_billing_charge_chargecard", "contains"),
+        ("src_billing_route_readroute", "src_billing_charge_chargecard", "calls"),
+    ])
+
+
+def test_path_scoped_endpoint_refuses_when_file_has_no_symbol(monkeypatch, tmp_path, capsys):
+    """A `file::symbol` endpoint whose file defines no such symbol must fail closed,
+    not score the bare name across other files and answer from the wrong file (#4264)."""
+    gp = _cross_file_symbol_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", "src/admin/route.ts::readRoute", "chargeCard", "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Shortest path" not in captured.out
+    assert "src/admin/route.ts" in captured.err and "readRoute" in captured.err
+    # names the files that DO define it, so the user can retarget
+    assert "src/billing/route.ts" in captured.err
+    assert "src/seats/route.ts" in captured.err
+
+
+def test_shortest_path_tool_refuses_scoped_endpoint_miss(tmp_path):
+    """The MCP shortest_path tool shares the resolver, so it refuses the same way."""
+    from graphify.serve import _shortest_path_text
+    raw = json.loads(_cross_file_symbol_graph(tmp_path).read_text())
+    G = json_graph.node_link_graph({**raw, "directed": True}, edges="links")
+    out = _shortest_path_text(G, {"source": "src/admin/route.ts::readRoute", "target": "chargeCard"})
+    assert "Shortest path" not in out
+    assert "src/admin/route.ts" in out and "readRoute" in out
+
+
+def test_path_scoped_endpoint_honors_file_qualifier(monkeypatch, tmp_path, capsys):
+    """The positive control: a `file::symbol` that DOES resolve must pick that file's
+    symbol (billing's readRoute reaches chargeCard), never a same-named twin."""
+    gp = _cross_file_symbol_graph(tmp_path)
+    out = _run(monkeypatch, gp, "src/billing/route.ts::readRoute", "chargeCard", capsys)
+    assert "readRoute() --calls [EXTRACTED]--> chargeCard()" in out
