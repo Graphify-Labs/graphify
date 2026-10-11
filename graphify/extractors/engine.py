@@ -4844,6 +4844,12 @@ def _extract_generic(
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
+        if nid == _make_id(path.stem):
+            # #4334: `Widget` in widget.py slugs to the same id the file node gets
+            # once paths are made relative, so a stub here swallows the file node.
+            # It's a forward reference to the class defined later in this file, so
+            # point at that local id instead.
+            return _make_id(stem, ".".join(namespace_stack), name)
         if nid not in seen_ids:
             # The name isn't defined in this file, so this is a cross-file reference
             # (e.g. a `Thing` type annotation imported from another module). Emit a
