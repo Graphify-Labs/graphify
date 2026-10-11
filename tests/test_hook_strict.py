@@ -210,3 +210,15 @@ def test_install_hook_carries_strict_flag():
     # search hook is unchanged either way
     for hooks in (soft, strict):
         assert next(h for h in hooks if h["matcher"] == "Bash|Grep")["hooks"][0]["command"].endswith("hook-guard search")
+
+
+def test_strict_deny_shows_the_files_graph_nodes(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    (tmp_path / "graphify-out" / "graph.json").write_text(json.dumps({"nodes": [
+        {"id": "x", "label": "x()", "source_file": "src/mod.py", "source_location": "L1"},
+    ], "links": []}), encoding="utf-8")
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+    assert _is_deny(out)
+    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "- x() (src/mod.py L1)" in reason
+    assert 'graphify explain "mod.py"' in reason

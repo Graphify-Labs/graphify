@@ -451,3 +451,54 @@ def test_default_out_nudge_is_byte_identical(kind, payload, const, tmp_path, mon
     from graphify import cli
     out = _invoke(kind, payload, tmp_path, monkeypatch)
     assert out == getattr(cli, const)
+
+
+# --------------------------------------------------------------------------- #
+# Call-specific hints: the nudge names the graph nodes behind the call.
+# --------------------------------------------------------------------------- #
+_HINT_GRAPH = {"nodes": [
+    {"id": "a", "label": "load_config()", "source_file": "src/app.py", "source_location": "L10"},
+    {"id": "b", "label": "save_config()", "source_file": "src/app.py", "source_location": "L3"},
+    {"id": "c", "label": "app.py", "source_file": "src/app.py", "source_location": "L1"},
+    {"id": "d", "label": "unrelated()", "source_file": "src/other.py", "source_location": "L1"},
+], "links": []}
+
+
+def _invoke_with_graph(kind, payload, tmp_path, monkeypatch):
+    (tmp_path / "graphify-out").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "graphify-out" / "graph.json").write_text(json.dumps(_HINT_GRAPH), encoding="utf-8")
+    return _invoke(kind, payload, tmp_path, monkeypatch, graph=False)
+
+
+@pytest.mark.parametrize("tool_input", [
+    {"pattern": r"load_config\("},
+    {"command": "rg -n -A 3 'load_config' src/"},
+    {"command": "grep -e load_config -r ."},
+])
+def test_search_nudge_names_matching_node_and_explain_command(tool_input, tmp_path, monkeypatch):
+    ctx = _ctx(_invoke_with_graph("search", {"tool_input": tool_input}, tmp_path, monkeypatch))
+    assert 'Start with: `graphify explain "load_config()"`' in ctx
+    assert "- load_config() (src/app.py L10)" in ctx
+    assert "unrelated()" not in ctx
+
+
+def test_search_nudge_without_exact_label_suggests_query(tmp_path, monkeypatch):
+    ctx = _ctx(_invoke_with_graph("search", {"tool_input": {"pattern": "config"}}, tmp_path, monkeypatch))
+    assert 'Start with: `graphify query "config"`' in ctx
+
+
+def test_search_nudge_without_match_stays_plain(tmp_path, monkeypatch):
+    from graphify import cli
+    out = _invoke_with_graph("search", {"tool_input": {"pattern": "nothing_here"}}, tmp_path, monkeypatch)
+    assert out == cli._SEARCH_NUDGE
+
+
+def test_read_nudge_lists_the_files_symbols_in_line_order(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    os.utime(tmp_path / "src" / "app.py", (1, 1))  # older than the graph: not stale
+    ctx = _ctx(_invoke_with_graph("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}},
+                                  tmp_path, monkeypatch))
+    assert 'Start with: `graphify explain "app.py"`' in ctx
+    assert ctx.index("save_config()") < ctx.index("load_config()")
+    assert "- app.py (" not in ctx  # the file node itself is not listed

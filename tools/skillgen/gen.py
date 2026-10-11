@@ -92,6 +92,16 @@ ALWAYS_ON_BLOCKS = {
     "kiro-steering": "_KIRO_STEERING",
 }
 
+# Query-first rule: name the exact moment to query (before the first raw grep,
+# search or read) instead of "for codebase questions", which agents read as
+# optional once they have a specific file in mind.
+_QUERY_FIRST_EDIT = (
+    'For codebase questions, first run `graphify query "<question>"` when '
+    "graphify-out/graph.json exists.",
+    'When graphify-out/graph.json exists, run `graphify query "<question>"` before '
+    "your first grep, search or source-file read for a codebase question.",
+)
+
 # Sanctioned divergences from the frozen always-on baseline above. The roundtrip
 # guard deliberately does NOT track HEAD, so any *intentional* change to an
 # always-on instruction block must be recorded here as an explicit, reviewable
@@ -120,10 +130,11 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "When the user types `/graphify`, use the installed graphify skill or instructions "
             "before doing anything else.",
         ),
+        _QUERY_FIRST_EDIT,
         _GRAPH_DIFF_EDIT,
     ),
-    "_CLAUDE_MD_SECTION": (_GRAPH_DIFF_EDIT,),
-    "_GEMINI_MD_SECTION": (_GRAPH_DIFF_EDIT,),
+    "_CLAUDE_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
+    "_GEMINI_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
 }
 
 # The full six-value file_type enum (Decision A). Every rendered platform — split
