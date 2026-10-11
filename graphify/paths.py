@@ -22,10 +22,35 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+def _out_from_env() -> str:
+    """``GRAPHIFY_OUT``, or ``"graphify-out"`` when it is unset, empty, or names
+    the project itself / a parent of it.
+
+    ``os.environ.get(key, default)`` only applies the default when the variable
+    is missing, so ``GRAPHIFY_OUT=`` (a blank ``.env`` entry) used to yield
+    ``""``: output landed in the project root and ``uninstall --purge`` deleted
+    the whole project. ``.`` and ``..`` are never a valid output dir either.
+    """
+    value = (os.environ.get("GRAPHIFY_OUT") or "").strip()
+    if not value:
+        return "graphify-out"
+    norm = os.path.normpath(value)
+    if norm == "." or all(part == ".." for part in Path(norm).parts):
+        print(
+            f"warning: GRAPHIFY_OUT={value!r} points at the project or a parent "
+            "of it; using 'graphify-out' instead",
+            file=sys.stderr,
+        )
+        return "graphify-out"
+    return value
+
+
+GRAPHIFY_OUT = _out_from_env()
 
 
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:

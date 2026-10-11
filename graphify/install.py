@@ -2105,9 +2105,41 @@ def _strip_graphify_hook(settings_path: Path) -> None:
     settings["hooks"]["PreToolUse"] = filtered
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
+
+
+def _unsafe_purge_reason(out: Path, project_dir: Path) -> str | None:
+    """Why ``rmtree(out)`` must not run for ``--purge``, or None when it is safe.
+
+    The output dir may legitimately live outside the project (an absolute
+    ``GRAPHIFY_OUT``), so this only rejects targets whose deletion would take
+    the project, the home directory, or a filesystem root with it.
+    """
+    target = out.resolve()
+    project = project_dir.resolve()
+    home = Path.home().resolve()
+    if target == project or target in project.parents:
+        return "the project folder or one of its parents"
+    if target == home or target in home.parents:
+        return "your home folder or one of its parents"
+    if target == Path(target.anchor):
+        return "a filesystem root"
+    return None
+
+
 def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     """Remove graphify from every platform detected in the current project."""
     pd = project_dir or Path(".")
+    out = pd / _GRAPHIFY_OUT
+    if purge:
+        # Checked before any uninstaller runs, so a refused purge changes nothing.
+        reason = _unsafe_purge_reason(out, pd)
+        if reason:
+            print(
+                f"error: refusing --purge: {out.resolve()} is {reason}. "
+                "Nothing was changed. Check the GRAPHIFY_OUT environment variable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     print("Uninstalling graphify from all detected platforms...\n")
 
     # Skill-file / config-section uninstallers. remove_user_skill=True keeps the
@@ -2142,7 +2174,6 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
 
     if purge:
         import shutil as _shutil
-        out = pd / _GRAPHIFY_OUT
         if out.exists():
             _shutil.rmtree(out)
             print(f"\n  {_GRAPHIFY_OUT}/  ->  deleted (--purge)")

@@ -384,6 +384,35 @@ def test_rebuild_bodies_honour_an_in_repo_graphify_root(name, body, tmp_path, mo
     assert ns["_root"].resolve() == (repo / "backend").resolve(), f"{name} lost the scoped root"
 
 
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_treat_blank_graphify_out_as_default(name, body, tmp_path):
+    """A set-but-empty GRAPHIFY_OUT must resolve to graphify-out/ like every other
+    reader (paths._out_from_env), not to the repo root, or the hook misses
+    .graphify_root. Runs in a fresh process because the hook reads the value
+    when graphify.paths is first imported."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "graphify-out" / ".graphify_root").write_text("backend", encoding="utf-8")
+    script = (
+        "import os\nfrom pathlib import Path\n"
+        + _extract_root_resolution(body)
+        + "\nprint(_root.resolve())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env={**os.environ, "GRAPHIFY_OUT": ""},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert Path(result.stdout.strip()) == (repo / "backend").resolve(), f"{name} ignored graphify-out/"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
 @pytest.mark.parametrize(
     "name,body",
