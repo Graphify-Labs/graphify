@@ -173,6 +173,23 @@ def _answer_files(text: str) -> list[str]:
     return files
 
 
+def _score_answer(question: str, expected: list[str], text: str) -> dict:
+    """One question's row: where the first expected file sits among the files
+    the answer shows (None when it shows none), and the answer's size."""
+    shown = _answer_files(text)
+    wanted = set(expected)
+    return {
+        "question": question,
+        "files": expected,
+        "rank": next((i for i, f in enumerate(shown) if f in wanted), None),
+        "tokens": len(text) // 3,
+        # query_graph's own notice: every node fit, so edges were kept past the budget
+        "over_budget": "[i] Complete answer over budget" in text,
+        "files_shown": len(shown),
+        "top_files": shown[:5],
+    }
+
+
 def run_answer_benchmark(
     graph_path: str | None,
     questions: list[dict],
@@ -191,40 +208,25 @@ def run_answer_benchmark(
     """
     from graphify.serve import _load_graph, _query_graph_text
 
-    graph_path = graph_path or _default_graph_json()
-    G = _load_graph(str(graph_path))
-    per_question = []
-    for item in questions:
-        text = _query_graph_text(G, item["question"], mode="bfs", depth=depth, token_budget=token_budget)
-        shown = _answer_files(text)
-        expected = set(item["files"])
-        rank = next((i for i, f in enumerate(shown) if f in expected), None)
-        per_question.append({
-            "question": item["question"],
-            "files": item["files"],
-            "rank": rank,
-            "tokens": len(text) // 3,
-            # query_graph's own notice: every node fit, so edges were kept past the budget
-            "over_budget": "[i] Complete answer over budget" in text,
-            "files_shown": len(shown),
-            "top_files": shown[:5],
-        })
-    n = len(per_question)
-
-    def hits(k: int | None) -> int:
-        return sum(1 for p in per_question if p["rank"] is not None and (k is None or p["rank"] < k))
-
+    G = _load_graph(str(graph_path or _default_graph_json()))
+    per_question = [
+        _score_answer(item["question"], item["files"],
+                      _query_graph_text(G, item["question"], mode="bfs", depth=depth, token_budget=token_budget))
+        for item in questions
+    ]
+    ranks = [p["rank"] for p in per_question]
     tokens = sorted(p["tokens"] for p in per_question)
+    n = len(per_question)
     return {
         "nodes": G.number_of_nodes(),
         "edges": G.number_of_edges(),
         "questions": n,
         "depth": depth,
         "token_budget": token_budget,
-        "hit_at_1": hits(1),
-        "hit_at_3": hits(3),
-        "hit_at_5": hits(5),
-        "found": hits(None),
+        "hit_at_1": sum(1 for r in ranks if r is not None and r < 1),
+        "hit_at_3": sum(1 for r in ranks if r is not None and r < 3),
+        "hit_at_5": sum(1 for r in ranks if r is not None and r < 5),
+        "found": sum(1 for r in ranks if r is not None),
         "median_tokens": tokens[n // 2] if n else 0,
         "over_budget": sum(1 for p in per_question if p["over_budget"]),
         "per_question": per_question,
