@@ -6,21 +6,28 @@ Load this when the user passed one or more `https://github.com/...` URLs, or nam
 
 **Single repo:**
 ```bash
-LOCAL_PATH=$(graphify clone <github-url> [--branch <branch>])
-# Use LOCAL_PATH as the target for all subsequent steps
+LOCAL_PATH="$HOME/graphify repos/repo"
+graphify clone "https://github.com/owner/repo" --out "$LOCAL_PATH" &&
+  graphify extract "$LOCAL_PATH"
+# Add --branch "branch-name" to the clone command when needed.
 ```
 
 **Multiple repos (cross-repo graph):**
 ```bash
-# Clone each repo, run the full pipeline on each, then merge
-graphify clone <url1>   # → ~/.graphify/repos/<owner1>/<repo1>
-graphify clone <url2>   # → ~/.graphify/repos/<owner2>/<repo2>
-# Run /graphify on each local path to produce their graph.json files
-# Then merge:
-graphify merge-graphs \
-  ~/.graphify/repos/<owner1>/<repo1>/graphify-out/graph.json \
-  ~/.graphify/repos/<owner2>/<repo2>/graphify-out/graph.json \
-  --out graphify-out/cross-repo-graph.json
+REPO1_PATH="$HOME/graphify repos/repo1"
+REPO2_PATH="$HOME/graphify repos/repo2"
+# Build at each clone root; graphify extract writes graphify-out/ inside its target.
+# For semantic files, configure a supported backend/API key or pass --backend <provider>.
+# Use --code-only only when you intend to skip semantic extraction.
+# The chain stops if cloning or extracting either repository fails.
+graphify clone "https://github.com/owner/repo1" --out "$REPO1_PATH" &&
+  graphify clone "https://github.com/owner/repo2" --out "$REPO2_PATH" &&
+  graphify extract "$REPO1_PATH" &&
+  graphify extract "$REPO2_PATH" &&
+  graphify merge-graphs \
+    "$REPO1_PATH/graphify-out/graph.json" \
+    "$REPO2_PATH/graphify-out/graph.json" \
+    --out graphify-out/cross-repo-graph.json
 ```
 
 Graphify clones into `~/.graphify/repos/<owner>/<repo>` and reuses existing clones on repeat runs. Each node in the merged graph carries a `repo` attribute so you can filter by origin.

@@ -1685,11 +1685,12 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
     for entry in entries:
-        # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
-        subcommand = parts[1] if len(parts) > 1 else ""
-        assert subcommand in dispatched, (
-            f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
+        # The availability guard may wrap the CLI command in shell syntax.
+        assert "hook-check" in entry["command"], (
+            "codex hook does not invoke its configured CLI subcommand"
+        )
+        assert "hook-check" in dispatched, (
+            "codex hook registers a subcommand the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
         )
 
@@ -1751,7 +1752,11 @@ def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platfor
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} project install registered no hook command"
     for command in commands:
-        assert command.startswith("graphify "), command
+        if platform == "codex":
+            assert "command -v graphify" in command, command
+            assert "hook-check" in command, command
+        else:
+            assert command.startswith("graphify "), command
         assert ":" not in command, f"drive letter / absolute path leaked: {command}"
         assert "\\" not in command, f"backslash path leaked: {command}"
         assert ".exe" not in command.lower(), f"platform exe casing leaked: {command}"
@@ -1776,7 +1781,11 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} install registered no hook command"
     for command in commands:
-        assert command.startswith("C:/Users/installer/graphify.EXE "), command
+        if platform == "codex":
+            assert "C:/Users/installer/graphify.EXE" in command, command
+            assert "hook-check" in command, command
+        else:
+            assert command.startswith("C:/Users/installer/graphify.EXE "), command
 
 
 @pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
