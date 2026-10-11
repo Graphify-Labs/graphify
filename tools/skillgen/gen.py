@@ -99,7 +99,9 @@ _QUERY_FIRST_EDIT = (
     'For codebase questions, first run `graphify query "<question>"` when '
     "graphify-out/graph.json exists.",
     'When graphify-out/graph.json exists, run `graphify query "<question>"` before '
-    "your first grep, search or source-file read for a codebase question.",
+    "your first grep, search or source-file read for a codebase question, and put "
+    "this rule in every subagent prompt that explores code. Read raw files only for "
+    "lines the graph or an earlier read already located.",
 )
 
 # Sanctioned divergences from the frozen always-on baseline above. The roundtrip
