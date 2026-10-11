@@ -29,6 +29,14 @@ def test_audit_coverage_passes():
     assert problems == [], "\n".join(problems)
 
 
+def test_update_reference_does_not_dump_incremental_corpus():
+    """--update must not print every corpus path into the agent context (#3944)."""
+    text = (gen.FRAGMENTS_DIR / "references" / "shared" / "update.md").read_text(encoding="utf-8")
+    assert "print(json.dumps(result, indent=2, ensure_ascii=False))" not in text
+    assert "new_by_type" in text
+    assert "graphify-out/.graphify_incremental.json" in text
+
+
 def test_check_passes():
     """The committed artifacts and the expected/ snapshot match a fresh render.
 
