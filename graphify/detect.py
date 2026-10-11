@@ -972,8 +972,8 @@ _SKIP_FILES = {
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
 # Platforms whose project-scope skills dir is one level below the hidden dir
-# (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
-_NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
+# (install.py: pi -> .pi/agent/skills, omp -> .omp/agent/skills, kilo -> .config/kilo/skills).
+_NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".omp", "agent"), (".config", "kilo")})
 
 # Single files `graphify install` writes whole into a project (#4057): the
 # always-on rules/steering/workflow files and the opencode/kilo hook plugins.
@@ -1155,7 +1155,8 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         return True
     # graphify's own skill folder, as `graphify install --project` writes it
     # (#4057): <hidden dir>/skills/graphify/ (.claude, .codex, .agents, ...),
-    # .pi/agent/skills/graphify/, .config/kilo/skills/graphify/ and
+    # .pi/agent/skills/graphify/, .omp/agent/skills/graphify/,
+    # .config/kilo/skills/graphify/ and
     # .aider/graphify/. Matched on the whole path shape rather than the bare
     # names "skills"/"graphify" (#2479), so graphify's own source tree
     # (graphify/skills/<host>/), a top-level skills/graphify/ and the user's
