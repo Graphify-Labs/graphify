@@ -29,6 +29,13 @@ from .pascal_resolution import resolve_pascal_inherited_calls
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
+from graphify.rcfile import (
+    activate_language_overrides,
+    cache_salt,
+    effective_suffix,
+    get_language_overrides,
+    set_language_overrides,
+)
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -43,6 +50,8 @@ from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
+    _is_cs_file,
+    _is_dotnet_source_file,
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
 )
@@ -102,6 +111,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _disambiguate_colliding_node_ids,
     _find_workspace_root,
     _go_import_path_for_file,
+    _is_python_package_dir,
     _is_type_like_definition,
     _js_call_identifier,
     _js_default_export_name,
@@ -430,7 +440,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     the edge dangles and is silently dropped — the graph loses most ``imports``
     edges purely because of where the scan started. Build an alias map from the
     dotted-module id to the real file-node id by detecting each ``.py`` file's
-    package root (the contiguous run of ancestor dirs carrying ``__init__.py``)
+    package root (the contiguous run of ancestor dirs carrying a Python initializer)
     and rewrite matching ``imports``/``imports_from`` edge targets. Guards: never
     shadow an existing node id, and drop an alias claimed by more than one file
     (ambiguous -> leave dangling, as before). Files whose package root IS the
@@ -442,7 +452,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
     alias_to_files: dict[str, set[str]] = {}
     for p in paths:
-        if p.suffix.lower() not in (".py", ".pyi"):
+        if effective_suffix(p).lower() not in (".py", ".pyi"):
             continue
         try:
             rel = Path(p).resolve().relative_to(root)
@@ -455,7 +465,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         levels = 0
         # Bounded by the number of dirs between the file and the scan root, so a
         # pathological `/__init__.py` chain can't loop forever.
-        while levels < len(parts) - 1 and (d / "__init__.py").is_file():
+        while levels < len(parts) - 1 and _is_python_package_dir(d):
             levels += 1
             d = d.parent
         if levels == 0:
@@ -466,7 +476,11 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         file_node = _file_node_id(rel)
         alias = _make_id(str(Path(*mod_parts).with_suffix("")))
         alias_to_files.setdefault(alias, set()).add(file_node)
-        if p.name in ("__init__.py", "__init__.pyi") and len(mod_parts) > 1:
+        if (
+            p.stem == "__init__"
+            and effective_suffix(p) in (".py", ".pyi")
+            and len(mod_parts) > 1
+        ):
             # `import pkg` / `from pkg import x` targets the package-dir id.
             pkg_alias = _make_id(str(Path(*mod_parts[:-1])))
             alias_to_files.setdefault(pkg_alias, set()).add(file_node)
@@ -485,7 +499,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         if (
             isinstance(e, dict)
             and e.get("relation") in ("imports", "imports_from")
-            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+            and effective_suffix(str(e.get("source_file", ""))).lower() in (".py", ".pyi")
         ):
             tgt = e.get("target")
             if tgt in alias_map:
@@ -494,10 +508,10 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
 
 def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
     """Repoint Python sibling-import edges to the real file node in directories
-    without an __init__.py (#3430).
+    without a Python package initializer (#3430).
 
     When a Python file below the scan root lives in a non-package directory
-    (no __init__.py in its immediate parent), plain imports of same-directory
+    (no package initializer in its immediate parent), plain imports of same-directory
     modules (e.g. `scripts/main.py: import greeter`) target a bare name (`greeter`),
     while the real file node is scan-root-relative (`scripts_greeter`). Because
     the directory is not a package, `_repoint_python_package_imports` skips it
@@ -505,7 +519,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
     (`greeter.greet()`) to be dropped.
 
     This pass is strictly importer-directory-local:
-    - Only applies when the importing file's parent directory has no __init__.py.
+    - Only applies when the importing file's parent directory has no package initializer.
     - Resolves only to unambiguous same-directory candidate modules in the scanned corpus.
     - Never builds a global alias map and never searches outside the importer's directory.
     - Preserves local aliases (e.g. `import greeter as g`).
@@ -521,7 +535,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
     # dir_path -> {module_name_id: set_of_file_node_ids}
     dir_siblings: dict[Path, dict[str, set[str]]] = {}
     for p in paths:
-        if p.suffix.lower() not in (".py", ".pyi"):
+        if effective_suffix(p).lower() not in (".py", ".pyi"):
             continue
         try:
             p_res = Path(p).resolve()
@@ -533,7 +547,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
         if file_node not in node_ids:
             continue
 
-        if p_res.name in ("__init__.py", "__init__.pyi"):
+        if p_res.stem == "__init__" and effective_suffix(p_res) in (".py", ".pyi"):
             # Sibling package directory inside parent_dir (parent_dir / subpkg / __init__.py)
             pkg_dir = p_res.parent
             parent_dir = pkg_dir.parent
@@ -541,7 +555,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
             # capture a bare `import logging`, which means the stdlib module (#4261).
             if pkg_dir.name in _PYTHON_STDLIB_MODULE_NAMES:
                 continue
-            if not (parent_dir / "__init__.py").is_file() and not (parent_dir / "__init__.pyi").is_file():
+            if not _is_python_package_dir(parent_dir, (".py", ".pyi")):
                 mod_key = _make_id(pkg_dir.name)
                 dir_siblings.setdefault(parent_dir, {}).setdefault(mod_key, set()).add(file_node)
             continue
@@ -549,7 +563,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
         d = p_res.parent
         # PEP 328 guard: if the directory is a package, implicit relative imports
         # are forbidden in Python 3. Do not index packages as loose sibling directories.
-        if (d / "__init__.py").is_file() or (d / "__init__.pyi").is_file():
+        if _is_python_package_dir(d, (".py", ".pyi")):
             continue
 
         # A loose module named like a stdlib module (e.g. `logging.py`) must not
@@ -577,7 +591,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
         if not (
             isinstance(e, dict)
             and e.get("relation") in ("imports", "imports_from")
-            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+            and effective_suffix(str(e.get("source_file", ""))).lower() in (".py", ".pyi")
         ):
             continue
 
@@ -2148,7 +2162,7 @@ def extract_python(path: Path, *, root: Path | None = None) -> dict:
 
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
-    suffix = path.suffix.lower()
+    suffix = effective_suffix(path).lower()
     is_ts = suffix in (".ts", ".tsx", ".mts", ".cts")
     if suffix == ".tsx":
         config = _TSX_CONFIG
@@ -3390,7 +3404,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
     """True when the file's language resolves identifiers case-insensitively (#1581)."""
     if not source_file:
         return False
-    return Path(str(source_file)).suffix.lower() in _CASE_INSENSITIVE_EXTS
+    return effective_suffix(str(source_file)).lower() in _CASE_INSENSITIVE_EXTS
 
 
 # Language interop families for cross-file call resolution. A call in one language
@@ -3440,7 +3454,7 @@ def _lang_family(source_file: object) -> str | None:
     """Interop family of the file's language, or None when unknown/not code."""
     if not source_file:
         return None
-    return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
+    return _LANG_FAMILY_BY_EXT.get(effective_suffix(str(source_file)).lower())
 
 
 # A language's own built-in throwable hierarchy, keyed by the interop family of
@@ -3667,7 +3681,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
 
     for edge in edges:
         is_csharp_scoped_edge = (
-            str(edge.get("source_file", "")).endswith((".cs", ".razor", ".cshtml"))
+            _is_dotnet_source_file(str(edge.get("source_file", "")))
             and edge.get("relation") in csharp_scoped_relations
         )
         source = edge.get("source")
@@ -3675,7 +3689,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             remapped_source = remap[str(source)]
             if not (
                 is_csharp_scoped_edge
-                and str(by_id.get(remapped_source, {}).get("source_file", "")).endswith(".cs")
+                and _is_cs_file(str(by_id.get(remapped_source, {}).get("source_file", "")))
             ) and not _cross_language_candidate(edge, remapped_source):
                 edge["source"] = remapped_source
         target = edge.get("target")
@@ -3683,7 +3697,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             remapped_target = remap[str(target)]
             if not (
                 is_csharp_scoped_edge
-                and str(by_id.get(remapped_target, {}).get("source_file", "")).endswith(".cs")
+                and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
             ) and not _names_own_builtin_base(
                 edge, str(target), remapped_target
             ) and not _cross_language_candidate(edge, remapped_target):
@@ -3866,7 +3880,7 @@ def _merge_csharp_partial_class_nodes(
     """
     groups: dict[tuple[str, str], list[dict]] = {}
     for n in all_nodes:
-        if not str(n.get("source_file", "")).endswith(".cs"):
+        if not _is_cs_file(str(n.get("source_file", ""))):
             continue
         if n.get("file_type") != "code":
             continue
@@ -4926,7 +4940,7 @@ def _resolve_csharp_member_calls(
         if e.get("relation") != "inherits":
             continue
         src_file = e.get("source_file")
-        if not (isinstance(src_file, str) and src_file.endswith(".cs")):
+        if not _is_cs_file(src_file):
             continue
         src, tgt = e.get("source"), e.get("target")
         if not (isinstance(src, str) and isinstance(tgt, str)):
@@ -7578,6 +7592,12 @@ def _get_extractor(path: Path) -> Any | None:
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
     if is_package_manifest_path(path):
         return extract_package_manifest
+    # A project-declared remap (.graphifyrc `language.inc=php`, #2961) wins
+    # over every sniff below: the user has said what the extension means in
+    # this repo, so a remapped `.h`/`.m` also skips the C++/ObjC probes.
+    remapped = effective_suffix(path)
+    if remapped != path.suffix:
+        return _DISPATCH.get(remapped) or _DISPATCH.get(remapped.lower())
     # `.h` is C/C++/ObjC-ambiguous; route Objective-C headers to extract_objc
     # (the suffix map sends `.h` to extract_c, which can't read @interface etc.).
     # ObjC sniffing has priority over the C++ sniff: an Objective-C++ header can
@@ -7620,6 +7640,13 @@ def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
         _XAML_ACTIVE_EXTRACT_ROOT = previous_root
 
 
+def _worker_init(language_overrides: dict[str, str]) -> None:
+    """Pool initializer. Under ``spawn`` a worker re-imports the package and
+    starts with no overrides; hand it the parent's so `_get_extractor` and the
+    cache key agree across processes (#2961)."""
+    set_language_overrides(language_overrides)
+
+
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
     """Worker function for parallel extraction. Runs in a subprocess.
 
@@ -7644,11 +7671,11 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+    bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
-        cached = load_cached(path, root, cache_root=cache_location)
+        cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
         if cached is not None:
             return idx, cached
 
@@ -7665,7 +7692,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # An intentional decline or virtual workspace root (result.get("skipped"))
     # is cached so repeat runs do not re-extract and re-report it (#3910).
     if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
-        save_cached(path, result, root, cache_root=cache_location)
+        save_cached(path, result, root, cache_root=cache_location, salt=cache_salt(path))
     return idx, result
 
 
@@ -7769,7 +7796,11 @@ def _extract_parallel(
     failed: list[int] = []  # positions into uncached_work whose future failed
     _PROGRESS_INTERVAL = 100
     try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_worker_init,
+            initargs=(get_language_overrides(),),
+        ) as pool:
             futures = {
                 pool.submit(_extract_single_file, item): pos
                 for pos, item in enumerate(work_items)
@@ -7873,13 +7904,13 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
         # but cache intentional declines/virtual manifests carrying `skipped` (#3910).
         if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
-            save_cached(path, result, root, cache_root=cache_location)
+            save_cached(path, result, root, cache_root=cache_location, salt=cache_salt(path))
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
         # Consistent denominator with the intermediate lines (#1693).
@@ -8010,6 +8041,17 @@ def extract(
         if len(module_paths) > 1 and module_id not in scan_root_aliases
     }
 
+    # Project-level extension->language declarations (#2961). detect() has
+    # usually activated them for this root already; a direct library caller
+    # (the skill runbook, the MCP server, the issue's own repro) gets them here.
+    _overrides = activate_language_overrides(root)
+    if _overrides:
+        print(
+            "  language overrides (.graphifyrc): "
+            + ", ".join(f"{k} -> {v}" for k, v in sorted(_overrides.items())),
+            flush=True,
+        )
+
     # #1774: the cache is an OUTPUT, so when no explicit cache_root is given it is
     # written under the current working directory — never `root` (the inferred
     # common parent of the inputs), which would drop graphify-out/ inside a
@@ -8027,9 +8069,9 @@ def extract(
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
-            cached = load_cached(path, root, cache_root=cache_location)
+            cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:
                 per_file[i] = cached
                 continue
@@ -8139,7 +8181,7 @@ def extract(
     from graphify.detect import CODE_EXTENSIONS as _CODE_EXTS
     _no_extractor: dict[str, int] = {}
     for _p in paths:
-        _ext = _p.suffix.lower()
+        _ext = effective_suffix(_p).lower()
         if _ext in _CODE_EXTS and _get_extractor(_p) is None:
             _no_extractor[_ext] = _no_extractor.get(_ext, 0) + 1
     if _no_extractor:
@@ -8166,7 +8208,7 @@ def extract(
     for i, _p in enumerate(paths):
         _err = (per_file[i] or {}).get("error") or ""
         if _DEP_MISSING_MARKER in _err or _DEP_LOAD_FAILED_MARKER in _err:
-            _ext = _p.suffix.lower()
+            _ext = effective_suffix(_p).lower()
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
@@ -8772,7 +8814,7 @@ def extract(
     _php_exts = {".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}
     _php_sel = [
         (r, p) for r, p in zip(per_file, paths)
-        if p.suffix.lower() in _php_exts and not p.name.lower().endswith(".blade.php")
+        if effective_suffix(p).lower() in _php_exts and not p.name.lower().endswith(".blade.php")
     ]
     if _php_sel:
         try:
@@ -8788,7 +8830,7 @@ def extract(
     # internal class with that simple name, manufacturing a false hub. Parking
     # such references on an FQN-labeled stub first prevents the merge, and
     # import-exact resolution of internal references (#1318/#1744) still applies.
-    _java_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".java"]
+    _java_sel = [(r, p) for r, p in zip(per_file, paths) if effective_suffix(p) == ".java"]
     if _java_sel:
         try:
             _resolve_java_type_references(
@@ -8799,7 +8841,7 @@ def extract(
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
     # Resolve internal Go pkg.Type references exactly and park external ones
     # before the generic bare-label stub rewire can manufacture a collision.
-    _go_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".go"]
+    _go_sel = [(r, p) for r, p in zip(per_file, paths) if effective_suffix(p) == ".go"]
     if _go_sel:
         try:
             _resolve_go_type_references(
@@ -8813,9 +8855,9 @@ def extract(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
     # Cross-file Python import resolution and type-reference repointing (#3252)
-    py_paths = [p for p in paths if p.suffix == ".py"]
+    py_paths = [p for p in paths if effective_suffix(p) == ".py"]
     if py_paths:
-        py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
+        py_results = [r for r, p in zip(per_file, paths) if effective_suffix(p) == ".py"]
         try:
             cross_file_edges = _resolve_cross_file_imports(
                 py_results, py_paths, all_nodes, all_edges,
@@ -8828,9 +8870,9 @@ def extract(
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Cross-file Java import resolution
-    java_paths = [p for p in paths if p.suffix == ".java"]
+    java_paths = [p for p in paths if effective_suffix(p) == ".java"]
     if java_paths:
-        java_results = [r for r, p in zip(per_file, paths) if p.suffix == ".java"]
+        java_results = [r for r, p in zip(per_file, paths) if effective_suffix(p) == ".java"]
         try:
             all_edges.extend(_resolve_cross_file_java_imports(java_results, java_paths))
         except Exception as exc:
@@ -8841,9 +8883,9 @@ def extract(
     # references edges left on shadow stubs, disambiguating same-named types by the
     # referencing file's `using` directives + enclosing namespace (mirrors Java #1318).
     _DOTNET_TYPE_EXTS = {".cs", ".razor", ".cshtml"}
-    cs_paths = [p for p in paths if p.suffix.lower() in _DOTNET_TYPE_EXTS]
+    cs_paths = [p for p in paths if effective_suffix(p).lower() in _DOTNET_TYPE_EXTS]
     if cs_paths:
-        cs_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_TYPE_EXTS]
+        cs_results = [r for r, p in zip(per_file, paths) if effective_suffix(p).lower() in _DOTNET_TYPE_EXTS]
         try:
             _resolve_csharp_type_references(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:
@@ -9288,7 +9330,7 @@ def extract(
         # legitimately call across files without an explicit import. Scoped to
         # direct calls: the indirect_call path above is already conservative
         # (INFERRED, callable-target-gated) and independent of import evidence.
-        if not has_import_evidence and str(rc.get("source_file", "")).endswith(_JS_TS_CALL_SUFFIXES):
+        if not has_import_evidence and effective_suffix(str(rc.get("source_file", ""))) in _JS_TS_CALL_SUFFIXES:
             continue
         if rc.get("via_stub") and not (has_import_evidence or stub_scope_hit):
             continue

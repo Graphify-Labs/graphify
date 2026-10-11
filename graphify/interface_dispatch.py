@@ -31,6 +31,8 @@ protocols, for one) adds a wrapper, not a second copy of the algorithm.
 """
 from __future__ import annotations
 
+from graphify.rcfile import effective_suffix
+
 DISPATCH_RELATION = "dispatches_to"
 
 
@@ -39,12 +41,14 @@ def declared_in(node: dict | None, suffixes: tuple[str, ...]) -> bool:
 
     Every end of a dispatch pair has to pass this. A sourceless stub minted for
     a dangling reference carries no members worth dispatching to, and a
-    cross-language pair is a name collision rather than an implementation.
+    cross-language pair is a name collision rather than an implementation. The
+    suffix is the effective one, so a `.graphifyrc` language declaration counts
+    (#2961).
     """
     if not node:
         return False
     source_file = node.get("source_file")
-    return bool(source_file) and str(source_file).endswith(suffixes)
+    return bool(source_file) and effective_suffix(str(source_file)) in suffixes
 
 
 def method_label(node: dict) -> str:
@@ -78,11 +82,11 @@ def resolve_interface_dispatch(
     in a file with one of these extensions.
     """
     if not any(
-        str(result.get("source_file", "")).endswith(suffixes)
+        declared_in(result, suffixes)
         for result in per_file
         if isinstance(result, dict)
     ) and not any(
-        str(n.get("source_file", "")).endswith(suffixes) for n in all_nodes
+        declared_in(n, suffixes) for n in all_nodes
     ):
         return
 
