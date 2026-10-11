@@ -750,15 +750,17 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    # The registry holds exactly the #1530 substitution plus the graph-diff rule.
     assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
         (old_instruction, new_instruction),
+        gen._GRAPH_DIFF_EDIT,
     )
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
-    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # The ONLY divergences from the frozen baseline are the sanctioned edits —
     # any other byte drift would have surfaced as a problem above.
     assert old_instruction in baseline_agents
-    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    old_rule, new_rule = gen._GRAPH_DIFF_EDIT
+    assert baseline_agents.replace(old_instruction, new_instruction).replace(old_rule, new_rule) == rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
 
