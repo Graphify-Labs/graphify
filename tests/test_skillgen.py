@@ -300,18 +300,18 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
-def test_codex_dispatch_is_agenttask_and_collects_in_memory():
-    """codex: spawn/wait/close_agent dispatch needing multi_agent = true."""
+def test_codex_dispatch_is_agenttask_and_persists_chunk_results():
+    """codex uses native agent dispatch and writes results for shared B3."""
     core, _ = _platform_artifacts("codex")
     assert "spawn_agent" in core
     assert "wait_agent" in core
     assert "close_agent" in core
     assert "multi_agent = true" in core
-    assert "Codex collects in memory" in core
     # The B2 dispatch slot itself (Codex heading -> Step B3) must not carry the
     # claude Agent-tool example. The shared Step B3 prose mentions the agent type
     # in a re-run hint, so scope the check to the dispatch block only.
     b2 = core[core.index("**Step B2"):core.index("**Step B3")]
+    assert "graphify-out/.graphify_chunk_NN.json" in b2
     assert "Concrete example for 3 chunks" not in b2
     assert "Agent tool call 1" not in b2
 
