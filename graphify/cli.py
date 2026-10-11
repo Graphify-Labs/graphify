@@ -63,8 +63,8 @@ _READ_DENY = json.dumps({
             'graphify strict mode: this project has a fresh knowledge graph that covers '
             'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
             '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
-            'will be allowed. This block fires at most once per session; reading raw '
-            'files to modify or debug specific lines is fine after one query. Apply the '
+            'will be allowed. This block fires at most once per session; after one '
+            'query, read raw files for the exact lines the graph pointed you to. Apply the '
             'same rule in any subagent prompt that explores code.'
         ),
     }
@@ -156,17 +156,31 @@ def _default_graph_path() -> str:
 
 # Hint for a firing nudge: the graph nodes behind this very call and a command
 # to run, so the nudge shows what the graph knows instead of only asking for it.
-# A direct label/path scan of graph.json, not `graphify query`: loading the full
-# query stack costs ~1.5 s on a 15k-node graph, too slow for a per-call hook.
+# A direct label scan of graph.json, not `graphify query`: loading the full query
+# stack costs ~1.5 s on a 15k-node graph, too slow for a per-call hook. The scan
+# costs ~0.5 s on an 18 MiB graph; bigger graphs than the cap get the plain nudge.
 _HINT_MAX_NODES = 5
-_HINT_GRAPH_MAX_BYTES = 32 * 1024 * 1024
+_HINT_GRAPH_MAX_BYTES = 24 * 1024 * 1024
 _HINT_TERM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 _HINT_SAFE_ARG_RE = re.compile(r"[\w.\-() ]+")
+# Declaration keywords a pattern like `def load_config` carries; never the target.
+_HINT_KEYWORDS = frozenset({
+    "def", "class", "function", "func", "const", "let", "var", "import", "export",
+    "async", "return", "struct", "interface", "type", "enum", "impl", "pub",
+})
+# grep/rg/ag/ack options whose value is the next argument, never the pattern.
+_HINT_VALUE_FLAGS = frozenset({
+    "-t", "-T", "-g", "--type", "--type-not", "--glob", "--iglob", "-A", "-B", "-C",
+    "-m", "--max-count", "-j", "--threads", "-f", "--file", "--include", "--exclude",
+    "--exclude-dir", "--max-depth", "-d", "-D", "--color", "--colour",
+})
 
 
 def _pattern_terms(pattern: str) -> list[str]:
-    """Identifier-like words in a search pattern (regex escapes dropped), at most three."""
-    return _HINT_TERM_RE.findall(re.sub(r"\\.", " ", pattern))[:3]
+    """Identifier-like words in a search pattern (regex escapes and declaration
+    keywords dropped), at most three."""
+    words = _HINT_TERM_RE.findall(re.sub(r"\\.", " ", pattern))
+    return [w for w in words if w.lower() not in _HINT_KEYWORDS][:3]
 
 
 def _rel_to_root(file_path: str, root: "Path") -> "str | None":
@@ -174,14 +188,15 @@ def _rel_to_root(file_path: str, root: "Path") -> "str | None":
     if not file_path:
         return None
     try:
-        return Path(file_path).resolve().relative_to(root).as_posix()
+        p = Path(file_path.replace("\\", "/"))
+        return (p if p.is_absolute() else root / p).resolve().relative_to(root).as_posix()
     except (ValueError, OSError, RuntimeError):
         return None
 
 
 def _search_hint_terms(t: dict) -> list[str]:
-    """Words the agent searched for: the Grep `pattern`, or the first pattern-like
-    argument of a shell search command. Empty when there is nothing to go on."""
+    """Words the agent searched for: the Grep `pattern`, or the pattern argument of
+    a shell content search. Empty when there is nothing to go on."""
     cmd = str(t.get("command") or "")
     if not cmd:
         return _pattern_terms(str(t.get("pattern") or ""))
@@ -191,89 +206,99 @@ def _search_hint_terms(t: dict) -> list[str]:
     except ValueError:
         return []
     for i, tok in enumerate(tokens):
-        if tok.rsplit("/", 1)[-1].lower() not in _SEARCH_COMMANDS:
+        name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        # Content searches only: find/fd match file names, which labels do not.
+        if name not in _SEARCH_COMMANDS or name in ("find", "fd"):
             continue
         rest = iter(tokens[i + 1:])
         for arg in rest:
             if arg in ("-e", "--regexp"):
                 return _pattern_terms(next(rest, ""))
+            if arg in _HINT_VALUE_FLAGS:
+                next(rest, None)
+                continue
             if arg.startswith("-"):
                 continue
-            # Option values (`-A 3`, `-g '*.ts'`) carry no identifier and are skipped.
-            terms = _pattern_terms(arg)
-            if terms:
-                return terms
+            return _pattern_terms(arg)  # the first positional argument is the pattern
         return []
     return []
 
 
-def _graph_hint(terms: "list[str] | None" = None, rel_file: "str | None" = None) -> tuple[str, list[str]]:
-    """(command, node lines) for a nudge: nodes whose label or source path match
-    the searched terms, or the symbols in the file being read. ("", []) on any
-    failure, an oversized graph, or no match - the plain nudge still goes out."""
+def _hint_text(value: object, cap: int) -> str:
+    """A graph field as one inert line: graph.json is repository content, so no
+    newline, control character or backtick may reach the model-facing hint."""
+    text = re.sub(r"[\x00-\x1f\x7f`]", " ", str(value))
+    text = " ".join(text.split())
+    return text if len(text) <= cap else text[: cap - 1] + "…"
+
+
+def _graph_hint(terms: "list[str]", rel_file: "str | None") -> tuple[str, list[str]]:
+    """(command, node lines) for a nudge: nodes whose label matches the searched
+    terms, or the symbols in the file being read. ("", []) for an oversized graph
+    or no match."""
     from graphify.paths import out_path
-    try:
-        p = out_path("graph.json")
-        if p.stat().st_size > _HINT_GRAPH_MAX_BYTES:
-            return "", []
-        nodes = json.loads(p.read_text(encoding="utf-8")).get("nodes") or []
-    except Exception:
+    p = out_path("graph.json")
+    if p.stat().st_size > _HINT_GRAPH_MAX_BYTES:
         return "", []
+    nodes = json.loads(p.read_text(encoding="utf-8")).get("nodes")
+    nodes = [n for n in nodes if isinstance(n, dict)] if isinstance(nodes, list) else []
+
+    def key(n: dict) -> str:
+        return str(n.get("label") or "").lower().removesuffix("()").lstrip(".")
 
     def line_of(n: dict) -> int:
         m = re.match(r"L(\d+)", str(n.get("source_location") or ""))
         return int(m.group(1)) if m else 0
 
-    def fmt(n: dict) -> str:
-        loc = str(n.get("source_location") or "")
-        return f"- {n.get('label')} ({n.get('source_file') or '?'}{' ' + loc if loc else ''})"
-
-    picked: list[dict] = []
     command = ""
     if rel_file:
         base = rel_file.rsplit("/", 1)[-1]
-        picked = sorted(
-            (n for n in nodes if isinstance(n, dict) and n.get("source_file") == rel_file
-             and n.get("label") != base),
-            key=line_of,
-        )[:_HINT_MAX_NODES]
+        picked = sorted((n for n in nodes if n.get("source_file") == rel_file and n.get("label") != base),
+                        key=line_of)[:_HINT_MAX_NODES]
         if picked and _HINT_SAFE_ARG_RE.fullmatch(base):
             command = f'graphify explain "{base}"'
-    elif terms:
+    else:
         lowered = [term.lower() for term in terms]
-        scored: list[tuple[int, int, dict]] = []
-        for n in nodes:
-            if not isinstance(n, dict):
-                continue
-            label = str(n.get("label") or "").lower()
-            key = label.removesuffix("()").lstrip(".")
-            src = str(n.get("source_file") or "").lower()
-            score = sum(4 if key == term else 2 if term in label else 1 if term in src else 0
-                        for term in lowered)
-            if score:
-                scored.append((score, len(label), n))
-        scored.sort(key=lambda s: (-s[0], s[1]))
-        picked = [n for _, _, n in scored[:_HINT_MAX_NODES]]
-        top = str(picked[0].get("label") or "") if picked else ""
-        if top.lower().removesuffix("()").lstrip(".") == lowered[0] and _HINT_SAFE_ARG_RE.fullmatch(top):
-            command = f'graphify explain "{top}"'
+        # Exact label matches first, then labels containing a term; shorter labels first.
+        # Short terms (`src`, `app`) only match exactly: as substrings they hit every path.
+        ranked = sorted(
+            ((0 if key(n) in lowered else 1, len(key(n)), n) for n in nodes
+             if key(n) in lowered or any(len(term) >= 5 and term in key(n) for term in lowered)),
+            key=lambda r: (r[0], r[1]),
+        )
+        picked = [n for _, _, n in ranked[:_HINT_MAX_NODES]]
+        # An exact match's label is a search term ([A-Za-z0-9_]) plus "." or "()": safe to quote.
+        if picked and ranked[0][0] == 0:
+            command = f'graphify explain "{picked[0].get("label")}"'
         elif picked:
             command = f'graphify query "{" ".join(terms)}"'
-    return command, [fmt(n) for n in picked]
+    lines = []
+    for n in picked:
+        loc = _hint_text(n.get("source_location") or "", 20)
+        src = _hint_text(n.get("source_file") or "?", 120)
+        lines.append(f"- {_hint_text(n.get('label') or '', 80)} ({src}{' ' + loc if loc else ''})")
+    return command, lines
 
 
-def _with_hint(nudge: str, command: str, lines: "list[str]") -> str:
-    """Append the call-specific command and matching graph nodes to a nudge or deny."""
-    if not command and not lines:
+def _with_hint(nudge: str, terms: "list[str] | None" = None, rel_file: "str | None" = None) -> str:
+    """Append the call-specific command and matching graph nodes to a nudge or deny.
+    Any failure returns the nudge unchanged: a hint must never cost the nudge."""
+    if not terms and not rel_file:
         return nudge
-    d = json.loads(nudge)
-    out = d["hookSpecificOutput"]
-    key = "permissionDecisionReason" if "permissionDecisionReason" in out else "additionalContext"
-    extra = f"\nStart with: `{command}`" if command else ""
-    if lines:
-        extra += "\nWhat the graph already has for this call:\n" + "\n".join(lines)
-    out[key] += extra
-    return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
+    try:
+        command, lines = _graph_hint(terms or [], rel_file)
+        if not command and not lines:
+            return nudge
+        d = json.loads(nudge)
+        out = d["hookSpecificOutput"]
+        key = "permissionDecisionReason" if "permissionDecisionReason" in out else "additionalContext"
+        extra = f"\nStart with: `{command}`" if command else ""
+        if lines:
+            extra += "\nWhat the graph already has for this call:\n" + "\n".join(lines)
+        out[key] += extra
+        return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
+    except Exception:
+        return nudge
 
 
 def _stamped_manifest_files(
@@ -1117,7 +1142,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
                     and _nudge_allowed(d):
-                sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), *_graph_hint(terms=_search_hint_terms(t))))
+                sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), terms=_search_hint_terms(t)))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             tails = [
@@ -1237,10 +1262,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
-                sys.stdout.write(_with_hint(_READ_DENY, *_graph_hint(rel_file=_rel_to_root(fp, root))))
+                sys.stdout.write(_with_hint(_READ_DENY, rel_file=_rel_to_root(fp, root)))
                 return
             if _nudge_allowed(d):
-                sys.stdout.write(_with_hint(_nudge_for_out(_READ_NUDGE), *_graph_hint(rel_file=_rel_to_root(fp, root))))
+                sys.stdout.write(_with_hint(_nudge_for_out(_READ_NUDGE), rel_file=_rel_to_root(fp, root)))
     except Exception:
         pass
 
