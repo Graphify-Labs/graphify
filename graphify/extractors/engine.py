@@ -1805,6 +1805,106 @@ def _python_receiver_shadow_checker(root, source: bytes):
 
     return is_shadowed
 
+_PYTHON_PROPERTY_DECORATORS = frozenset({"property", "cached_property", "functools.cached_property"})
+
+
+def _python_is_property(func_node, source: bytes) -> bool:
+    """`@property` / `@cached_property` / `@x.getter`: reading the attribute runs it."""
+    parent = func_node.parent
+    if parent is None or parent.type != "decorated_definition":
+        return False
+    for dec in parent.children:
+        if dec.type != "decorator":
+            continue
+        expr = next(iter(dec.named_children), None)
+        text = _read_text(expr, source) if expr is not None else ""
+        if text in _PYTHON_PROPERTY_DECORATORS or text.endswith(".getter"):
+            return True
+    return False
+
+
+def _same_node(a, b) -> bool:
+    # tree-sitter hands out a new wrapper per access: compare spans, not identity
+    return a is not None and b is not None and (a.start_byte, a.end_byte, a.type) == (b.start_byte, b.end_byte, b.type)
+
+
+def _python_attribute_is_store(node) -> bool:
+    """`x.a = ...`, `x.a += ...`, `for x.a in ...`, `del x.a`: not a read of `a`."""
+    child, parent = node, node.parent
+    while parent is not None and parent.type in ("pattern_list", "tuple_pattern", "list_pattern"):
+        child, parent = parent, parent.parent
+    if parent is None:
+        return False
+    if parent.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+        return _same_node(parent.child_by_field_name("left"), child)
+    return parent.type == "delete_statement"
+
+
+def _python_property_reads(
+    function_bodies, source: bytes, str_path: str,
+    var_types: dict[str, dict[str, str | None]],
+    attr_types: dict[str, dict[str, str | None]],
+    method_owner: dict[str, str],
+) -> list[dict]:
+    """Raw calls for attribute reads that may run a `@property` getter.
+
+    `response.text` names no call, but reading it runs `Response.text` when that
+    is a property. Only reads whose receiver is typed the way a member call
+    would be are recorded: `self.a` (minus the fields the class assigns,
+    `self.a = ...`), a typed local or parameter (`receiver_type`), and
+    `self.X.a` with `X` bound to one class (`_python_self_attr_type`). The
+    resolver binds them like member calls and keeps only targets marked
+    `_py_property`, as a `references` edge, so a plain field or a method reference gets no edge.
+    """
+    out: list[dict] = []
+    for caller_nid, body in function_bodies:
+        owner = method_owner.get(caller_nid, "")
+        fields = attr_types.get(owner, {})
+        stack = list(getattr(body, "children", ()))
+        while stack:
+            node = stack.pop()
+            if node.type in ("function_definition", "class_definition", "lambda"):
+                continue
+            stack.extend(node.children)
+            if node.type != "attribute":
+                continue
+            parent = node.parent
+            if parent is not None and parent.type == "call" and _same_node(parent.child_by_field_name("function"), node):
+                continue  # a method call: the call walk owns it
+            if _python_attribute_is_store(node):
+                continue
+            obj, attr_n = node.child_by_field_name("object"), node.child_by_field_name("attribute")
+            if obj is None or attr_n is None:
+                continue
+            attr = _read_text(attr_n, source)
+            typed: dict = {}
+            if obj.type == "identifier":
+                name = _read_text(obj, source)
+                if name == "self":
+                    if owner and attr not in fields:
+                        typed = {"receiver": "self"}
+                else:
+                    cls = var_types.get(caller_nid, {}).get(name)
+                    if cls:
+                        typed = {"receiver": name, "receiver_type": cls}
+            else:
+                self_attr = _python_self_attr(obj, source)
+                cls = fields.get(self_attr) if self_attr else None
+                if cls:
+                    typed = {"receiver": f"self.{self_attr}", "_python_self_attr_type": cls}
+            if typed:
+                out.append({
+                    "caller_nid": caller_nid,
+                    "callee": attr,
+                    "is_member_call": True,
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "_python_attr_read": True,
+                    **typed,
+                })
+    return out
+
+
 def _python_self_attr(node, source: bytes) -> str | None:
     """``X`` when ``node`` is the attribute ``self.X`` (#2860), else None."""
     if node is None or node.type != "attribute":
@@ -8521,8 +8621,13 @@ def _extract_generic(
             ruby_local_names[caller_nid] = _ruby_local_names(body_node, source)
 
     if config.ts_module == "tree_sitter_python":
+        _py_node_by_id = {n["id"]: n for n in nodes}
         for caller_nid, body_node in function_bodies:
             python_var_types[caller_nid] = _python_local_class_bindings(body_node, source)
+            func = getattr(body_node, "parent", None)
+            if (func is not None and func.type == "function_definition"
+                    and caller_nid in _py_node_by_id and _python_is_property(func, source)):
+                _py_node_by_id[caller_nid]["_py_property"] = True
 
     # C++: build the per-file `var -> ClassName` table from local declarations in
     # every function body so the cross-file member-call pass can type a receiver
@@ -8668,6 +8773,10 @@ def _extract_generic(
     # fold them in so the cross-file resolver sees them (#1668).
     if _ruby_mixin_calls:
         raw_calls.extend(_ruby_mixin_calls)
+    if config.ts_module == "tree_sitter_python":
+        raw_calls.extend(_python_property_reads(
+            function_bodies, source, str_path, python_var_types, python_attr_types, method_owner,
+        ))
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
     # Export the per-file field->type tables for the corpus member-call
     # resolvers (#3151): a field declared on a superclass in ANOTHER file can

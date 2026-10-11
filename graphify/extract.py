@@ -4362,6 +4362,13 @@ def _resolve_python_member_calls(
     ) -> None:
         if not target_nid or target_nid == caller or (caller, target_nid) in existing_pairs:
             return
+        if rc.get("_python_attr_read"):
+            # An attribute read only runs a property getter, and only the one it
+            # spells: _key() folds `_items` into `items`, so compare the name.
+            target = node_by_id.get(target_nid, {})
+            label = str(target.get("label", "")).strip().lstrip(".").removesuffix("()")
+            if not target.get("_py_property") or label != rc.get("callee"):
+                return
         existing_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
@@ -4372,8 +4379,10 @@ def _resolve_python_member_calls(
         all_edges.append({
             "source": caller,
             "target": target_nid,
-            "relation": "calls",
-            "context": "call",
+            # A property read runs the getter but is not a call site: `references`,
+            # as for C# member reads (#3120), so call-graph queries stay calls only.
+            "relation": "references" if rc.get("_python_attr_read") else "calls",
+            "context": "property_read" if rc.get("_python_attr_read") else "call",
             "confidence": "INFERRED" if inferred else "EXTRACTED",
             "confidence_score": 0.85 if inferred else 1.0,
             "source_file": rc.get("source_file", ""),
