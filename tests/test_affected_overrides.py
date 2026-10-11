@@ -70,6 +70,18 @@ def test_overridden_member_reached_by_a_real_edge_is_reported():
     assert hits.get("Base.read_all") == 1
 
 
+def test_recursive_overridden_member_is_a_caller_of_the_override():
+    # `Base.m` calling `m()` on its own object dispatches to `Impl.m` for an Impl
+    # instance, so the self-loop is a real edge into it: Base.m is affected.
+    g = _graph(
+        ("Base", "Base.m", "method"),
+        ("Base.m", "Base.m", "calls"),
+        ("Impl", "Base", "inherits"),
+        ("Impl", "Impl.m", "method"),
+    )
+    assert _hits(g, "Impl.m") == {"Base.m": 1}
+
+
 def test_same_depth_keeps_the_depth_limit_exact():
     # depth=1 must still list the supertype member's direct callers.
     g = _graph(
