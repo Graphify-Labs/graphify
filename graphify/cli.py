@@ -1353,9 +1353,13 @@ def dispatch_command(cmd: str) -> None:
             elif args[i] == "--seed" and i + 1 < len(args):
                 seeds.append(args[i + 1])
                 i += 2
-            elif args[i].startswith("--seed="):
+            elif args[i].startswith("--seed=") and args[i].split("=", 1)[1]:
                 seeds.append(args[i].split("=", 1)[1])
                 i += 1
+            elif args[i] == "--seed" or args[i] == "--seed=":
+                # Fail closed: a --seed with no value must not quietly become a keyword query.
+                print("error: --seed needs a value (node id, label or file path)", file=sys.stderr)
+                sys.exit(1)
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
@@ -1440,6 +1444,7 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
+            seeds=seeds or None,
         )
         _touch_query_stamp(gp)
         print(_result)

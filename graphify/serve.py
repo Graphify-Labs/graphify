@@ -1380,7 +1380,7 @@ def _query_graph_text(
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
     seeds: list[str] | None = None,
-    seed_root: "Path | None" = None,
+    seed_root: Path | None = None,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1396,7 +1396,8 @@ def _query_graph_text(
         for value in seeds:
             nid = resolve_seed(G, value, seed_root)
             if nid is None:
-                unresolved.append(value)
+                if value not in unresolved:
+                    unresolved.append(value)
             elif nid not in start_nodes:
                 start_nodes.append(nid)
         if not start_nodes:

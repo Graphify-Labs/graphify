@@ -85,3 +85,52 @@ def test_query_cli_absolute_seed_uses_the_graph_location_not_cwd(monkeypatch, tm
                                               "--graph", str(graph_path)])
     mainmod.main()
     assert "Start (given): ['build']" in capsys.readouterr().out
+
+
+def test_duplicate_unresolved_seed_is_reported_once():
+    G = _graph()
+    text = _query_graph_text(G, "anything", depth=1, seeds=["nope", "cluster", "nope"])
+    assert "Unresolved seeds (skipped): ['nope']" in text
+
+
+def test_callable_name_seed_resolves_with_or_without_parentheses():
+    G = _graph()
+    G.add_node("n5", label="refresh_token()", source_file="pkg/auth.py", source_location="L7", community=3)
+    for value in ("refresh_token", "refresh_token()"):
+        text = _query_graph_text(G, "anything", depth=1, seeds=[value])
+        assert "Start (given): ['refresh_token()']" in text, value
+
+
+def test_seed_combines_with_the_context_filter():
+    G = _graph()
+    G.add_edge("n3", "n2", relation="calls", confidence="EXTRACTED", context="call")   # build calls cluster
+    kept = _query_graph_text(G, "anything", depth=1, seeds=["build"], context_filters=["call"])
+    assert "Start (given): ['build']" in kept and "Context: call (explicit)" in kept
+    assert "NODE cluster" in kept and "NODE report" not in kept                        # the import edge is filtered
+
+
+def test_query_cli_seed_without_a_value_fails_closed(monkeypatch, tmp_path, capsys):
+    import pytest
+    graph_path = _write(tmp_path, _graph())
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    for argv in (["graphify", "query", "extract", "--graph", str(graph_path), "--seed"],
+                 ["graphify", "query", "extract", "--seed=", "--graph", str(graph_path)]):
+        monkeypatch.setattr(mainmod.sys, "argv", argv)
+        with pytest.raises(SystemExit) as exc:
+            mainmod.main()
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "--seed needs a value" in captured.err and "Start" not in captured.out    # no keyword query ran
+
+
+def test_query_cli_logs_the_seeds(monkeypatch, tmp_path, capsys):
+    graph_path = _write(tmp_path, _graph())
+    log = tmp_path / "queries.log"
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "query", "q", "--seed", "build", "--graph", str(graph_path)])
+    mainmod.main()
+    capsys.readouterr()
+    record = json.loads(log.read_text().strip().splitlines()[-1])
+    assert record.get("seeds") == ["build"]
