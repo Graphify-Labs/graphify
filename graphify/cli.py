@@ -3559,8 +3559,53 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
 
-        graph_path = sys.argv[2] if len(sys.argv) > 2 else _default_graph_path()
+        args = sys.argv[2:]
+        questions_path = None
+        as_json = "--json" in args
+        depth, budget = 3, 2000
+        positional: list[str] = []
+        i = 0
+        while i < len(args):
+            if args[i] in ("--questions", "--depth", "--budget") and i + 1 < len(args):
+                if args[i] == "--questions":
+                    questions_path = args[i + 1]
+                else:
+                    try:
+                        value = int(args[i + 1])
+                    except ValueError:
+                        print(f"error: {args[i]} must be an integer", file=sys.stderr)
+                        sys.exit(1)
+                    if args[i] == "--depth":
+                        depth = value
+                    else:
+                        budget = value
+                i += 2
+            elif args[i] == "--json":
+                i += 1
+            elif args[i].startswith("--"):
+                print(f"error: unknown option {args[i]}", file=sys.stderr)
+                sys.exit(1)
+            else:
+                positional.append(args[i])
+                i += 1
+        graph_path = positional[0] if positional else _default_graph_path()
         _enforce_graph_size_cap_or_exit(Path(graph_path))
+        if questions_path:
+            # Answer quality: is the right file in what query_graph shows?
+            from graphify.benchmark import (
+                load_benchmark_questions, print_answer_benchmark, run_answer_benchmark,
+            )
+            try:
+                questions = load_benchmark_questions(questions_path)
+            except (OSError, ValueError) as exc:
+                print(f"error: could not read --questions {questions_path}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            result = run_answer_benchmark(graph_path, questions, depth=depth, token_budget=budget)
+            if as_json:
+                print(json.dumps(result, indent=2))
+            else:
+                print_answer_benchmark(result)
+            return
         # Try to load corpus_words from detect output
         corpus_words = None
         detect_path = Path(".graphify_detect.json")
