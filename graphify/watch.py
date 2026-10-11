@@ -1495,8 +1495,15 @@ def _report_for_compare(report_text: str) -> str:
     return re.sub(r"^- Built from commit: `[^`]+`\n?", "", report_text, flags=re.MULTILINE)
 
 
+def _is_single_line(path: Path) -> bool:
+    """True when ``path`` holds one line (the compact graph.json layout, #3413)."""
+    with path.open("rb") as f:
+        f.readline()
+        return not f.readline()
+
+
 def _json_text(data: dict) -> str:
-    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
 def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
@@ -2127,6 +2134,10 @@ def _rebuild_code(
             print(f"error: {exc}", file=sys.stderr)
             return False
 
+        # The equality skips below compare parsed data, not layout; an existing
+        # multi-line graph.json must still be rewritten compact (#3413).
+        legacy_layout = existing_graph.exists() and not _is_single_line(existing_graph)
+
         _relativize_source_files(result, project_root, scope=watch_root)
         # Source files re-extracted this run — their symbol sets may legitimately
         # shrink (a removed function), so the shrink-guard should not block the
@@ -2208,6 +2219,7 @@ def _rebuild_code(
                     )
                 except Exception:
                     same_graph = False
+            same_graph = same_graph and not legacy_layout
             if not same_graph:
                 if not _check_shrink(
                     force, existing_graph_data, candidate_graph_data,
@@ -2277,7 +2289,7 @@ def _rebuild_code(
         # build_from_json defaults to directed=False otherwise.
         G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
         candidate_topology = _topology_from_graph(G)
-        if existing_graph_data:
+        if existing_graph_data and not legacy_layout:
             try:
                 same_topology = (
                     json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False)
@@ -2415,6 +2427,7 @@ def _rebuild_code(
                 )
             except Exception:
                 same_graph = False
+        same_graph = same_graph and not legacy_layout
         if report_path.exists():
             old_report = report_path.read_text(encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)

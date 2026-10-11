@@ -67,7 +67,7 @@ def _save_global_graph(G: nx.Graph) -> None:
     except TypeError:
         data = _jg.node_link_data(G)
     from graphify.paths import write_json_atomic
-    write_json_atomic(_GLOBAL_GRAPH, data, indent=2)
+    write_json_atomic(_GLOBAL_GRAPH, data, compact=True)
 
 
 def _file_hash(path: Path) -> str:
