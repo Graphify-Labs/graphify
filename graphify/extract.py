@@ -2720,6 +2720,176 @@ def extract_astro(path: Path) -> dict:
     return result
 
 
+# EJS spells a tag `<%` (code), `<%_` (code, whitespace-slurp), `<%=`/`<%-`
+# (escaped/unescaped output) or `<%#` (comment); `<%%` is an escaped literal
+# `<%`. Only the code bodies and inline `<script>` bodies are JS statements a
+# grammar can read — markup and output expressions are not, so a `.ejs` file fed
+# whole to the JS grammar is one top-level ERROR that loses every symbol (the
+# `.svelte` lesson of #3928).
+_EJS_SCRIPT_TAG_RE = _HTML_SCRIPT_TAG_RE
+_EJS_INCLUDE_RE = re.compile(
+    r"""<%(?:_|[-=])?\s*include\s*\(\s*['"]([^'"]+)['"]"""
+)
+
+
+def _ejs_mask_non_script(src: str) -> str:
+    """Blank an EJS template down to the JavaScript a parser can read.
+
+    Keeps the bodies of code tags (``<% %>`` / ``<%_ %>``) and of JS ``<script>``
+    blocks; markup, ``<%# %>`` comments and ``<%= %>``/``<%- %>`` output
+    expressions become spaces, with ``\\r``/``\\n`` preserved so AST line
+    numbers and byte offsets still match the original file. An output tag inside
+    a ``<script>`` body is replaced by a length-preserving ``0`` so the
+    surrounding statement still parses (``const x = <%- data %>;``).
+    """
+    n = len(src)
+    keep = bytearray(n)        # 1 where the character is JS we want to parse
+    neutralize = bytearray(n)  # 1 inside an output tag that sits in kept JS
+
+    for m in _EJS_SCRIPT_TAG_RE.finditer(src):
+        if _NON_JS_SCRIPT_TYPE_RE.search(m.group(1)):
+            continue
+        for p in range(m.start(2), m.end(2)):
+            keep[p] = 1
+
+    i = 0
+    while True:
+        j = src.find("<%", i)
+        if j < 0:
+            break
+        if j + 2 < n and src[j + 2] == "%":  # `<%%` — a literal `<%`
+            for p in range(j, min(j + 3, n)):
+                keep[p] = 0
+            i = j + 3
+            continue
+        marker = src[j + 2] if j + 2 < n else ""
+        close = src.find("%>", j + 2)
+        if close < 0:
+            break
+        # The `<%` … `%>` delimiters are never JS, even inside a <script> body.
+        for p in (j, j + 1, close, close + 1):
+            if p < n:
+                keep[p] = 0
+        if marker in ("=", "-"):
+            for p in range(j + 2, close):
+                if keep[p]:
+                    neutralize[p] = 1
+        elif marker == "#":
+            for p in range(j, close + 2):
+                keep[p] = 0
+        else:
+            # Code tag (`<%` or `<%_`): its body is real JS.
+            body_start = j + 3 if marker == "_" else j + 2
+            if marker == "_":
+                keep[j + 2] = 0  # the `<%_` whitespace-slurp modifier
+            for p in range(body_start, close):
+                keep[p] = 1
+        i = close + 2
+
+    out: list[str] = []
+    in_output = False
+    for p in range(n):
+        c = src[p]
+        if c in "\r\n":
+            out.append(c)
+            in_output = False
+        elif not keep[p]:
+            out.append(" ")
+            in_output = False
+        elif neutralize[p]:
+            out.append(" " if in_output else "0")
+            in_output = True
+        else:
+            out.append(c)
+            in_output = False
+    return "".join(out)
+
+
+def _emit_ejs_include(
+    result: dict,
+    existing_ids: set,
+    file_node_id: str,
+    path: Path,
+    raw: str,
+    line: int,
+) -> None:
+    """Emit the template-composition edge for ``<%- include('partial') %>``.
+
+    EJS resolves an include relative to the including template, so probe the
+    template's own directory through :func:`_resolve_js_import_path` — which,
+    now that ``.ejs`` is a JS resolve extension, appends ``.ejs``/``index.ejs``
+    the way EJS itself does. A relative hit is stamped with ``target_file`` so
+    the #2169 canonicalization pass repoints it at the real template node; a
+    bare/views-root include that cannot be resolved keeps a stub node, so the
+    edge is never dropped.
+    """
+    base = Path(os.path.normpath(path.parent / raw))
+    resolved = _resolve_js_import_path(base)
+    edge = {
+        "source": file_node_id, "relation": "includes", "confidence": "EXTRACTED",
+        "source_file": str(path), "source_location": f"L{line}",
+    }
+    if resolved.is_file():
+        edge["target"] = _make_id(str(resolved))
+        edge["target_file"] = str(resolved)
+        result.setdefault("edges", []).append(edge)
+        return
+    node_id = _make_id(raw)
+    if node_id not in existing_ids:
+        existing_ids.add(node_id)
+        result.setdefault("nodes", []).append({
+            "id": node_id, "label": raw, "file_type": "code",
+            "source_file": str(path), "source_location": f"L{line}",
+            "confidence": "EXTRACTED",
+        })
+    edge["target"] = node_id
+    result.setdefault("edges", []).append(edge)
+
+
+def extract_ejs(path: Path) -> dict:
+    """Extract imports, symbols, and `include()` composition from an EJS template.
+
+    EJS is HTML carrying ``<% %>`` scriptlets and inline ``<script>`` blocks, so
+    the whole file is not JS: fed to the JS grammar it becomes a top-level ERROR
+    and every symbol inside a scriptlet is lost (``_ejs_mask_non_script`` keeps
+    only the JS regions, preserving line numbers). The AST pass then reads the
+    template's real JavaScript — ``require``/``import`` edges, functions,
+    classes — and two regex passes add what no JS grammar can see: dynamic
+    ``import('./X')`` calls written in a scriptlet, and the EJS
+    ``<%- include('partial') %>`` composition edge an Express view graph is
+    built on (#3811, #2511).
+    """
+    try:
+        src = _read_source_text(path)
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    masked = _ejs_mask_non_script(src).encode("utf-8")
+    masked = _normalize_ts_import_types(masked) or masked
+    result = _extract_generic(path, _TS_CONFIG, source_override=masked)
+
+    try:
+        existing_ids = {n["id"] for n in result.get("nodes", [])}
+        file_node_id = _make_id(str(path))
+        aliases = _load_tsconfig_aliases(path.parent)
+        base_url = _load_tsconfig_base_url(path.parent)
+        for m in re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
+            if m.group(1):
+                _emit_rescued_import(
+                    result, existing_ids, file_node_id, path, m.group(1),
+                    "dynamic_import", aliases, base_url,
+                )
+        for m in _EJS_INCLUDE_RE.finditer(src):
+            if m.group(1):
+                _emit_ejs_include(
+                    result, existing_ids, file_node_id, path, m.group(1),
+                    src.count("\n", 0, m.start()) + 1,
+                )
+    except Exception:
+        pass
+    return result
+
+
 # The open-tag matcher skips over quoted attribute values so a `>` inside one
 # (e.g. Vue 3.3+ generic components: `<script setup lang="ts"
 # generic="T extends Record<string, unknown>">`) doesn't prematurely end the tag.
@@ -3406,7 +3576,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     # JS/TS module graph (SFCs embed JS/TS)
     ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
-    ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts",
+    ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts", ".ejs": "jsts",
     # JVM interop
     ".java": "jvm", ".kt": "jvm", ".kts": "jvm",
     ".scala": "jvm", ".groovy": "jvm", ".gradle": "jvm",
@@ -7380,6 +7550,7 @@ _DISPATCH: dict[str, Any] = {
     ".vue": extract_vue,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
+    ".ejs": extract_ejs,
     ".dart": extract_dart,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
