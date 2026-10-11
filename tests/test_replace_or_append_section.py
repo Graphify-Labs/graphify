@@ -305,4 +305,57 @@ def test_a_fenced_comment_in_trailing_content_does_not_block_a_clean_remove():
     assert removed is not None
     assert "## My own rules" in removed
     assert "echo hi" in removed
-    assert "registration content" not in removed
+
+
+def test_a_different_fence_character_inside_an_open_fence_does_not_close_it():
+    """Review finding on PR 3803: fence tracking toggled on ANY fence line,
+    backtick or tilde, as if the two were interchangeable. CommonMark closes
+    a fence only on a line of the SAME character it opened with, so a tilde
+    fenced example that itself demonstrates backtick fences as literal text
+    must not have that backtick line mistaken for closing it -- a heading
+    line still inside the tilde fence would otherwise wrongly end the scan
+    early, which is exactly the #3791 data loss bug this file exists to
+    prevent."""
+    h1_marker = "# graphify"
+    before = (
+        "# graphify\n"
+        "registration content\n"
+        "~~~markdown\n"
+        "To open a fenced block, write:\n"
+        "```\n"
+        "# this line is still inside the outer tilde fence\n"
+        "~~~\n"
+        "\n"
+        "## User Section\n"
+        "important user content\n"
+    )
+    after = _replace_or_append_section(
+        before, h1_marker, "# graphify\nNEW content\n", boundary_prefix="# "
+    )
+    assert "important user content" in after
+    assert "NEW content" in after
+    assert "registration content" not in after
+    assert "still inside the outer tilde fence" not in after
+
+
+def test_an_indented_sibling_heading_is_still_recognized_as_a_boundary():
+    """Review finding on PR 3803: the boundary_prefix check matched against
+    the RAW line, while every other check in this same condition (the ATX
+    heading regex) matches against the stripped line. A sibling heading
+    indented by a couple of spaces is still a real ATX heading per
+    CommonMark, so matching the raw line missed it as a boundary even though
+    the ATX check a few lines later would have caught the same line once
+    stripped -- an inconsistency between two branches of one condition."""
+    h2_marker = "## graphify"
+    before = (
+        "## graphify\n"
+        "registration content\n"
+        "  ## User Section\n"
+        "important user content\n"
+    )
+    after = _replace_or_append_section(
+        before, h2_marker, "## graphify\nNEW content\n", boundary_prefix="## "
+    )
+    assert "important user content" in after
+    assert "NEW content" in after
+    assert "registration content" not in after
