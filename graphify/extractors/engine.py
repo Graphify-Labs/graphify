@@ -8133,6 +8133,13 @@ def _extract_generic(
                 # skips source-less candidates on its own (#3888).
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
+                    # A direct recursive call (tgt_nid == caller_nid) is a real
+                    # self-edge, not noise: name resolution binds it the same
+                    # way as any other call, and build_from_json already
+                    # preserves a supplied recursive calls self-loop rather
+                    # than stripping it, so extraction dropping it here was
+                    # the only place the call structure actually got lost
+                    # (#3350).
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
