@@ -679,15 +679,15 @@ def test_default_global_git_ignore_is_honoured(tmp_path):
     """With core.excludesFile unset git still reads ~/.config/git/ignore (or
     $XDG_CONFIG_HOME/git/ignore); HOME is sandboxed by conftest (#4335)."""
     (Path.home() / ".config" / "git").mkdir(parents=True)
-    (Path.home() / ".config" / "git" / "ignore").write_text("**/.claude/settings.local.json\nsecret.py\n")
+    (Path.home() / ".config" / "git" / "ignore").write_text("**/config.local.json\nsecret.py\n")
     (tmp_path / ".git").mkdir()
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".claude" / "settings.local.json").write_text('{"token": "x"}')
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.local.json").write_text('{"token": "x"}')
     (tmp_path / "secret.py").write_text("SECRET = 'abc'")
     (tmp_path / "a.py").write_text("x = 1")
 
     files = as_posix_list(f for fs in detect(tmp_path)["files"].values() for f in fs)
-    assert not any(f.endswith("secret.py") or "settings.local.json" in f for f in files)
+    assert not any(f.endswith("secret.py") or f.endswith("config.local.json") for f in files)
     assert any(f.endswith("a.py") for f in files)
 
 
