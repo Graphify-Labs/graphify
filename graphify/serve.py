@@ -1373,16 +1373,8 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
 _QUERY_NO_MATCH = "No matching nodes found."
 
 
-def _query_graph_text(
-    G: nx.Graph,
-    question: str,
-    *,
-    mode: str = "bfs",
-    depth: int = 3,
-    token_budget: int = 2000,
-    context_filters: list[str] | None = None,
-    graph_path: str | None = None,
-) -> str:
+def _question_seeds(G: nx.Graph, question: str) -> list[str]:
+    """Traversal roots picked from the question's keywords (the default `query` seeding)."""
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
@@ -1404,7 +1396,22 @@ def _query_graph_text(
         best_seed_by_term = {
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    return _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+
+
+def _query_graph_text(
+    G: nx.Graph,
+    question: str,
+    *,
+    mode: str = "bfs",
+    depth: int = 3,
+    token_budget: int = 2000,
+    context_filters: list[str] | None = None,
+    graph_path: str | None = None,
+    start_nodes: list[str] | None = None,
+) -> str:
+    if start_nodes is None:
+        start_nodes = _question_seeds(G, question)
     if not start_nodes:
         return _QUERY_NO_MATCH
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
@@ -1756,28 +1763,20 @@ def _no_scoped_match_message(G: nx.Graph, path_part: str, symbol_part: str) -> s
     return msg
 
 
-def _resolve_path_endpoint(
-    G: nx.Graph, query: str
-) -> tuple[str | None, list[tuple[float, str]], str | None]:
-    """Resolve one endpoint of the `path` CLI / `shortest_path` tool (#3913).
+def _resolve_exact_node(G: nx.Graph, query: str) -> tuple[str | None, str | None]:
+    """Resolve *query* only when it names a node outright, never by score.
 
     A hit in `_find_node`'s exact tiers — the `path::symbol` form, a full node
     id, an exact label or source path — names the node outright, so it is used
     as-is, and refused with the candidate list when it spans several files (the
-    answer `explain` gives). Scoring alone tokenized those forms instead: the
-    path half of `path::symbol` pulled the route to the file node, and an id's
-    tokens to its containing class. Only a query without an exact hit falls
-    through to `_score_nodes`, which ranks the multi-word and partial labels
-    the tiers cannot.
+    answer `explain` gives). Several hits in one file are refused too, unless
+    the query is a file path (whose tier is the file node followed by its
+    members): two same-named symbols of one file cannot be told apart by
+    `path::symbol`, only by the node id.
 
-    Several hits in one file are refused too, unless the query is a file path
-    (whose tier is the file node followed by its members): two same-named
-    symbols of one file were split by graph order behind a score-tie warning,
-    and `path::symbol` cannot separate them — only the node id can.
-
-    Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
-    score fallback picked the node; ``(None, [], message)`` when ambiguous; and
-    ``(None, [], None)`` when nothing matches.
+    Returns ``(node_id, None)``; ``(None, message)`` when ambiguous or when a
+    `file::symbol` names a file without that symbol; ``(None, None)`` when no
+    node is named exactly.
     """
     source_exact, exact, _, _ = _find_node_tiers(G, query)
     hits = source_exact or exact
@@ -1788,8 +1787,8 @@ def _resolve_path_endpoint(
             G, query, hits, file_query=bool(source_exact) and "::" not in query
         )
         if refusal:
-            return None, [], refusal
-        return hits[0], [], None
+            return None, refusal
+        return hits[0], None
     # A deliberately file-scoped endpoint (`file::symbol`) that matched no symbol
     # in that file must NOT fall back to scoring the bare name across other files
     # (#4264) — that reintroduces the cross-file guess the qualifier forbids. Fail
@@ -1797,7 +1796,28 @@ def _resolve_path_endpoint(
     # via the exact tier above (hits non-empty) and never reaches here.
     path_part, sep, symbol_part = query.partition("::")
     if sep and path_part.strip() and symbol_part.strip():
-        return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
+        return None, _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
+    return None, None
+
+
+def _resolve_path_endpoint(
+    G: nx.Graph, query: str
+) -> tuple[str | None, list[tuple[float, str]], str | None]:
+    """Resolve one endpoint of the `path` CLI / `shortest_path` tool (#3913).
+
+    An exact name (`_resolve_exact_node`) is used as-is or refused. Scoring alone
+    tokenized those forms instead: the path half of `path::symbol` pulled the
+    route to the file node, and an id's tokens to its containing class. Only a
+    query without an exact hit falls through to `_score_nodes`, which ranks the
+    multi-word and partial labels the tiers cannot.
+
+    Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
+    score fallback picked the node; ``(None, [], message)`` when refused; and
+    ``(None, [], None)`` when nothing matches.
+    """
+    nid, refusal = _resolve_exact_node(G, query)
+    if nid is not None or refusal is not None:
+        return nid, [], refusal
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None

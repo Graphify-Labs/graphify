@@ -1314,15 +1314,18 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--strict] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _QUERY_NO_MATCH, _query_graph_text
+        from graphify.serve import (
+            _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text, _resolve_exact_node,
+        )
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        strict = "--strict" in sys.argv[3:]
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
@@ -1409,6 +1412,20 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        _start: list[str] | None = None
+        if strict:
+            _nid, _refusal = _resolve_exact_node(G, question)
+            if _nid is None:
+                print(_refusal or (
+                    f"No node is named exactly '{question}'. --strict starts only from a "
+                    "node the question names outright: its id, its exact label, its file "
+                    "path, or path::Symbol.\n"
+                    'Look one up with: graphify explain "<path>::<Symbol>"\n'
+                    'Connect two with: graphify path "<A>" "<B>"\n'
+                    "Without --strict, query seeds from keywords, which may be off-topic."
+                ))
+                sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(_refusal) else EXIT_NOT_FOUND)
+            _start = [_nid]
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
@@ -1420,6 +1437,7 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             context_filters=context_filters,
             graph_path=str(gp),
+            start_nodes=_start,
         )
         querylog.log_query(
             kind="query",
