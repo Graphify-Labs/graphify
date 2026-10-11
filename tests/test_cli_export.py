@@ -209,6 +209,177 @@ def test_export_falkordb_creates_cypher(tmp_path):
     assert "MERGE" in content or "CREATE" in content
 
 
+def _dispatch_graphdb_push(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    subcmd: str,
+    uri: str,
+    password_env: str | None = None,
+    user: str | None = None,
+) -> tuple[dict[str, object], str]:
+    """Run CLI dispatch with the database exporter replaced by a recorder."""
+    project = tmp_path / "project with spaces"
+    project.mkdir()
+    out = _make_graph(project)
+    monkeypatch.chdir(project)
+
+    import graphify.export as export_module
+    from graphify.cli import dispatch_command
+
+    calls: dict[str, object] = {}
+
+    def fake_push(G, *, uri, user, password, communities):
+        calls.update(uri=uri, user=user, password=password, communities=communities)
+        return {"nodes": G.number_of_nodes(), "edges": G.number_of_edges()}
+
+    monkeypatch.setattr(export_module, f"push_to_{subcmd}", fake_push)
+    secret_env = "FALKORDB_PASSWORD" if subcmd == "falkordb" else "NEO4J_PASSWORD"
+    monkeypatch.delenv(secret_env, raising=False)
+    if password_env is not None:
+        monkeypatch.setenv(secret_env, password_env)
+
+    args = ["graphify", "export", subcmd, "--graph", str(out / "graph.json"), "--push", uri]
+    if user is not None:
+        args.extend(["--user", user])
+    monkeypatch.setattr(sys, "argv", args)
+    dispatch_command("export")
+    return calls, uri
+
+
+@pytest.mark.parametrize(
+    ("subcmd", "uri", "user", "password_env", "expected_password"),
+    [
+        (
+            "neo4j",
+            "neo4j+s://db.example:8765/tenant/prod?mode=read%20write&tag=a%26b",
+            "graph-writer",
+            "neo4j-secret-not-for-output",
+            "neo4j-secret-not-for-output",
+        ),
+        (
+            "falkordb",
+            "falkordb://db.example:6391/graphs/team%20alpha?tls=true&tag=a%3Bb",
+            None,
+            None,
+            None,
+        ),
+        (
+            "falkordb",
+            "redis://db.example:6392/graphs/main?user=writer%40example.com",
+            "redis-writer",
+            "falkordb-secret-not-for-output",
+            "falkordb-secret-not-for-output",
+        ),
+    ],
+)
+def test_graphdb_push_forwards_uri_and_credentials_without_a_database_connection(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    subcmd: str,
+    uri: str,
+    user: str | None,
+    password_env: str | None,
+    expected_password: str | None,
+) -> None:
+    calls, expected_uri = _dispatch_graphdb_push(
+        monkeypatch,
+        tmp_path,
+        subcmd=subcmd,
+        uri=uri,
+        user=user,
+        password_env=password_env,
+    )
+
+    assert calls["uri"] == expected_uri
+    assert calls["user"] == (user if user is not None else "neo4j")
+    assert calls["password"] == expected_password
+    output = capsys.readouterr().out
+    assert "db.example" not in output
+    assert "secret-not-for-output" not in output
+
+
+@pytest.mark.parametrize("subcmd", ["neo4j", "falkordb"])
+def test_graphdb_export_without_push_never_calls_database(
+    monkeypatch, tmp_path: Path, subcmd: str
+) -> None:
+    project = tmp_path / "project with spaces"
+    project.mkdir()
+    out = _make_graph(project)
+    monkeypatch.chdir(project)
+
+    import graphify.export as export_module
+    from graphify.cli import dispatch_command
+
+    def fail_if_pushed(*args, **kwargs):
+        pytest.fail("export-only mode must not push to a database")
+
+    monkeypatch.setattr(export_module, f"push_to_{subcmd}", fail_if_pushed)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "export", subcmd, "--graph", str(out / "graph.json")],
+    )
+
+    dispatch_command("export")
+
+    cypher = out / "cypher.txt"
+    assert cypher.is_file()
+    assert "MERGE" in cypher.read_text(encoding="utf-8")
+
+
+def test_export_reference_preserves_supplied_push_uris_safely() -> None:
+    fragment = (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "references"
+        / "shared"
+        / "exports.md"
+    ).read_text(encoding="utf-8")
+    neo4j = fragment[fragment.index("### Step 7 - Neo4j export") : fragment.index("### Step 7a - FalkorDB")]
+    falkordb = fragment[fragment.index("### Step 7a - FalkorDB export") : fragment.index("### Step 7b - SVG export")]
+
+    for section, push_heading, scheme_host, local_default in (
+        (
+            neo4j,
+            "If `--neo4j-push",
+            "bolt://remote-host:7687",
+            "bolt://localhost:7687",
+        ),
+        (
+            falkordb,
+            "If `--falkordb-push",
+            "falkordb://remote-host:6379",
+            "falkordb://localhost:6379",
+        ),
+    ):
+        push_instructions = section[section.index(push_heading) :]
+        code_start = push_instructions.index("```bash\n") + len("```bash\n")
+        code_end = push_instructions.index("\n```", code_start)
+        push_example = push_instructions[code_start:code_end]
+
+        assert "exact URI from the original `/graphify` command" in section
+        assert "quote the URI for the shell that will execute the command" in section
+        assert "`shlex.quote` for POSIX shells" in section
+        assert "Never replace a supplied URI with localhost" in section
+        assert "explicitly requested a push but supplied no URI" in section
+        assert "Only push when this flag was explicitly given" in section
+        assert "Do not print the URI or credentials" in section
+        assert scheme_host in section
+        assert scheme_host in push_example
+        assert local_default not in push_example
+
+    assert "Default URI is `bolt://localhost:7687`" in neo4j
+    assert "Default URI is `falkordb://localhost:6379`" in falkordb
+    assert "NEO4J_PASSWORD" in neo4j
+    assert "FALKORDB_PASSWORD" in falkordb
+    assert "--neo4j-push" in neo4j
+    assert "--falkordb-push" in falkordb
+
+
 # ── graphify query ───────────────────────────────────────────────────────────
 
 def test_query_returns_output(tmp_path):
