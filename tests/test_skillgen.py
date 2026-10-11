@@ -787,11 +787,36 @@ def test_save_result_answer_is_captured_through_a_heredoc_not_inlined():
         assert '--answer "ANSWER"' not in body, (
             f"[{key}] the old direct-substitution --answer form must not survive"
         )
-        assert "cat > graphify-out/.save_result_answer.tmp <<'EOF'" in body, (
-            f"[{key}] missing the heredoc capture for the save-result answer"
+        assert "cat > graphify-out/.save_result_answer.tmp <<'GRAPHIFY_ANSWER_EOF'" in body, (
+            f"[{key}] missing the heredoc capture for the save-result answer, "
+            f"or it still uses the bare 'EOF' delimiter a line of ANSWER's own "
+            f"text could collide with"
         )
         assert "--answer-file graphify-out/.save_result_answer.tmp" in body, (
             f"[{key}] save-result must read the answer back from the captured file"
+        )
+
+
+def test_save_result_answer_heredoc_uses_a_collision_resistant_delimiter():
+    """#3621 review follow up: the save-result answer heredoc originally closed
+    on a bare `EOF`, same as every shell heredoc reaches for by reflex. ANSWER
+    is the agent's own free text explanation, and a line that is just "EOF"
+    is entirely plausible boilerplate inside one (quoting shell output, a log
+    excerpt, a code block fence label) -- that closes the heredoc early and
+    lets the rest of ANSWER execute as shell commands, the exact class of bug
+    the heredoc was introduced to prevent in the first place. The delimiter
+    is now the distinctive GRAPHIFY_ANSWER_EOF, matching the GRAPHIFY_ROOT_EOF
+    pattern Step 1's own scan-root heredoc already uses for the same reason."""
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core + "".join(claude_refs.values())}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "<<'EOF'\nANSWER\nEOF" not in body, (
+            f"[{key}] the save-result answer heredoc still closes on a bare "
+            f"EOF that ANSWER's own text could contain"
         )
 
 
@@ -817,8 +842,11 @@ def test_ingest_add_call_captures_url_author_contributor_through_files():
             f"[{key}] the old direct-substitution ingest(...) form must not survive"
         )
         for tmp_name in ("url", "author", "contributor"):
-            assert f"cat > graphify-out/.ingest_{tmp_name}.tmp <<'EOF'" in body, (
-                f"[{key}] missing the heredoc capture for ingest's {tmp_name}"
+            delim = f"GRAPHIFY_{tmp_name.upper()}_EOF"
+            assert f"cat > graphify-out/.ingest_{tmp_name}.tmp <<'{delim}'" in body, (
+                f"[{key}] missing the heredoc capture for ingest's {tmp_name}, "
+                f"or it still uses the bare 'EOF' delimiter a fetched page's own "
+                f"text could collide with"
             )
             assert f"Path('graphify-out/.ingest_{tmp_name}.tmp').read_text" in body, (
                 f"[{key}] must read {tmp_name} back from its captured file"
@@ -826,6 +854,31 @@ def test_ingest_add_call_captures_url_author_contributor_through_files():
         assert "ingest(_url, Path('./raw'), author=_author, contributor=_contributor)" in body, (
             f"[{key}] ingest(...) must be called with the file-captured values"
         )
+
+
+def test_ingest_add_heredocs_use_collision_resistant_delimiters():
+    """#3621 review follow up: the ingest URL/AUTHOR/CONTRIBUTOR heredocs
+    originally all closed on the same bare `EOF`, same as every shell heredoc
+    reaches for by reflex. AUTHOR/CONTRIBUTOR can be free text lifted
+    verbatim from a fetched page, and a page plausibly contains a line that
+    is just "EOF" -- that closes the heredoc early and lets the rest of the
+    page's content execute as shell commands, the exact class of bug the
+    heredoc was introduced to prevent. Each now uses its own distinctive
+    GRAPHIFY_URL_EOF/GRAPHIFY_AUTHOR_EOF/GRAPHIFY_CONTRIBUTOR_EOF delimiter,
+    matching the GRAPHIFY_ROOT_EOF pattern Step 1's own scan-root heredoc
+    already uses for the same reason."""
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core + "".join(claude_refs.values())}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        for tmp_name in ("URL", "AUTHOR", "CONTRIBUTOR"):
+            assert f"<<'EOF'\n{tmp_name}\nEOF" not in body, (
+                f"[{key}] the ingest {tmp_name.lower()} heredoc still closes on a "
+                f"bare EOF that fetched page content could contain"
+            )
 
 
 def test_step1_gates_on_a_still_failed_install():
