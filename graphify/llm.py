@@ -1483,8 +1483,11 @@ def _call_openai_compat(
         raise ValueError("LLM returned empty or filtered response")
     raw_content = resp.choices[0].message.content
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = resp.usage.prompt_tokens if resp.usage else 0
-    result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
+    # Some OpenAI-compatible gateways report null token counts (#4325) — coerce
+    # to 0 so the ollama low-token warning and the per-chunk merge below don't
+    # crash comparing/adding None.
+    result["input_tokens"] = (resp.usage.prompt_tokens or 0) if resp.usage else 0
+    result["output_tokens"] = (resp.usage.completion_tokens or 0) if resp.usage else 0
     result["model"] = model
     # `finish_reason == "length"` means the model hit max_completion_tokens
     # mid-generation. The JSON we got back is truncated; callers should
@@ -1531,8 +1534,8 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     )
     raw_content = _anthropic_response_text(resp.content)
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = resp.usage.input_tokens if resp.usage else 0
-    result["output_tokens"] = resp.usage.output_tokens if resp.usage else 0
+    result["input_tokens"] = (resp.usage.input_tokens or 0) if resp.usage else 0
+    result["output_tokens"] = (resp.usage.output_tokens or 0) if resp.usage else 0
     result["model"] = model
     # Normalise Anthropic's `stop_reason` to the OpenAI-compat `finish_reason`
     # vocabulary so the adaptive-retry layer doesn't have to know which
@@ -1885,8 +1888,8 @@ def _call_azure(
         raise ValueError("Azure OpenAI returned empty or filtered response")
     raw_content = resp.choices[0].message.content
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = resp.usage.prompt_tokens if resp.usage else 0
-    result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
+    result["input_tokens"] = (resp.usage.prompt_tokens or 0) if resp.usage else 0
+    result["output_tokens"] = (resp.usage.completion_tokens or 0) if resp.usage else 0
     result["model"] = model
     result["finish_reason"] = resp.choices[0].finish_reason
     _mark_hollow(result, raw_content, "azure")
@@ -1936,8 +1939,8 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     text = _bedrock_response_text(resp, default="{}")
     result = _parse_llm_json(text)
     usage = resp.get("usage", {})
-    result["input_tokens"] = usage.get("inputTokens", 0)
-    result["output_tokens"] = usage.get("outputTokens", 0)
+    result["input_tokens"] = usage.get("inputTokens", 0) or 0
+    result["output_tokens"] = usage.get("outputTokens", 0) or 0
     result["model"] = model
     result["finish_reason"] = "length" if resp.get("stopReason") == "max_tokens" else "stop"
     _mark_hollow(result, text, "bedrock")
