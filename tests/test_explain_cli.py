@@ -320,3 +320,82 @@ def test_explain_matches_within_one_file_are_not_ambiguous(monkeypatch, tmp_path
     out = _run(monkeypatch, p, "MetricsPort", capsys)
     assert "Ambiguous" not in out
     assert "Node: MetricsPort" in out
+
+
+def test_explain_path_scoped_symbol_resolves_the_ambiguous_case(monkeypatch, tmp_path, capsys):
+    """#3485: the ambiguity message suggests retrying with "the repo-relative
+    path", but a bare path resolves to the FILE node, not the symbol, so
+    that retry either finds nothing or the wrong thing. `path::Symbol`
+    restricts the label match to the given file, so the same query that
+    produced the ambiguity now resolves to the specific symbol asked
+    about."""
+    p = _write_ambiguous_graph(tmp_path)
+    out = _run(
+        monkeypatch, p,
+        "services/chat/src/application/ports/metrics.port.ts::MetricsPort",
+        capsys,
+    )
+    assert "Ambiguous" not in out
+    assert "ID:        chat_metrics_port" in out
+
+    out2 = _run(
+        monkeypatch, p,
+        "services/scraping/src/application/ports/metrics.port.ts::MetricsPort",
+        capsys,
+    )
+    assert "Ambiguous" not in out2
+    assert "ID:        scraping_metrics_port" in out2
+
+
+def test_explain_path_scoped_symbol_falls_back_when_nothing_matches(monkeypatch, tmp_path, capsys):
+    """A path part that matches no file, or a symbol not in that file, must
+    fall through to the ordinary "no match" behavior rather than crash or
+    silently pick something else."""
+    p = _write_ambiguous_graph(tmp_path)
+    out, code = _run_expect_exit(
+        monkeypatch, p,
+        "services/chat/src/application/ports/metrics.port.ts::NotThere",
+        capsys,
+    )
+    assert "No node matching" in out
+
+
+def test_explain_double_colon_label_without_path_match_still_resolves(monkeypatch, tmp_path, capsys):
+    """A language that genuinely uses "::" in a label (Rust modules, C++
+    namespaces) must still resolve via ordinary matching when the string
+    before "::" does not happen to match any file path."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "mymod_foo_bar", "label": "Foo::Bar",
+             "source_file": "src/lib.rs", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "Foo::Bar", capsys)
+    assert "Ambiguous" not in out
+    assert "ID:        mymod_foo_bar" in out
+
+
+def test_explain_double_colon_label_not_hijacked_by_a_coincidental_path_match(monkeypatch, tmp_path, capsys):
+    """A native "::" label must resolve to itself even when its prefix happens
+    to match an unrelated file elsewhere in the graph (an extensionless file
+    literally named the same as the module) -- the path::Symbol form must not
+    shadow a query the literal label already answers."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "mylib_bar", "label": "mylib::Bar",
+             "source_file": "src/mylib.rs", "community": 0},
+            {"id": "mylib_file_bar", "label": "Bar",
+             "source_file": "mylib", "community": 1},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "mylib::Bar", capsys)
+    assert "Ambiguous" not in out
+    assert "ID:        mylib_bar" in out

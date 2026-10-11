@@ -4,14 +4,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
 def extract_razor(path: Path) -> dict:
-    """Extract directives, component refs, and @code methods from .razor/.cshtml."""
+    """Extract directives, component refs, and @code/@functions methods from .razor/.cshtml."""
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
 
@@ -158,7 +158,11 @@ def extract_razor(path: Path) -> dict:
         line_num = src[:m.start()].count("\n") + 1
         _add_ref(comp_name, "calls", line_num)
 
-    _CODE_BLOCK_RE = re.compile(r'@code\s*\{', re.MULTILINE)
+    # @code is the Blazor (.razor) spelling; @functions is the equivalent
+    # Razor-Pages / MVC (.cshtml) spelling. Both compile to class members, and
+    # this extractor serves both file types, so a .cshtml that declares its
+    # methods in an @functions block lost every one of them.
+    _CODE_BLOCK_RE = re.compile(r'@(?:code|functions)\s*\{', re.MULTILINE)
     for m in _CODE_BLOCK_RE.finditer(src):
         block_start = m.end()
         depth = 1
