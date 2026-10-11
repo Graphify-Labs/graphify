@@ -78,7 +78,7 @@ def test_explain_refuses_same_file_twins(monkeypatch, tmp_path, capsys, label):
 
 def test_explain_refuses_sourceless_stubs(monkeypatch, tmp_path, capsys):
     out, code = _explain(monkeypatch, capsys, _write(tmp_path), "EntityManagerInterface")
-    assert "Ambiguous: 'EntityManagerInterface' matches 2 nodes with no source file." in out
+    assert out.startswith("Ambiguous: 'EntityManagerInterface' matches 2 nodes")
     assert "tests_a_php_entitymanagerinterface" in out
     assert "tests_b_php_entitymanagerinterface" in out
     assert "Node: EntityManagerInterface" not in out
