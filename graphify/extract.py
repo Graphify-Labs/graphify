@@ -74,6 +74,7 @@ from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.solidity import (  # noqa: F401
     extract_solidity,
+    resolve_solidity_inherited_calls,
     resolve_solidity_type_references,
 )
 from graphify.extractors.sql import extract_sql  # noqa: F401
@@ -7332,6 +7333,12 @@ register_language_resolver(
         "solidity_type_references", frozenset({".sol"}), resolve_solidity_type_references
     )
 )
+# Runs after the type pass: it walks the `inherits` edges that pass binds.
+register_language_resolver(
+    LanguageResolver(
+        "solidity_inherited_calls", frozenset({".sol"}), resolve_solidity_inherited_calls
+    )
+)
 register_language_resolver(
     LanguageResolver(
         "erlang_remote_calls",
@@ -10324,6 +10331,11 @@ def extract(
         # cited file as evidence; a global name match here would mint a `calls`
         # edge from a heading to whatever shares the name.
         if rc.get("language") == "markdown":
+            continue
+        # A Solidity name is visible only through the caller contract's own
+        # bases; resolve_solidity_inherited_calls binds those. A corpus-wide
+        # name match would link `_transfer()` to any contract's `_transfer`.
+        if rc.get("solidity_call"):
             continue
         # A Go predeclared function is never a cross-file call: the extractor
         # already drops bare `append(s, x)` (extractors/go.py), so this is the
