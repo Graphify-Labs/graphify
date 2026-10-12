@@ -64,6 +64,13 @@ _PYTHON_TYPE_CONTAINERS = frozenset({
     "Generator", "AsyncGenerator", "ContextManager", "AsyncContextManager",
     "Annotated", "ClassVar", "Final", "Literal", "Concatenate", "ParamSpec", "TypeVar",
     "None", "Ellipsis",
+    # PEP 673: `Self` names the enclosing class, not a corpus symbol. Emitting a
+    # ref mints a sourceless stub with the bare id `self` that every `-> Self`
+    # method in the corpus collapses onto (a god node), the same keyword-type
+    # pitfall as Rust's `Self`. Dropping it matches how the `-> "ClassName"`
+    # self forward-ref is already left unresolved. `typing.Self` resolves to the
+    # same tail and is covered by the attribute branch below.
+    "Self",
 })
 
 _PYTHON_ANNOTATION_NOISE = frozenset({
