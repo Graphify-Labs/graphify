@@ -3092,6 +3092,49 @@ def test_powershell_dot_source_inside_function_emits_edge():
     )
 
 
+
+@pytest.mark.parametrize("line", [
+    '. "$PSScriptRoot\\lib.ps1"',   # quoted path with variable (most common in real scripts)
+    ". $PSScriptRoot\\lib.ps1",     # unquoted path with variable -> path_command_name
+    ". '.\\lib.ps1'",               # single-quoted relative path -> string_literal
+])
+def test_powershell_dot_source_quoted_or_variable_path_emits_edge(tmp_path, line):
+    """Dot-source with a quoted or $PSScriptRoot-based path emits imports_from (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(line + "\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any(t.endswith("lib") for t in targets), f"Missing dot-source lib edge; targets={targets}"
+
+
+def test_powershell_script_scope_call_is_recorded(tmp_path):
+    """A call at script scope (outside any function) is attributed to the file (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "Helper\n"
+        "Get-External\n"
+    )
+    r = extract_powershell(f)
+    calls = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    raw = {c["callee"] for c in r["raw_calls"]}
+    assert any(t.endswith("helper") for t in calls), f"Missing script-scope call to Helper; calls={calls}"
+    assert "Get-External" in raw, f"Missing script-scope raw call; raw={raw}"
+
+
+def test_powershell_script_scope_walk_does_not_duplicate_function_calls(tmp_path):
+    """Walking the file root must not re-attribute calls made inside function bodies."""
+    f = tmp_path / "mod.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "function Run { Helper }\n"
+    )
+    r = extract_powershell(f)
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == f.name)
+    callers = {e["source"] for e in r["edges"] if e["relation"] == "calls"}
+    callers |= {c["caller_nid"] for c in r["raw_calls"]}
+    assert file_nid not in callers, f"File node became a caller; callers={callers}"
+
 # ── PowerShell manifest (.psd1) (#1331) ──────────────────────────────────────
 
 def test_powershell_psd1_dispatched():
