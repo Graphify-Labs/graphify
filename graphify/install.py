@@ -2696,8 +2696,23 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _project_uninstall("pi", Path("."))
             else:
                 _remove_skill_file("pi")
+        elif subcmd == "guard" and sys.argv[3:] in (["install"], ["uninstall"], ["path"]):
+            # The native guard package ships inside the wheel; Pi owns its registration.
+            package_path = Path(__file__).resolve().parent / "pi"
+            if sys.argv[3] == "path":
+                print(package_path)
+                return True
+            pi = shutil.which("pi")
+            if not pi:
+                print("error: install Pi (pi) and add it to PATH first", file=sys.stderr)
+                sys.exit(1)
+            import subprocess
+            verb = "install" if sys.argv[3] == "install" else "remove"
+            result = subprocess.run([pi, verb, str(package_path)], check=False)
+            if result.returncode:
+                sys.exit(result.returncode)
         else:
-            print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            print("Usage: graphify pi [install|uninstall] | graphify pi guard [install|uninstall|path]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

@@ -250,7 +250,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +258,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design — use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
+
+Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native Pi extension (via Pi's own `pi install <package directory>`) that runs the installed `graphify hook-guard` before Pi's `read`, `grep`, `find` and search-style `bash` calls. Fresh/stale graph decisions and the `GRAPHIFY_HOOK_STRICT=1` once-per-session indexed-read denial come from that same policy, so Pi matches Claude Code's hook behavior; guidance arrives as a `<system-reminder source="graphify">` message. The package ships inside the Graphify installation, so install Graphify persistently (`uv tool install graphifyy` or `pipx install graphifyy`, not `uvx`), restart Pi after installing or upgrading, and remove it with `graphify pi guard uninstall`. Only local file targets are inspected; the hook needs `graphify` on an absolute `PATH` entry outside the project, is bounded to a two-second, 256 KiB-in/64 KiB-out call, and fails open. The same package also loads in [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. The registered path contains the Python version and venv, so re-run `graphify pi guard install` after changing either, and remove the old entry with `pi remove <old path>`.
 
 > Codex uses `$graphify` instead of `/graphify`.
 
