@@ -212,3 +212,70 @@ def test_crate_is_the_deepest_root_above_the_file(tmp_path: Path):
     for caller in ("unit()", "integration()"):
         assert _hit(calls, caller, ".load()", "crates/a/src/config.rs"), (caller, calls)
         assert not _hit(calls, caller, ".load()", "crates/b/src/config.rs"), (caller, calls)
+
+
+_DIR_ENTRY = (
+    "pub struct DirEntry { pub name: String }\n"
+    "impl DirEntry {\n"
+    "    pub fn new() -> Self { DirEntry { name: String::new() } }\n"
+    "    pub fn path(&self) -> String { self.name.clone() }\n"
+    "}\n"
+)
+
+
+def test_a_type_imported_from_std_never_binds_to_a_same_named_local_type(tmp_path: Path):
+    calls = _calls(tmp_path, {
+        "src/walker.rs": _DIR_ENTRY,
+        "src/main.rs": (
+            "mod walker;\nuse std::fs::DirEntry;\n"
+            "fn show(e: DirEntry) { let _ = e.path(); }\n"
+            "fn listed(e: &DirEntry) -> String { let p = e.path(); p }\n"
+        ),
+    })
+    assert not _hit(calls, "show()", ".path()", "src/walker.rs"), calls
+    assert not _hit(calls, "listed()", ".path()", "src/walker.rs"), calls
+
+
+def test_a_type_imported_from_another_crate_never_binds_here(tmp_path: Path):
+    calls = _calls(tmp_path, {
+        "src/walker.rs": _DIR_ENTRY,
+        "src/dep.rs": (
+            "use walkdir::{DirEntry, WalkDir};\n"
+            "fn param(e: DirEntry) { let _ = e.path(); }\n"
+            "fn built() { let e = DirEntry::new(); let _ = e.path(); }\n"
+        ),
+    })
+    assert not any(c[0] in ("param()", "built()") for c in calls), calls
+
+
+def test_the_crates_own_imports_still_bind(tmp_path: Path):
+    # `use crate::...` in a nested module of a file that also imports std's
+    # `DirEntry`: a `use` applies to its own module only.
+    calls = _calls(tmp_path, {
+        "src/walker.rs": _DIR_ENTRY,
+        "src/main.rs": (
+            "mod walker;\nuse std::fs::DirEntry;\n"
+            "fn show(e: DirEntry) { let _ = e.path(); }\n"
+            "mod inner {\n"
+            "    use crate::walker::DirEntry;\n"
+            "    fn mine(e: DirEntry) { let _ = e.path(); }\n"
+            "}\n"
+        ),
+    })
+    assert _hit(calls, "mine()", ".path()", "src/walker.rs"), calls
+    assert not _hit(calls, "show()", ".path()", "src/walker.rs"), calls
+
+
+def test_a_crate_imported_by_its_cargo_package_name_is_the_corpus_own(tmp_path: Path):
+    # bat's examples `use bat::PrettyPrinter;`: the package name, read from
+    # Cargo.toml (past an `authors = [...]` line), names this corpus's crate.
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nauthors = ["A <a@b.c>"]\nname = "my-tool"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    calls = _calls(tmp_path, {
+        "src/lib.rs": "pub mod walker;\n",
+        "src/walker.rs": _DIR_ENTRY,
+        "examples/demo.rs": "use my_tool::walker::DirEntry;\nfn main() { let e = DirEntry::new(); let _ = e.path(); }\n",
+    })
+    assert _hit(calls, "main()", ".path()", "src/walker.rs"), calls

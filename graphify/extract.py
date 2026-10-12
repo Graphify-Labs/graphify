@@ -7134,6 +7134,52 @@ def _rust_crate_roots(paths) -> frozenset[str]:
     return frozenset(roots)
 
 
+def _cargo_crate_names(text: str) -> set[str]:
+    """The `name`s of a Cargo.toml's `[package]` and `[lib]` tables (either is
+    how other crates `use` it), read line by line."""
+    names: set[str] = set()
+    section = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        header = re.match(r"^\[\s*([^\]]+?)\s*\]$", stripped)
+        if header:
+            section = header.group(1)
+            continue
+        if section in ("package", "lib"):
+            m = re.match(r"""^name\s*=\s*["']([^"']+)["']""", stripped)
+            if m:
+                names.add(m.group(1))
+    return names
+
+
+def _rust_corpus_crate_names(paths, crate_roots) -> frozenset[str]:
+    """Names this corpus's own crates are imported by: each crate dir's name
+    and the `[package]` / `[lib]` name of the nearest `Cargo.toml` above each
+    file (with `-` as `_`, as `use` spells it), so `use grep_searcher::Searcher;` in a
+    sibling crate counts as the corpus's own."""
+    names = {root.rsplit("/", 1)[-1].replace("-", "_") for root in crate_roots if root}
+    seen: set[str] = set()
+    for path in paths:
+        folder = os.path.dirname(path) or "."
+        while folder not in seen:
+            seen.add(folder)
+            manifest = os.path.join(folder, "Cargo.toml")
+            if os.path.isfile(manifest):
+                try:
+                    text = Path(manifest).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    break
+                names |= {name.replace("-", "_") for name in _cargo_crate_names(text)}
+                break
+            if folder == ".":
+                break
+            parent = os.path.dirname(folder) or "."
+            if parent == folder:
+                break
+            folder = parent
+    return frozenset(names)
+
+
 def _resolve_rust_typed_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -7227,6 +7273,7 @@ def _resolve_rust_typed_member_calls(
         return crate_of[path]
 
     relative_crates = {c for c in crate_roots if c and not _is_abs(c)}
+    corpus_crates = _rust_corpus_crate_names(rust_paths, crate_roots)
 
     def _same(a: str, b: str, crate: bool = False) -> bool:
         if a == b:
@@ -7280,6 +7327,9 @@ def _resolve_rust_typed_member_calls(
             return None
         if "ok" in desc:
             return None if want_ok else _eval(desc["ok"], from_file, True, depth + 1)
+        if desc.get("crate") is not None and str(desc["crate"]) not in corpus_crates:
+            # `use walkdir::DirEntry;`: another crate's type, not a same-named one here.
+            return None
         if "t" in desc:
             return None if want_ok else _type(desc["t"], from_file)
         if "field" in desc:
