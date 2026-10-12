@@ -4,6 +4,7 @@ from __future__ import annotations
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference_edge
 from graphify.extractors.resolution import _resolve_c_include_path
+from graphify.security import sanitize_metadata
 from pathlib import Path
 from typing import Any
 import re
@@ -123,12 +124,15 @@ def extract_objc(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
+                 context: str | None = None,
+                 metadata: dict | None = None) -> None:
         edge = {"source": src, "target": tgt, "relation": relation,
                 "confidence": confidence, "source_file": str_path,
                 "source_location": f"L{line}", "weight": weight}
         if context:
             edge["context"] = context
+        if metadata:
+            edge["metadata"] = metadata
         edges.append(edge)
 
     file_nid = _make_id(str(path))
@@ -279,7 +283,17 @@ def extract_objc(path: Path) -> dict:
                             else:
                                 module = raw.split("/")[-1].replace(".h", "")
                                 if module:
-                                    add_edge(file_nid, _make_id(module), "imports", line, context="import")
+                                    add_edge(
+                                        file_nid,
+                                        _make_id(module),
+                                        "imports",
+                                        line,
+                                        context="import",
+                                        metadata=sanitize_metadata({
+                                            "raw_include": raw,
+                                            "include_kind": "quoted",
+                                        }),
+                                    )
             return
 
         if t == "module_import":

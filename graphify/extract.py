@@ -1112,7 +1112,7 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
             module_name = raw.split("/")[-1].split(".")[0]
             if module_name:
                 tgt_nid = _make_id(module_name)
-                edges.append({
+                edge_dict = {
                     "source": file_nid,
                     "target": tgt_nid,
                     "relation": "imports",
@@ -1121,7 +1121,13 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
-                })
+                }
+                if child.type != "system_lib_string":
+                    edge_dict["metadata"] = sanitize_metadata({
+                        "raw_include": raw,
+                        "include_kind": "quoted",
+                    })
+                edges.append(edge_dict)
             break
 
 
@@ -5856,6 +5862,150 @@ def _resolve_kotlin_import_targets(
             e["target"] = candidates[0]
 
 
+_C_FAMILY_HEADER_EXTS = frozenset({".h", ".hpp", ".hh", ".hxx", ".cuh", ".inl"})
+
+
+def _resolve_c_include_edges(
+    edges: list[dict],
+    resolution_nodes: list[dict],
+    root: Path | None = None,
+) -> None:
+    """Resolve unresolved quoted C/C++/ObjC include edges to matching header file nodes (#4354).
+
+    When a quoted #include / #import is outside the including file's directory,
+    _resolve_c_include_path cannot resolve it, so per-file extraction emits a
+    fallback edge targeting a bare stem ID with metadata={"raw_include": ..., "include_kind": "quoted"}.
+    This pass runs after canonical node IDs and collision disambiguation are
+    established, but before import-evidence indexing.
+
+    Resolution rules:
+    1. Only processes unresolved quoted includes (metadata.include_kind == "quoted"
+       and metadata.raw_include is present).
+    2. Explicit relative (./ or ../) or absolute paths that failed sibling
+       resolution are never resolved via corpus fallback.
+    3. Matches the full include path as a path suffix, not merely the basename
+       when the include contains directory components.
+    4. Prefers exact-case matches over case-insensitive matches.
+    5. If no exact-case candidate exists, falls back to case-insensitive matching.
+    6. If multiple candidates remain, uses longest-shared-directory-prefix as a
+       tie-breaker. Resolves only when one candidate has a strictly greater score
+       than all others; ties remain unresolved. This is a heuristic and does not
+       claim to reproduce compiler include-order semantics.
+    7. Resolved edges point to the canonical target file node ID.
+    8. Unresolved edges remain untouched for external stub creation.
+    """
+    if not edges or not resolution_nodes:
+        return
+
+    headers_by_basename: dict[str, list[tuple[dict, str]]] = {}
+    headers_by_basename_ci: dict[str, list[tuple[dict, str]]] = {}
+
+    for n in resolution_nodes:
+        if n.get("type") == "namespace" or n.get("file_type") == "rationale":
+            continue
+        sf = n.get("source_file")
+        if not sf:
+            continue
+        sf_str = str(sf)
+        sf_p = Path(sf_str)
+        if sf_p.suffix.lower() not in _C_FAMILY_HEADER_EXTS:
+            continue
+        if n.get("label") != sf_p.name:
+            continue
+        if not n.get("id"):
+            continue
+
+        sf_key = _source_key(sf_str, root) if root else sf_str
+        cand_path = sf_key.replace("\\", "/").rstrip("/")
+        basename = cand_path.split("/")[-1]
+
+        headers_by_basename.setdefault(basename, []).append((n, cand_path))
+        headers_by_basename_ci.setdefault(basename.lower(), []).append((n, cand_path))
+
+    if not headers_by_basename:
+        return
+
+    def _shared_dir_prefix_len(p1_parts: list[str], p2_parts: list[str]) -> int:
+        score = 0
+        for a, b in zip(p1_parts, p2_parts):
+            if a == b:
+                score += 1
+            else:
+                break
+        return score
+
+    for e in edges:
+        if e.get("relation") != "imports":
+            continue
+        md = e.get("metadata")
+        if not isinstance(md, dict):
+            continue
+        if md.get("include_kind") != "quoted":
+            continue
+        raw = md.get("raw_include")
+        if not raw or not isinstance(raw, str):
+            continue
+
+        raw_norm = raw.replace("\\", "/").strip()
+        if not raw_norm:
+            continue
+
+        if raw_norm.startswith(("./", "../", "/")):
+            continue
+        try:
+            if Path(raw).is_absolute():
+                continue
+        except Exception:
+            pass
+
+        target_base = raw_norm.split("/")[-1]
+        if not target_base:
+            continue
+
+        exact_cands = headers_by_basename.get(target_base, [])
+        matches = [
+            (node, cand_path) for node, cand_path in exact_cands
+            if cand_path == raw_norm or cand_path.endswith("/" + raw_norm)
+        ]
+
+        if not matches:
+            ci_cands = headers_by_basename_ci.get(target_base.lower(), [])
+            raw_norm_lower = raw_norm.lower()
+            matches = [
+                (node, cand_path) for node, cand_path in ci_cands
+                if cand_path.lower() == raw_norm_lower or cand_path.lower().endswith("/" + raw_norm_lower)
+            ]
+
+        if not matches:
+            continue
+
+        winner_node: dict | None = None
+        if len(matches) == 1:
+            winner_node = matches[0][0]
+        else:
+            imp_sf = str(e.get("source_file", ""))
+            imp_key = _source_key(imp_sf, root) if root else imp_sf
+            imp_path = imp_key.replace("\\", "/").rstrip("/")
+            imp_parts = imp_path.split("/")[:-1]
+
+            scored: list[tuple[int, dict]] = []
+            for node, cand_path in matches:
+                cand_parts = cand_path.split("/")[:-1]
+                score = _shared_dir_prefix_len(imp_parts, cand_parts)
+                scored.append((score, node))
+
+            max_score = max(s[0] for s in scored)
+            top_matches = [node for score, node in scored if score == max_score]
+            if len(top_matches) == 1:
+                winner_node = top_matches[0]
+            else:
+                winner_node = None
+
+        if winner_node is not None:
+            e["target"] = winner_node["id"]
+            e.pop("target_file", None)
+
+
 def _resolve_csharp_qualified_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -9270,6 +9420,15 @@ def extract(
         paths, per_file, all_nodes, all_edges,
         resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER],
     )
+
+    # C/C++/ObjC quoted include resolution (#4354): resolve quoted include edges
+    # outside the including file's directory to canonical header file nodes.
+    # Runs after node-ID disambiguation and before import-evidence indexing.
+    try:
+        _resolve_c_include_edges(all_edges, resolution_nodes, root)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("C include resolution failed, skipping: %s", exc)
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
