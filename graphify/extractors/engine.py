@@ -1068,7 +1068,7 @@ def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         for c in node.children:
             if c.type == "type_identifier":
                 text = _read_text(c, source)
-                if text:
+                if text and text != "Self":
                     out.append((text, "generic_arg" if generic else "type"))
                 break
         for c in node.children:
@@ -1079,7 +1079,12 @@ def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         return
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        # `Self` names the enclosing type, not a corpus symbol. Emitting a ref
+        # mints a sourceless stub with the bare id `self` that every `-> Self`
+        # method collapses onto (a god node), the same keyword-type pitfall as
+        # Rust's `Self`. A genuine type (including `Int`/`String` builtin hubs)
+        # is unaffected.
+        if text and text != "Self":
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("optional_type", "implicitly_unwrapped_optional_type", "array_type",
