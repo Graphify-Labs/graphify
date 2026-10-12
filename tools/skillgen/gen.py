@@ -121,6 +121,52 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "before doing anything else.",
         ),
         _GRAPH_DIFF_EDIT,
+        (
+            "- For codebase questions, first run `graphify query \"<question>\"` when "
+            "graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for "
+            "relationships and `graphify explain \"<concept>\"` for focused concepts. "
+            "These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or "
+            "raw grep output.",
+            "- For codebase questions, follow this order:\n"
+            "  1. First check whether `graphify-out/graph.json` exists. If it does not, skip "
+            "graph queries and continue with the other codebase workflow.\n"
+            "  2. For a natural-language graph question, follow **Step 0 — Constrained query "
+            "expansion** in the installed Graphify query workflow (the `references/query.md` "
+            "sidecar when available). When the user's wording differs from node labels, map "
+            "the intent only to matching tokens found in the graph's actual node-label "
+            "vocabulary; do not invent synonyms or terms. If no vocab tokens match the "
+            "question, say the graph has no relevant vocabulary and stop instead of running "
+            "a broad or guessed query.\n"
+            "  3. Run `graphify query \"<expanded tokens>\"` using only the selected "
+            "vocabulary tokens. Use `graphify path \"<A>\" \"<B>\"` for relationships "
+            "and `graphify explain \"<concept>\"` for focused concepts. These return a "
+            "scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.\n"
+            "  4. Keep the user's original question for the answer and any `save-result` "
+            "operation; use the expanded tokens only for the graph query.",
+        ),
+        (
+            "- After modifying code, run `graphify update .` to keep the graph current "
+            "(AST-only, no API cost).\n"
+            "- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff"
+            " to it in a pull request is expected. Do not flag it as churn or suggest skipping the"
+            " graph rebuild or its hooks.",
+            "- After code-only changes, run `graphify update .` only when "
+            "`graphify-out/graph.json` already exists. This CLI update locally refreshes the "
+            "code graph with AST extraction and does not call an LLM or API. It can create a "
+            "new graph when code files exist, so do not run `graphify update` automatically "
+            "when that graph is missing.\n"
+            "- For changes to documentation, papers, images, videos, or a mix of code and "
+            "semantic files, do not automatically run `/graphify --update`. Its semantic "
+            "extraction can call the configured LLM/API backend and may incur usage or cost; "
+            "run it only when the user explicitly requests a graph refresh, following the "
+            "installed Graphify update reference.\n"
+            "- No changes to relevant content means no graph update. If an update fails, "
+            "report the failure and preserve the existing graph and cache; do not delete or "
+            "reset them as recovery.\n"
+            "- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff"
+            " to it in a pull request is expected. Do not flag it as churn or suggest skipping the"
+            " graph rebuild or its hooks.",
+        ),
     ),
     "_CLAUDE_MD_SECTION": (_GRAPH_DIFF_EDIT,),
     "_GEMINI_MD_SECTION": (_GRAPH_DIFF_EDIT,),
@@ -1297,6 +1343,44 @@ def _is_sanctioned_monolith_diff(line: str) -> bool:
     return not line.strip() or any(pred(line) for pred in _SANCTIONED_MONOLITH_DIFFS)
 
 
+def _explain_connections_span(text: str) -> tuple[int, int, str] | None:
+    """Return the inline explain connection block's byte span and body."""
+    section = re.search(r"^## For /graphify explain\s*$", text, re.MULTILINE)
+    if section is None:
+        return None
+    marker = "print('CONNECTIONS:')"
+    for fence in re.finditer(r"```bash\n(.*?)\n```", text[section.end():], re.DOTALL):
+        block = fence.group(1)
+        lines = block.splitlines(keepends=True)
+        marker_index = next(
+            (i for i, line in enumerate(lines) if line.rstrip("\r\n") == marker),
+            None,
+        )
+        if marker_index is None:
+            continue
+        close_index = next(
+            (i for i in range(marker_index + 1, len(lines)) if lines[i].strip() == '"'),
+            None,
+        )
+        if close_index is None:
+            return None
+        relative_start = sum(len(line) for line in lines[:marker_index + 1])
+        relative_end = sum(len(line) for line in lines[:close_index])
+        start = section.end() + fence.start(1) + relative_start
+        end = section.end() + fence.start(1) + relative_end
+        return start, end, text[start:end]
+    return None
+
+
+def _mask_explain_connections(text: str) -> tuple[str, str | None]:
+    """Replace the explain edge-rendering block with a stable round-trip marker."""
+    span = _explain_connections_span(text)
+    if span is None:
+        return text, None
+    start, end, block = span
+    return text[:start] + "__GRAPHIFY_EXPLAIN_CONNECTIONS__\n" + text[end:], block
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
@@ -1307,7 +1391,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the inline explain edge rendering
+    block, which is required to match the shared query reference exactly.
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
@@ -1319,18 +1404,35 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if platform.roundtrip_ref is None:
         return [f"[{platform.key}] monolith is missing roundtrip_ref"]
 
-    rendered_lines = render(platform)[0].content.splitlines()
+    rendered_text = render(platform)[0].content
     # Strip trigger lines from the original — they are non-spec and their removal
     # (#1180) is a permitted diff.
-    original_lines = [
+    original_text = "\n".join(
         l for l in _normalise(_git_show(platform.roundtrip_ref)).splitlines()
         if not _is_trigger_line(l)
-    ]
+    )
+
+    problems: list[str] = []
+    if platform.monolith in {"aider", "devin"}:
+        shared = _explain_connections_span(_read_fragment(_QUERY_REFERENCE))
+        rendered_text, rendered_connections = _mask_explain_connections(rendered_text)
+        original_text, _original_connections = _mask_explain_connections(original_text)
+        if shared is None or rendered_connections is None or _original_connections is None:
+            problems.append(
+                f"[{platform.key}] could not isolate the inline explain connection block"
+            )
+        elif rendered_connections != shared[2]:
+            problems.append(
+                f"[{platform.key}] inline explain connection block differs from "
+                "references/query/default.md"
+            )
+
+    rendered_lines = rendered_text.splitlines()
+    original_lines = original_text.splitlines()
 
     added = Counter(rendered_lines) - Counter(original_lines)
     removed = Counter(original_lines) - Counter(rendered_lines)
 
-    problems: list[str] = []
     for line in list(added.elements()) + list(removed.elements()):
         if _is_sanctioned_monolith_diff(line):
             continue

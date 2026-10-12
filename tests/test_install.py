@@ -859,6 +859,47 @@ def test_codex_agents_install_writes_agents_md(tmp_path):
     assert "GRAPH_REPORT.md" in agents_md.read_text()
 
 
+def test_installed_agents_md_expands_queries_against_graph_vocabulary(tmp_path):
+    _agents_install(tmp_path, "codex")
+    content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "Constrained query expansion" in content
+    assert "actual node-label vocabulary" in content
+    assert "node labels" in content
+    assert "When the user's wording differs from node labels" in content
+    assert "do not invent synonyms or terms" in content
+    assert "If no vocab tokens match" in content
+    assert "original question" in content
+
+
+def test_installed_agents_md_orders_graph_query_steps_unambiguously(tmp_path):
+    _agents_install(tmp_path, "codex")
+    content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+
+    graph_check = content.index("First check whether `graphify-out/graph.json` exists")
+    expansion = content.index("Step 0 — Constrained query expansion")
+    constrained_query = content.index('graphify query "<expanded tokens>"')
+    original_question = content.index("Keep the user's original question for the answer")
+    assert graph_check < expansion < constrained_query < original_question
+    assert 'first run `graphify query "<question>"`' not in content
+
+
+def test_installed_agents_md_guards_updates_and_semantic_api_work(tmp_path):
+    _agents_install(tmp_path, "codex")
+    content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "graphify-out/graph.json" in content
+    assert "so do not run `graphify update` automatically when that graph is missing" in content
+    assert "code-only" in content
+    assert "AST" in content
+    for kind in ("documentation", "papers", "images", "videos"):
+        assert kind in content
+    assert "LLM/API" in content
+    assert "explicitly requests a graph refresh" in content
+    assert "No changes" in content
+    assert "preserve the existing graph and cache" in content
+
+
 def test_opencode_agents_install_writes_agents_md(tmp_path):
     _agents_install(tmp_path, "opencode")
     assert (tmp_path / "AGENTS.md").exists()
