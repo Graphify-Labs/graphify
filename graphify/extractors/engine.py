@@ -89,6 +89,14 @@ _PYTHON_DECORATOR_NOISE = frozenset({
     "final", "no_type_check", "runtime_checkable", "dataclass",
 })
 
+# `@x.setter` / `@x.getter` / `@x.deleter` are the property-descriptor protocol,
+# not references to corpus symbols named setter/getter/deleter. Emitting a
+# decorator edge for them fabricates a sourceless stub on nearly every file with
+# a property setter, and the bare `deleter`/`getter` stub collapses into a
+# cross-file god node. `_python_is_property` already excludes `.getter` for the
+# read-semantics; the decorator-edge path mirrors it here.
+_PYTHON_PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
+
 def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Python type annotation; append (name, role) where role is 'type' or 'generic_arg'.
 
@@ -7279,6 +7287,14 @@ def _extract_generic(
                         owner_nid = _make_id(stem, inner_name)
                     for child in node.children:
                         if child.type != "decorator":
+                            continue
+                        # `@x.setter` / `@x.getter` / `@x.deleter` is the
+                        # property-descriptor protocol, not a reference to a
+                        # corpus symbol; emitting an edge mints a sourceless
+                        # stub (and a `deleter`/`getter` god node).
+                        deco_expr = next(iter(child.named_children), None)
+                        deco_text = _read_text(deco_expr, source) if deco_expr is not None else ""
+                        if deco_text.endswith(_PYTHON_PROPERTY_ACCESSOR_SUFFIXES):
                             continue
                         deco_name = _python_decorator_name(child, source)
                         # Builtin/stdlib decorators are noise: no stub nodes,
