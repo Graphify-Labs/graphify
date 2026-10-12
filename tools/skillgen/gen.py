@@ -13,7 +13,7 @@ Usage (from the repo root)::
     python -m tools.skillgen --check         # byte-diff render vs committed + expected/, exit 1 on drift
     python -m tools.skillgen --audit-coverage# per host: assert every heading of that host's own v8 body single-homes in its render
     python -m tools.skillgen --schema-singleton  # assert the file_type enum is byte-identical everywhere
-    python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo the enum unification
+    python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo documented fixes
     python -m tools.skillgen --always-on-roundtrip# assert each always_on/*.md reproduces its former constant
     python -m tools.skillgen --bless         # rewrite expected/ from the current render
 
@@ -24,6 +24,7 @@ timestamp or version is ever written into a generated file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
@@ -890,6 +891,20 @@ def _is_enum_line(line: str) -> bool:
     )
 
 
+# SHA-256 of the exact compact JSON example currently shared by the Aider and
+# Devin monoliths. A full-line digest keeps this sanctioned replacement narrow;
+# changes to any field require an explicit allowlist update.
+_APPROVED_EXTRACTION_EXAMPLE_SHA256 = frozenset(
+    {"1c72eefdd45bfbdb903c51d71750e234d6105bf7c50a3f730f3695d314f286fe"}
+)
+
+
+def _is_extraction_example_line(line: str) -> bool:
+    """Whether a line exactly matches an approved monolith extraction example."""
+    digest = hashlib.sha256(line.strip().encode("utf-8")).hexdigest()
+    return digest in _APPROVED_EXTRACTION_EXAMPLE_SHA256
+
+
 def _is_frontmatter_description_line(line: str) -> bool:
     """Whether a line is a YAML frontmatter description field.
 
@@ -1226,6 +1241,7 @@ def _is_worktree_visibility_note_line(line: str) -> bool:
 # all of these is an unsanctioned drift the round-trip must catch.
 _SANCTIONED_MONOLITH_DIFFS = (
     _is_enum_line,
+    _is_extraction_example_line,
     _is_frontmatter_description_line,
     _is_chunk_cleanup_line,
     _is_directed_fix_line,
@@ -1261,7 +1277,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     pristine v8 blob (``roundtrip_ref``); this is the guard that stops an
     arbitrary edit (even a blessed one) from drifting them. Sanctioned changes are
     enumerated as predicates in ``_SANCTIONED_MONOLITH_DIFFS``: the file_type enum
-    unification, the unified frontmatter description, the chunk-cleanup rewrite
+    unification, the concrete extraction JSON sample, the unified frontmatter
+    description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
     and semantic-cache source scoping (#1757).
@@ -1365,7 +1382,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--check", action="store_true", help="byte-diff render vs committed + expected/, exit 1 on drift")
     p.add_argument("--audit-coverage", action="store_true", help="per host: assert every heading of that host's own v8 body single-homes in its render")
     p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
-    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
+    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo documented fixes")
     p.add_argument("--always-on-roundtrip", action="store_true", help="assert each always_on/*.md reproduces its former __main__.py constant byte for byte")
     p.add_argument("--bless", action="store_true", help="rewrite expected/ from the current render")
     return p.parse_args(argv)
@@ -1425,7 +1442,7 @@ def main(argv: list[str] | None = None) -> int:
             for m in all_problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
-        print("monolith-roundtrip OK: each monolith matches v8 modulo the enum unification.")
+        print("monolith-roundtrip OK: each monolith matches v8 modulo documented fixes.")
         return 0
 
     if args.always_on_roundtrip:
