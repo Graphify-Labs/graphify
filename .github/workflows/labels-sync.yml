@@ -1,0 +1,35 @@
+name: Sync triage labels
+
+# Creates/updates the area/, kind/ and status/ labels defined in
+# tools/triage/taxonomy.py. Idempotent, and only touches labels the bot owns.
+# Run it once after merging (also triggered on taxonomy changes, and available
+# from the Actions tab via Run workflow).
+
+on:
+  push:
+    branches: ["v8", "main"]
+    paths:
+      - "tools/triage/taxonomy.py"
+      - "tools/triage/sync_labels.py"
+      - ".github/workflows/labels-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python -m tools.triage.sync_labels
