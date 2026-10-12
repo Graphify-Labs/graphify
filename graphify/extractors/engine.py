@@ -4750,6 +4750,10 @@ def _extract_generic(
     # extensions don't (file stem is part of the id), so they're collected here
     # for a corpus-level merge after every file has been parsed.
     swift_extensions: list[dict] = []
+    # C# type id -> its name within the namespace, enclosing types first
+    # (`` Outer`1.Inner ``). Partial types carry it as `type_path` so the
+    # corpus-level partial merge can key nested and generic halves exactly.
+    csharp_type_paths: dict[str, str] = {}
     # #1356: call expressions in property/field initializers (e.g.
     # `let vm = VM()`) live outside function bodies, so the call-walk never
     # reaches them. Collect (owner_nid, call_node) here and walk them too.
@@ -4997,6 +5001,21 @@ def _extract_generic(
                 config.ts_module == "tree_sitter_ruby" and class_nid in seen_ids
             )
             if config.ts_module == "tree_sitter_c_sharp":
+                # The type's name within its namespace, enclosing types first,
+                # each with its arity (`` Outer`1.Inner ``). The id omits the
+                # enclosing types, so this is what tells two same-named nested
+                # types under different outers apart. None when an enclosing
+                # type's path is unknown.
+                if parent_class_nid:
+                    _parent_path = csharp_type_paths.get(parent_class_nid)
+                    _type_path = (
+                        f"{_parent_path}.{class_name_for_id}"
+                        if _parent_path is not None else None
+                    )
+                else:
+                    _type_path = class_name_for_id
+                if _type_path is not None:
+                    csharp_type_paths.setdefault(class_nid, _type_path)
                 if parent_class_nid:
                     metadata = {"is_nested_type": True}
                 # #2332: `partial class Foo` split across files mints one node
@@ -5013,8 +5032,11 @@ def _extract_generic(
                     c.type == "modifier" and _read_text(c, source) == "partial"
                     for c in node.children
                 ):
-                    metadata = dict(metadata or {})
-                    metadata["is_partial"] = True
+                    partial_metadata: dict[str, object] = dict(metadata or {})
+                    partial_metadata["is_partial"] = True
+                    if _type_path is not None:
+                        partial_metadata["type_path"] = _type_path
+                    metadata = partial_metadata
             if config.ts_module == "tree_sitter_ruby":
                 ruby_body = _find_body(node, config)
                 if ruby_absolute_declaration or ruby_reopened or (

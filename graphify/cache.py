@@ -37,7 +37,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 8  # Rust `use` groups: one imports_from edge per binding; prior (7): Python opaque-base/super(args) raw-call markers and nested-class enclosing ids.
+_AST_CACHE_SCHEMA = 9  # C# partial types carry `type_path`, the nested/generic partial merge key; prior (8): Rust `use` groups: one imports_from edge per binding; (7): Python opaque-base/super(args) raw-call markers and nested-class enclosing ids.
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is

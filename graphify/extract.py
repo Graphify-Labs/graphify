@@ -3844,13 +3844,15 @@ def _merge_csharp_partial_class_nodes(
     declaring `partial class Foo` produces its own `Foo` node: members split
     across the halves and cross-half calls don't resolve (two candidate types
     make every receiver-typed lookup bail as ambiguous). Group partial-stamped
-    type nodes by (assembly, namespace, label) — same-named types in different
-    namespaces are distinct types, non-partial same-named types are separate
-    declarations, and nested partials are excluded (their ids omit the
-    enclosing type, so a same-named nested pair under different outers would
-    falsely merge). The `partial` keyword only fuses declarations compiled into
-    the SAME assembly, so the key also carries the nearest ancestor directory
-    holding a `*.csproj`/`*.fsproj`/`*.vbproj` — same-named halves under
+    type nodes by (assembly, namespace, type path) — same-named types in
+    different namespaces are distinct types, non-partial same-named types are
+    separate declarations. The type path carries the enclosing types and each
+    arity (`` Outer`1.Inner ``): nested ids omit the enclosing type, so the
+    path is what keeps same-named nested types under different outers apart,
+    and the arity keeps `Foo` and `Foo<T>` apart. The `partial` keyword only
+    fuses declarations compiled into the SAME assembly, so the key also
+    carries the nearest ancestor directory holding a
+    `*.csproj`/`*.fsproj`/`*.vbproj` — same-named halves under
     different project dirs are genuinely distinct types and stay apart. Halves
     with NO project file on any ancestor (up to the scan root) all key to ""
     and still merge together, so single-project/snippet corpora behave exactly
@@ -3871,12 +3873,21 @@ def _merge_csharp_partial_class_nodes(
         if n.get("file_type") != "code":
             continue
         md = n.get("metadata") or {}
-        if not md.get("is_partial") or md.get("is_nested_type"):
+        if not md.get("is_partial"):
             continue
-        label = n.get("label")
-        if not label:
+        # `type_path` names the type with its enclosing types and arities
+        # (`` Outer`1.Inner ``), so nested halves only meet under the same
+        # outer and `Foo` / `Foo<T>` stay apart (#4249). A nested type whose
+        # path is unknown stays unmerged: its label alone would join
+        # same-named types under different outers.
+        type_path = md.get("type_path")
+        if not type_path:
+            if md.get("is_nested_type"):
+                continue
+            type_path = n.get("label")
+        if not type_path:
             continue
-        groups.setdefault((str(md.get("namespace", "")), str(label)), []).append(n)
+        groups.setdefault((str(md.get("namespace", "")), str(type_path)), []).append(n)
 
     if not any(len(members) >= 2 for members in groups.values()):
         return
@@ -4013,6 +4024,52 @@ def _merge_csharp_partial_class_nodes(
             cn = rc.get("caller_nid")
             if cn in remap:
                 rc["caller_nid"] = remap[cn]
+
+
+def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Drop a merged partial type's placeholder base when a real base of the
+    same name sits next to it.
+
+    Every half of a partial type may repeat the base list, and C# requires
+    the halves to agree. Each half's base name is resolved in its own file's
+    scope, so a half whose file the resolver cannot see the base from (a
+    sibling nested base without `using static` for its holder, say) leaves a
+    placeholder edge while another half binds the real type. After the merge the type then has two same-named bases, and
+    lookups through the base chain bail as ambiguous. The placeholder is the
+    unresolved spelling of the resolved base, so it goes.
+    """
+    nodes_by_id = {str(n.get("id", "")): n for n in all_nodes}
+
+    def _is_partial_cs(nid: str) -> bool:
+        n = nodes_by_id.get(nid) or {}
+        return (
+            str(n.get("source_file", "")).endswith(".cs")
+            and bool((n.get("metadata") or {}).get("is_partial"))
+        )
+
+    real_bases: dict[str, set[str]] = {}
+    for e in all_edges:
+        if e.get("relation") not in ("inherits", "implements"):
+            continue
+        src = str(e.get("source", ""))
+        if not _is_partial_cs(src):
+            continue
+        tgt = nodes_by_id.get(str(e.get("target", ""))) or {}
+        if tgt.get("source_file"):
+            real_bases.setdefault(src, set()).add(str(tgt.get("label", "")))
+    if not real_bases:
+        return
+
+    def _shadowed(e: dict) -> bool:
+        if e.get("relation") not in ("inherits", "implements"):
+            return False
+        names = real_bases.get(str(e.get("source", "")))
+        if not names:
+            return False
+        tgt = nodes_by_id.get(str(e.get("target", ""))) or {}
+        return not tgt.get("source_file") and str(tgt.get("label", "")) in names
+
+    all_edges[:] = [e for e in all_edges if not _shadowed(e)]
 
 
 UNRESOLVED_CALLS_KEY = "unresolved_calls"
@@ -8854,6 +8911,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+        _drop_shadowed_csharp_partial_bases(all_nodes, all_edges)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
     # in a file this one `source`s is left unresolved by the per-file extractor
@@ -9058,6 +9116,7 @@ def extract(
                 str(n.get("label", ""))
             )
     _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
+    _csharp_method_owner: dict[str, str] | None = None  # method nid -> type nid, built on first use
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -9205,9 +9264,35 @@ def extract(
                 or (candidate_file_nid is not None and candidate_file_nid in imported_modules)
             )
 
+        # C#: an unqualified call binds to a member of the caller's own type
+        # first. The extractor already does that in-file (#4252), but a partial
+        # type's halves live in different files: after the merge they are one
+        # type, and a same-named method elsewhere must not hide the other half's
+        # member. Exactly one own-type candidate binds; a tie (overloads) falls
+        # through to the generic tie-breakers unchanged.
+        own_type_matches: list[str] = []
+        if (
+            len(candidates) > 1
+            and rc.get("lang") == "csharp"
+            and not rc.get("csharp_new")
+        ):
+            if _csharp_method_owner is None:
+                _csharp_method_owner = {
+                    e["target"]: e["source"] for e in all_edges
+                    if e.get("relation") == "method"
+                }
+            caller_owner = _csharp_method_owner.get(rc.get("caller_nid", ""))
+            if caller_owner is not None:
+                own_type_matches = [
+                    c for c in candidates if _csharp_method_owner.get(c) == caller_owner
+                ]
+
         if len(candidates) == 1:
             tgt = candidates[0]
             has_import_evidence = go_exact_import or _has_import_evidence(tgt)
+        elif len(own_type_matches) == 1:
+            tgt = own_type_matches[0]
+            has_import_evidence = True
         else:
             # Ambiguous name (defined in 2+ files). Don't bail outright (#1219):
             # if the caller has explicit import evidence pointing at exactly one
