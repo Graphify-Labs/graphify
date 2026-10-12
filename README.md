@@ -340,6 +340,13 @@ Both encourage scoped graph queries before broad source searches. Choose the ins
 
 `GRAPH_REPORT.md` summarizes the god nodes, communities, and key paths for broad architecture review. How the graph is built and what it contains: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
+JavaScript files that yield only file nodes or simple bindings are listed under
+**Files without structural symbols** in `GRAPH_REPORT.md`, with byte sizes and
+a bounded list of the largest files. This flags possible data banks that AST
+structure cannot describe; it does not automatically run semantic extraction.
+Files with functions, classes, imports, calls, or parser errors are excluded
+from this coverage notice.
+
 ---
 
 ## What files it handles
