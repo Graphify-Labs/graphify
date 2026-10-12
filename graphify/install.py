@@ -411,7 +411,7 @@ def _remove_claude_skill_registration(project_dir: Path) -> None:
     claude_md = project_dir / ".claude" / "CLAUDE.md"
     if not claude_md.exists():
         return
-    content = claude_md.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(claude_md)
     # Match the exact H1 `# graphify` registration heading, never a substring of a
     # user's `## graphify`/`### graphify` (#2062). Section runs to the next H1.
     # _SKILL_REGISTRATION_MARKER is the single source of truth for this heading,
@@ -422,9 +422,9 @@ def _remove_claude_skill_registration(project_dir: Path) -> None:
         return
     # A symlink stays: writing through it cleans the file it points to.
     if cleaned or claude_md.is_symlink():
-        # newline="" so the rest of the file's own line endings are never
-        # translated on write (#3668, same CRLF issue as the insert side).
-        claude_md.write_text(cleaned + "\n", encoding="utf-8", newline="")
+        # The file's own line ending is restored, so the rest of its content is
+        # never re-translated on write (#3668/#4360).
+        _write_keep_newline(claude_md, cleaned + "\n", newline)
         print(f"  CLAUDE.md        ->  graphify skill registration removed from {_shown_path(claude_md)}")
     else:
         claude_md.unlink()
@@ -506,10 +506,10 @@ def _register_always_on_block(target: Path, prefix: str, registration: str) -> N
     of the bare "graphify" substring check silently treating any unrelated
     mention of the word as already-registered and skipping every re-run (#3668).
 
-    Written with newline="" so an existing file's own line endings are never
-    translated -- Path.write_text otherwise opens in text mode, which on Windows
-    turns the WHOLE file's pre-existing bare-LF content into CRLF just to append a
-    few lines (#3668).
+    Written through the shared _read_keep_newline/_write_keep_newline pair, so an
+    existing file's own line endings survive the read-modify-write: a plain
+    read_text/write_text round-trip turns a bare-LF file into CRLF on Windows (and
+    a CRLF file into LF elsewhere) just to append a few lines (#3668/#4360).
 
     The skill files are copied before this runs, so a *target* that cannot be
     read or written must not abort an otherwise-complete install (#3474). That
@@ -519,18 +519,18 @@ def _register_always_on_block(target: Path, prefix: str, registration: str) -> N
     """
     try:
         existed = target.exists()
-        content = target.read_text(encoding="utf-8") if existed else ""
+        content, newline = _read_keep_newline(target) if existed else ("", "\n")
         new_content = _replace_or_append_section(
             content, _SKILL_REGISTRATION_MARKER, registration, boundary_prefix="# "
         )
         if existed and new_content == content:
             print(f"{prefix}already registered (no change)")
         elif existed:
-            target.write_text(new_content, encoding="utf-8", newline="")
+            _write_keep_newline(target, new_content, newline)
             print(f"{prefix}skill registered in {_shown_path(target)}")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(new_content, encoding="utf-8", newline="")
+            _write_keep_newline(target, new_content, newline)
             print(f"{prefix}created at {_shown_path(target)}")
     except OSError as exc:
         print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
@@ -783,6 +783,40 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     return "\n".join(lines).rstrip()
 
 
+def _read_keep_newline(path: Path) -> "tuple[str, str]":
+    """Read *path* as UTF-8 and return ``(text, newline)``.
+
+    ``text`` uses bare ``\n`` internally, so the section helpers
+    (``_replace_or_append_section`` / ``_remove_marker_section``) work on it
+    unchanged, and ``newline`` is the file's own dominant line ending (``"\r\n"``
+    or ``"\n"``) so a later write can put it back.
+
+    ``Path.read_text`` opens in universal-newline mode and folds every ``\r\n``
+    to ``\n``, so the file's convention is lost before the write side ever sees
+    it; a plain ``write_text`` then re-emits the platform default and rewrites
+    the WHOLE file's endings, turning an LF file into CRLF on Windows (or a CRLF
+    file into LF on Linux) just to merge in a few lines (#4360). Reading the bytes
+    and normalising here keeps the original ending to restore.
+    """
+    raw = path.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    return raw.replace("\r\n", "\n").replace("\r", "\n"), newline
+
+
+def _write_keep_newline(path: Path, text: str, newline: str = "\n") -> None:
+    """Write bare-``\n`` *text* using *newline* endings, without translation.
+
+    ``newline=""`` stops ``write_text`` from translating on the way out; the one
+    conversion from bare ``\n`` to the file's own ending happens here, so every
+    install/uninstall writer shares a single line-ending contract (#4360). A file
+    with no prior convention (a fresh install) is written with plain LF, matching
+    what the other install writers already emit.
+    """
+    if newline != "\n":
+        text = text.replace("\n", newline)
+    path.write_text(text, encoding="utf-8", newline="")
+
+
 _BANNER_LOGO = """\
      ▄▄▀█▀▄▄
  ▄▄▀▀  ▄█▄  ▀▀▄▄
@@ -932,20 +966,20 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
     target = project_dir / "GEMINI.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _GEMINI_MD_MARKER, _always_on("gemini-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("gemini-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        # newline="" so an existing file's own line endings are never translated
-        # (Path.write_text otherwise opens in text mode, which on Windows turns
-        # the WHOLE file's pre-existing bare-LF content into CRLF, #3668).
-        target.write_text(new_content, encoding="utf-8", newline="")
+        # The file's own line ending is restored on write, so its existing
+        # content is never re-translated (#3668/#4360).
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     # Always re-install the Gemini hook so an older payload (e.g. pre-issue-#580
@@ -1050,14 +1084,14 @@ def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, 
     if not target.exists():
         print("No GEMINI.md found in current directory - nothing to do")
         return
-    content = target.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _GEMINI_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in GEMINI.md - nothing to do")
         return
     # A symlink stays: writing through it cleans the file it points to.
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -1107,17 +1141,17 @@ def vscode_install(project_dir: Path | None = None) -> None:
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     instructions.parent.mkdir(parents=True, exist_ok=True)
     if instructions.exists():
-        content = instructions.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(instructions)
         new_content = _replace_or_append_section(
             content, _VSCODE_INSTRUCTIONS_MARKER, _always_on("vscode-instructions")
         )
         if new_content == content:
             print(f"  {instructions}  ->  already configured (no change)")
         else:
-            instructions.write_text(new_content, encoding="utf-8")
+            _write_keep_newline(instructions, new_content, newline)
             print(f"  {instructions}  ->  graphify section {'updated' if _VSCODE_INSTRUCTIONS_MARKER in content else 'added'}")
     else:
-        instructions.write_text(_always_on("vscode-instructions"), encoding="utf-8")
+        _write_keep_newline(instructions, _always_on("vscode-instructions"))
         print(f"  {instructions}  ->  created")
 
     print()
@@ -1151,13 +1185,13 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     if not instructions.exists():
         return
-    content = instructions.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(instructions)
     cleaned = _remove_marker_section(content, _VSCODE_INSTRUCTIONS_MARKER)
     if cleaned is None:
         return
     # A symlink stays: writing through it cleans the file it points to.
     if cleaned or instructions.is_symlink():
-        instructions.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(instructions, cleaned + "\n", newline)
         print(f"  graphify section removed from {instructions}")
     else:
         instructions.unlink()
@@ -1796,17 +1830,18 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
     target = (project_dir or Path(".")) / "AGENTS.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _AGENTS_MD_MARKER, _always_on("agents-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("agents-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     if platform == "codex":
@@ -1968,7 +2003,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
 
-    content = target.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _AGENTS_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in AGENTS.md - nothing to do")
@@ -1980,7 +2015,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
 
     # A symlink stays: writing through it cleans the file it points to.
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -2034,17 +2069,18 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _CLAUDE_MD_MARKER, _always_on("claude-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("claude-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     # Always re-install the Claude Code PreToolUse hook so an old hook
@@ -2232,7 +2268,7 @@ def _strip_graphify_md_section(target: Path) -> bool:
     remains after removal.
     """
     try:
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
     except (OSError, UnicodeDecodeError):
         # An unreadable/undecodable CLAUDE.md-style file (e.g. non-UTF-8, or a
         # directory of that name) must not abort uninstall - nothing to strip.
@@ -2244,7 +2280,7 @@ def _strip_graphify_md_section(target: Path) -> bool:
         return False
     # A symlink stays: writing through it cleans the file it points to.
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -2256,17 +2292,18 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
     target = (project_dir or Path(".")) / "CODEBUDDY.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _CODEBUDDY_MD_MARKER, _always_on("claude-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("claude-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     # Also write CodeBuddy PreToolUse hook to .codebuddy/settings.json
@@ -2331,7 +2368,7 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         print("No CODEBUDDY.md found in current directory - nothing to do")
         return
 
-    content = target.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _CODEBUDDY_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in CODEBUDDY.md - nothing to do")
@@ -2339,7 +2376,7 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
 
     # A symlink stays: writing through it cleans the file it points to.
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
