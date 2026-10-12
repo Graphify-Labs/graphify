@@ -52,3 +52,29 @@ def test_forward_ref_keeps_file_node_with_importer(tmp_path):
     _check(result, labels, edges)
     assert ("app.py", "imports_from", "widget.py") in edges
     assert ("app.py", "imports_from", "Widget") not in edges
+
+
+def test_imported_same_name_in_subdirectory_keeps_cross_file_rewire(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    result, labels, edges = _extract(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/base.py": "class Widget:\n    def draw(self):\n        return 1\n",
+        "pkg/widget.py": "from .base import Widget\n\ndef use(w: Widget):\n    w.draw()\n",
+    })
+    ids = {n["id"] for n in result["nodes"]}
+    assert all(e["source"] in ids and e["target"] in ids for e in result["edges"])
+    base_widget = next(n["id"] for n in result["nodes"]
+                       if n["label"] == "Widget" and n["source_file"].endswith("base.py"))
+    use = next(n["id"] for n in result["nodes"] if n["label"] == "use()")
+    assert any(e["source"] == use and e["target"] == base_widget for e in result["edges"])
+    assert [n for n in result["nodes"] if n["label"] == "Widget"] == [
+        n for n in result["nodes"] if n["id"] == base_widget
+    ]
+
+
+def test_same_named_function_is_not_a_type_reference_target(tmp_path):
+    src = "class Helper:\n    def make(self, w: Widget) -> None:\n        w.draw()\n\ndef widget():\n    return 1\n"
+    result, labels, edges = _extract(tmp_path, {"widget.py": src})
+    assert (".make()", "references", "widget()") not in edges
+    assert (".make()", "uses", "widget()") not in edges

@@ -4845,11 +4845,9 @@ def _extract_generic(
             return nid
         nid = _make_id(name)
         if nid == _make_id(path.stem):
-            # #4334: `Widget` in widget.py slugs to the same id the file node gets
-            # once paths are made relative, so a stub here swallows the file node.
-            # It's a forward reference to the class defined later in this file, so
-            # point at that local id instead.
-            return _make_id(stem, ".".join(namespace_stack), name)
+            # #4334: `Widget` in widget.py slugs to the file-stem id, so the stub
+            # can swallow the file node. Decide after the walk (see below).
+            stem_forward_refs[nid] = _make_id(stem, name)
         if nid not in seen_ids:
             # The name isn't defined in this file, so this is a cross-file reference
             # (e.g. a `Thing` type annotation imported from another module). Emit a
@@ -4869,6 +4867,7 @@ def _extract_generic(
             })
         return nid
 
+    stem_forward_refs: dict[str, str] = {}
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
     if not source:
@@ -7128,6 +7127,18 @@ def _extract_generic(
             walk(child, parent_class_nid=None)
 
     walk(root)
+
+    # #4334: a forward reference to a same-named class defined later in this
+    # file resolves to that class. Anything else (an imported name, a function
+    # with the same id) keeps the sourceless stub for the cross-file rewire.
+    for stub_nid, local_nid in stem_forward_refs.items():
+        if local_nid not in callable_class_nids:
+            continue
+        for edge in edges:
+            if edge["target"] == stub_nid:
+                edge["target"] = local_nid
+        nodes[:] = [n for n in nodes if not (n["id"] == stub_nid and not n["source_file"])]
+        seen_ids.discard(stub_nid)
 
     # ── Call-graph pass ───────────────────────────────────────────────────────
     label_to_nid: dict[str, str] = {}     # case-sensitive (Ruby, C#, Java, Kotlin, etc.)
