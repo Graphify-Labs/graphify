@@ -1,0 +1,1 @@
+- Add them to the docs list before semantic extraction in Step 3B

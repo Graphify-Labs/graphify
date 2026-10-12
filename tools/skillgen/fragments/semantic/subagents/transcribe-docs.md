@@ -1,0 +1,1 @@
+- Add them to the docs list before dispatching semantic subagents in Step 3B

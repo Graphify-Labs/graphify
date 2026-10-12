@@ -111,7 +111,7 @@ Skip this step entirely if `detect` returned zero `video` files. When the corpus
 
 ### Step 3 - Extract entities and relationships
 
-**Before starting:** note whether `--mode deep` was given. You must pass `DEEP_MODE=true` to every subagent in Step B2 if it was. Track this from the original invocation - do not lose it.
+@@SEM_DEEP_MODE@@
 
 This step has two parts: **structural extraction** (deterministic, free) and **semantic extraction** (LLM, costs tokens).
 
@@ -120,17 +120,15 @@ This step has two parts: **structural extraction** (deterministic, free) and **s
 **Before semantic extraction:** check whether `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set. If neither is set, print this one-liner to the user:
 > Tip: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to use Gemini for semantic extraction (`pip install 'graphifyy[gemini]'`).
 
-Print it once, then continue — do not wait for the user to supply a key. If `GEMINI_API_KEY` or `GOOGLE_API_KEY` IS set, use `graphify.llm.extract_corpus_parallel(files, backend="gemini")` for semantic extraction instead of dispatching subagents. The default Gemini model is `gemini-3-flash-preview`; set `GRAPHIFY_GEMINI_MODEL` or pass `--model` in headless CLI flows to override it.
+@@SEM_GEMINI_ALT@@
 
-> **No other API keys are read.** When `GEMINI_API_KEY`/`GOOGLE_API_KEY` are unset, semantic extraction falls to the host agent itself — the running session is the LLM. On a host that dispatches subagents (e.g. Claude Code), dispatch them as written in Part B. On a host that runs the CLI directly in a terminal and cannot dispatch subagents, do not stall: a code-only corpus has no semantic work, so write the empty semantic file (Part B "Fast path") and continue to Part C; for a corpus with docs/papers/images, either set a Gemini key or extract those inline yourself, but in no case prompt for `ANTHROPIC_API_KEY` — that prompt is a misread of this skill.
+@@SEM_NO_KEY_FALLBACK@@
 
-**Run Part A (AST) and Part B (semantic) in parallel. Dispatch all semantic subagents AND start AST extraction in the same message. Both can run simultaneously since they operate on different file types. Merge results in Part C as before.**
-
-Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is deterministic and fast; start it while subagents are processing docs/papers.
+@@SEM_PARALLEL_AST@@
 
 #### Part A - Structural extraction for code files
 
-For any code files detected, run AST extraction in parallel with Part B subagents:
+@@SEM_PART_A_INTRO@@
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -157,9 +155,9 @@ else:
 "
 ```
 
-#### Part B - Semantic extraction (parallel subagents)
+@@SEM_PART_B_HEADING@@
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
+@@SEM_FAST_PATH@@
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -169,19 +167,11 @@ Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'
 "
 ```
 
-**MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
-
-Before dispatching subagents, print a timing estimate:
-- Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25)
-- Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
-- Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
+@@SEM_MANDATE_ESTIMATE@@
 
 **Step B0 - Check extraction cache first**
 
-Before dispatching any subagents, check which files already have cached extraction results:
-
-SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
+@@SEM_B0_INTRO@@
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -191,7 +181,7 @@ from pathlib import Path
 
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 # Only content files go to semantic extraction. Code is already covered structurally
-# by the AST pass (Part A); flattening every category here makes subagents re-read
+@@SEM_CACHE_COMMENT@@
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
@@ -212,7 +202,7 @@ print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files n
 "
 ```
 
-Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip Steps B1 and B2 but still run Step B3's commands: its merge is the only Part B step that writes `graphify-out/.graphify_semantic.json`, and Part C reads that file unconditionally. Do not write an empty `.graphify_semantic.json` instead, because that drops every cached node.
+@@SEM_UNCACHED_ONLY@@
 
 **Step B1 - Split into chunks**
 
@@ -222,15 +212,7 @@ Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-2
 
 **Step B3 - Collect, cache, and merge**
 
-Wait for all subagents. For each result:
-- Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
-- If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
-- If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
-
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
-
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
+@@SEM_B3_COLLECT@@
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json, glob

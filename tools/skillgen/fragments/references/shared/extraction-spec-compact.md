@@ -1,9 +1,9 @@
-# graphify reference: extraction subagent prompt (compact)
+@@SEM_SPEC_TITLE@@
 
-Load this in Step 3 Part B when the corpus has at least one doc, paper, or image chunk. A pure-code corpus skips Part B and never reads this file. Each semantic subagent receives the prompt below verbatim (substitute FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, and DEEP_MODE).
+@@SEM_SPEC_INTRO@@
 
 ```
-You are a graphify extraction subagent. Read the files listed and extract a knowledge graph fragment.
+@@SEM_SPEC_ROLE@@
 Output ONLY valid JSON matching the schema below - no explanation, no markdown fences, no preamble.
 
 Files (chunk CHUNK_NUM of TOTAL_CHUNKS):

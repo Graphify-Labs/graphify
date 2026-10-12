@@ -1,0 +1,1 @@
+Load this in Step 3 Part B when the corpus has at least one doc, paper, or image chunk. A pure-code corpus skips Part B and never reads this file. Apply the prompt below verbatim to each chunk you extract (substitute FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, and DEEP_MODE).
