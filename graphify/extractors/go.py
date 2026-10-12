@@ -48,14 +48,59 @@ _GO_PREDECLARED_FUNCS = frozenset({
     "recover",
 })
 
-def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a Go type expression; append (name, role) tuples."""
+def _go_type_param_names(decl_node, source: bytes) -> frozenset[str]:
+    """Names bound by a declaration's generic type parameters.
+
+    Covers a function/type's own `[T any, R comparable]` list and, for a method,
+    the receiver's `(b Box[T])` type arguments (Go methods cannot declare their
+    own type parameters; they reuse the receiver's). These names are local
+    bindings, not corpus symbols, so a signature's use of them must not mint a
+    sourceless stub.
+    """
+    names: set[str] = set()
+    for child in decl_node.children:
+        if child.type != "type_parameter_list":
+            continue
+        for decl in child.children:
+            if decl.type != "type_parameter_declaration":
+                continue
+            for c in decl.children:
+                if c.type == "identifier":
+                    text = _read_text(c, source)
+                    if text:
+                        names.add(text)
+    receiver = decl_node.child_by_field_name("receiver")
+    if receiver is not None:
+        stack = [receiver]
+        while stack:
+            n = stack.pop()
+            if n.type == "type_arguments":
+                leaves = [n]
+                while leaves:
+                    leaf = leaves.pop()
+                    if leaf.type == "type_identifier":
+                        text = _read_text(leaf, source)
+                        if text:
+                            names.add(text)
+                    leaves.extend(leaf.children)
+                continue
+            stack.extend(n.children)
+    return frozenset(names)
+
+
+def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                          skip: frozenset[str] = frozenset()) -> None:
+    """Walk a Go type expression; append (name, role) tuples.
+
+    Names in ``skip`` (the enclosing declaration's generic type parameters) are
+    local bindings, not references, and are dropped.
+    """
     if node is None:
         return
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text and text not in _GO_PREDECLARED_TYPES:
+        if text and text not in _GO_PREDECLARED_TYPES and text not in skip:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_type":
@@ -69,24 +114,24 @@ def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
         type_field = node.child_by_field_name("type")
         if type_field is not None:
             sub: list[tuple[str, str]] = []
-            _go_collect_type_refs(type_field, source, generic, sub)
+            _go_collect_type_refs(type_field, source, generic, sub, skip)
             out.extend(sub)
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _go_collect_type_refs(arg, source, True, out)
+                        _go_collect_type_refs(arg, source, True, out, skip)
         return
     if t in ("pointer_type", "slice_type", "array_type", "map_type",
              "channel_type", "parenthesized_type"):
         for c in node.children:
             if c.is_named:
-                _go_collect_type_refs(c, source, generic, out)
+                _go_collect_type_refs(c, source, generic, out, skip)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _go_collect_type_refs(c, source, generic, out)
+                _go_collect_type_refs(c, source, generic, out, skip)
 
 def extract_go(path: Path) -> dict:
     """Extract functions, methods, type declarations, and imports from a .go file."""
@@ -171,7 +216,13 @@ def extract_go(path: Path) -> dict:
             })
         return nid
 
-    def emit_go_method_refs(func_node, func_nid: str, line: int) -> None:
+    def emit_go_method_refs(func_node, func_nid: str, line: int,
+                            type_params: frozenset[str] = frozenset()) -> None:
+        # The signature's own generic type parameters (and, for a method, those
+        # bound by the receiver or an enclosing generic interface) are local
+        # bindings, not references — dropping them keeps a `[T any]` signature
+        # from minting a sourceless `T` god node every generic function shares.
+        skip = type_params | _go_type_param_names(func_node, source)
         params = func_node.child_by_field_name("parameters")
         if params is not None:
             for p in params.children:
@@ -179,7 +230,7 @@ def extract_go(path: Path) -> dict:
                     continue
                 type_node = p.child_by_field_name("type")
                 refs: list[tuple[str, str]] = []
-                _go_collect_type_refs(type_node, source, False, refs)
+                _go_collect_type_refs(type_node, source, False, refs, skip)
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                     tgt = ensure_named_node(ref_name, line)
@@ -198,7 +249,7 @@ def extract_go(path: Path) -> dict:
                                 type_node = c
                                 break
                     refs = []
-                    _go_collect_type_refs(type_node, source, False, refs)
+                    _go_collect_type_refs(type_node, source, False, refs, skip)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
                         tgt = ensure_named_node(ref_name, line)
@@ -206,7 +257,7 @@ def extract_go(path: Path) -> dict:
                             add_edge(func_nid, tgt, "references", line, context=ctx)
             else:
                 refs = []
-                _go_collect_type_refs(result, source, False, refs)
+                _go_collect_type_refs(result, source, False, refs, skip)
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "return_type"
                     tgt = ensure_named_node(ref_name, line)
@@ -352,6 +403,9 @@ def extract_go(path: Path) -> dict:
                 type_nid = _make_id(pkg_scope, type_name)
                 add_node(type_nid, type_name, line)
                 add_edge(file_nid, type_nid, "contains", line)
+                # A generic type's own parameters (`type Box[T any]`) are local
+                # bindings; a field or method using `T` must not mint a stub.
+                type_params = _go_type_param_names(child, source)
                 # Type body: struct fields (with embeds) or interface embedding.
                 type_body = None
                 for tc in child.children:
@@ -377,7 +431,7 @@ def extract_go(path: Path) -> dict:
                                         type_node = fc
                                         break
                             refs: list[tuple[str, str]] = []
-                            _go_collect_type_refs(type_node, source, False, refs)
+                            _go_collect_type_refs(type_node, source, False, refs, type_params)
                             for ref_name, role in refs:
                                 tgt = ensure_named_node(ref_name, field.start_point[0] + 1)
                                 if tgt == type_nid:
@@ -411,7 +465,7 @@ def extract_go(path: Path) -> dict:
                             m_nid = symbol_nid(_make_id(type_nid, m_name), m_name)
                             add_node(m_nid, f".{m_name}()", m_line)
                             add_edge(type_nid, m_nid, "method", m_line)
-                            emit_go_method_refs(elem, m_nid, m_line)
+                            emit_go_method_refs(elem, m_nid, m_line, type_params)
                             continue
                         if elem.type != "type_elem":
                             continue
@@ -428,7 +482,7 @@ def extract_go(path: Path) -> dict:
                         refs = []
                         for sub in elem.children:
                             if sub.is_named:
-                                _go_collect_type_refs(sub, source, False, refs)
+                                _go_collect_type_refs(sub, source, False, refs, type_params)
                         for ref_name, role in refs:
                             tgt = ensure_named_node(ref_name, elem.start_point[0] + 1)
                             if tgt == type_nid:
