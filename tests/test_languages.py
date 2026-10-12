@@ -3092,6 +3092,34 @@ def test_powershell_dot_source_inside_function_emits_edge():
     )
 
 
+def test_powershell_quoted_dot_source_emits_import_edge(tmp_path):
+    """A quoted/interpolated dot-source (`. "$PSScriptRoot\\lib.ps1"`) is how a
+    PowerShell script imports a library, but the handler read only a bare
+    `command_name` operand — a quoted path parses as a string_literal instead, so
+    the dependency edge was dropped (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text('. "$PSScriptRoot\\lib.ps1"\n', encoding="utf-8")
+    r = extract_powershell(f)
+    assert "error" not in r
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any("lib" in t for t in targets), f"Missing quoted dot-source edge; targets={targets}"
+
+
+def test_powershell_script_scope_call_emits_calls_edge(tmp_path):
+    """A call made at script scope is a call from the file itself. walk_calls ran
+    only over function bodies, so an entry-point script's top-level calls were
+    dropped from the call graph entirely (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(
+        "function Invoke-Main { return 1 }\n"
+        "Invoke-Main\n",
+        encoding="utf-8",
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    assert ("main.ps1", "Invoke-Main") in _edge_labels(r, "calls")
+
+
 # ── PowerShell manifest (.psd1) (#1331) ──────────────────────────────────────
 
 def test_powershell_psd1_dispatched():

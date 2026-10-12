@@ -8,6 +8,26 @@ from typing import Any
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
+def _dot_source_module_stem(raw: str) -> str:
+    """Bare module stem for a PowerShell dot-source target.
+
+    Accepts the operand as it appears in the source: a bare path
+    (``./Shared.psm1``), a quoted/verbatim path (``'lib.ps1'``) or an
+    interpolated one (``"$PSScriptRoot\\lib.ps1"``). The surrounding quotes, a
+    leading variable reference (``$PSScriptRoot`` / ``${PSScriptRoot}``), any
+    directory components and the extension are all dropped, so
+    ``"$PSScriptRoot\\lib.ps1"`` yields ``lib`` — the stem ``_file_stem`` gives
+    the library file, so the edge lands on the same node id (#4356).
+    """
+    path = raw.strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
+        path = path[1:-1]
+    path = re.sub(r'^\$\{?[A-Za-z_][A-Za-z0-9_:.]*\}?', '', path)
+    path = re.sub(r'^[./\\]+', '', path)
+    path = re.sub(r'\.[^.\\/]+$', '', path)
+    return path.replace('\\', '/').split('/')[-1]
+
+
 def extract_powershell(path: Path) -> dict:
     """Extract functions, classes, methods, and using statements from a .ps1 file."""
     try:
@@ -254,7 +274,7 @@ def extract_powershell(path: Path) -> dict:
             return
 
         if t == "command":
-            # Dot-sourcing: `. ./Shared.psm1`
+            # Dot-sourcing: `. ./Shared.psm1` or `. "$PSScriptRoot\lib.ps1"`
             # Uses command_invokation_operator '.' + command_name_expr (not command_name)
             invoke_op = next(
                 (c for c in node.children if c.type == "command_invokation_operator"), None
@@ -264,16 +284,18 @@ def extract_powershell(path: Path) -> dict:
                     (c for c in node.children if c.type == "command_name_expr"), None
                 )
                 if name_expr is not None:
-                    name_node = next(
-                        (c for c in name_expr.children if c.type == "command_name"), None
+                    # A bare path parses the operand as a command_name; a quoted
+                    # or interpolated one (`. "$PSScriptRoot\lib.ps1"`) parses it
+                    # as a string_literal instead. Looking only for command_name
+                    # dropped the dependency edge for that common entry-point
+                    # shape, even though dot-sourcing is how a PowerShell script
+                    # imports a library (#4356).
+                    operand = next(
+                        (c for c in name_expr.children
+                         if c.type in ("command_name", "string_literal")), None
                     )
-                    if name_node:
-                        raw_path = _read_text(name_node, source)
-                        # Strip relative path prefix (./ or .\ or just the dot)
-                        module_stem = re.sub(r'^[./\\]+', '', raw_path)
-                        # Drop extension to get bare module name
-                        module_stem = re.sub(r'\.[^.]+$', '', module_stem).replace('\\', '/')
-                        module_name = module_stem.split('/')[-1]
+                    if operand is not None:
+                        module_name = _dot_source_module_stem(_read_text(operand, source))
                         if module_name:
                             add_edge(file_nid, _make_id(module_name), "imports_from",
                                      node.start_point[0] + 1)
@@ -414,6 +436,13 @@ def extract_powershell(path: Path) -> dict:
 
     for caller_nid, body_node, parent_class_nid in function_bodies:
         walk_calls(body_node, caller_nid, parent_class_nid)
+
+    # Script-scope (top-level) commands are calls too, attributed to the file
+    # node. Only function bodies were walked, so an entry-point script that
+    # dot-sources a library and then calls its functions at file scope produced
+    # no `calls` edge at all (#4356). walk_calls stops at function/class
+    # statements, so this does not repeat the per-body passes above.
+    walk_calls(root, file_nid, None)
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] in ("imports_from", "imports"))]
