@@ -478,6 +478,71 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd, "timeout": 10}]},
     ]
+# Tokens that only ever appear in a command graphify itself writes: its
+# `hook-guard <search|read|gemini>` and `hook-check` subcommands. Legacy
+# (pre-#522) installs shipped an inline POSIX bash guard instead, whose command
+# always gated on graphify's own output dir, so that marker identifies it too.
+_GRAPHIFY_HOOK_SUBCOMMANDS = ("hook-guard", "hook-check")
+_GRAPHIFY_LEGACY_HOOK_MARKER = "graphify-out/"
+
+
+def _is_graphify_hook_command(command: str) -> bool:
+    """True when a hook ``command`` string is one graphify installed.
+
+    Matches graphify's own guard/check subcommands (current installs) or the
+    ``graphify-out/`` path its pre-#522 inline bash guard gated on (legacy
+    installs). Deliberately command-scoped: the old ``"graphify" in str(group)``
+    match also caught an unrelated group whose command path merely contained the
+    word "graphify" (#4359).
+    """
+    lowered = command.lower()
+    if "graphify" not in lowered:
+        return False
+    if any(sub in lowered for sub in _GRAPHIFY_HOOK_SUBCOMMANDS):
+        return True
+    return _GRAPHIFY_LEGACY_HOOK_MARKER in lowered
+
+
+def _is_graphify_hook_entry(entry: object) -> bool:
+    """True when a single ``hooks[]`` element is a graphify command entry.
+
+    Non-dict and non-command entries are never graphify's (the old uninstall
+    filter called ``.get`` on every entry and raised ``AttributeError`` on a
+    plain string, #4359).
+    """
+    if not isinstance(entry, dict) or entry.get("type") != "command":
+        return False
+    command = entry.get("command")
+    return isinstance(command, str) and _is_graphify_hook_command(command)
+
+
+def _strip_graphify_hooks(groups: "list") -> "list":
+    """Drop graphify's own hook entries from *groups*, keeping everything else.
+
+    Only the individual entries graphify installed are removed, so a user
+    command sharing graphify's group survives and a group is dropped only once
+    removal leaves it with no hooks. Non-dict groups and non-list ``hooks`` are
+    passed through untouched, and a group without a graphify entry is never
+    rewritten. This replaces the old group-level ``"graphify" in str(group)``
+    filter, which removed whole groups (and other tools' commands in them) and
+    any unrelated group whose command path happened to contain the word (#4359).
+    """
+    kept: "list" = []
+    for group in groups:
+        if not isinstance(group, dict):
+            kept.append(group)
+            continue
+        entries = group.get("hooks")
+        if not isinstance(entries, list):
+            kept.append(group)
+            continue
+        remaining = [e for e in entries if not _is_graphify_hook_entry(e)]
+        if len(remaining) == len(entries):
+            kept.append(group)  # nothing of ours in this group
+        elif remaining:
+            kept.append({**group, "hooks": remaining})
+        # else: the group held only graphify commands -- drop it entirely.
+    return kept
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     # Heading is "# graphify" (H1) to match _SKILL_REGISTRATION_MARKER, which
     # _register_always_on_block anchors its idempotent replace-or-append on.
@@ -1008,9 +1073,7 @@ def _install_gemini_hook(project_dir: Path, project: bool = False) -> None:
     before_tool = hooks.setdefault("BeforeTool", [])
     if not isinstance(before_tool, list):
         _refuse_to_modify(settings_path)
-    hooks["BeforeTool"] = [
-        h for h in before_tool if "graphify" not in str(h)
-    ]
+    hooks["BeforeTool"] = _strip_graphify_hooks(before_tool)
     hooks["BeforeTool"].append(_gemini_hook(project=project))
     _write_settings_with_backup(settings_path, settings)
     print("  .gemini/settings.json  ->  BeforeTool hook registered")
@@ -1023,11 +1086,13 @@ def _uninstall_gemini_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     before_tool = settings.get("hooks", {}).get("BeforeTool", [])
-    filtered = [h for h in before_tool if "graphify" not in str(h)]
-    if len(filtered) == len(before_tool):
+    if not isinstance(before_tool, list):
+        return
+    filtered = _strip_graphify_hooks(before_tool)
+    if filtered == before_tool:
         return
     settings["hooks"]["BeforeTool"] = filtered
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print("  .gemini/settings.json  ->  BeforeTool hook removed")
 def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, remove_user_skill: bool | None = None) -> None:
     """Remove the graphify section from GEMINI.md, uninstall hook, and remove skill file.
@@ -1767,7 +1832,7 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     pre_tool = hooks.setdefault("PreToolUse", [])
     if not isinstance(pre_tool, list):
         _refuse_to_modify(hooks_path)
-    hooks["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
     _write_settings_with_backup(hooks_path, existing)
     print(
@@ -1787,9 +1852,13 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = existing.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if "graphify" not in str(h)]
+    if not isinstance(pre_tool, list):
+        return
+    filtered = _strip_graphify_hooks(pre_tool)
+    if filtered == pre_tool:
+        return
     existing["hooks"]["PreToolUse"] = filtered
-    hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    _write_settings_with_backup(hooks_path, existing)
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
@@ -2075,7 +2144,7 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
@@ -2099,11 +2168,13 @@ def _strip_graphify_hook(settings_path: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
-    if len(filtered) == len(pre_tool):
+    if not isinstance(pre_tool, list):
+        return
+    filtered = _strip_graphify_hooks(pre_tool)
+    if filtered == pre_tool:
         return
     settings["hooks"]["PreToolUse"] = filtered
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
 
 
@@ -2289,7 +2360,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
@@ -2303,11 +2374,13 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
-    if len(filtered) == len(pre_tool):
+    if not isinstance(pre_tool, list):
+        return
+    filtered = _strip_graphify_hooks(pre_tool)
+    if filtered == pre_tool:
         return
     settings["hooks"]["PreToolUse"] = filtered
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hook removed")
 def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = False, remove_user_skill: bool | None = None) -> None:
     """Remove the graphify skill tree (SKILL.md + references/) and the CODEBUDDY.md section.
