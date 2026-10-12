@@ -4034,11 +4034,26 @@ def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[d
     the halves to agree. Each half's base name is resolved in its own file's
     scope, so a half whose file the resolver cannot see the base from (a
     sibling nested base without `using static` for its holder, say) leaves a
-    placeholder edge while another half binds the real type. After the merge the type then has two same-named bases, and
-    lookups through the base chain bail as ambiguous. The placeholder is the
-    unresolved spelling of the resolved base, so it goes.
+    placeholder edge while another half binds the real type. After the merge
+    the type then has two same-named bases, and lookups through the base chain
+    bail as ambiguous. A placeholder spelled with the bare name is the
+    unresolved spelling of the resolved base, so it goes. One written
+    qualified (`Other.IFoo`) or through a `using` alias of that name can be a
+    different type that only shares the simple name, so it stays.
     """
     nodes_by_id = {str(n.get("id", "")): n for n in all_nodes}
+
+    # `using X = ...;` aliases per file, from the import edges the C# extractor
+    # emits (the same source the C# name resolver reads).
+    aliases_by_file: dict[str, set[str]] = {}
+    for e in all_edges:
+        md = e.get("metadata")
+        if not isinstance(md, dict) or md.get("using_kind") != "alias":
+            continue
+        alias = md.get("alias")
+        src_node = nodes_by_id.get(str(e.get("source", ""))) or {}
+        if isinstance(alias, str) and alias:
+            aliases_by_file.setdefault(str(src_node.get("source_file", "")), set()).add(alias)
 
     def _is_partial_cs(nid: str) -> bool:
         n = nodes_by_id.get(nid) or {}
@@ -4067,7 +4082,13 @@ def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[d
         if not names:
             return False
         tgt = nodes_by_id.get(str(e.get("target", ""))) or {}
-        return not tgt.get("source_file") and str(tgt.get("label", "")) in names
+        label = str(tgt.get("label", ""))
+        if tgt.get("source_file") or label not in names:
+            return False
+        md = e.get("metadata")
+        if isinstance(md, dict) and md.get("qualified"):
+            return False
+        return label not in aliases_by_file.get(str(e.get("source_file", "")), set())
 
     all_edges[:] = [e for e in all_edges if not _shadowed(e)]
 

@@ -556,3 +556,72 @@ def test_schema_bump_retires_csharp_entries_cached_without_type_path(tmp_path, m
     assert len(_nodes_labeled(r, "Inner")) == 1
     boxes = sorted(sorted(_methods_of(r, n["id"])) for n in _nodes_labeled(r, "Box"))
     assert boxes == [[".Plain()"], [".Typed()"]]
+
+
+def test_nested_types_sharing_an_id_in_one_file_are_not_merged(tmp_path):
+    """`OuterA.Inner` and `OuterB.Inner` declared in one file already share
+    one node id. No single type path is right for that node, so it must not
+    join the halves of either `OuterA.Inner` or `OuterB.Inner` elsewhere."""
+    calls, r = _extract(tmp_path, {
+        "One.cs": (
+            "namespace App {\n"
+            "    public partial class OuterA { public partial class Inner { public void A1() {} } }\n"
+            "    public partial class OuterB { public partial class Inner { public void B1() {} } }\n"
+            "}\n"
+        ),
+        "A2.cs": (
+            "namespace App { public partial class OuterA {"
+            " public partial class Inner { public void A2() {} } } }\n"
+        ),
+        "B2.cs": (
+            "namespace App { public partial class OuterB {"
+            " public partial class Inner { public void B2() {} } } }\n"
+        ),
+    })
+    owned = [_methods_of(r, n["id"]) for n in _nodes_labeled(r, "Inner")]
+    assert not any({".A2()", ".B1()"} <= m or {".B2()", ".A1()"} <= m for m in owned), owned
+
+
+def test_qualified_or_aliased_base_is_not_dropped_as_shadowed(tmp_path):
+    """A half that names a same-named but different base (`Other.IFoo`, or an
+    alias) keeps its placeholder edge; only a bare-name placeholder next to
+    the real base of that name is the unresolved spelling of it."""
+    def _bases(case, files):
+        _, r = _extract(tmp_path / case, files)
+        by_id = {n["id"]: n for n in r["nodes"]}
+        return sorted((by_id[e["target"]]["label"], bool(by_id[e["target"]].get("source_file")))
+                      for e in r["edges"] if e["relation"] in ("inherits", "implements"))
+
+    common = {
+        "I.cs": "namespace App { public interface IFoo { void F(); } }\n",
+        "DA.cs": "namespace App { public partial class D : IFoo { public void F() {} } }\n",
+    }
+    qualified = _bases("qualified", {**common, "DB.cs": "namespace App { public partial class D : Other.IFoo { } }\n"})
+    aliased = _bases("aliased", {**common, "DB.cs": (
+        "using IFoo = Other.IFoo;\n"
+        "namespace App { public partial class D : IFoo { } }\n"
+    )})
+    assert qualified == [("IFoo", False), ("IFoo", True)], qualified
+    assert aliased == [("IFoo", False), ("IFoo", True)], aliased
+
+
+def test_receiver_qualified_calls_are_not_rebound_to_the_own_type(tmp_path):
+    """The own-type binding is for unqualified calls only: `base.M()`,
+    `this.M()` and `Type.M()` keep their existing targets."""
+    calls, r = _extract(tmp_path, {
+        "Machine.cs": "namespace App { public class Machine { public virtual void Reset() {} } }\n",
+        "E1.cs": (
+            "namespace App { public partial class Engine : Machine {"
+            " public override void Reset() {} public static void Stop() {} } }\n"
+        ),
+        "E2.cs": (
+            "namespace App { public partial class Engine : Machine {"
+            " public void Go() { base.Reset(); Valve.Stop(); } } }\n"
+        ),
+        "Valve.cs": "namespace App { public static class Valve { public static void Stop() {} } }\n",
+    })
+    go = _find(r, ".Go()", "engine")
+    assert (go, _find(r, ".Reset()", "machine")) in calls
+    assert (go, _find(r, ".Stop()", "valve")) in calls
+    assert (go, _find(r, ".Reset()", "engine")) not in calls
+    assert (go, _find(r, ".Stop()", "engine")) not in calls

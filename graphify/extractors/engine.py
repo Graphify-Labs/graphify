@@ -4753,7 +4753,7 @@ def _extract_generic(
     # C# type id -> its name within the namespace, enclosing types first
     # (`` Outer`1.Inner ``). Partial types carry it as `type_path` so the
     # corpus-level partial merge can key nested and generic halves exactly.
-    csharp_type_paths: dict[str, str] = {}
+    csharp_type_paths: dict[str, str | None] = {}
     # #1356: call expressions in property/field initializers (e.g.
     # `let vm = VM()`) live outside function bodies, so the call-walk never
     # reaches them. Collect (owner_nid, call_node) here and walk them too.
@@ -5006,6 +5006,7 @@ def _extract_generic(
                 # enclosing types, so this is what tells two same-named nested
                 # types under different outers apart. None when an enclosing
                 # type's path is unknown.
+                _type_path: str | None
                 if parent_class_nid:
                     _parent_path = csharp_type_paths.get(parent_class_nid)
                     _type_path = (
@@ -5014,8 +5015,18 @@ def _extract_generic(
                     )
                 else:
                     _type_path = class_name_for_id
-                if _type_path is not None:
-                    csharp_type_paths.setdefault(class_nid, _type_path)
+                if class_nid not in csharp_type_paths:
+                    csharp_type_paths[class_nid] = _type_path
+                elif csharp_type_paths[class_nid] != _type_path:
+                    # Two declarations in this file share one id but not one
+                    # path (same-named nested types under different outers).
+                    # No path is right for both, so the node gets none and the
+                    # partial merge leaves it alone.
+                    csharp_type_paths[class_nid] = None
+                    _type_path = None
+                    for _prev in nodes:
+                        if _prev.get("id") == class_nid and isinstance(_prev.get("metadata"), dict):
+                            _prev["metadata"].pop("type_path", None)
                 if parent_class_nid:
                     metadata = {"is_nested_type": True}
                 # #2332: `partial class Foo` split across files mints one node
