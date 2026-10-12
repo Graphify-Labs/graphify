@@ -199,6 +199,20 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     return False
 
 
+def _is_contains_only_ast_node(G: nx.Graph, node_id: str) -> bool:
+    """AST declarations (type aliases, enum members, local consts, JSON keys)
+    whose only edge is the structural `contains` from their declaring file are
+    working as designed, not documentation gaps (#4205)."""
+    from graphify.build import _is_ast_tier
+    attrs = G.nodes[node_id]
+    if not _is_ast_tier(attrs):
+        return False
+    if G.degree(node_id) != 1:
+        return False
+    edges = list(G.edges(node_id, data=True))
+    return len(edges) == 1 and edges[0][2].get("relation") == "contains"
+
+
 from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS
 
 
@@ -468,6 +482,9 @@ def suggest_questions(
     Generate questions the graph is uniquely positioned to answer.
     Based on: AMBIGUOUS edges, bridge nodes, underexplored god nodes, isolated nodes.
     Each question has a 'type', 'question', and 'why' field.
+    Interleave question types before applying top_n so an abundant early type
+    cannot crowd out later signals. Preserve the existing order within each type
+    and category generation order when the limit is smaller than the type count.
     """
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
@@ -475,7 +492,11 @@ def suggest_questions(
     questions = []
     node_community = _node_community_map(communities)
 
-    # 1. AMBIGUOUS edges → unresolved relationship questions
+    # 1. AMBIGUOUS edges → unresolved relationship questions.
+    # Tagged ``low_confidence=True`` (#4199): the audit trail stays
+    # intact but downstream renderers (report.py) move these into a
+    # separate "Low-confidence Hints" section so they do not compete
+    # with EXTRACTED/INFERRED bridges in the main list.
     for u, v, data in G.edges(data=True):
         if data.get("confidence") == "AMBIGUOUS":
             ul = G.nodes[u].get("label", u)
@@ -485,6 +506,7 @@ def suggest_questions(
                 "type": "ambiguous_edge",
                 "question": f"What is the exact relationship between `{ul}` and `{vl}`?",
                 "why": f"Edge tagged AMBIGUOUS (relation: {relation}) - confidence is low.",
+                "low_confidence": True,
             })
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
@@ -549,6 +571,7 @@ def suggest_questions(
         if G.degree(n) <= 1
         and not _is_file_node(G, n)
         and not _is_concept_node(G, n)
+        and not _is_contains_only_ast_node(G, n)
         and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
@@ -583,7 +606,16 @@ def suggest_questions(
             ),
         }]
 
-    return questions[:top_n]
+    from itertools import zip_longest
+
+    by_type: dict[str, list[dict]] = {}
+    for question in questions:
+        by_type.setdefault(question["type"], []).append(question)
+    diversified = [
+        question for row in zip_longest(*by_type.values())
+        for question in row if question is not None
+    ]
+    return diversified[:top_n]
 
 
 def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
@@ -618,24 +650,39 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
             return (u, v, data.get("relation", ""))
         return (min(u, v), max(u, v), data.get("relation", ""))
 
-    old_edge_keys = {
-        edge_key(G_old, u, v, d)
+    def edge_dir(data: dict) -> tuple | None:
+        # Stored direction of an undirected edge (build_from_json, load_node_link_graph).
+        if "_src" in data and "_tgt" in data:
+            return (data["_src"], data["_tgt"])
+        return None
+
+    old_edge_dirs = {
+        edge_key(G_old, u, v, d): edge_dir(d)
         for u, v, d in G_old.edges(data=True)
     }
-    new_edge_keys = {
-        edge_key(G_new, u, v, d)
+    new_edge_dirs = {
+        edge_key(G_new, u, v, d): edge_dir(d)
         for u, v, d in G_new.edges(data=True)
     }
+    old_edge_keys = set(old_edge_dirs)
+    new_edge_keys = set(new_edge_dirs)
 
-    added_edge_keys = new_edge_keys - old_edge_keys
-    removed_edge_keys = old_edge_keys - new_edge_keys
+    # A reversed edge (a->b became b->a) keeps its undirected key. Report it as
+    # removed + added only when both snapshots carry _src/_tgt and they differ,
+    # so graphs without the markers diff exactly as before (#4067).
+    reversed_edge_keys = {
+        k for k in old_edge_keys & new_edge_keys
+        if old_edge_dirs[k] and new_edge_dirs[k] and old_edge_dirs[k] != new_edge_dirs[k]
+    }
+    added_edge_keys = (new_edge_keys - old_edge_keys) | reversed_edge_keys
+    removed_edge_keys = (old_edge_keys - new_edge_keys) | reversed_edge_keys
 
     new_edges_list = []
     for u, v, d in G_new.edges(data=True):
         if edge_key(G_new, u, v, d) in added_edge_keys:
             new_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
             })
@@ -644,8 +691,8 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     for u, v, d in G_old.edges(data=True):
         if edge_key(G_old, u, v, d) in removed_edge_keys:
             removed_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
             })

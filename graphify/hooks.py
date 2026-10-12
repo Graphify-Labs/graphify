@@ -137,6 +137,42 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
 fi
 """
 
+_GIT_C_ESCAPES = {
+    "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92,
+}
+
+
+def _unquote_git_path(name: str) -> str:
+    """Decode a path as printed by ``git diff --name-only``.
+
+    Even with ``core.quotePath=false`` git wraps a name containing a double
+    quote, backslash or control character in double quotes and C-escapes it,
+    spelling raw bytes as ``\\ooo`` octal. Unquoted names are returned as-is.
+    """
+    if len(name) < 2 or not (name.startswith('"') and name.endswith('"')):
+        return name
+    body = name[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\" or i + 1 >= len(body):
+            out += ch.encode("utf-8")
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt in "0123" and i + 3 < len(body) and all(c in "01234567" for c in body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        elif nxt in _GIT_C_ESCAPES:
+            out.append(_GIT_C_ESCAPES[nxt])
+            i += 2
+        else:
+            out += ch.encode("utf-8")
+            i += 1
+    return os.fsdecode(bytes(out))
+
+
 # The Python that the rebuild runs, shared by both hooks. Embedded verbatim into
 # the launcher below and re-executed in the detached child. Must not contain the
 # double-quote, $, backtick or backslash characters: it is carried inside a
@@ -145,8 +181,10 @@ _REBUILD_BODY_COMMIT = """\
 import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
+from graphify.hooks import _unquote_git_path
+
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
-changed = [Path(f.strip()) for f in changed_raw.strip().splitlines() if f.strip()]
+changed = [Path(_unquote_git_path(f.strip())) for f in changed_raw.strip().splitlines() if f.strip()]
 
 if not changed:
     sys.exit(0)
@@ -183,7 +221,7 @@ try:
             _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     _root = Path('.')
-    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    from graphify.paths import GRAPHIFY_OUT as _out
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
@@ -258,7 +296,7 @@ try:
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
     # prevents pile-ups when commit + checkout fire back-to-back.
     _root = Path('.')
-    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    from graphify.paths import GRAPHIFY_OUT as _out
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
@@ -410,7 +448,10 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + """
-CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
+# core.quotePath=false: by default git prints a non-ASCII path as a quoted
+# octal-escaped string, which matches no file on disk, so the edit was silently
+# left out of the rebuild. Names git still quotes are decoded in the rebuild.
+CHANGED=$(git -c core.quotePath=false diff --name-only HEAD~1 HEAD 2>/dev/null || git -c core.quotePath=false diff --name-only HEAD 2>/dev/null)
 if [ -z "$CHANGED" ]; then
     exit 0
 fi
@@ -576,6 +617,66 @@ def _reject_windows_path(value: str, source: str) -> None:
         )
 
 
+def _is_within(child: Path, parent: Path) -> bool:
+    """True if `child` is `parent` or a path underneath it."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _rev_parse_path(root: Path, flag: str) -> Path | None:
+    """Resolve one ``git rev-parse`` path flag against ``root``.
+
+    ``-c core.hooksPath=`` is not used: an empty value makes ``--git-path hooks``
+    print ``./`` instead of the real hooks directory.
+    """
+    import subprocess as _sp
+    try:
+        res = _sp.run(
+            ["git", "-C", str(root), "rev-parse", flag],
+            capture_output=True, text=True,
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    if res.returncode != 0:
+        return None
+    raw = res.stdout.strip()
+    if not raw or any(c in raw for c in ("\n", "\r", "\x00")):
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def _builtin_hooks_dir(root: Path) -> Path | None:
+    """Git's own hooks directory, ignoring core.hooksPath.
+
+    ``--git-path hooks`` follows core.hooksPath, so the default is derived from
+    the common git dir. A linked worktree's hooks live in the main repo's
+    ``.git/hooks``, which is outside the worktree root.
+    """
+    for flag in ("--git-common-dir", "--git-dir"):
+        git_dir = _rev_parse_path(root, flag)
+        if git_dir is not None:
+            return (git_dir / "hooks").resolve()
+    return None
+
+
+def _hooks_path_allowed(root: Path, candidate: Path) -> bool:
+    """Allow in-repo hook dirs (Husky) and git's own hooks dir only.
+
+    A core.hooksPath that resolves anywhere else is repository-controlled
+    local config. Honoring it makes `hook install` write outside the repo (#3869).
+    """
+    if _is_within(candidate, root):
+        return True
+    builtin = _builtin_hooks_dir(root)
+    return builtin is not None and candidate.resolve() == builtin.resolve()
+
+
 def _hooks_dir(root: Path) -> Path:
     """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky).
 
@@ -616,8 +717,19 @@ def _hooks_dir(root: Path) -> Path:
             if raw and not any(c in raw for c in ("\n", "\r", "\x00")):
                 _reject_windows_path(raw, "git rev-parse --git-path hooks")
                 d = (root / raw).resolve()
-                d.mkdir(parents=True, exist_ok=True)
-                return d
+                if _hooks_path_allowed(root, d):
+                    d.mkdir(parents=True, exist_ok=True)
+                    return d
+                print(
+                    f"[graphify hooks] refusing hooks path {d}: it is outside "
+                    f"{root.resolve()}. Installing into the default git hooks "
+                    f"directory instead (#3869).",
+                    file=sys.stderr,
+                )
+                default = _builtin_hooks_dir(root)
+                if default is not None:
+                    default.mkdir(parents=True, exist_ok=True)
+                    return default
     except (OSError, FileNotFoundError):
         pass
     d = root / ".git" / "hooks"

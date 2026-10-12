@@ -30,6 +30,18 @@ def test_to_json_valid_json():
         assert "nodes" in data
         assert "links" in data
 
+
+def test_to_json_includes_graph_schema_metadata(tmp_path):
+    G = make_graph()
+    out = tmp_path / "graph.json"
+
+    assert to_json(G, {}, str(out))
+
+    graph_metadata = json.loads(out.read_text())["graph"]
+    assert graph_metadata["schema_version"] == 1
+    assert graph_metadata["graphify_version"]
+
+
 def test_to_json_nodes_have_community():
     G = make_graph()
     communities = cluster(G)

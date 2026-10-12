@@ -613,9 +613,13 @@ def to_html(
         n = member_counts.get(cid, len(communities.get(cid, []))) if member_counts else len(communities.get(cid, []))
         legend_data.append({"cid": cid, "color": color, "label": lbl, "count": n})
 
-    # Escape </script> sequences so embedded JSON cannot break out of the script tag
+    # Escape every `<` as < so embedded JSON cannot break out of the <script>
+    # element. Escaping only `</` is not enough: an unclosed `<!--` then a later
+    # `<script` in a label drive the HTML tokenizer into script-data-double-escaped
+    # state, where the real `</script>` no longer closes the tag and the page goes
+    # blank (#4124). `<` round-trips through JSON.parse, so labels render unchanged.
     def _js_safe(obj) -> str:
-        return json.dumps(obj).replace("</", "<\\/")
+        return json.dumps(obj).replace("<", "\\u003c")
 
     nodes_json = _js_safe(vis_nodes)
     edges_json = _js_safe(vis_edges)

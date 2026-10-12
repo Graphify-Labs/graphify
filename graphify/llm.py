@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from graphify.extractors.base import _read_source_text
 from graphify.file_slice import (
     FileSlice,
     bisect_slice,
@@ -99,6 +100,26 @@ def _resolve_ollama_base_url(default: str) -> str:
     if not host.endswith("/v1"):
         host = f"{host}/v1"
     return host
+
+
+def _resolve_ollama_seed() -> int | None:
+    """Return the opt-in seed for built-in Ollama requests, if configured."""
+    raw = os.environ.get("GRAPHIFY_OLLAMA_SEED")
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    max_seed = "9223372036854775807"
+    normalized = value.lstrip("0") or "0"
+    if (
+        re.fullmatch(r"[0-9]+", value) is None
+        or len(normalized) > len(max_seed)
+        or (len(normalized) == len(max_seed) and normalized > max_seed)
+    ):
+        raise ValueError(
+            "GRAPHIFY_OLLAMA_SEED must be an ASCII integer in the range "
+            f"0..{max_seed}."
+        )
+    return int(normalized)
 
 
 BACKENDS: dict[str, dict] = {
@@ -537,7 +558,7 @@ def _file_to_text(path: Path) -> str:
     if path.suffix.lower() == ".pdf":
         from graphify.detect import extract_pdf_text
         return extract_pdf_text(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+    return _read_source_text(path)
 
 
 def _resolve_under_root(path: Path, root: Path) -> Path | None:
@@ -1376,6 +1397,7 @@ def _call_openai_compat(
     extra_body: dict | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
+    ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -1412,6 +1434,8 @@ def _call_openai_compat(
         kwargs["temperature"] = temperature
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    if ollama_seed is not None:
+        kwargs["seed"] = ollama_seed
     # A custom provider in providers.json can pass its own extra_body (e.g.
     # `chat_template_kwargs.enable_thinking=false` for self-hosted Qwen3 served
     # by vLLM). When supplied, it wins over the moonshot default — the user has
@@ -1470,14 +1494,23 @@ def _call_openai_compat(
             # heuristic) + 400 for the system prompt, then add output headroom.
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
-        kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+        # Merge, don't assign: GRAPHIFY_DISABLE_THINKING may have set extra_body
+        # above, and replacing it here made the flag silently inert on ollama (#3988).
+        kwargs["extra_body"] = {
+            **kwargs.get("extra_body", {}),
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive,
+        }
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
     raw_content = resp.choices[0].message.content
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = resp.usage.prompt_tokens if resp.usage else 0
-    result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
+    # Some OpenAI-compatible gateways report null token counts (#4325) — coerce
+    # to 0 so the ollama low-token warning and the per-chunk merge below don't
+    # crash comparing/adding None.
+    result["input_tokens"] = (resp.usage.prompt_tokens or 0) if resp.usage else 0
+    result["output_tokens"] = (resp.usage.completion_tokens or 0) if resp.usage else 0
     result["model"] = model
     # `finish_reason == "length"` means the model hit max_completion_tokens
     # mid-generation. The JSON we got back is truncated; callers should
@@ -1524,8 +1557,8 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     )
     raw_content = _anthropic_response_text(resp.content)
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = resp.usage.input_tokens if resp.usage else 0
-    result["output_tokens"] = resp.usage.output_tokens if resp.usage else 0
+    result["input_tokens"] = (resp.usage.input_tokens or 0) if resp.usage else 0
+    result["output_tokens"] = (resp.usage.output_tokens or 0) if resp.usage else 0
     result["model"] = model
     # Normalise Anthropic's `stop_reason` to the OpenAI-compat `finish_reason`
     # vocabulary so the adaptive-retry layer doesn't have to know which
@@ -1878,8 +1911,8 @@ def _call_azure(
         raise ValueError("Azure OpenAI returned empty or filtered response")
     raw_content = resp.choices[0].message.content
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = resp.usage.prompt_tokens if resp.usage else 0
-    result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
+    result["input_tokens"] = (resp.usage.prompt_tokens or 0) if resp.usage else 0
+    result["output_tokens"] = (resp.usage.completion_tokens or 0) if resp.usage else 0
     result["model"] = model
     result["finish_reason"] = resp.choices[0].finish_reason
     _mark_hollow(result, raw_content, "azure")
@@ -1929,8 +1962,8 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     text = _bedrock_response_text(resp, default="{}")
     result = _parse_llm_json(text)
     usage = resp.get("usage", {})
-    result["input_tokens"] = usage.get("inputTokens", 0)
-    result["output_tokens"] = usage.get("outputTokens", 0)
+    result["input_tokens"] = usage.get("inputTokens", 0) or 0
+    result["output_tokens"] = usage.get("outputTokens", 0) or 0
     result["model"] = model
     result["finish_reason"] = "length" if resp.get("stopReason") == "max_tokens" else "stop"
     _mark_hollow(result, text, "bedrock")
@@ -2142,7 +2175,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         return chars // _CHARS_PER_TOKEN
     else:
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+            content = _read_source_text(path, warn=False)[:_FILE_CHAR_CAP]
         except OSError:
             return 0
 
@@ -2904,6 +2937,7 @@ def _call_llm(
     """
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}")
+    ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
     cfg = BACKENDS[backend]
     key = _get_backend_api_key(backend)
     if not key and backend == "ollama":
@@ -3056,6 +3090,8 @@ def _call_llm(
         kwargs["temperature"] = temperature
     if cfg.get("reasoning_effort"):
         kwargs["reasoning_effort"] = cfg["reasoning_effort"]
+    if ollama_seed is not None:
+        kwargs["seed"] = ollama_seed
     # Custom providers can override via providers.json `extra_body`; falls back
     # to the moonshot default to preserve existing behavior.
     if cfg.get("extra_body") is not None:

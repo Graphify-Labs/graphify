@@ -117,7 +117,9 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-result = detect(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 # Write the sidecar from Python, not a shell redirect, so the same block renders
 # on PowerShell hosts without console-encoding drift (#2528).
 Path('graphify-out/.graphify_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
@@ -246,11 +248,15 @@ if cached_nodes or cached_edges or cached_hyperedges:
 else:
     Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
+# Nothing has been dispatched yet, so any chunk file on disk is a leftover from an
+# interrupted run, and Step B3 merges every .graphify_chunk_*.json it finds.
+for stale in Path('graphify-out').glob('.graphify_chunk_*.json'):
+    stale.unlink()
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
 ```
 
-Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip to Part C directly.
+Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip Steps B1 and B2 but still run Step B3's commands: its merge is the only Part B step that writes `graphify-out/.graphify_semantic.json`, and Part C reads that file unconditionally. Do not write an empty `.graphify_semantic.json` instead, because that drops every cached node.
 
 **Step B1 - Split into chunks**
 
@@ -273,7 +279,11 @@ After all agents are dispatched, collect results sequentially in memory:
 result = wait_agent(handle); close_agent(handle)   # repeat per handle
 ```
 
-Parse each result as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. Codex collects in memory, so there are no per-chunk files on disk; the disk-based success checks in Step B3 do not apply — a chunk that returns invalid JSON is the failure signal instead.
+Collect each result in memory and associate it with the chunk number used for dispatch. Validate that every result is a JSON object with list-valued `nodes` and `edges`; `hyperedges` may be omitted or a list. Empty lists are valid extraction results.
+
+If any subagent fails, returns no result or invalid JSON, or a result cannot be persisted and read back from its expected chunk file, print the affected chunk numbers and stop before Step B3. Do not merge partial results, save cache, or continue to Part C; leave the existing graph and semantic cache untouched.
+
+Only after every result validates, write each result to its matching `graphify-out/.graphify_chunk_NN.json` file, using JSON serialization and the trusted chunk number. Preserve its `nodes`, `edges`, `hyperedges`, `input_tokens`, and `output_tokens` values. Verify that every expected chunk file exists and parses as JSON before continuing. Do not aggregate results or write `graphify-out/.graphify_semantic_new.json` in B2 — shared Step B3 performs the merge and cache update.
 
 Subagent prompt template:
 
@@ -641,6 +651,8 @@ Graph complete. Outputs in PATH_TO_DIR/graphify-out/
 If graphify saved you time, consider supporting it: https://github.com/sponsors/safishamsi
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
+
+If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
 
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes

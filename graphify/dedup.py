@@ -18,12 +18,38 @@ from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _is_label_char(ch: str) -> bool:
+    """True for a character that belongs to a word in a label.
+
+    Letters and digits, plus combining marks (Unicode category M*). ``\\w`` does
+    not match marks, so the old ``[\\W_]+`` separator class deleted every vowel
+    sign and virama: ``हिंदी`` became ``ह द`` and ``कि``/``की``/``के`` all
+    collapsed to ``क``, merging distinct words.
+    """
+    return ch.isalnum() or unicodedata.category(ch).startswith("M")
+
+
 def _norm(label: str | None) -> str:
-    """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
+    """Lowercase + collapse non-word runs to space (Unicode-aware).
+
+    Combining marks stay part of the word (see ``_is_label_char``); punctuation,
+    underscores and whitespace collapse to a single space as before. Known gap:
+    ZWJ/ZWNJ (category Cf) still count as separators.
+    """
     if not isinstance(label, str):
         label = "" if label is None else str(label)
-    label = unicodedata.normalize("NFKC", label)
-    return re.sub(r"[\W_]+", " ", label.casefold(), flags=re.UNICODE).strip()
+    label = unicodedata.normalize("NFKC", label).casefold()
+    out: list[str] = []
+    pending_sep = False
+    for ch in label:
+        if _is_label_char(ch):
+            if pending_sep and out:
+                out.append(" ")
+            pending_sep = False
+            out.append(ch)
+        else:
+            pending_sep = True
+    return "".join(out)
 
 
 def _entropy(label: str) -> float:
@@ -402,13 +428,16 @@ def _lifecycle_penalty(rank_path: str) -> int:
 def _rank_path(source_file: str, root: Path | None) -> str:
     """The root-relative form of ``source_file`` used for collision ranking.
 
-    Mirrors ``_source_key`` in extractors/resolution.py: with a scan root, an
-    absolute stored path and its repo-relative twin rank identically, and the
-    checkout location's own segments never participate (#2532). Without a root
-    (or when relativizing fails) the normalized stored path is used as-is.
+    With a scan root, an absolute stored path and its repo-relative twin rank
+    identically, and the checkout location's own segments never participate
+    (#2532). A relative stored path is already root-relative and is used as-is;
+    unlike ``_source_key`` in extractors/resolution.py, it is not resolved
+    against the CWD, so a run from a subdirectory of the root keys it the same
+    (#4281). Without a root (or when relativizing fails) the normalized stored
+    path is used as-is.
     """
     normalized = source_file.replace("\\", "/")
-    if root is not None and normalized:
+    if root is not None and normalized and Path(normalized).is_absolute():
         try:
             return Path(normalized).resolve().relative_to(root).as_posix()
         except Exception:
@@ -512,6 +541,98 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
             )
 
 
+def _full_stem(source_file: str) -> str:
+    """The extension-stripped, slugified full-path stem a file's own IDs start with."""
+    stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
+    return "_".join(s for s in (normalize_id(p) for p in stem.split("/")) if s)
+
+
+def _extension_qualified_id(node: dict) -> str | None:
+    """``x.html``'s own spelling of an ID it shares with ``x.py`` (#4281).
+
+    Only applies when the ID is spelled with the node's FULL path stem, i.e.
+    the ID collides because the extension was stripped. Returns None for an ID
+    that only matches a trailing path slice (a bare ``protocol``): that is a
+    reference to another file's entity, not a distinct entity, and is left to
+    the collapse-and-warn path.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    ext_match = _EXTENSION.search(source_file.replace("\\", "/"))
+    full = _full_stem(source_file)
+    if not (nid and full and ext_match):
+        return None
+    if nid != full and not nid.startswith(f"{full}_"):
+        return None
+    return f"{full}_{normalize_id(ext_match.group(0))}{nid[len(full):]}"
+
+
+def _disambiguate_defining_collisions(
+    nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
+    root: Path | None,
+) -> tuple[list[dict], list[dict]]:
+    """Keep ``x.py`` and ``x.html`` apart when both derive the same ID (#4281).
+
+    The ID is built from the extension-stripped path, so two files that differ
+    only by extension mint the same ID. The best-ranked file keeps it; the
+    others get an extension-qualified ID. Edges and hyperedges follow the
+    renamed node by ``source_file``, compared in root-relative form because
+    semantic edges can still carry an absolute path here while nodes were
+    already made relative. Anything else (an ID no file derives from its own
+    path, or a bare ID shared across different paths) is left to the existing
+    collapse-and-warn path.
+    """
+    def key(sf):
+        return _rank_path(sf, root) if sf else ""
+
+    by_id: dict[str, list[dict]] = defaultdict(list)
+    for node in nodes:
+        nid = node.get("id")
+        if nid and node.get("source_file") and _extension_qualified_id(node):
+            by_id[nid].append(node)
+    taken = {n.get("id") for n in nodes if n.get("id")}
+    renames: dict[tuple[str, str], str] = {}
+    for nid, definers in by_id.items():
+        if len({key(d["source_file"]) for d in definers}) < 2:
+            continue
+        winner = min(definers, key=lambda d: _collision_rank(d, root))
+        for d in sorted(definers, key=lambda d: key(d["source_file"])):
+            k = key(d["source_file"])
+            if k == key(winner["source_file"]) or (nid, k) in renames:
+                continue
+            # Same full stem only: x.py vs x.html, never a/x vs b/x.
+            if _full_stem(d["source_file"]) != _full_stem(winner["source_file"]):
+                continue
+            # The extension is what tells them apart; same-extension slug twins
+            # (pkg/service.py vs pkg_service.py) stay on the collapse-and-warn path.
+            if _EXTENSION.search(d["source_file"]) and _EXTENSION.search(winner["source_file"]) and                     _EXTENSION.search(d["source_file"]).group(0).lower() ==                     _EXTENSION.search(winner["source_file"]).group(0).lower():
+                continue
+            new_id = _extension_qualified_id(d)
+            if new_id and new_id not in taken:
+                taken.add(new_id)
+                renames[(nid, k)] = new_id
+    if not renames:
+        return nodes, edges
+    out_nodes = [
+        dict(node, id=renames[(node.get("id"), key(node.get("source_file")))])
+        if (node.get("id"), key(node.get("source_file"))) in renames else node
+        for node in nodes
+    ]
+    for coll in (edges, hyperedges or []):
+        for item in coll:
+            if not isinstance(item, dict):
+                continue
+            k = key(item.get("source_file"))
+            for end in ("source", "target"):
+                new_id = renames.get((item.get(end), k))
+                if new_id:
+                    item[end] = new_id
+            members = item.get("nodes")
+            if isinstance(members, list):
+                item["nodes"] = [renames.get((m, k), m) if isinstance(m, str) else m for m in members]
+    return out_nodes, edges
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
@@ -608,6 +729,7 @@ def deduplicate_entities(
     # passing cross-reference's. Missing attributes from same-source records are
     # retained so AST structure and semantic enrichment can coexist (#2091).
     # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
+    nodes, edges = _disambiguate_defining_collisions(nodes, edges, hyperedges, root_resolved)
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
@@ -678,6 +800,30 @@ def deduplicate_entities(
         if prot is not None:
             prot_by_root[new_root] = prot
 
+    def _crossfile_union(left: dict, right: dict, *, with_prot: bool) -> None:
+        nonlocal exact_merges
+        if _crossfile_fileanchored_blocked(left, right):
+            return
+        left_id = left["id"]
+        right_id = right["id"]
+        if with_prot:
+            px = _get_prot(left_id)
+            py = _get_prot(right_id)
+            if px is not None and py is not None and px != py:
+                return
+        if uf.find(left_id) == uf.find(right_id):
+            return
+        if with_prot:
+            _union_with_prot(left_id, right_id)
+        else:
+            uf.union(left_id, right_id)
+        exact_merges += 1
+
+    def _crossfile_join(members: list[dict], *, with_prot: bool) -> None:
+        for index, left in enumerate(members):
+            for right in members[index + 1:]:
+                _crossfile_union(left, right, with_prot=with_prot)
+
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
@@ -726,20 +872,15 @@ def deduplicate_entities(
         # it is provably safe (#2182). `concept` is the one file_type meant to
         # unify across files (#1284) — code is keyed by ID (#1205) and
         # image/paper labels are often shared basenames (logo.png), so both stay
-        # blocked. rationale/document join `concept` here ONLY when the node
-        # reads as an entity inside its file (#296): a file-anchored
-        # *file_type* does not make an individual node file-anchored. An entity
-        # extracted from a note — a person, a project — inherits `document` from
-        # the file's extension, not from anything about itself, so in note-heavy
-        # corpora almost no entity node is typed `concept` and this merge never
-        # got to run on them. A file's own node and its headings still never
-        # merge (#1284, #3094).
+        # blocked. A rationale or document node can still enter this list when
+        # it reads as an entity (#296). Each union calls
+        # `_crossfile_fileanchored_blocked`, so that node does not join a node
+        # from another file (#3094). Concept nodes still join across files.
+        # A file's own node and its headings never enter the list (#1284).
         # Provenance is required (#1178), and the entropy gate mirrors Pass 2 so
         # short generic labels ("API") stay distinct — both untouched here.
-        # Scoped to this exact-normalization pass: Pass 2's fuzzy
-        # `_crossfile_fileanchored_blocked` is unchanged, so #1284's
-        # near-identical boilerplate and heading siblings stay blocked.
-        # Sorting by id keeps the winner order-independent.
+        # Pass 2 still calls the same block, so near-identical boilerplate stays
+        # blocked (#1284). Sorting by id keeps the pair order stable.
         mergeable = sorted(
             (n for n in group
              if (n.get("file_type") == "concept"
@@ -758,30 +899,18 @@ def deduplicate_entities(
                     # NEVER collapse them during incremental merge.
                     continue
                 if prot_members:
-                    # Mixed: pick AT MOST ONE protected survivor for incoming nodes to fold into.
-                    # Multiple protected nodes must remain separate independent entities.
+                    # Mixed: fold an incoming node into at most one protected
+                    # survivor. Protected nodes stay separate from each other.
+                    # Incoming nodes the block still allows are joined to each
+                    # other, so a blocked winner does not leave them apart.
                     canonical_winner = _pick_winner(prot_members)
                     for inc in inc_members:
-                        px = _get_prot(canonical_winner["id"])
-                        py = _get_prot(inc["id"])
-                        if px is not None and py is not None and px != py:
-                            continue
-                        if uf.find(canonical_winner["id"]) != uf.find(inc["id"]):
-                            _union_with_prot(canonical_winner["id"], inc["id"])
-                            exact_merges += 1
+                        _crossfile_union(canonical_winner, inc, with_prot=True)
+                    _crossfile_join(inc_members, with_prot=True)
                 else:
-                    # Incoming only: merge normally
-                    winner = _pick_winner(inc_members)
-                    for node in inc_members:
-                        if uf.find(winner["id"]) != uf.find(node["id"]):
-                            _union_with_prot(winner["id"], node["id"])
-                            exact_merges += 1
+                    _crossfile_join(inc_members, with_prot=True)
             else:
-                winner = _pick_winner(mergeable)
-                for node in mergeable:
-                    if uf.find(winner["id"]) != uf.find(node["id"]):
-                        uf.union(winner["id"], node["id"])
-                        exact_merges += 1
+                _crossfile_join(mergeable, with_prot=False)
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
     candidates: list[dict] = []

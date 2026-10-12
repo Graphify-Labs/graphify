@@ -1346,24 +1346,22 @@ def test_reads_as_file_entity_helper():
 
 
 def test_dedup_merges_crossfile_document_entity_variants():
-    """The reported bug (#296): case/prefix variants of one entity, extracted
-    from three different notes and typed `document` by extension, must collapse
-    to a single node."""
+    """Unstamped document nodes that share a label stay one node per file.
+
+    The exact pass calls the same cross-file block as the fuzzy pass (#3094).
+    Three notes no longer collapse to one node.
+    """
     nodes = [
         {"id": "journal_2024_03_0%d_cyrilxbt" % i, "label": variant,
          "file_type": "document", "source_file": "journal/2024-03-0%d.md" % i}
         for i, variant in enumerate(_CYRIL_VARIANTS, start=1)
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-    assert len(result_nodes) == 1, (
-        "cross-file `document` entity variants did not merge -- the #296 gate "
-        "widening is not reaching Pass 1's cross-file residue"
-    )
+    assert len(result_nodes) == 3
 
 
 def test_dedup_merges_crossfile_rationale_entity_variants():
-    """`rationale` rides the same gate as `document` (#296): entity nodes of
-    that type, provably not their files' own nodes, merge on an exact label."""
+    """Unstamped rationale nodes that share a label stay one node per file (#3094)."""
     nodes = [
         {"id": "svc_alpha_py_retention_window", "label": "Retention Window",
          "file_type": "rationale", "source_file": "svc/alpha.py"},
@@ -1371,7 +1369,7 @@ def test_dedup_merges_crossfile_rationale_entity_variants():
          "file_type": "rationale", "source_file": "svc/beta.py"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-    assert len(result_nodes) == 1
+    assert len(result_nodes) == 2
 
 
 def test_dedup_never_merges_a_files_own_node_away():
@@ -1434,10 +1432,11 @@ def test_dedup_crossfile_entity_merge_keeps_the_provenance_gate():
 
 
 def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
-    """#296 widens only the exact-normalization pass. Pass 2's fuzzy
-    `_crossfile_fileanchored_blocked` is unchanged, so near-identical (not
-    identical) document labels in different files still stay distinct -- the
-    #1284 guard keeps doing its job on entity nodes too."""
+    """Pass 2 still refuses near-identical document labels in different files.
+
+    The exact pass now calls the same block (#3094). This pair is not an exact
+    label match, so only the fuzzy pass can see it, and the block keeps both nodes.
+    """
     nodes = [
         {"id": "docs_a_guide", "label": "Getting Started Installation Guide",
          "file_type": "document", "source_file": "docs/a.md"},
@@ -1446,6 +1445,75 @@ def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
     assert len(result_nodes) == 2
+
+
+def _doc(node_id, label, source_file, file_type="document"):
+    return {
+        "id": node_id,
+        "label": label,
+        "file_type": file_type,
+        "source_file": source_file,
+        "source_location": None,
+    }
+
+
+def test_exact_pass_keeps_unstamped_documents_across_files(tmp_path, capsys):
+    """The 0.9.66 script: five unstamped document nodes, three source files."""
+    from graphify.build import build_merge
+
+    extraction = {"nodes": [
+        _doc("a_decisions", "Decisions", "Sessions/session-A.md"),
+        _doc("b_decisions", "Decisions", "Sessions/session-B.md"),
+        _doc("c_decisions", "Decisions", "Sessions/session-C.md"),
+        _doc("a_open_items", "Open items", "Sessions/session-A.md"),
+        _doc("b_open_items", "Open items", "Sessions/session-B.md"),
+    ], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    graph = build_merge(
+        [extraction],
+        graph_path=tmp_path / "missing.json",
+        dedup=True,
+    )
+    files = {data.get("source_file") for _, data in graph.nodes(data=True)}
+    assert graph.number_of_nodes() == 5
+    assert files == {
+        "Sessions/session-A.md",
+        "Sessions/session-B.md",
+        "Sessions/session-C.md",
+    }
+    assert "Deduplicated" not in capsys.readouterr().out
+
+
+def test_exact_pass_still_merges_same_file_document_duplicate():
+    nodes = [
+        _doc("a1", "Decisions", "Sessions/session-A.md"),
+        _doc("a2", "Decisions", "Sessions/session-A.md"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_exact_pass_still_merges_crossfile_concepts():
+    nodes = [
+        _doc("c1", "Decisions", "Sessions/session-A.md", file_type="concept"),
+        _doc("c2", "Decisions", "Sessions/session-B.md", file_type="concept"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_exact_pass_merges_concepts_beside_a_blocked_document():
+    """A document winner must not leave the two concept nodes unjoined."""
+    nodes = [
+        _doc("a", "Decisions", "Sessions/session-A.md"),
+        _doc("c1", "Decisions", "Sessions/session-B.md", file_type="concept"),
+        _doc("c2", "Decisions", "Sessions/session-C.md", file_type="concept"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    kinds = sorted(node["file_type"] for node in result_nodes)
+    ids = {node["id"] for node in result_nodes}
+    assert len(result_nodes) == 2
+    assert kinds == ["concept", "document"]
+    assert "a" in ids
 
 
 def test_dedup_never_merges_repeated_headings_across_files():
@@ -1482,3 +1550,146 @@ def test_reads_as_file_entity_trusts_the_node_kind_stamp_only():
     del unstamped["node_kind"]
     assert not _reads_as_file_entity(stamped)
     assert _reads_as_file_entity(unstamped)
+
+
+# ── #4281: same stem, different extension keeps both nodes ────────────────────
+
+def test_same_stem_different_extension_keeps_both_nodes(capsys):
+    """x.py and x.html share an extension-stripped stem; neither may be dropped."""
+    nodes = [
+        {"id": "firmware_lib_portal", "label": "portal.py",
+         "file_type": "code", "source_file": "firmware/lib/portal.py"},
+        {"id": "firmware_lib_portal", "label": "Brick provisioning portal (portal.html)",
+         "file_type": "document", "source_file": "firmware/lib/portal.html"},
+    ]
+    edges = [{"source": "firmware_lib_portal", "target": "firmware_lib_portal",
+              "relation": "serves", "source_file": "firmware/lib/portal.html"}]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    ids = {n["source_file"]: n["id"] for n in result_nodes}
+    assert len(result_nodes) == 2
+    assert ids["firmware/lib/portal.py"] == "firmware_lib_portal"
+    assert ids["firmware/lib/portal.html"] == "firmware_lib_portal_html"
+    assert result_edges[0]["source"] == result_edges[0]["target"] == "firmware_lib_portal_html"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_extension_rename_is_order_independent():
+    a = {"id": "x", "label": "x", "file_type": "code", "source_file": "x.py"}
+    b = {"id": "x", "label": "x page", "file_type": "document", "source_file": "x.html"}
+    n1, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
+    n2, _ = deduplicate_entities([dict(b), dict(a)], [], communities={})
+    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}
+
+
+def test_bare_id_across_different_paths_still_collapses_with_warning(capsys):
+    """A bare `protocol` shared by docs/protocol.md and docs/firmware/protocol.md is
+    a reference to another file's entity, not a second entity: it is not renamed."""
+    nodes = [
+        {"id": "protocol", "label": "protocol", "file_type": "document",
+         "source_file": "docs/protocol.md"},
+        {"id": "protocol", "label": "protocol (top-level)", "file_type": "document",
+         "source_file": "docs/firmware/protocol.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_build_with_absolute_edge_paths_moves_edges_to_renamed_node(tmp_path):
+    """Semantic edges reach dedup with an ABSOLUTE source_file while nodes are already
+    root-relative; the renamed node must still receive its edges (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    py = str(root / "firmware" / "lib" / "portal.py")
+    html = str(root / "firmware" / "lib" / "portal.html")
+    ext = {
+        "nodes": [
+            {"id": "firmware_lib_portal", "label": "portal.py", "file_type": "code",
+             "source_file": py},
+            {"id": "firmware_lib_portal", "label": "Portal page", "file_type": "document",
+             "source_file": html},
+            {"id": "card_a", "label": "Card A", "file_type": "document", "source_file": html},
+        ],
+        "edges": [
+            {"source": "firmware_lib_portal", "target": "card_a", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": html},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert "firmware_lib_portal" in G and "firmware_lib_portal_html" in G
+    assert G.has_edge("firmware_lib_portal_html", "card_a")
+    assert not G.has_edge("firmware_lib_portal", "card_a")
+
+
+# ── combining marks in normalization ─────────────────────────────────────────
+# `_norm` used `[\W_]+` as its separator class. Combining marks (Mn/Mc: vowel
+# signs, viramas) are not `\w`, so they were deleted as if they were
+# punctuation, and distinct Indic-script words collapsed to one key.
+
+def test_norm_keeps_combining_marks():
+    from graphify.dedup import _norm
+    assert _norm("हिंदी") == "हिंदी"
+    assert _norm("தமிழ்") == "தமிழ்"
+    # Marks are kept, separators still collapse.
+    assert _norm("हिंदी - भाषा_नोट") == "हिंदी भाषा नोट"
+
+
+def test_norm_still_separates_punctuation_for_latin():
+    from graphify.dedup import _norm
+    assert _norm("  Graph--Extractor__v2! ") == "graph extractor v2"
+    # NFKC still composes a decomposed accent into the letter, mark included.
+    assert _norm("Cafe\u0301 Menu") == "caf\u00e9 menu"
+
+
+def test_distinct_indic_words_are_not_exact_merged():
+    """कि / की / के differ only by vowel sign; they used to share the key 'क'."""
+    nodes = [
+        {"id": "h1", "label": "कि", "source_file": "a.md", "file_type": "concept"},
+        {"id": "h2", "label": "की", "source_file": "a.md", "file_type": "concept"},
+        {"id": "h3", "label": "के", "source_file": "a.md", "file_type": "concept"},
+    ]
+    out, _ = deduplicate_entities(nodes, [], communities={})
+    assert sorted(n["id"] for n in out) == ["h1", "h2", "h3"]
+
+
+def test_identical_indic_labels_still_exact_merge():
+    nodes = [
+        {"id": "h1", "label": "हिंदी भाषा", "source_file": "a.md", "file_type": "concept"},
+        {"id": "h2", "label": "हिंदी  भाषा", "source_file": "a.md", "file_type": "concept"},
+    ]
+    out, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(out) == 1
+
+
+def test_build_from_subdirectory_moves_edges_to_renamed_node(tmp_path, monkeypatch):
+    """Nodes are root-relative by dedup time; run from a subdirectory of the root, a
+    relative path must not be resolved against the CWD, or the renamed node's key
+    stops matching its edges' and they stay on the survivor (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    (root / "firmware").mkdir()
+    monkeypatch.chdir(root / "firmware")
+    py = str(root / "firmware" / "lib" / "portal.py")
+    html = str(root / "firmware" / "lib" / "portal.html")
+    ext = {
+        "nodes": [
+            {"id": "firmware_lib_portal", "label": "portal.py", "file_type": "code",
+             "source_file": py},
+            {"id": "firmware_lib_portal", "label": "Portal page", "file_type": "document",
+             "source_file": html},
+            {"id": "card_a", "label": "Card A", "file_type": "document", "source_file": html},
+        ],
+        "edges": [
+            {"source": "firmware_lib_portal", "target": "card_a", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": html},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert "firmware_lib_portal" in G and "firmware_lib_portal_html" in G
+    assert G.has_edge("firmware_lib_portal_html", "card_a")
+    assert not G.has_edge("firmware_lib_portal", "card_a")
