@@ -30,6 +30,18 @@ def test_to_json_valid_json():
         assert "nodes" in data
         assert "links" in data
 
+
+def test_to_json_includes_graph_schema_metadata(tmp_path):
+    G = make_graph()
+    out = tmp_path / "graph.json"
+
+    assert to_json(G, {}, str(out))
+
+    graph_metadata = json.loads(out.read_text())["graph"]
+    assert graph_metadata["schema_version"] == 1
+    assert graph_metadata["graphify_version"]
+
+
 def test_to_json_nodes_have_community():
     G = make_graph()
     communities = cluster(G)
@@ -1033,6 +1045,84 @@ def test_to_json_refuses_shrink(tmp_path):
     assert to_json(_mkG(2), {}, str(p), force=True) is True  # force overrides
 
 
+def test_to_json_refuses_lost_semantic_id_when_total_grows(tmp_path, capsys):
+    """#2229: AST growth and a new stub must not replace a saved rationale id."""
+    import networkx as nx
+
+    saved_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "app_ts_main", "label": "main", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L2", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "rationale_lost", "label": "lost", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ]
+    new_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "app_ts_main", "label": "main", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L2", "file_type": "code"},
+        {"id": "app_ts_hook", "label": "hook", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L10", "file_type": "code"},
+        {"id": "app_ts_route", "label": "route", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L20", "file_type": "code"},
+        {"id": "app_ts_util", "label": "util", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L30", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "pathlib_Path", "label": "Path", "source_file": "", "source_location": None, "file_type": "concept"},
+    ]
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": saved_nodes, "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    for node in new_nodes:
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    assert G.number_of_nodes() > len(saved_nodes)
+    assert to_json(G, {}, str(p), force=False) is False
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert "rationale_lost" in {n["id"] for n in written["nodes"]}
+    assert "rationale_lost" in capsys.readouterr().err
+
+
+def test_to_json_allows_ast_growth_that_keeps_semantic_ids(tmp_path):
+    """AST nodes may be added when every saved rationale id is still present."""
+    import networkx as nx
+
+    saved_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "rationale_lost", "label": "lost", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ]
+    new_nodes = saved_nodes + [
+        {"id": "app_ts_hook", "label": "hook", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L10", "file_type": "code"},
+    ]
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": saved_nodes, "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    for node in new_nodes:
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    assert to_json(G, {}, str(p), force=False) is True
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert {"rationale_kept", "rationale_lost"} <= {n["id"] for n in written["nodes"]}
+
+
+def test_to_json_rewrites_the_same_integer_node_ids(tmp_path):
+    """An unstamped integer id that is still in the graph is not a lost semantic node."""
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    G.add_edges_from([(1, 2, {}), (1, 3, {}), (2, 3, {})])
+    p = tmp_path / "racecar"
+    assert to_json(G, {}, str(p), force=False) is True
+    assert to_json(G, {}, str(p), force=False) is True
+    assert {n["id"] for n in json.loads(p.read_text(encoding="utf-8"))["nodes"]} == {1, 2, 3}
+
+
+def test_to_json_refuses_a_missing_integer_semantic_id(tmp_path):
+    """A saved integer id that the new graph dropped is still refused when the total grows."""
+    import networkx as nx
+
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": [{"id": 4}], "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    assert to_json(G, {}, str(p), force=False) is False
+    assert json.loads(p.read_text(encoding="utf-8"))["nodes"] == [{"id": 4}]
+
+
 def test_to_json_fails_safe_on_corrupt_existing(tmp_path):
     """A non-empty but unparseable existing graph.json (corrupt or mid-write)
     must NOT be silently overwritten — we can't verify the new graph isn't a
@@ -1197,3 +1287,179 @@ def test_to_html_spiral_seed_uses_a_real_map_index():
                 "spiral seed references `i` but the node map has no index param "
                 "-> ReferenceError: i is not defined (#3699)"
             )
+
+
+def test_to_html_canonical_node_schema_mapping(tmp_path):
+    """#3914: nodesDS and showInfo must use canonical un-prefixed field names
+    matching RAW_NODES and Graphify's node schema (file_type, source_file,
+    community_name, degree), eliminating the underscore-prefixed mapping."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n_sample", label="SampleNode", file_type="code", source_file="src/sample.py")
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n_sample"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+
+    # RAW_NODES carries canonical un-prefixed fields
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    assert nodes["n_sample"]["file_type"] == "code"
+    assert nodes["n_sample"]["source_file"] == "src/sample.py"
+    assert nodes["n_sample"]["community_name"] == "Core"
+    assert "degree" in nodes["n_sample"]
+
+    # nodesDS dataset mapping must preserve canonical field names
+    assert "file_type: n.file_type" in content
+    assert "source_file: n.source_file" in content
+    assert "community_name: n.community_name" in content
+    assert "degree: n.degree" in content
+
+    # nodesDS must not contain old underscore-prefixed mappings
+    assert "_file_type: n.file_type" not in content
+    assert "_source_file: n.source_file" not in content
+    assert "_community_name: n.community_name" not in content
+    assert "_degree: n.degree" not in content
+    assert "_community: n.community" not in content
+
+    # showInfo must consume canonical fields directly
+    assert "n.file_type" in content
+    assert "n.source_file" in content
+    assert "n.community_name" in content
+    assert "n.degree" in content
+    assert "n._file_type" not in content
+    assert "n._source_file" not in content
+    assert "n._community_name" not in content
+    assert "n._degree" not in content
+
+
+def _run_node_info_harness(html_content: str, target_node_id: str) -> str:
+    """Helper to execute graph.html's client script in Node.js and return #info-content innerHTML."""
+    import re
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+
+    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
+    assert m, "vis script block not found in html"
+    script = m.group(1)
+
+    harness = f"""
+const mockElem = () => ({{
+  innerHTML: '',
+  style: {{}},
+  appendChild: () => {{}},
+  addEventListener: () => {{}},
+  classList: {{ add: () => {{}}, remove: () => {{}} }},
+  prepend: () => {{}},
+}});
+
+const doc = {{
+  elements: {{
+    'info-content': mockElem(),
+    'graph': mockElem(),
+    'search': mockElem(),
+    'search-results': mockElem(),
+    'select-all-cb': Object.assign(mockElem(), {{ checked: true }}),
+    'legend': mockElem()
+  }},
+  getElementById(id) {{
+    return this.elements[id] || (this.elements[id] = mockElem());
+  }},
+  createElement() {{ return mockElem(); }},
+  addEventListener() {{}},
+  querySelectorAll() {{ return []; }}
+}};
+
+class MockDataSet {{
+  constructor(items) {{
+    this.map = new Map();
+    items.forEach(it => this.map.set(it.id, it));
+  }}
+  get(id) {{ return this.map.get(id); }}
+  update() {{}}
+}}
+
+const vis = {{
+  DataSet: MockDataSet,
+  Network: class {{
+    constructor() {{}}
+    once() {{}}
+    on() {{}}
+    getConnectedNodes() {{ return []; }}
+    focus() {{}}
+    selectNodes() {{}}
+  }}
+}};
+
+const document = doc;
+const window = {{}};
+
+{script}
+
+showInfo('{target_node_id}');
+console.log('OUTPUT:' + doc.getElementById('info-content').innerHTML);
+"""
+    proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
+    m_out = re.search(r"OUTPUT:(.*)", proc.stdout)
+    assert m_out, f"OUTPUT not found in stdout: {proc.stdout}"
+    return m_out.group(1)
+
+
+def test_to_html_show_info_runtime_renders_node_fields(tmp_path):
+    """#3914: Execute showInfo in Node.js for a normal node.
+    Type: code and Source: src/sample.py must be rendered into info-content,
+    not Type: unknown or Source: -."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n_sample", label="SampleNode", file_type="code", source_file="src/sample.py")
+    G.add_node("n_other", label="OtherNode", file_type="document", source_file="doc/readme.md")
+    G.add_edge("n_sample", "n_other", relation="references", confidence="EXTRACTED")
+
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n_sample", "n_other"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+
+    info_html = _run_node_info_harness(content, "n_sample")
+    assert '<div class="field"><b>SampleNode</b></div>' in info_html
+    assert '<div class="field">Type: code</div>' in info_html
+    assert '<div class="field">Community: Core</div>' in info_html
+    assert '<div class="field">Source: src/sample.py</div>' in info_html
+    assert '<div class="field">Degree: 1</div>' in info_html
+    assert "Type: unknown" not in info_html
+    assert "Source: -" not in info_html
+
+
+def test_to_html_aggregated_community_nodes_runtime(tmp_path):
+    """#3914: Execute showInfo in Node.js for an aggregated community node.
+    Community meta-nodes have no file_type/source_file and must not display
+    misleading Type: unknown or Source: -; they must display community name
+    and member count."""
+    import networkx as nx
+    meta = nx.Graph()
+    meta.add_node("0", label="Core Systems")
+    meta.add_node("1", label="UI Layer")
+    meta.add_edge("0", "1", relation="cross-community", confidence="AGGREGATED")
+
+    out = tmp_path / "graph.html"
+    to_html(
+        meta,
+        {0: ["0"], 1: ["1"]},
+        str(out),
+        community_labels={0: "Core Systems", 1: "UI Layer"},
+        member_counts={0: 25, 1: 10},
+    )
+    content = out.read_text(encoding="utf-8")
+
+    nodes = _vis_nodes_from_html(content)
+    assert any(n.get("member_count") == 25 for n in nodes)
+
+    info_html = _run_node_info_harness(content, "0")
+    assert '<div class="field"><b>Core Systems</b></div>' in info_html
+    assert '<div class="field">Community: Core Systems</div>' in info_html
+    assert '<div class="field">Members: 25</div>' in info_html
+    assert '<div class="field">Degree: 1</div>' in info_html
+    assert "Type: unknown" not in info_html
+    assert "Source: -" not in info_html

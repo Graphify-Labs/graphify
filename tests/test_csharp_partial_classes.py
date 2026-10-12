@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import _merge_csharp_partial_class_nodes, extract
 
 
 def _extract(tmp_path, files: dict[str, str]):
@@ -128,30 +128,166 @@ def test_non_partial_same_name_not_merged(tmp_path):
         f"a non-partial declaration never merges with a partial half: {foos}"
 
 
-def test_nested_partial_not_merged(tmp_path):
-    """Nested partial types are excluded: their ids omit the enclosing type
-    name, so same-named nested pairs would falsely merge across outers."""
+def _methods_of(r, nid):
+    label_of = {n["id"]: n["label"] for n in r["nodes"]}
+    return {label_of[e["target"]] for e in r["edges"]
+            if e["relation"] == "method" and e["source"] == nid}
+
+
+_NESTED_HALVES = {
+    "A.cs": (
+        "namespace App {\n"
+        "    public partial class Outer {\n"
+        "        public partial class Inner { public void FromA() { FromB(); } }\n"
+        "    }\n"
+        "}\n"
+    ),
+    "B.cs": (
+        "namespace App {\n"
+        "    public partial class Outer {\n"
+        "        public partial class Inner { public virtual void FromB() {} }\n"
+        "    }\n"
+        "}\n"
+    ),
+    # Same member names on an unrelated type, so a name-only fallback cannot
+    # stand in for the merge.
+    "Decoy.cs": (
+        "namespace App {\n"
+        "    public class Decoy { public void FromA() {} public virtual void FromB() {} }\n"
+        "}\n"
+    ),
+}
+
+
+def test_nested_partial_halves_merge_under_the_same_outer(tmp_path):
+    """A nested partial type split across files is one type, like a top-level
+    one: its halves collapse onto one node that owns both halves' members."""
+    calls, r = _extract(tmp_path, _NESTED_HALVES)
+    outers = _nodes_labeled(r, "Outer")
+    inners = _nodes_labeled(r, "Inner")
+    assert len(outers) == 1, "top-level partial halves still merge"
+    assert len(inners) == 1, f"nested partial halves must merge: {inners}"
+    assert _methods_of(r, inners[0]["id"]) == {".FromA()", ".FromB()"}
+    # Still contained by the outer type, not by a file.
+    assert any(e["relation"] == "contains" and e["source"] == outers[0]["id"]
+               and e["target"] == inners[0]["id"] for e in r["edges"])
+
+
+def test_nested_partial_cross_half_unqualified_call_resolves(tmp_path):
+    calls, r = _extract(tmp_path, _NESTED_HALVES)
+    assert (_find(r, ".FromA()", "inner"), _find(r, ".FromB()", "inner")) in calls
+
+
+def test_cross_half_unqualified_call_beats_a_same_named_method_elsewhere(tmp_path):
+    """The in-file own-class binding (#4252) cannot see the other half of a
+    partial type; a same-named method on another type must not make the
+    cross-half call ambiguous."""
     calls, r = _extract(tmp_path, {
-        "A.cs": (
+        **_HALVES,
+        "Decoy.cs": "namespace App { public class Decoy { public void Alpha() {} } }\n",
+    })
+    alpha = _find(r, ".Alpha()", "foo")
+    beta = _find(r, ".Beta()", "foo")
+    assert (beta, alpha) in calls
+    assert (beta, _find(r, ".Alpha()", "decoy")) not in calls
+
+
+def test_nested_partial_base_call_resolves_into_the_other_half(tmp_path):
+    """`base.M()` on a nested partial base whose M is declared in the half
+    that is not the merge's canonical node."""
+    calls, r = _extract(tmp_path, {
+        **_NESTED_HALVES,
+        "Derived.cs": (
+            "using static App.Outer;\n"
             "namespace App {\n"
-            "    public partial class Outer {\n"
-            "        public partial class Inner { public void FromA() {} }\n"
-            "    }\n"
-            "}\n"
-        ),
-        "B.cs": (
-            "namespace App {\n"
-            "    public partial class Outer {\n"
-            "        public partial class Inner { public void FromB() {} }\n"
+            "    public class Derived : Inner {\n"
+            "        public override void FromB() { base.FromB(); }\n"
             "    }\n"
             "}\n"
         ),
     })
-    outers = _nodes_labeled(r, "Outer")
+    derived_from_b = _find(r, ".FromB()", "derived")
+    inner_from_b = _find(r, ".FromB()", "inner")
+    assert (derived_from_b, inner_from_b) in calls
+
+
+def test_receiver_typed_calls_resolve_into_both_nested_halves(tmp_path):
+    calls, r = _extract(tmp_path, {
+        **_NESTED_HALVES,
+        "Caller.cs": (
+            "namespace App {\n"
+            "    public class Caller {\n"
+            "        public void Run(Outer.Inner i) { i.FromA(); i.FromB(); }\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+    run = _find(r, ".Run()", "caller")
+    assert (run, _find(r, ".FromA()", "inner")) in calls
+    assert (run, _find(r, ".FromB()", "inner")) in calls
+
+
+def test_same_named_nested_partials_under_different_outers_not_merged(tmp_path):
+    """Nested ids omit the enclosing type; the merge must still keep
+    `OuterA.Inner` and `OuterB.Inner` apart, each owning only its own halves."""
+    def _half(outer, method):
+        return (
+            "namespace App {\n"
+            f"    public partial class {outer} {{\n"
+            f"        public partial class Inner {{ public void {method}() {{}} }}\n"
+            "    }\n"
+            "}\n"
+        )
+    calls, r = _extract(tmp_path, {
+        "A1.cs": _half("OuterA", "A1"), "A2.cs": _half("OuterA", "A2"),
+        "B1.cs": _half("OuterB", "B1"), "B2.cs": _half("OuterB", "B2"),
+    })
     inners = _nodes_labeled(r, "Inner")
-    assert len(outers) == 1, "top-level partial halves still merge"
-    assert len(inners) == 2, \
-        f"nested partial types must NOT merge (id has no outer qualifier): {inners}"
+    assert len(inners) == 2, f"one Inner per outer: {inners}"
+    owned = sorted(sorted(_methods_of(r, n["id"])) for n in inners)
+    assert owned == [[".A1()", ".A2()"], [".B1()", ".B2()"]]
+
+
+def test_deeply_nested_partials_key_on_the_whole_enclosing_chain(tmp_path):
+    def _half(mid, method):
+        return (
+            "namespace App {\n"
+            "    public partial class Outer {\n"
+            f"        public partial class {mid} {{\n"
+            f"            public partial class Inner {{ public void {method}() {{}} }}\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+    calls, r = _extract(tmp_path, {
+        "M1a.cs": _half("Mid1", "One"), "M1b.cs": _half("Mid1", "Two"),
+        "M2.cs": _half("Mid2", "Three"),
+    })
+    inners = _nodes_labeled(r, "Inner")
+    owned = sorted(sorted(_methods_of(r, n["id"])) for n in inners)
+    assert owned == [[".One()", ".Two()"], [".Three()"]]
+
+
+def test_generic_and_non_generic_partials_not_merged(tmp_path):
+    """`Foo` and `Foo<T>` are distinct types with distinct ids (#4249); the
+    merge must not fold them back together, top-level or as an outer."""
+    calls, r = _extract(tmp_path, {
+        "A.cs": "namespace App { public partial class Foo { public void A() {} } }\n",
+        "B.cs": "namespace App { public partial class Foo<T> { public void B() {} } }\n",
+        "C.cs": "namespace App { public partial class Foo { public void C() {} } }\n",
+        "D.cs": (
+            "namespace App { public partial class Box {"
+            " public partial class Item { public void D() {} } } }\n"
+        ),
+        "E.cs": (
+            "namespace App { public partial class Box<T> {"
+            " public partial class Item { public void E() {} } } }\n"
+        ),
+    })
+    foos = sorted(sorted(_methods_of(r, n["id"])) for n in _nodes_labeled(r, "Foo"))
+    assert foos == [[".A()", ".C()"], [".B()"]]
+    items = sorted(sorted(_methods_of(r, n["id"])) for n in _nodes_labeled(r, "Item"))
+    assert items == [[".D()"], [".E()"]]
 
 
 _TWO_ASSEMBLIES = {
@@ -256,3 +392,236 @@ def test_assembly_probe_without_scanned_csproj(tmp_path):
     widgets = _nodes_labeled(r, "Widget")
     assert len(widgets) == 2, \
         f"on-disk (unscanned) project files must still split assemblies: {widgets}"
+
+
+# ---------------------------------------------------------------------------
+# The merge rewrites every edge in the corpus, not only C# ones. It must drop
+# only the self-loops it creates itself (two distinct halves collapsing into
+# one node) and leave every edge it does not remap exactly as it was — the
+# same rules as the Swift extension merge (#2538) and deduplicate_entities
+# (#3809). Before this, one partial class anywhere in a repo erased every
+# recursive call, in every language.
+# ---------------------------------------------------------------------------
+
+def _self_calls(r):
+    """Names (without the `()` suffix some extractors add) of functions with a
+    recursive `calls` self-loop."""
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    return {label[e["source"]].removesuffix("()") for e in r["edges"]
+            if e["relation"] == "calls" and e["source"] == e["target"]}
+
+
+def test_partial_class_keeps_recursive_calls_in_other_languages(tmp_path):
+    calls, r = _extract(tmp_path, {
+        **_HALVES,
+        "tree.py": "def walk(node):\n    for child in node.children:\n        walk(child)\n",
+        "tree.ts": "export function visit(n: any): void {\n  for (const c of n.children) visit(c);\n}\n",
+    })
+    assert len(_nodes_labeled(r, "Foo")) == 1, "the partial halves still merge"
+    assert {"walk", "visit"} <= _self_calls(r), \
+        f"recursive calls outside C# must survive the partial merge, got {_self_calls(r)}"
+
+
+def test_partial_class_keeps_recursive_call_inside_a_half(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "FooPartA.cs": (
+            "namespace App {\n"
+            "    public partial class Foo {\n"
+            "        public int Depth(int n) { return n <= 0 ? 0 : 1 + Depth(n - 1); }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "FooPartB.cs": _HALVES["FooPartB.cs"],
+    })
+    assert ".Depth" in _self_calls(r), \
+        f"a recursive method inside a partial half must keep its self-call, got {_self_calls(r)}"
+
+
+def _merge(tmp_path, nodes, edges):
+    _merge_csharp_partial_class_nodes([], nodes, edges, [], tmp_path)
+    return {(e["source"], e["target"], e["relation"], e.get("confidence")) for e in edges}
+
+
+def _partial_half(nid, source_file):
+    return {"id": nid, "label": "Foo", "source_file": source_file, "file_type": "code",
+            "metadata": {"is_partial": True, "namespace": "App"}}
+
+
+def test_merge_drops_only_the_self_loops_it_creates(tmp_path):
+    nodes = [
+        _partial_half("a_app_foo", "A.cs"),  # sorts first: the canonical half
+        _partial_half("b_app_foo", "B.cs"),
+        {"id": "tree_walk", "label": "walk()", "source_file": "tree.py", "file_type": "code"},
+    ]
+    edges = [
+        # pre-existing self-loop on a node the merge never touches
+        {"source": "tree_walk", "target": "tree_walk", "relation": "calls"},
+        # pre-existing self-loop on the merged-away half: rewired, not dropped
+        {"source": "b_app_foo", "target": "b_app_foo", "relation": "references"},
+        # two distinct halves collapse into one node: a merge artifact
+        {"source": "b_app_foo", "target": "a_app_foo", "relation": "references",
+         "source_file": "B.cs", "source_location": "L3"},
+    ]
+    got = _merge(tmp_path, nodes, edges)
+    assert ("tree_walk", "tree_walk", "calls", None) in got
+    assert ("a_app_foo", "a_app_foo", "references", None) in got
+    assert len(got) == 2, f"only the collapsed b->a edge may be dropped, got {got}"
+
+
+def test_merge_does_not_dedup_edges_it_never_rewrote(tmp_path):
+    nodes = [_partial_half("a_app_foo", "A.cs"), _partial_half("b_app_foo", "B.cs")]
+    # Two parallel edges at one call site that differ only in confidence —
+    # unrelated to the merge, so both must come out unchanged.
+    edges = [
+        {"source": "x", "target": "y", "relation": "calls", "confidence": "EXTRACTED",
+         "source_file": "x.py", "source_location": "L1"},
+        {"source": "x", "target": "y", "relation": "calls", "confidence": "INFERRED",
+         "source_file": "x.py", "source_location": "L1"},
+    ]
+    got = _merge(tmp_path, nodes, edges)
+    assert got == {("x", "y", "calls", "EXTRACTED"), ("x", "y", "calls", "INFERRED")}
+
+
+def test_base_named_by_two_halves_resolves_once(tmp_path):
+    """Both halves name the base, a sibling nested type of the same holder.
+    Only the half that imports the holder (`using static`) resolves it; the
+    other leaves a placeholder. After the merge the type must not carry that
+    placeholder next to the real base — it made the base-chain lookup for
+    `base.Init()` look ambiguous and dropped the edge."""
+    calls, r = _extract(tmp_path, {
+        "Base.cs": (
+            "namespace App {\n"
+            "    public static partial class Agents {\n"
+            "        public class Base { public virtual void Init() {} }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "DA.cs": (
+            "using static App.Agents;\n"
+            "namespace App {\n"
+            "    public static partial class Agents {\n"
+            "        public partial class Derived : Base { public override void Init() { base.Init(); } }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "DB.cs": (
+            "namespace App {\n"
+            "    public static partial class Agents {\n"
+            "        public partial class Derived : Base { public void Other() {} }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "Decoy.cs": "namespace App { public class Decoy { public virtual void Init() {} } }\n",
+    })
+    derived = _nodes_labeled(r, "Derived")
+    assert len(derived) == 1
+    by_id = {n["id"]: n for n in r["nodes"]}
+    bases = [by_id[e["target"]] for e in r["edges"]
+             if e["relation"] in ("inherits", "implements") and e["source"] == derived[0]["id"]]
+    assert [b["label"] for b in bases] == ["Base"], bases
+    assert bases[0].get("source_file"), "the one base must be the real Agents.Base"
+    assert (_find(r, ".Init()", "derived"), _find(r, ".Init()", "base")) in calls
+
+
+def test_schema_bump_retires_csharp_entries_cached_without_type_path(tmp_path, monkeypatch):
+    """An entry from schema 8 has no `type_path`; replayed, its nested halves
+    stay split and `Box` / `Box<T>` fold back into one node."""
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+    from graphify.extract import extract_csharp
+
+    files = {
+        **{k: v for k, v in _NESTED_HALVES.items() if k != "Decoy.cs"},
+        "Box.cs": "namespace App { public partial class Box { public void Plain() {} } }\n",
+        "BoxOfT.cs": "namespace App { public partial class Box<T> { public void Typed() {} } }\n",
+    }
+    paths = []
+    for name, body in files.items():
+        p = tmp_path / name
+        p.write_text(body)
+        paths.append(p)
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 8)  # last schema without type_path
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    for p in paths:
+        stale = extract_csharp(p)
+        for node in stale["nodes"]:
+            (node.get("metadata") or {}).pop("type_path", None)
+        save_cached(p, stale, root=tmp_path, cache_root=tmp_path, kind="ast")
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    r = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    assert len(_nodes_labeled(r, "Inner")) == 1
+    boxes = sorted(sorted(_methods_of(r, n["id"])) for n in _nodes_labeled(r, "Box"))
+    assert boxes == [[".Plain()"], [".Typed()"]]
+
+
+def test_nested_types_sharing_an_id_in_one_file_are_not_merged(tmp_path):
+    """`OuterA.Inner` and `OuterB.Inner` declared in one file already share
+    one node id. No single type path is right for that node, so it must not
+    join the halves of either `OuterA.Inner` or `OuterB.Inner` elsewhere."""
+    calls, r = _extract(tmp_path, {
+        "One.cs": (
+            "namespace App {\n"
+            "    public partial class OuterA { public partial class Inner { public void A1() {} } }\n"
+            "    public partial class OuterB { public partial class Inner { public void B1() {} } }\n"
+            "}\n"
+        ),
+        "A2.cs": (
+            "namespace App { public partial class OuterA {"
+            " public partial class Inner { public void A2() {} } } }\n"
+        ),
+        "B2.cs": (
+            "namespace App { public partial class OuterB {"
+            " public partial class Inner { public void B2() {} } } }\n"
+        ),
+    })
+    owned = [_methods_of(r, n["id"]) for n in _nodes_labeled(r, "Inner")]
+    assert not any({".A2()", ".B1()"} <= m or {".B2()", ".A1()"} <= m for m in owned), owned
+
+
+def test_qualified_or_aliased_base_is_not_dropped_as_shadowed(tmp_path):
+    """A half that names a same-named but different base (`Other.IFoo`, or an
+    alias) keeps its placeholder edge; only a bare-name placeholder next to
+    the real base of that name is the unresolved spelling of it."""
+    def _bases(case, files):
+        _, r = _extract(tmp_path / case, files)
+        by_id = {n["id"]: n for n in r["nodes"]}
+        return sorted((by_id[e["target"]]["label"], bool(by_id[e["target"]].get("source_file")))
+                      for e in r["edges"] if e["relation"] in ("inherits", "implements"))
+
+    common = {
+        "I.cs": "namespace App { public interface IFoo { void F(); } }\n",
+        "DA.cs": "namespace App { public partial class D : IFoo { public void F() {} } }\n",
+    }
+    qualified = _bases("qualified", {**common, "DB.cs": "namespace App { public partial class D : Other.IFoo { } }\n"})
+    aliased = _bases("aliased", {**common, "DB.cs": (
+        "using IFoo = Other.IFoo;\n"
+        "namespace App { public partial class D : IFoo { } }\n"
+    )})
+    assert qualified == [("IFoo", False), ("IFoo", True)], qualified
+    assert aliased == [("IFoo", False), ("IFoo", True)], aliased
+
+
+def test_receiver_qualified_calls_are_not_rebound_to_the_own_type(tmp_path):
+    """The own-type binding is for unqualified calls only: `base.M()`,
+    `this.M()` and `Type.M()` keep their existing targets."""
+    calls, r = _extract(tmp_path, {
+        "Machine.cs": "namespace App { public class Machine { public virtual void Reset() {} } }\n",
+        "E1.cs": (
+            "namespace App { public partial class Engine : Machine {"
+            " public override void Reset() {} public static void Stop() {} } }\n"
+        ),
+        "E2.cs": (
+            "namespace App { public partial class Engine : Machine {"
+            " public void Go() { base.Reset(); Valve.Stop(); } } }\n"
+        ),
+        "Valve.cs": "namespace App { public static class Valve { public static void Stop() {} } }\n",
+    })
+    go = _find(r, ".Go()", "engine")
+    assert (go, _find(r, ".Reset()", "machine")) in calls
+    assert (go, _find(r, ".Stop()", "valve")) in calls
+    assert (go, _find(r, ".Reset()", "engine")) not in calls
+    assert (go, _find(r, ".Stop()", "engine")) not in calls

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+)
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -93,7 +99,7 @@ def extract_go(path: Path) -> dict:
     try:
         language = Language(tsgo.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -251,6 +257,21 @@ def extract_go(path: Path) -> dict:
         return _make_id(base, name), name
 
     def _scan_declarations(node) -> None:
+        if node.type == "type_spec":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                owner_nid = _make_id(pkg_scope, _read_text(name_node, source))
+                for body in node.children:
+                    if body.type != "interface_type":
+                        continue
+                    for elem in body.children:
+                        if elem.type != "method_elem":
+                            continue
+                        method_name = elem.child_by_field_name("name")
+                        if method_name is not None:
+                            name = _read_text(method_name, source)
+                            plain_nid = _make_id(owner_nid, name)
+                            case_groups.setdefault(plain_nid, set()).add(name)
         if node.type in ("function_declaration", "method_declaration"):
             found = _plain_symbol_nid(node)
             if found:
@@ -390,6 +411,7 @@ def extract_go(path: Path) -> dict:
                             m_nid = symbol_nid(_make_id(type_nid, m_name), m_name)
                             add_node(m_nid, f".{m_name}()", m_line)
                             add_edge(type_nid, m_nid, "method", m_line)
+                            emit_go_method_refs(elem, m_nid, m_line)
                             continue
                         if elem.type != "type_elem":
                             continue

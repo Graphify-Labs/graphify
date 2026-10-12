@@ -127,6 +127,10 @@ def test_search_non_dict_tool_input_is_silent(tmp_path, monkeypatch):
     {"file_path": "SRC/APP.PY"},                 # uppercase extension
     {"file_path": "src/a.test.tsx"},             # multi-dot -> .tsx
     {"file_path": "lib/foo.min.js"},             # multi-dot -> .js
+    {"file_path": "scripts/deploy.ps1"},          # #4271: PowerShell sources nudge too
+    {"file_path": "scripts/Module.psm1"},         # #4271
+    {"file_path": "scripts/Module.psd1"},         # #4271
+    {"file_path": "scripts/DEPLOY.PS1"},          # #4271: uppercase extension
     {"file_path": r"src\components\app.py"},     # windows backslashes
     {"pattern": "**/*.py", "path": "src"},       # glob pattern
     {"pattern": "**/*.astro"},
@@ -182,6 +186,36 @@ def test_read_nudges_source_outside_custom_output_dir(tmp_path, monkeypatch):
     assert "graphify query" in out
 
 
+@pytest.mark.parametrize("file_path", [
+    "tools/graphify/notes.md",
+    "tools/graphify/helper.py",
+    ".codex/skills/graphify/SKILL.md",
+    r"tools\graphify\helper.py",
+])
+def test_read_nudges_when_nested_out_name_matches_directory(file_path, tmp_path, monkeypatch):
+    # #3959: when GRAPHIFY_OUT is a nested path whose last segment is a common name
+    # (e.g. artifacts/graphify), paths containing graphify/ outside the output directory
+    # must still be nudged and not falsely suppressed.
+    out = _invoke("read", {"tool_input": {"file_path": file_path}},
+                  tmp_path, monkeypatch, graph=True, out_name="artifacts/graphify")
+    assert "graphify query" in out, f"{file_path} should nudge"
+
+
+@pytest.mark.parametrize("tool_input", [
+    {"file_path": "artifacts/graphify/GRAPH_REPORT.md"},
+    {"file_path": "artifacts/graphify/report.py"},
+    {"pattern": "artifacts/graphify/**/*.py"},
+    {"pattern": "*.py", "path": "artifacts/graphify"},
+    {"pattern": "graphify/*.py", "path": "artifacts"},
+])
+def test_read_nested_output_dir_silences_own_output(tool_input, tmp_path, monkeypatch):
+    # #3959: files and globs inside the nested output dir must remain silent.
+    out = _invoke("read", {"tool_input": tool_input},
+                  tmp_path, monkeypatch, graph=True, out_name="artifacts/graphify")
+    assert out.strip() == "", f"{tool_input!r} should be silent"
+
+
+
 # --------------------------------------------------------------------------- #
 # fail-open: malformed / empty stdin never crashes or blocks
 # --------------------------------------------------------------------------- #
@@ -200,6 +234,96 @@ def test_search_out_path_error_is_swallowed(tmp_path, monkeypatch):
     monkeypatch.setattr("graphify.paths.out_path", _boom)
     out = _invoke("search", {"tool_input": {"command": "grep x"}}, tmp_path, monkeypatch)
     assert out.strip() == ""
+
+
+# --------------------------------------------------------------------------- #
+# soft nudge bounds (#3435): fresh query stamp suppresses, per-session cap
+# --------------------------------------------------------------------------- #
+def _read_payload(sid="s1", agent=None):
+    p = {"session_id": sid, "tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+    if agent:
+        p["agent_id"] = agent
+    return p
+
+
+def _search_payload(sid="s1"):
+    return {"session_id": sid, "tool_input": {"command": "grep -rn foo ."}}
+
+
+def _fresh_stamp(tmp_path):
+    stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("x", encoding="utf-8")
+
+
+def test_fresh_query_stamp_silences_nudges_after_the_first(tmp_path, monkeypatch):
+    _fresh_stamp(tmp_path)
+    # The stamp is project-wide and cannot tell which agent queried, so each
+    # agent still gets its first nudge; later ones are silenced.
+    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
+    assert _invoke("search", _search_payload(), tmp_path, monkeypatch) == ""
+
+
+def test_fresh_query_stamp_silences_nudges_without_session_id(tmp_path, monkeypatch):
+    _fresh_stamp(tmp_path)
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+    assert _invoke("read", payload, tmp_path, monkeypatch) == ""
+
+
+def test_subagents_get_their_own_nudge_budget(tmp_path, monkeypatch):
+    # Claude Code subagents share the parent's session_id and differ by agent_id.
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
+    sid = "s" * 64  # long ids must not truncate distinct agents into one key
+    assert "MANDATORY" in _invoke("read", _read_payload(sid), tmp_path, monkeypatch)
+    assert _invoke("read", _read_payload(sid), tmp_path, monkeypatch) == ""
+    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch)
+    assert _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch) == ""
+    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-b"), tmp_path, monkeypatch)
+
+
+def test_subagent_first_nudge_survives_parent_query(tmp_path, monkeypatch):
+    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    _fresh_stamp(tmp_path)  # parent queried
+    assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
+    assert "MANDATORY" in _invoke("read", _read_payload(agent="agent-a"), tmp_path, monkeypatch)
+
+
+def test_nudges_capped_per_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "3")
+    outs = [_invoke("read", _read_payload("cap"), tmp_path, monkeypatch) for _ in range(3)]
+    assert all("MANDATORY" in o for o in outs)
+    assert _invoke("read", _read_payload("cap"), tmp_path, monkeypatch) == ""
+    assert _invoke("search", _search_payload("cap"), tmp_path, monkeypatch) == ""
+    # Another session has its own budget.
+    assert "MANDATORY" in _invoke("read", _read_payload("other"), tmp_path, monkeypatch)
+
+
+def test_read_and_search_nudges_share_the_session_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "2")
+    assert "MANDATORY" in _invoke("search", _search_payload("mix"), tmp_path, monkeypatch)
+    assert "MANDATORY" in _invoke("read", _read_payload("mix"), tmp_path, monkeypatch)
+    assert _invoke("search", _search_payload("mix"), tmp_path, monkeypatch) == ""
+
+
+def test_nudge_cap_default_is_five(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_HOOK_NUDGE_CAP", raising=False)
+    outs = [_invoke("read", _read_payload("d"), tmp_path, monkeypatch) for _ in range(6)]
+    assert [bool(o) for o in outs] == [True] * 5 + [False]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "not-a-number"])
+def test_nudge_cap_disabled(value, tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", value)
+    outs = [_invoke("read", _read_payload("nocap"), tmp_path, monkeypatch) for _ in range(8)]
+    assert all("MANDATORY" in o for o in outs)
+
+
+def test_nudges_without_session_id_are_not_counted(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+    outs = [_invoke("read", payload, tmp_path, monkeypatch) for _ in range(3)]
+    assert all("MANDATORY" in o for o in outs)
 
 
 # --------------------------------------------------------------------------- #
@@ -281,3 +405,49 @@ def test_read_nudge_em_dash_survives_utf8(tmp_path):
     text = r.stdout.decode("utf-8")   # raises if not valid UTF-8
     payload = json.loads(text)
     assert "—" in payload["hookSpecificOutput"]["additionalContext"]  # em dash preserved
+
+
+# --------------------------------------------------------------------------- #
+# #4040: reminders name the effective graph.json when GRAPHIFY_OUT is customized
+# --------------------------------------------------------------------------- #
+def _ctx(out):
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_custom_out_read_nudge_names_effective_graph(tmp_path, monkeypatch):
+    out = _invoke("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}},
+                  tmp_path, monkeypatch, out_name="artifacts/graphify")
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+def test_custom_out_stale_nudge_names_effective_graph(tmp_path, monkeypatch):
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x = 1\n", encoding="utf-8")
+    g = tmp_path / "artifacts" / "graphify" / "graph.json"
+    g.parent.mkdir(parents=True)
+    g.write_text("{}", encoding="utf-8")
+    os.utime(g, (1, 1))
+    out = _invoke("read", {"tool_name": "Read", "tool_input": {"file_path": str(target)}},
+                  tmp_path, monkeypatch, graph=False, out_name="artifacts/graphify")
+    assert "STALE" in _ctx(out)
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+def test_custom_out_search_nudge_names_effective_graph(tmp_path, monkeypatch):
+    out = _invoke("search", {"tool_name": "Bash", "tool_input": {"command": "grep -rn x ."}},
+                  tmp_path, monkeypatch, out_name="artifacts/graphify")
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+@pytest.mark.parametrize("kind,payload,const", [
+    ("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}, "_READ_NUDGE"),
+    ("search", {"tool_name": "Bash", "tool_input": {"command": "grep -rn x ."}}, "_SEARCH_NUDGE"),
+])
+def test_default_out_nudge_is_byte_identical(kind, payload, const, tmp_path, monkeypatch):
+    from graphify import cli
+    out = _invoke(kind, payload, tmp_path, monkeypatch)
+    assert out == getattr(cli, const)

@@ -103,6 +103,14 @@ mkdir -p graphify-out
 "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
 # Force UTF-8 I/O on Windows (prevents garbled CJK/non-ASCII output)
 export PYTHONUTF8=1
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# The scan path is passed through a quoted heredoc, never substituted into the
+# command line itself: a bare `cd <path>` (or an unquoted heredoc, which
+# still expands $()/backticks in its body) would let a malicious path execute
+# as shell code the moment this line runs.
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+INPUT_PATH
+GRAPHIFY_ROOT_EOF
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -116,7 +124,9 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-result = detect(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 print(json.dumps(result))
 " > graphify-out/.graphify_detect.json
 ```
@@ -424,6 +434,18 @@ from graphify.semantic_cleanup import sanitize_semantic_fragment
 
 ast = json.loads(Path('graphify-out/.graphify_ast.json').read_text())
 sem = json.loads(Path('graphify-out/.graphify_semantic.json').read_text())
+
+# Stamp tier provenance on the semantic side. build._is_ast_tier reads
+# _origin when present and otherwise guesses from the SHAPE of
+# source_location ('L<line>' means AST). A subagent that writes 'L12' for a
+# doc section therefore made that node read as AST, and the next
+# `graphify update` deleted it along with the re-extracted code file it
+# seemed to belong to (#2843). extract() stamps its own items 'ast'; the
+# semantic side must say so explicitly.
+for n in sem['nodes']:
+    n.setdefault('_origin', 'semantic')
+for e in sem['edges']:
+    e.setdefault('_origin', 'semantic')
 
 # Merge: AST nodes first, semantic nodes deduplicated by id
 seen = {n['id'] for n in ast['nodes']}
@@ -856,6 +878,8 @@ If graphify saved you time, consider supporting it: https://github.com/sponsors/
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
 
+If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
+
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes
 - Surprising Connections
@@ -903,7 +927,9 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result))
@@ -985,7 +1011,7 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
-from networkx.readwrite import json_graph
+from graphify.paths import load_node_link_graph
 import networkx as nx
 from pathlib import Path
 
@@ -994,7 +1020,7 @@ new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text()
 G_new = build_from_json(new_extract, directed=IS_DIRECTED)
 
 if old_data:
-    G_old = json_graph.node_link_graph(old_data, edges='links')
+    G_old = load_node_link_graph(old_data)
     diff = graph_diff(G_old, G_new)
     print(diff['summary'])
     if diff['new_nodes']:
@@ -1358,10 +1384,10 @@ Supported URL types (auto-detected):
 Start a background watcher that monitors a folder and auto-updates the graph when files change.
 
 ```bash
-python3 -m graphify.watch INPUT_PATH --debounce 3
+$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3
 ```
 
-Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:
+This watches the same folder graphify extracted, read from the trusted `graphify-out/.graphify_root` that Step 1 resolved - there is no path to substitute, so a scan root containing shell metacharacters can never be re-interpreted here. Behavior depends on what changed:
 
 - **Code files only (.py, .ts, .go, etc.):** re-runs AST extraction + rebuild + cluster immediately, no LLM needed. `graph.json` and `GRAPH_REPORT.md` are updated automatically.
 - **Docs, papers, or images:** writes a `graphify-out/needs_update` flag and prints a notification to run `/graphify --update` (LLM semantic re-extraction required).
