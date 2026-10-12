@@ -1866,3 +1866,32 @@ def test_node_arg_accepts_label_node_id_and_id_aliases():
     # nothing usable -> empty string, so the caller can answer with guidance
     assert _node_arg({}) == ""
     assert _node_arg({"relation_filter": "calls"}) == ""
+
+
+def test_dotted_python_symbol_resolves_by_module_path():
+    """`pkg.mod.func` / `pkg.mod:func` resolve via the module's file (#4366)."""
+    from graphify.serve import _resolve_single_node
+    G = nx.Graph()
+    G.add_node("cli_main", label="main()", source_file="src/pkg/cli.py", source_location="L26")
+    G.add_node("other_main", label="main()", source_file="src/pkg/other.py", source_location="L5")
+    G.add_node("engine_scan", label="scan()", source_file="src/pkg/engine/__init__.py", source_location="L9")
+    G.add_node("wf", label="scan job", source_file=".github/workflows/scan.yml", source_location="L1")
+    for query, expected in [
+        ("pkg.cli.main", "cli_main"),
+        ("pkg.cli:main", "cli_main"),
+        ("pkg.other.main()", "other_main"),
+        ("pkg.engine.scan", "engine_scan"),
+    ]:
+        assert _resolve_single_node(G, query) == (expected, None), query
+    nid, err = _resolve_single_node(G, "pkg.missing.main")
+    assert nid is None and err
+
+
+def test_dotted_python_symbol_same_file_tie_is_refused():
+    """A function and a same-named method in one module are a tie, not a guess."""
+    from graphify.serve import _resolve_single_node
+    G = nx.Graph()
+    G.add_node("f", label="run()", source_file="pkg/mod.py", source_location="L1")
+    G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
+    nid, err = _resolve_single_node(G, "pkg.mod.run")
+    assert nid is None and err.startswith("Ambiguous")

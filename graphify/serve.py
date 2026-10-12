@@ -1519,6 +1519,23 @@ def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> b
     return False
 
 
+# `pkg.mod.func`, `pkg.mod.func()` or `pkg.mod:func` (#4366).
+_PY_QUALIFIED_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[.:]([A-Za-z_]\w*)(?:\(\))?$")
+
+
+def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
+    """Nodes named by a dotted Python symbol such as `pkg.mod.func` (#4366)."""
+    qualified = _PY_QUALIFIED_RE.match(label.strip())
+    if not qualified:
+        return []
+    module_path = qualified.group(1).replace(".", "/")
+    for path_part in (f"{module_path}.py", f"{module_path}/__init__.py"):
+        scoped = _resolve_path_scoped_symbol(G, path_part, qualified.group(2))
+        if scoped:
+            return scoped
+    return []
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1559,6 +1576,16 @@ def _find_node_tiers(
             scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
             if scoped:
                 return scoped, [], [], []
+
+    # A dotted Python symbol (`pkg.mod.func`, or the `pkg.mod:func` entry-point
+    # form) names a module path plus a symbol. Tokenized as-is it matches no
+    # label, so map it onto the `path::symbol` lookup above: `pkg/mod.py` (or
+    # `pkg/mod/__init__.py`), suffix-matched so a `src/` layout still resolves
+    # (#4366). Nothing found falls through to the ordinary tiers.
+    if _PY_QUALIFIED_RE.match(label.strip()) and not _label_has_literal_exact_match(G, term, norm_query):
+        scoped = _resolve_python_qualified(G, label)
+        if scoped:
+            return scoped, [], [], []
 
     if not term:
         return [], [], [], []
@@ -1674,7 +1701,13 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     tier = source_exact or exact or prefix or substring
     if not tier:
         return None, f"No node matching '{label}' found."
-    refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
+    # A dotted symbol's tier is symbols, not a file followed by its members, so
+    # several hits in one file (a function and a same-named method) are a tie.
+    file_query = (
+        bool(source_exact) and "::" not in label
+        and source_exact != _resolve_python_qualified(G, label)
+    )
+    refusal = _tier_refusal(G, label, tier, file_query=file_query)
     if refusal:
         return None, refusal
     return tier[0], None
