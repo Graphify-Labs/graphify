@@ -1895,3 +1895,13 @@ def test_dotted_python_symbol_same_file_tie_is_refused():
     G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
     nid, err = _resolve_single_node(G, "pkg.mod.run")
     assert nid is None and err.startswith("Ambiguous")
+
+
+def test_dotted_python_symbol_same_file_tie_is_refused_by_path_endpoint():
+    """`path` refuses the same dotted tie `get_node`/`explain` do (#4366)."""
+    from graphify.serve import _resolve_path_endpoint
+    G = nx.Graph()
+    G.add_node("f", label="run()", source_file="pkg/mod.py", source_location="L1")
+    G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
+    nid, _, err = _resolve_path_endpoint(G, "pkg.mod.run")
+    assert nid is None and err.startswith("Ambiguous")

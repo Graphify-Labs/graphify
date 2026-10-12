@@ -1701,13 +1701,7 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     tier = source_exact or exact or prefix or substring
     if not tier:
         return None, f"No node matching '{label}' found."
-    # A dotted symbol's tier is symbols, not a file followed by its members, so
-    # several hits in one file (a function and a same-named method) are a tie.
-    file_query = (
-        bool(source_exact) and "::" not in label
-        and source_exact != _resolve_python_qualified(G, label)
-    )
-    refusal = _tier_refusal(G, label, tier, file_query=file_query)
+    refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
     if refusal:
         return None, refusal
     return tier[0], None
@@ -1723,6 +1717,10 @@ def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool)
     rivals = _rivals_across_files(G, tier)
     if rivals:
         return _ambiguity_message(G, label, rivals)
+    # A dotted Python symbol's tier is symbols, not a file followed by its
+    # members, so a function and a same-named method in one module tie (#4366).
+    if file_query and len(tier) > 1 and tier == _resolve_python_qualified(G, label):
+        file_query = False
     if len(tier) > 1 and not file_query:
         return _same_file_ambiguity_message(G, label, tier)
     return None
