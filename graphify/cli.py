@@ -4300,7 +4300,6 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
-                            "_ts_public_twin", "_py_property",
                             "_rust_ret", "_rust_ret_ok", "_rust_fields",
                         ):
                             if _node.get(_marker):

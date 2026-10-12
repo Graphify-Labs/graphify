@@ -238,11 +238,104 @@ _RUST_SAME_TYPE_METHODS = frozenset({"clone", "to_owned"})
 _RUST_UNWRAP_METHODS = frozenset({"unwrap", "expect", "unwrap_or_default"})
 
 
+def _rust_use_leaves(node, source: bytes, head: str | None):
+    """(first path segment, name bound) for each name a `use` argument brings in:
+    `std::fs::DirEntry` -> ("std", "DirEntry"), `a::{B, c::D as E}` -> ("a", "B"),
+    ("a", "E"). A glob (`a::*`) binds no name it spells out."""
+    def first(path_node) -> str:
+        text = _read_text(path_node, source)
+        return "::" if text.startswith("::") else text.split("::", 1)[0].strip()
+
+    t = node.type
+    if t == "identifier":
+        name = _read_text(node, source)
+        yield (head or name, name)
+    elif t == "scoped_identifier":
+        name = node.child_by_field_name("name")
+        if name is not None:
+            yield (head or first(node), _read_text(name, source))
+    elif t == "use_as_clause":
+        path, alias = node.child_by_field_name("path"), node.child_by_field_name("alias")
+        if path is not None and alias is not None:
+            yield (head or first(path), _read_text(alias, source))
+    elif t == "scoped_use_list":
+        path, items = node.child_by_field_name("path"), node.child_by_field_name("list")
+        sub_head = head or (first(path) if path is not None else None)
+        for item in items.named_children if items is not None else ():
+            yield from _rust_use_leaves(item, source, sub_head)
+    elif t == "use_list":
+        for item in node.named_children:
+            yield from _rust_use_leaves(item, source, head)
+
+
+# Crates that are never part of a corpus: a `use` from them names their type.
+_RUST_SYSROOT_CRATES = frozenset({"std", "core", "alloc", "::"})
+_FOREIGN_IMPORTS: dict[tuple[int, int], dict[str, str]] = {}
+_FOREIGN_IMPORTS_SOURCE: list[bytes | None] = [None]
+
+
+def _rust_foreign_imports(scope, source: bytes) -> dict[str, str]:
+    """Names the module ``scope`` (a file root or a `mod` item) imports with
+    `use` from outside its own crate (`use std::fs::DirEntry;`,
+    `use walkdir::{DirEntry, WalkDir};`).
+
+    Maps each such name to the crate its path starts with. A `std` / `core` /
+    `alloc` name never binds to a same-named type of the corpus; any other
+    crate may be one of the corpus's own (an integration test's `use a::X`),
+    which the corpus pass decides. A path is the module's own when it starts
+    with `crate`, `self` or `super`, or with a module this scope declares
+    (`mod walker; use walker::DirEntry;` in a crate root). A `use` applies to
+    its own module only, so nested `mod` items are not read.
+    """
+    if _FOREIGN_IMPORTS_SOURCE[0] is not source:
+        _FOREIGN_IMPORTS.clear()
+        _FOREIGN_IMPORTS_SOURCE[0] = source
+    key = (scope.start_byte, scope.end_byte)
+    cached = _FOREIGN_IMPORTS.get(key)
+    if cached is not None:
+        return cached
+    local_heads = {"crate", "self", "super"}
+    uses = []
+    stack = list(scope.children)
+    while stack:
+        n = stack.pop()
+        if n.type == "mod_item":
+            name = n.child_by_field_name("name")
+            if name is not None:
+                local_heads.add(_read_text(name, source))
+            continue
+        if n.type == "use_declaration":
+            arg = n.child_by_field_name("argument")
+            if arg is not None:
+                uses.append(arg)
+            continue
+        stack.extend(n.children)
+    names = {
+        name: head
+        for arg in uses
+        for head, name in _rust_use_leaves(arg, source, None)
+        if head not in local_heads and name[:1].isupper()
+    }
+    _FOREIGN_IMPORTS[key] = names
+    return names
+
+
+def _rust_scope(node):
+    """The module a node sits in: its nearest `mod` item, else the file root."""
+    while node is not None:
+        if node.type == "mod_item" or node.parent is None:
+            return node
+        node = node.parent
+    return None
+
+
 def _rust_generic_names(node, source: bytes) -> frozenset[str]:
-    """Type parameter names in scope at ``node``: those of every enclosing fn,
-    impl and trait (`impl<T> Foo<T>`, `fn f<M: Matcher>`), which never name a
-    concrete type."""
+    """Names in scope at ``node`` that never name a concrete type of this
+    corpus: the type parameters of every enclosing fn, impl and trait
+    (`impl<T> Foo<T>`, `fn f<M: Matcher>`), and the types the module imports
+    from `std` / `core` / `alloc` (`use std::fs::DirEntry;`)."""
     names: set[str] = set()
+    scope = _rust_scope(node)
     while node is not None:
         if node.type in ("function_item", "impl_item", "trait_item", "struct_item", "enum_item"):
             params = node.child_by_field_name("type_parameters")
@@ -254,6 +347,11 @@ def _rust_generic_names(node, source: bytes) -> frozenset[str]:
                     if left is not None and left.type == "type_identifier":
                         names.add(_read_text(left, source))
         node = node.parent
+    if scope is not None:
+        names |= {
+            name for name, head in _rust_foreign_imports(scope, source).items()
+            if head in _RUST_SYSROOT_CRATES
+        }
     return frozenset(names)
 
 
@@ -347,6 +445,14 @@ class _RustReceiverTyper:
         self.source = source
         self.self_type = _rust_type_last_segment(self_type) if self_type else None
         self.generics = _rust_generic_names(fn_node, source)
+        # Types the fn's module imports from a crate other than std/core/alloc:
+        # name -> crate. The corpus pass binds them only to that crate's type.
+        scope = _rust_scope(fn_node)
+        self.imported = {
+            name: head
+            for name, head in (_rust_foreign_imports(scope, source) if scope is not None else {}).items()
+            if head not in _RUST_SYSROOT_CRATES
+        }
         # name -> [(start_byte, scope_start, scope_end, type_node, value_node)]
         self.bindings: dict[str, list[tuple]] = {}
         body = fn_node.child_by_field_name("body")
@@ -419,6 +525,10 @@ class _RustReceiverTyper:
                 best = b
         return best
 
+    def _typed(self, name: str) -> dict:
+        """``{"t": name}``, plus the crate a `use` brought ``name`` from."""
+        return {"t": name, "crate": self.imported[name]} if name in self.imported else {"t": name}
+
     def describe(self, node, pos: int | None = None, depth: int = 0) -> dict | None:
         if node is None or depth > self._MAX_DEPTH:
             return None
@@ -432,7 +542,7 @@ class _RustReceiverTyper:
                 return None
             if b[3] is not None:
                 named = _rust_named_type(b[3], src, self.self_type, self.generics)
-                return {"t": named} if named else None
+                return self._typed(named) if named else None
             return self.describe(b[4], b[0], depth + 1)
         if t in ("reference_expression", "parenthesized_expression", "unary_expression", "await_expression"):
             inner = [c for c in node.named_children]
@@ -445,7 +555,7 @@ class _RustReceiverTyper:
             name = _rust_type_last_segment(_read_text(name_n, src)) if name_n is not None else ""
             if name == "Self":
                 name = self.self_type or ""
-            return {"t": name} if name[:1].isupper() and name not in self.generics else None
+            return self._typed(name) if name[:1].isupper() and name not in self.generics else None
         if t == "field_expression":
             fld = node.child_by_field_name("field")
             if fld is None or fld.type != "field_identifier":
@@ -480,8 +590,13 @@ class _RustReceiverTyper:
                     qual = self.self_type
                 if name_n is None:
                     return None
+                if qual and qual in self.generics:
+                    return None
                 if qual:
-                    return {"assoc": _rust_type_last_segment(qual), "name": _read_text(name_n, src)}
+                    desc = {"assoc": _rust_type_last_segment(qual), "name": _read_text(name_n, src)}
+                    if qual in self.imported:
+                        desc["crate"] = self.imported[qual]
+                    return desc
                 return {"fn": _read_text(name_n, src)}
             if fn.type == "identifier":
                 return {"fn": _read_text(fn, src)}
