@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from typing import Any
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -1235,6 +1236,89 @@ def _reenter_main() -> None:
     main()
 
 
+def _explain_connections(
+    graph: Any,
+    node_id: str,
+    *,
+    show_all: bool = False,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Print and return each edge incident to a node, preserving direction and parallel edges."""
+    connections: list[tuple[str, str, dict[str, Any]]] = []
+    if graph.is_multigraph():
+        incident_edges = list(graph.out_edges(node_id, keys=True, data=True))
+        incident_edges.extend(graph.in_edges(node_id, keys=True, data=True))
+    else:
+        incident_edges = list(graph.out_edges(node_id, data=True))
+        incident_edges.extend(graph.in_edges(node_id, data=True))
+
+    seen_edges: set[tuple[str, str, object]] = set()
+    for item in incident_edges:
+        if graph.is_multigraph():
+            source, target, key, edge_data = item
+        else:
+            source, target, edge_data = item
+            key = None
+        edge_id = (source, target, key)
+        if edge_id in seen_edges:
+            continue
+        seen_edges.add(edge_id)
+        if source == node_id:
+            neighbor = target
+            direction = "out" if edge_data.get("_src", source) == node_id else "in"
+        else:
+            neighbor = source
+            direction = "in" if edge_data.get("_src", source) == source else "out"
+        connections.append((direction, neighbor, edge_data))
+
+    if connections:
+        print(f"\nConnections ({len(connections)}):")
+        connections.sort(key=lambda connection: graph.degree(connection[1]), reverse=True)
+        displayed_connections = connections if show_all else connections[:20]
+        for direction, neighbor, edge_data in displayed_connections:
+            relation = edge_data.get("relation", "")
+            confidence = edge_data.get("confidence", "")
+            arrow = "-->" if direction == "out" else "<--"
+            source_file = edge_data.get("source_file") or ""
+            location = edge_data.get("source_location") or ""
+            at = f" {source_file}:{location}" if location else ""
+            metadata = {
+                key: value for key, value in edge_data.items()
+                if key not in {"relation", "confidence", "_src", "_tgt"}
+            }
+            if location:
+                metadata.pop("source_file", None)
+                metadata.pop("source_location", None)
+            details = " ".join(
+                f"{key}={json.dumps(value, ensure_ascii=False, sort_keys=True)}"
+                for key, value in sorted(metadata.items())
+            )
+            suffix = f" {details}" if details else ""
+            print(
+                f"  {arrow} {graph.nodes[neighbor].get('label', neighbor)} "
+                f"[{relation}] [{confidence}]{at}{suffix}"
+            )
+        if not show_all and len(connections) > 20:
+            remainder = connections[20:]
+            print(f"  ... and {len(remainder)} more (--all lists all {len(connections)})")
+            # #2009: a bare count silently hides the answer on high-degree
+            # nodes ("who calls this, what's the impact?"). Group the cut
+            # connections by direction + file so their shape is visible.
+            by_file: dict[tuple[str, str], int] = {}
+            for direction, _neighbor, edge_data in remainder:
+                source_file = edge_data.get("source_file") or "(unknown file)"
+                key = (direction, source_file)
+                by_file[key] = by_file.get(key, 0) + 1
+            grouped = sorted(by_file.items(), key=lambda item: (-item[1], item[0]))
+            print("  Grouped by file:")
+            for (direction, source_file), count in grouped[:20]:
+                arrow = "-->" if direction == "out" else "<--"
+                noun = "connection" if count == 1 else "connections"
+                print(f"    {arrow} {source_file}: {count} {noun}")
+            if len(grouped) > 20:
+                print(f"    ... and {len(grouped) - 20} more files")
+    return connections
+
+
 def dispatch_command(cmd: str) -> None:
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
@@ -1967,59 +2051,7 @@ def dispatch_command(cmd: str) -> None:
         except Exception:
             pass
         print(f"  Degree:    {G.degree(nid)}")
-        from graphify.build import edge_data
-        connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
-        # Classify by the edge's TRUE direction, not the loaded arc order:
-        # a link persisted in flipped endpoint order carries its truth in the
-        # per-edge _src marker (#2309). Markerless edges fall back to the arc
-        # tail (today's behavior).
-        for nb in G.successors(nid):
-            _ed = edge_data(G, nid, nb)
-            connections.append(
-                ("out" if _ed.get("_src", nid) == nid else "in", nb, _ed)
-            )
-        for nb in G.predecessors(nid):
-            _ed = edge_data(G, nb, nid)
-            connections.append(
-                ("in" if _ed.get("_src", nb) == nb else "out", nb, _ed)
-            )
-        if connections:
-            print(f"\nConnections ({len(connections)}):")
-            connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
-            shown = connections if show_all else connections[:20]
-            for direction, nb, edata in shown:
-                rel = edata.get("relation", "")
-                conf = edata.get("confidence", "")
-                arrow = "-->" if direction == "out" else "<--"
-                # Append the edge's location — the actual call/import/reference
-                # SITE (in the caller's file for an incoming call), not a def
-                # line (#BUG1). Labeled by [rel] so the meaning is unambiguous.
-                loc = edata.get("source_location") or ""
-                sfile = edata.get("source_file") or ""
-                at = f" {sfile}:{loc}" if loc else ""
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
-            if len(connections) > len(shown):
-                remainder = connections[len(shown):]
-                print(f"  ... and {len(remainder)} more (--all lists all {len(connections)})")
-                # #2009: a bare count silently hides the answer on high-degree
-                # nodes ("who calls this, what's the impact?"). Group the cut
-                # connections by direction + file so their shape is visible
-                # without falling back to a repo-wide grep.
-                by_file: dict[tuple[str, str], int] = {}
-                for direction, _nb, edata in remainder:
-                    sfile = edata.get("source_file") or "(unknown file)"
-                    key = (direction, sfile)
-                    by_file[key] = by_file.get(key, 0) + 1
-                # Count desc, then (direction, file) so equal-count groups have a
-                # byte-stable order (not the degree-derived insertion order).
-                grouped = sorted(by_file.items(), key=lambda kv: (-kv[1], kv[0]))
-                print("  Grouped by file:")
-                for (direction, sfile), count in grouped[:20]:
-                    arrow = "-->" if direction == "out" else "<--"
-                    noun = "connection" if count == 1 else "connections"
-                    print(f"    {arrow} {sfile}: {count} {noun}")
-                if len(grouped) > 20:
-                    print(f"    ... and {len(grouped) - 20} more files")
+        connections = _explain_connections(G, nid, show_all=show_all)
         from graphify import querylog
         querylog.log_query(
             kind="explain",

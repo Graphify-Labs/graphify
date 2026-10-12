@@ -32,10 +32,10 @@ def _write_graph(tmp_path):
     return p
 
 
-def _run(monkeypatch, graph_path, label, capsys):
+def _run(monkeypatch, graph_path, label, capsys, extra_args=()):
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(mainmod.sys, "argv",
-        ["graphify", "explain", label, "--graph", str(graph_path)])
+        ["graphify", "explain", label, *extra_args, "--graph", str(graph_path)])
     mainmod.main()
     return capsys.readouterr().out
 
@@ -153,6 +153,65 @@ def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
     assert "state.py" in out and "L56" in out
 
 
+def test_explain_multidigraph_preserves_parallel_edges_and_deduplicates_self_loop(
+    monkeypatch, tmp_path, capsys,
+):
+    """Every incident directed edge, including parallel edges, is rendered once."""
+    graph_data = {
+        "directed": True, "multigraph": True, "graph": {},
+        "nodes": [
+            {"id": "center", "label": "Center", "community": 0},
+            {"id": "incoming", "label": "Incoming", "community": 0},
+            {"id": "outgoing", "label": "Outgoing", "community": 0},
+            {"id": "bidirectional", "label": "Bidirectional", "community": 0},
+        ],
+        "links": [
+            {"source": "incoming", "target": "center", "key": 0,
+             "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "incoming.py", "source_location": "L12",
+             "confidence_score": 0.98},
+            {"source": "incoming", "target": "center", "key": 1,
+             "relation": "uses", "confidence": "INFERRED",
+             "source_file": "incoming.py", "source_location": "L13",
+             "context": "shared state"},
+            {"source": "center", "target": "outgoing", "key": 0,
+             "relation": "imports", "confidence": "EXTRACTED",
+             "source_file": "center.py", "source_location": "L4"},
+            {"source": "center", "target": "outgoing", "key": 1,
+             "relation": "references", "confidence": "AMBIGUOUS",
+             "source_file": "center.py", "source_location": "L5",
+             "weight": 0.4},
+            {"source": "center", "target": "center", "key": 0,
+             "relation": "recurses", "confidence": "EXTRACTED",
+             "source_file": "center.py", "source_location": "L8"},
+            {"source": "center", "target": "bidirectional", "key": 0,
+             "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "center.py", "source_location": "L10"},
+            {"source": "bidirectional", "target": "center", "key": 0,
+             "relation": "belongs_to", "confidence": "INFERRED",
+             "source_file": "other.py", "source_location": "L3"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "Center", capsys, extra_args=("--all",))
+
+    assert "Connections (7):" in out
+    expected = {
+        "<-- Incoming [calls] [EXTRACTED] incoming.py:L12 confidence_score=0.98",
+        '<-- Incoming [uses] [INFERRED] incoming.py:L13 context="shared state"',
+        "--> Outgoing [imports] [EXTRACTED] center.py:L4",
+        "--> Outgoing [references] [AMBIGUOUS] center.py:L5 weight=0.4",
+        "--> Center [recurses] [EXTRACTED] center.py:L8",
+        "--> Bidirectional [contains] [EXTRACTED] center.py:L10",
+        "<-- Bidirectional [belongs_to] [INFERRED] other.py:L3",
+    }
+    for connection in expected:
+        assert connection in out
+    assert sum("[recurses]" in line for line in out.splitlines()) == 1
+
+
 # --- #2009: high-degree nodes must not silently hide the cut connections ------
 
 def _write_high_degree_graph(tmp_path, n_callers=30, files=None):
@@ -183,6 +242,7 @@ def test_explain_truncation_notice_present_for_high_degree_node(monkeypatch, tmp
     p = _write_high_degree_graph(tmp_path, n_callers=30)
     out = _run(monkeypatch, p, "hub", capsys)
     assert "Connections (30):" in out
+    assert sum(line.startswith("  <-- caller_") for line in out.splitlines()) == 20
     assert "... and 10 more" in out
 
 
@@ -202,10 +262,32 @@ def test_explain_groups_cut_callers_by_file_instead_of_dropping_them(monkeypatch
     assert "<-- app/jobs/retry.py: 3 connections" in out
     # No silent loss: the aggregated counts must sum to the announced cut.
     grouped_lines = [
-        l for l in out.splitlines() if l.strip().startswith(("<--", "-->")) and "connection" in l
+        line for line in out.splitlines()
+        if line.strip().startswith(("<--", "-->")) and "connection" in line
     ]
-    total = sum(int(l.rsplit(":", 1)[1].split()[0]) for l in grouped_lines)
+    total = sum(int(line.rsplit(":", 1)[1].split()[0]) for line in grouped_lines)
     assert total == 10  # 30 connections - 20 shown = 10 cut, all accounted for
+
+
+def test_explain_all_shows_every_connection_and_logs_full_count(
+    monkeypatch, tmp_path, capsys,
+):
+    """--all bypasses display truncation while the default remains capped."""
+    p = _write_high_degree_graph(tmp_path, n_callers=30)
+    from graphify import querylog
+
+    logged = {}
+    monkeypatch.setattr(querylog, "log_query", lambda **kwargs: logged.update(kwargs))
+
+    out = _run(monkeypatch, p, "hub", capsys, extra_args=("--all",))
+
+    assert "Connections (30):" in out
+    assert "... and 10 more" not in out
+    assert "Grouped by file:" not in out
+    for i in range(30):
+        assert f"caller_{i}() [calls]" in out
+    assert logged["kind"] == "explain"
+    assert logged["nodes_returned"] == 30
 
 
 def test_explain_no_grouping_section_when_under_cutoff(monkeypatch, tmp_path, capsys):

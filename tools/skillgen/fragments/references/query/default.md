@@ -292,13 +292,60 @@ print(f'  type: {data_n.get(\"file_type\",\"unknown\")}')
 print(f'  degree: {G.degree(nid)}')
 print()
 print('CONNECTIONS:')
-for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-    nlabel = G.nodes[neighbor].get('label', neighbor)
-    rel = edge.get('relation', '')
-    conf = edge.get('confidence', '')
-    src_file = G.nodes[neighbor].get('source_file', '')
-    print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
+if not G.is_directed():
+    for neighbor in G.neighbors(nid):
+        _raw = G[nid][neighbor]
+        edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+        nlabel = G.nodes[neighbor].get('label', neighbor)
+        rel = edge.get('relation', '')
+        conf = edge.get('confidence', '')
+        src_file = G.nodes[neighbor].get('source_file', '')
+        print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
+else:
+    connections = []
+    seen_edges = set()
+
+    if G.is_multigraph():
+        incident_edges = list(G.out_edges(nid, keys=True, data=True))
+        incident_edges.extend(G.in_edges(nid, keys=True, data=True))
+    else:
+        incident_edges = list(G.out_edges(nid, data=True))
+        incident_edges.extend(G.in_edges(nid, data=True))
+
+    for item in incident_edges:
+        if G.is_multigraph():
+            source, target, key, edge = item
+        else:
+            source, target, edge = item
+            key = None
+        edge_id = (source, target, key)
+        if edge_id in seen_edges:
+            continue
+        seen_edges.add(edge_id)
+
+        if source == nid:
+            neighbor = target
+            direction = 'out' if edge.get('_src', source) == nid else 'in'
+        else:
+            neighbor = source
+            direction = 'in' if edge.get('_src', source) == source else 'out'
+        connections.append((direction, neighbor, edge))
+
+    for direction, neighbor, edge in connections:
+        nlabel = G.nodes[neighbor].get('label', neighbor)
+        rel = edge.get('relation', '')
+        conf = edge.get('confidence', '')
+        arrow = '-->' if direction == 'out' else '<--'
+        metadata = {
+            name: value for name, value in edge.items()
+            if name not in {'relation', 'confidence', '_src', '_tgt'}
+        }
+        details = ' '.join(
+            f'{name}={json.dumps(value, ensure_ascii=False, sort_keys=True)}'
+            for name, value in sorted(metadata.items())
+        )
+        suffix = f' {details}' if details else ''
+        print(f'  {arrow} {nlabel} [{rel}] [{conf}]{suffix}')
 "
 ```
 

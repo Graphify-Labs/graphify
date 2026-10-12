@@ -623,6 +623,20 @@ def test_monoliths_change_only_sanctioned_lines():
         assert UNIFIED_DESCRIPTION in rendered
 
 
+def test_monolith_explain_fallback_matches_shared_query_reference():
+    """The Aider and Devin inline fallbacks use the same explain renderer."""
+    shared = gen._explain_connections_span(
+        gen._read_fragment(gen._QUERY_REFERENCE)
+    )
+    assert shared is not None
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        rendered = gen.render(platforms[key])[0].content
+        block = gen._explain_connections_span(rendered)
+        assert block is not None
+        assert block[2] == shared[2], f"[{key}] inline explain renderer drifted"
+
+
 def test_monoliths_carry_the_1392_runbook_fixes():
     """The four #1392 data-loss/correctness fixes are present in both monoliths.
 
@@ -758,17 +772,22 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The registry holds exactly the #1530 substitution plus the graph-diff rule.
-    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
-        (old_instruction, new_instruction),
-        gen._GRAPH_DIFF_EDIT,
+    # Preserve the original #1530 host-generic substitution while allowing the
+    # narrowly scoped query-expansion and update-safety edits above it.
+    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"][0] == (
+        old_instruction,
+        new_instruction,
     )
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
-    # The ONLY divergences from the frozen baseline are the sanctioned edits —
-    # any other byte drift would have surfaced as a problem above.
-    assert old_instruction in baseline_agents
-    old_rule, new_rule = gen._GRAPH_DIFF_EDIT
-    assert baseline_agents.replace(old_instruction, new_instruction).replace(old_rule, new_rule) == rendered_agents
+    # Applying each exact allowlisted replacement must reproduce the rendered
+    # file byte for byte; unlisted drift remains rejected by the round-trip guard.
+    expected_agents = baseline_agents
+    for old, new in gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"]:
+        assert old in expected_agents
+        expected_agents = expected_agents.replace(old, new)
+    assert expected_agents == rendered_agents
+    assert gen._GRAPH_DIFF_EDIT in gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"]
+    assert "Do not flag it as churn" in rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
 
