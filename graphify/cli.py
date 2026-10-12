@@ -207,8 +207,9 @@ def _search_hint_terms(t: dict) -> list[str]:
         return []
     for i, tok in enumerate(tokens):
         name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
-        # Content searches only: find/fd match file names, which labels do not.
-        if name not in _SEARCH_COMMANDS or name in ("find", "fd"):
+        # Content searches only: find/fd match file names, which labels do not, and
+        # a search fed by a pipe filters that output, not the code.
+        if name not in _SEARCH_COMMANDS or name in ("find", "fd") or (i and tokens[i - 1] == "|"):
             continue
         rest = iter(tokens[i + 1:])
         for arg in rest:

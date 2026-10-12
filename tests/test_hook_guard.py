@@ -495,6 +495,16 @@ def test_search_nudge_ignores_path_only_matches(tool_input, tmp_path, monkeypatc
     assert _invoke_with_graph("search", {"tool_input": tool_input}, tmp_path, monkeypatch) == cli._SEARCH_NUDGE
 
 
+@pytest.mark.parametrize("command,hinted", [
+    ("git log --oneline | grep load_config", False),
+    ("rg -l save_config src | grep load_config", True),  # the code search still drives the hint
+])
+def test_piped_search_filters_output_not_code(command, hinted, tmp_path, monkeypatch):
+    ctx = _ctx(_invoke_with_graph("search", {"tool_input": {"command": command}}, tmp_path, monkeypatch))
+    assert "load_config()" not in ctx
+    assert ("- save_config() (src/app.py L3)" in ctx) is hinted
+
+
 def test_search_hint_ranks_exact_label_first_and_caps_at_five(tmp_path, monkeypatch):
     nodes = [{"id": f"n{i}", "label": f"load_config_variant_{i}()", "source_file": "a.py"} for i in range(7)]
     nodes.append({"id": "x", "label": "load_config()", "source_file": "b.py"})
