@@ -1,0 +1,206 @@
+name: Issue triage
+
+# One sequential job, so the order is enforced and there is no race:
+#   1. ensure the area//kind//status/ labels exist (idempotent; same source of
+#      truth as the Sync triage labels workflow) so a fresh repo cannot fail on a
+#      missing label,
+#   2. stamp status/need-triage on open so nothing is lost,
+#   3. one model call picks area/ + kind/ from the fixed allowlist in
+#      tools/triage/taxonomy.py and replies with JSON,
+#   4. apply the labels, and *suggest* `good first issue` in a comment.
+#
+# The model is configurable (see tools/triage/README.md). With no key configured
+# the classify step skips and the issue simply keeps status/need-triage.
+#
+# Untrusted issue text reaches the model but never a `run:` shell: the payload
+# travels through the ISSUE_JSON env var and is piped to the classifier's stdin,
+# and the model may only choose labels from the allowlist. The one place model
+# output reaches a human is the GFI comment, which uses fixed wording (no
+# model-authored text), so injected mentions/links cannot be posted.
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    if: "!endsWith(github.event.issue.user.login, '[bot]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure triage labels exist (best effort)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python -m tools.triage.sync_labels
+
+      - name: Stamp status/need-triage
+        if: github.event.action == 'opened'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['status/need-triage'],
+            });
+
+      - name: Check whether the issue still needs triage
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: current } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const alreadyDone = current.some(
+              (l) => l.name.startsWith('area/') || l.name === 'status/bot-triaged',
+            );
+            core.setOutput('go', alreadyDone ? 'false' : 'true');
+
+      - name: Classify issue
+        if: steps.check.outputs.go == 'true'
+        continue-on-error: true
+        env:
+          ISSUE_JSON: ${{ toJSON(github.event.issue) }}
+          # Explicit TRIAGE_* wins; otherwise the provider is auto-detected from
+          # whichever key is set below (see tools/triage/README.md).
+          TRIAGE_API_KEY: ${{ secrets.TRIAGE_API_KEY }}
+          TRIAGE_PROVIDER: ${{ vars.TRIAGE_PROVIDER }}
+          TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL }}
+          TRIAGE_BASE_URL: ${{ vars.TRIAGE_BASE_URL }}
+          TRIAGE_MAX_TOKENS: ${{ vars.TRIAGE_MAX_TOKENS }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ISSUE_JSON" | python -m tools.triage.classify > triage-result.json
+          cat triage-result.json
+
+      - name: Apply labels and suggestion
+        if: steps.check.outputs.go == 'true'
+        uses: actions/github-script@v7
+        env:
+          TRIAGE_DRY_RUN: ${{ vars.TRIAGE_DRY_RUN }}
+        with:
+          script: |
+            const fs = require('fs');
+            let result;
+            try {
+              result = JSON.parse(fs.readFileSync('triage-result.json', 'utf8'));
+            } catch (e) {
+              core.warning('no triage result; leaving status/need-triage');
+              return;
+            }
+            if (result.action !== 'triaged') {
+              core.warning(
+                `triage ${result.action}: ${result.reason || ''} `
+                + '(issue keeps status/need-triage)',
+              );
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            // Canary mode: report the proposed labels in a comment and change
+            // nothing. Set repo variable TRIAGE_DRY_RUN=true to evaluate on real
+            // issues without touching labels, then unset it to go live.
+            if ((process.env.TRIAGE_DRY_RUN || '').toLowerCase() === 'true') {
+              const proposed = [...result.area, result.kind];
+              const marker = '<!-- triage:dry-run -->';
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number, per_page: 100,
+              });
+              if (!comments.some((c) => c.body && c.body.includes(marker))) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number,
+                  body:
+                    marker +
+                    `\n\n**Triage (dry run).** Proposed labels: \`${proposed.join('`, `')}\`` +
+                    (result.good_first_issue ? ' and a possible `good first issue`' : '') +
+                    '. No labels were changed.',
+                });
+              }
+              core.info(`dry run: ${proposed.join(', ')}`);
+              return;
+            }
+
+            const wanted = [...result.area, result.kind, 'status/bot-triaged'];
+
+            const { data: current } = await github.rest.issues.listLabelsOnIssue({
+              owner, repo, issue_number, per_page: 100,
+            });
+            for (const label of current) {
+              if (label.name.startsWith('area/') && !result.area.includes(label.name)) {
+                await github.rest.issues
+                  .removeLabel({ owner, repo, issue_number, name: label.name })
+                  .catch(() => {});
+              }
+              if (label.name.startsWith('kind/') && label.name !== result.kind) {
+                await github.rest.issues
+                  .removeLabel({ owner, repo, issue_number, name: label.name })
+                  .catch(() => {});
+              }
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: wanted });
+
+            // Clear the transient markers this run owns. A stale gfi-suggested is
+            // dropped when the issue no longer looks like a good first issue.
+            const stale = ['status/need-triage'];
+            if (!result.good_first_issue) stale.push('status/gfi-suggested');
+            for (const name of stale) {
+              await github.rest.issues
+                .removeLabel({ owner, repo, issue_number, name })
+                .catch(() => {});
+            }
+
+            if (result.good_first_issue) {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number, labels: ['status/gfi-suggested'],
+              });
+              const MARKER = '<!-- triage:gfi -->';
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number, per_page: 100,
+              });
+              core.info('gfi suggestion: ' + String(result.gfi_reason || ''));
+              if (!comments.some((c) => c.body && c.body.includes(MARKER))) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number,
+                  body:
+                    MARKER +
+                    '\n\nThis looks like a possible **good first issue** to the triage bot. ' +
+                    'A maintainer will confirm before the label is applied.',
+                });
+              }
+            }
+            core.info(`triaged: ${wanted.join(', ')}`);
