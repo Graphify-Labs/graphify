@@ -112,7 +112,7 @@ def _finish_cluster_adoption(out: Path, explicit: dict) -> None:
         sys.exit(1)
     if outcome == "adopted_after_error":
         print(
-            "warning: clustering settings were adopted, but config cleanup failed; "
+            "warning: clustering settings were adopted despite a reported config write error; "
             "inspect .graphify_build.json if retrying",
             file=sys.stderr,
         )

@@ -116,8 +116,8 @@ def _same_json_object(left: object, right: object) -> bool:
     if not isinstance(left, dict) or not isinstance(right, dict):
         return False
     return (
-        json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        == json.dumps(right, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        json.dumps(left, sort_keys=True, separators=(",", ":"))
+        == json.dumps(right, sort_keys=True, separators=(",", ":"))
     )
 
 
@@ -247,7 +247,12 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
-        path.write_text(json.dumps(config), encoding="utf-8")
+        try:
+            payload = json.dumps(config, allow_nan=False)
+        except (TypeError, ValueError):
+            logger.warning("Cannot persist build options in %s; existing config contains a non-serializable value", path)
+            return
+        path.write_text(payload, encoding="utf-8")
     except OSError:
         pass
 
