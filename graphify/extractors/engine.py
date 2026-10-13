@@ -1345,41 +1345,79 @@ def _c_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str
             if c.is_named:
                 _c_collect_type_refs(c, source, generic, out)
 
-def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
+def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
+    """Return C++ template type-parameter names visible from ``node``.
+
+    A `template<typename T, class U>` binds `T`/`U` as local names, not corpus
+    symbols. Walking up to every enclosing `template_declaration`'s
+    `template_parameter_list` collects the names from its
+    `type_parameter_declaration`/`variadic_type_parameter_declaration` children.
+    A non-type parameter (`int N`) is a value, not a type, and is left alone.
+    """
+    names: set[str] = set()
+    scope = node
+    while scope is not None:
+        for child in scope.children:
+            if child.type != "template_parameter_list":
+                continue
+            for param in child.children:
+                if param.type not in (
+                    "type_parameter_declaration",
+                    "variadic_type_parameter_declaration",
+                ):
+                    continue
+                for sub in param.children:
+                    if sub.type == "type_identifier":
+                        name = _read_text(sub, source)
+                        if name:
+                            names.add(name)
+                        break
+        scope = scope.parent
+    return frozenset(names)
+
+
+def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                           skip: frozenset[str] | None = None) -> None:
     """Walk a C++ type expression; append (name, role) tuples.
     Resolves qualified_identifier tails (std::string → string) and template_type
-    base + arguments (std::vector<HttpClient> → vector + HttpClient as generic_arg)."""
+    base + arguments (std::vector<HttpClient> → vector + HttpClient as generic_arg).
+
+    Template type parameters in scope (``skip``) are local bindings, not
+    references; emitting one mints a sourceless stub (the bare `t` god node a
+    `template<typename T>` class or function would otherwise share corpus-wide)."""
     if node is None or node.type in _C_PRIMITIVE_TYPE_NODES:
         return
+    if skip is None:
+        skip = _cpp_type_parameters_in_scope(node, source)
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        if text and text not in skip:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_identifier":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            _cpp_collect_type_refs(name_node, source, generic, out)
+            _cpp_collect_type_refs(name_node, source, generic, out, skip)
         return
     if t == "template_type":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             text = _read_text(name_node, source)
-            if text:
+            if text and text not in skip:
                 out.append((text, "generic_arg" if generic else "type"))
         args_node = node.child_by_field_name("arguments")
         if args_node is not None:
             for c in args_node.children:
                 if c.is_named:
-                    _cpp_collect_type_refs(c, source, True, out)
+                    _cpp_collect_type_refs(c, source, True, out, skip)
         return
     if t in ("type_descriptor", "pointer_declarator", "reference_declarator",
              "array_declarator", "type_qualifier", "abstract_pointer_declarator",
              "abstract_reference_declarator", "abstract_array_declarator"):
         for c in node.children:
             if c.is_named:
-                _cpp_collect_type_refs(c, source, generic, out)
+                _cpp_collect_type_refs(c, source, generic, out, skip)
 
 def _scala_given_synthetic_name(node, source: bytes) -> str | None:
     """A stable label for an anonymous Scala 3 given (`given Show[Int] with`).
