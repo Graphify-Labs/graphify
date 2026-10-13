@@ -8746,6 +8746,16 @@ def _extract_generic(
                         and not nid_to_sf.get(tgt_nid)
                     ):
                         tgt_nid = None
+                    # `new X()` constructs a type, never a method that shares X's
+                    # name (`static Bounds Bounds(..) => new Bounds(..)` on a type
+                    # outside the corpus). Defer so the cross-file pass can look
+                    # for the type itself.
+                    if (
+                        config.ts_module == "tree_sitter_c_sharp"
+                        and node.type == "object_creation_expression"
+                        and tgt_nid in method_owner
+                    ):
+                        tgt_nid = None
                 # A name-only reference can leave a source-less stub behind when
                 # the target is outside the scanned corpus (for example,
                 # ``HTTPException`` imported from FastAPI). It is useful for the

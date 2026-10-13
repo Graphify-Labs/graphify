@@ -10164,6 +10164,7 @@ def extract(
             )
     _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
     _csharp_method_owner: dict[str, str] | None = None  # method nid -> type nid, built on first use
+    _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -10220,6 +10221,16 @@ def extract(
             # #4245) bound to the case instead of getting no edge/deferring to
             # raw_calls resolution that could reject it on its own grounds.
             candidates = [c for c in candidates if c not in _member_nids]
+            if rc.get("csharp_new"):
+                # Nor does `new X()` construct a method that shares X's name:
+                # without this every `new List<T>()` in the corpus binds to a
+                # `List()` method as an INFERRED hub.
+                if _csharp_method_owner is None:
+                    _csharp_method_owner = {
+                        e["target"]: e["source"] for e in all_edges
+                        if e.get("relation") == "method"
+                    }
+                candidates = [c for c in candidates if c not in _csharp_method_owner]
             if not candidates:
                 continue
         # A call rescued from an annotation stub (#3888): the caller's own file
@@ -10367,13 +10378,31 @@ def extract(
                     # tie-breakers (non-test preference, then path proximity).
                     # Resolve only if exactly one candidate survives; otherwise
                     # the #543/#1219 guard still holds and we skip.
-                    tgt = disambiguate_ambiguous_candidates(
-                        candidates,
-                        {c: nid_to_source_file.get(c, "") for c in candidates},
-                        rc.get("source_file", ""),
-                    )
-                    if tgt is None:
-                        continue
+                    # A qualified C# construction (`new Outer.Slot()`) names
+                    # which Slot it means, and a proximity guess over the bare
+                    # name ignores that: it takes the one Slot nested in a type
+                    # called Outer, or no edge. A namespace qualifier matches no
+                    # outer type and is left to _resolve_csharp_qualified_calls.
+                    if rc.get("csharp_new") and rc.get("qualified_prefix"):
+                        if _csharp_outer_type is None:
+                            labels = {n["id"]: str(n.get("label", "")) for n in all_nodes}
+                            _csharp_outer_type = {
+                                e["target"]: labels.get(e["source"], "")
+                                for e in all_edges if e.get("relation") == "contains"
+                            }
+                        outer = str(rc["qualified_prefix"]).rsplit(".", 1)[-1]
+                        nested = [c for c in candidates if _csharp_outer_type.get(c) == outer]
+                        if len(nested) != 1:
+                            continue
+                        tgt = nested[0]
+                    else:
+                        tgt = disambiguate_ambiguous_candidates(
+                            candidates,
+                            {c: nid_to_source_file.get(c, "") for c in candidates},
+                            rc.get("source_file", ""),
+                        )
+                        if tgt is None:
+                            continue
                     has_import_evidence = False
         # A source-less candidate is an unresolved external stub, not a
         # project-defined callable. It can remain a target of type/reference
