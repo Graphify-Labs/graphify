@@ -23,6 +23,7 @@ from .resolver_registry import (
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
+from .go_resolution import resolve_go_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
@@ -7047,6 +7048,12 @@ register_language_resolver(
 # graphify.ruby_resolution; registered here as a second consumer of the framework.
 register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
+)
+# Go receiver-typed member-call resolution (#3368): a call through a typed
+# parameter, receiver, or struct-field chain, bound to the declared type
+# instead of dropped outright. Lives in graphify.go_resolution.
+register_language_resolver(
+    LanguageResolver("go_member_calls", frozenset({".go"}), resolve_go_member_calls)
 )
 register_language_resolver(
     LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)

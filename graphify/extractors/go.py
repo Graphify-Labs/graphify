@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 import hashlib
+import re
 from pathlib import Path
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
@@ -11,6 +12,26 @@ from graphify.extractors.base import (
     _read_source_bytes,
     _read_text,
 )
+
+
+_GO_BARE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _go_bare_local_type(type_text: str) -> str | None:
+    """A declared type's bare name, or ``None`` when it isn't one.
+
+    Only a plain identifier, stripped of at most one leading ``*``, counts:
+    a slice, map, chan, func, generic instantiation, interface literal, or a
+    package-qualified type (``pkg.Type``) all fail this check. That is
+    deliberate: resolving those needs either real type inference or the
+    cross-package qualified-type machinery `_resolve_go_type_references`
+    already owns, not this table. A name this returns is guaranteed to be a
+    type declared in the *same* file/package as the text it came from.
+    """
+    text = type_text.strip()
+    if text.startswith("*"):
+        text = text[1:].strip()
+    return text if _GO_BARE_IDENTIFIER_RE.match(text) else None
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -161,6 +182,41 @@ def extract_go(path: Path) -> dict:
     function_bodies: list[tuple[str, object]] = []
     # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
+    # caller_nid -> {receiver/parameter name: declared type's node id}, for
+    # resolving a member call's receiver to a type without guessing (#3368).
+    # Values are full type_nids (not bare names) so merging these tables
+    # across files/packages can never let one package's "Config" answer for
+    # another's.
+    local_types_by_caller: dict[str, dict[str, str]] = {}
+    # type_nid -> {field name: declared type's node id}, the same-package half
+    # of that resolution; a cross-package field type is left out here (#3368).
+    go_struct_fields: dict[str, dict[str, str]] = {}
+
+    def _record_param_types(func_node, dest: dict[str, str]) -> None:
+        """Declared type's node id for each parameter name, into ``dest``.
+
+        One ``parameter_declaration`` can bind several names to one type
+        (``func f(a, b int)``): every ``identifier`` child before the shared
+        ``type`` field is a bound name. A name whose type is not a bare local
+        type (see ``_go_bare_local_type``) is left out, same as an unresolved
+        field.
+        """
+        params = func_node.child_by_field_name("parameters")
+        if params is None:
+            return
+        for p in params.children:
+            if p.type != "parameter_declaration":
+                continue
+            type_node = p.child_by_field_name("type")
+            if type_node is None:
+                continue
+            bare = _go_bare_local_type(_read_text(type_node, source))
+            if bare is None:
+                continue
+            type_nid = _make_id(pkg_scope, bare)
+            for child in p.children:
+                if child.type == "identifier":
+                    dest[_read_text(child, source)] = type_nid
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -353,6 +409,7 @@ def extract_go(path: Path) -> dict:
                 add_node(func_nid, f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
+                _record_param_types(node, local_types_by_caller.setdefault(func_nid, {}))
                 body = node.child_by_field_name("body")
                 if body:
                     function_bodies.append((func_nid, body))
@@ -360,6 +417,7 @@ def extract_go(path: Path) -> dict:
 
         if t == "method_declaration":
             receiver = node.child_by_field_name("receiver")
+            receiver_name: str | None = None
             receiver_type: str | None = None
             if receiver:
                 for param in receiver.children:
@@ -367,6 +425,10 @@ def extract_go(path: Path) -> dict:
                         type_node = param.child_by_field_name("type")
                         if type_node:
                             receiver_type = _read_text(type_node, source).lstrip("*").strip()
+                        for child in param.children:
+                            if child.type == "identifier":
+                                receiver_name = _read_text(child, source)
+                                break
                         break
             name_node = node.child_by_field_name("name")
             if not name_node:
@@ -386,6 +448,10 @@ def extract_go(path: Path) -> dict:
                 add_edge(file_nid, method_nid, "contains", line)
 
             emit_go_method_refs(node, method_nid, line)
+            local_types = local_types_by_caller.setdefault(method_nid, {})
+            if receiver_name and receiver_type:
+                local_types[receiver_name] = _make_id(pkg_scope, receiver_type)
+            _record_param_types(node, local_types)
             body = node.child_by_field_name("body")
             if body:
                 function_bodies.append((method_nid, body))
@@ -421,15 +487,27 @@ def extract_go(path: Path) -> dict:
                         for field in fdl.children:
                             if field.type != "field_declaration":
                                 continue
-                            has_name = any(
-                                fc.type == "field_identifier" for fc in field.children
+                            field_name_node = next(
+                                (fc for fc in field.children if fc.type == "field_identifier"),
+                                None,
                             )
+                            has_name = field_name_node is not None
                             type_node = field.child_by_field_name("type")
                             if type_node is None:
                                 for fc in field.children:
                                     if fc.is_named and fc.type != "field_identifier":
                                         type_node = fc
                                         break
+                            if has_name and type_node is not None:
+                                bare = _go_bare_local_type(_read_text(type_node, source))
+                                # A generic field typed by the type's own
+                                # parameter (`field T`) is not a struct to walk
+                                # into; leaving it out of the table makes the
+                                # lookup fail rather than chase a phantom type.
+                                if bare and bare not in type_params:
+                                    go_struct_fields.setdefault(type_nid, {})[
+                                        _read_text(field_name_node, source)
+                                    ] = _make_id(pkg_scope, bare)
                             refs: list[tuple[str, str]] = []
                             _go_collect_type_refs(type_node, source, False, refs, type_params)
                             for ref_name, role in refs:
@@ -551,6 +629,7 @@ def extract_go(path: Path) -> dict:
             is_member_call: bool = False
             is_bare_identifier: bool = False
             package_receiver: str | None = None
+            member_receiver: str | None = None
             import_path: str | None = None
             if func_node:
                 if func_node.type == "identifier":
@@ -566,6 +645,13 @@ def extract_go(path: Path) -> dict:
                     if not is_member_call:
                         package_receiver = receiver_name
                         import_path = go_imported_pkgs[receiver_name]
+                    else:
+                        # tree-sitter nests `a.b.c` as selector_expressions, but
+                        # reading the operand's text span already gives the
+                        # whole dotted chain ("a.b") in one string — exactly
+                        # what the member-call resolver needs to walk segment
+                        # by segment (#3368).
+                        member_receiver = receiver_name
                     if field:
                         callee_name = _read_text(field, source)
             if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
@@ -599,6 +685,7 @@ def extract_go(path: Path) -> dict:
                         "is_member_call": is_member_call,
                         "language": "go",
                         "receiver": package_receiver,
+                        "member_receiver": member_receiver,
                         "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
@@ -621,4 +708,6 @@ def extract_go(path: Path) -> dict:
         "edges": clean_edges,
         "raw_calls": raw_calls,
         "go_imports": dict(go_imported_pkgs),
+        "go_local_types": local_types_by_caller,
+        "go_struct_fields": go_struct_fields,
     }
