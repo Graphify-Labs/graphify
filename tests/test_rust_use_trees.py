@@ -236,8 +236,10 @@ def test_a_use_of_a_name_declared_twice_stays_unresolved(tmp_path: Path):
     assert _imports(result, "user.rs") == ["thing"]
 
 
-def test_a_std_use_does_not_land_on_a_same_named_declaration(tmp_path: Path):
+def test_a_use_from_another_crate_does_not_land_on_a_same_named_declaration(tmp_path: Path):
+    """Only a path rooted at `crate`, `self` or `super` names this crate's own item."""
     result = _extract(tmp_path, {
-        "src/lib.rs": "pub mod a;\npub mod user;\n", "src/a.rs": "pub struct File;\npub struct Command;\n",
-        "src/user.rs": "use std::fs::File;\nuse std::{process::Command, io};\n"})
-    assert _imports(result, "user.rs") == ["command", "file", "io"]
+        "src/lib.rs": "pub mod a;\npub mod user;\n",
+        "src/a.rs": "pub struct File;\npub struct Command;\npub struct Serialize;\n",
+        "src/user.rs": "use std::fs::File;\nuse std::{process::Command, io};\nuse serde::Serialize;\n"})
+    assert _imports(result, "user.rs") == ["command", "file", "io", "serialize"]

@@ -723,8 +723,9 @@ def extract_rust(path: Path) -> dict:
             if arg:
                 def name_use(written: str, path: str) -> None:
                     # The name as written, for the corpus rewire (#4439): the id folds its
-                    # case. Not for the standard library, whose `File` is never the corpus's.
-                    if path.lstrip(": ").split("::")[0].strip() not in ("std", "core", "alloc"):
+                    # case. Only for a path rooted in this crate: `serde::Serialize` or
+                    # `std::fs::File` is never the corpus's own `Serialize` or `File`.
+                    if path.lstrip(": ").split("::")[0].strip() in ("crate", "self", "super"):
                         edges[-1]["_rust_use_name"] = written.split(" as ")[0].strip()
                 module_name = _rust_use_module(_read_text(arg, source))
                 grouped = arg.type in ("use_list", "scoped_use_list")
