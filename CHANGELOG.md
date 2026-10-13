@@ -2,6 +2,113 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.89 (2026-10-13)
+
+Sixteen community pull requests: cross-repo member-call resolution (Go, PHP, TypeScript, Kotlin, Objective-C), generic/template type-parameter cleanup (Kotlin, Scala, C++, Swift), an Objective-C enum extractor, interface-dispatch fan-out, a native Pi guard extension, and several resolution/ingest fixes. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Feature: **cross-repo member calls** now finish across a repository boundary for Go, PHP, TypeScript/JS, Kotlin and Objective-C: a call whose receiver type is declared in another repo is parked by name during the single-repo build and bound on `merge-graphs`/`global add` against a unique same-named exported type, fail-closed on ambiguity (#3152, #3388, #3393, #3385, #3387, #3389, #3391, #3395, thanks @xiongjianxu).
+- Fix: **Go** a package's type whose methods span several files now folds into one node instead of fragmenting under `_disambiguate_colliding_node_ids`, so single-definition guards and receiver typing work (#3399, #3400, thanks @xiongjianxu).
+- Fix: **Kotlin / Scala / C++ / Swift** generic and template type parameters (`class Box<T>`, `[T]`, `template<typename T>`, `struct Stack<Element>`) no longer mint sourceless stub god-nodes; a real same-named type is still referenced (#4406, #4407, #4408, #4409, thanks @rajatnagda45).
+- Feature: **Objective-C** `NS_ENUM` and `NS_OPTIONS` declarations are now extracted as an enum type plus its members, with the macro forms validated and malformed macros rejected fail-closed (#4400, #4401, thanks @oleksii-tumanov).
+- Feature: **dispatch** an interface member now links to every implementer, not just one, so a DI chain through a multi-implementer interface resolves; the fan-out is gated to genuine implementers with a correct method match (#3800, #4396, thanks @Goodkamalpandey).
+- Feature: **Pi** a native Pi guard extension now runs `graphify hook-guard` before Pi's tool calls and also loads under Oh My Pi, so the hook-guard policy reaches Pi; install/uninstall delegates to `pi install`/`pi remove` and the guard fails open (#4378, thanks @andrebrait).
+- Feature: **hook** a firing read/search nudge now shows the graph nodes behind the nudged call and tightens its wording, so agents act on it instead of treating it as noise; the graph read piggybacks on the already-bounded nudge and is injection-safe and size-capped (#4368, thanks @andrebrait).
+- Fix: **resolution** a `.js` import now resolves to a `.tsx` source when no real `.js` file exists, matching TypeScript's NodeNext resolution; a real `.js` still wins (#3486, #4395, thanks @DevChiniwala).
+- Fix: distinct downloaded binary captures (PDFs/images) whose URLs collide to one filename are now kept under numbered names instead of silently overwriting each other, matching the markdown path's de-dup (#4393, #4394, thanks @oleksii-tumanov).
+
+## 0.9.88 (2026-10-12)
+
+Twenty community pull requests: language-extraction and call-resolution fixes (Java, C/C++, Python, Swift, Go, PowerShell, C#, JS/EJS), dedup/shrink-guard hardening, and query/graph.html ergonomics. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Feature: **Java** a call on a chained, `new` or cast receiver (`factory.builder().size(3).build()`, `new Builder().size(1)`, `((Builder) o).build()`) now resolves through the declared return types on the method chain, binding only on a single unambiguous target (#4306, #4307, thanks @rohit-jsfreaky).
+- Fix: **Java** a bare call or field receiver inherited from a supertype in another file now resolves to the nearest declaring supertype (class wins over an interface default; a tie binds nothing), instead of dangling (#4304, #4305, thanks @rohit-jsfreaky).
+- Fix: **C/C++** a quoted cross-directory include (`#include "../lib/foo.h"`, STM32 `Core/Src` to `Core/Inc`) now resolves to the right header by a unique longest-shared-directory-prefix match, fail-closed on ties and never guessing for `./`, `../`, absolute or angle-bracket includes (#4354, #4392, thanks @hopstreax).
+- Fix: **Python** a `@name.setter`/`.getter`/`.deleter` decorator no longer mints a sourceless stub node (#4380, #4385, thanks @rajatnagda45).
+- Fix: **Python** a `Self` (PEP 673) type annotation (`-> Self`, `: Self`, `typing.Self`) no longer mints a sourceless `self` stub (#4381, #4386, thanks @rajatnagda45).
+- Fix: **Swift** a `Self` type annotation no longer mints a sourceless `self` stub (#4382, #4387, thanks @rajatnagda45).
+- Fix: **Go** generic type parameters (`[T any]`) in signatures, struct fields and interface methods no longer mint sourceless `t`/`r` stubs (#4383, #4388, thanks @rajatnagda45).
+- Fix: **Python** a class type-hinted before it is defined (a forward reference) no longer mints a bare stub that collides with and swallows the file node (#4334, #4343, thanks @Mpasha17).
+- Fix: **C#** extraction now recovers members declared after a verbatim interpolated string that ends in an escaped quote (`$@"a""{e}"""`), instead of silently dropping the rest of the file; the fix masks only the offending bytes and discards the rewrite unless it re-parses clean (#3376, #3612, thanks @rohit-jsfreaky).
+- Fix: **PowerShell** dot-sourced includes with quoted or `$PSScriptRoot` paths now emit import edges, and script-scope commands (outside any function) are now collected as calls (#4356, #4369, thanks @FabioRueda).
+- Fix: **JS/TS** a bare or scoped external import is now anchored to the package name rather than the path leaf, so `@scope-a/utils` and `@scope-b/utils` stay distinct and `lodash/fp/map` collapses onto one `lodash` node (#3084, #3092, thanks @rohit-jsfreaky).
+- Feature: **EJS** (`.ejs`) templates now have an extractor: scriptlet functions/classes, require/import edges, dynamic imports, and `<%- include('partial') %>` composition edges, instead of a single top-level parse error (#3811, #4338, thanks @nothariharan).
+- Fix: **serve** a dotted Python query (`pkg.mod.func`, `pkg.mod:func`) now resolves to the symbol by module path, fail-closed on a same-file ambiguity, without regressing bare-name lookups (#4366, #4367, thanks @Mpasha17).
+- Fix: dedup now path-qualifies semantic ids that dropped the directory, so `a/x.md` and `b/x.md` (both minting a bare `x`) stay distinct instead of collapsing and losing one node; a reference to the bare id from a third file is left unresolved with a warning rather than guessed (#4281, #4362, thanks @Deepjyoti-Sarmah).
+- Fix: a semantic node that dedup legitimately folded into its AST twin is now exempt from the shrink guard, so `graphify update` on a graph that had an LLM semantic ghost is no longer wrongly write-blocked; the exemption is scoped to a strict `_origin=="ast"` twin at the same path and label, so a genuine partial-build loss is still refused. LLM node/edge field aliases (`file`/`filepath`, `relationship`) are folded, with the canonical field always winning (#4389, #4391, thanks @AndresDiagoM).
+- Fix: **install** `graphify install/uninstall` now removes only graphify's own hook entries (keyed on the `hook-guard`/`hook-check` command, not a loose "graphify" substring), keeping co-located user hooks and other commands in the same group, and routes uninstall through a backup (#4359, #4373, thanks @nothariharan).
+- Fix: **install** CLAUDE.md, AGENTS.md and sibling files now keep their original line endings (CRLF or LF) across install and uninstall, instead of being normalized to the platform default (#4360, #4372, thanks @nothariharan).
+- Fix: **wiki** index rows now link to their own article when two communities or god-nodes share a label, instead of both pointing at the first-registered slug and orphaning the second article (#3032, #3033, #3095, thanks @rohit-jsfreaky).
+- Feature: **query** `--seed` starts the traversal at given nodes (ids, labels, callable names or paths) so an external ranker can choose the start set; unresolved seeds are reported and skipped, and an all-unresolved set fails closed rather than falling back to keyword seeds (#4293, #4289, thanks @devkancheti4-design).
+- Feature: **graph.html** the sidebar now shows a hover tooltip with the full (truncated) legend/search/neighbor name and the legend node count; user text is written via `textContent`, preserving the embedded-JSON escaping (#4286, #4291, thanks @Hassannzidan).
+
+## 0.9.87 (2026-10-12)
+
+Eighteen community pull requests: language-extraction fixes (PHP, C#, Python, TypeScript, Julia), retrieval and watch hardening, and skill/benchmark correctness.
+
+- Fix: **PHP** a `Class::method()` static call now resolves to the called method rather than binding to the class node, and no longer stalls at INFERRED confidence for a same-namespace call that needs no `use` import. `self`/`static`/`parent` and lowercase class receivers route through the PHP resolver, fail-closed on any ambiguous or off-corpus receiver (#3872, #3874, thanks @rikurunico).
+- Fix: **C#** nested and generic `partial` types now merge by their full type path (`Outer\`1.Inner`), so a two-file nested partial is unified while `Foo` and `Foo<T>` stay distinct; a cross-file unqualified call binds to the caller's own merged type when it is the single own-type candidate, and a sourceless placeholder base is dropped when a real same-named base exists on the partial (#4363, #4364, thanks @JensD-git). (The AST cache schema is bumped, so the first build after upgrading re-extracts.)
+- Feature: **Python** a read of a `@property` (`obj.prop`, including `x.prop += v`) now links to the property's getter, instead of being dropped as a bare attribute access (#4337, thanks @rohit-jsfreaky). (The AST cache schema is bumped, so the first build after upgrading re-extracts.)
+- Fix: **TypeScript** a public call `c.name()` reaches a `#name`-labeled node only when the class declares a public `name`, and a public call keeps its edge when `foo` and `#foo` share one node (#4298, thanks @rohit-jsfreaky).
+- Fix: **Julia** parametric and module-qualified functor (callable-struct) types are named by their type rather than the variable, and never fall back to the variable binding (#4351, thanks @ayarodionov).
+- Fix: **C#** a `var` is typed from the called method's return type, so downstream member calls on it resolve (#4266, #4268, thanks @Mpasha17).
+- Fix: `graphify affected <PR>` now scopes graph impact to the requested PR instead of the repository default branch, and PR default-branch detection is isolated under test (#3829, thanks @hopstreax).
+- Fix: `update` refuses to drop a saved semantic node id when the node total grows (treating it as an incomplete re-extract), while still letting a removed import stub go; `export` keeps an integer node id that is still in the graph (#4115, thanks @SrijanSriv).
+- Fix: the MCP `query_graph` seed order no longer lets a weak match on an early-alphabet term lead a specific term's exact match: the per-term guaranteed seeds (#1445) are ordered by match strength (#4357, #4358, thanks @devkancheti4-design).
+- Fix: the update skill stamps `_origin` on the semantic tier so an AST-only `update` cannot delete semantic nodes it did not re-extract (#2843, #3110, thanks @abhay-codes07).
+- Feature: a project can declare what an ambiguous extension (`.inc`, `.h`, TS-family) means via `language.<ext>=<language|.ext>` lines in `.graphifyrc`; the declaration flows through classification, extractor selection, imports, watch, and the AST cache, and default detection is byte-for-byte unchanged when absent (#2961, #3789, thanks @andrebrait and @abhay-codes07).
+- Fix: the hook's soft read/search nudge is bounded per session instead of firing on every matching file (#3435, #3443, thanks @L4XB).
+- Fix: the update skill prints a short summary of the incremental step and leaves the full result in `.graphify_incremental.json`, instead of dumping every file path into the agent context (#3952, thanks @mdshzb04).
+- Fix: **skillgen** Step 3 Part A now passes `root=` to `extract()`, so adapting the snippet to a relocated cache (`--out`) no longer renames every code node and blinds the node-count shrink guard (#3727, #3955, thanks @jnrod03-rgb).
+- Fix: **watch** a full-corpus rebuild is no longer silently dropped when the rebuild lock is busy; it is queued (superseding queued incremental paths) and drained after the in-flight rebuild, and the "changes queued" log only prints when something was actually queued (#4274, #4276, thanks @smngvlkz).
+- Fix: the benchmark now counts the tokens of the answer `query_graph` actually returns (calling the real budgeted query path) instead of a separate unbudgeted reimplementation (#4347, #4348, thanks @rohit-jsfreaky).
+- Feature: **graph.html** gains a light/dark/system theme toggle; the dark default renders byte-identically to before (#3894, #4300, thanks @Mpasha17).
+- Fix: labeling now honors the Claude CLI model environment variable (`GRAPHIFY_CLAUDE_CLI_MODEL`), matching the extraction path, so labeling no longer silently falls back to the session default model (#3846, #3876, thanks @oleksii-tumanov).
+
+## 0.9.86 (2026-10-11)
+
+Eighteen community pull requests: language-extraction fixes, safety and determinism hardening, and CLI/query ergonomics.
+
+- Safety: `graphify uninstall --purge` now refuses to delete the project (or home, or a filesystem root) when `GRAPHIFY_OUT` is empty or `.`, instead of silently removing the working tree (#4329, thanks @Hassannzidan).
+- Fix: **Julia** now extracts return-typed, qualified (`Base.show`), operator (`Base.:+`) and functor (callable-struct) methods, and resolves broadcast (`f.(xs)`) and pipe (`x |> f`) calls (#4310, thanks @ayarodionov).
+- Fix: **Rust** grouped `use` declarations (`use a::{b, c::d}`) now expand into one import binding per name, instead of a single edge to the common prefix (#4135, thanks @krishhgg). (The AST cache schema is bumped, so the first build after upgrading re-extracts.)
+- Fix: **Scala 3** `class Foo derives Bar` now links the class to each derived typeclass (#2048, #4173, thanks @Mpasha17).
+- Fix: **Codex** semantic chunks are no longer clobbered by the shared B3 merge (each chunk is written to its own file, matching the other hosts), so semantic nodes/edges survive (#4311, #4312, thanks @vibhanshu-mishra).
+- Fix: `affected <Symbol>` now also walks callers of the supertype member that an overriding method overrides, so a change to an override surfaces users of the base contract (#4330, #4331, thanks @rohit-jsfreaky).
+- Fix: dedup keeps combining marks in label normalization, so distinct Indic-script words no longer collapse to one node (#4317, #4318, thanks @Suraj370).
+- Fix: dedup ranks a relative `source_file` against the scan root rather than the CWD, so building from a subdirectory no longer strands an extension-renamed node's edges on the survivor (#4281, #4326, thanks @Deepjyoti-Sarmah).
+- Fix: the global (cross-repo) graph preserves stored edge direction on `global add`, so `path` and other direction-aware readers no longer follow reversed arcs (#4066, #4138, thanks @e4c5).
+- Fix: graphify now respects git's global ignore file (`core.excludesFile`), with git-faithful precedence and `~`/XDG expansion (#4335, #4339, thanks @smngvlkz).
+- Fix: null token counts from a backend are coerced to 0 across all backends, instead of crashing a chunk with a `TypeError` (#4325, #4340, thanks @rtmalikian).
+- Feature: built-in Ollama requests accept a sampling seed for reproducible extraction (#4168, thanks @oleksii-tumanov).
+- Fix: `explain` refuses a name carried by several nodes of one file (ambiguous within a file) instead of silently picking one (#4320, thanks @alexwrite).
+- Fix: lookups now return distinct exit codes — 0 for an answer, 3 for an ambiguous name, 4 for a missing one — so scripts can tell a miss from a hit (#4321, thanks @alexwrite).
+- Fix: `explain`/`query` tell you how to get the full answer (and add `explain --all`) when the output is truncated to the token budget (#4323, thanks @alexwrite).
+- Change: a committed `graph.json` is now written as one line of compact JSON, so re-running a build produces a `+1/-1` diff instead of a large whitespace churn (#3413, #4319, thanks @andrebrait).
+- Docs: the always-on guidance explains that large `graph.json` diffs in pull requests are expected (#4324, thanks @andrebrait), and the README distinguishes local CLI skill guidance from MCP instructions (#3925, #4292, thanks @Tivonsico).
+
+## 0.9.85 (2026-10-10)
+
+A language-extraction and tooling batch: six extractor/exporter fixes picked from open issues, plus fourteen community pull requests.
+
+- Fix: **Julia** functions with a `where` clause (long and short form) and parametric type definitions (`struct Box{T}`, `abstract type Shape{T}`, `struct Sq{T} <: Shape{T}`) are now extracted. The name sat inside a `where_expression` / `parametrized_type_expression` wrapper that the name lookup skipped, so the whole method/type was dropped; a declared type parameter (`value::T`) no longer leaks as a phantom field-type node (#4126, #4128).
+- Fix: **Fortran** a named generic `interface` now gets a callable node and a `dispatches_to` edge to each listed `module procedure`, so a call to the generic name resolves instead of dangling; unnamed and operator/assignment interfaces are unaffected (#4141, #4142, thanks @rajatnagda45).
+- Fix: **Elixir** `defdelegate` is now extracted as a function definition, so the delegated function appears and same-module calls to it resolve (#4132).
+- Fix: **Scala 3** `given ... with` instance methods are scoped to the given instead of leaking to file scope (where they collided with the same-named trait type); an anonymous `given Show[Int] with` keeps its members under a synthesized name (#4130).
+- Fix: **graph.html** a node label containing an unclosed `<!--` then `<script` can no longer break out of the embedded data script and blank the page; every `<` in the embedded JSON is escaped (#4124).
+- Fix: the incomplete-extraction message now explains a pure semantic omission (a smaller `--token-budget` is the lever) instead of always blaming truncation (#4101, #4280, thanks @ayushcodes10).
+- Fix: **TypeScript** `export type *` star re-exports no longer trip a spurious syntax-error flag that skewed the health report (#3942, #4303, thanks @ayushcodes10).
+- Fix: **Rust** a cross-file reference to a type with impl blocks in other files now binds to the single declaration instead of a sourceless stub, fail-closed (#4283, #4284, thanks @Alin1233).
+- Fix: distinct files that mint the same node id after the extension is dropped (`x.py` vs `x.html`) are kept as separate nodes instead of collapsing and losing one (#4281, #4282, thanks @bitwizard25).
+- Fix: the git hook now updates the graph for files whose names contain non-ASCII characters (`core.quotePath=false` plus C-quote decoding) (#4278, #4279, thanks @smngvlkz).
+- Fix: **watch** the rebuild lock no longer unlinks on release while a waiter holds it, closing a race that let two rebuilds run at once (POSIX) (#4273, #4277, thanks @ayushcodes10).
+- Fix: an unanchored ignore pattern is now matched against the entry name only (so `*` no longer crosses `/` and negations behave like git) (#4242, #4251, thanks @Yyunozor).
+- Fix: the hook-guard Read nudge now fires for PowerShell source files (`.ps1`/`.psm1`/`.psd1`) (#4271, #4272, thanks @rtmalikian).
+- Fix: the skill now tells you that `graphify-out/` was written into your working tree, with how to gitignore or share it (#3941, #4308, thanks @eoinforker).
+- Fix: `graphify affected <Symbol>` now reaches callers through the symbol's defining file, so Dart/Flutter (and other file-module languages) return results instead of nothing (#4288, #4290, thanks @dcaldr).
+- Fix: an `export default` with a huge base64 literal plus a tsconfig `baseUrl` no longer crashes extraction with "File name too long" (#4166, #4169, thanks @bastiennoel93).
+- Fix: markdown links to a file name containing a space (`[x](<My Note.md>)`, `[x](My%20Note.md)`) now resolve to a references edge (#4177, #4178, thanks @Yyunozor).
+- Perf: skip a per-call `os.getcwd()` in the path-memo key for absolute paths, and walk each JS/TS tree once when collecting symbol facts — both output-identical (#4301, #4302, thanks @pishuv).
+
 ## 0.9.84 (2026-10-10)
 
 A correctness batch picked directly from open issues, plus an OpenCode plugin fix.
@@ -13,6 +120,7 @@ A correctness batch picked directly from open issues, plus an OpenCode plugin fi
 - Fix: **Python** a bare `import logging` is no longer captured by a loose same-named module (`scripts/logging.py`) in a non-package directory — it resolves to the stdlib module. Guarded by a vendored, deterministic stdlib-name set across the module resolver, the sibling-repoint pass, and the build-time stem-alias index; a deliberate package shadow (`logging/__init__.py`) still resolves (#4261).
 - Fix: **Python** a qualified external annotation (`httpx.Response`) no longer binds to an unrelated private local class (`_Response`). The stub-rewire match key now preserves underscores, so `_Response` and `Response` are distinct identifiers (#4269).
 - Fix: **C#** an external type the corpus references but never declares (`List<T>`, `System.Type`, Unity's `VisualElement`) now gets one shared, name-keyed placeholder instead of a separate per-file stub (`a_cs_list`, `b_cs_list`), so a query returns one node and the files sharing the type connect through it (#4247).
+- Fix: two files that differ only by extension (`portal.py` / `portal.html`) no longer collapse into one node. They derive the same extension-stripped id; the best-ranked file keeps it, the other gets an extension-qualified id (`…_portal_html`), and its edges follow it (matched by root-relative `source_file`, so absolute semantic paths work). A bare id shared across different paths still collapses with the warning (#4281).
 - Internal: added regression coverage locking in cross-module binding of a singly-defined type through re-export chains and the unique-stub rewire; the reported failure (#4262) no longer reproduces on this line.
 
 ## 0.9.83 (2026-10-09)

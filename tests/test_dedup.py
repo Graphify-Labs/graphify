@@ -444,11 +444,13 @@ def test_dedup_still_merges_crossfile_true_duplicates():
 def test_cross_chunk_id_collision_emits_warning(capsys):
     """When two nodes share the same ID but come from different source files
     (a cross-chunk LLM ID collision), a WARNING must be printed to stderr
-    and only the first node survives (#1504)."""
+    and only the first node survives (#1504). The id is not a shorter-stem mint
+    of either path, so this covers a collision the path-qualify pass cannot
+    attribute (#4281)."""
     nodes = [
-        {"id": "readme_booking_service", "label": "Booking Service",
+        {"id": "booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-a/README.md"},
-        {"id": "readme_booking_service", "label": "Booking Service",
+        {"id": "booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-b/README.md"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
@@ -458,7 +460,7 @@ def test_cross_chunk_id_collision_emits_warning(capsys):
 
     captured = capsys.readouterr()
     assert "WARNING" in captured.err
-    assert "readme_booking_service" in captured.err
+    assert "booking_service" in captured.err
     assert "module-b/README.md" in captured.err
     assert "module-a/README.md" in captured.err
 
@@ -1550,3 +1552,461 @@ def test_reads_as_file_entity_trusts_the_node_kind_stamp_only():
     del unstamped["node_kind"]
     assert not _reads_as_file_entity(stamped)
     assert _reads_as_file_entity(unstamped)
+
+
+# ── #4281: same stem, different extension keeps both nodes ────────────────────
+
+def test_same_stem_different_extension_keeps_both_nodes(capsys):
+    """x.py and x.html share an extension-stripped stem; neither may be dropped."""
+    nodes = [
+        {"id": "firmware_lib_portal", "label": "portal.py",
+         "file_type": "code", "source_file": "firmware/lib/portal.py"},
+        {"id": "firmware_lib_portal", "label": "Brick provisioning portal (portal.html)",
+         "file_type": "document", "source_file": "firmware/lib/portal.html"},
+    ]
+    edges = [{"source": "firmware_lib_portal", "target": "firmware_lib_portal",
+              "relation": "serves", "source_file": "firmware/lib/portal.html"}]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    ids = {n["source_file"]: n["id"] for n in result_nodes}
+    assert len(result_nodes) == 2
+    assert ids["firmware/lib/portal.py"] == "firmware_lib_portal"
+    assert ids["firmware/lib/portal.html"] == "firmware_lib_portal_html"
+    assert result_edges[0]["source"] == result_edges[0]["target"] == "firmware_lib_portal_html"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_extension_rename_is_order_independent():
+    a = {"id": "x", "label": "x", "file_type": "code", "source_file": "x.py"}
+    b = {"id": "x", "label": "x page", "file_type": "document", "source_file": "x.html"}
+    n1, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
+    n2, _ = deduplicate_entities([dict(b), dict(a)], [], communities={})
+    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}
+
+
+def test_bare_id_across_different_paths_is_path_qualified(capsys):
+    """A bare `protocol` shared by docs/protocol.md and docs/firmware/protocol.md,
+    with no protocol.md anywhere: neither file is named by the bare id, so both are
+    definers and each gets its own path-qualified id (#4281 remaining case).
+
+    No own-file `references` edge points at either copy here, so there is no
+    evidence that one of them is a mention of the other file, and both are renamed.
+    With that edge the same ids stay one node (a mention is not a second document):
+    see test_reference_to_another_file_does_not_become_a_second_document."""
+    nodes = [
+        {"id": "protocol", "label": "protocol", "file_type": "document",
+         "source_file": "docs/protocol.md"},
+        {"id": "protocol", "label": "protocol (top-level)", "file_type": "document",
+         "source_file": "docs/firmware/protocol.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert {n["id"] for n in result_nodes} == {"docs_protocol", "docs_firmware_protocol"}
+    assert "minted by two different files" not in capsys.readouterr().err
+
+
+def test_bare_id_naming_an_existing_file_is_not_renamed(capsys):
+    """`protocol.md` exists, so a bare `protocol` may be a genuine reference to it:
+    the group is not path-qualified and takes the definer-wins collapse path."""
+    nodes = [
+        {"id": "protocol", "label": "protocol", "file_type": "document",
+         "source_file": "protocol.md"},
+        {"id": "protocol", "label": "protocol (docs)", "file_type": "document",
+         "source_file": "docs/protocol.md"},
+        {"id": "protocol", "label": "protocol (firmware)", "file_type": "document",
+         "source_file": "docs/firmware/protocol.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert [(n["id"], n["source_file"]) for n in result_nodes] == [("protocol", "protocol.md")]
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_build_with_absolute_edge_paths_moves_edges_to_renamed_node(tmp_path):
+    """Semantic edges reach dedup with an ABSOLUTE source_file while nodes are already
+    root-relative; the renamed node must still receive its edges (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    py = str(root / "firmware" / "lib" / "portal.py")
+    html = str(root / "firmware" / "lib" / "portal.html")
+    ext = {
+        "nodes": [
+            {"id": "firmware_lib_portal", "label": "portal.py", "file_type": "code",
+             "source_file": py},
+            {"id": "firmware_lib_portal", "label": "Portal page", "file_type": "document",
+             "source_file": html},
+            {"id": "card_a", "label": "Card A", "file_type": "document", "source_file": html},
+        ],
+        "edges": [
+            {"source": "firmware_lib_portal", "target": "card_a", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": html},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert "firmware_lib_portal" in G and "firmware_lib_portal_html" in G
+    assert G.has_edge("firmware_lib_portal_html", "card_a")
+    assert not G.has_edge("firmware_lib_portal", "card_a")
+
+
+# ── combining marks in normalization ─────────────────────────────────────────
+# `_norm` used `[\W_]+` as its separator class. Combining marks (Mn/Mc: vowel
+# signs, viramas) are not `\w`, so they were deleted as if they were
+# punctuation, and distinct Indic-script words collapsed to one key.
+
+def test_norm_keeps_combining_marks():
+    from graphify.dedup import _norm
+    assert _norm("हिंदी") == "हिंदी"
+    assert _norm("தமிழ்") == "தமிழ்"
+    # Marks are kept, separators still collapse.
+    assert _norm("हिंदी - भाषा_नोट") == "हिंदी भाषा नोट"
+
+
+def test_norm_still_separates_punctuation_for_latin():
+    from graphify.dedup import _norm
+    assert _norm("  Graph--Extractor__v2! ") == "graph extractor v2"
+    # NFKC still composes a decomposed accent into the letter, mark included.
+    assert _norm("Cafe\u0301 Menu") == "caf\u00e9 menu"
+
+
+def test_distinct_indic_words_are_not_exact_merged():
+    """कि / की / के differ only by vowel sign; they used to share the key 'क'."""
+    nodes = [
+        {"id": "h1", "label": "कि", "source_file": "a.md", "file_type": "concept"},
+        {"id": "h2", "label": "की", "source_file": "a.md", "file_type": "concept"},
+        {"id": "h3", "label": "के", "source_file": "a.md", "file_type": "concept"},
+    ]
+    out, _ = deduplicate_entities(nodes, [], communities={})
+    assert sorted(n["id"] for n in out) == ["h1", "h2", "h3"]
+
+
+def test_identical_indic_labels_still_exact_merge():
+    nodes = [
+        {"id": "h1", "label": "हिंदी भाषा", "source_file": "a.md", "file_type": "concept"},
+        {"id": "h2", "label": "हिंदी  भाषा", "source_file": "a.md", "file_type": "concept"},
+    ]
+    out, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(out) == 1
+
+
+def test_build_from_subdirectory_moves_edges_to_renamed_node(tmp_path, monkeypatch):
+    """Nodes are root-relative by dedup time; run from a subdirectory of the root, a
+    relative path must not be resolved against the CWD, or the renamed node's key
+    stops matching its edges' and they stay on the survivor (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    (root / "firmware").mkdir()
+    monkeypatch.chdir(root / "firmware")
+    py = str(root / "firmware" / "lib" / "portal.py")
+    html = str(root / "firmware" / "lib" / "portal.html")
+    ext = {
+        "nodes": [
+            {"id": "firmware_lib_portal", "label": "portal.py", "file_type": "code",
+             "source_file": py},
+            {"id": "firmware_lib_portal", "label": "Portal page", "file_type": "document",
+             "source_file": html},
+            {"id": "card_a", "label": "Card A", "file_type": "document", "source_file": html},
+        ],
+        "edges": [
+            {"source": "firmware_lib_portal", "target": "card_a", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": html},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert "firmware_lib_portal" in G and "firmware_lib_portal_html" in G
+    assert G.has_edge("firmware_lib_portal_html", "card_a")
+    assert not G.has_edge("firmware_lib_portal", "card_a")
+
+
+# ── #4281: path-dropped doc ids (a/x.md vs b/x.md both mint `x`) ──────────────
+
+def _path_dropped_input():
+    """Two docs whose semantic ids dropped the directory: both mint `x`/`x_intro`."""
+    nodes = [
+        {"id": "x", "label": "X A", "file_type": "document", "source_file": "a/x.md"},
+        {"id": "x_intro", "label": "Intro A", "file_type": "document",
+         "source_file": "a/x.md"},
+        {"id": "x", "label": "X B", "file_type": "document", "source_file": "b/x.md"},
+        {"id": "x_intro", "label": "Intro B", "file_type": "document",
+         "source_file": "b/x.md"},
+    ]
+    edges = [
+        {"source": "x", "target": "x_intro", "relation": "references",
+         "confidence": "EXTRACTED", "source_file": "a/x.md"},
+        {"source": "x", "target": "x_intro", "relation": "references",
+         "confidence": "EXTRACTED", "source_file": "b/x.md"},
+    ]
+    return nodes, edges
+
+
+def test_path_dropped_doc_id_keeps_both_files(capsys):
+    """a/x.md and b/x.md both mint `x`; neither may be dropped, and each file's
+    edge stays inside its own file (#4281)."""
+    nodes, edges = _path_dropped_input()
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    assert len(result_nodes) == 4
+    assert {n["id"] for n in result_nodes} == {"a_x", "a_x_intro", "b_x", "b_x_intro"}
+    by_file = {e["source_file"]: (e["source"], e["target"]) for e in result_edges}
+    assert by_file == {"a/x.md": ("a_x", "a_x_intro"), "b/x.md": ("b_x", "b_x_intro")}
+    assert "minted by two different files" not in capsys.readouterr().err
+
+
+def test_path_dropped_rename_is_order_independent():
+    """Guards determinism of the new pass: reversed input must give the same result.
+    Expected to pass pre-fix too, since the old collapse is deterministic as well."""
+    nodes, edges = _path_dropped_input()
+    n1, e1 = deduplicate_entities([dict(n) for n in nodes], [dict(e) for e in edges],
+                                  communities={})
+    n2, e2 = deduplicate_entities([dict(n) for n in reversed(nodes)],
+                                  [dict(e) for e in reversed(edges)], communities={})
+    assert {(n["source_file"], n["id"]) for n in n1} == {(n["source_file"], n["id"]) for n in n2}
+    assert {(e["source_file"], e["source"], e["target"]) for e in e1} == \
+           {(e["source_file"], e["source"], e["target"]) for e in e2}
+
+
+def test_path_dropped_foreign_reference_is_not_guessed(capsys):
+    """c.md points at the bare `x`. It cannot be attributed to a/x.md or b/x.md, so
+    it is left unresolved with one warning rather than guessed (#4281)."""
+    nodes, edges = _path_dropped_input()
+    nodes.append({"id": "c_note", "label": "Note C", "file_type": "document",
+                  "source_file": "c.md"})
+    edges.append({"source": "c_note", "target": "x", "relation": "references",
+                  "confidence": "INFERRED", "source_file": "c.md"})
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    assert {n["id"] for n in result_nodes} == {
+        "a_x", "a_x_intro", "b_x", "b_x_intro", "c_note"}
+    foreign = next(e for e in result_edges if e["source_file"] == "c.md")
+    assert foreign["target"] == "x"
+    warning = ("[graphify] WARNING: node 'x' was minted by several files and renamed "
+               "per file; 1 reference(s) from other files could not be attributed "
+               "and were left unresolved.")
+    assert capsys.readouterr().err.count(warning) == 1
+
+
+@pytest.mark.parametrize("a, b, leaked", [
+    ("/home/u/a/x.md", "/home/u/b/x.md", "home_u"),
+    ("C:\\r\\a\\x.md", "C:\\r\\b\\x.md", "c_r"),
+])
+def test_path_dropped_absolute_paths_are_not_qualified(a, b, leaked, capsys):
+    """With no root to relativize against, a stored absolute path (POSIX or
+    Windows) must not be baked into an id: the checkout location would leak into
+    persisted ids. Such files stay on the collapse-and-warn path (#4281)."""
+    nodes = [
+        {"id": "x", "label": "X A", "file_type": "document", "source_file": a},
+        {"id": "x", "label": "X B", "file_type": "document", "source_file": b},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert not any(leaked in n["id"] for n in result_nodes)
+    assert "minted by two different files" in capsys.readouterr().err
+
+
+def test_single_path_dropped_id_left_alone():
+    """A lone path-dropped id has no collision; build_from_json's remap handles it."""
+    nodes = [
+        {"id": "x", "label": "X A", "file_type": "document", "source_file": "a/x.md"},
+        {"id": "other", "label": "Other", "file_type": "document", "source_file": "a/y.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert {n["id"] for n in result_nodes} == {"x", "other"}
+
+
+def test_path_dropped_through_build(tmp_path):
+    """The full build path (dedup runs before build_from_json) keeps both files'
+    nodes and edges, with absolute semantic paths as real extractions carry (#4281)."""
+    from graphify.build import build
+
+    root = tmp_path
+    a = str(root / "a" / "x.md")
+    b = str(root / "b" / "x.md")
+    ext = {
+        "nodes": [
+            {"id": "x", "label": "X A", "file_type": "document", "source_file": a},
+            {"id": "x_intro", "label": "Intro A", "file_type": "document", "source_file": a},
+            {"id": "x", "label": "X B", "file_type": "document", "source_file": b},
+            {"id": "x_intro", "label": "Intro B", "file_type": "document", "source_file": b},
+        ],
+        "edges": [
+            {"source": "x", "target": "x_intro", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": a},
+            {"source": "x", "target": "x_intro", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": b},
+        ],
+    }
+    G = build([ext], root=str(root))
+
+    assert set(G.nodes) == {"a_x", "a_x_intro", "b_x", "b_x_intro"}
+    assert G.has_edge("a_x", "a_x_intro")
+    assert G.has_edge("b_x", "b_x_intro")
+    assert not G.has_edge("a_x", "b_x_intro")
+    assert not G.has_edge("b_x", "a_x_intro")
+
+
+def test_path_dropped_rebuild_is_idempotent():
+    """Round-tripping a built graph through build() again must not keep renaming
+    the fix's own output (#4281)."""
+    import copy
+    from networkx.readwrite import json_graph
+    from graphify.build import build
+
+    nodes, edges = _path_dropped_input()
+    G1 = build([copy.deepcopy({"nodes": nodes, "edges": edges})])
+    G2 = build([json_graph.node_link_data(G1, edges="edges")])
+
+    expected = ["a_x", "a_x_intro", "b_x", "b_x_intro"]
+    assert sorted(G1.nodes) == sorted(G2.nodes) == expected
+    assert {frozenset(e) for e in G2.edges} == {
+        frozenset(("a_x", "a_x_intro")), frozenset(("b_x", "b_x_intro"))}
+
+
+def test_path_dropped_id_stays_qualified_after_collision_disappears():
+    """Once b/x.md leaves the corpus there is no collision, but a/x.md must keep
+    `a_x` rather than flip back to the bare `x` (#4281)."""
+    from graphify.build import build
+
+    nodes, edges = _path_dropped_input()
+    only_a = {"nodes": [n for n in nodes if n["source_file"] == "a/x.md"],
+              "edges": [e for e in edges if e["source_file"] == "a/x.md"]}
+    G = build([only_a])
+
+    assert sorted(G.nodes) == ["a_x", "a_x_intro"]
+    assert G.has_edge("a_x", "a_x_intro")
+
+
+def test_path_dropped_foreign_reference_edge_is_dropped_by_build(capsys):
+    """c.md's reference to the bare `x` cannot be attributed, so build() ends up
+    with no node `x` and drops the edge, and the warning says so (#4281)."""
+    from graphify.build import build
+
+    nodes, edges = _path_dropped_input()
+    nodes.append({"id": "c_note", "label": "Note C", "file_type": "document",
+                  "source_file": "c.md"})
+    edges.append({"source": "c_note", "target": "x", "relation": "references",
+                  "confidence": "INFERRED", "source_file": "c.md"})
+    G = build([{"nodes": nodes, "edges": edges}])
+
+    assert sorted(G.nodes) == ["a_x", "a_x_intro", "b_x", "b_x_intro", "c_note"]
+    assert G.degree("c_note") == 0
+    assert not G.has_edge("c_note", "a_x")
+    assert not G.has_edge("c_note", "b_x")
+    assert ("node 'x' was minted by several files and renamed per file; "
+            "1 reference(s)") in capsys.readouterr().err
+
+
+# ── #4281: a same-file reference is a mention, not a second document ──────────
+# Repro cases (notes 03-repro): D -> test_path_dropped_through_build,
+# F -> test_path_dropped_foreign_reference_edge_is_dropped_by_build,
+# R, R_labelswap, R_noedge, R_toplevel, G -> the tests below.
+
+def _mention_node(nid, label, source_file):
+    return {"id": nid, "label": label, "file_type": "document", "source_file": source_file}
+
+
+def _mention_edge(source, target, source_file):
+    return {"source": source, "target": target, "relation": "references",
+            "confidence": "EXTRACTED", "source_file": source_file}
+
+
+def _protocol_reference_input(*, edge=True, docs_label="Protocol",
+                              mention_label="protocol (top-level)", top_level=False):
+    """docs/firmware/protocol.md mints its own `docs_firmware_protocol` plus a bare
+    `protocol` that stands for another file; docs/protocol.md mints `protocol`."""
+    fw = "docs/firmware/protocol.md"
+    nodes = [_mention_node("protocol", docs_label, "docs/protocol.md"),
+             _mention_node("docs_firmware_protocol", "Firmware protocol", fw),
+             _mention_node("protocol", mention_label, fw)]
+    if top_level:
+        nodes.append(_mention_node("protocol", "Protocol (top-level)", "protocol.md"))
+    edges = [_mention_edge("docs_firmware_protocol", "protocol", fw)] if edge else []
+    return {"nodes": nodes, "edges": edges}
+
+
+def _assert_reference_lands_on_the_other_file(G):
+    assert sorted(G.nodes) == ["docs_firmware_protocol", "docs_protocol"]
+    # one edge, from the firmware doc to docs/protocol.md; a self-loop would collapse
+    # to a one-element frozenset and fail this comparison.
+    assert {frozenset(e) for e in G.edges} == {
+        frozenset(("docs_firmware_protocol", "docs_protocol"))}
+
+
+def test_reference_to_another_file_does_not_become_a_second_document():
+    """Case R. A bare id that another node of its own file `references`, and that is
+    itself a path slice (`protocol`), is a mention of a document: it is not renamed
+    into the mentioning file's own page, so the reference ends on docs/protocol.md.
+    Renaming it made `docs_firmware_protocol` reference itself (#4281)."""
+    from graphify.build import build
+
+    _assert_reference_lands_on_the_other_file(build([_protocol_reference_input()]))
+
+
+def test_reference_outcome_does_not_depend_on_label_length():
+    """Case R_labelswap. Same graph as above with the labels swapped, so the mention
+    has the shorter one. v8 kept the shorter label and dropped docs/protocol.md here."""
+    from graphify.build import build
+
+    G = build([_protocol_reference_input(docs_label="Protocol overview", mention_label="protocol")])
+    _assert_reference_lands_on_the_other_file(G)
+
+
+def test_mention_without_an_edge_gives_the_same_two_documents():
+    """Case R_noedge. With no `references` edge there is no evidence the bare id is a
+    mention, so both files are renamed per file; the result is still the two real
+    documents and no edge. The evidence only ever withholds a rename."""
+    from graphify.build import build
+
+    G = build([_protocol_reference_input(edge=False)])
+    assert sorted(G.nodes) == ["docs_firmware_protocol", "docs_protocol"]
+    assert list(G.edges) == []
+
+
+def test_top_level_collision_keeps_todays_result():
+    """Case R_toplevel. KNOWN LIMITATION, pinned so a change is noticed: with a
+    top-level protocol.md that also mints `protocol`, the three files collide and the
+    label tiebreak drops the top-level document's node. This is a separate genuine
+    collision from the mention rule and is not fixed here (#4281)."""
+    from graphify.build import build
+
+    G = build([_protocol_reference_input(top_level=True)])
+    assert sorted(G.nodes) == ["docs_firmware_protocol", "docs_protocol"]
+    assert {frozenset(e) for e in G.edges} == {
+        frozenset(("docs_firmware_protocol", "docs_protocol"))}
+
+
+def test_entity_described_in_two_documents_collapses_to_one_node(capsys):
+    """Case G, the shape of the reporter's warnings. `sender` is derived from neither
+    path and each document points at it, so the two copies are one entity: one node
+    with both edges, and the merge warning still prints (#4281)."""
+    from graphify.build import build
+
+    ext = {
+        "nodes": [_mention_node("docs_a_doc", "Doc A", "docs/a.md"),
+                  _mention_node("sender", "Sender service", "docs/a.md"),
+                  _mention_node("docs_b_doc", "Doc B", "docs/b.md"),
+                  _mention_node("sender", "Sender", "docs/b.md")],
+        "edges": [_mention_edge("docs_a_doc", "sender", "docs/a.md"),
+                  _mention_edge("docs_b_doc", "sender", "docs/b.md")],
+    }
+    G = build([ext])
+    assert sorted(G.nodes) == ["docs_a_doc", "docs_b_doc", "sender"]
+    assert {frozenset(e) for e in G.edges} == {
+        frozenset(("docs_a_doc", "sender")), frozenset(("docs_b_doc", "sender"))}
+    assert "node 'sender' is minted by two different files" in capsys.readouterr().err
+
+
+def test_reference_evidence_does_not_change_survivors_of_other_collisions():
+    """The mention evidence is gated to ids that are themselves a path slice. `x_intro`
+    is derived from a/x.md (so a/x.md defines it and wins the collision) but is not a
+    slice. Both copies are the target of an own-file `references` edge. Applied to every
+    id, that evidence would demote a/x.md's copy and let the shorter label from c.md
+    win. The survivor must be what v8 picks: a/x.md's node (#4281)."""
+    nodes = [_mention_node("x", "X", "a/x.md"),
+             _mention_node("x_intro", "Introduction to X", "a/x.md"),
+             _mention_node("c_doc", "Doc C", "c.md"),
+             _mention_node("x_intro", "Intro", "c.md")]
+    edges = [_mention_edge("x", "x_intro", "a/x.md"),
+             _mention_edge("c_doc", "x_intro", "c.md")]
+    kept, _ = deduplicate_entities(nodes, edges, communities={})
+    survivor = next(n for n in kept if n["id"] == "x_intro")
+    assert (survivor["label"], survivor["source_file"]) == ("Introduction to X", "a/x.md")

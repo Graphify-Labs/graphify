@@ -16,7 +16,16 @@ from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
 result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
-print(json.dumps(result, indent=2, ensure_ascii=False))
+nf = result.get('new_files', {})
+print(json.dumps({
+    'new_total': new_total,
+    'deleted': len(result.get('deleted_files', [])),
+    'new_by_type': {t: len(v) for t, v in nf.items()},
+    'total_files': result.get('total_files'),
+    'total_words': result.get('total_words'),
+    'skipped_sensitive': result.get('skipped_sensitive', []),
+}, indent=2, ensure_ascii=False))
+print('Full result: graphify-out/.graphify_incremental.json')
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
 deleted = list(result.get('deleted_files', []))
 if new_total == 0 and not deleted:

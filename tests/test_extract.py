@@ -491,7 +491,7 @@ def test_collect_files_from_dir():
 def test_collect_files_skips_hidden():
     files = collect_files(FIXTURES)
     for f in files:
-        assert not any(part.startswith(".") for part in f.parts)
+        assert not any(part.startswith(".") for part in f.relative_to(FIXTURES).parts)
 
 
 def test_collect_files_follows_symlinked_directory(requires_symlinks, tmp_path):
@@ -5277,6 +5277,38 @@ def test_pure_export_no_from_not_treated_as_reexport():
         result = extract_js(Path(f.name))
     reexports = [e for e in result["edges"] if e["relation"] == "re_exports"]
     assert reexports == [], f"Pure export should not create re_exports: {reexports}"
+
+
+def test_export_default_string_not_treated_as_import(tmp_path):
+    from graphify.extract import extract_js
+    src = tmp_path / "logo.js"
+    src.write_text("export default 'data:image/png;base64,AAAA';\n")
+    result = extract_js(src)
+    imports = [e for e in result["edges"] if e["relation"] == "imports_from"]
+    assert imports == [], f"export default string should not create imports_from: {imports}"
+
+
+def test_export_default_long_string_with_base_url_does_not_crash(tmp_path):
+    from graphify.extract import extract_js
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {"baseUrl": "."}}')
+    src = tmp_path / "src" / "logo.js"
+    src.parent.mkdir()
+    src.write_text("export default 'data:image/png;base64," + "A" * 5000 + "';\n")
+    result = extract_js(src)
+    assert "error" not in result
+    assert [e for e in result["edges"] if e["relation"] == "imports_from"] == []
+    extract([src])
+
+
+def test_overlong_import_specifier_with_base_url_does_not_crash(tmp_path):
+    from graphify.extract import extract_js
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {"baseUrl": "."}}')
+    src = tmp_path / "src" / "main.js"
+    src.parent.mkdir()
+    src.write_text("import x from '" + "a" * 5000 + "';\n")
+    result = extract_js(src)
+    assert "error" not in result
+    extract([src])
 
 
 def test_dart_child_node_ids_are_stem_based(tmp_path):

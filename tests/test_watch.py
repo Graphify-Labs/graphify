@@ -1311,6 +1311,55 @@ def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
             assert lock_path.read_text(encoding="utf-8") == held_contents
 
 
+def _rebuild_lock_holder_for_test(out_dir, name, hold, q):
+    """Module-level so `spawn`-mode multiprocessing can pickle it (#4273)."""
+    with _rebuild_lock(out_dir, blocking=True):
+        q.put((name, "enter", time.monotonic()))
+        time.sleep(hold)
+        q.put((name, "exit", time.monotonic()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="#4273 is a POSIX flock/unlink race")
+def test_rebuild_lock_unlink_does_not_let_a_third_caller_in_while_a_waiter_holds(tmp_path):
+    """#4273: flock() locks the open file's inode, not the path. Unlinking the
+    path on release used to let a blocked waiter end up holding the lock on
+    an orphaned inode while a later caller opened the (recreated) path fresh
+    and acquired an unrelated, never-locked inode immediately — two holders
+    inside the critical section at once.
+
+    A (held briefly) -> B (blocked waiter, acquires once A releases) -> C
+    (arrives after A releases, while B is still holding). C must never enter
+    while B is still inside.
+    """
+    import multiprocessing as mp
+
+    out = tmp_path / "graphify-out"
+    holder = _rebuild_lock_holder_for_test
+    q = mp.Queue()
+    a = mp.Process(target=holder, args=(out, "A", 0.4, q))
+    a.start()
+    time.sleep(0.15)
+    b = mp.Process(target=holder, args=(out, "B", 0.6, q))  # parks in flock() on the old inode
+    b.start()
+    a.join()
+    time.sleep(0.15)  # A has released; B should now hold the lock on a fresh inode
+    c = mp.Process(target=holder, args=(out, "C", 0.2, q))  # must NOT get in until B exits
+    c.start()
+    b.join()
+    c.join()
+
+    events = sorted((q.get() for _ in range(6)), key=lambda e: e[2])
+    intervals = {}
+    for name, kind, t in events:
+        intervals.setdefault(name, {})[kind] = t
+
+    b_enter, b_exit = intervals["B"]["enter"], intervals["B"]["exit"]
+    c_enter = intervals["C"]["enter"]
+    assert not (b_enter < c_enter < b_exit), (
+        f"C entered at {c_enter} while B held the lock ({b_enter}..{b_exit}): {events}"
+    )
+
+
 def test_rebuild_lock_blocks_concurrent_process(tmp_path):
     """#3881: concurrent processes cannot acquire the rebuild lock simultaneously."""
     import subprocess
@@ -1532,13 +1581,13 @@ def test_check_shrink_allows_shrink_within_rebuilt_sources(capsys):
     """#1116: a symbol removed from a re-extracted file is a legitimate shrink —
     every lost node belongs to a rebuilt source, so the write proceeds (no --force)."""
     existing = {"nodes": [
-        {"id": "a", "source_file": "m.py"},
-        {"id": "b", "source_file": "m.py"},
-        {"id": "c", "source_file": "other.py"},
+        {"id": "a", "source_file": "m.py", "_origin": "ast"},
+        {"id": "b", "source_file": "m.py", "_origin": "ast"},
+        {"id": "c", "source_file": "other.py", "_origin": "ast"},
     ], "links": []}
     new = {"nodes": [
-        {"id": "a", "source_file": "m.py"},
-        {"id": "c", "source_file": "other.py"},
+        {"id": "a", "source_file": "m.py", "_origin": "ast"},
+        {"id": "c", "source_file": "other.py", "_origin": "ast"},
     ], "links": []}
     ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
     assert ok is True
@@ -1621,6 +1670,117 @@ def test_check_shrink_allows_growth():
         new_data=_shrink_payload(60),
     )
     assert ok is True
+
+
+def _masked_semantic_loss():
+    """#2229: AST growth plus a new sourceless stub hides one lost rationale id.
+
+    The total rises (4 → 7). The semantic count stays at 2 because pathlib_Path
+    fills the slot. src/app.ts is rebuilt and is not deleted, so a rebuilt-set
+    excuse also accepts the loss.
+    """
+    def ast(node_id, line):
+        return {
+            "id": node_id,
+            "source_file": "src/app.ts",
+            "_origin": "ast",
+            "source_location": f"L{line}",
+            "file_type": "code",
+        }
+
+    def rationale(node_id):
+        return {
+            "id": node_id,
+            "source_file": "src/app.ts",
+            "_origin": "semantic",
+            "source_location": None,
+            "file_type": "rationale",
+        }
+
+    saved = {"nodes": [
+        ast("app_ts", 1),
+        ast("app_ts_main", 2),
+        rationale("rationale_kept"),
+        rationale("rationale_lost"),
+    ], "links": []}
+    new = {"nodes": [
+        ast("app_ts", 1),
+        ast("app_ts_main", 2),
+        ast("app_ts_hook", 10),
+        ast("app_ts_route", 20),
+        ast("app_ts_util", 30),
+        rationale("rationale_kept"),
+        {
+            "id": "pathlib_Path",
+            "source_file": "",
+            "source_location": None,
+            "file_type": "concept",
+        },
+    ], "links": []}
+    return saved, new
+
+
+def test_check_shrink_refuses_lost_semantic_id_when_total_grows(capsys):
+    """#2229: a larger total must not write away a saved rationale id."""
+    saved, new = _masked_semantic_loss()
+    assert len(new["nodes"]) > len(saved["nodes"])
+    ok = _check_shrink(False, saved, new, rebuilt_sources={"src/app.ts"})
+    assert ok is False
+    assert "rationale_lost" in capsys.readouterr().err
+
+
+def test_check_shrink_allows_deleted_code_file_when_semantic_ids_remain(capsys):
+    """A removed code file may drop its nodes. A rationale id on a file that
+    is still present must stay, and that pair still writes."""
+    existing = {"nodes": [
+        {"id": "gone_fn", "source_file": "gone.py", "_origin": "ast", "source_location": "L1"},
+        {"id": "gone_rationale", "source_file": "gone.py", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "stay_rationale", "source_file": "stay.md", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ], "links": []}
+    new = {"nodes": [
+        {"id": "stay_rationale", "source_file": "stay.md", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ], "links": []}
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"gone.py"},
+        deleted_sources={"gone.py"},
+    )
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stub", [
+    {"id": "json", "external": True, "source_file": "", "file_type": "concept", "_origin": "semantic"},
+    {"id": "json", "type": "external", "source_file": "", "file_type": "concept", "_origin": "semantic"},
+])
+def test_check_shrink_allows_dropped_import_stub_when_total_grows(capsys, stub):
+    """Removing an import drops its auto-minted stub. Added code can make the
+    total grow. That write must succeed without --force."""
+    def code(node_id):
+        return {
+            "id": node_id,
+            "source_file": "app.py",
+            "_origin": "ast",
+            "source_location": "L1",
+            "file_type": "code",
+        }
+    existing = {"nodes": [
+        code("app"),
+        code("app_load"),
+        stub,
+    ], "links": []}
+    new = {"nodes": [
+        code("app"),
+        code("app_load"),
+        code("app_extra"),
+        code("app_more"),
+    ], "links": []}
+    assert len(new["nodes"]) > len(existing["nodes"])
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"app.py"})
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
 
 
 def test_check_shrink_unlinks_tmp_on_refuse(tmp_path):
@@ -2161,8 +2321,111 @@ def test_rebuild_code_full_corpus_skips_pending_queue(tmp_path, monkeypatch):
     # Full-corpus rebuild passes None to the inner call (does not merge in
     # the queued paths — a full rebuild already covers them).
     assert seen == [None]
-    # The queue still gets drained on entry so stale entries don't leak,
-    # but no late-arrival loop runs for the full-corpus path.
+    # The queue is drained on entry so stale entries don't leak; nothing
+    # arrived mid-run, so the late-arrival loop has nothing to do.
+    assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_full_request_queues_marker_on_contention(tmp_path, capsys):
+    """#4274: a full-corpus request that loses the lock must leave a
+    .pending_full marker instead of being dropped behind a 'queued' log."""
+    from graphify.watch import _rebuild_code, _rebuild_lock, _PENDING_FULL_FILENAME
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    with _rebuild_lock(out, blocking=False) as outer_got:
+        assert outer_got is True
+        assert _rebuild_code(tmp_path) is False
+        assert "changes queued" in capsys.readouterr().out
+        assert (out / _PENDING_FULL_FILENAME).exists()
+
+
+def test_rebuild_code_empty_change_set_does_not_claim_queued(tmp_path, capsys):
+    """#4274: 'changes queued' is printed only when something was queued."""
+    from graphify.watch import _rebuild_code, _rebuild_lock, _PENDING_FILENAME
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    with _rebuild_lock(out, blocking=False) as outer_got:
+        assert outer_got is True
+        assert _rebuild_code(tmp_path, changed_paths=[]) is False
+        assert "changes queued" not in capsys.readouterr().out
+        assert not (out / _PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_holder_runs_queued_full_pass(tmp_path, monkeypatch):
+    """#4274: a full request queued while an incremental rebuild holds the
+    lock must make the holder run one more full pass before releasing."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            paths = kwargs.get("changed_paths")
+            seen.append(None if paths is None else [p.as_posix() for p in paths])
+            if len(seen) == 1:
+                watch_mod._queue_pending_full(out)
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path, changed_paths=[Path("own.py")]) is True
+    assert seen == [["own.py"], None]
+    assert not (out / watch_mod._PENDING_FULL_FILENAME).exists()
+
+
+def test_rebuild_code_full_pass_upgrades_from_queued_marker(tmp_path, monkeypatch):
+    """#4274: an incremental holder that finds a full marker already queued
+    runs a full rebuild instead of its incremental one."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    watch_mod._queue_pending_full(out)
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            seen.append(kwargs.get("changed_paths"))
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path, changed_paths=[Path("own.py")]) is True
+    assert seen == [None]
+    assert not (out / watch_mod._PENDING_FULL_FILENAME).exists()
+    assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_full_rebuild_drains_late_arrivals(tmp_path, monkeypatch):
+    """#4274: incremental work queued after a full rebuild walked the corpus
+    must be applied by that rebuild's holder before it releases the lock."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            paths = kwargs.get("changed_paths")
+            seen.append(None if paths is None else [p.as_posix() for p in paths])
+            if len(seen) == 1:
+                watch_mod._queue_pending(out, [Path("late.py")])
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path) is True
+    assert seen == [None, ["late.py"]]
     assert not (out / watch_mod._PENDING_FILENAME).exists()
 
 

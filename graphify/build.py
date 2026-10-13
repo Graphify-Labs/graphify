@@ -66,6 +66,87 @@ def _backfill_origin(item: dict) -> None:
         item.pop("_origin", None)
         return
     item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
+def _lost_saved_semantic_nodes(
+    saved_nodes: list,
+    new_nodes: list,
+    deleted_sources: set[str] | None = None,
+) -> list[dict]:
+    """Saved semantic nodes whose ids are absent from the new graph.
+
+    A node created in this run is not in ``saved_nodes``, so a sourceless stub
+    cannot stand in for a missing id. ``deleted_sources`` is the files the user
+    removed. A code rebuild is not a deletion: do not pass the rebuilt set.
+
+    An auto-minted import stub (``external`` true, or ``type`` ``external``) is
+    rebuilt from the import edges of this run. Dropping one is not a lost
+    rationale or document node.
+    """
+    deleted = {
+        norm
+        for source in (deleted_sources or ())
+        if (norm := _norm_source_file(source))
+    }
+    new_ids = {node.get("id") for node in new_nodes if isinstance(node, dict)}
+    # A semantic ghost deduplicated into its AST twin (#1145) loses its id but
+    # the symbol survives at the same (source_file, label).
+    new_ast_loc_nodes: set[tuple[str, str]] = set()
+    ast_loc_collisions: set[tuple[str, str]] = set()
+    for node in new_nodes:
+        # Match build_from_json's strict canonical-AST check (#2334).
+        if not isinstance(node, dict) or node.get("_origin") != "ast":
+            continue
+        sf = node.get("source_file")
+        if not isinstance(sf, str) or not sf:
+            continue
+        lbl = str(node.get("label", "")).strip()
+        if not lbl:
+            continue
+        norm_sf = _norm_source_file(sf)
+        if not norm_sf:
+            continue
+        key = (norm_sf, lbl)
+        if key in new_ast_loc_nodes:
+            ast_loc_collisions.add(key)
+        new_ast_loc_nodes.add(key)
+    # cluster-only and build_from_json rewrite a legacy semantic id to its
+    # canonical stem, then fold a bare doc id into its `_doc` twin. That id
+    # is the same node. A missing rationale id has no such successor.
+    stem_remap = _semantic_id_remap(saved_nodes, None)
+    rewritten = [
+        {**node, "id": stem_remap[node["id"]]}
+        if isinstance(node, dict) and node.get("id") in stem_remap
+        else node
+        for node in saved_nodes
+    ]
+    doc_remap = _doc_twin_remap(rewritten)
+
+    def _renamed_present(node_id: str) -> bool:
+        renamed = stem_remap.get(node_id, node_id)
+        renamed = doc_remap.get(renamed, renamed)
+        return renamed in new_ids
+
+    lost: list[dict] = []
+    for node in saved_nodes:
+        if not isinstance(node, dict) or _is_ast_tier(node):
+            continue
+        if node.get("external") is True or node.get("type") == "external":
+            continue
+        node_id = node.get("id")
+        if node_id in new_ids:
+            continue
+        if isinstance(node_id, str) and _renamed_present(node_id):
+            continue
+        sf_val = node.get("source_file")
+        source = _norm_source_file(sf_val) if isinstance(sf_val, str) else None
+        lbl = str(node.get("label", "")).strip()
+        if source and lbl:
+            loc_key = (source, lbl)
+            if loc_key in new_ast_loc_nodes and loc_key not in ast_loc_collisions:
+                continue
+        if source and source in deleted:
+            continue
+        lost.append(node)
+    return lost
 
 
 # Relations that say only "these two symbols appear together", with no claim about
@@ -369,10 +450,11 @@ def _normalize_hyperedge_members(he: object) -> None:
 def _fold_node_aliases(node: dict) -> None:
     """Fold legacy node field aliases onto canonical keys, in place (#2194).
 
-    ``name`` -> ``label`` and ``path`` -> ``source_file``. Uses an empty-check
-    (not mere key presence) so a node carrying ``label: ""``/``None`` next to a
-    real ``name`` is healed too. When the canonical field already holds a value
-    it wins and the alias key is left untouched. Without this fold an alias-only
+    ``name`` -> ``label`` and ``file``/``path``/``filepath`` -> ``source_file``
+    (first non-blank alias in that order wins). Uses an empty-check (not mere
+    key presence) so a node carrying ``label: ""``/``None`` next to a real
+    ``name`` is healed too. When the canonical field already holds a value it
+    wins and the alias key is left untouched. Without this fold an alias-only
     node enters the graph with no label/source_file: it fails validation, gets
     ``norm_label == ""`` (invisible to query/explain), and is excluded from every
     label-keyed merge/dedup — a permanent ghost that ``graphify update``
@@ -380,16 +462,21 @@ def _fold_node_aliases(node: dict) -> None:
     """
     if not node.get("label") and isinstance(node.get("name"), str) and node["name"]:
         node["label"] = node.pop("name")
-    if not node.get("source_file") and isinstance(node.get("path"), str) and node["path"]:
-        node["source_file"] = node.pop("path")
+    if not node.get("source_file"):
+        for alias in ("file", "path", "filepath"):
+            val = node.get(alias)
+            if isinstance(val, str) and val.strip():
+                node["source_file"] = node.pop(alias)
+                break
 
 
 def _fold_edge_aliases(edge: dict) -> None:
     """Fold legacy edge field aliases onto canonical keys, in place (#2194).
 
-    ``type`` -> ``relation``. A ``confidence_score`` float with no ``confidence``
-    enum backfills ``confidence: "INFERRED"`` — never EXTRACTED (alias recovery
-    is not provenance) and never a threshold mapping of the float. The
+    ``type``/``relationship`` -> ``relation`` (``type`` checked first). A
+    ``confidence_score`` float with no ``confidence`` enum backfills
+    ``confidence: "INFERRED"`` — never EXTRACTED (alias recovery is not
+    provenance) and never a threshold mapping of the float. The
     ``confidence_score`` key itself is NOT popped: it is a legitimate companion
     field that the edge loop sanitizes and to_json round-trips.
 
@@ -404,6 +491,8 @@ def _fold_edge_aliases(edge: dict) -> None:
     """
     if not edge.get("relation") and isinstance(edge.get("type"), str) and edge["type"]:
         edge["relation"] = edge.pop("type")
+    if not edge.get("relation") and isinstance(edge.get("relationship"), str) and edge["relationship"]:
+        edge["relation"] = edge.pop("relationship")
     _conf = edge.get("confidence")
     if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
         if edge.get("confidence_score") is None:
@@ -1743,7 +1832,7 @@ def build(
         # coerces too, but that runs after dedup — too late for this path.
         _coerce_non_string_ids(combined)
         # Fold legacy node field aliases before dedup (#2194): dedup runs BEFORE
-        # build_from_json and keys on `label`, so a `name`/`path` alias node
+        # build_from_json and keys on `label`, so a `name`/`file`/`path` alias node
         # would be invisible to it and only label-dedup one build later, after
         # build_from_json's own fold has healed the persisted graph.json.
         for n in combined["nodes"]:

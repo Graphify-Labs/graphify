@@ -255,15 +255,128 @@ def test_same_named_type_the_import_cannot_decide_emits_no_edge(tmp_path):
     assert not _hits(calls, "neither")
 
 
-def test_a_public_call_never_binds_to_a_private_hash_method(tmp_path):
-    # `_key()` folds `#newResponse` and `newResponse` together; a `#name` is only
-    # reachable as `#name`, so `c.newResponse()` must not land on it.
+def test_public_call_reaches_the_member_node_in_either_declaration_order(tmp_path):
+    # `foo()` and `#foo()` share one node (ids drop `#`), labeled after whichever is
+    # declared first. `c.foo()` can only mean the public one, so it must keep its
+    # edge to that node in both orders.
+    orders = (
+        "  foo(): number { return 1; }\n  #foo(): number { return 2; }\n",
+        "  #foo(): number { return 2; }\n  foo(): number { return 1; }\n",
+    )
+    for i, members in enumerate(orders):
+        calls, _ = _calls(tmp_path / f"order{i}", {
+            "ctx.ts": "export class Ctx {\n" + members + "}\n",
+            "use.ts": ('import { Ctx } from "./ctx";\n'
+                       "export function make(c: Ctx): number { return c.foo(); }\n"),
+        })
+        assert any("make" in str(s) and "foo" in str(t) for s, t in calls), (i, calls)
+
+
+def test_public_call_never_reaches_a_private_only_member(tmp_path):
+    # `Child` declares only `#run`; its public `run` is inherited from `Base`, so
+    # `c.run()` must not land on the private method's node.
+    calls, _ = _calls(tmp_path, {
+        "base.ts": "export class Base {\n  run(): number { return 0; }\n}\n",
+        "child.ts": ('import { Base } from "./base";\n'
+                     "export class Child extends Base {\n  #run(): number { return 1; }\n}\n"),
+        "use.ts": ('import { Child } from "./child";\n'
+                   "export function go(c: Child): number { return c.run(); }\n"),
+    })
+    assert not any("go" in str(s) and "#run" in str(t) for s, t in calls), calls
+
+
+def test_public_property_sharing_a_private_methods_node_keeps_its_edge(tmp_path):
+    # hono's shape: a public arrow property and a `#` method of the same name.
     calls, _ = _calls(tmp_path, {
         "ctx.ts": ("export class Ctx {\n"
-                   "  #newResponse(): number { return 1; }\n"
-                   "  build(): number { return this.#newResponse(); }\n"
+                   "  #respond(): number { return 1; }\n"
+                   "  respond = (): number => this.#respond();\n"
                    "}\n"),
         "use.ts": ('import { Ctx } from "./ctx";\n'
-                   "export function make(c: Ctx): number { return c.newResponse(); }\n"),
+                   "export function go(c: Ctx): number { return c.respond(); }\n"),
     })
-    assert not _hits(calls, "make", "newResponse")
+    assert any("go" in str(s) and "respond" in str(t) for s, t in calls), calls
+
+
+def test_a_pure_esm_corpus_still_activates_the_resolver(tmp_path):
+    # `.mjs` and `.cjs` route to extract_js like `.js` does, so a repo that uses
+    # only those must not be the one shape where the resolver never runs.
+    calls, _ = _calls(tmp_path, {
+        "svc.mjs": "export class Svc {\n  doThing() { return 1; }\n}\n",
+        "app.mjs": ('import { Svc } from "./svc.mjs";\nconst s = new Svc();\n'
+                    "export function usesDirect() { return s.doThing(); }\n"),
+    })
+    assert any("usesDirect" in s and "doThing" in t for s, t in calls)
+
+
+def _parked(r) -> list[dict]:
+    return [entry for n in r["nodes"]
+            if isinstance(n.get("metadata"), dict)
+            for entry in n["metadata"].get("unresolved_calls", [])]
+
+
+def test_an_annotated_type_declared_nowhere_is_parked_for_the_merge(tmp_path):
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from 'greeter-pkg';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+    })
+    assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
+                           "lang": "typescript", "line": "L4"}]
+
+
+def test_a_namespace_style_receiver_is_not_parked(tmp_path):
+    # An uppercase receiver types the type by spelling alone, which a namespace
+    # alias, a default import or a plain const object satisfies just as well.
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import * as React from 'react';\n"
+                   "const s = new Svc();\n"
+                   "export function render(): void { React.createElement(); }\n"),
+    })
+    assert _parked(r) == []
+
+
+def test_a_type_the_origin_gate_rejected_is_not_parked(tmp_path):
+    # A local declaration exists and the gate refused it, so parking would ask the
+    # merge to accept a remote match on evidence the gate just judged weaker.
+    _, r = _calls(tmp_path, {
+        "fileb.ts": _LOCAL_REPO,
+        "filea.ts": ("import type { Repo } from 'external-pkg';\n"
+                     "export class ReportService {\n"
+                     "  constructor(private repo: Repo) {}\n"
+                     "  run(): void { this.repo.save(); }\n"
+                     "}\n"),
+    })
+    assert _parked(r) == []
+
+
+def test_a_class_from_another_language_neither_answers_nor_blocks_parking(tmp_path):
+    # The declaration index is corpus-wide, so a same-named PHP class used to make the
+    # receiver look locally declared and the call was dropped instead of parked.
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from 'greeter-pkg';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+        "Greeter.php": "<?php\nclass Greeter {\n    public function greet(): void {}\n}\n",
+    })
+    assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
+                           "lang": "typescript", "line": "L4"}]
+
+
+def test_a_class_declared_in_an_sfc_script_block_still_answers(tmp_path):
+    # An SFC script block is TS, so its declarations belong to the same interop family
+    # as the caller's and must keep resolving.
+    calls, _ = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from './Greeter.vue';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+        "Greeter.vue": ("<script lang=\"ts\">\nexport class Greeter {\n"
+                        "  greet(): void {}\n}\n</script>\n"),
+    })
+    assert any("run" in str(s) and "greet" in str(t) for s, t in calls), calls

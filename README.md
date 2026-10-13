@@ -250,7 +250,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -259,6 +259,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design — use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
+
+Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native Pi extension (via Pi's own `pi install <package directory>`) that runs the installed `graphify hook-guard` before Pi's `read`, `grep`, `find` and search-style `bash` calls. Fresh/stale graph decisions and the `GRAPHIFY_HOOK_STRICT=1` once-per-session indexed-read denial come from that same policy, so Pi matches Claude Code's hook behavior; guidance arrives as a `<system-reminder source="graphify">` steering message. It needs Pi 0.58.4 or newer: earlier versions let a steering message skip the rest of a parallel tool-call batch. The package ships inside the Graphify installation, so install Graphify persistently (`uv tool install graphifyy` or `pipx install graphifyy`, not `uvx`), restart Pi after installing or upgrading, and remove it with `graphify pi guard uninstall`. Only local file targets are inspected; the hook needs `graphify` on an absolute `PATH` entry outside the project, is bounded to a two-second, 256 KiB-in/64 KiB-out call, and fails open. The same package also loads in [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. The registered path contains the Python version and venv, so re-run `graphify pi guard install` after changing either, and remove the old entry with `pi remove <old path>`.
 
 > Codex uses `$graphify` instead of `/graphify`.
 
@@ -324,6 +326,19 @@ This writes a small config file that tells your assistant to consult the knowled
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
+### CLI skills or MCP instructions?
+
+The instructions installed by `graphify install` and those supplied with a Graphify MCP connection describe different ways to query a graph:
+
+| Setup | Guidance to use | Query access |
+|---|---|---|
+| Local CLI and installed assistant skill | The platform instructions written by `graphify install` | Run `graphify query`, `graphify path`, and `graphify explain` against the local graph (`graphify-out/` by default). |
+| Connected Graphify MCP server | The connection's instructions and the tools listed by that server | Call the listed MCP tools against the graph served by that connection. Tool names and descriptions come from the server. |
+
+Both encourage scoped graph queries before broad source searches. Choose the instructions that match the tools your assistant can actually access; neither block establishes a universal precedence rule for your assistant's instruction files. If you use both integrations, identify which graph each queries and choose a primary query path instead of copying two unconditional instruction blocks into `AGENTS.md`.
+
+`graphify install` installs the local assistant integration; it does not establish an MCP connection. An MCP client does not need to run local CLI queries to use its connected server. A locally hosted server still needs its own Graphify installation and graph, while a hosted connection may serve a graph that is not present in the client's working directory. If the expected tools are missing, check the relevant CLI installation or MCP connection rather than treating the other setup's instructions as interchangeable.
+
 ---
 
 ## What's in the report
@@ -374,6 +389,29 @@ See the [full command reference](#full-command-reference) below.
 
 graphify honors `.gitignore` and supports `--exclude` patterns and a project `.graphifyignore`. Details: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+
+## Project configuration
+
+Create a `.graphifyrc` in the scan root for settings that belong to the project rather than to one run. One `key=value` per line; lines beginning with `#` are comments.
+
+**Ambiguous extensions.** Some extensions mean different languages in different projects: `.inc` is PHP on pfSense, Pascal in a Delphi tree, SQL or assembly elsewhere; `.h` is C or C++; `.m` is Objective-C or MATLAB. graphify has to pick one global default, and when it picks wrong the file does not fail — it parses as the wrong language and yields a handful of incidental nodes, so the graph looks populated while the real symbols are missing. Declare what the extension means in your repo:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+The declaration controls file classification, extractor selection and language-specific grammar and resolution, and the AST cache: a file re-parsed under a different language never reuses the old entry. Original source paths and physical format conventions, such as Fortran `.F90` preprocessing and C/C++ header/implementation pairing, are preserved. Optional language backends must still be installed. A typo is reported once on stderr and the scan continues with graphify's defaults.
+
+Adding, changing, or removing a language declaration invalidates affected incremental manifest entries even when the source bytes have not changed. `graphify watch` recognizes declared source extensions and root `.graphifyrc` changes, including atomic replacement; configuration changes schedule an AST rebuild and flag semantic work for the next extraction. The same configuration is read by `graphify extract`, `graphify update`, the hooks, the MCP server, and the `/graphify` skill.
+
+Extensionless local JS/TS imports can also resolve declared suffixes. Native suffixes retain precedence within file and directory-index lookup, and file candidates are tried before directory indexes. Python module and package lookups also support declared Python suffixes, while retaining native `.py` precedence.
+
 ---
 
 ## Team setup
@@ -384,7 +422,7 @@ Commit or share the graph so your whole team queries the same context, and revie
 
 ## Using the graph directly
 
-Beyond your AI assistant, query `graph.json` straight from the CLI with `graphify query`, `graphify path`, and `graphify explain`. See **[Ask better graph questions](https://docs.graphify.com/guides/querying)** and the **[query reference](https://docs.graphify.com/reference/query)**.
+Beyond your AI assistant, query `graph.json` straight from the CLI with `graphify query`, `graphify path`, and `graphify explain`. A name that matches several nodes is refused with the candidates listed rather than guessed. Scripts can read the outcome from the exit code: `0` an answer, `3` an ambiguous name, `4` no matching node. See **[Ask better graph questions](https://docs.graphify.com/guides/querying)** and the **[query reference](https://docs.graphify.com/reference/query)**.
 
 ---
 

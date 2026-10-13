@@ -118,6 +118,12 @@ classes under different parents retain separate definitions, methods, and
 containment edges; top-level class ids are unchanged. AST cache schema 7 prevents
 older cached definitions from retaining the collapsed identities.
 
+C# partial types merge across files by their path inside the namespace,
+enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
+assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
+`Foo<T>` stay separate types. AST cache schema 9 retires cached C# results that
+lack this path.
+
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
