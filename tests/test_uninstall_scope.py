@@ -12,6 +12,7 @@ These tests pin the fixed contract:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,36 @@ def test_project_uninstall_codebuddy_spares_global(tmp_path):
     assert (global_tree / ".graphify_version").exists()
     assert not (project_tree / "SKILL.md").exists()
     assert not project_tree.exists()
+
+
+def test_project_uninstall_mimo_spares_global(tmp_path, monkeypatch):
+    """`graphify uninstall --project` (mimo branch) must not delete ~/.config/mimocode."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    global_dir = home / ".config" / "mimocode"
+    global_tree = _plant_skill_tree(global_dir, "")
+    global_plugin = global_dir / "plugins" / "graphify.js"
+    global_plugin.parent.mkdir(parents=True, exist_ok=True)
+    global_plugin.write_text("// global plugin\n", encoding="utf-8")
+    global_cfg = global_dir / "mimocode.json"
+    global_cfg.write_text(json.dumps({"plugin": [global_plugin.as_posix()]}), encoding="utf-8")
+
+    proj_dir = tmp_path / "proj"
+    project_tree = _plant_skill_tree(proj_dir, ".mimocode")
+    proj_plugin = proj_dir / ".mimocode" / "plugins" / "graphify.js"
+    proj_plugin.parent.mkdir(parents=True, exist_ok=True)
+    proj_plugin.write_text("// proj plugin\n", encoding="utf-8")
+    proj_cfg = proj_dir / ".mimocode" / "mimocode.json"
+    proj_cfg.write_text(json.dumps({"plugin": ["./plugins/graphify.js"]}), encoding="utf-8")
+
+    _project_uninstall("mimo", proj_dir)
+
+    assert (global_tree / "SKILL.md").exists(), "CLI --project uninstall deleted the global mimo skill"
+    assert (global_tree / ".graphify_version").exists()
+    assert global_plugin.exists(), "CLI --project uninstall deleted the global mimo plugin"
+    assert global_cfg.exists(), "CLI --project uninstall deleted the global mimo config"
+    assert not (project_tree / "SKILL.md").exists()
+    assert not proj_plugin.exists()
 
 
 import pytest as _pytest_posix
