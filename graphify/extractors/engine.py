@@ -168,6 +168,107 @@ def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
         stack.extend(n.children)
     return out
 
+_CSHARP_TYPE_DECLARATIONS = frozenset({
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "struct_declaration",
+    "record_declaration",
+})
+
+
+def _csharp_type_name_for_id(node, class_name: str) -> str:
+    """A C# type's name as its node id spells it: the arity folds in (#4249).
+
+    `Effect` and `Effect<T>` are different types, so the generic one is named
+    the way C# metadata names it (`` Effect`1 ``); arity 0 is the bare name.
+    """
+    arity = sum(
+        1 for c in node.children if c.type == "type_parameter_list"
+        for _p in c.children if _p.type in ("type_parameter", "identifier")
+    )
+    return f"{class_name}`{arity}" if arity else class_name
+
+
+def _csharp_pre_scan_name_collisions(
+    root_node, source: bytes, stem: str
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Pre-scan a C# file for declared names that collapse to one node id.
+
+    C# is case-sensitive and `_Name` is the usual spelling of a private member,
+    but ``ids.py:make_id`` strips leading/trailing underscores and casefolds, so
+    `Action()` / `_Action()`, `Size` / `_Size`, `Load()` / `load()` and the types
+    `Pair` / `_Pair` each mint ONE id. ``add_node`` keeps the first declaration
+    and drops the second; the dropped method's calls are credited to the
+    survivor, and a type's members hang off the other type (#4415). This is
+    the Python #3302 collision in C#; the outcome is the same rule
+    (``_underscore_salted_nid``).
+
+    Returns ``(type_groups, member_groups)``, each ``{plain_nid: {raw names}}``
+    for the ids two or more distinct names would share. Types are keyed the way
+    the walk mints them (``_make_id(stem, namespace, name_for_id)``), members
+    (methods, properties, enum members) by ``_make_id(type_nid, name)`` where
+    ``type_nid`` is the type's FINAL id, already salted when the type itself
+    collides. Same-file partial declarations of one type share an id, so their
+    members are grouped together. Overloads are one name, never a collision.
+    """
+    type_names: dict[str, set[str]] = {}
+    member_names: dict[str, set[str]] = {}
+    type_decls: list[tuple[object, str, str]] = []
+
+    def _visit(n, ns: list[str]) -> None:
+        # Types are declared only at file level, in namespace and type bodies
+        # and in #if wrappers around them, so only those are entered: the
+        # recursion depth is the nesting depth of declarations, never of
+        # expressions.
+        scoped = list(ns)
+        for c in n.children:
+            if c.type == "namespace_declaration":
+                ns_name = _csharp_namespace_name(c, source)
+                body = c.child_by_field_name("body")
+                if body is not None:
+                    _visit(body, scoped + [ns_name] if ns_name else scoped)
+            elif c.type == "file_scoped_namespace_declaration":
+                # Applies to the rest of the file, as in the walk.
+                ns_name = _csharp_namespace_name(c, source)
+                if ns_name:
+                    scoped = scoped + [ns_name]
+            elif c.type in _CSHARP_TYPE_DECLARATIONS:
+                name_node = c.child_by_field_name("name")
+                name = _read_text(name_node, source) if name_node is not None else ""
+                if name:
+                    plain = _make_id(stem, ".".join(scoped), _csharp_type_name_for_id(c, name))
+                    type_names.setdefault(plain, set()).add(name)
+                    type_decls.append((c, plain, name))
+                # Nested types take the namespace, not the enclosing type (ids
+                # omit the outer type), so they join the same groups.
+                _visit(c, scoped)
+            elif c.type == "declaration_list" or c.type.startswith("preproc_"):
+                _visit(c, scoped)
+
+    _visit(root_node, [])
+    type_groups = {nid: names for nid, names in type_names.items() if len(names) >= 2}
+
+    def _members(n, type_nid: str) -> None:
+        for c in n.children:
+            if c.type in ("method_declaration", "property_declaration",
+                          "enum_member_declaration"):
+                name_node = c.child_by_field_name("name")
+                name = _read_text(name_node, source) if name_node is not None else ""
+                if name:
+                    member_names.setdefault(_make_id(type_nid, name), set()).add(name)
+            elif c.type in ("declaration_list", "enum_member_declaration_list") or (
+                c.type.startswith("preproc_")
+            ):
+                # The body, and #if/#region wrappers the walk sees through (#2631).
+                _members(c, type_nid)
+
+    for decl, plain, name in type_decls:
+        _members(decl, _underscore_salted_nid(plain, name, type_groups))
+    member_groups = {nid: names for nid, names in member_names.items() if len(names) >= 2}
+    return type_groups, member_groups
+
+
 def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
     """`implements` if the base name is an interface (declared or by I-prefix convention), else `inherits`."""
     if name in interface_names:
@@ -1189,10 +1290,11 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
     return {nid: names for nid, names in groups.items() if len(names) >= 2}
 
 
-def _python_underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]]) -> str:
-    """Resolve a Python function/method's real node id against the collision map.
+def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]]) -> str:
+    """Resolve a declaration's real node id against the collision map.
 
-    A name with no leading underscore at all is "public" per PEP 8 convention.
+    Shared by the Python and C# pre-scans (#3302, #4415). A name with no
+    leading underscore at all is "public" per PEP 8 convention.
     When a collision group has exactly one public member, that member keeps the
     plain id — cross-file/documentation references overwhelmingly target the
     public name, and keeping it stable means an incremental rebuild that adds or
@@ -3999,7 +4101,8 @@ def _csharp_namespace_name(node, source: bytes) -> str:
 def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                        nodes: list, edges: list, seen_ids: set, function_bodies: list,
                        parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                       walk_fn, namespace_stack: list[str], scope_stack: list[str]) -> bool:
+                       walk_fn, namespace_stack: list[str], scope_stack: list[str],
+                       member_groups: dict[str, set[str]] | None = None) -> bool:
     """Handle C# namespaces, enum members, and transparent class-member wrappers."""
     if node.type == "enum_member_declaration" and parent_class_nid:
         # `enum_declaration` is in C#'s class_types, so the enum type is a node
@@ -4015,11 +4118,13 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         if not member_name:
             return True
         line = node.start_point[0] + 1
-        member_nid = _make_id(parent_class_nid, member_name)
         # C# is case-sensitive, so `enum E { Value, value }` is legal, but the id
-        # recipe casefolds — both members normalize to one id. Emitting the
-        # second would hang a duplicate edge on the first member's node, so the
-        # first declaration keeps it (same guard as the property nodes in #3006).
+        # recipe casefolds — both members normalize to one id. The pre-scan
+        # salts such a pair apart (#4415); the guard stays for anything else
+        # that lands on one id.
+        member_nid = _underscore_salted_nid(
+            _make_id(parent_class_nid, member_name), member_name, member_groups or {}
+        )
         if member_nid not in seen_ids:
             add_node_fn(member_nid, member_name, line)
             add_edge_fn(parent_class_nid, member_nid, "case_of", line)
@@ -5285,8 +5390,13 @@ def _extract_generic(
     csharp_method_returns: dict[str, dict[str, list]] = {}
 
     csharp_interface_names: set[str] = set()
+    csharp_type_groups: dict[str, set[str]] = {}
+    csharp_member_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_c_sharp":
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
+        csharp_type_groups, csharp_member_groups = _csharp_pre_scan_name_collisions(
+            root, source, stem
+        )
 
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
@@ -5341,6 +5451,8 @@ def _extract_generic(
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(stem, ".".join(namespace_stack), name)
+        if config.ts_module == "tree_sitter_c_sharp":
+            nid = _underscore_salted_nid(nid, name, csharp_type_groups)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
@@ -5487,13 +5599,11 @@ def _extract_generic(
                 # matching how C# metadata itself names a generic type
                 # (`` Effect`1 ``), so each arity gets its own node; the
                 # label is untouched; arity 0 keeps today's id exactly.
-                _csharp_arity = sum(
-                    1 for c in node.children if c.type == "type_parameter_list"
-                    for _p in c.children if _p.type in ("type_parameter", "identifier")
-                )
-                if _csharp_arity:
-                    class_name_for_id = f"{class_name}`{_csharp_arity}"
+                class_name_for_id = _csharp_type_name_for_id(node, class_name)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name_for_id)
+            if config.ts_module == "tree_sitter_c_sharp":
+                # `Pair` / `_Pair` in one file share an id otherwise (#4415).
+                class_nid = _underscore_salted_nid(class_nid, class_name, csharp_type_groups)
             if config.ts_module == "tree_sitter_python" and parent_class_nid:
                 class_nid = _make_id(parent_class_nid, class_name)
             line = node.start_point[0] + 1
@@ -5930,13 +6040,19 @@ def _extract_generic(
                                 )
                         base_nid = None
                         if base_arity:
-                            _arity_nid = _make_id(
-                                stem, ".".join(namespace_stack), f"{base}`{base_arity}"
+                            _arity_nid = _underscore_salted_nid(
+                                _make_id(
+                                    stem, ".".join(namespace_stack), f"{base}`{base_arity}"
+                                ),
+                                base, csharp_type_groups,
                             )
                             if _arity_nid in seen_ids:
                                 base_nid = _arity_nid
                         if base_nid is None:
-                            base_nid = _make_id(stem, ".".join(namespace_stack), base)
+                            base_nid = _underscore_salted_nid(
+                                _make_id(stem, ".".join(namespace_stack), base),
+                                base, csharp_type_groups,
+                            )
                         if base_nid not in seen_ids:
                             base_nid = _make_id(base)
                             if base_nid not in seen_ids:
@@ -6470,7 +6586,10 @@ def _extract_generic(
                 property_name = _read_text(prop_node_name, source)
                 if property_name:
                     property_line = node.start_point[0] + 1
-                    property_nid = _make_id(parent_class_nid, property_name)
+                    property_nid = _underscore_salted_nid(
+                        _make_id(parent_class_nid, property_name),
+                        property_name, csharp_member_groups,
+                    )
                     if property_nid not in seen_ids:
                         add_node(property_nid, property_name, property_line)
                         add_edge(parent_class_nid, property_nid, "defines",
@@ -6925,8 +7044,12 @@ def _extract_generic(
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
-                    func_nid = _python_underscore_salted_nid(
+                    func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
+                    )
+                elif config.ts_module == "tree_sitter_c_sharp":
+                    func_nid = _underscore_salted_nid(
+                        func_nid, sanitized_name, csharp_member_groups
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
@@ -6962,7 +7085,7 @@ def _extract_generic(
             else:
                 func_nid = _make_id(stem, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
-                    func_nid = _python_underscore_salted_nid(
+                    func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
                     )
                 add_node(func_nid, f"{func_name}()", line)
@@ -7532,7 +7655,7 @@ def _extract_generic(
             if _csharp_extra_walk(node, source, file_nid, stem, str_path,
                                    nodes, edges, seen_ids, function_bodies,
                                    parent_class_nid, add_node, add_edge, walk,
-                                   namespace_stack, scope_stack):
+                                   namespace_stack, scope_stack, csharp_member_groups):
                 return
 
         if config.ts_module == "tree_sitter_swift":
