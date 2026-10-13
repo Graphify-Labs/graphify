@@ -41,53 +41,60 @@ class ToolError(Exception):
     """
 
 
+def _read_graph(graph_path: str) -> nx.Graph:
+    """Load graph.json exactly as the MCP server does, raising on a bad path
+    or file (ValueError, FileNotFoundError, json.JSONDecodeError) so a library
+    caller such as the benchmark can handle it."""
+    resolved = Path(graph_path).resolve()
+    if resolved.suffix != ".json":
+        raise ValueError(f"Graph path must be a .json file, got: {graph_path!r}")
+    if not resolved.exists():
+        raise FileNotFoundError(f"Graph file not found: {resolved}")
+    check_graph_file_size_cap(resolved)
+    safe = resolved
+    data = json.loads(safe.read_text(encoding="utf-8"))
+    if "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    # Stash the on-disk logical flag before the load-time override below:
+    # `directed: True` exists only so renderers can recover stored arc
+    # order (#2309); tools that care about logical direction (#2487) must
+    # not mistake the override for graph truth.
+    _logical_directed = bool(data.get("directed", False))
+    data = {**data, "directed": True}
+    try:
+        from graphify.build import graph_has_legacy_ids as _legacy
+        if _legacy(data.get("nodes", [])):
+            print(
+                "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                "rebuild with `graphify extract --force` for path-qualified IDs.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+    try:
+        G = json_graph.node_link_graph(data, edges="links")
+    except TypeError:
+        G = json_graph.node_link_graph(data)
+    G.graph["_logical_directed"] = _logical_directed
+    # node_link_graph drops top-level keys other than data["graph"], so the
+    # build commit export.to_json writes there is stashed by hand (#3354).
+    _commit = data.get("built_at_commit")
+    if isinstance(_commit, str) and _commit.strip():
+        G.graph["_built_at_commit"] = _commit.strip()
+    # Attach the work-memory overlay (derived sidecar next to graph.json) so
+    # the query/MCP read surface can annotate NODE lines display-only. Empty
+    # when no sidecar exists, leaving un-annotated output byte-identical.
+    try:
+        from graphify.reflect import load_learning_overlay as _llo
+        G.graph["_learning_overlay"] = _llo(resolved)
+    except Exception:
+        G.graph["_learning_overlay"] = {}
+    return G
+
+
 def _load_graph(graph_path: str) -> nx.Graph:
     try:
-        resolved = Path(graph_path).resolve()
-        if resolved.suffix != ".json":
-            raise ValueError(f"Graph path must be a .json file, got: {graph_path!r}")
-        if not resolved.exists():
-            raise FileNotFoundError(f"Graph file not found: {resolved}")
-        check_graph_file_size_cap(resolved)
-        safe = resolved
-        data = json.loads(safe.read_text(encoding="utf-8"))
-        if "links" not in data and "edges" in data:
-            data = dict(data, links=data["edges"])
-        # Stash the on-disk logical flag before the load-time override below:
-        # `directed: True` exists only so renderers can recover stored arc
-        # order (#2309); tools that care about logical direction (#2487) must
-        # not mistake the override for graph truth.
-        _logical_directed = bool(data.get("directed", False))
-        data = {**data, "directed": True}
-        try:
-            from graphify.build import graph_has_legacy_ids as _legacy
-            if _legacy(data.get("nodes", [])):
-                print(
-                    "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                    "rebuild with `graphify extract --force` for path-qualified IDs.",
-                    file=sys.stderr,
-                )
-        except Exception:
-            pass
-        try:
-            G = json_graph.node_link_graph(data, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(data)
-        G.graph["_logical_directed"] = _logical_directed
-        # node_link_graph drops top-level keys other than data["graph"], so the
-        # build commit export.to_json writes there is stashed by hand (#3354).
-        _commit = data.get("built_at_commit")
-        if isinstance(_commit, str) and _commit.strip():
-            G.graph["_built_at_commit"] = _commit.strip()
-        # Attach the work-memory overlay (derived sidecar next to graph.json) so
-        # the query/MCP read surface can annotate NODE lines display-only. Empty
-        # when no sidecar exists, leaving un-annotated output byte-identical.
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            G.graph["_learning_overlay"] = _llo(resolved)
-        except Exception:
-            G.graph["_learning_overlay"] = {}
-        return G
+        return _read_graph(graph_path)
     except json.JSONDecodeError as exc:
         print(f"error: graph.json is corrupted ({exc}). Re-run /graphify to rebuild.", file=sys.stderr)
         sys.exit(1)
@@ -543,6 +550,8 @@ class _QueryScores(NamedTuple):
     """
     ranked: list[tuple[float, str]]
     best_seed_by_term: dict[str, str]
+    # Terms of `best_seed_by_term`, strongest per-term match first (see `_pick_seeds`).
+    term_order: tuple[str, ...] = ()
 
 
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
@@ -734,9 +743,14 @@ def _score_query(
     # match beats a longer superset that happens to share the same score.
     scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
     best_seed_by_term: dict[str, str] = {}
+    term_order: tuple[str, ...] = ()
     if collect_per_term_seeds and best_by_term:
         best_seed_by_term = {t: nid for t, (_key, nid) in best_by_term.items()}
-    return _QueryScores(ranked=scored, best_seed_by_term=best_seed_by_term)
+        # Strongest per-term winner first: the key is (-singleton score, -degree, label length, node id), and the
+        # singleton score already carries the term's IDF weight, so a specific term's exact match leads and a
+        # common term's substring hit trails. The term itself breaks remaining ties, so the order is deterministic.
+        term_order = tuple(t for t, _ in sorted(best_by_term.items(), key=lambda kv: (kv[1][0], kv[0])))
+    return _QueryScores(ranked=scored, best_seed_by_term=best_seed_by_term, term_order=term_order)
 
 
 def _pick_scored_endpoint(G: nx.Graph, scored: list[tuple[float, str]], query: str) -> str:
@@ -770,6 +784,7 @@ def _pick_seeds(
     *,
     G: "nx.Graph | None" = None,
     best_seed_by_term: dict[str, str] | None = None,
+    term_order: "tuple[str, ...] | list[str] | None" = None,
 ) -> list[str]:
     """Select BFS seed nodes, stopping when score drops too far below the top.
 
@@ -844,7 +859,12 @@ def _pick_seeds(
         # The per-label dedup cap also gates these additions, so the guarantee
         # cannot reintroduce a second copy of an already-seeded generic label
         # (#1766).
-        for term in sorted(best_seed_by_term):
+        # With `term_order` (from `_score_query`), the guaranteed seeds follow the strength of each term's best
+        # match, strongest first, so the seeds the renderer prints first are the strongest; without it, the
+        # legacy sorted-term order.
+        ordered_terms = [t for t in (term_order or ()) if t in best_seed_by_term]
+        ordered_terms += sorted(t for t in best_seed_by_term if t not in set(ordered_terms))
+        for term in ordered_terms:
             best_nid = best_seed_by_term[term]
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
@@ -1260,12 +1280,16 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
         # wrapper lines, like the existing end marker).
+        # Smallest budget whose cut keeps every NODE line; past that, edges are never dropped.
+        node_chars = sum(len(l) + 1 for l in lines if l.startswith("NODE "))
+        full_budget = (min(node_chars, len(output)) + 2) // 3
         output = (
             f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
             f"(~{token_budget}-token budget). The answer may be among the "
-            f"{cut_count} cut nodes — raise the token budget (CLI: --budget) or "
-            f"narrow the query (e.g. context_filter=['call'], or get_node for a "
-            f"specific symbol).\n\n"
+            f"{cut_count} cut nodes — raise the token budget to {full_budget} to get "
+            f"all {total_nodes} (CLI: --budget {full_budget}, MCP: "
+            f"token_budget={full_budget}) or narrow the query (e.g. "
+            f"context_filter=['call'], or get_node for a specific symbol).\n\n"
             + output[:cut_at]
             + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
             f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
@@ -1286,12 +1310,14 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     kept = output[:cut_at]
     shown = kept.count("\n") + 1
     cut_count = len(lines) - shown
+    full_budget = (len(output) + 2) // 3
     # Announce truncation at the TOP as well, matching _subgraph_to_text — a
     # bottom-only marker reads as silence/absence (the BUG-2 fix rationale). The
     # notice sits outside char_budget by design (one bounded wrapper line).
     return (
         f"[!] TRUNCATED: showing {shown} of {len(lines)} lines "
-        f"(~{token_budget}-token budget). {narrow_hint}\n\n"
+        f"(~{token_budget}-token budget). Raise the token budget to {full_budget} "
+        f"to get all {len(lines)} (token_budget={full_budget}). {narrow_hint}\n\n"
         + kept
         + f"\n... (truncated — {cut_count} more lines cut by ~{token_budget}-token budget. "
         + narrow_hint
@@ -1370,6 +1396,9 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
     G.graph["_traversal_view"] = H
     return H
 
+_QUERY_NO_MATCH = "No matching nodes found."
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1379,7 +1408,31 @@ def _query_graph_text(
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
+    seeds: list[str] | None = None,
+    seed_root: Path | None = None,
 ) -> str:
+    # Explicit start nodes: an external ranker -- embeddings, a learned
+    # retriever, grep -- can choose where the traversal begins instead of the
+    # question's keyword matches. Each value resolves exactly as `affected`
+    # resolves its seed (node id, unique label, or repo-relative / absolute file
+    # path; `seed_root` anchors absolute paths), so there is one interpretation
+    # of a node reference. Fail closed: a value that does not resolve to exactly
+    # one node is reported and skipped, never guessed.
+    unresolved: list[str] = []
+    if seeds:
+        from graphify.affected import resolve_seed
+        start_nodes: list[str] = []
+        for value in seeds:
+            nid = resolve_seed(G, value, seed_root)
+            if nid is None:
+                if value not in unresolved:
+                    unresolved.append(value)
+            elif nid not in start_nodes:
+                start_nodes.append(nid)
+        if not start_nodes:
+            return "No unique node match for --seed: " + ", ".join(seeds)
+        return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
+                             context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
@@ -1401,16 +1454,35 @@ def _query_graph_text(
         best_seed_by_term = {
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term, term_order=qs.term_order)
     if not start_nodes:
-        return "No matching nodes found."
+        return _QUERY_NO_MATCH
+    return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
+                         context_filters=context_filters, graph_path=graph_path)
+
+
+def _render_query(
+    G: nx.Graph,
+    question: str,
+    start_nodes: list[str],
+    *,
+    mode: str,
+    depth: int,
+    token_budget: int,
+    context_filters: list[str] | None,
+    graph_path: str | None,
+    given: bool = False,
+    unresolved: list[str] | None = None,
+) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
-        f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
+        f"Start{' (given)' if given else ''}: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    if unresolved:
+        header_parts.append(f"Unresolved seeds (skipped): {unresolved}")
     # Name the graph this answer came from. `graphify-out/` resolves against the
     # CWD, so running a query from a parent project while thinking about a
     # vendored subproject silently answers from the wrong corpus — the output is
@@ -1510,6 +1582,23 @@ def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> b
     return False
 
 
+# `pkg.mod.func`, `pkg.mod.func()` or `pkg.mod:func` (#4366).
+_PY_QUALIFIED_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[.:]([A-Za-z_]\w*)(?:\(\))?$")
+
+
+def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
+    """Nodes named by a dotted Python symbol such as `pkg.mod.func` (#4366)."""
+    qualified = _PY_QUALIFIED_RE.match(label.strip())
+    if not qualified:
+        return []
+    module_path = qualified.group(1).replace(".", "/")
+    for path_part in (f"{module_path}.py", f"{module_path}/__init__.py"):
+        scoped = _resolve_path_scoped_symbol(G, path_part, qualified.group(2))
+        if scoped:
+            return scoped
+    return []
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1550,6 +1639,16 @@ def _find_node_tiers(
             scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
             if scoped:
                 return scoped, [], [], []
+
+    # A dotted Python symbol (`pkg.mod.func`, or the `pkg.mod:func` entry-point
+    # form) names a module path plus a symbol. Tokenized as-is it matches no
+    # label, so map it onto the `path::symbol` lookup above: `pkg/mod.py` (or
+    # `pkg/mod/__init__.py`), suffix-matched so a `src/` layout still resolves
+    # (#4366). Nothing found falls through to the ordinary tiers.
+    if _PY_QUALIFIED_RE.match(label.strip()) and not _label_has_literal_exact_match(G, term, norm_query):
+        scoped = _resolve_python_qualified(G, label)
+        if scoped:
+            return scoped, [], [], []
 
     if not term:
         return [], [], [], []
@@ -1652,21 +1751,50 @@ def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
-    """Shared node resolution for the get_node / get_neighbors tools.
+    """Shared node resolution for `explain` and the get_node / get_neighbors tools.
 
     Returns ``(node_id, None)`` when *label* resolves to a single winner via the
     tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
-    the winning tier spans several source files. Routing both tools through this
-    keeps get_node from silently returning a `G.nodes()` iteration-order match for
-    a hub name while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+    the winning tier holds several nodes, in different files or in one, as the
+    `path` endpoints refuse them. Routing both tools through this keeps get_node
+    from silently returning a `G.nodes()` iteration-order match for a hub name
+    while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
     """
-    matches = _find_node(G, label)
-    if not matches:
+    source_exact, exact, prefix, substring = _find_node_tiers(G, label)
+    tier = source_exact or exact or prefix or substring
+    if not tier:
         return None, f"No node matching '{label}' found."
-    rivals = find_node_ambiguity(G, label)
+    refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
+    if refusal:
+        return None, refusal
+    return tier[0], None
+
+
+def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool) -> str | None:
+    """Refusal message when the winning *tier* names more than one node, else None.
+
+    Shared by `explain`, get_node / get_neighbors and the `path` endpoints so all
+    of them refuse the same lookups. A file-path query is the one exception: its
+    tier is the file node followed by its members, which is precedence, not a tie.
+    """
+    rivals = _rivals_across_files(G, tier)
     if rivals:
-        return None, _ambiguity_message(G, label, rivals)
-    return matches[0], None
+        return _ambiguity_message(G, label, rivals)
+    # A dotted Python symbol's tier is symbols, not a file followed by its
+    # members, so a function and a same-named method in one module tie (#4366).
+    if file_query and len(tier) > 1 and tier == _resolve_python_qualified(G, label):
+        file_query = False
+    if len(tier) > 1 and not file_query:
+        return _same_file_ambiguity_message(G, label, tier)
+    return None
+
+
+_AMBIGUOUS = "Ambiguous: "
+
+
+def _is_ambiguity_refusal(message: str | None) -> bool:
+    """True for a refusal that lists candidates, False for a miss (no node matched)."""
+    return message is not None and message.startswith(_AMBIGUOUS)
 
 
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
@@ -1677,7 +1805,7 @@ def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
     # nest a path-scoped one (`index.ts::foo()`) behind a second path.
     symbol = G.nodes[rivals[0]].get("label") or label
     return (
-        f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+        f"{_AMBIGUOUS}'{label}' matches {len(rivals)} nodes in different files.\n"
         f"{listing}\n"
         f"Retry with path::symbol using one of the paths above (e.g. "
         f"<path>::{symbol}) or the full node id."
@@ -1692,10 +1820,40 @@ def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> st
         for h in hits
     )
     return (
-        f"Ambiguous: '{label}' matches {len(hits)} nodes {where}.\n"
+        f"{_AMBIGUOUS}'{label}' matches {len(hits)} nodes {where}.\n"
         f"{listing}\n"
         f"Retry with the full node id."
     )
+
+
+def _no_scoped_match_message(G: nx.Graph, path_part: str, symbol_part: str) -> str:
+    """Refusal for a `file::symbol` endpoint whose file defines no such symbol (#4264).
+
+    Fail closed like `explain` instead of scoring the bare name across other
+    files, and name the files that DO define the symbol so the user can retarget.
+    """
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    others: set[str] = set()
+    for _nid, d in G.nodes(data=True):
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            sf = d.get("source_file") or ""
+            if sf:
+                others.add(sf)
+    msg = (
+        f"No node matching '{path_part}::{symbol_part}' found; "
+        f"{path_part} defines no '{symbol_part}'."
+    )
+    if others:
+        msg += "\n" + "\n".join(f"  defined in {s}" for s in sorted(others))
+    return msg
 
 
 def _resolve_path_endpoint(
@@ -1724,15 +1882,22 @@ def _resolve_path_endpoint(
     source_exact, exact, _, _ = _find_node_tiers(G, query)
     hits = source_exact or exact
     if hits:
-        rivals = _rivals_across_files(G, hits)
-        if rivals:
-            return None, [], _ambiguity_message(G, query, rivals)
         # A `path::symbol` hit also lands in `source_exact`; only a plain path
         # query makes that tier a file lookup.
-        file_query = bool(source_exact) and "::" not in query
-        if len(hits) > 1 and not file_query:
-            return None, [], _same_file_ambiguity_message(G, query, hits)
+        refusal = _tier_refusal(
+            G, query, hits, file_query=bool(source_exact) and "::" not in query
+        )
+        if refusal:
+            return None, [], refusal
         return hits[0], [], None
+    # A deliberately file-scoped endpoint (`file::symbol`) that matched no symbol
+    # in that file must NOT fall back to scoring the bare name across other files
+    # (#4264) — that reintroduces the cross-file guess the qualifier forbids. Fail
+    # closed like `explain`. A native `::` label (Rust/C++) that matched resolves
+    # via the exact tier above (hits non-empty) and never reaches here.
+    path_part, sep, symbol_part = query.partition("::")
+    if sep and path_part.strip() and symbol_part.strip():
+        return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None

@@ -137,6 +137,42 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
 fi
 """
 
+_GIT_C_ESCAPES = {
+    "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92,
+}
+
+
+def _unquote_git_path(name: str) -> str:
+    """Decode a path as printed by ``git diff --name-only``.
+
+    Even with ``core.quotePath=false`` git wraps a name containing a double
+    quote, backslash or control character in double quotes and C-escapes it,
+    spelling raw bytes as ``\\ooo`` octal. Unquoted names are returned as-is.
+    """
+    if len(name) < 2 or not (name.startswith('"') and name.endswith('"')):
+        return name
+    body = name[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\" or i + 1 >= len(body):
+            out += ch.encode("utf-8")
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt in "0123" and i + 3 < len(body) and all(c in "01234567" for c in body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        elif nxt in _GIT_C_ESCAPES:
+            out.append(_GIT_C_ESCAPES[nxt])
+            i += 2
+        else:
+            out += ch.encode("utf-8")
+            i += 1
+    return os.fsdecode(bytes(out))
+
+
 # The Python that the rebuild runs, shared by both hooks. Embedded verbatim into
 # the launcher below and re-executed in the detached child. Must not contain the
 # double-quote, $, backtick or backslash characters: it is carried inside a
@@ -145,8 +181,10 @@ _REBUILD_BODY_COMMIT = """\
 import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
+from graphify.hooks import _unquote_git_path
+
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
-changed = [Path(f.strip()) for f in changed_raw.strip().splitlines() if f.strip()]
+changed = [Path(_unquote_git_path(f.strip())) for f in changed_raw.strip().splitlines() if f.strip()]
 
 if not changed:
     sys.exit(0)
@@ -183,7 +221,7 @@ try:
             _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     _root = Path('.')
-    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    from graphify.paths import GRAPHIFY_OUT as _out
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
@@ -258,7 +296,7 @@ try:
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
     # prevents pile-ups when commit + checkout fire back-to-back.
     _root = Path('.')
-    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    from graphify.paths import GRAPHIFY_OUT as _out
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
@@ -410,7 +448,10 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + """
-CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
+# core.quotePath=false: by default git prints a non-ASCII path as a quoted
+# octal-escaped string, which matches no file on disk, so the edit was silently
+# left out of the rebuild. Names git still quotes are decoded in the rebuild.
+CHANGED=$(git -c core.quotePath=false diff --name-only HEAD~1 HEAD 2>/dev/null || git -c core.quotePath=false diff --name-only HEAD 2>/dev/null)
 if [ -z "$CHANGED" ]; then
     exit 0
 fi
@@ -511,39 +552,14 @@ echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY
 """
 
 
-def _load_graphifyrc(root: Path) -> dict[str, str | int]:
-    """Load key/value options from <root>/.graphifyrc if present.
+def _load_graphifyrc(root: Path) -> dict:
+    """Load ``<root>/.graphifyrc``; the parser lives in :mod:`graphify.rcfile`.
 
-    Supported options:
-      viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+    Kept as the hooks-side name so callers and tests need not move. Returns
+    ``viz_node_limit`` (used here) alongside any other option the file sets.
     """
-    rc_path = root / ".graphifyrc"
-    if not rc_path.is_file():
-        return {}
-
-    cfg: dict[str, str | int] = {}
-    content = rc_path.read_text(encoding="utf-8")
-    for line_num, raw in enumerate(content.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            raise ValueError(f"Invalid line {line_num} in {rc_path}: {raw!r} (expected key=value)")
-        key, val = line.split("=", 1)
-        key = key.strip()
-        val = val.strip()
-        if key == "viz_node_limit":
-            try:
-                parsed_val = int(val)
-                if parsed_val < 0:
-                    raise ValueError("must be a non-negative integer")
-                cfg["viz_node_limit"] = parsed_val
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
-                    f"Must be a non-negative integer."
-                ) from exc
-    return cfg
+    from graphify.rcfile import load_graphifyrc
+    return load_graphifyrc(root)
 
 
 def _git_root(path: Path) -> Path | None:

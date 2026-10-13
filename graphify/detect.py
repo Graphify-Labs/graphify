@@ -23,6 +23,7 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.rcfile import activate_language_overrides, cache_salt, effective_suffix
 
 
 class FileType(str, Enum):
@@ -525,7 +526,9 @@ def classify_file(path: Path) -> FileType | None:
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
-    ext = path.suffix.lower()
+    # A project may declare what an ambiguous extension means to it
+    # (.graphifyrc `language.inc=php`, #2961); classify by the declared one.
+    ext = effective_suffix(path).lower()
     if not ext:
         return _shebang_file_type(path)
     if ext in CODE_EXTENSIONS:
@@ -1329,6 +1332,45 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+def _git_global_excludes(vcs_root: Path) -> Path | None:
+    """Resolve git's user-wide excludes file (``core.excludesFile``).
+
+    This is where people keep machine-wide rules for local settings and secret
+    files so they don't repeat them in every repo; git ignores those files but
+    graphify read them (#4335). Asks git for the configured path (``--path``
+    expands ``~``) and falls back to git's default,
+    ``$XDG_CONFIG_HOME/git/ignore`` or ``~/.config/git/ignore``, when the key
+    is unset or git is unavailable. Only applies inside a git repo, like git.
+    Returns None when there is no readable file.
+    """
+    if not (vcs_root / ".git").exists():
+        return None
+    configured = ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vcs_root), "config", "--path", "--get", "core.excludesFile"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+        if proc.returncode == 0:
+            configured = proc.stdout.decode("utf-8", errors="replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = vcs_root / path
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
+        path = base / "git" / "ignore"
+    return path if path.is_file() else None
+
+
 _warned_ignore_encodings: set[str] = set()
 
 
@@ -1439,6 +1481,15 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     dirs.reverse()  # ceiling first, scan root last
 
     patterns: list[tuple[Path, str]] = []
+
+    # git's user-wide excludes file ranks below info/exclude, so it goes first
+    # of all, anchored at the VCS root like info/exclude (#4335).
+    global_excludes = _git_global_excludes(ceiling) if gitignore else None
+    if global_excludes is not None:
+        for raw in _read_ignore_text(global_excludes).splitlines():
+            line = _parse_gitignore_line(raw)
+            if line:
+                patterns.append((ceiling, line))
 
     # $GIT_DIR/info/exclude is repo-root-scoped and, per git, ranks below every
     # per-directory .gitignore/.graphifyignore — so load it first (lowest priority
@@ -1614,18 +1665,15 @@ def _is_ignored(
     if not patterns:
         return False
 
-    root_nparts = len(root.parts)
-
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path.
 
         Everything derivable from ``target`` alone — its parts, its relative
-        path per anchor, the root-relative path, the split segments and their
-        "/"-joined prefixes, the NFC name, the is_dir() stat — is computed at
-        most ONCE per call, no matter how many patterns are evaluated. The
-        previous shape rebuilt pathlib objects (``relative_to``) and re-split
-        strings per PATTERN per entry, which pinned real scans for tens of
-        minutes (see CHANGELOG).
+        path per anchor, the NFC name, the is_dir() stat — is computed at most
+        ONCE per call, no matter how many patterns are evaluated. The previous
+        shape rebuilt pathlib objects (``relative_to``) and re-split strings
+        per PATTERN per entry, which pinned real scans for tens of minutes
+        (see CHANGELOG).
         """
         if _cache is not None and target in _cache:
             return _cache[target]
@@ -1633,44 +1681,22 @@ def _is_ignored(
         target_parts = target.parts
         target_name_nfc: str | None = None
         target_is_dir: bool | None = None
-        rel_root_known = False
-        rel_root: str | None = None
-        # rel string (or None = outside anchor) and part-count per distinct
-        # anchor; patterns overwhelmingly share a handful of anchors.
-        rel_by_anchor: dict[Path, tuple[str | None, int]] = {}
-        # split segments + accumulated "/" prefixes per distinct rel string.
-        segs_by_rel: dict[str, tuple[list[str], list[str]]] = {}
-
-        def _segments(rel: str) -> tuple[list[str], list[str]]:
-            got = segs_by_rel.get(rel)
-            if got is None:
-                parts = rel.split("/")
-                prefixes: list[str] = []
-                acc = ""
-                for part in parts:
-                    acc = part if not acc else acc + "/" + part
-                    prefixes.append(acc)
-                got = (parts, prefixes)
-                segs_by_rel[rel] = got
-            return got
+        # rel string (or None = outside anchor) per distinct anchor; patterns
+        # overwhelmingly share a handful of anchors.
+        rel_by_anchor: dict[Path, str | None] = {}
 
         def _matches(rel: str, p: str, path_relative: bool) -> bool:
             nonlocal target_name_nfc
             if path_relative:
                 return _match_anchored_ignore_pattern(rel, p)
-            if fnmatch.fnmatch(rel, p):
-                return True
+            # A pattern without a slash names one path component, so it is
+            # compared with the target's own name only. Ancestors are tested
+            # one by one by _is_ignored's parent-exclusion walk; matching them
+            # again here let `*` cross "/" and left a directory re-included
+            # with `!dir/` without its files.
             if target_name_nfc is None:
                 target_name_nfc = _nfc(target.name)
-            if fnmatch.fnmatch(target_name_nfc, p):
-                return True
-            parts, prefixes = _segments(rel)
-            for part, prefix in zip(parts, prefixes):
-                if fnmatch.fnmatch(part, p):
-                    return True
-                if fnmatch.fnmatch(prefix, p):
-                    return True
-            return False
+            return fnmatch.fnmatch(target_name_nfc, p)
 
         result = False
         for anchor, pattern in patterns:
@@ -1683,26 +1709,14 @@ def _is_ignored(
             # let e.g. .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo
             # (detect() returned 0 files). The anchor dir itself is exempt — an
             # ignore file governs its directory's contents, not the directory.
-            cached_rel = rel_by_anchor.get(anchor)
-            if cached_rel is None:
-                cached_rel = (
-                    _lexical_relative(target, target_parts, anchor),
-                    len(anchor.parts),
-                )
-                rel_by_anchor[anchor] = cached_rel
-            rel_anchor, anchor_nparts = cached_rel
+            if anchor not in rel_by_anchor:
+                rel_by_anchor[anchor] = _lexical_relative(target, target_parts, anchor)
+            rel_anchor = rel_by_anchor[anchor]
             if rel_anchor is None:
                 continue  # target outside this pattern's anchor: cannot match
             matched = False
             if rel_anchor != ".":
-                rel = rel_anchor
-                if not path_relative and root_nparts > anchor_nparts:
-                    if not rel_root_known:
-                        rel_root_known = True
-                        rel_root = _lexical_relative(target, target_parts, root)
-                    if rel_root is not None:
-                        rel = rel_root
-                matched = _matches(rel, p, path_relative=path_relative)
+                matched = _matches(rel_anchor, p, path_relative=path_relative)
                 if matched and directory_only:
                     if target_is_dir is None:
                         target_is_dir = target.is_dir()
@@ -1872,6 +1886,9 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    # The project's extension->language declarations (#2961) shape
+    # classification for this scan.
+    activate_language_overrides(root)
     configured_out_dir = root / GRAPHIFY_OUT
     configured_out_names = {configured_out_dir.name}
     try:
@@ -2558,6 +2575,9 @@ def save_manifest(
     re-queues the file after the failure is fixed, without deleting
     graphify-out/.
     """
+    # Another root may have activated different overrides in this thread.
+    if root is not None:
+        activate_language_overrides(Path(root))
     existing = load_manifest(manifest_path, root=root)
 
     # Index both raw and NFC forms so scan/clear membership survives the
@@ -2694,12 +2714,19 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
+        # Hash workers do not inherit this thread's language overrides.
+        current_lang = cache_salt(f)
+        lang_changed = current_lang != prev.get("language")
         if kind in ("ast", "both"):
             ast_h = h
+        elif lang_changed:
+            ast_h = ""
         else:
             ast_h = prev.get("ast_hash", "")
         if kind in ("semantic", "both"):
             sem_h = h
+        elif lang_changed:
+            sem_h = ""
         else:
             # Preserve semantic_hash only when content is unchanged
             sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
@@ -2712,6 +2739,7 @@ def save_manifest(
             and mtime == prev.get("mtime")
             and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
             and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
+            and not lang_changed
             and not _in_clear_ast(f)
             and not _in_clear(f)
         )
@@ -2721,6 +2749,9 @@ def save_manifest(
             "ast_hash": ast_h,
             "semantic_hash": sem_h,
         }
+        if current_lang is not None:
+            # No override keeps legacy rows unchanged.
+            entry["language"] = current_lang
         manifest[key] = entry
     if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
@@ -2856,7 +2887,11 @@ def detect_incremental(
             # the graph drifted from disk (#1859). No stored hash means we
             # cannot verify content — any mtime delta forces a re-extract,
             # and the next save promotes the entry into the dict schema.
-            if isinstance(stored, (int, float)):
+            # A language change invalidates even identical bytes and legacy rows.
+            stored_lang = stored.get("language") if isinstance(stored, dict) else None
+            if stored is not None and cache_salt(f) != stored_lang:
+                changed = True
+            elif isinstance(stored, (int, float)):
                 changed = current_mtime != stored
             elif isinstance(stored, dict):
                 # Normalise legacy {mtime, hash} to new schema

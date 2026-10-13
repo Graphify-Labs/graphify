@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from graphify.build import build_from_json
+from graphify.export import to_json
 from graphify.extract import _file_node_id, _file_stem, _make_id, extract
 
 
@@ -16,6 +19,12 @@ def _write(path: Path, text: str) -> Path:
 
 def _extract_for(paths: list[Path], root: Path):
     return extract(paths, cache_root=root)
+
+
+def _unresolved_reexport_id(path: Path) -> str:
+    identity = path.as_posix()
+    salt = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]  # nosec
+    return _make_id("unresolved_reexport", _file_stem(path), salt)
 
 
 def _has_edge(result: dict, source: str, target: str, relation: str = "imports_from") -> bool:
@@ -102,6 +111,108 @@ def test_ts_directory_import_resolves_index_ts(tmp_path: Path):
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "src/lib/page.ts", "src/lib/server/queue/index.ts")
+
+
+@pytest.mark.parametrize(
+    ("specifier", "target_path"),
+    [
+        ("./missing", None),
+        ("./directory", "directory/index.d.ts"),
+        ("./type", "type.d.ts"),
+    ],
+)
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "export * from {specifier!r}\n",
+        "export * as values from {specifier!r}\n",
+        "export {{ Value }} from {specifier!r}\n",
+    ],
+)
+def test_unresolved_ts_reexport_ids_are_portable_across_checkout_paths(
+    tmp_path: Path,
+    specifier: str,
+    target_path: str | None,
+    statement: str,
+):
+    def build(checkout: Path) -> dict:
+        root = tmp_path / checkout
+        if target_path is not None:
+            _write(root / target_path, "export interface Value { id: string }\n")
+        barrel = _write(root / "index.ts", statement.format(specifier=specifier))
+
+        result = _extract_for([barrel], root)
+        projection = {
+            "nodes": result["nodes"],
+            "edges": result["edges"],
+        }
+        serialized = json.dumps(projection, sort_keys=True)
+        assert str(root) not in serialized
+        assert _make_id(str(root)) not in serialized
+
+        expected_target = _unresolved_reexport_id(Path(specifier.removeprefix("./")))
+        reexport_targets = {
+            edge["target"]
+            for edge in result["edges"]
+            if edge["relation"] == "re_exports"
+        }
+        assert expected_target in reexport_targets
+        return projection
+
+    first = build(Path("checkout-a"))
+    second = build(Path("nested/checkout-b"))
+
+    assert first == second
+
+
+def test_unresolved_ts_reexport_does_not_bind_a_colliding_context_node(tmp_path: Path):
+    root = tmp_path / "repo"
+    barrel = _write(root / "index.ts", "export * from './a-b/x'\n")
+    context_node = {
+        "id": _file_node_id(Path("a/b/x.ts")),
+        "label": "x.ts",
+        "file_type": "code",
+        "source_file": "a/b/x.ts",
+        "source_location": "L1",
+        "_origin": "ast",
+    }
+
+    result = extract(
+        [barrel],
+        cache_root=root,
+        root=root,
+        parallel=False,
+        resolution_context_nodes=[context_node],
+    )
+
+    target = next(
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "re_exports"
+    )
+    assert target == _unresolved_reexport_id(Path("a-b/x"))
+    assert target != context_node["id"]
+
+
+def test_unresolved_ts_reexport_external_stub_is_portable(tmp_path: Path):
+    root = tmp_path / "checkout"
+    barrel = _write(root / "index.ts", "export * from './missing'\n")
+    result = _extract_for([barrel], root)
+    graph = build_from_json(result, root=root)
+    output = tmp_path / "graph.json"
+
+    assert to_json(graph, {}, str(output), force=True)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    expected_id = _unresolved_reexport_id(Path("missing"))
+    stub = next(node for node in payload["nodes"] if node["id"] == expected_id)
+    assert stub["external"] is True
+    assert stub["label"] == expected_id
+    assert stub["norm_label"] == expected_id
+    assert any(edge["target"] == expected_id for edge in payload["links"])
+    serialized = json.dumps(payload, sort_keys=True)
+    assert str(root) not in serialized
+    assert _make_id(str(root)) not in serialized
 
 
 def test_ts_named_reexport_alias_from_index_resolves_imported_symbol_to_origin(tmp_path: Path):

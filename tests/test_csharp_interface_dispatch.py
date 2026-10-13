@@ -5,11 +5,11 @@ is what the call site names. The implementing `Report.Build()` is a separate
 node with nothing joining the two, so a directed walk stops at the interface
 and every chain through an injected dependency is cut there.
 
-`resolve_csharp_interface_dispatch` links the interface's method to the
-implementing method when the interface has exactly one implementer and that
-implementer owns exactly one method of the same name. Ambiguity at either step
-leaves the pair alone, the same single-owner guard the Pascal and Ruby
-resolvers use.
+`resolve_csharp_interface_dispatch` links the interface's method to every
+implementing method, as long as that implementer owns exactly one method of
+the same name. An implementer's own ambiguity leaves only that implementer's
+edge out, the same single-owner guard the Pascal and Ruby resolvers use.
+Confidence falls as the implementer count grows (0.85 / 0.75 / 0.65).
 """
 from __future__ import annotations
 
@@ -96,13 +96,63 @@ def test_the_call_to_the_interface_method_is_kept(tmp_path):
     assert (_find(r, ".Go()", "runner"), _find(r, ".Build()", "ireport")) in calls
 
 
-def test_two_implementers_produce_no_edge(tmp_path):
-    dispatch, _ = _extract(tmp_path, {"S.cs": (
+def test_two_implementers_both_get_an_edge_at_lower_confidence(tmp_path):
+    dispatch, r = _extract(tmp_path, {"S.cs": (
         "public interface IR { void M(); }\n"
         "public class A : IR { public void M() { } }\n"
         "public class B : IR { public void M() { } }\n"
     )})
-    assert not dispatch
+    iface_m = _find(r, ".M()", "ir")
+    assert dispatch == {
+        (iface_m, _find(r, ".M()", "s_a")),
+        (iface_m, _find(r, ".M()", "s_b")),
+    }
+    for edge in r["edges"]:
+        if edge["relation"] == "dispatches_to":
+            assert edge["confidence"] == "INFERRED"
+            assert edge["confidence_score"] == 0.75
+
+
+def test_three_implementers_floor_at_the_weak_inference_tier(tmp_path):
+    dispatch, r = _extract(tmp_path, {"S.cs": (
+        "public interface IR { void M(); }\n"
+        "public class A : IR { public void M() { } }\n"
+        "public class B : IR { public void M() { } }\n"
+        "public class C : IR { public void M() { } }\n"
+    )})
+    assert len(dispatch) == 3
+    for edge in r["edges"]:
+        if edge["relation"] == "dispatches_to":
+            assert edge["confidence_score"] == 0.65
+
+
+def test_one_ambiguous_implementer_does_not_suppress_its_siblings(tmp_path):
+    # B owns two distinct nodes named `.M()` (synthetic: the real extractor
+    # collapses same-named overloads into one node, so this models a case
+    # where it would not, e.g. partial classes merged incorrectly). B's
+    # ambiguity must stay scoped to B and not suppress A's clean match.
+    from graphify.csharp_dispatch import resolve_csharp_interface_dispatch
+
+    nodes = [
+        {"id": "iface", "label": "IR", "source_file": "a.cs", "_callable_class": True},
+        {"id": "a", "label": "A", "source_file": "a.cs", "_callable_class": True},
+        {"id": "b", "label": "B", "source_file": "a.cs", "_callable_class": True},
+        {"id": "iface_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "a_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "b_m1", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "b_m2", "label": ".M()", "source_file": "a.cs", "_callable": True},
+    ]
+    edges = [
+        {"source": "a", "target": "iface", "relation": "implements"},
+        {"source": "b", "target": "iface", "relation": "implements"},
+        {"source": "iface", "target": "iface_m", "relation": "method"},
+        {"source": "a", "target": "a_m", "relation": "method"},
+        {"source": "b", "target": "b_m1", "relation": "method"},
+        {"source": "b", "target": "b_m2", "relation": "method"},
+    ]
+    resolve_csharp_interface_dispatch([], nodes, edges)
+    dispatch = {(e["source"], e["target"]) for e in edges if e["relation"] == "dispatches_to"}
+    assert dispatch == {("iface_m", "a_m")}
 
 
 def test_no_matching_member_produces_no_edge(tmp_path):
@@ -214,6 +264,37 @@ def test_a_non_csharp_implementer_is_not_dispatched_to(tmp_path):
         "Report.java": "public class Report implements IReport { public void Build() { } }\n",
     })
     assert not dispatch
+
+
+def test_a_gate_failing_implementer_does_not_dilute_confidence(tmp_path):
+    # `implementers[iface]` holds every `implements` source regardless of
+    # language or whether the node even resolved (a dangling/external
+    # reference stub). Only `A` passes the gate and gets an edge; the stub
+    # must not count toward "how many implementers" for confidence purposes,
+    # or a single real implementer would score as if it had a sibling.
+    from graphify.csharp_dispatch import resolve_csharp_interface_dispatch
+
+    nodes = [
+        {"id": "iface", "label": "IR", "source_file": "a.cs", "_callable_class": True},
+        {"id": "a", "label": "A", "source_file": "a.cs", "_callable_class": True},
+        {"id": "stub", "label": "Stub", "_callable_class": True},  # sourceless: fails declared_in
+        {"id": "iface_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "a_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "stub_m", "label": ".M()", "_callable": True},
+    ]
+    edges = [
+        {"source": "a", "target": "iface", "relation": "implements"},
+        {"source": "stub", "target": "iface", "relation": "implements"},
+        {"source": "iface", "target": "iface_m", "relation": "method"},
+        {"source": "a", "target": "a_m", "relation": "method"},
+        {"source": "stub", "target": "stub_m", "relation": "method"},
+    ]
+    resolve_csharp_interface_dispatch([], nodes, edges)
+    dispatch_edges = [e for e in edges if e["relation"] == "dispatches_to"]
+    assert len(dispatch_edges) == 1
+    assert dispatch_edges[0]["source"] == "iface_m"
+    assert dispatch_edges[0]["target"] == "a_m"
+    assert dispatch_edges[0]["confidence_score"] == 0.85
 
 
 def test_mixed_corpus_links_only_the_csharp_pair(tmp_path):

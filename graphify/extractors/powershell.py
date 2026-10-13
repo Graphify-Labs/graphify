@@ -61,6 +61,10 @@ def extract_powershell(path: Path) -> dict:
         # Import commands — handled as import edges, not function calls
         "import-module",
     })
+    # File-scope advanced-function blocks that parse as pseudo-commands rather
+    # than named_block nodes; walk() must descend into them to reach nested
+    # function/class/enum statements (#4270).
+    _PS_NAMED_BLOCK_CMDS = frozenset({"begin", "process", "end", "dynamicparam", "clean"})
 
     def _find_script_block_body(node):
         for child in node.children:
@@ -260,11 +264,14 @@ def extract_powershell(path: Path) -> dict:
                     (c for c in node.children if c.type == "command_name_expr"), None
                 )
                 if name_expr is not None:
+                    # Bare paths parse as command_name; `$PSScriptRoot\x.ps1` as path_command_name;
+                    # quoted paths as string_literal. The basename logic below handles all three.
                     name_node = next(
-                        (c for c in name_expr.children if c.type == "command_name"), None
+                        (c for c in name_expr.children
+                         if c.type in ("command_name", "path_command_name", "string_literal")), None
                     )
                     if name_node:
-                        raw_path = _read_text(name_node, source)
+                        raw_path = _read_text(name_node, source).strip().strip("'\"")
                         # Strip relative path prefix (./ or .\ or just the dot)
                         module_stem = re.sub(r'^[./\\]+', '', raw_path)
                         # Drop extension to get bare module name
@@ -314,6 +321,16 @@ def extract_powershell(path: Path) -> dict:
                         if bare:
                             add_edge(file_nid, _make_id(bare), "imports_from",
                                      node.start_point[0] + 1)
+                elif cmd_text in _PS_NAMED_BLOCK_CMDS:
+                    # File-scope begin/process/end/dynamicparam/clean blocks parse as a
+                    # pseudo-command (command_name 'begin') whose `{ }` body is a
+                    # script_block_expression under command_elements, NOT a real
+                    # named_block (those exist only inside a function/scriptblock body).
+                    # Descend so nested function/class/enum statements are extracted
+                    # (#4270); without this the command branch returns before the
+                    # generic child walk below and the whole block is dropped.
+                    for child in node.children:
+                        walk(child, parent_class_nid)
             return
 
         for child in node.children:
@@ -400,6 +417,9 @@ def extract_powershell(path: Path) -> dict:
 
     for caller_nid, body_node, parent_class_nid in function_bodies:
         walk_calls(body_node, caller_nid, parent_class_nid)
+    # Script-scope commands (outside any function/class) are called by the file itself.
+    # walk_calls stops at function_statement/class_statement, so bodies are not walked twice.
+    walk_calls(root, file_nid, None)
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] in ("imports_from", "imports"))]

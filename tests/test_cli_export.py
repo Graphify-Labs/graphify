@@ -8,12 +8,26 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 PYTHON = sys.executable
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _rename(src: Path, dst: Path) -> None:
+    """Rename a directory, retrying briefly: on Windows a virus scanner or indexer
+    can hold a just-written file open and fail the rename with PermissionError."""
+    for attempt in range(20):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
 
 
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -199,20 +213,20 @@ def test_export_falkordb_creates_cypher(tmp_path):
 
 def test_query_returns_output(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["query", "test"], tmp_path)
+    r = _run(["query", "Transformer"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert len(r.stdout) > 0
 
 
 def test_query_dfs_flag(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["query", "test", "--dfs"], tmp_path)
+    r = _run(["query", "Transformer", "--dfs"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
 def test_query_budget_flag(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["query", "test", "--budget", "500"], tmp_path)
+    r = _run(["query", "Transformer", "--budget", "500"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
@@ -224,11 +238,11 @@ def test_query_missing_graph_fails(tmp_path):
 def test_query_uses_graphify_out_env(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
-    out.rename(custom_out)
+    _rename(out, custom_out)
     env = os.environ.copy()
     env["GRAPHIFY_OUT"] = custom_out.name
 
-    r = _run(["query", "test"], tmp_path, env=env)
+    r = _run(["query", "Transformer"], tmp_path, env=env)
 
     assert r.returncode == 0, r.stderr
     assert len(r.stdout) > 0
@@ -271,7 +285,7 @@ def test_path_missing_graph_fails(tmp_path):
 def test_path_uses_graphify_out_env(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
-    out.rename(custom_out)
+    _rename(out, custom_out)
     env = os.environ.copy()
     env["GRAPHIFY_OUT"] = custom_out.name
 
@@ -393,7 +407,7 @@ def test_path_flags_mutually_exclusive(tmp_path):
 
 def test_explain_runs_without_error(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["explain", "test"], tmp_path)
+    r = _run(["explain", "Transformer"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
@@ -405,11 +419,11 @@ def test_explain_missing_graph_fails(tmp_path):
 def test_explain_uses_graphify_out_env(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
-    out.rename(custom_out)
+    _rename(out, custom_out)
     env = os.environ.copy()
     env["GRAPHIFY_OUT"] = custom_out.name
 
-    r = _run(["explain", "test"], tmp_path, env=env)
+    r = _run(["explain", "Transformer"], tmp_path, env=env)
 
     assert r.returncode == 0, r.stderr
 
