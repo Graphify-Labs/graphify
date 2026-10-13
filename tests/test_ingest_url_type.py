@@ -161,6 +161,8 @@ def test_binary_captures_skip_existing_entries(entry_kind, numbered, tmp_path, m
             occupied.symlink_to(sentinel)
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"host cannot create symlinks: {exc}")
+        # Windows reads the target back as \\?\C:\..., which never equals `sentinel`.
+        link_target = occupied.readlink()
 
     monkeypatch.setattr(ingest_mod, "validate_url", lambda url: url)
     monkeypatch.setattr(ingest_mod, "safe_fetch", lambda url: b"new capture")
@@ -176,7 +178,7 @@ def test_binary_captures_skip_existing_entries(entry_kind, numbered, tmp_path, m
     elif entry_kind == "directory":
         assert occupied.is_dir() and not list(occupied.iterdir())
     else:
-        assert occupied.is_symlink() and occupied.readlink() == sentinel
+        assert occupied.is_symlink() and occupied.readlink() == link_target
         if entry_kind == "live_link":
             assert sentinel.read_bytes() == b"outside sentinel"
         else:
