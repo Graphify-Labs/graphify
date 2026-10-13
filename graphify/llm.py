@@ -1382,6 +1382,123 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
     )
 
 
+def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dict:
+    """num_ctx/keep_alive for an Ollama request, sized to the prompt."""
+    # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
+    # than that — the symptom is hollow 200 OK responses after the first few
+    # chunks (#798). We derive num_ctx from the actual prompt size so we don't
+    # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
+    # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
+    # hollow-200 symptom — just from a different direction (#798 follow-up).
+    # Formula: actual input tokens + output cap + system prompt headroom.
+    # Capped at 131072 (enough for the default 60k token_budget); env var wins.
+    num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
+    # Auto-derive num_ctx from actual chunk size regardless — used as the
+    # fallback and for the mismatch check below.
+    estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
+    auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 131072)
+    auto_num_ctx = max(auto_num_ctx, 8192)
+    if num_ctx_raw:
+        try:
+            num_ctx = int(num_ctx_raw)
+        except ValueError:
+            # Bad env var: fall through to auto-derivation (not 131072 —
+            # hardcoding the cap is what causes OOM on constrained VRAM).
+            print(
+                f"[graphify] GRAPHIFY_OLLAMA_NUM_CTX={num_ctx_raw!r} is not a valid integer; "
+                f"using auto-derived value ({auto_num_ctx}).",
+                file=sys.stderr,
+            )
+            num_ctx = auto_num_ctx
+        else:
+            # Warn when the pinned value is smaller than the estimated input —
+            # Ollama silently truncates the prompt and returns empty responses.
+            if num_ctx < estimated_input:
+                print(
+                    f"[graphify] warning: GRAPHIFY_OLLAMA_NUM_CTX={num_ctx} is smaller than "
+                    f"the estimated chunk input (~{estimated_input} tokens). Ollama will "
+                    f"silently truncate the prompt and return empty responses. "
+                    f"Try --token-budget {max(1024, num_ctx // 3)} or increase NUM_CTX.",
+                    file=sys.stderr,
+                )
+    else:
+        # Estimate input tokens: user_message chars / 4 (standard BPE
+        # heuristic) + 400 for the system prompt, then add output headroom.
+        num_ctx = auto_num_ctx
+    keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
+    return {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+
+
+# Ollama's OpenAI-compatible /v1 endpoint ignores `options`, so the num_ctx
+# from _ollama_request_extras never reached the server and every prompt was cut
+# to Ollama's default context (4096 on Ollama 0.17.5) — the model lost the JSON
+# instructions and answered in prose (#4413). The native /api/chat endpoint honours it. Servers
+# that only speak /v1 (LM Studio, llama.cpp behind the ollama backend) 404 on
+# /api/chat; remember them so each chunk doesn't pay for a failed request.
+_OLLAMA_NO_NATIVE: set[str] = set()
+
+
+def _call_ollama_native(
+    client,
+    base_url: str,
+    kwargs: dict,
+    user_message: str,
+    images: list[_ImageRef],
+) -> tuple[str | None, int, int, str] | None:
+    """Send an ollama request to /api/chat. Returns None when the server has no
+    native endpoint, so the caller falls back to /v1."""
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    if root in _OLLAMA_NO_NATIVE:
+        return None
+    from openai import APIStatusError
+
+    extra = kwargs.get("extra_body", {})
+    options = dict(extra.get("options", {}))
+    options["num_predict"] = kwargs["max_completion_tokens"]
+    if "temperature" in kwargs:
+        options["temperature"] = kwargs["temperature"]
+    if "seed" in kwargs:
+        options["seed"] = kwargs["seed"]
+    user: dict = {"role": "user", "content": _with_image_notes(user_message, images)}
+    pixels = [r.b64 for r in images if r.raw]
+    if pixels:
+        user["images"] = pixels
+    body: dict = {
+        "model": kwargs["model"],
+        "messages": [*kwargs["messages"][:-1], user],
+        "stream": False,
+        "options": options,
+        "keep_alive": extra.get("keep_alive", "30m"),
+    }
+    if _thinking_disabled_via_env():
+        body["think"] = False
+    try:
+        data = client.post(f"{root}/api/chat", body=body, cast_to=object)
+    except APIStatusError as exc:
+        # Ollama also 404s on an unknown model; surface that instead of
+        # marking a real Ollama server as non-native.
+        if exc.status_code not in (404, 405) or "model" in str(exc).lower():
+            raise
+        _OLLAMA_NO_NATIVE.add(root)
+        print(
+            f"[graphify] {root}/api/chat is not available; falling back to the "
+            "OpenAI-compatible /v1 endpoint, which ignores num_ctx.",
+            file=sys.stderr,
+        )
+        return None
+    data = data or {}
+    message = data.get("message") or {}
+    finish_reason = "length" if data.get("done_reason") == "length" else "stop"
+    return (
+        message.get("content"),
+        data.get("prompt_eval_count") or 0,
+        data.get("eval_count") or 0,
+        finish_reason,
+    )
+
+
 def _call_openai_compat(
     base_url: str,
     api_key: str,
@@ -1449,73 +1566,39 @@ def _call_openai_compat(
     # (#1621). Not a default — see _thinking_disabled_via_env for the tradeoff.
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
-    # than that — the symptom is hollow 200 OK responses after the first few
-    # chunks (#798). We derive num_ctx from the actual prompt size so we don't
-    # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
-    # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
-    # hollow-200 symptom — just from a different direction (#798 follow-up).
-    # Formula: actual input tokens + output cap + system prompt headroom.
-    # Capped at 131072 (enough for the default 60k token_budget); env var wins.
     # The ollama num_ctx auto-derive is a default. A custom provider that
     # explicitly sets extra_body has opted out — respect their request shape.
     if backend == "ollama" and extra_body is None:
-        num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
-        # Auto-derive num_ctx from actual chunk size regardless — used as the
-        # fallback and for the mismatch check below.
-        estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
-        auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 131072)
-        auto_num_ctx = max(auto_num_ctx, 8192)
-        if num_ctx_raw:
-            try:
-                num_ctx = int(num_ctx_raw)
-            except ValueError:
-                # Bad env var: fall through to auto-derivation (not 131072 —
-                # hardcoding the cap is what causes OOM on constrained VRAM).
-                print(
-                    f"[graphify] GRAPHIFY_OLLAMA_NUM_CTX={num_ctx_raw!r} is not a valid integer; "
-                    f"using auto-derived value ({auto_num_ctx}).",
-                    file=sys.stderr,
-                )
-                num_ctx = auto_num_ctx
-            else:
-                # Warn when the pinned value is smaller than the estimated input —
-                # Ollama silently truncates the prompt and returns empty responses.
-                if num_ctx < estimated_input:
-                    print(
-                        f"[graphify] warning: GRAPHIFY_OLLAMA_NUM_CTX={num_ctx} is smaller than "
-                        f"the estimated chunk input (~{estimated_input} tokens). Ollama will "
-                        f"silently truncate the prompt and return empty responses. "
-                        f"Try --token-budget {max(1024, num_ctx // 3)} or increase NUM_CTX.",
-                        file=sys.stderr,
-                    )
-        else:
-            # Estimate input tokens: user_message chars / 4 (standard BPE
-            # heuristic) + 400 for the system prompt, then add output headroom.
-            num_ctx = auto_num_ctx
-        keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
         # Merge, don't assign: GRAPHIFY_DISABLE_THINKING may have set extra_body
         # above, and replacing it here made the flag silently inert on ollama (#3988).
         kwargs["extra_body"] = {
             **kwargs.get("extra_body", {}),
-            "options": {"num_ctx": num_ctx},
-            "keep_alive": keep_alive,
+            **_ollama_request_extras(user_message, max_completion_tokens),
         }
-    resp = client.chat.completions.create(**kwargs)
-    if not resp.choices or resp.choices[0].message is None:
-        raise ValueError("LLM returned empty or filtered response")
-    raw_content = resp.choices[0].message.content
+    native = None
+    if backend == "ollama" and extra_body is None:
+        native = _call_ollama_native(client, base_url, kwargs, user_message, images or [])
+    if native is not None:
+        raw_content, input_tokens, output_tokens, finish_reason = native
+    else:
+        resp = client.chat.completions.create(**kwargs)
+        if not resp.choices or resp.choices[0].message is None:
+            raise ValueError("LLM returned empty or filtered response")
+        raw_content = resp.choices[0].message.content
+        # Some OpenAI-compatible gateways report null token counts (#4325) — coerce
+        # to 0 so the ollama low-token warning and the per-chunk merge below don't
+        # crash comparing/adding None.
+        input_tokens = (resp.usage.prompt_tokens or 0) if resp.usage else 0
+        output_tokens = (resp.usage.completion_tokens or 0) if resp.usage else 0
+        finish_reason = resp.choices[0].finish_reason
     result = _parse_llm_json(raw_content or "{}")
-    # Some OpenAI-compatible gateways report null token counts (#4325) — coerce
-    # to 0 so the ollama low-token warning and the per-chunk merge below don't
-    # crash comparing/adding None.
-    result["input_tokens"] = (resp.usage.prompt_tokens or 0) if resp.usage else 0
-    result["output_tokens"] = (resp.usage.completion_tokens or 0) if resp.usage else 0
+    result["input_tokens"] = input_tokens
+    result["output_tokens"] = output_tokens
     result["model"] = model
     # `finish_reason == "length"` means the model hit max_completion_tokens
     # mid-generation. The JSON we got back is truncated; callers should
     # treat this as a signal to retry with smaller input.
-    result["finish_reason"] = resp.choices[0].finish_reason
+    result["finish_reason"] = finish_reason
     # An overwhelmed local model (typically Ollama) can return HTTP 200 with
     # empty / null content or unparseable half-generated JSON. The call looks
     # successful, `finish_reason` is `"stop"`, and the chunk would be silently
@@ -3123,6 +3206,18 @@ def _call_llm(
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # Community-labeling batches are sized for a 16k context, so without this
+    # Ollama cut them to its default the same way as extraction chunks (#4413).
+    if backend == "ollama" and cfg.get("extra_body") is None:
+        kwargs["extra_body"] = {
+            **kwargs.get("extra_body", {}),
+            **_ollama_request_extras(prompt, max_tokens),
+        }
+        native = _call_ollama_native(client, cfg["base_url"], kwargs, prompt, [])
+        if native is not None:
+            content, input_tokens, output_tokens, _finish = native
+            _rec(input_tokens, output_tokens)
+            return content or ""
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
