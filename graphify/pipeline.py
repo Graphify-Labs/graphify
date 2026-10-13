@@ -114,23 +114,44 @@ def _scan(scan_path: Path | str | None) -> Path:
 # --------------------------------------------------------------------------
 
 
+def _persisted_corpus_shaping(
+    out_dir: Path, gitignore: bool | None, exclude: list[str] | None
+) -> tuple[bool, list[str] | None]:
+    """Fill in the corpus-shaping options a rebuild should reuse.
+
+    An explicit flag wins; otherwise reuse what a prior build persisted for this
+    graph (``graphify-out/.graphify_build.json``), matching the skill's own detect
+    step. ``gitignore`` defaults to True and ``exclude`` to [] when nothing is
+    persisted, so a first run is unchanged.
+    """
+    from graphify.watch import _read_build_excludes, _read_build_gitignore
+
+    if exclude is None:
+        exclude = _read_build_excludes(out_dir) or None
+    if gitignore is None:
+        gitignore = _read_build_gitignore(out_dir)
+    return gitignore, exclude
+
+
 def step_detect(
     path: str | Path,
     *,
     out: Path | str | None = None,
-    gitignore: bool = True,
+    gitignore: bool | None = None,
     google_workspace: bool = False,
     exclude: list[str] | None = None,
 ) -> dict:
     """Scan ``path`` and write ``<out>/graphify-out/.graphify_detect.json``.
 
     Returns the detection dict so a caller can print the corpus summary without
-    re-reading the sidecar.
+    re-reading the sidecar. ``gitignore``/``exclude`` default to the values
+    persisted for this graph by a prior build (see :func:`_persisted_corpus_shaping`).
     """
     from graphify.detect import detect
 
     out_dir = _out_dir(out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    gitignore, exclude = _persisted_corpus_shaping(out_dir, gitignore, exclude)
 
     # cache_root is the directory that CONTAINS graphify-out, not graphify-out
     # itself: detect() appends the output dir to it (detect.py:2065) and the stat
@@ -179,8 +200,15 @@ def step_extract_ast(
         fp = Path(f)
         code_files.extend(collect_files(fp) if fp.is_dir() else [fp])
 
+    # cache_root only says where graphify-out/cache/ lives; root= anchors node
+    # ids and source_file relativization on the SCAN root. Pass both: without an
+    # explicit root, extract() falls back to cache_root as the anchor, so
+    # pointing the cache at --out would rename every node and the node-count
+    # shrink guard could not notice (#3727). cache_root is the directory that
+    # CONTAINS graphify-out, mirroring step_detect.
+    cache_root = Path(out) if out is not None else None
     if code_files:
-        result = extract(code_files, cache_root=_scan(path))
+        result = extract(code_files, cache_root=cache_root, root=_scan(path))
     else:
         result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
 
@@ -399,9 +427,20 @@ def step_merge_semantic(*, out: Path | str | None = None) -> dict:
 
 def step_merge_extraction(*, out: Path | str | None = None) -> dict:
     """Merge ``.graphify_ast.json`` + ``.graphify_semantic.json`` -> ``.graphify_extract.json``."""
+    from graphify.llm import _stamp_semantic_origin
+
     out_dir = _out_dir(out)
     ast = _load(out_dir / _AST_JSON, "AST sidecar")
     sem = _load(out_dir / _SEMANTIC_JSON, "semantic sidecar")
+
+    # Stamp tier provenance on the semantic side before the merge. build._is_ast_tier
+    # reads `_origin` when present and otherwise guesses from the SHAPE of
+    # source_location ('L<line>' means AST). A subagent that writes 'L12' for a doc
+    # section would therefore read as AST, and the next `graphify update` would delete
+    # it with the re-extracted code file it seemed to belong to (#2843). extract()
+    # stamps its own items 'ast'; the semantic side (fresh results and cache hits
+    # alike) must say so explicitly.
+    _stamp_semantic_origin(sem)
 
     seen = {n["id"] for n in ast["nodes"]}
     merged_nodes = list(ast["nodes"])
@@ -754,7 +793,13 @@ def step_detect_incremental(
 
     out_dir = _out_dir(out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    result = detect_incremental(_scan(path), manifest_path=str(out_dir / "manifest.json"))
+    gitignore, exclude = _persisted_corpus_shaping(out_dir, None, None)
+    result = detect_incremental(
+        _scan(path),
+        manifest_path=str(out_dir / "manifest.json"),
+        extra_excludes=exclude or None,
+        gitignore=gitignore,
+    )
     write_json_atomic(out_dir / ".graphify_incremental.json", result, ensure_ascii=False)
     write_json_atomic(
         out_dir / _DETECT_JSON,

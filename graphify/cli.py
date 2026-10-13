@@ -1656,6 +1656,16 @@ def _cmd_pipeline(argv: list[str]) -> None:
                 print(f"{len(deleted)} deleted file(s) to prune.")
             if new_total > 0:
                 print(f"{new_total} new/changed file(s) to re-extract.")
+                # Summarize by type; never dump every corpus path into the
+                # agent context (#3944).
+                new_by_type = {
+                    t: len(v) for t, v in result.get("new_files", {}).items() if v
+                }
+                if new_by_type:
+                    breakdown = ", ".join(
+                        f"{t}: {n}" for t, n in sorted(new_by_type.items())
+                    )
+                    print(f"By type: {breakdown}")
             if new_total == 0 and not deleted:
                 print("No files changed since last run. Nothing to update.")
             return
