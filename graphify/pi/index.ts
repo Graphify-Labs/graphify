@@ -168,7 +168,8 @@ export default function graphify(api: HostAPI): void {
         }), ctx.cwd, signal, timeout, OUTPUT_LIMIT);
         if (signal.aborted || !trusted()) return;
         if (!output) continue;
-        const hook = JSON.parse(output)?.hookSpecificOutput;
+        let hook;
+        try { hook = JSON.parse(output)?.hookSpecificOutput; } catch { continue; }
         if (hook?.hookEventName !== "PreToolUse") continue;
         if (hook.permissionDecision === "deny" && typeof hook.permissionDecisionReason === "string" && hook.permissionDecisionReason.trim()) {
           return { block: true, reason: hook.permissionDecisionReason };

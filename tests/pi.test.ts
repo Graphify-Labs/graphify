@@ -68,7 +68,8 @@ else if (config.mode === "delayed") {
   const counterFile = ${JSON.stringify(join(root, "count"))};
   const n = existsSync(counterFile) ? Number(readFileSync(counterFile, "utf8")) || 0 : 0;
   writeFileSync(counterFile, String(n + 1));
-  process.stdout.write(JSON.stringify({hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "guidance " + (n + 1)}}));
+  if (config.invalidFirst && n === 0) process.stdout.write("not json");
+  else process.stdout.write(JSON.stringify({hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "guidance " + (n + 1)}}));
 } else if (config.mode === "hung") {
   process.on("SIGTERM", () => {});
   await Bun.sleep(60000);
@@ -132,6 +133,13 @@ test("multi-target glob calls surface every target's guidance", async () => {
   const api = harness();
   const result = await api.emit("tool_call", { toolName: "glob", input: { path: "source.py;stale.py" }, toolCallId: "call-1" });
   expect(result?.additionalContext).toContain("guidance 1");
+  expect(result?.additionalContext).toContain("guidance 2");
+});
+
+test("malformed output from one glob target does not stop later targets", async () => {
+  writeFileSync(control, JSON.stringify({ mode: "varying", invalidFirst: true }));
+  const api = harness();
+  const result = await api.emit("tool_call", { toolName: "glob", input: { path: "source.py;stale.py" }, toolCallId: "call-1" });
   expect(result?.additionalContext).toContain("guidance 2");
 });
 
