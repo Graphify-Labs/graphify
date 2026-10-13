@@ -2296,6 +2296,22 @@ def build_merge(
     # never see the loss it is meant to catch.
     _disk_nodes = existing_nodes
     _disk_n = len(existing_nodes)
+    # Source-less nodes already isolated in the stored graph (#4399). Taken
+    # before the rebind below drops the re-extracted sources' old edges, so a
+    # placeholder that THIS run strands is not mistaken for a pre-existing
+    # isolate by the orphan sweep after the build. Nodes the fresh chunks
+    # themselves emit without an edge are spared too: a from-scratch build
+    # would keep them.
+    def _isolated_sourceless(nodes, edges) -> set:
+        linked = {e.get(k) for e in edges if isinstance(e, dict)
+                  for k in ("source", "target") if _hashable(e.get(k))}
+        return {n.get("id") for n in nodes
+                if isinstance(n, dict) and _hashable(n.get("id"))
+                and not n.get("source_file") and n.get("id") not in linked}
+    _spare_isolated = _isolated_sourceless(existing_nodes, existing_edges) | {
+        nid for ch in new_chunks
+        for nid in _isolated_sourceless(ch.get("nodes", []), ch.get("edges", []))
+    }
 
     # #3203: Check for unverified semantic shrink on re-extracted sources.
     # An existing source with prior semantic nodes (> 1) that produces strictly
@@ -2479,29 +2495,10 @@ def build_merge(
         protected_ids=_protected_ids,
     )
 
-    # Prune nodes and edges from deleted source files
-    if prune_sources:
-        # Source-less nodes that are ALREADY isolated before this prune. They are
-        # not this prune's doing, so they must survive it — the sweep below is
-        # scoped to the ones it orphans itself.
-        _isolated_before = {
-            n for n, d in G.nodes(data=True)
-            if not d.get("source_file") and G.degree(n) == 0
-        }
-        to_remove = [
-            n for n, d in G.nodes(data=True)
-            if _prune_match(d.get("source_file"))
-        ]
-        G.remove_nodes_from(to_remove)
-        n_nodes = len(to_remove)
-
-        edges_to_remove = [
-            (u, v) for u, v, d in G.edges(data=True)
-            if _prune_match(d.get("source_file"))
-        ]
-        if edges_to_remove:
-            G.remove_edges_from(edges_to_remove)
-
+    # Runs after every merge, not only under prune_sources: re-extraction strands
+    # placeholders too, e.g. per-file stubs re-pointed at a shared node (#4247)
+    # or a type whose last reference was edited away (#4399).
+    def _sweep_orphans() -> list:
         # Extractors create a per-file node for each IMPORTED EXTERNAL symbol
         # (`Path` from pathlib, `Counter` from collections), and those carry no
         # source_file because they are defined outside the corpus. Every edge
@@ -2525,11 +2522,34 @@ def build_merge(
             n for n, d in G.nodes(data=True)
             if not d.get("source_file")
             and G.degree(n) == 0
-            and n not in _isolated_before
+            and n not in _spare_isolated
+            # Off the prune path only machine-minted placeholders are collected
+            # (AST code stubs and #2873 external import stubs); a source-less
+            # semantic/curated node is never second-guessed by a plain merge.
+            and (prune_sources or d.get("file_type") == "code"
+                 or _is_external_stub(d))
         ]
-        if orphaned:
-            G.remove_nodes_from(orphaned)
-            n_nodes += len(orphaned)
+        G.remove_nodes_from(orphaned)
+        return orphaned
+
+    # Prune nodes and edges from deleted source files
+    if prune_sources:
+        to_remove = [
+            n for n, d in G.nodes(data=True)
+            if _prune_match(d.get("source_file"))
+        ]
+        G.remove_nodes_from(to_remove)
+        n_nodes = len(to_remove)
+
+        edges_to_remove = [
+            (u, v) for u, v, d in G.edges(data=True)
+            if _prune_match(d.get("source_file"))
+        ]
+        if edges_to_remove:
+            G.remove_edges_from(edges_to_remove)
+
+        orphaned = _sweep_orphans()
+        n_nodes += len(orphaned)
         # Excuse only saved nodes this prune removed (#3774). A stub minted
         # in this run and then orphaned was never in graph.json, so counting
         # it would hide a dedup shrink. The print below still uses n_nodes,
@@ -2590,6 +2610,21 @@ def build_merge(
                     f"graph, already clean.",
                     file=sys.stderr,
                 )
+
+    else:
+        _swept = _sweep_orphans()
+        if _swept:
+            # Same #3774 excuse as the prune path: only saved nodes count.
+            _disk_ids = {
+                n.get("id") for n in _disk_nodes
+                if isinstance(n, dict) and n.get("id") is not None
+            }
+            G.graph["_pruned_node_count"] = sum(1 for nid in _swept if nid in _disk_ids)
+            print(
+                f"[graphify] Removed {len(_swept)} source-less node(s) left with "
+                f"no edges by re-extraction.",
+                file=sys.stderr,
+            )
 
     # Safety check: refuse to SILENTLY drop nodes (#479, reworked in #2497).
     # The old count comparison ran against the post-replace `existing_nodes`,
