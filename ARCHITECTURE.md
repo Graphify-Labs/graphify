@@ -122,7 +122,9 @@ C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
 assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
 `Foo<T>` stay separate types. AST cache schema 9 retires cached C# results that
-lack this path.
+lack this path. The merge runs after colliding ids are salted apart by path, so
+a half whose file stem collides with another file's (`Spec.cs` and `_Spec.cs`,
+`Cfg/Helpers.cs` and `Cfg_Helpers.cs`) still merges and keeps its members.
 
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
