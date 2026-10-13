@@ -5710,7 +5710,7 @@ def _resolve_php_member_calls(
     type_def_nids: dict[str, list[str]] = {}
     for node in all_nodes:
         if (
-            node.get("source_file")
+            _lang_family(node.get("source_file")) == "php"
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
@@ -5733,6 +5733,12 @@ def _resolve_php_member_calls(
         if edge.get("relation") == "inherits":
             inherits_bases.setdefault(edge["source"], []).append(edge["target"])
 
+    type_table_by_file: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        tt = result.get("php_type_table")
+        if tt and tt.get("path"):
+            type_table_by_file[str(tt["path"])] = tt.get("table", {})
+
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
@@ -5746,6 +5752,7 @@ def _resolve_php_member_calls(
             if not receiver or not callee or not caller:
                 continue
 
+            inferred = False
             receiver_lower = receiver.lower()
             if receiver_lower in ("self", "static"):
                 type_nid = enclosing_type.get(caller)
@@ -5756,6 +5763,25 @@ def _resolve_php_member_calls(
                 if len(bases) != 1:
                     continue
                 type_nid = bases[0]
+            elif not raw_call.get("php_scoped") and not receiver.startswith("$"):
+                # Instance receiver (`$g->m()`, `$this->prop->m()`): the type comes
+                # from the annotation table, never the call site, so this rung is
+                # INFERRED. An untyped, union or longer-chain receiver is absent from
+                # the table and stays unresolved rather than guessing a class name.
+                typed = type_table_by_file.get(
+                    str(raw_call.get("source_file", "")), {}).get(receiver)
+                if typed is None:
+                    continue
+                inferred = True
+                type_defs = type_def_nids.get(class_key(typed), [])
+                if not type_defs:
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, typed, "php", raw_call,
+                    )
+                    continue
+                if len(type_defs) != 1:
+                    continue
+                type_nid = type_defs[0]
             elif not receiver.startswith("$"):
                 type_defs = type_def_nids.get(class_key(receiver), [])
                 if not type_defs:
@@ -5783,8 +5809,10 @@ def _resolve_php_member_calls(
                 "target": method_nid,
                 "relation": "calls",
                 "context": "call",
-                "confidence": "EXTRACTED",
-                "confidence_score": 1.0,
+                "confidence": "INFERRED" if inferred else "EXTRACTED",
+                # Table-typed receiver -> the discrete INFERRED rung (0.85);
+                # a source-named class scope stays EXTRACTED (1.0).
+                "confidence_score": 0.85 if inferred else 1.0,
                 "source_file": raw_call.get("source_file", ""),
                 "source_location": raw_call.get("source_location"),
                 "weight": 1.0,

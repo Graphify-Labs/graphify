@@ -158,10 +158,10 @@ def test_method_name_case_insensitivity(tmp_path):
     assert any(s == ".run()" and t.lower() == ".sanitize()" for s, t in calls)
 
 
-def test_instance_call_is_still_unresolved_no_regression(tmp_path):
-    """`$obj->method()` was never resolved before this fix (no receiver-typed
-    PHP resolver existed) and must remain so - this fix only targets scoped
-    (`::`) calls, not instance (`->`) calls."""
+def test_instance_call_resolves_through_the_receivers_declared_type(tmp_path):
+    """`$h->sanitize()` on a `Helper $h` parameter now resolves through the
+    receiver's declared type (INFERRED), the instance-receiver tier that extends
+    the scoped (`::`) resolver."""
     calls, _ = _extract(tmp_path, {
         "Helper.php": (
             "<?php\nnamespace App;\nclass Helper {\n"
@@ -170,4 +170,7 @@ def test_instance_call_is_still_unresolved_no_regression(tmp_path):
             "<?php\nnamespace App;\nclass Caller {\n"
             "    public function run(Helper $h, $x) { return $h->sanitize($x); }\n}\n"),
     })
-    assert not any(s == ".run()" for s, _t in calls)
+    edge = next((e for (s, t), e in calls.items()
+                 if s == ".run()" and t == ".sanitize()"), None)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
