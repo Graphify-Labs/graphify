@@ -9933,7 +9933,22 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
-    _rewire_unique_stub_nodes(all_nodes, all_edges)
+    # An incremental build re-extracts only the changed files, so the rewire also
+    # needs the unchanged ones as candidates, or it resolves less than a full build.
+    _fresh_ids = {n.get("id") for n in all_nodes}
+    # #4439: a Rust `use` reached its declaration only when a type annotation had left
+    # a sourceless node under the same id. Lend the rewire one for each imported name
+    # that has none; they are not kept, so an unresolved import dangles as before.
+    _use_stubs = {
+        e["target"]: {"id": e["target"], "label": e["_rust_use_name"], "file_type": "code", "source_file": ""}
+        for e in all_edges
+        if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _fresh_ids
+    }
+    _rewire_view = all_nodes + list(_use_stubs.values()) + [
+        n for n in resolution_context_nodes or [] if n.get("id") not in _fresh_ids]
+    _rewire_unique_stub_nodes(_rewire_view, all_edges)
+    _kept = {id(n) for n in _rewire_view} - {id(n) for n in _use_stubs.values()}
+    all_nodes[:] = [n for n in all_nodes if id(n) in _kept]
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if effective_suffix(p) == ".java"]
@@ -10561,6 +10576,7 @@ def extract(
     all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
     for e in all_edges:
         e.pop("_rust_use_binding", None)
+        e.pop("_rust_use_name", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a

@@ -721,17 +721,24 @@ def extract_rust(path: Path) -> dict:
         if t == "use_declaration":
             arg = node.child_by_field_name("argument")
             if arg:
+                def name_use(written: str, path: str) -> None:
+                    # The name as written, for the corpus rewire (#4439): the id folds its
+                    # case. Not for the standard library, whose `File` is never the corpus's.
+                    if path.lstrip(": ").split("::")[0].strip() not in ("std", "core", "alloc"):
+                        edges[-1]["_rust_use_name"] = written.split(" as ")[0].strip()
                 module_name = _rust_use_module(_read_text(arg, source))
                 grouped = arg.type in ("use_list", "scoped_use_list")
                 if module_name:
                     tgt_nid = _make_id(module_name)
                     add_edge(file_nid, tgt_nid, "imports_from", node.start_point[0] + 1, context="import")
+                    name_use(module_name, _read_text(arg, source))
                     if grouped:  # call evidence as in v8, then dropped (extract.py)
                         edges[-1]["_rust_use_group"] = True
                 # A group imports what the plain `use` of each of its bindings would.
                 for binding, line in _rust_use_bindings(arg, source) if grouped else []:
                     if binding_name := _rust_use_module(binding):
                         add_edge(file_nid, _make_id(binding_name), "imports_from", line, context="import")
+                        name_use(binding_name, binding)
                         edges[-1]["_rust_use_binding"] = True  # not call evidence: v8 had no such edge
             return
 
