@@ -210,3 +210,25 @@ def test_objc_macro_enums_preserve_siblings_and_unrelated_parser_errors(tmp_path
         ("Direction", "North"), ("Direction", "South"),
         ("Kind", "First"), ("Kind", "Second"), ("Mask", "Enabled"),
     }
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "typedef NS_ENUM(NSInteger = 1, Broken) { Bad };",
+        "typedef NS_ENUM(NSInteger, *Broken) { Bad };",
+        "typedef NS_ENUM(NSInteger, Broken[2]) { Bad };",
+        "typedef NS_OPTIONS(NSUInteger, Broken) {\n"
+        "#ifdef FEATURE\n    Bad = 1 << 0,\n#endif\n    Other = 1 << 1,\n};",
+    ],
+)
+def test_objc_macro_enum_unsupported_parts_do_not_emit_partial_enums(tmp_path, declaration):
+    source = tmp_path / "Partial.h"
+    source.write_text(
+        "#import <Foundation/Foundation.h>\n" + declaration + "\n"
+        "typedef NS_ENUM(NSInteger, Good) { Kept };\n",
+        encoding="utf-8",
+    )
+    result = extract([source], cache_root=tmp_path)
+    assert {n["label"] for n in result["nodes"]}.isdisjoint({"Broken", "Bad", "Other"})
+    assert _edge_labels(result, "case_of") == {("Good", "Kept")}

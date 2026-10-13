@@ -322,6 +322,19 @@ def extract_objc(path: Path) -> dict:
                 "identifier", "type_identifier"
             ):
                 continue
+            # Valid headers also have grammar ERROR wrappers. Check complete
+            # argument spans rather than ignoring extra tokens inside them.
+            underlying_type = outer_types[0]
+            if any(token.is_missing for token in tokens) or any(
+                opening.end_byte <= token.start_byte < comma.start_byte
+                and not (underlying_type.start_byte <= token.start_byte
+                         and token.end_byte <= underlying_type.end_byte)
+                or comma.end_byte <= token.start_byte < closing.start_byte
+                and not (names[0].start_byte <= token.start_byte
+                         and token.end_byte <= names[0].end_byte)
+                for token in tokens
+            ):
+                continue
 
             following = [token for token in source_leaves
                          if token.start_byte >= macro.end_byte]
@@ -362,6 +375,11 @@ def extract_objc(path: Path) -> dict:
                     or enum_spec.has_error or body is None or body.type != "enumerator_list"
                     or body.has_error or body.start_byte != len(prefix)
                     or body.end_byte != len(prefix) + len(body_bytes)):
+                continue
+            # Conditional members need preprocessor handling. Do not emit a
+            # partial enum when a clean body contains unsupported child nodes.
+            if any(child.type not in {"{", "}", ",", "comment", "enumerator"}
+                   for child in body.children):
                 continue
 
             members: list[tuple[str, int]] = []
