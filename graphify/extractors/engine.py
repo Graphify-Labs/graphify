@@ -1407,15 +1407,55 @@ def _scala_given_synthetic_name(node, source: bytes) -> str | None:
     return "given"
 
 
-def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
+def _scala_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
+    """Return Scala type-parameter names visible from ``node``.
+
+    A `class Box[T]` / `def map[R](...)` binds `T`/`R` as local names, not
+    corpus symbols. Walking up to every enclosing declaration's `type_parameters`
+    list (the use site is `type_arguments`, a distinct node, so an instantiation
+    argument is never collected) collects them for the scope skip set. A
+    variance-annotated parameter (`[+A]`/`[-B]`) wraps its name one level
+    deeper. A bound (`[A: Ordering]`, `[T <: Base]`) names a real type, not a
+    parameter, so its `context_bound`/`upper_bound`/`lower_bound` node is skipped.
+    """
+    names: set[str] = set()
+    scope = node
+    while scope is not None:
+        for child in scope.children:
+            if child.type != "type_parameters":
+                continue
+            for param in child.children:
+                if param.type in ("identifier", "type_identifier"):
+                    name = _read_text(param, source)
+                    if name:
+                        names.add(name)
+                elif param.type in ("covariant_type_parameter", "contravariant_type_parameter"):
+                    for sub in param.children:
+                        if sub.type in ("identifier", "type_identifier"):
+                            name = _read_text(sub, source)
+                            if name:
+                                names.add(name)
+                            break
+        scope = scope.parent
+    return frozenset(names)
+
+
+def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                             skip: frozenset[str] | None = None) -> None:
     """Walk a Scala type expression; append (name, role) tuples.
-    Handles type_identifier, generic_type (List[T]), and common type wrappers."""
+    Handles type_identifier, generic_type (List[T]), and common type wrappers.
+
+    Generic type parameters in scope (``skip``) are local bindings, not
+    references; emitting one mints a sourceless stub (the bare `t` god node a
+    `[T]` class or method would otherwise share corpus-wide)."""
     if node is None:
         return
+    if skip is None:
+        skip = _scala_type_parameters_in_scope(node, source)
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        if text and text not in skip:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
@@ -1427,19 +1467,19 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
                     break
         if base is not None and base.type == "type_identifier":
             text = _read_text(base, source)
-            if text:
+            if text and text not in skip:
                 out.append((text, "generic_arg" if generic else "type"))
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _scala_collect_type_refs(arg, source, True, out)
+                        _scala_collect_type_refs(arg, source, True, out, skip)
         return
     if t in ("compound_type", "infix_type", "function_type", "tuple_type",
              "annotated_type", "projected_type"):
         for c in node.children:
             if c.is_named:
-                _scala_collect_type_refs(c, source, generic, out)
+                _scala_collect_type_refs(c, source, generic, out, skip)
     # A `match type` (`type Elem[X] = X match { case String => Char }`) names a
     # real type in every case clause -- both the type it discriminates on and
     # the type it yields. Without these two the walker returned nothing for a
@@ -1448,7 +1488,7 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
     if t in ("match_type", "type_case_clause"):
         for c in node.children:
             if c.is_named:
-                _scala_collect_type_refs(c, source, generic, out)
+                _scala_collect_type_refs(c, source, generic, out, skip)
 
 
 def _scala_collect_context_bounds(
