@@ -182,3 +182,57 @@ def test_a_non_go_corpus_is_untouched(tmp_path):
         "pkg/a.py": "class A:\n    def run(self):\n        pass\n",
     })
     assert not calls
+
+
+def test_multi_name_field_declaration_resolves_every_name(tmp_path):
+    # `a, b *Helper` binds two names to one type. Calling only through `b`
+    # (never `a`) pins that the second name is captured too, not just the
+    # first field_identifier child (review finding, go.py's struct-field loop).
+    calls, r = _extract(tmp_path, {
+        "pkg/s.go": (
+            "package pkg\n"
+            "type S struct { a, b *Helper }\n"
+            "func (s *S) Run() { s.b.Do() }\n"
+        ),
+        "pkg/helper.go": "package pkg\ntype Helper struct{}\nfunc (h *Helper) Do() {}\n",
+        "pkg/other.go": "package pkg\ntype Other struct{}\nfunc (o *Other) Do() {}\n",
+    })
+    assert calls == {(_find(r, ".Run()", "pkg_s"), _find(r, ".Do()", "pkg_helper"))}
+
+
+def test_generic_receiver_method_attaches_to_its_own_type(tmp_path):
+    # `(b *Box[T])` reads its type field as "Box[T]" verbatim; the type
+    # declaration's own id is the bare "Box" (`[T any]` is a separate field).
+    # Without stripping the instantiation, a generic type's methods attached
+    # to a node disconnected from the type itself (review finding).
+    _, r = _extract(tmp_path, {
+        "pkg/box.go": (
+            "package pkg\n"
+            "type Box[T any] struct { val T }\n"
+            "func (b *Box[T]) Get() T { return b.val }\n"
+        ),
+    })
+    box_nid = _find(r, "Box", "pkg_box")
+    method_owner = next(
+        e["source"] for e in r["edges"]
+        if e["relation"] == "method" and e["target"] == _find(r, ".Get()", "pkg_box")
+    )
+    assert method_owner == box_nid
+
+
+def test_generic_receivers_concrete_field_chain_resolves(tmp_path):
+    # A generic type can still have a field of a concrete, non-type-parameter
+    # type; a chain through it must resolve once the receiver's own id is
+    # normalized to match the field table's key.
+    calls, r = _extract(tmp_path, {
+        "pkg/box.go": (
+            "package pkg\n"
+            "type Box[T any] struct { val T\n meta *Metadata }\n"
+            "func (b *Box[T]) Describe() { b.meta.Print() }\n"
+        ),
+        "pkg/metadata.go": "package pkg\ntype Metadata struct{}\nfunc (m *Metadata) Print() {}\n",
+        "pkg/other.go": "package pkg\ntype Other struct{}\nfunc (o *Other) Print() {}\n",
+    })
+    assert calls == {
+        (_find(r, ".Describe()", "pkg_box"), _find(r, ".Print()", "pkg_metadata"))
+    }

@@ -34,6 +34,21 @@ def _go_bare_local_type(type_text: str) -> str | None:
     return text if _GO_BARE_IDENTIFIER_RE.match(text) else None
 
 
+def _go_strip_generic_args(type_text: str) -> str:
+    """Drop a generic instantiation's type arguments from a receiver type's text.
+
+    ``(b *Box[T])`` reads its ``type`` field as ``*Box[T]`` verbatim, but the
+    type declaration's own id is keyed on the bare name alone (``Box``):
+    ``type Box[T any] struct {...}`` captures ``[T any]`` as a separate
+    ``type_parameter_list``, never part of the name. Without stripping this
+    here too, a generic receiver's id never matched its own type's id, so
+    every method on a generic type attached to a node disconnected from the
+    type itself (#3368) — this must run before ``receiver_type`` is used to
+    build any id, not only the ones this PR adds.
+    """
+    return type_text.split("[", 1)[0].strip()
+
+
 _GO_PREDECLARED_TYPES = frozenset({
     "bool", "byte", "complex64", "complex128", "error", "float32", "float64",
     "int", "int8", "int16", "int32", "int64", "rune", "string",
@@ -347,7 +362,9 @@ def extract_go(path: Path) -> dict:
             if param.type == "parameter_declaration":
                 type_node = param.child_by_field_name("type")
                 if type_node:
-                    return _read_text(type_node, source).lstrip("*").strip()
+                    return _go_strip_generic_args(
+                        _read_text(type_node, source).lstrip("*").strip()
+                    )
                 break
         return None
 
@@ -424,7 +441,9 @@ def extract_go(path: Path) -> dict:
                     if param.type == "parameter_declaration":
                         type_node = param.child_by_field_name("type")
                         if type_node:
-                            receiver_type = _read_text(type_node, source).lstrip("*").strip()
+                            receiver_type = _go_strip_generic_args(
+                                _read_text(type_node, source).lstrip("*").strip()
+                            )
                         for child in param.children:
                             if child.type == "identifier":
                                 receiver_name = _read_text(child, source)
@@ -487,11 +506,14 @@ def extract_go(path: Path) -> dict:
                         for field in fdl.children:
                             if field.type != "field_declaration":
                                 continue
-                            field_name_node = next(
-                                (fc for fc in field.children if fc.type == "field_identifier"),
-                                None,
-                            )
-                            has_name = field_name_node is not None
+                            # A field_declaration can bind several names to one
+                            # type (`a, b int`), the same shape as a parameter
+                            # list: every field_identifier child is a bound
+                            # name, not just the first (#3368).
+                            field_name_nodes = [
+                                fc for fc in field.children if fc.type == "field_identifier"
+                            ]
+                            has_name = bool(field_name_nodes)
                             type_node = field.child_by_field_name("type")
                             if type_node is None:
                                 for fc in field.children:
@@ -505,9 +527,11 @@ def extract_go(path: Path) -> dict:
                                 # into; leaving it out of the table makes the
                                 # lookup fail rather than chase a phantom type.
                                 if bare and bare not in type_params:
-                                    go_struct_fields.setdefault(type_nid, {})[
-                                        _read_text(field_name_node, source)
-                                    ] = _make_id(pkg_scope, bare)
+                                    field_type_nid = _make_id(pkg_scope, bare)
+                                    for field_name_node in field_name_nodes:
+                                        go_struct_fields.setdefault(type_nid, {})[
+                                            _read_text(field_name_node, source)
+                                        ] = field_type_nid
                             refs: list[tuple[str, str]] = []
                             _go_collect_type_refs(type_node, source, False, refs, type_params)
                             for ref_name, role in refs:
