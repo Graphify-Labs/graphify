@@ -2722,6 +2722,83 @@ def _csharp_receiver_type_name(type_node, source: bytes) -> str | None:
     return name if name and name[:1].isupper() else None
 
 
+_CSHARP_LOOP_SEQUENCES = frozenset({
+    "List", "IList", "IReadOnlyList", "IEnumerable", "ICollection",
+    "IReadOnlyCollection", "HashSet", "ISet", "SortedSet", "Queue", "Stack",
+    "LinkedList",
+})
+_CSHARP_LOOP_DICTIONARIES = frozenset({
+    "Dictionary", "IDictionary", "IReadOnlyDictionary", "SortedDictionary",
+    "SortedList", "ConcurrentDictionary",
+})
+
+
+def _csharp_loop_element_types(type_node, source: bytes) -> dict[str, str]:
+    """What a C# ``foreach`` over a field or property of this type yields.
+
+    Maps the iterated suffix to the element class: ``""`` for a ``T[]`` or a
+    sequence of T, ``".Values"`` / ``".Keys"`` for a dictionary's values and
+    keys. Iterating a dictionary itself yields ``KeyValuePair`` and is left
+    out, as are nested collections, type parameters and primitives.
+    """
+    if type_node is None:
+        return {}
+    if type_node.type == "array_type":
+        args = [type_node.child_by_field_name("type")]
+        suffixes = ("",)
+    elif type_node.type == "generic_name":
+        info = _read_csharp_type_name(type_node, source)
+        arg_list = next(
+            (c for c in type_node.children if c.type == "type_argument_list"), None
+        )
+        args = arg_list.named_children if arg_list is not None else []
+        if info and info[0] in _CSHARP_LOOP_SEQUENCES and len(args) == 1:
+            suffixes = ("",)
+        elif info and info[0] in _CSHARP_LOOP_DICTIONARIES and len(args) == 2:
+            suffixes = (".Keys", ".Values")
+        else:
+            return {}
+    else:
+        return {}
+    type_params = _csharp_type_parameters_in_scope(type_node, source)
+    out: dict[str, str] = {}
+    for suffix, arg in zip(suffixes, args):
+        if arg is None or arg.type not in ("identifier", "qualified_name", "generic_name"):
+            continue
+        name = _csharp_receiver_type_name(arg, source)
+        if (
+            name
+            and name not in type_params
+            and name not in _CSHARP_LOOP_SEQUENCES
+            and name not in _CSHARP_LOOP_DICTIONARIES
+        ):
+            out[suffix] = name
+    return out
+
+
+def _csharp_loop_source(expr, source: bytes) -> tuple[str, str] | None:
+    """``(field, suffix)`` for a ``foreach`` over ``f``, ``this.f``,
+    ``f.Values`` or ``f.Keys``; None for anything else."""
+    if expr is None:
+        return None
+    if expr.type == "identifier":
+        return _read_text(expr, source), ""
+    if expr.type != "member_access_expression":
+        return None
+    inner = expr.child_by_field_name("expression")
+    name = expr.child_by_field_name("name")
+    if inner is None or name is None or name.type != "identifier":
+        return None
+    member = _read_text(name, source)
+    if inner.type in ("this", "this_expression"):
+        return member, ""
+    if member in ("Values", "Keys"):
+        root = _csharp_loop_source(inner, source)
+        if root is not None and root[1] == "":
+            return root[0], "." + member
+    return None
+
+
 def _csharp_element_type_name(type_node, source: bytes) -> str | None:
     """The element type of a C# array or list type, else None (#4246).
 
@@ -2844,6 +2921,9 @@ def _csharp_method_receiver_types(
     """
     bindings: dict[str, list[tuple[int, int, str | list | None]]] = {}
     field_poisoned: set[str] = set()
+    # `foreach (var x in field)` loops, typed once every local is bound so a
+    # local or parameter shadowing the field is seen wherever it is declared.
+    pending_loops: list[tuple] = []  # (loop variable, field, suffix, foreach node)
 
     def bind(
         name: str | None, type_name: str | list | None, scope_node,
@@ -2953,6 +3033,23 @@ def _csharp_method_receiver_types(
                                 type_name = _csharp_deferred_call(g, source)
                                 break
                     bind(_read_text(name_node, source), type_name, scope, declared_elem)
+        elif node.type == "foreach_statement":
+            # The loop variable is visible inside the loop: bound to its
+            # explicit type, or for `var` to the element type of the field or
+            # property it iterates (resolved after the walk, below).
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                loop_type = _csharp_receiver_type_name(
+                    node.child_by_field_name("type"), source
+                )
+                loop_source = (
+                    None if loop_type
+                    else _csharp_loop_source(node.child_by_field_name("right"), source)
+                )
+                if loop_source is not None:
+                    pending_loops.append((_read_text(left, source), *loop_source, node))
+                else:
+                    bind(_read_text(left, source), loop_type, node)
         elif node.type in ("declaration_expression", "declaration_pattern"):
             # #2346: inline-declared receivers. `out Sect s` is a
             # declaration_expression; `is Leaf lf`, `is not Node nd`,
@@ -2979,6 +3076,12 @@ def _csharp_method_receiver_types(
             else scope
         )
         stack.extend((child, child_scope) for child in node.children)
+
+    for name, field, suffix, loop in pending_loops:
+        shadowed = any(
+            start <= loop.start_byte < end for start, end, _ in bindings.get(field, [])
+        )
+        bind(name, None if shadowed else field_types.get(field + suffix + "{}"), loop)
 
     base = {
         name: type_name
@@ -6406,6 +6509,7 @@ def _extract_generic(
                 if type_name[:1].isupper():
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
                     elem_type = _csharp_element_type_name(type_node, source)
+                    loop_elems = _csharp_loop_element_types(type_node, source)
                     for child in node.children:
                         if child.type != "variable_declaration":
                             continue
@@ -6422,6 +6526,9 @@ def _extract_generic(
                                 if elem_type:
                                     # `_items[i].M()` reads an element (#4246)
                                     fields[_read_text(name_node, source) + "[]"] = elem_type
+                                for suffix, loop_elem in loop_elems.items():
+                                    # `foreach (var x in _items)` yields one
+                                    fields[_read_text(name_node, source) + suffix + "{}"] = loop_elem
                 line = node.start_point[0] + 1
                 # Walk the whole type expression rather than only its outer name, so
                 # `Box<Widget>` yields the Box field ref AND the Widget generic_arg ref.
@@ -6491,6 +6598,10 @@ def _extract_generic(
                         csharp_field_types[parent_class_nid][
                             _read_text(prop_name_node, source) + "[]"
                         ] = prop_elem
+                    for suffix, loop_elem in _csharp_loop_element_types(type_node, source).items():
+                        csharp_field_types[parent_class_nid][
+                            _read_text(prop_name_node, source) + suffix + "{}"
+                        ] = loop_elem
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str, bool, str]] = []
                 _csharp_collect_type_refs(type_node, source, False, refs)
