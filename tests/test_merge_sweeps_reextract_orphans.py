@@ -107,3 +107,34 @@ def test_a_sourceless_semantic_node_is_untouched(tmp_path):
     ), tmp_path)
     G = build_merge([_x([_n("a", "A.cs")], [])], graph_path=gp, root=".")
     assert "concept" in G and "doc_idea" in G
+
+
+def _save_he(extraction, tmp_path) -> str:
+    gp = Path(_save(extraction, tmp_path))
+    data = json.loads(gp.read_text(encoding="utf-8"))
+    data["hyperedges"] = extraction["hyperedges"]
+    gp.write_text(json.dumps(data), encoding="utf-8")
+    return str(gp)
+
+
+def test_hyperedge_member_is_not_swept_as_an_orphan(tmp_path):
+    """A degree-0 placeholder still referenced by a carried hyperedge stays."""
+    he = {"id": "h1", "label": "grp", "nodes": ["c", "list"],
+          "relation": "participate_in", "source_file": "C.md"}
+    gp = _save_he({"nodes": [_n("a", "A.cs"), _n("c", "C.md", "document"), _n("list")],
+                   "edges": [_e("a", "list", "A.cs")], "hyperedges": [he]}, tmp_path)
+    G = build_merge([_x([_n("a", "A.cs")], [])], graph_path=gp, root=".")
+    assert "list" in G
+    for h in G.graph.get("hyperedges", []):
+        assert all(m in G for m in h["nodes"])
+
+
+def test_prune_spares_semantic_node_stranded_by_reextraction(tmp_path):
+    """Under prune, a source-less non-code node goes only if the prune isolated it."""
+    gp = _save(_x(
+        [_n("a", "A.md", "document"), _n("concept", None, "document"), _n("d", "D.cs")],
+        [_e("a", "concept", "A.md")],
+    ), tmp_path)
+    G = build_merge([_x([_n("a", "A.md", "document")], [])],
+                    graph_path=gp, root=".", prune_sources=["D.cs"])
+    assert "concept" in G and "d" not in G

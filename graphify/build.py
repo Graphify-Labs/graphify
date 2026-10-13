@@ -2518,22 +2518,39 @@ def build_merge(
         # references/inherits edge, never as a source), so removing one can
         # never drop another to degree 0. A future extractor emitting a
         # stub->stub edge would require iterating this to a fixpoint.
+        # Hyperedge members are referenced out of band (G.graph, not G.edges),
+        # so degree 0 does not mean "connects nothing" for them; sweeping one
+        # would leave the hyperedge with a dangling member.
+        _he_members = {
+            m for he in (G.graph.get("hyperedges") or []) if isinstance(he, dict)
+            for m in (he.get("nodes") or []) if _hashable(m)
+        }
         orphaned = [
             n for n, d in G.nodes(data=True)
             if not d.get("source_file")
             and G.degree(n) == 0
             and n not in _spare_isolated
-            # Off the prune path only machine-minted placeholders are collected
-            # (AST code stubs and #2873 external import stubs); a source-less
-            # semantic/curated node is never second-guessed by a plain merge.
-            and (prune_sources or d.get("file_type") == "code"
-                 or _is_external_stub(d))
+            and n not in _he_members
+            # Only machine-minted placeholders (AST code stubs and #2873
+            # external import stubs) are collected when re-extraction strands
+            # them. A source-less semantic/curated node goes only when THIS
+            # prune isolated it, as before #4399 (_isolated_before is empty
+            # off the prune path).
+            and (d.get("file_type") == "code" or _is_external_stub(d)
+                 or (prune_sources and n not in _isolated_before))
         ]
         G.remove_nodes_from(orphaned)
         return orphaned
 
     # Prune nodes and edges from deleted source files
+    _isolated_before: set = set()
     if prune_sources:
+        # Source-less nodes already isolated before this prune (post-rebind).
+        # Non-placeholder nodes among them are not this prune's doing.
+        _isolated_before = {
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file") and G.degree(n) == 0
+        }
         to_remove = [
             n for n, d in G.nodes(data=True)
             if _prune_match(d.get("source_file"))
