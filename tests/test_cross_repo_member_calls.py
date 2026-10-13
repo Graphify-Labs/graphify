@@ -584,6 +584,7 @@ def test_each_language_parks_the_call_and_the_merge_finishes_it(
     assert len(parked) == 1, parked
     assert (parked[0]["callee"], parked[0]["receiver_type"], parked[0]["lang"]) == (
         callee, "Greeter", lang)
+    assert parked[0]["reason"] == "external_unresolved"
     assert parked[0]["line"], "the call site travels with the entry"
 
     merged = _merge(tmp_path, app, lib)
@@ -593,4 +594,196 @@ def test_each_language_parks_the_call_and_the_merge_finishes_it(
     assert any(e.startswith("app::") and "run" in e.lower() for e in endpoints), endpoints
     assert any(e.startswith("lib::") and callee.lower() in e.lower()
                for e in endpoints), endpoints
+
+
+def test_unresolved_calls_schema_and_truncation_counter():
+    """Unit tests for _record_unresolved_call schema, deduplication, and truncation."""
+    from graphify.extract import (
+        _MAX_PARKED_CALLS_PER_NODE,
+        _record_unresolved_call,
+    )
+
+    node = {"id": "caller_1", "label": "caller()"}
+    # Record basic unresolved call
+    _record_unresolved_call(
+        node,
+        callee="foo",
+        lang="swift",
+        reason="external_unresolved",
+        raw_call={"source_location": "L42"},
+        receiver_type="RemoteService",
+    )
+    meta = node["metadata"]
+    assert len(meta["unresolved_calls"]) == 1
+    assert meta["unresolved_calls"][0] == {
+        "callee": "foo",
+        "lang": "swift",
+        "reason": "external_unresolved",
+        "receiver_type": "RemoteService",
+        "line": "L42",
+    }
+    assert "unresolved_calls_truncated" not in meta
+
+    # Deduplication with identical attributes
+    _record_unresolved_call(
+        node,
+        callee="foo",
+        lang="swift",
+        reason="external_unresolved",
+        raw_call={"source_location": "L42"},
+        receiver_type="RemoteService",
+    )
+    assert len(meta["unresolved_calls"]) == 1
+
+    # Same callee & receiver_type but different reason is permitted
+    _record_unresolved_call(
+        node,
+        callee="foo",
+        lang="swift",
+        reason="custom_reason",
+        receiver_type="RemoteService",
+    )
+    assert len(meta["unresolved_calls"]) == 2
+    assert meta["unresolved_calls"][1]["reason"] == "custom_reason"
+
+    # Fill up to _MAX_PARKED_CALLS_PER_NODE (64)
+    current_count = len(meta["unresolved_calls"])
+    for i in range(current_count, _MAX_PARKED_CALLS_PER_NODE):
+        _record_unresolved_call(
+            node,
+            callee=f"method_{i}",
+            lang="python",
+            reason="external_unresolved",
+        )
+    assert len(meta["unresolved_calls"]) == _MAX_PARKED_CALLS_PER_NODE
+    assert "unresolved_calls_truncated" not in meta
+
+    # Exceeding the maximum increments unresolved_calls_truncated counter
+    _record_unresolved_call(
+        node,
+        callee="overflow_1",
+        lang="python",
+        reason="external_unresolved",
+    )
+    assert len(meta["unresolved_calls"]) == _MAX_PARKED_CALLS_PER_NODE
+    assert meta["unresolved_calls_truncated"] == 1
+
+    _record_unresolved_call(
+        node,
+        callee="overflow_2",
+        lang="python",
+        reason="external_unresolved",
+    )
+    assert len(meta["unresolved_calls"]) == _MAX_PARKED_CALLS_PER_NODE
+    assert meta["unresolved_calls_truncated"] == 2
+
+
+def test_park_unresolved_member_call_backward_compatibility():
+    """Verify _park_unresolved_member_call delegates to _record_unresolved_call with default reason."""
+    from graphify.extract import _park_unresolved_member_call
+
+    node = {"id": "caller_2"}
+    _park_unresolved_member_call(
+        node,
+        callee="bar",
+        receiver_type="BarService",
+        lang="cpp",
+        raw_call={"source_location": "L99"},
+    )
+    meta = node["metadata"]
+    assert meta["unresolved_calls"] == [{
+        "callee": "bar",
+        "lang": "cpp",
+        "reason": "external_unresolved",
+        "receiver_type": "BarService",
+        "line": "L99",
+    }]
+
+
+@needs_java
+def test_graph_json_records_reason_and_truncation_counter(tmp_path: Path):
+    """End-to-end extraction verifying reason and unresolved_calls_truncated serialize to graph.json."""
+    from graphify.extract import _MAX_PARKED_CALLS_PER_NODE
+
+    extra_calls = 6
+    total_calls = _MAX_PARKED_CALLS_PER_NODE + extra_calls
+    call_lines = "\n".join(f"        greeter.call{i}();" for i in range(total_calls))
+    app_body = f"""public class App {{
+    private Greeter greeter;
+    public void run() {{
+{call_lines}
+    }}
+}}
+"""
+    app_graph = _build(tmp_path, "app", "src/App.java", app_body)
+    data = json.loads(app_graph.read_text(encoding="utf-8"))
+    run_nodes = [n for n in data["nodes"] if "run" in str(n.get("label", "")).lower()]
+    assert len(run_nodes) == 1
+    run_meta = run_nodes[0].get("metadata", {})
+    assert len(run_meta.get("unresolved_calls", [])) == _MAX_PARKED_CALLS_PER_NODE
+    assert all(entry.get("reason") == "external_unresolved" for entry in run_meta["unresolved_calls"])
+    assert run_meta.get("unresolved_calls_truncated") == extra_calls
+
+
+def test_python_unresolved_call_drop_sites_3665(tmp_path: Path):
+    """Verify that Python call sites dropped without a target record their drop in unresolved_calls (#3665)."""
+    demo_code = '''RAW = "data/raw"
+
+def reads_pinned_bytes():
+    return open(RAW).read()
+
+BUILDERS = {"cash": reads_pinned_bytes}
+
+def test_via_registry():
+    return BUILDERS["cash"]()
+
+def test_via_fixture(pinned_leg):
+    return pinned_leg
+
+def test_via_getattr():
+    return getattr(BUILDERS["cash"], "__call__")()
+'''
+    py_file = tmp_path / "demo.py"
+    py_file.write_text(demo_code, encoding="utf-8")
+    from graphify.extract import extract
+    res = extract([py_file], root=tmp_path)
+    nodes = {n["label"]: n for n in res["nodes"]}
+
+    reg_node = nodes["test_via_registry()"]
+    assert reg_node.get("metadata") is not None
+    reg_unresolved = reg_node["metadata"].get("unresolved_calls", [])
+    assert len(reg_unresolved) == 1
+    assert reg_unresolved[0]["callee"] == 'BUILDERS["cash"]'
+    assert reg_unresolved[0]["reason"] == "no_candidates"
+    assert reg_unresolved[0]["lang"] == "python"
+
+    getattr_node = nodes["test_via_getattr()"]
+    assert getattr_node.get("metadata") is not None
+    getattr_unresolved = getattr_node["metadata"].get("unresolved_calls", [])
+    callees = [u["callee"] for u in getattr_unresolved]
+    assert 'getattr(BUILDERS["cash"], "__call__")' in callees
+    assert all(u["reason"] == "no_candidates" for u in getattr_unresolved)
+
+    fixture_node = nodes["test_via_fixture()"]
+    assert fixture_node.get("metadata") is None or "unresolved_calls" not in fixture_node.get("metadata", {})
+
+
+def test_python_typed_receiver_external_member_call(tmp_path: Path):
+    """Verify Python member calls with external typed receiver get parked with reason=external_unresolved (#3665, #3885)."""
+    code = '''
+def handle_request(req: ExternalRequest):
+    return req.process_payload()
+'''
+    py_file = tmp_path / "handler.py"
+    py_file.write_text(code, encoding="utf-8")
+    from graphify.extract import extract
+    res = extract([py_file], root=tmp_path)
+    handler_node = next(n for n in res["nodes"] if "handle_request" in n.get("label", ""))
+    parked = handler_node.get("metadata", {}).get("unresolved_calls", [])
+    assert len(parked) == 1
+    assert parked[0]["callee"] == "process_payload"
+    assert parked[0]["receiver_type"] == "ExternalRequest"
+    assert parked[0]["reason"] == "external_unresolved"
+    assert parked[0]["lang"] == "python"
+
 

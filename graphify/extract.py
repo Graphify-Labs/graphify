@@ -4467,12 +4467,63 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 _MAX_PARKED_CALLS_PER_NODE = 64
 
 
+def _record_unresolved_call(
+    caller_node: dict | None,
+    *,
+    callee: str,
+    lang: str,
+    reason: str,
+    raw_call: dict | None = None,
+    receiver_type: str | None = None,
+) -> None:
+    """Record an unresolvable call on the caller node's metadata (#3152, #3885).
+
+    When a call target cannot be resolved locally (e.g. member call on a receiver
+    declared in another repository), parking the metadata allows cross-repo
+    linking passes to resolve the call later.
+
+    Capped at ``_MAX_PARKED_CALLS_PER_NODE`` per node; beyond this, the
+    ``unresolved_calls_truncated`` metadata counter is incremented.
+    """
+    if not caller_node or not callee:
+        return
+    metadata = caller_node.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    parked = metadata.setdefault(UNRESOLVED_CALLS_KEY, [])
+    if not isinstance(parked, list):
+        return
+    if len(parked) >= _MAX_PARKED_CALLS_PER_NODE:
+        metadata["unresolved_calls_truncated"] = metadata.get("unresolved_calls_truncated", 0) + 1
+        return
+    callee = str(callee)
+    receiver_str = str(receiver_type) if receiver_type else None
+    for previous in parked:
+        if (
+            isinstance(previous, dict)
+            and previous.get("callee") == callee
+            and previous.get("receiver_type") == receiver_str
+            and previous.get("reason") == reason
+        ):
+            return
+    entry: dict[str, Any] = {"callee": callee, "lang": lang, "reason": reason}
+    if receiver_str:
+        entry["receiver_type"] = receiver_str
+    if raw_call:
+        location = raw_call.get("source_location")
+        if location:
+            entry["line"] = str(location)
+    parked.append(entry)
+
+
 def _park_unresolved_member_call(
     caller_node: dict | None,
     callee: str,
     receiver_type: str,
     lang: str,
     raw_call: dict,
+    *,
+    reason: str = "external_unresolved",
 ) -> None:
     """Keep a member call whose receiver type is declared nowhere in this corpus.
 
@@ -4486,27 +4537,14 @@ def _park_unresolved_member_call(
     remaps and again by the repo prefixing, and a stale id inside metadata would
     fail silently (#3150 was that bug). Names survive every rewrite.
     """
-    if not caller_node or not callee or not receiver_type:
-        return
-    metadata = caller_node.setdefault("metadata", {})
-    if not isinstance(metadata, dict):
-        return
-    parked = metadata.setdefault(UNRESOLVED_CALLS_KEY, [])
-    if not isinstance(parked, list) or len(parked) >= _MAX_PARKED_CALLS_PER_NODE:
-        return
-    callee, receiver_type = str(callee), str(receiver_type)
-    for previous in parked:
-        if (
-            isinstance(previous, dict)
-            and previous.get("callee") == callee
-            and previous.get("receiver_type") == receiver_type
-        ):
-            return
-    entry = {"callee": callee, "receiver_type": receiver_type, "lang": lang}
-    location = raw_call.get("source_location")
-    if location:
-        entry["line"] = str(location)
-    parked.append(entry)
+    _record_unresolved_call(
+        caller_node,
+        callee=callee,
+        lang=lang,
+        reason=reason,
+        raw_call=raw_call,
+        receiver_type=receiver_type,
+    )
 
 
 def _resolve_swift_member_calls(
@@ -4653,9 +4691,7 @@ def _resolve_swift_member_calls(
             # language and Swift raw_calls carry no `lang` tag, so the parked
             # entry's language comes from the declaring file's suffix.
             if str(rc.get("source_file", "")).lower().endswith(".swift"):
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, type_name, "swift", rc,
-                )
+                _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=type_name, lang="swift", reason="external_unresolved", raw_call=rc)
             continue
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
@@ -4948,6 +4984,15 @@ def _resolve_python_member_calls(
                 cls_file = _file_node(cls)
                 if cls_file == caller_file or cls in imported or (cls_file is not None and cls_file in imported):
                     _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+            elif not class_nids:
+                _record_unresolved_call(
+                    node_by_id.get(caller),
+                    callee=callee,
+                    receiver_type=receiver_type,
+                    lang="python",
+                    reason="external_unresolved",
+                    raw_call=rc,
+                )
             continue
         if receiver[:1].isupper():
             # Class arm (#1446): a capitalized receiver is a class reference; an
@@ -5152,8 +5197,13 @@ def _resolve_typescript_member_calls(
             # default imports, and node_modules is unscanned, so those are npm names.
             # The caller's family stands in for the `lang` tag TS raw_calls do not carry.
             if not type_qualified and _lang_family(rc.get("source_file")) == "jsts":
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, type_name, "typescript", rc,
+                _record_unresolved_call(
+                    node_by_id.get(caller),
+                    callee=callee,
+                    receiver_type=type_name,
+                    lang="typescript",
+                    reason="external_unresolved",
+                    raw_call=rc,
                 )
             continue
         # Origin gate (#2553): the caller's file must actually see the matched
@@ -5335,9 +5385,7 @@ def _resolve_cpp_member_calls(
                 # also the shape of a namespace-qualified free function, so the
                 # merge side's guards do the deciding: it acts only when exactly
                 # one other repo declares a `Foo` owning exactly one `bar`.
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, receiver, "cpp", rc,
-                )
+                _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=receiver, lang="cpp", reason="external_unresolved", raw_call=rc)
                 continue
             if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
@@ -5350,9 +5398,7 @@ def _resolve_cpp_member_calls(
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
             if not type_defs:
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, type_name, "cpp", rc,
-                )
+                _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=type_name, lang="cpp", reason="external_unresolved", raw_call=rc)
                 continue
             if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
@@ -5533,9 +5579,7 @@ def _resolve_csharp_member_calls(
         so re-check the bare-name index instead of trusting the ``None``.
         """
         if type_name and not type_def_nids.get(_key(type_name)):
-            _park_unresolved_member_call(
-                caller_node, rc.get("callee"), type_name, "csharp", rc,
-            )
+            _record_unresolved_call(caller_node, callee=rc.get("callee"), receiver_type=type_name, lang="csharp", reason="external_unresolved", raw_call=rc)
 
     # Field/property declared types per class, for `x.F.M()` (#4246).
     class_fields = _bind_member_field_tables(per_file, all_nodes, lang="csharp")
@@ -5856,8 +5900,13 @@ def _resolve_php_member_calls(
                 inferred = True
                 type_defs = type_def_nids.get(class_key(typed), [])
                 if not type_defs:
-                    _park_unresolved_member_call(
-                        node_by_id.get(caller), callee, typed, "php", raw_call,
+                    _record_unresolved_call(
+                        node_by_id.get(caller),
+                        callee=callee,
+                        receiver_type=typed,
+                        lang="php",
+                        reason="external_unresolved",
+                        raw_call=raw_call,
                     )
                     continue
                 if len(type_defs) != 1:
@@ -5866,8 +5915,13 @@ def _resolve_php_member_calls(
             elif not receiver.startswith("$"):
                 type_defs = type_def_nids.get(class_key(receiver), [])
                 if not type_defs:
-                    _park_unresolved_member_call(
-                        node_by_id.get(caller), callee, receiver, "php", raw_call,
+                    _record_unresolved_call(
+                        node_by_id.get(caller),
+                        callee=callee,
+                        receiver_type=receiver,
+                        lang="php",
+                        reason="external_unresolved",
+                        raw_call=raw_call,
                     )
                     continue
                 if len(type_defs) != 1:
@@ -6150,9 +6204,7 @@ def _resolve_java_member_calls(
                     # merge (#3152). An ambiguous name (>1 declaration) is a
                     # local ambiguity that merging only widens, so it stays
                     # dropped, exactly as the guard below already decided.
-                    _park_unresolved_member_call(
-                        node_by_id.get(caller), callee, type_name, "java", raw_call,
-                    )
+                    _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=type_name, lang="java", reason="external_unresolved", raw_call=raw_call)
                     continue
                 if len(type_defs) != 1:
                     continue
@@ -6297,7 +6349,14 @@ def _resolve_objc_member_calls(
         """
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             return
-        _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "objc", rc)
+        _record_unresolved_call(
+            node_by_id.get(caller),
+            callee=callee,
+            receiver_type=type_name,
+            lang="objc",
+            reason="external_unresolved",
+            raw_call=rc,
+        )
 
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
@@ -6999,7 +7058,14 @@ def _resolve_go_member_calls(
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
             # says who is asking, so no suffix sniff is needed.
-            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
+            _record_unresolved_call(
+                node_by_id.get(caller),
+                callee=callee,
+                receiver_type=type_name,
+                lang="go",
+                reason="external_unresolved",
+                raw_call=rc,
+            )
             continue
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
@@ -7229,8 +7295,14 @@ def _resolve_kotlin_member_calls(
             # not contain, so park it for the merge (#3152/#3388). A builtin receiver
             # (String.format, ...) never crosses a repo boundary.
             if receiver not in _LANGUAGE_BUILTIN_GLOBALS:
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, receiver, "kotlin", rc)
+                _record_unresolved_call(
+                    node_by_id.get(caller),
+                    callee=callee,
+                    receiver_type=receiver,
+                    lang="kotlin",
+                    reason="external_unresolved",
+                    raw_call=rc,
+                )
             continue
         if len(type_nids) != 1:
             continue
@@ -10293,6 +10365,7 @@ def extract(
     _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
     _csharp_method_owner: dict[str, str] | None = None  # method nid -> type nid, built on first use
     _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
+    _res_node_by_id: dict[str, dict] = {n["id"]: n for n in resolution_nodes if n.get("id")}
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -10305,6 +10378,16 @@ def extract(
         # and collides with any top-level function named "log" in the corpus.
         if rc.get("is_member_call"):
             continue
+
+        def _record_drop(reason: str) -> None:
+            _record_unresolved_call(
+                _res_node_by_id.get(rc.get("caller_nid", "")),
+                callee=callee,
+                lang=str(rc.get("lang") or rc.get("language") or _lang_family(rc.get("source_file")) or "unknown"),
+                reason=reason,
+                raw_call=rc,
+            )
+
         # Skip Ruby include/extend/prepend mixin markers: they carry a module
         # name as `callee` but are not calls — the Ruby resolver turns them into
         # `mixes_in` edges. Letting the shared pass emit a `calls` edge here would
@@ -10340,6 +10423,7 @@ def extract(
         if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
+            _record_drop("no_candidates")
             continue
         if rc.get("csharp_new") or rc.get("lang") == "csharp":
             # An enum member or a field/property is never a valid call target
@@ -10360,6 +10444,7 @@ def extract(
                     }
                 candidates = [c for c in candidates if c not in _csharp_method_owner]
             if not candidates:
+                _record_drop("csharp_member_target")
                 continue
         # A call rescued from an annotation stub (#3888): the caller's own file
         # names this type without defining it, and before the rescue the call
@@ -10395,6 +10480,7 @@ def extract(
                 or candidate_family == caller_family
             ]
             if not candidates:
+                _record_drop("cross_language_mismatch")
                 continue
         # Imported Go selectors carry exact package evidence. External package
         # calls yield no internal candidate instead of binding by bare name.
@@ -10408,6 +10494,7 @@ def extract(
                 ) == import_path
             ]
             if not candidates:
+                _record_drop("go_import_mismatch")
                 continue
             go_exact_import = True
         # An unqualified Elixir call can only reach the caller's own module
@@ -10425,6 +10512,7 @@ def extract(
                 if _elixir_modules_by_file.get(nid_to_source_file.get(candidate, ""), set()) & scope
             ]
             if not candidates:
+                _record_drop("elixir_scope_mismatch")
                 continue
         caller = rc["caller_nid"]
         # Resolve the caller's file via the raw_call's own source_file string,
@@ -10521,6 +10609,7 @@ def extract(
                         outer = str(rc["qualified_prefix"]).rsplit(".", 1)[-1]
                         nested = [c for c in candidates if _csharp_outer_type.get(c) == outer]
                         if len(nested) != 1:
+                            _record_drop("unresolved_ambiguity")
                             continue
                         tgt = nested[0]
                     else:
@@ -10530,6 +10619,7 @@ def extract(
                             rc.get("source_file", ""),
                         )
                         if tgt is None:
+                            _record_drop("unresolved_ambiguity")
                             continue
                     has_import_evidence = False
         # A source-less candidate is an unresolved external stub, not a
@@ -10537,6 +10627,7 @@ def extract(
         # edges, but a name-only call must not turn it into a cross-file calls
         # hub (#3156). Source-backed project definitions continue normally.
         if not nid_to_source_file.get(tgt):
+            _record_drop("source_less_stub")
             continue
         if rc.get("indirect"):
             # Cross-file indirect dispatch: a callback passed BY NAME
@@ -10578,8 +10669,10 @@ def extract(
         # direct calls: the indirect_call path above is already conservative
         # (INFERRED, callable-target-gated) and independent of import evidence.
         if not has_import_evidence and effective_suffix(str(rc.get("source_file", ""))) in _JS_TS_CALL_SUFFIXES:
+            _record_drop("missing_import_evidence")
             continue
         if rc.get("via_stub") and not (has_import_evidence or stub_scope_hit):
+            _record_drop("missing_import_evidence")
             continue
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))

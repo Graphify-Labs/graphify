@@ -324,7 +324,7 @@ def test_an_annotated_type_declared_nowhere_is_parked_for_the_merge(tmp_path):
                    "}\n"),
     })
     assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
-                           "lang": "typescript", "line": "L4"}]
+                           "lang": "typescript", "reason": "external_unresolved", "line": "L4"}]
 
 
 def test_a_namespace_style_receiver_is_not_parked(tmp_path):
@@ -364,7 +364,7 @@ def test_a_class_from_another_language_neither_answers_nor_blocks_parking(tmp_pa
         "Greeter.php": "<?php\nclass Greeter {\n    public function greet(): void {}\n}\n",
     })
     assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
-                           "lang": "typescript", "line": "L4"}]
+                           "lang": "typescript", "reason": "external_unresolved", "line": "L4"}]
 
 
 def test_a_class_declared_in_an_sfc_script_block_still_answers(tmp_path):
