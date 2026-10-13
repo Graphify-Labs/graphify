@@ -419,7 +419,7 @@ from graphify.build import build
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
-from graphify.export import to_json
+from graphify.export import to_json, existing_graph_node_count
 from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
@@ -444,11 +444,15 @@ questions = suggest_questions(G, communities, labels)
 # Persist the graph first and only write the report/analysis if it actually
 # persisted - to_json refuses to shrink an existing graph.json (#479), and a
 # report describing a graph we did not write would be a lie (#1392).
+# Dedup shrinks a graph.json built without it (#4431). Allow a shrink no bigger than
+# the nodes dedup merged; anything bigger is a real shrink and still hits #479.
 collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)
-wrote = to_json(G, communities, 'graphify-out/graph.json')
+old_n = existing_graph_node_count('graphify-out/graph.json')
+dedup_shrink = bool(collapsed) and isinstance(old_n, int) and 0 < old_n - G.number_of_nodes() <= collapsed
+if dedup_shrink:
+    print(f'Note: entity dedup merged {collapsed} duplicate node(s), so graph.json shrinks from {old_n} to {G.number_of_nodes()} nodes.')
+wrote = to_json(G, communities, 'graphify-out/graph.json', force=dedup_shrink)
 if not wrote:
-    if collapsed:
-        print(f'Note: entity dedup merged {collapsed} duplicate node(s) (#4431); a graph.json built before the skill deduplicated is larger, so this shrink is expected.')
     print('ERROR: refused to shrink graphify-out/graph.json (fewer nodes than the existing graph). Run a full rebuild to be safe.')
     raise SystemExit(1)
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)

@@ -426,7 +426,7 @@ from graphify.build import build, build_from_json
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
-from graphify.export import to_json
+from graphify.export import to_json, existing_graph_node_count
 from pathlib import Path
 
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
@@ -434,7 +434,7 @@ detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(enc
 
 # root= mirrors the --update runbook (#1361): relativize source_file to the same
 # base so the full build and incremental --update never drift apart on re-extract.
-# A full build dedups entities like `graphify extract` (#4431). After --update the
+# A full build dedups entities like the graphify extract CLI (#4431). After --update the
 # extraction is build_merge's output, already deduped with untouched nodes kept
 # apart (#3477), so it is rebuilt as-is rather than deduped a second time.
 if extraction.get('_merged_by_build_merge'):
@@ -460,11 +460,15 @@ questions = suggest_questions(G, communities, labels)
 # nothing) when the new graph is smaller than the existing graph.json. Only write
 # GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
 # they never describe a graph that graph.json doesn't contain (#1392).
+# Dedup shrinks a graph.json built without it (#4431). Allow a shrink no bigger than
+# the nodes dedup merged; anything bigger is a real shrink and still hits #479.
 collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)
-wrote = to_json(G, communities, 'graphify-out/graph.json')
+old_n = existing_graph_node_count('graphify-out/graph.json')
+dedup_shrink = bool(collapsed) and isinstance(old_n, int) and 0 < old_n - G.number_of_nodes() <= collapsed
+if dedup_shrink:
+    print(f'Note: entity dedup merged {collapsed} duplicate node(s), so graph.json shrinks from {old_n} to {G.number_of_nodes()} nodes.')
+wrote = to_json(G, communities, 'graphify-out/graph.json', force=dedup_shrink)
 if not wrote:
-    if collapsed:
-        print(f'Note: entity dedup merged {collapsed} duplicate node(s) (#4431); a graph.json built before the skill deduplicated is larger, so this shrink is expected.')
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
     raise SystemExit(1)
@@ -533,7 +537,7 @@ detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(enc
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text(encoding=\"utf-8\"))
 
 # root= as in Step 4 / the --update runbook (#1361) — same base for node-key parity.
-# A full build dedups entities like `graphify extract` (#4431). After --update the
+# A full build dedups entities like the graphify extract CLI (#4431). After --update the
 # extraction is build_merge's output, already deduped with untouched nodes kept
 # apart (#3477), so it is rebuilt as-is rather than deduped a second time.
 if extraction.get('_merged_by_build_merge'):

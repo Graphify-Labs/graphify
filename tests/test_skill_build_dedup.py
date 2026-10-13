@@ -75,15 +75,27 @@ def run_skill(skill: str, work: Path, extraction: dict, directed: bool = False):
     def sub(b):
         return b.replace("INPUT_PATH", str(work)).replace("IS_DIRECTED", str(directed))
 
-    env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT), "HOME": str(work)}
+    # A fake `graphify` that fails loudly: a stray backtick or $(...) inside a
+    # double-quoted python -c block would run it via command substitution.
+    fake_bin = work / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    marker = work / "GRAPHIFY_WAS_CALLED"
+    (fake_bin / "graphify").write_text(f"#!/bin/sh\necho \"$@\" >> '{marker}'\nexit 97\n", encoding="utf-8")
+    (fake_bin / "graphify").chmod(0o755)
+    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "PYTHONPATH": str(ROOT), "HOME": str(work)}
+
+    def check_no_substitution():
+        assert not marker.exists(), "skill block ran `graphify` via shell substitution: " + marker.read_text()
     step4 = sub(_blocks(_section(text, "### Step 4 -"))[0])
     r = subprocess.run(["bash", "-c", step4], cwd=work, capture_output=True, text=True, env=env)
+    check_no_substitution()
     if r.returncode != 0:
         return None, None, r.stdout + r.stderr
     g4 = json.loads((out / "graph.json").read_text(encoding="utf-8"))
     step5 = [b for b in _blocks(_section(text, "### Step 5 -")) if "LABELS_DICT" in b][0]
     step5 = sub(step5).replace("LABELS_DICT", "{cid: 'C' + str(cid) for cid in communities}")
     r5 = subprocess.run(["bash", "-c", step5], cwd=work, capture_output=True, text=True, env=env)
+    check_no_substitution()
     assert r5.returncode == 0, r5.stdout + r5.stderr
     g5 = json.loads((out / "graph.json").read_text(encoding="utf-8"))
     return g4, g5, r.stdout + r.stderr + r5.stdout + r5.stderr
@@ -172,17 +184,34 @@ def test_step4_directed_flag_kept(tmp_path):
     assert g4["directed"] is True and len(g4["nodes"]) == 4
 
 
-def test_step4_shrink_over_undeduped_graph_explains_dedup(tmp_path):
-    """An old non-dedup graph.json is larger; to_json's #479 guard refuses, and Step 4 says why."""
-    A, B = frag("lot_a"), frag("lot_b")
+def _write_old_graph(tmp_path, extraction):
     from graphify.cluster import cluster
     from graphify.export import to_json
-    (tmp_path / "graphify-out").mkdir()
-    G_old = build_from_json(merged(A, B), root=str(tmp_path))
+    (tmp_path / "graphify-out").mkdir(exist_ok=True)
+    G_old = build_from_json(copy.deepcopy(extraction), root=str(tmp_path))  # a pre-fix skill build
     to_json(G_old, cluster(G_old), str(tmp_path / "graphify-out" / "graph.json"))
-    g4, _, log = run_skill("skill.md", tmp_path, merged(A, B))
+    return G_old.number_of_nodes()
+
+
+def test_step4_rebuild_over_undeduped_graph_succeeds(tmp_path):
+    """The shrink is exactly what dedup merged, so the full rebuild writes (#4431)."""
+    ext = merged(frag("lot_a"), frag("lot_b"))
+    assert _write_old_graph(tmp_path, ext) == 6
+    g4, g5, log = run_skill("skill.md", tmp_path, ext)
+    assert g4 is not None, log
+    assert len(g4["nodes"]) == len(g5["nodes"]) == 4
+    assert "dedup merged 2 duplicate node(s), so graph.json shrinks from 6 to 4 nodes" in log
+
+
+def test_step4_genuine_shrink_still_refused(tmp_path):
+    """Dedup plus a dropped file shrinks more than dedup explains: #479 still refuses."""
+    old_n = _write_old_graph(tmp_path, merged(frag("lot_a"), frag("lot_b"), frag("lot_c")))
+    assert old_n == 9
+    g4, _, log = run_skill("skill.md", tmp_path, merged(frag("lot_a"), frag("lot_b")))  # lot_c gone: 4 < 9 - 2
     assert g4 is None
-    assert "entity dedup merged 2 duplicate node(s)" in log and "refused to shrink" in log
+    assert "refused to shrink" in log and "shrinks from" not in log
+    assert len(json.loads((tmp_path / "graphify-out" / "graph.json").read_text())["nodes"]) == 9
+
 
 
 def _as_update_output(G) -> dict:
@@ -216,3 +245,28 @@ def test_step4_after_update_does_not_redup_protected_nodes(tmp_path):
     g4, _, log = run_skill("skill.md", tmp_path, _as_update_output(G1))
     assert g4 is not None, log
     assert {n["id"] for n in g4["nodes"]} == set(G1.nodes)
+
+
+# Pre-existing v8 comment lines with backticks inside python -c blocks. They are
+# in comments, so the backtick pair still runs as a command substitution; left
+# alone here to keep this fix scoped. Any NEW hazard line fails the test.
+_V8_SHELL_HAZARD_LINES = {
+    "# Do NOT add `changed` here: with root= passed, prune_set relativizes to the same base",
+    "# `graphify update` deleted it along with the re-extracted code file it",
+}
+
+
+def _python_c_hazards(text: str) -> list[str]:
+    bad = []
+    for m in re.finditer(r'-c "\n(.*?)\n"', text, re.S):
+        for line in m.group(1).split("\n"):
+            if "`" in line or re.search(r"(?<!\\)\$[({A-Za-z_]", line):
+                bad.append(line.strip())
+    return bad
+
+
+@pytest.mark.parametrize("path", sorted((ROOT / "graphify").glob("**/*.md")), ids=lambda p: str(p.relative_to(ROOT)))
+def test_no_new_shell_hazards_in_python_c_blocks(path):
+    """No backtick or unescaped $ inside a double-quoted bash python -c block (#4433 review)."""
+    new = [line for line in _python_c_hazards(path.read_text(encoding="utf-8")) if line not in _V8_SHELL_HAZARD_LINES]
+    assert new == []

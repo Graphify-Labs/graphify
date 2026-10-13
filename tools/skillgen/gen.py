@@ -1283,17 +1283,26 @@ def _is_skill_build_dedup_fix_line(line: str) -> bool:
     (``build([...], dedup=True)``, #769) and ``--update`` (``build_merge``).
     They now import ``build`` and call ``build([extraction], dedup=True, ...)``
     (the call lines already match the #1392 directed predicate). Step 4 also
-    reads the dedup-collapse count before ``to_json`` and explains a refused
-    shrink caused by dedup. These are the old/new import lines and those added
-    Step 4 lines.
+    lets a shrink no bigger than the dedup-collapse count through the #479
+    guard (an older un-deduped graph.json). These are the old/new import lines,
+    the old/new Step 4 to_json call and the added Step 4 lines.
     """
     stripped = line.strip()
     return stripped in (
         "from graphify.build import build_from_json",
         "from graphify.build import build",
         "collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)",
-        "if collapsed:",
-    ) or stripped.startswith("print(f'Note: entity dedup merged {collapsed} duplicate node(s) (#4431)")
+        "# Dedup shrinks a graph.json built without it (#4431). Allow a shrink no bigger than",
+        "# the nodes dedup merged; anything bigger is a real shrink and still hits #479.",
+        "old_n = existing_graph_node_count('graphify-out/graph.json')",
+        "dedup_shrink = bool(collapsed) and isinstance(old_n, int) and 0 < old_n - G.number_of_nodes() <= collapsed",
+        "if dedup_shrink:",
+        "print(f'Note: entity dedup merged {collapsed} duplicate node(s), so graph.json shrinks from {old_n} to {G.number_of_nodes()} nodes.')",
+        "wrote = to_json(G, communities, 'graphify-out/graph.json', force=dedup_shrink)",
+        "wrote = to_json(G, communities, 'graphify-out/graph.json')",
+        "from graphify.export import to_json, existing_graph_node_count",
+        "from graphify.export import to_json",
+    )
 
 
 # Every line that may differ between a rendered monolith and its pristine v8
