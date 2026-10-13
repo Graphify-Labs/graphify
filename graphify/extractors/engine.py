@@ -8309,6 +8309,15 @@ def _extract_generic(
                                 )
                                 if isinstance(elem_type, str):
                                     csharp_receiver_chain = [elem_type]
+                        elif recv is not None and recv.type == "object_creation_expression":
+                            # new X(...).M(): the receiver is the constructed X
+                            # (#1770), typed here now that a nameless receiver no
+                            # longer falls back to the file's bare-name map.
+                            type_info = _read_csharp_type_name(
+                                recv.child_by_field_name("type"), source
+                            )
+                            if type_info and type_info[0]:
+                                csharp_receiver_chain = [type_info[0]]
                         elif recv is not None and recv.type == "parenthesized_expression":
                             # ((IStore)x).M() / (x as IStore).M(): the cast names
                             # the receiver's type in source, so resolve it as
@@ -8670,9 +8679,13 @@ def _extract_generic(
                 # receiver's declared type and mis-binds to an unrelated same-named
                 # method (#1609). The receiver may be lowercase (`_server.Save()`),
                 # so this is broader than the capitalized/this-field Python rule.
+                # A receiver with no capturable name (`run.Sequence.Apply()`,
+                # `Make().Apply()`, `s.Items.Count()`) defers too: the bare-name
+                # map would bind it to the caller's own same-named method. A typed
+                # chain still resolves through `receiver_chain`; anything else
+                # gets no edge.
                 _csharp_defer = (
-                    config.ts_module == "tree_sitter_c_sharp"
-                    and is_member_call and member_receiver
+                    config.ts_module == "tree_sitter_c_sharp" and is_member_call
                 )
                 _python_defer = (
                     config.ts_module == "tree_sitter_python"
@@ -8691,13 +8704,12 @@ def _extract_generic(
                     and is_member_call
                     and not lua_self_qualified
                 )
-                if _python_defer or _java_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                if _python_defer or _java_defer or _csharp_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
                         member_receiver[:1].isupper()
                         or is_this_field_call
-                        or _csharp_defer
                     )
                 ):
                     tgt_nid = None
