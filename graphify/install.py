@@ -323,12 +323,12 @@ def _remove_claude_skill_registration(project_dir: Path) -> None:
     claude_md = project_dir / ".claude" / "CLAUDE.md"
     if not claude_md.exists():
         return
-    content = claude_md.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(claude_md)
     cleaned = _remove_marker_section(content, _SKILL_REGISTRATION_MARKER, boundary_prefix="# ")
     if cleaned is None:
         return
     if cleaned or claude_md.is_symlink():
-        claude_md.write_text(cleaned + "\n", encoding="utf-8", newline="")
+        _write_keep_newline(claude_md, cleaned + "\n", newline)
         print(f"  CLAUDE.md        ->  graphify skill registration removed from {_shown_path(claude_md)}")
     else:
         claude_md.unlink()
@@ -361,6 +361,47 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> lis
     ]
 
 
+_GRAPHIFY_HOOK_SUBCOMMANDS = ("hook-guard", "hook-check")
+_GRAPHIFY_LEGACY_HOOK_MARKER = "graphify-out/"
+
+
+def _is_graphify_hook_command(command: str) -> bool:
+    """True when a hook ``command`` string is one graphify installed."""
+    lowered = command.lower()
+    if "graphify" not in lowered:
+        return False
+    if any(sub in lowered for sub in _GRAPHIFY_HOOK_SUBCOMMANDS):
+        return True
+    return _GRAPHIFY_LEGACY_HOOK_MARKER in lowered
+
+
+def _is_graphify_hook_entry(entry: object) -> bool:
+    """True when a single ``hooks[]`` element is a graphify command entry."""
+    if not isinstance(entry, dict) or entry.get("type") != "command":
+        return False
+    command = entry.get("command")
+    return isinstance(command, str) and _is_graphify_hook_command(command)
+
+
+def _strip_graphify_hooks(groups: list) -> list:
+    """Drop graphify's own hook entries from *groups*, keeping everything else."""
+    kept: list = []
+    for group in groups:
+        if not isinstance(group, dict):
+            kept.append(group)
+            continue
+        entries = group.get("hooks")
+        if not isinstance(entries, list):
+            kept.append(group)
+            continue
+        remaining = [e for e in entries if not _is_graphify_hook_entry(e)]
+        if len(remaining) == len(entries):
+            kept.append(group)
+        elif remaining:
+            kept.append({**group, "hooks": remaining})
+    return kept
+
+
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     return (
         "# graphify\n"
@@ -378,20 +419,23 @@ def _shown_path(path: Path) -> str:
 
 
 def _register_always_on_block(target: Path, prefix: str, registration: str) -> None:
+    """Idempotently add or refresh an always-on registration in *target*, degrading
+    instead of raising.
+    """
     try:
         existed = target.exists()
-        content = target.read_text(encoding="utf-8") if existed else ""
+        content, newline = _read_keep_newline(target) if existed else ("", "\n")
         new_content = _replace_or_append_section(
             content, _SKILL_REGISTRATION_MARKER, registration, boundary_prefix="# "
         )
         if existed and new_content == content:
             print(f"{prefix}already registered (no change)")
         elif existed:
-            target.write_text(new_content, encoding="utf-8", newline="")
+            _write_keep_newline(target, new_content, newline)
             print(f"{prefix}skill registered in {_shown_path(target)}")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(new_content, encoding="utf-8", newline="")
+            _write_keep_newline(target, new_content, newline)
             print(f"{prefix}created at {_shown_path(target)}")
     except OSError as exc:
         print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
@@ -489,6 +533,20 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     if not removed:
         return None
     return "\n".join(lines).rstrip()
+
+
+def _read_keep_newline(path: Path) -> tuple[str, str]:
+    """Read *path* as UTF-8 and return ``(text, newline)``."""
+    raw = path.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    return raw.replace("\r\n", "\n").replace("\r", "\n"), newline
+
+
+def _write_keep_newline(path: Path, text: str, newline: str = "\n") -> None:
+    """Write bare-``\n`` *text* using *newline* endings, without translation."""
+    if newline != "\n":
+        text = text.replace("\n", newline)
+    path.write_text(text, encoding="utf-8", newline="")
 
 
 _BANNER_LOGO = """\
@@ -629,17 +687,18 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
     target = project_dir / "GEMINI.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _GEMINI_MD_MARKER, _always_on("gemini-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("gemini-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8", newline="")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     _install_gemini_hook(project_dir, project=project)
@@ -691,7 +750,7 @@ def _install_gemini_hook(project_dir: Path, project: bool = False) -> None:
     before_tool = hooks.setdefault("BeforeTool", [])
     if not isinstance(before_tool, list):
         _refuse_to_modify(settings_path)
-    hooks["BeforeTool"] = [h for h in before_tool if "graphify" not in str(h)]
+    hooks["BeforeTool"] = _strip_graphify_hooks(before_tool)
     hooks["BeforeTool"].append(_gemini_hook(project=project))
     _write_settings_with_backup(settings_path, settings)
     print("  .gemini/settings.json  ->  BeforeTool hook registered")
@@ -706,11 +765,13 @@ def _uninstall_gemini_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     before_tool = settings.get("hooks", {}).get("BeforeTool", [])
-    filtered = [h for h in before_tool if "graphify" not in str(h)]
-    if len(filtered) == len(before_tool):
+    if not isinstance(before_tool, list):
+        return
+    filtered = _strip_graphify_hooks(before_tool)
+    if filtered == before_tool:
         return
     settings["hooks"]["BeforeTool"] = filtered
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print("  .gemini/settings.json  ->  BeforeTool hook removed")
 
 
@@ -728,13 +789,13 @@ def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, 
     if not target.exists():
         print("No GEMINI.md found in current directory - nothing to do")
         return
-    content = target.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _GEMINI_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in GEMINI.md - nothing to do")
         return
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -782,17 +843,17 @@ def vscode_install(project_dir: Path | None = None) -> None:
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     instructions.parent.mkdir(parents=True, exist_ok=True)
     if instructions.exists():
-        content = instructions.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(instructions)
         new_content = _replace_or_append_section(
             content, _VSCODE_INSTRUCTIONS_MARKER, _always_on("vscode-instructions")
         )
         if new_content == content:
             print(f"  {instructions}  ->  already configured (no change)")
         else:
-            instructions.write_text(new_content, encoding="utf-8")
+            _write_keep_newline(instructions, new_content, newline)
             print(f"  {instructions}  ->  graphify section {'updated' if _VSCODE_INSTRUCTIONS_MARKER in content else 'added'}")
     else:
-        instructions.write_text(_always_on("vscode-instructions"), encoding="utf-8")
+        _write_keep_newline(instructions, _always_on("vscode-instructions"))
         print(f"  {instructions}  ->  created")
 
     print()
@@ -823,12 +884,12 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     if not instructions.exists():
         return
-    content = instructions.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(instructions)
     cleaned = _remove_marker_section(content, _VSCODE_INSTRUCTIONS_MARKER)
     if cleaned is None:
         return
     if cleaned or instructions.is_symlink():
-        instructions.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(instructions, cleaned + "\n", newline)
         print(f"  graphify section removed from {instructions}")
     else:
         instructions.unlink()
@@ -1858,10 +1919,10 @@ def _uninstall_mimo_plugin(project_dir: Path, *, project: bool = False) -> None:
 def _write_mimo_agents_instruction(target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     existed = target.exists()
-    content = target.read_text(encoding="utf-8") if existed else ""
+    content, newline = _read_keep_newline(target) if existed else ("", "\n")
     new_content = _replace_or_append_section(content, _AGENTS_MD_MARKER, _always_on("agents-md"))
     if not (existed and new_content == content):
-        _write_text_atomic(target, new_content)
+        _write_keep_newline(target, new_content, newline)
         print(f"  {target.resolve()}  ->  instructions written")
 
 
@@ -1892,10 +1953,11 @@ def _mimo_uninstall(project_dir: Path, *, project: bool = False) -> None:
 
     target = (project_dir / "AGENTS.md") if project else (_mimo_global_config_dir() / "AGENTS.md")
     if target.exists():
-        cleaned = _remove_marker_section(target.read_text(encoding="utf-8"), _AGENTS_MD_MARKER)
+        content, newline = _read_keep_newline(target)
+        cleaned = _remove_marker_section(content, _AGENTS_MD_MARKER)
         if cleaned is not None:
             if cleaned:
-                _write_text_atomic(target, cleaned + "\n")
+                _write_keep_newline(target, cleaned + "\n", newline)
             else:
                 target.unlink()
 
@@ -1967,7 +2029,7 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     pre_tool = hooks.setdefault("PreToolUse", [])
     if not isinstance(pre_tool, list):
         _refuse_to_modify(hooks_path)
-    hooks["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
     _write_settings_with_backup(hooks_path, existing)
     print(
@@ -1986,26 +2048,31 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = existing.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if "graphify" not in str(h)]
+    if not isinstance(pre_tool, list):
+        return
+    filtered = _strip_graphify_hooks(pre_tool)
+    if filtered == pre_tool:
+        return
     existing["hooks"]["PreToolUse"] = filtered
-    hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    _write_settings_with_backup(hooks_path, existing)
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
 
 
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     target = (project_dir or Path(".")) / "AGENTS.md"
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _AGENTS_MD_MARKER, _always_on("agents-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("agents-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     if platform == "codex":
@@ -2164,7 +2231,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
             _uninstall_mimo_plugin(project_dir or Path("."), project=True)
         return
 
-    content = target.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _AGENTS_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in AGENTS.md - nothing to do")
@@ -2177,7 +2244,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         return
 
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -2238,17 +2305,18 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _CLAUDE_MD_MARKER, _always_on("claude-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("claude-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     _install_claude_hook(project_dir or Path("."), strict=strict, project=project)
@@ -2274,7 +2342,7 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
@@ -2295,16 +2363,42 @@ def _strip_graphify_hook(settings_path: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
-    if len(filtered) == len(pre_tool):
+    if not isinstance(pre_tool, list):
+        return
+    filtered = _strip_graphify_hooks(pre_tool)
+    if filtered == pre_tool:
         return
     settings["hooks"]["PreToolUse"] = filtered
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
+
+
+def _unsafe_purge_reason(out: Path, project_dir: Path) -> str | None:
+    """Why ``rmtree(out)`` must not run for ``--purge``, or None when it is safe."""
+    target = out.resolve()
+    project = project_dir.resolve()
+    home = Path.home().resolve()
+    if target == project or target in project.parents:
+        return "the project folder or one of its parents"
+    if target == home or target in home.parents:
+        return "your home folder or one of its parents"
+    if target == Path(target.anchor):
+        return "a filesystem root"
+    return None
 
 
 def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     pd = project_dir or Path(".")
+    out = pd / _GRAPHIFY_OUT
+    if purge:
+        reason = _unsafe_purge_reason(out, pd)
+        if reason:
+            print(
+                f"error: refusing --purge: {out.resolve()} is {reason}. "
+                "Nothing was changed. Check the GRAPHIFY_OUT environment variable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     print("Uninstalling graphify from all detected platforms...\n")
 
     claude_uninstall(pd, remove_user_skill=True)
@@ -2331,7 +2425,6 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
 
     if purge:
         import shutil as _shutil
-        out = pd / _GRAPHIFY_OUT
         if out.exists():
             _shutil.rmtree(out)
             print(f"\n  {_GRAPHIFY_OUT}/  ->  deleted (--purge)")
@@ -2372,14 +2465,14 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
 
 def _strip_graphify_md_section(target: Path) -> bool:
     try:
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
     except (OSError, UnicodeDecodeError):
         return False
     cleaned = _remove_marker_section(content, _CLAUDE_MD_MARKER)
     if cleaned is None:
         return False
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -2392,17 +2485,18 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
     target = (project_dir or Path(".")) / "CODEBUDDY.md"
 
     if target.exists():
-        content = target.read_text(encoding="utf-8")
+        content, newline = _read_keep_newline(target)
         new_content = _replace_or_append_section(
             content, _CODEBUDDY_MD_MARKER, _always_on("claude-md")
         )
     else:
+        content, newline = "", "\n"
         new_content = _always_on("claude-md")
 
-    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+    if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_keep_newline(target, new_content, newline)
         print(f"graphify section written to {target.resolve()}")
 
     _install_codebuddy_hook(project_dir or Path("."))
@@ -2425,7 +2519,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
@@ -2440,11 +2534,13 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
-    if len(filtered) == len(pre_tool):
+    if not isinstance(pre_tool, list):
+        return
+    filtered = _strip_graphify_hooks(pre_tool)
+    if filtered == pre_tool:
         return
     settings["hooks"]["PreToolUse"] = filtered
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hook removed")
 
 
@@ -2463,14 +2559,14 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         print("No CODEBUDDY.md found in current directory - nothing to do")
         return
 
-    content = target.read_text(encoding="utf-8")
+    content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _CODEBUDDY_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in CODEBUDDY.md - nothing to do")
         return
 
     if cleaned or target.is_symlink():
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_keep_newline(target, cleaned + "\n", newline)
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
@@ -2713,8 +2809,22 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _project_uninstall("pi", Path("."))
             else:
                 _remove_skill_file("pi")
+        elif subcmd == "guard" and sys.argv[3:] in (["install"], ["uninstall"], ["path"]):
+            package_path = Path(__file__).resolve().parent / "pi"
+            if sys.argv[3] == "path":
+                print(package_path)
+                return True
+            pi = shutil.which("pi")
+            if not pi:
+                print("error: install Pi (pi) and add it to PATH first", file=sys.stderr)
+                sys.exit(1)
+            import subprocess
+            verb = "install" if sys.argv[3] == "install" else "remove"
+            result = subprocess.run([pi, verb, str(package_path)], check=False)
+            if result.returncode:
+                sys.exit(result.returncode)
         else:
-            print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            print("Usage: graphify pi [install|uninstall] | graphify pi guard [install|uninstall|path]", file=sys.stderr)
             sys.exit(1)
         return True
 
