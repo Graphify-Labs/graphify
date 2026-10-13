@@ -1158,28 +1158,63 @@ def _swift_user_type_name(user_type_node, source: bytes) -> str | None:
             return text or None
     return None
 
-def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a Swift type expression; append (name, role) tuples (role 'type' or 'generic_arg')."""
+def _swift_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
+    """Return Swift generic type-parameter names visible from ``node``.
+
+    A `struct Stack<Element>` / `func map<R>(...)` binds `Element`/`R` as local
+    names, not corpus symbols. Walking up to every enclosing declaration's
+    `type_parameters` list collects them; a parameter's name is the first
+    `type_identifier` of its `type_parameter` node (a constraint like
+    `T: Equatable` is a separate `user_type` and is left to reference).
+    """
+    names: set[str] = set()
+    scope = node
+    while scope is not None:
+        for child in scope.children:
+            if child.type != "type_parameters":
+                continue
+            for param in child.children:
+                if param.type != "type_parameter":
+                    continue
+                for sub in param.children:
+                    if sub.type == "type_identifier":
+                        name = _read_text(sub, source)
+                        if name:
+                            names.add(name)
+                        break
+        scope = scope.parent
+    return frozenset(names)
+
+
+def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                             skip: frozenset[str] | None = None) -> None:
+    """Walk a Swift type expression; append (name, role) tuples (role 'type' or 'generic_arg').
+
+    Generic type parameters in scope (``skip``) are local bindings, not
+    references; emitting one mints a sourceless stub (the bare `t` god node a
+    `<T>` type or function would otherwise share corpus-wide)."""
     if node is None:
         return
+    if skip is None:
+        skip = _swift_type_parameters_in_scope(node, source)
     t = node.type
     if t == "type_annotation":
         for c in node.children:
             if c.is_named:
-                _swift_collect_type_refs(c, source, generic, out)
+                _swift_collect_type_refs(c, source, generic, out, skip)
         return
     if t == "user_type":
         for c in node.children:
             if c.type == "type_identifier":
                 text = _read_text(c, source)
-                if text and text != "Self":
+                if text and text != "Self" and text not in skip:
                     out.append((text, "generic_arg" if generic else "type"))
                 break
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _swift_collect_type_refs(arg, source, True, out)
+                        _swift_collect_type_refs(arg, source, True, out, skip)
         return
     if t == "type_identifier":
         text = _read_text(node, source)
@@ -1188,19 +1223,19 @@ def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         # method collapses onto (a god node), the same keyword-type pitfall as
         # Rust's `Self`. A genuine type (including `Int`/`String` builtin hubs)
         # is unaffected.
-        if text and text != "Self":
+        if text and text != "Self" and text not in skip:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("optional_type", "implicitly_unwrapped_optional_type", "array_type",
              "dictionary_type", "tuple_type"):
         for c in node.children:
             if c.is_named:
-                _swift_collect_type_refs(c, source, generic, out)
+                _swift_collect_type_refs(c, source, generic, out, skip)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _swift_collect_type_refs(c, source, generic, out)
+                _swift_collect_type_refs(c, source, generic, out, skip)
 
 def _swift_property_type_node(property_node):
     """Return the type_annotation child of a Swift property_declaration, if any."""
