@@ -59,3 +59,11 @@ def test_step1_snippet_behind_uptodate_nongit(tmp_path):
     plain.mkdir()
     assert _run(snippet, work, plain) == ""
     assert _run(snippet, work, up) == ""  # git repo, no remote/upstream
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.name)
+def test_no_skip_to_step2_before_check(skill):
+    text = skill.read_text(encoding="utf-8")
+    before = text[:text.index("commit(s) behind")]
+    assert "move straight to Step 2" not in before
+    assert "If the import succeeds, print nothing and continue below." in before

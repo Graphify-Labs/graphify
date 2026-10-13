@@ -100,7 +100,7 @@ INPUT_PATH
 GRAPHIFY_ROOT_EOF
 ```
 
-If the import succeeds, print nothing.
+If the import succeeds, print nothing and continue below.
 
 Then, if the input is a git checkout, check it is not behind (prints nothing for a non-git path or one with no upstream/remote):
 

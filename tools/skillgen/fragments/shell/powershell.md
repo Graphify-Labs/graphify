@@ -68,6 +68,6 @@ INPUT_PATH
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
 ```
 
-If the import succeeds, print nothing and move straight to Step 2.
+If the import succeeds, print nothing and continue below.
 
 **In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**

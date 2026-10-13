@@ -1292,7 +1292,7 @@ _BEHIND_DEFAULT_BRANCH_FIX_LINES = frozenset((
         "# Same commit `graphify update` stamps: graph.json's built_at_commit, else the input's git HEAD.",
         '$(cat graphify-out/.graphify_python) -c "',
         'If the import succeeds, print nothing and move straight to Step 2.',
-        'If the import succeeds, print nothing.',
+        'If the import succeeds, print nothing and continue below.',
         'Then, if the input is a git checkout, check it is not behind (prints nothing for a non-git path or one with no upstream/remote):',
         'This compares against the last-fetched remote refs (no fetch). If it printed a WARNING, tell the user and offer to scan a fresh worktree of the default branch instead (`git -C INPUT_PATH worktree add <tmp-dir> <base>`, then use `<tmp-dir>` as INPUT_PATH and re-run Step 1). Otherwise continue to Step 2.',
         '```',
