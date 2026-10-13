@@ -1811,6 +1811,74 @@ def test_python_module_call_resolves_when_same_file_imports_function_with_nested
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_python_module_qualified_call_resolves_from_enclosing_scopes(tmp_path):
+    """`mod.func()` inside a class method or a nested function resolves against
+    the enclosing file's imports (#2447, cause C).
+
+    A method hangs off its class via a `method` edge rather than a `contains`
+    edge from the file node, and a nested function's `contains` parent is the
+    enclosing function, so looking up `file_of_node.get(caller)` directly missed
+    the file node's import set in both cases."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    mod = scripts / "mod.py"
+    mod.write_text("def func():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text(
+        "import mod\n\n"
+        "class Worker:\n"
+        "    def run(self):\n"
+        "        return mod.func()\n\n"
+        "class OuterClass:\n"
+        "    class InnerClass:\n"
+        "        def nested_run(self):\n"
+        "            return mod.func()\n\n"
+        "def outer():\n"
+        "    def inner():\n"
+        "        def deep_inner():\n"
+        "            return mod.func()\n"
+        "        return mod.func() + deep_inner()\n"
+        "    return inner()\n"
+    )
+    result = extract([mod, caller], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+
+    def call_edges_from(caller_label: str) -> list[dict]:
+        return [
+            e for e in result["edges"]
+            if e["relation"] == "calls"
+            and nodes[e["source"]]["label"].lstrip(".").removesuffix("()") == caller_label
+            and "func" in nodes[e["target"]]["label"]
+            and "mod.py" in (nodes[e["target"]].get("source_file") or "")
+        ]
+
+    for caller_label in ("run", "nested_run", "inner", "deep_inner"):
+        edges = call_edges_from(caller_label)
+        assert len(edges) == 1, f"expected {caller_label}->func edge, got {edges}"
+        assert edges[0]["confidence"] == "EXTRACTED"
+
+    # Cause A guard: bare `import mod` at the scan root when `mod.py` lives only
+    # under `scripts/` still does not resolve from either file scope or a method.
+    root_caller = tmp_path / "root_caller.py"
+    root_caller.write_text(
+        "import mod\n\n"
+        "def root_use():\n"
+        "    return mod.func()\n\n"
+        "class RootWorker:\n"
+        "    def root_run(self):\n"
+        "        return mod.func()\n"
+    )
+    root_result = extract([mod, root_caller], cache_root=tmp_path, root=tmp_path)
+    root_nodes = {n["id"]: n for n in root_result["nodes"]}
+    root_calls = [
+        e for e in root_result["edges"]
+        if e["relation"] == "calls"
+        and "func" in root_nodes.get(e["target"], {}).get("label", "")
+        and "mod.py" in (root_nodes.get(e["target"], {}).get("source_file") or "")
+    ]
+    assert root_calls == [], f"unresolvable root import must not link to scripts/mod.py: {root_calls}"
+
+
 def test_python_from_import_alias_module_call_resolves(tmp_path):
     """`from pkg import mod as alias` must resolve `alias.func()` the same way the
     unaliased `from pkg import mod` / `mod.func()` form already does (#2082). The
