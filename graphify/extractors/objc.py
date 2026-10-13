@@ -378,7 +378,7 @@ def extract_objc(path: Path) -> dict:
                 continue
             # Conditional members need preprocessor handling. Do not emit a
             # partial enum when a clean body contains unsupported child nodes.
-            if any(child.type not in {"{", "}", ",", "comment", "enumerator"}
+            if any(child.type not in {"{", "}", ",", "comment", "enumerator", "attribute_specifier"}
                    for child in body.children):
                 continue
 

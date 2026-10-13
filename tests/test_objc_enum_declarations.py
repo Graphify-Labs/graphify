@@ -232,3 +232,21 @@ def test_objc_macro_enum_unsupported_parts_do_not_emit_partial_enums(tmp_path, d
     result = extract([source], cache_root=tmp_path)
     assert {n["label"] for n in result["nodes"]}.isdisjoint({"Broken", "Bad", "Other"})
     assert _edge_labels(result, "case_of") == {("Good", "Kept")}
+
+
+@pytest.mark.parametrize("macro", ["NS_ENUM", "NS_OPTIONS"])
+def test_objc_macro_enum_preserves_members_with_attributes(tmp_path, macro):
+    source = tmp_path / "Attributes.h"
+    source.write_text(
+        "#import <Foundation/Foundation.h>\n"
+        f"typedef {macro}(NSInteger, Kind) {{\n"
+        "    First __attribute__((deprecated)),\n"
+        "    Second,\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    result = extract([source], cache_root=tmp_path)
+    assert _edge_labels(result, "case_of") == {("Kind", "First"), ("Kind", "Second")}
+    nodes = {n["label"]: n for n in result["nodes"]}
+    assert nodes["First"]["source_location"] == "L3"
+    assert nodes["Second"]["source_location"] == "L4"
