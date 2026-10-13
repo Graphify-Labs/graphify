@@ -736,6 +736,184 @@ def test_rebuild_honors_persisted_no_gitignore(tmp_path):
     assert any(source.endswith("generated/gen.py") for source in sources)
 
 
+def test_cluster_build_config_flat_precedence_and_atomic_readback(tmp_path, monkeypatch, caplog):
+    from graphify.watch import _adopt_cluster_settings, _cluster_settings, _valid_cluster_value
+    from graphify.paths import write_json_atomic
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    config = out / ".graphify_build.json"
+    prior = {
+        "excludes": ["vendor"], "gitignore": False, "future_option": {"keep": True},
+        "clustering": {"exclude_hubs_percentile": 90}, "schema_version": 2,
+        "cluster_exclude_hubs_percentile": 999,
+    }
+    config.write_text(json.dumps(prior))
+    assert _cluster_settings(out) == (1.0, None)
+    assert "invalid cluster_exclude_hubs_percentile" in caplog.text
+    assert _adopt_cluster_settings(out, {"cluster_resolution": 2.5}) == "adopted"
+    saved = json.loads(config.read_text())
+    assert saved == {
+        "excludes": ["vendor"], "gitignore": False, "future_option": {"keep": True},
+        "clustering": {"exclude_hubs_percentile": 90}, "schema_version": 2,
+        "cluster_resolution": 2.5,
+    }
+    assert _cluster_settings(out) == (2.5, None)
+    assert _cluster_settings(out, {"cluster_resolution": 3}) == (3, None)
+    config.write_text(json.dumps({"cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90}))
+    assert _cluster_settings(out) == (2.5, 90)
+    config.write_text(json.dumps({"cluster_exclude_hubs_percentile": 90}))
+    assert _cluster_settings(out) == (1.0, 90)
+
+    original = json.loads(config.read_text())
+    def before_swap(path, obj):
+        raise OSError("pre-swap")
+    monkeypatch.setattr("graphify.paths.write_json_atomic", before_swap)
+    with pytest.raises(RuntimeError, match="not adopted"):
+        _adopt_cluster_settings(out, {"cluster_resolution": 2.5})
+    assert json.loads(config.read_text()) == original
+
+    def after_swap(path, obj):
+        write_json_atomic(path, obj)
+        raise OSError("fallback cleanup")
+    monkeypatch.setattr("graphify.paths.write_json_atomic", after_swap)
+    assert _adopt_cluster_settings(out, {"cluster_resolution": 2.5}) == "adopted_after_error"
+    assert json.loads(config.read_text())["cluster_resolution"] == 2.5
+
+    def uncertain(path, obj):
+        config.write_text("broken")
+        raise OSError("fallback left uncertain state")
+    monkeypatch.setattr("graphify.paths.write_json_atomic", uncertain)
+    with pytest.raises(RuntimeError, match="uncertain"):
+        _adopt_cluster_settings(out, {"cluster_resolution": 3})
+
+    config.write_text(json.dumps(original))
+    def different(path, obj):
+        config.write_text(json.dumps({"other_writer": True}))
+        raise OSError("destination changed")
+    monkeypatch.setattr("graphify.paths.write_json_atomic", different)
+    with pytest.raises(RuntimeError, match="uncertain"):
+        _adopt_cluster_settings(out, {"cluster_resolution": 3})
+
+    config.write_text(json.dumps(original))
+    def missing(path, obj):
+        config.unlink()
+        raise OSError("destination missing")
+    monkeypatch.setattr("graphify.paths.write_json_atomic", missing)
+    with pytest.raises(RuntimeError, match="uncertain"):
+        _adopt_cluster_settings(out, {"cluster_resolution": 3})
+
+    # Python considers True == 1.0; readback must compare JSON types as well.
+    config.write_text(json.dumps({"cluster_resolution": True}))
+    monkeypatch.setattr("graphify.paths.write_json_atomic", before_swap)
+    with pytest.raises(RuntimeError, match="not adopted"):
+        _adopt_cluster_settings(out, {"cluster_resolution": 1.0})
+    assert json.loads(config.read_text())["cluster_resolution"] is True
+    with pytest.raises(ValueError):
+        _valid_cluster_value("cluster_resolution", True)
+    with pytest.raises(ValueError):
+        _valid_cluster_value("cluster_exclude_hubs_percentile", False)
+    monkeypatch.setattr("graphify.paths.write_json_atomic", write_json_atomic)
+    config.write_text(
+        '{"cluster_resolution": 1e309, "cluster_exclude_hubs_percentile": 90, "excludes": ["vendor"]}'
+    )
+    assert _cluster_settings(out) == (1.0, 90)
+    assert _adopt_cluster_settings(out, {"cluster_resolution": 2.5}) == "adopted"
+    assert json.loads(config.read_text()) == {
+        "cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90,
+        "excludes": ["vendor"],
+    }
+
+    config.write_text('{"future": 1e309}')
+    with pytest.raises(RuntimeError, match="not adopted"):
+        _adopt_cluster_settings(out, {"cluster_resolution": 2.5})
+    assert config.read_text() == '{"future": 1e309}'
+
+
+def test_rebuild_uses_output_local_clustering_only_for_topology_change(tmp_path, monkeypatch):
+    from graphify.watch import _rebuild_code
+    import importlib
+    cluster_module = importlib.import_module("graphify.cluster")
+    analyze_module = importlib.import_module("graphify.analyze")
+
+    source = tmp_path / "app.py"
+    source.write_text("def first(): return 1\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    config = out / ".graphify_build.json"
+    config.write_text(json.dumps({"cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90}))
+    seen_cluster = []
+    seen_gods = []
+    real_cluster = cluster_module.cluster
+    real_gods = analyze_module.god_nodes
+    def spy_cluster(graph, **kwargs):
+        seen_cluster.append(kwargs)
+        return real_cluster(graph, **kwargs)
+    def spy_gods(graph, **kwargs):
+        seen_gods.append(kwargs)
+        return real_gods(graph, **kwargs)
+    monkeypatch.setattr(cluster_module, "cluster", spy_cluster)
+    monkeypatch.setattr(analyze_module, "god_nodes", spy_gods)
+
+    assert _rebuild_code(tmp_path, acquire_lock=False)
+    assert seen_cluster[-1] == {"resolution": 2.5, "exclude_hubs_percentile": 90}
+    assert seen_gods[-1] == {"exclude_hubs_percentile": 90}
+    first_count = (len(seen_cluster), len(seen_gods))
+    assert _rebuild_code(tmp_path, acquire_lock=False)
+    assert (len(seen_cluster), len(seen_gods)) == first_count
+
+    config.write_text("{}")
+    source.write_text("def first(): return 1\ndef second(): return first()\n")
+    assert _rebuild_code(tmp_path, acquire_lock=False)
+    assert seen_cluster[-1] == {"resolution": 1.0, "exclude_hubs_percentile": None}
+    assert seen_gods[-1] == {"exclude_hubs_percentile": None}
+
+
+def test_default_output_cluster_only_adoption_reaches_update(tmp_path, monkeypatch):
+    import importlib
+    cluster_module = importlib.import_module("graphify.cluster")
+    analyze_module = importlib.import_module("graphify.analyze")
+
+    source = tmp_path / "app.py"
+    source.write_text("def first(): return 1\n")
+    assert _rebuild_code(tmp_path, acquire_lock=False)
+    first = subprocess.run(
+        [sys.executable, "-m", "graphify", "cluster-only", ".", "--no-viz", "--no-label",
+         "--resolution", "2.5", "--exclude-hubs", "90"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert first.returncode == 0, first.stderr
+    config = tmp_path / "graphify-out" / ".graphify_build.json"
+    assert json.loads(config.read_text()) == {
+        "cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90,
+    }
+    flagless = subprocess.run(
+        [sys.executable, "-m", "graphify", "cluster-only", ".", "--no-viz", "--no-label"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert flagless.returncode == 0, flagless.stderr
+
+    seen_cluster = []
+    seen_gods = []
+    real_cluster = cluster_module.cluster
+    real_gods = analyze_module.god_nodes
+    def spy_cluster(graph, **kwargs):
+        seen_cluster.append(kwargs)
+        return real_cluster(graph, **kwargs)
+    def spy_gods(graph, **kwargs):
+        seen_gods.append(kwargs)
+        return real_gods(graph, **kwargs)
+    monkeypatch.setattr(cluster_module, "cluster", spy_cluster)
+    monkeypatch.setattr(analyze_module, "god_nodes", spy_gods)
+    source.write_text("def first(): return 1\ndef second(): return first()\n")
+    assert _rebuild_code(tmp_path, acquire_lock=False)
+    assert seen_cluster[-1] == {"resolution": 2.5, "exclude_hubs_percentile": 90}
+    assert seen_gods[-1] == {"exclude_hubs_percentile": 90}
+    counts = (len(seen_cluster), len(seen_gods))
+    assert _rebuild_code(tmp_path, acquire_lock=False)
+    assert (len(seen_cluster), len(seen_gods)) == counts
+
+
 def test_no_cluster_rebuild_disambiguates_colliding_file_labels(tmp_path):
     """The raw update path keeps the same display labels as a fresh extract.
 
@@ -1384,7 +1562,7 @@ def test_rebuild_code_is_idempotent_when_cluster_ids_flap(tmp_path, monkeypatch)
 
     calls = {"n": 0}
 
-    def flaky_cluster(G):
+    def flaky_cluster(G, **_settings):
         calls["n"] += 1
         nodes = sorted(G.nodes())
         if calls["n"] % 2 == 1:
@@ -1417,7 +1595,7 @@ def test_rebuild_code_skips_cluster_when_topology_unchanged(tmp_path, monkeypatc
 
     calls = {"n": 0}
 
-    def cluster_once(G):
+    def cluster_once(G, **_settings):
         calls["n"] += 1
         if calls["n"] > 1:
             raise AssertionError("cluster() should be skipped when topology is unchanged")

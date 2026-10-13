@@ -807,6 +807,67 @@ def test_cluster_only_happy_path_exits_zero(tmp_path):
     assert "communities" in r.stdout
 
 
+def test_cluster_only_adopts_and_reuses_settings_for_exact_graph_owner(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    out = _make_graph(project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    config = out / ".graphify_build.json"
+    config.write_text(json.dumps({"excludes": ["vendor"], "future": {"opaque": 1}}))
+
+    first = _run([
+        "cluster-only", ".", "--graph", str(out / "graph.json"), "--no-viz", "--no-label",
+        "--resolution", "2.5", "--exclude-hubs=90",
+    ], elsewhere)
+    assert first.returncode == 0, first.stderr
+    assert json.loads(config.read_text()) == {
+        "excludes": ["vendor"], "future": {"opaque": 1},
+        "cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90,
+    }
+    assert not (elsewhere / "graphify-out").exists()
+
+    # Simulate generated Step 4 replacing communities with its default partition.
+    graph = json.loads((out / "graph.json").read_text())
+    for node in graph["nodes"]:
+        node["community"] = -1
+    (out / "graph.json").write_text(json.dumps(graph))
+    second = _run([
+        "cluster-only", ".", "--graph", str(out / "graph.json"), "--no-viz", "--no-label",
+    ], elsewhere)
+    assert second.returncode == 0, second.stderr
+    restored = json.loads((out / "graph.json").read_text())
+    assert {node.get("community") for node in restored["nodes"]} != {-1}
+    assert json.loads(config.read_text())["cluster_resolution"] == 2.5
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--resolution", "nan"), ("--resolution", "inf"), ("--resolution", "0"),
+    ("--exclude-hubs", "-1"), ("--exclude-hubs", "101"),
+    ("--exclude-hubs", "-inf"),
+])
+def test_cluster_only_invalid_settings_exit_before_mutation(tmp_path, flag, value):
+    out = _make_graph(tmp_path)
+    graph = (out / "graph.json").read_bytes()
+    result = _run(["cluster-only", ".", flag, value, "--no-viz"], tmp_path)
+    assert result.returncode == 2
+    assert (out / "graph.json").read_bytes() == graph
+    assert not (out / ".graphify_build.json").exists()
+
+
+def test_cluster_only_refused_write_does_not_adopt_settings(tmp_path):
+    out = _make_graph(tmp_path)
+    graph_path = out / "graph.json"
+    data = json.loads(graph_path.read_text())
+    data["nodes"] += data["nodes"][:3]
+    graph_path.write_text(json.dumps(data))
+    result = _run([
+        "cluster-only", ".", "--resolution", "2.5", "--no-viz", "--no-label",
+    ], tmp_path)
+    assert result.returncode == 1
+    assert not (out / ".graphify_build.json").exists()
+
+
 def test_cluster_only_preserves_parallel_edges(tmp_path):
     """#3999: cluster-only reloads graph.json into a simple Graph (one edge per
     node pair) to re-cluster, then used to write THAT back out, silently
