@@ -947,10 +947,45 @@ def _kotlin_annotation_class_literal_refs(
     return names
 
 
-def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a Kotlin type expression; append (name, role) tuples."""
+def _kotlin_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
+    """Return Kotlin type-parameter names visible from ``node``.
+
+    A `class Box<T>` or `fun <R> map(...)` binds `T`/`R` as local names, not
+    corpus symbols. Walking up to every enclosing declaration's `type_parameters`
+    list (the use site is `type_arguments`, a different node, so this never
+    collects an instantiation argument) collects them for the scope skip set.
+    """
+    names: set[str] = set()
+    scope = node
+    while scope is not None:
+        for child in scope.children:
+            if child.type != "type_parameters":
+                continue
+            for param in child.children:
+                if param.type != "type_parameter":
+                    continue
+                for sub in param.children:
+                    if sub.type in ("identifier", "type_identifier"):
+                        name = _read_text(sub, source)
+                        if name:
+                            names.add(name)
+                        break
+        scope = scope.parent
+    return frozenset(names)
+
+
+def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                              skip: frozenset[str] | None = None) -> None:
+    """Walk a Kotlin type expression; append (name, role) tuples.
+
+    Generic type parameters in scope (``skip``) are local bindings, not
+    references; emitting one mints a sourceless stub (the bare `t` god node a
+    `<T>` class or function would otherwise share corpus-wide).
+    """
     if node is None:
         return
+    if skip is None:
+        skip = _kotlin_type_parameters_in_scope(node, source)
     t = node.type
     if t in ("integral_literal", "boolean_literal"):
         return
@@ -958,14 +993,14 @@ def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         for c in node.children:
             if c.type in ("identifier", "type_identifier"):
                 text = _read_text(c, source)
-                if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
+                if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES and text not in skip:
                     out.append((text, "generic_arg" if generic else "type"))
                 break
             if c.type == "simple_user_type":
                 for sub in c.children:
                     if sub.type in ("identifier", "type_identifier"):
                         text = _read_text(sub, source)
-                        if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
+                        if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES and text not in skip:
                             out.append((text, "generic_arg" if generic else "type"))
                         break
                 break
@@ -975,24 +1010,24 @@ def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
                     if arg.type == "type_projection":
                         for sub in arg.children:
                             if sub.is_named:
-                                _kotlin_collect_type_refs(sub, source, True, out)
+                                _kotlin_collect_type_refs(sub, source, True, out, skip)
                     elif arg.is_named:
-                        _kotlin_collect_type_refs(arg, source, True, out)
+                        _kotlin_collect_type_refs(arg, source, True, out, skip)
         return
     if t in ("identifier", "type_identifier"):
         text = _read_text(node, source)
-        if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
+        if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES and text not in skip:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("nullable_type", "parenthesized_type", "type_reference"):
         for c in node.children:
             if c.is_named:
-                _kotlin_collect_type_refs(c, source, generic, out)
+                _kotlin_collect_type_refs(c, source, generic, out, skip)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _kotlin_collect_type_refs(c, source, generic, out)
+                _kotlin_collect_type_refs(c, source, generic, out, skip)
 
 def _kotlin_property_type_node(property_node):
     """Find the user_type node within a Kotlin property_declaration."""
