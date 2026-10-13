@@ -1838,17 +1838,18 @@ def scope_semantic_result(
     still says unchanged, so no later incremental run re-dispatches it and the
     loss is permanent until a full rebuild.
 
-    Items whose ``source_file`` resolves outside ``allowed_source_files`` are
-    dropped from ``result``'s ``nodes`` / ``edges`` / ``hyperedges`` lists
-    (mutated in place); items without a ``source_file`` pass through. An edge
-    or hyperedge that survives the scope filter but references a dropped node
-    id is dropped too (#1916 mirror), unless that id is also defined by a kept
-    node (duplicate attribution must not be over-pruned).
+    Nodes and hyperedges whose ``source_file`` resolves outside
+    ``allowed_source_files`` are dropped from ``result`` (mutated in place);
+    items without a ``source_file`` pass through. An edge whose own
+    ``source_file`` is outside the allowlist is kept when both endpoint ids are
+    kept nodes (#2276). An edge or hyperedge that survives
+    the scope filter but references a dropped node id is dropped too (#1916
+    mirror), unless that id is also defined by a kept node (duplicate
+    attribution must not be over-pruned).
 
     Path matching shares :func:`_semantic_source_matcher` with
     :func:`save_semantic_cache` (relative against ``root``, walked-path
-    identity), so an item this function keeps can never still hit the save's
-    out-of-scope skip, and vice versa.
+    identity). That kept edge can still be skipped by the cache write.
 
     Returns ``(dropped_source_files, dropped_item_count)`` for logging;
     ``dropped_source_files`` holds the normalized ``source_file`` strings of
@@ -1885,6 +1886,20 @@ def scope_semantic_result(
         for item in result.get(bucket) or []:
             display, ident = _item_identity(item)
             if ident is not None and ident not in allowed_paths:
+                if bucket == "edges":
+                    src = item.get("source")
+                    tgt = item.get("target")
+                    # Nodes are processed first, so kept_ids is complete.
+                    # An edge to a dropped id that is not also kept still falls
+                    # through and is counted below (#2276).
+                    if (
+                        _hashable(src)
+                        and _hashable(tgt)
+                        and src in kept_ids
+                        and tgt in kept_ids
+                    ):
+                        kept.append(item)
+                        continue
                 dropped_files.add(display)
                 dropped_items += 1
                 if bucket == "nodes" and item.get("id") is not None:

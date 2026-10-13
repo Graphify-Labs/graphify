@@ -2836,6 +2836,7 @@ def extract_corpus_parallel(
     dropped_ids: set = set()
     dropped_files: set[str] = set()
     kept_nodes: list[dict] = []
+    kept_ids: set = set()
     for n in merged.get("nodes", []):
         if _out_of_scope(n):
             if n.get("id") is not None:
@@ -2843,18 +2844,27 @@ def extract_corpus_parallel(
             dropped_files.add(str(n.get("source_file")))
             continue
         kept_nodes.append(n)
+        if n.get("id") is not None:
+            kept_ids.add(n.get("id"))
     dropped_node_count = len(merged.get("nodes", [])) - len(kept_nodes)
     merged["out_of_scope_dropped"] = dropped_node_count
     if dropped_node_count:
         merged["nodes"] = kept_nodes
-        # Keep the graph consistent: an edge or hyperedge referencing a
-        # dropped node's id (or itself attributed to an undispatched real
-        # file) must not survive its endpoint.
+        # Keep the graph consistent: drop an edge that references a dropped
+        # node's id. An edge attributed to an undispatched file is kept when
+        # both endpoints are kept nodes (#2276). Hyperedges stay on the
+        # out-of-scope predicate.
         merged["edges"] = [
             e for e in merged.get("edges", [])
-            if not _out_of_scope(e)
-            and e.get("source") not in dropped_ids
+            if e.get("source") not in dropped_ids
             and e.get("target") not in dropped_ids
+            and (
+                not _out_of_scope(e)
+                or (
+                    e.get("source") in kept_ids
+                    and e.get("target") in kept_ids
+                )
+            )
         ]
         merged["hyperedges"] = [
             h for h in merged.get("hyperedges", [])
