@@ -348,13 +348,13 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
+**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
 
 ```bash
 mkdir -p graphify-out
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build, build_from_json
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
@@ -366,7 +366,13 @@ detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(enc
 
 # root= mirrors the --update runbook (#1361): relativize source_file to the same
 # base so the full build and incremental --update never drift apart on re-extract.
-G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
+# A full build dedups entities like `graphify extract` (#4431). After --update the
+# extraction is build_merge's output, already deduped with untouched nodes kept
+# apart (#3477), so it is rebuilt as-is rather than deduped a second time.
+if extraction.get('_merged_by_build_merge'):
+    G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
+else:
+    G = build([extraction], dedup=True, root='INPUT_PATH', directed=IS_DIRECTED)
 # Guard BEFORE any write: an empty extraction must not clobber a good graph.json /
 # GRAPH_REPORT.md / analysis sidecar. Check immediately after build (#1392).
 if G.number_of_nodes() == 0:
@@ -386,8 +392,11 @@ questions = suggest_questions(G, communities, labels)
 # nothing) when the new graph is smaller than the existing graph.json. Only write
 # GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
 # they never describe a graph that graph.json doesn't contain (#1392).
+collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)
 wrote = to_json(G, communities, 'graphify-out/graph.json')
 if not wrote:
+    if collapsed:
+        print(f'Note: entity dedup merged {collapsed} duplicate node(s) (#4431); a graph.json built before the skill deduplicated is larger, so this shrink is expected.')
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
     raise SystemExit(1)
@@ -444,7 +453,7 @@ Then regenerate the report and save the labels for the visualizer:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build, build_from_json
 from graphify.cluster import score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
@@ -456,7 +465,13 @@ detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(enc
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text(encoding=\"utf-8\"))
 
 # root= as in Step 4 / the --update runbook (#1361) — same base for node-key parity.
-G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
+# A full build dedups entities like `graphify extract` (#4431). After --update the
+# extraction is build_merge's output, already deduped with untouched nodes kept
+# apart (#3477), so it is rebuilt as-is rather than deduped a second time.
+if extraction.get('_merged_by_build_merge'):
+    G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
+else:
+    G = build([extraction], dedup=True, root='INPUT_PATH', directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}

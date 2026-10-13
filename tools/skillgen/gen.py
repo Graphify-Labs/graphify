@@ -1275,6 +1275,27 @@ def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
     )
 
 
+def _is_skill_build_dedup_fix_line(line: str) -> bool:
+    """Whether a line is part of the full-build entity-dedup fix (#4431).
+
+    The full-build steps called ``build_from_json`` directly, so
+    ``deduplicate_entities`` never ran, unlike ``graphify extract``
+    (``build([...], dedup=True)``, #769) and ``--update`` (``build_merge``).
+    They now import ``build`` and call ``build([extraction], dedup=True, ...)``
+    (the call lines already match the #1392 directed predicate). Step 4 also
+    reads the dedup-collapse count before ``to_json`` and explains a refused
+    shrink caused by dedup. These are the old/new import lines and those added
+    Step 4 lines.
+    """
+    stripped = line.strip()
+    return stripped in (
+        "from graphify.build import build_from_json",
+        "from graphify.build import build",
+        "collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)",
+        "if collapsed:",
+    ) or stripped.startswith("print(f'Note: entity dedup merged {collapsed} duplicate node(s) (#4431)")
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1302,6 +1323,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
+    _is_skill_build_dedup_fix_line,
 )
 
 

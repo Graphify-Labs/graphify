@@ -144,6 +144,8 @@ merged_out = {
     'hyperedges': list(G.graph.get('hyperedges', [])),
     'input_tokens': new_extraction.get('input_tokens', 0),
     'output_tokens': new_extraction.get('output_tokens', 0),
+    # Already deduped here; tells Step 4/5 not to dedup again (#4431, #3477).
+    '_merged_by_build_merge': True,
 }
 Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged_out, ensure_ascii=False), encoding=\"utf-8\")
 print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])} nodes, {len(merged_out[\"edges\"])} edges)')

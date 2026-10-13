@@ -409,13 +409,13 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source->target), otherwise `False` (the default undirected `Graph`). Substitute it everywhere it appears, the same way you substitute `INPUT_PATH` - do not leave the literal `IS_DIRECTED` in the code.
+**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source->target), otherwise `False` (the default undirected `Graph`). Substitute it everywhere it appears, the same way you substitute `INPUT_PATH` - do not leave the literal `IS_DIRECTED` in the code.
 
 ```bash
 mkdir -p graphify-out
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
@@ -425,7 +425,7 @@ from pathlib import Path
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 # Guard BEFORE any write: an empty extraction must not clobber a good graph.json /
 # GRAPH_REPORT.md / analysis sidecar. Check immediately after build (#1392).
 if G.number_of_nodes() == 0:
@@ -444,8 +444,11 @@ questions = suggest_questions(G, communities, labels)
 # Persist the graph first and only write the report/analysis if it actually
 # persisted - to_json refuses to shrink an existing graph.json (#479), and a
 # report describing a graph we did not write would be a lie (#1392).
+collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)
 wrote = to_json(G, communities, 'graphify-out/graph.json')
 if not wrote:
+    if collapsed:
+        print(f'Note: entity dedup merged {collapsed} duplicate node(s) (#4431); a graph.json built before the skill deduplicated is larger, so this shrink is expected.')
     print('ERROR: refused to shrink graphify-out/graph.json (fewer nodes than the existing graph). Run a full rebuild to be safe.')
     raise SystemExit(1)
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
@@ -476,7 +479,7 @@ Then regenerate the report and save the labels for the visualizer:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.cluster import score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
@@ -487,7 +490,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
@@ -523,7 +526,7 @@ If `--obsidian` was given:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.export import to_obsidian, to_canvas
 from pathlib import Path
 
@@ -531,7 +534,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
@@ -554,7 +557,7 @@ Generate the HTML graph (always, unless `--no-viz`):
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.export import to_html
 from pathlib import Path
 
@@ -562,7 +565,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
 
@@ -581,11 +584,11 @@ else:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.export import to_cypher
 from pathlib import Path
 
-G = build_from_json(json.loads(Path('.graphify_extract.json').read_text()), directed=IS_DIRECTED)
+G = build([json.loads(Path('.graphify_extract.json').read_text())], dedup=True, directed=IS_DIRECTED)
 to_cypher(G, 'graphify-out/cypher.txt')
 print('cypher.txt written - import with: cypher-shell < graphify-out/cypher.txt')
 "
@@ -596,14 +599,14 @@ print('cypher.txt written - import with: cypher-shell < graphify-out/cypher.txt'
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.cluster import cluster
 from graphify.export import push_to_neo4j
 from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
 result = push_to_neo4j(G, uri='NEO4J_URI', user='NEO4J_USER', password='NEO4J_PASSWORD', communities=communities)
@@ -618,7 +621,7 @@ Replace `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` with actual values. Default 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.export import to_svg
 from pathlib import Path
 
@@ -626,7 +629,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
 
@@ -640,14 +643,14 @@ print('graph.svg written - embeds in Obsidian, Notion, GitHub READMEs')
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
-from graphify.build import build_from_json
+from graphify.build import build
 from graphify.export import to_graphml
 from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build([extraction], dedup=True, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
 to_graphml(G, communities, 'graphify-out/graph.graphml')
