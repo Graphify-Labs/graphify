@@ -11,11 +11,12 @@ graphify pipeline detect-incremental INPUT_PATH
 ```
 
 Replace INPUT_PATH with the actual path. This diffs the corpus against the manifest
-and writes `.graphify_incremental.json` (the raw result) plus `.graphify_detect.json`,
-so Steps 3A–6 (which read it unconditionally) see the right state for an incremental
-run: `files` carries the changed subset (drives Step 3A AST + Step 3B0 cache check on
-only what changed) and `all_files` the full corpus. It prints the changed/deleted
-counts; if nothing changed it says so.
+and writes `graphify-out/.graphify_incremental.json` (the raw result) plus
+`.graphify_detect.json`, so Steps 3A–6 (which read it unconditionally) see the right
+state for an incremental run: `files` carries the changed subset (drives Step 3A AST +
+Step 3B0 cache check on only what changed) and `all_files` the full corpus. It prints
+the changed/deleted counts broken down by file type (`new_by_type`) rather than dumping
+every corpus path into the agent context (#3944); if nothing changed it says so.
 
 If new files exist, check whether all changed files are code files:
 
