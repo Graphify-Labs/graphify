@@ -154,6 +154,28 @@ def test_a_cpp_call_does_not_bind_to_a_csharp_declaration():
     assert link_cross_repo_member_calls(G) == 0
 
 
+PARKED_PHP = [{"callee": "greet", "receiver_type": "Greeter", "lang": "php", "line": "L4"}]
+
+
+def test_a_php_call_binds_to_a_php_declaration_in_another_repo():
+    G = _graph(
+        caller=_caller("a", PARKED_PHP, source_file="src/App.php"),
+        declarations=[(_declaration("b", "Greeter", "src/Greeter.php"),
+                       _method("b", ".greet()", source_file="src/Greeter.php"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_php_call_does_not_bind_to_a_java_declaration():
+    G = _graph(
+        caller=_caller("a", PARKED_PHP, source_file="src/App.php"),
+        declarations=[(_declaration("b", "Greeter", "src/Greeter.java"),
+                       _method("b", ".greet()", source_file="src/Greeter.java"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
 def test_a_cpp_header_declaration_answers_through_defines():
     # A C++ class that only declares `void greet();` owns it through `defines`,
     # the relation the extractor also uses for fields, so a header-only library
