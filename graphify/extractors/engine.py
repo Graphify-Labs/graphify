@@ -3301,6 +3301,20 @@ def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
                     ctor = value.child_by_field_name("constructor")
                     if ctor is not None and ctor.type in ("identifier", "type_identifier"):
                         tname = _read_text(ctor, source)
+                elif value is not None and value.type == "call_expression":
+                    # Angular functional DI: `private svc = inject(MyService)`
+                    func = value.child_by_field_name("function")
+                    if (func is not None
+                            and func.type == "identifier"
+                            and _read_text(func, source) == "inject"):
+                        args = value.child_by_field_name("arguments")
+                        if args is not None:
+                            first_arg = next(
+                                (c for c in args.children if c.is_named), None
+                            )
+                            if (first_arg is not None
+                                    and first_arg.type in ("identifier", "type_identifier")):
+                                tname = _read_text(first_arg, source)
                 name = _read_text(name_n, source)
                 if name and tname and name not in table:
                     table[name] = tname
