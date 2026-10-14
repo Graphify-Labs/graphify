@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jsp:root xmlns:jsp="http://java.sun.com/JSP/Page" version="2.0">
+  <jsp:directive.page contentType="text/html; charset=UTF-8"/>
+  <jsp:directive.page import="com.example.shop.Product"/>
+  <jsp:directive.include file="../common/header.jspf"/>
+  <!-- <jsp:directive.page import="com.example.legacy.OldCart"/> -->
+  <jsp:useBean id="product" type="com.example.shop.Product" scope="request"/>
+  <jsp:declaration><![CDATA[
+    private boolean isFree(Product p) {
+        return p.getPriceCents() <= 0;
+    }
+  ]]></jsp:declaration>
+  <h1><jsp:expression>product.getName()</jsp:expression></h1>
+  <jsp:forward page="/missing/fallback.jsp"/>
+</jsp:root>

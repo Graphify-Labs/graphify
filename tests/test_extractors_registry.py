@@ -42,3 +42,12 @@ def test_terraform_migrated():
 
     assert facade.extract_terraform is extract_terraform
     assert LANGUAGE_EXTRACTORS["terraform"] is extract_terraform
+
+
+def test_jsp_registered():
+    from graphify.extractors.jsp import extract_jsp
+
+    assert facade.extract_jsp is extract_jsp
+    assert LANGUAGE_EXTRACTORS["jsp"] is extract_jsp
+    for suffix in (".jsp", ".jspf", ".jspx"):
+        assert facade._DISPATCH[suffix] is extract_jsp
