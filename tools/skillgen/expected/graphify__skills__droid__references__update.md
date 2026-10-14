@@ -31,12 +31,16 @@ deleted = list(result.get('deleted_files', []))
 prior_path = out_path() / 'graph.json'
 prior = json.loads(prior_path.read_text(encoding='utf-8')) if prior_path.exists() else {}
 fortran_refresh = any(_is_fortran_source(p) for p in result.get('files', {}).get('code', [])) or bool(_fortran_sources(prior, str))
-noncode_changes = any(files for kind, files in nf.items() if kind != 'code')
-if fortran_refresh and not noncode_changes:
+if fortran_refresh:
     import subprocess
+    # Reconcile the complete accepted Fortran corpus before the manual merge
+    # can persist a graph. The incremental snapshot above still holds the
+    # changed document list for semantic Steps 3B-3C.
     subprocess.run([sys.executable, '-m', 'graphify', 'update', 'INPUT_PATH'], check=True)
-    print('Fortran corpus refresh complete. Stop this update recipe here.')
-    raise SystemExit(0)
+    print('Fortran corpus refresh complete before the manual graph write.')
+    if not any(files for kind, files in nf.items() if kind != 'code'):
+        print('No semantic changes. Stop this update recipe here.')
+        raise SystemExit(0)
 if new_total == 0 and not deleted:
     print('No files changed since last run. Nothing to update.')
     raise SystemExit(0)
@@ -47,7 +51,7 @@ if new_total > 0:
 "
 ```
 
-If the command reports **Fortran corpus refresh complete**, the update is finished; do not run the partial extraction/merge recipe below. For mixed code and document changes, continue below and perform the final repository refresh after Steps 4–8 before querying or reporting the graph.
+If the command reports **No semantic changes**, the update is finished; do not run the partial extraction/merge recipe below. For mixed code and document changes, the complete Fortran corpus has already been reconciled before any manual graph write. Continue below with the saved incremental changed-file list so semantic extraction still runs for changed documents, then perform the final repository refresh after Steps 4–8 before querying or reporting the graph.
 
 Then populate `.graphify_detect.json` so Steps 3A–6 (which read it unconditionally) see the right state for an incremental run. `files` carries the changed subset (drives Step 3A AST + Step 3B0 cache check on only what changed); `all_files` carries the full corpus for any step that needs corpus-wide context:
 

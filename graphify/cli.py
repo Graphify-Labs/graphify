@@ -4208,14 +4208,16 @@ def dispatch_command(cmd: str) -> None:
         _fortran_files = [Path(p) for p in files_by_type.get("code", [])
                           if _is_fortran_source(p)]
         _fortran_prior = {}
+        _fortran_prior_unreadable = False
         if has_path and existing_graph_path.exists():
             from graphify.security import check_graph_file_size_cap
             try:
                 check_graph_file_size_cap(existing_graph_path)
                 _fortran_prior = json.loads(existing_graph_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                print(f"error: could not read existing graph: {exc}", file=sys.stderr)
-                sys.exit(1)
+            except (OSError, ValueError):
+                # Leave refusal/force behavior and diagnostics to the existing
+                # persistence guards. Unknown prior facts cannot certify links.
+                _fortran_prior_unreadable = True
         _fortran_active = bool(_fortran_files or _fortran_sources(_fortran_prior, str))
         # Corpus relations depend on negative evidence from every accepted
         # Fortran file. Keep other languages narrow and let the AST cache serve
@@ -4743,10 +4745,14 @@ def dispatch_command(cmd: str) -> None:
                 path = target / path
             return Path(os.path.abspath(path)).as_posix()
 
-        _fortran_complete = _fortran_structure_complete(
+        _fortran_persisted = _fortran_sources(_fortran_prior, _fortran_identity)
+        _fortran_reconciled = {
+            _fortran_identity(p)
+            for p in [*deleted_files, *excluded_files, *graph_stale_sources]
+        }
+        _fortran_complete = not _fortran_prior_unreadable and _fortran_structure_complete(
             ast_result, _fortran_files,
-            _fortran_sources(_fortran_prior, _fortran_identity),
-            {_fortran_identity(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]},
+            _fortran_persisted, _fortran_reconciled,
             _fortran_identity,
         )
         if not _fortran_complete:
@@ -5007,7 +5013,14 @@ def dispatch_command(cmd: str) -> None:
             G.remove_edges_from([(a, b) for a, b, edge in G.edges(data=True)
                                  if _fortran_structure_edge(edge)])
         stages.mark("build")
-        if G.number_of_nodes() == 0:
+        # Deleting/pruning the last Fortran sources is a verified empty result,
+        # not failed extraction. Persist it through the normal guarded writer.
+        _fortran_emptied = (
+            bool(_fortran_persisted) and not code_files and not semantic_files
+            and _fortran_persisted <= _fortran_reconciled
+            and _fortran_complete and not _extraction_incomplete
+        )
+        if G.number_of_nodes() == 0 and not _fortran_emptied:
             print(
                 "[graphify extract] graph is empty — extraction produced no nodes. "
                 "Possible causes: all files skipped, binary-only corpus, or LLM "

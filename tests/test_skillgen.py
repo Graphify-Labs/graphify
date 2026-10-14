@@ -70,13 +70,113 @@ def test_update_reference_refreshes_fortran_before_unchanged_return(
     snippet = match.group(1).replace('\\"', '"')
     if docs:
         exec(compile(snippet, "update-reference", "exec"), {})
-        assert calls == []  # mixed changes continue to the documented final refresh
+        assert calls == [([sys.executable, "-m", "graphify", "update", "INPUT_PATH"],
+                          {"check": True})]
+        assert json.loads((out / ".graphify_incremental.json").read_text()) == result
     else:
         with pytest.raises(SystemExit) as exc:
             exec(compile(snippet, "update-reference", "exec"), {})
         assert exc.value.code == 0
         assert calls == [([sys.executable, "-m", "graphify", "update", "INPUT_PATH"],
                           {"check": True})]
+
+
+@pytest.mark.parametrize("third_source", ["malformed", "duplicate_declaration"])
+def test_generated_mixed_update_reconciles_fortran_before_step4(
+    tmp_path, monkeypatch, third_source,
+):
+    """An interrupted mixed recipe must save no stale Fortran links (#1803)."""
+    import json
+    import os
+    import re
+    import subprocess
+
+    from graphify.extract import extract
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    declaration = (
+        "module m\ninterface\nmodule integer function f()\nend function\n"
+        "end interface\nend module\n"
+    )
+    (root / "a.f90").write_text(declaration)
+    (root / "b.f90").write_text(
+        "submodule(m) s\ncontains\nmodule procedure f\nf=1\n"
+        "end procedure\nend submodule\n"
+    )
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(tmp_path), "TMPDIR": str(tmp_path), "LANG": "C.UTF-8",
+        "PYTHONPATH": str(REPO_ROOT), "GRAPHIFY_NO_TIPS": "1",
+    }
+    initial = subprocess.run(
+        [sys.executable, "-m", "graphify", "extract", str(root), "--code-only"],
+        cwd=root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert initial.returncode == 0, initial.stderr
+    out = root / "graphify-out"
+    graph_path = out / "graph.json"
+
+    def marked_edges():
+        graph = json.loads(graph_path.read_text())
+        return [edge for edge in graph.get("links", graph.get("edges", []))
+                if edge.get("metadata", {}).get("fortran_structure_schema") == 1]
+
+    assert {edge["relation"] for edge in marked_edges()} == {"contains", "implements"}
+    third = root / "c.f90"
+    third.write_text(
+        "module broken\ninterface\nmodule function\nend module\n"
+        if third_source == "malformed" else declaration
+    )
+    doc = root / "notes.md"
+    doc.write_text("# Changed document\nA semantic observation.\n")
+
+    artifacts = gen.render_all(gen.load_platforms(), only="codex")
+    update = next(a.content for a in artifacts if a.path.endswith("/references/update.md"))
+    core = next(a.content for a in artifacts if a.path == "graphify/skill-codex.md")
+
+    def snippet(text, section, index=0):
+        blocks = re.findall(r'\$\(cat graphify-out/\.graphify_python\) -c "(.*?)\n"',
+                            text[text.index(section):], re.DOTALL)
+        assert len(blocks) > index
+        return "\n".join(gen._unescape_bash_dq(line)
+                         for line in blocks[index].splitlines())
+
+    def execute(body):
+        body = body.replace("INPUT_PATH", str(root)).replace("IS_DIRECTED", "False")
+        exec(compile(body, "generated-update-recipe", "exec"), {})
+
+    monkeypatch.chdir(root)
+    real_run = subprocess.run
+
+    def isolated_run(command, **kwargs):
+        kwargs.setdefault("env", env)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", isolated_run)
+    execute(snippet(update, "## For --update", 0))
+    saved = json.loads((out / ".graphify_incremental.json").read_text())
+    assert str(third) in saved["new_files"]["code"]
+    assert str(doc) in saved["new_files"]["document"]
+    assert marked_edges() == []
+
+    execute(snippet(update, "Then populate `.graphify_detect.json`", 0))
+    fresh = extract([third], root=root, cache_root=out, parallel=False)
+    semantic_node = {
+        "id": "semantic-note", "label": "Novel semantic observation", "type": "concept",
+        "file_type": "document", "source_file": str(doc), "_origin": "semantic",
+    }
+    fresh["nodes"].append(semantic_node)
+    (out / ".graphify_extract.json").write_text(json.dumps(fresh))
+    execute(snippet(update, "Then:\n", 0))
+    execute(snippet(core, "### Step 4 - Build graph", 0))
+    graph = json.loads(graph_path.read_text())
+    assert marked_edges() == []
+    assert any(node.get("_origin") == "semantic"
+               and node.get("label") == "Novel semantic observation"
+               for node in graph["nodes"])
+    assert any(node.get("source_file") == "a.f90" for node in graph["nodes"])
+    assert any(node.get("source_file") == "b.f90" for node in graph["nodes"])
 
 
 def test_check_passes():

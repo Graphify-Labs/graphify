@@ -6418,3 +6418,45 @@ def test_fortran_structure_does_not_match_bare_name_or_use_association(tmp_path)
     result = extract([decl, impl], cache_root=tmp_path, root=tmp_path, parallel=False)
     assert result["fortran_identity_incomplete_sources"] == []
     assert _fortran_structure_edges(result) == []
+
+
+@pytest.mark.parametrize("form", ("subroutine", "function"))
+def test_fortran_submodule_interface_blocks_direct_structure_batch(tmp_path, form):
+    root = tmp_path / "root.f90"
+    child = tmp_path / "child.f90"
+    grandchild = tmp_path / "grandchild.f90"
+    root.write_text(
+        "module root\ninterface\nmodule subroutine run()\nend subroutine\n"
+        "end interface\nend module\n"
+    )
+    header = ("module subroutine helper()\n" if form == "subroutine" else
+              "module function helper() result(value)\ninteger :: value\n")
+    child.write_text(
+        "submodule (root) child\ninterface\n"
+        f"{header}end {form}\n"
+        "end interface\ncontains\nmodule procedure run\n"
+        "end procedure\nend submodule\n"
+    )
+    grandchild.write_text(
+        "submodule (root:child) grandchild\ncontains\n"
+        "module procedure helper\nend procedure\nend submodule\n"
+    )
+    result = extract([root, child, grandchild], root=tmp_path,
+                     cache_root=tmp_path, parallel=False)
+    assert result["failed_sources"] == []
+    assert result["fortran_identity_incomplete_sources"] == [str(child)]
+    assert _fortran_structure_edges(result) == []
+    helper = next(n for n in result["nodes"] if n["label"] == "helper()"
+                  and n["source_file"] == "child.f90")
+    assert helper["id"] == "child_helper"
+    assert helper["source_location"] == "L3"
+    assert helper.get("metadata", {}).get("kind") not in {
+        "procedure_declaration", "procedure_implementation",
+    }
+    assert any(n["id"] == "child_run" and n["source_file"] == "child.f90"
+               for n in result["nodes"])
+    warm = extract([root, child, grandchild], root=tmp_path,
+                   cache_root=tmp_path, parallel=False)
+    assert warm["failed_sources"] == []
+    assert warm["fortran_identity_incomplete_sources"] == [str(child)]
+    assert _fortran_structure_edges(warm) == []

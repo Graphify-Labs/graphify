@@ -172,6 +172,13 @@ def extract_fortran(path: Path) -> dict:
                    _read_text(c, source).casefold() == "module"
                    for c in stmt.children):
             return None
+        if in_interface and submodule_lineage:
+            # A separate interface in a submodule declares a procedure in
+            # that submodule's scope. The supported identity model only links
+            # declarations in ancestor modules, so preserve the ordinary node
+            # without certifying or mislabeling this source as complete.
+            identity_complete = False
+            return None
         if not module_name or (not in_interface and not submodule_lineage):
             identity_complete = False
             return None

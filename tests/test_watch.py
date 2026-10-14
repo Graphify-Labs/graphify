@@ -5623,3 +5623,28 @@ def test_fortran_full_rebuild_does_not_trust_alive_outside_source(tmp_path):
     assert not edges
     assert any(n['id'] == 'outside-fortran' for n in data['nodes'])
     assert not any(str(n.get('source_file', '')).endswith(('a.f90', 'b.f90')) for n in data['nodes'])
+
+
+@pytest.mark.parametrize('no_cluster', [False, True])
+def test_fortran_submodule_interface_retires_persisted_relations(tmp_path, no_cluster):
+    """A clean but unsupported declaration scope enters J without losing nodes."""
+    corpus, graph_path = _fortran_watch_corpus(tmp_path)
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False)
+    before, edges = _fortran_graph_relations(graph_path)
+    assert len(edges) == 2
+    child = corpus / 'b.f90'
+    original = child.read_text()
+    child.write_text(original.replace('contains\n',
+        'interface\nmodule subroutine helper()\nend subroutine\nend interface\ncontains\n'))
+    assert _rebuild_code(corpus, changed_paths=[child], no_cluster=no_cluster,
+                         acquire_lock=False)
+    after, edges = _fortran_graph_relations(graph_path)
+    assert not edges
+    assert {n['id'] for n in before['nodes']} <= {n['id'] for n in after['nodes']}
+    helper = next(n for n in after['nodes'] if n['label'].lower() == 'helper()')
+    assert helper['source_file'].endswith('b.f90')
+    assert helper['source_location']
+    child.write_text(original)
+    assert _rebuild_code(corpus, changed_paths=[child], no_cluster=no_cluster,
+                         acquire_lock=False)
+    assert len(_fortran_graph_relations(graph_path)[1]) == 2

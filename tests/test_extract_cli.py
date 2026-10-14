@@ -1723,3 +1723,34 @@ def test_fortran_cli_incremental_reconciles_complete_facts(tmp_path, monkeypatch
     data, edges = run()
     assert not edges
     assert any(n['id'] == 'outside-fortran' for n in data['nodes'])
+
+
+@pytest.mark.parametrize('raw', [False, True])
+def test_fortran_cli_persists_deletion_of_last_sources(tmp_path, monkeypatch, raw):
+    """No unrelated survivor is needed to save a reconciled empty graph."""
+    import json
+    corpus = tmp_path / 'corpus'
+    corpus.mkdir()
+    parent = corpus / 'a.f90'
+    child = corpus / 'b.f90'
+    parent.write_text('module m\ninterface\nmodule subroutine f()\n'
+                      'end subroutine\nend interface\nend module\n')
+    child.write_text('submodule(m) s\ncontains\nmodule procedure f\n'
+                     'end procedure\nend submodule\n')
+    monkeypatch.setattr(mainmod, '_check_skill_version', lambda _: None)
+    monkeypatch.setattr(mainmod.sys, 'argv', ['graphify', 'extract', str(corpus),
+                        '--code-only', *(['--no-cluster'] if raw else [])])
+    def run():
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code == 0
+        return json.loads((corpus / 'graphify-out' / 'graph.json').read_text())
+    before = run()
+    assert len([e for e in before.get('links', before.get('edges', []))
+                if e.get('metadata', {}).get('fortran_structure_schema') == 1]) == 2
+    parent.unlink()
+    child.unlink()
+    after = run()
+    assert not after['nodes']
+    assert not after.get('links', after.get('edges', []))

@@ -2806,6 +2806,31 @@ def test_fortran_recovered_and_undecodable_identity_are_incomplete(tmp_path, mon
     assert not any(n.get("metadata", {}).get("kind") == "submodule" for n in result["nodes"])
 
 
+@pytest.mark.parametrize("form", ("subroutine", "function"))
+def test_fortran_submodule_interface_keeps_ordinary_node_but_is_incomplete(tmp_path, form):
+    src = tmp_path / "child.f90"
+    header = ("module subroutine helper()\n" if form == "subroutine" else
+              "module function helper() result(value)\ninteger :: value\n")
+    src.write_text(
+        "submodule (root) child\ninterface\n"
+        f"{header}end {form}\n"
+        "end interface\ncontains\nmodule procedure run\n"
+        "end procedure\nend submodule\n"
+    )
+    result = extract_fortran(src)
+    assert "error" not in result and "parse_errors" not in result
+    assert result["fortran_identity_complete"] is False
+    helper = next(n for n in result["nodes"] if n["label"] == "helper()")
+    assert helper["id"].endswith("child_helper")
+    assert helper["source_file"] == str(src)
+    assert helper["source_location"] == "L3"
+    assert helper.get("metadata", {}).get("kind") not in {
+        "procedure_declaration", "procedure_implementation",
+    }
+    implementation = next(n for n in result["nodes"] if n["label"] == "run()")
+    assert implementation["metadata"]["kind"] == "procedure_implementation"
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():
