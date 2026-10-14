@@ -3554,43 +3554,55 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "global":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         from graphify.global_graph import (
-            global_add as _global_add,
+            global_add_many as _global_add_many,
             global_remove as _global_remove,
             global_list as _global_list,
             global_path as _global_path,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [--as <tag>]
+            # graphify global add <graph.json> [<graph.json> ...] [--as <tag>]
+            # Several sources compose through global_add_many in one pass -- the batch
+            # pays the whole-graph load / cross-repo link / save once, not once per
+            # source, so adding K repos stays linear instead of K whole-graph cycles.
             args = sys.argv[3:]
-            source = None
+            sources: list[Path] = []
             tag = None
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
                     tag = args[i + 1]; i += 2
-                elif not source:
-                    source = Path(args[i]); i += 1
                 else:
-                    i += 1
-            if not source:
-                print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
+                    sources.append(Path(args[i])); i += 1
+            if not sources:
+                print("Usage: graphify global add <graph.json>... [--as <repo-tag>]",
+                      file=sys.stderr)
                 sys.exit(1)
-            if not tag:
-                # Inferred through merge-graphs' own helper, which degrades to "repo"
-                # instead of "": an empty tag prunes by "" and registers a manifest
-                # entry no later add can address.
-                from graphify.build import distinct_repo_tags
-                tag = distinct_repo_tags([source.absolute()])[0]
+            if tag and len(sources) > 1:
+                # One --as cannot name several sources; the second would prune the first.
+                print("error: --as names one source; drop it to add several.",
+                      file=sys.stderr)
+                sys.exit(1)
+            from graphify.build import distinct_repo_tags
+            if tag:
+                units = [(sources[0], tag)]
+            else:
+                # Name every source in one call so distinct_repo_tags widens any
+                # colliding directory names across the batch; a per-source call,
+                # seeing one name at a time, hands two the same tag and the second
+                # prunes the first. distinct_repo_tags also degrades "" to "repo".
+                tags = distinct_repo_tags([s.absolute() for s in sources])
+                units = list(zip(sources, tags))
             try:
-                result = _global_add(source, tag)
-                if result["skipped"]:
-                    print(f"'{tag}' unchanged since last add - global graph not modified.")
-                else:
-                    print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
-                          f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
-                    if result.get("cross_repo_calls"):
-                        print(f"  resolved {result['cross_repo_calls']} "
-                              f"member call(s) across repos")
+                batch = _global_add_many(units)
+                for result in batch["results"]:
+                    if result["skipped"]:
+                        print(f"'{result['repo_tag']}' unchanged since last add - skipped.")
+                    else:
+                        print(f"Added '{result['repo_tag']}' to global graph: "
+                              f"+{result['nodes_added']} nodes, -{result['nodes_removed']} pruned.")
+                if batch.get("cross_repo_calls"):
+                    print(f"  resolved {batch['cross_repo_calls']} member call(s) across repos")
+                print(f"Global: {_global_path()}")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
