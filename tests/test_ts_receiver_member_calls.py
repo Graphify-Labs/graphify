@@ -367,6 +367,38 @@ def test_a_class_from_another_language_neither_answers_nor_blocks_parking(tmp_pa
                            "lang": "typescript", "line": "L4"}]
 
 
+def test_angular_inject_field_resolves_member_calls(tmp_path):
+    # Angular functional DI: `private svc = inject(MyService)` should type the
+    # field so that `this.svc.doThing()` produces a calls edge.
+    calls, _ = _calls(tmp_path, {
+        "svc.ts": _SVC,
+        "comp.ts": ('import { Svc } from "./svc";\n'
+                    "import { inject } from '@angular/core';\n"
+                    "export class MyComponent {\n"
+                    "  private svc = inject(Svc);\n"
+                    "  readonly other = inject(Svc);\n"
+                    "  run(): void { this.svc.doThing(); }\n"
+                    "  run2(): void { this.other.doThing(); }\n"
+                    "}\n"),
+    })
+    assert _caller_hits(calls, "run"), "private inject() field must resolve"
+    assert _caller_hits(calls, "run2"), "readonly inject() field must resolve"
+
+
+def test_angular_inject_unimported_type_emits_no_edge(tmp_path):
+    # Origin gate must still apply: inject(Svc) where Svc is not imported locally.
+    calls, _ = _calls(tmp_path, {
+        "svc.ts": _SVC,
+        "comp.ts": ("import { inject } from '@angular/core';\n"
+                    "import type { Svc } from 'external-pkg';\n"
+                    "export class MyComponent {\n"
+                    "  private svc = inject(Svc);\n"
+                    "  run(): void { this.svc.doThing(); }\n"
+                    "}\n"),
+    })
+    assert not _caller_hits(calls, "run"), "unimported inject() type must not fabricate an edge"
+
+
 def test_a_class_declared_in_an_sfc_script_block_still_answers(tmp_path):
     # An SFC script block is TS, so its declarations belong to the same interop family
     # as the caller's and must keep resolving.
