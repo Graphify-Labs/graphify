@@ -367,6 +367,22 @@ graphify prs --conflicts           # PRs sharing graph communities: merge-order 
 
 See the [full command reference](#full-command-reference) below.
 
+To keep a code graph outside the source tree, use the same output root for the
+initial extraction and later updates:
+
+```bash
+graphify extract ./src --code-only --out ./graphs
+graphify update ./src --out ./graphs
+```
+
+With the default `GRAPHIFY_OUT`, graph and cache files stay in
+`./graphs/graphify-out`. Relative `--out` paths are resolved from the invocation
+directory. Omit the source path to reuse the scan-root marker in the selected
+output directory; if no marker exists, update scans the current directory.
+An absolute `GRAPHIFY_OUT` keeps precedence over `--out`. Omitting `--out`
+preserves the existing update behavior.
+
+
 ---
 
 ## Ignoring files

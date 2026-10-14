@@ -463,6 +463,174 @@ def test_update_preserves_cross_file_imports_and_calls_to_unchanged_file(tmp_pat
     assert has_call_after, f"calls edge a_use -> b_helper lost after incremental update: {after}"
 
 
+@pytest.mark.parametrize("relative_out", [False, True], ids=["absolute-out", "relative-out"])
+def test_update_external_output_keeps_nested_identity_and_unchanged_call_target(
+    tmp_path, monkeypatch, relative_out
+):
+    """#1287: cache placement must not become the extractor's source root."""
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    project = tmp_path / "project"
+    for directory in ("app", "services", "other"):
+        (project / directory).mkdir(parents=True)
+    target = project / "services" / "util.py"
+    target.write_text("def helper():\n    return 1\n", encoding="utf-8")
+    (project / "other" / "util.py").write_text(
+        "def unrelated():\n    return 2\n", encoding="utf-8"
+    )
+    caller = project / "app" / "caller.py"
+    caller.write_text(
+        "from services.util import helper\n\n"
+        "def use():\n    return helper()\n",
+        encoding="utf-8",
+    )
+    external = tmp_path / "external"
+    out_arg = "external" if relative_out else str(external)
+    out = external / "graphify-out"
+    graph_path = out / "graph.json"
+    manifest_path = out / "manifest.json"
+
+    first = _run(
+        ["extract", str(project), "--code-only", "--no-cluster", "--out", out_arg],
+        tmp_path,
+    )
+    assert first.returncode == 0, first.stderr
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    before_nodes = {node["id"]: node for node in before["nodes"]}
+    expected = {"app_caller_use", "services_util_helper", "other_util_unrelated"}
+    assert expected <= before_nodes.keys(), before_nodes.keys()
+    assert before_nodes["services_util_helper"]["source_file"] == "services/util.py"
+    assert before_nodes["other_util_unrelated"]["source_file"] == "other/util.py"
+    assert before_nodes["app_caller_use"]["source_file"] == "app/caller.py"
+    assert any(
+        edge.get("relation") == "calls"
+        and edge.get("source") == "app_caller_use"
+        and edge.get("target") == "services_util_helper"
+        for edge in _edges(graph_path)
+    )
+    before_manifest = manifest_path.read_text(encoding="utf-8")
+
+    # Change only the caller; the callee must be reused under its original ID.
+    caller.write_text(
+        "from services.util import helper\n\n"
+        "def use():\n    marker = 1\n    return helper() + marker\n",
+        encoding="utf-8",
+    )
+    out_option = [f"--out={out_arg}"] if relative_out else ["--out", out_arg]
+    second = _run(["update", str(project), *out_option, "--no-cluster"], tmp_path)
+    assert second.returncode == 0, second.stderr
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_nodes = {node["id"]: node for node in after["nodes"]}
+    assert expected <= after_nodes.keys(), after_nodes.keys()
+    for node_id in expected:
+        assert after_nodes[node_id]["source_file"] == before_nodes[node_id]["source_file"]
+    assert any(
+        edge.get("relation") == "calls"
+        and edge.get("source") == "app_caller_use"
+        and edge.get("target") == "services_util_helper"
+        for edge in _edges(graph_path)
+    ), after.get("links", after.get("edges", []))
+    assert manifest_path.read_text(encoding="utf-8") != before_manifest
+    assert (out / "cache" / "stat-index.json").exists()
+    assert not (project / "graphify-out").exists()
+
+    # The CLI rebuild above covers the full corpus. A changed-path rebuild
+    # exercises the incremental resolver with the callee absent from its batch.
+    from graphify.watch import _rebuild_code
+
+    caller.write_text(
+        caller.read_text(encoding="utf-8").replace("marker = 1", "marker = 2")
+        + "\ndef fresh():\n    return use()\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        project, changed_paths=[caller], output_root=external,
+        no_cluster=relative_out, acquire_lock=False,
+    ) is True
+    partial = json.loads(graph_path.read_text(encoding="utf-8"))
+    partial_nodes = {node["id"]: node for node in partial["nodes"]}
+    assert "app_caller_fresh" in partial_nodes
+    assert partial_nodes["services_util_helper"]["source_file"] == "services/util.py"
+    assert partial_nodes["services_util_helper"]["id"] == before_nodes["services_util_helper"]["id"]
+    assert partial_nodes["app_caller_use"]["source_file"] == "app/caller.py"
+    assert any(
+        edge.get("relation") == "calls"
+        and edge.get("source") == "app_caller_use"
+        and edge.get("target") == "services_util_helper"
+        for edge in partial.get("links", partial.get("edges", []))
+    ), partial.get("links", partial.get("edges", []))
+    if not relative_out:
+        assert (out / "GRAPH_REPORT.md").exists()
+    assert not (project / "graphify-out").exists()
+
+    # With no path argument, update must recover this project from the marker
+    # in the selected external output, including when --force is combined.
+    assert (out / ".graphify_root").read_text(encoding="utf-8") == str(project.resolve())
+    caller.write_text(
+        caller.read_text(encoding="utf-8") + "\ndef added():\n    return use()\n",
+        encoding="utf-8",
+    )
+    third = _run(["update", "--out", out_arg, "--force", "--no-cluster"], tmp_path)
+    assert third.returncode == 0, third.stderr
+    final_ids = {
+        node["id"] for node in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    assert "app_caller_added" in final_ids
+    assert not (project / "graphify-out").exists()
+
+
+def test_update_absolute_graphify_out_keeps_inherited_location(tmp_path, monkeypatch):
+    """An inherited absolute GRAPHIFY_OUT still owns graph, marker, and caches."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    (project / "guide.txt").write_text(
+        "The guide describes the project in plain text.\n", encoding="utf-8"
+    )
+    shared = tmp_path / "shared-graphify-out"
+    ignored = tmp_path / "ignored-prefix"
+    monkeypatch.setenv("GRAPHIFY_OUT", str(shared))
+    result = _run(
+        ["update", str(project), "--out", str(ignored), "--no-cluster"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert (shared / "graph.json").exists()
+    assert (shared / "manifest.json").exists()
+    assert (shared / ".graphify_root").read_text(encoding="utf-8") == str(project.resolve())
+    assert (shared / "cache" / "stat-index.json").exists()
+    assert not (ignored / "graphify-out").exists()
+    assert not (project / "graphify-out").exists()
+
+
+def test_update_invalid_external_output_does_not_fall_back(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("occupied", encoding="utf-8")
+    result = _run(["update", str(project), "--out", str(blocked)], tmp_path)
+    assert result.returncode != 0
+    assert blocked.read_text(encoding="utf-8") == "occupied"
+    assert not (project / "graphify-out").exists()
+
+
+@pytest.mark.parametrize("options", [["--out"], ["--out="], ["--out", "--force"]])
+def test_update_rejects_missing_output_root(tmp_path, options):
+    result = _run(["update", *options], tmp_path)
+    assert result.returncode == 2
+    assert "--out requires a directory" in result.stderr
+    assert not (tmp_path / "graphify-out").exists()
+
+
+def test_update_same_root_out_keeps_portable_marker(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    result = _run(["update", ".", "--out", ".", "--no-cluster"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "graphify-out" / ".graphify_root").read_text() == "."
+
+
 def test_update_does_not_resurrect_a_dropped_cross_file_edge_via_context(tmp_path):
     """#3776 negative: the resolution-context index widens the *target* view with
     unchanged files, so it must not resurrect an edge the edited file no longer
