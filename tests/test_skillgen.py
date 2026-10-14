@@ -37,6 +37,41 @@ def test_update_reference_does_not_dump_incremental_corpus():
     assert "graphify-out/.graphify_incremental.json" in text
 
 
+def test_update_code_only_path_writes_extract_before_merge():
+    """Regression for #4447: the --update code-only branch must write
+    ``.graphify_extract.json`` before the incremental merge reads it.
+
+    On the code-only path only Step 3A (AST) runs, which writes just
+    ``.graphify_ast.json``; Part C (the AST+semantic merge into
+    ``.graphify_extract.json``) is skipped, so the merge step that reads the
+    file either raises FileNotFoundError or silently drops the fresh AST via the
+    deletions-only empty-extract guard. The branch must therefore tell the agent
+    to write the empty semantic sidecar (Part B "Fast path") and run Part C
+    before the incremental merge.
+    """
+    text = (gen.FRAGMENTS_DIR / "references" / "shared" / "update.md").read_text(encoding="utf-8")
+    # Isolate the code-only branch: its sentence up to the code_only False branch.
+    start = text.index("If `code_only` is True:")
+    end = text.index("If `code_only` is False")
+    branch = text[start:end]
+    assert "empty semantic sidecar" in branch, (
+        "code-only branch never writes the empty semantic sidecar (#4447)"
+    )
+    assert "Part C" in branch, (
+        "code-only branch never runs Part C to write .graphify_extract.json (#4447)"
+    )
+    assert ".graphify_extract.json" in branch, (
+        "code-only branch must name the .graphify_extract.json it has to produce (#4447)"
+    )
+    assert "go straight to merge" not in branch, (
+        "code-only branch must not jump straight to the merge without writing the "
+        "extraction it reads (#4447)"
+    )
+    assert text.index("If `code_only` is True:") < text.index("from graphify.build import build_merge"), (
+        "the code-only instruction must precede the incremental merge that consumes it (#4447)"
+    )
+
+
 def test_check_passes():
     """The committed artifacts and the expected/ snapshot match a fresh render.
 
