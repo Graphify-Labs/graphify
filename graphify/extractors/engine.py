@@ -3809,6 +3809,14 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     # `_js_scan_member_assignments`, so it lands in
                     # `_tracked_body_ids` and walk_calls' own boundary check
                     # skips re-descending into it from here.
+                    # #4448: the walk runs under the file node, so the
+                    # closure's own params/locals must ride along as this
+                    # body's extra_locals (as in the #2568 branch); otherwise
+                    # `forEach(function (value) { s.on(value) })` resolves the
+                    # parameter `value` to any same-named function in the corpus.
+                    if closure_locals_by_body is not None:
+                        closure_locals_by_body[id(closure_body)] = (
+                            _js_local_bound_names(closure, source))
                     function_bodies.append((file_nid, closure_body))
         assign = next((c for c in node.children
                        if c.type == "assignment_expression"), None)
