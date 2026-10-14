@@ -650,7 +650,7 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # #18/#20 zero-node guard before any write, report/analysis gated on
         # to_json's return.
         lines = body.splitlines()
-        build_i = next(i for i, l in enumerate(lines) if "G = build_from_json(extraction, directed=IS_DIRECTED)" in l)
+        build_i = next(i for i, l in enumerate(lines) if "G = build([extraction], dedup=True, directed=IS_DIRECTED)" in l)
         guard_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "number_of_nodes() == 0" in l)
         report_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "GRAPH_REPORT.md').write_text(report)" in l)
         wrote_i = next(i for i, l in enumerate(lines[build_i:], build_i) if l.strip().startswith("wrote = to_json("))

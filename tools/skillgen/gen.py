@@ -1275,6 +1275,36 @@ def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
     )
 
 
+def _is_skill_build_dedup_fix_line(line: str) -> bool:
+    """Whether a line is part of the full-build entity-dedup fix (#4431).
+
+    The full-build steps called ``build_from_json`` directly, so
+    ``deduplicate_entities`` never ran, unlike ``graphify extract``
+    (``build([...], dedup=True)``, #769) and ``--update`` (``build_merge``).
+    They now import ``build`` and call ``build([extraction], dedup=True, ...)``
+    (the call lines already match the #1392 directed predicate). Step 4 also
+    lets a shrink no bigger than the dedup-collapse count through the #479
+    guard (an older un-deduped graph.json). These are the old/new import lines,
+    the old/new Step 4 to_json call and the added Step 4 lines.
+    """
+    stripped = line.strip()
+    return stripped in (
+        "from graphify.build import build_from_json",
+        "from graphify.build import build",
+        "collapsed = G.graph.get('_dedup_collapsed', 0)  # read before to_json pops it (#3774)",
+        "# Dedup shrinks a graph.json built without it (#4431). Allow a shrink no bigger than",
+        "# the nodes dedup merged; anything bigger is a real shrink and still hits #479.",
+        "old_n = existing_graph_node_count('graphify-out/graph.json')",
+        "dedup_shrink = bool(collapsed) and isinstance(old_n, int) and 0 < old_n - G.number_of_nodes() <= collapsed",
+        "if dedup_shrink:",
+        "print(f'Note: entity dedup merged {collapsed} duplicate node(s), so graph.json shrinks from {old_n} to {G.number_of_nodes()} nodes.')",
+        "wrote = to_json(G, communities, 'graphify-out/graph.json', force=dedup_shrink)",
+        "wrote = to_json(G, communities, 'graphify-out/graph.json')",
+        "from graphify.export import to_json, existing_graph_node_count",
+        "from graphify.export import to_json",
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1302,6 +1332,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
+    _is_skill_build_dedup_fix_line,
 )
 
 
