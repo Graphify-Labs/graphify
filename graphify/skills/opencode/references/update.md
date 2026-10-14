@@ -72,7 +72,7 @@ print('code_only:', code_only)
 "
 ```
 
-If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no subagents), then go straight to merge and Steps 4–8.
+If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, and skip Step 3B entirely (no subagents). Step 3A writes only `.graphify_ast.json`, so before the merge below you must also write the empty semantic sidecar (Part B "Fast path") and run Part C, so `.graphify_extract.json` holds the re-extracted AST. Without that the merge below reads a file that does not exist (`FileNotFoundError`), and the deletions-only guard further down would silently drop the fresh AST by writing an empty extraction instead (#4447). Then go to merge and Steps 4–8.
 
 If `code_only` is False (any changed file is a doc/paper/image/video): **first, if any changed file is in `new_files['video']`, run `references/transcribe.md` (Step 2.5) on those files, then rewrite `.graphify_detect.json` to move the resulting transcript paths into `files['document']` and drop `files['video']`** — otherwise raw `.mp4/.mp3` paths are fed to semantic subagents as unreadable media (#1392). Then run the full Steps 3A–3C pipeline as normal.
 
