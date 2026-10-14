@@ -6268,3 +6268,153 @@ def test_python_external_calls_survive_real_incremental_context(tmp_path):
     assert "incremental scan" in incremental_stdout
     assert "AST extraction on 2 code files" in incremental_stdout
     assert incremental_calls == [("ext_a_fetch_a", "requests", "L5"), ("ext_b_fetch_b", "requests", "L4")]
+
+
+def _fortran_structure_edges(result):
+    return [e for e in result["edges"]
+            if e.get("metadata", {}).get("fortran_structure_schema") == 1]
+
+
+def test_fortran_structure_qualified_batch_provenance_and_warm_cache(tmp_path):
+    decl = tmp_path / "decl.f90"
+    impl = tmp_path / "impl.f90"
+    nested = tmp_path / "nested.f90"
+    decl.write_text(
+        "module ROOT\ninterface\nmodule subroutine RUN()\nend subroutine\n"
+        "end interface\nend module\n"
+    )
+    impl.write_text(
+        "submodule (ROOT) CHILD\ncontains\nmodule procedure RUN\n"
+        "end procedure\nend submodule\n"
+    )
+    nested.write_text("submodule (ROOT:CHILD) GRAND\nend submodule\n")
+    for result in (
+        extract([decl, impl, nested], cache_root=tmp_path, root=tmp_path, parallel=False),
+        extract([decl, impl, nested], cache_root=tmp_path, root=tmp_path, parallel=False),
+    ):
+        assert result["fortran_identity_incomplete_sources"] == []
+        edges = _fortran_structure_edges(result)
+        assert {(e["relation"], e["source"], e["target"]) for e in edges} == {
+            ("contains", "decl_root", "impl_submodule_root_child"),
+            ("contains", "impl_submodule_root_child", "nested_submodule_root_child_grand"),
+            ("implements", "impl_run", "decl_run"),
+        }
+        assert all(e["confidence"] == "EXTRACTED" for e in edges)
+        assert next(e for e in edges if e["relation"] == "implements")["source_file"] == "impl.f90"
+        assert next(e for e in edges if e["relation"] == "implements")["source_location"] == "L3"
+        assert all("source_location" not in e for e in edges if e["relation"] == "contains")
+        assert {e["source_file"] for e in edges if e["relation"] == "contains"} == {
+            "decl.f90", "impl.f90",
+        }
+
+
+def test_fortran_structure_incomplete_explicit_input_preserves_generic_recovery(tmp_path):
+    decl = tmp_path / "decl.f90"
+    impl = tmp_path / "impl.f90"
+    broken = tmp_path / "broken.f90"
+    decl.write_text("module root\ninterface\nmodule subroutine run()\nend subroutine\nend interface\nend module\n")
+    impl.write_text("submodule (root) child\ncontains\nmodule procedure run\nend procedure\nend submodule\n")
+    broken.write_text("module another\nend module\nsubmodule (another) incomplete\nBROKEN ???\nend submodule\n")
+    result = extract([decl, impl, broken], cache_root=tmp_path, root=tmp_path, parallel=False)
+    assert result["failed_sources"] == []
+    assert result["fortran_identity_incomplete_sources"] == [str(broken)]
+    assert any(n["label"] == "another" for n in result["nodes"])
+    assert _fortran_structure_edges(result) == []
+
+
+def test_fortran_structure_missing_cached_signal_and_context_fail_closed(tmp_path, monkeypatch):
+    import importlib
+    extract_module = importlib.import_module("graphify.extract")
+    decl = tmp_path / "decl.f90"
+    impl = tmp_path / "impl.f90"
+    decl.write_text("module root\ninterface\nmodule subroutine run()\nend subroutine\nend interface\nend module\n")
+    impl.write_text("submodule (root) child\ncontains\nmodule procedure run\nend procedure\nend submodule\n")
+    full = extract([decl, impl], cache_root=tmp_path, root=tmp_path, parallel=False)
+    assert len(_fortran_structure_edges(full)) == 2
+
+    # A legacy marked cache result is not a completeness certificate.
+    original_load = extract_module.load_cached
+
+    def old_cache(path, *args, **kwargs):
+        cached = original_load(path, *args, **kwargs)
+        if path == decl and cached is not None:
+            cached.pop("fortran_identity_complete", None)
+        return cached
+
+    monkeypatch.setattr(extract_module, "load_cached", old_cache)
+    legacy = extract([decl, impl], cache_root=tmp_path, root=tmp_path, parallel=False)
+    assert legacy["fortran_identity_incomplete_sources"] == [str(decl)]
+    assert legacy["failed_sources"] == []
+    assert _fortran_structure_edges(legacy) == []
+    monkeypatch.setattr(extract_module, "load_cached", original_load)
+
+    # Context is a negative control: it cannot provide a positive endpoint.
+    declaration_context = [n for n in full["nodes"] if n["source_file"] == "decl.f90"]
+    partial = extract([impl], cache_root=tmp_path, root=tmp_path, parallel=False,
+                      resolution_context_nodes=declaration_context)
+    assert _fortran_structure_edges(partial) == []
+    duplicate = dict(next(n for n in declaration_context
+                          if n.get("metadata", {}).get("kind") == "procedure_declaration"))
+    duplicate["id"] = "other_run"
+    duplicate["source_file"] = "other.f90"
+    ambiguous = extract([decl, impl], cache_root=tmp_path, root=tmp_path, parallel=False,
+                        resolution_context_nodes=[duplicate])
+    assert not any(e["relation"] == "implements" for e in _fortran_structure_edges(ambiguous))
+
+
+def test_fortran_structure_duplicate_lineage_and_same_file_id_fail_closed(tmp_path):
+    decl = tmp_path / "decl.f90"
+    impl = tmp_path / "impl.f90"
+    other = tmp_path / "other.f90"
+    decl.write_text(
+        "module root\ninterface\nmodule subroutine run()\nend subroutine\n"
+        "end interface\nend module\n"
+    )
+    impl.write_text(
+        "submodule (root) child\ncontains\nmodule procedure run\n"
+        "end procedure\nend submodule\n"
+    )
+    other.write_text(
+        "module root\ninterface\nmodule function run()\nend function\n"
+        "end interface\nend module\n"
+    )
+    duplicate = extract([decl, impl, other], cache_root=tmp_path, root=tmp_path,
+                        parallel=False)
+    assert duplicate["fortran_identity_incomplete_sources"] == []
+    assert _fortran_structure_edges(duplicate) == []
+
+    same = tmp_path / "same.f90"
+    same.write_text(
+        "module root\ninterface\nmodule subroutine run()\nend subroutine\n"
+        "end interface\nend module\n"
+        "submodule (root) child\ncontains\nmodule procedure run\n"
+        "end procedure\nend submodule\n"
+    )
+    collision = extract([same], cache_root=tmp_path, root=tmp_path, parallel=False)
+    assert not any(e["relation"] == "implements" for e in _fortran_structure_edges(collision))
+    assert all(e["source"] != e["target"] for e in _fortran_structure_edges(collision))
+
+    # Two valid modules in one physical file share legacy procedure IDs.
+    # Neither qualified declaration may masquerade as the other's endpoint.
+    decl.write_text(decl.read_text() + decl.read_text().replace("root", "second"))
+    qualified_collision = extract([decl, impl], cache_root=tmp_path, root=tmp_path,
+                                  parallel=False)
+    assert qualified_collision["failed_sources"] == []
+    assert qualified_collision["fortran_identity_incomplete_sources"] == [str(decl)]
+    assert _fortran_structure_edges(qualified_collision) == []
+
+
+def test_fortran_structure_does_not_match_bare_name_or_use_association(tmp_path):
+    decl = tmp_path / "decl.f90"
+    impl = tmp_path / "impl.f90"
+    decl.write_text(
+        "module one\ninterface\nmodule subroutine run()\nend subroutine\n"
+        "end interface\nend module\n"
+    )
+    impl.write_text(
+        "submodule (two) child\nuse one\ncontains\nmodule procedure run\n"
+        "end procedure\nend submodule\n"
+    )
+    result = extract([decl, impl], cache_root=tmp_path, root=tmp_path, parallel=False)
+    assert result["fortran_identity_incomplete_sources"] == []
+    assert _fortran_structure_edges(result) == []

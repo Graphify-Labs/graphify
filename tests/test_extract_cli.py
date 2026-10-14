@@ -1668,3 +1668,58 @@ def test_incremental_stray_attribution_preserves_undispatched_file(
     assert "phantom_ts" not in ids, (
         f"stray attributed to a nonexistent path became a phantom node: {ids}"
     )
+
+
+@pytest.mark.parametrize('raw', [False, True])
+def test_fortran_cli_incremental_reconciles_complete_facts(tmp_path, monkeypatch, raw):
+    """CLI raw and clustered persistence obey the same A/B/C fact boundary."""
+    import json
+    corpus = tmp_path / 'corpus'
+    corpus.mkdir()
+    (corpus / 'a.f90').write_text(
+        'module m\ninterface\nmodule integer function f()\n'
+        'end function\nend interface\nend module\n')
+    (corpus / 'b.f90').write_text(
+        'submodule(m) s\ncontains\nmodule procedure f\nf=1\n'
+        'end procedure\nend submodule\n')
+    (corpus / 'keep.py').write_text('def keep():\n    return 1\n')
+    monkeypatch.setattr(mainmod, '_check_skill_version', lambda _: None)
+    def run(*extra):
+        monkeypatch.setattr(mainmod.sys, 'argv', ['graphify', 'extract', str(corpus),
+                            '--code-only', *(['--no-cluster'] if raw else []), *extra])
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code == 0
+        data = json.loads((corpus / 'graphify-out' / 'graph.json').read_text())
+        edges = [e for e in data.get('links', data.get('edges', []))
+                 if e.get('metadata', {}).get('fortran_structure_schema') == 1]
+        assert 'fortran_identity_incomplete_sources' not in data
+        return data, edges
+    initial, edges = run()
+    assert {e['relation'] for e in edges} == {'contains', 'implements'}
+    third = corpus / 'c.f90'
+    third.write_text('module broken\ninterface\nmodule function\nend module\n')
+    data, edges = run()
+    assert not edges
+    assert any(str(n.get('source_file', '')).endswith('c.f90') for n in data['nodes'])
+    third.write_text((corpus / 'a.f90').read_text())
+    assert not run()[1]
+    third.unlink()
+    data, edges = run()
+    assert len(edges) == 2
+    assert {n['id'] for n in data['nodes']} == {n['id'] for n in initial['nodes']}
+    # Full invocation cannot bless an alive identity outside its scan root.
+    outside = tmp_path / 'outside.f90'
+    outside.write_text('module m\nend module\n')
+    data['nodes'].append({'id': 'outside-fortran', 'label': 'm', 'file_type': 'code',
+                          'source_file': str(outside), 'source_location': 'L1', '_origin': 'ast'})
+    (corpus / 'graphify-out' / 'graph.json').write_text(json.dumps(data))
+    data, edges = run('--force')
+    assert not edges
+    assert any(n['id'] == 'outside-fortran' for n in data['nodes'])
+    (corpus / 'a.f90').unlink()
+    (corpus / 'b.f90').unlink()
+    data, edges = run()
+    assert not edges
+    assert any(n['id'] == 'outside-fortran' for n in data['nodes'])

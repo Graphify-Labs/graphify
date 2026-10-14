@@ -12,6 +12,7 @@ _FORTRAN_CPP_EXTS = {".F", ".F90", ".F95", ".F03", ".F08"}
 # A cpp `#include` directive at the start of a (optionally indented) line, in
 # either the `"..."` or `<...>` form. Matched on raw bytes before preprocessing.
 _INCLUDE_DIRECTIVE_RE = re.compile(rb"^[ \t]*#[ \t]*include\b")
+_IDENTITY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _strip_include_directives(source: bytes) -> bytes:
@@ -95,18 +96,29 @@ def extract_fortran(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    nodes_by_id: dict[str, dict] = {}
+    definition_counts: dict[str, int] = {}
+    identity_ids: set[str] = set()
     scope_bodies: list[tuple[str, object]] = []
+    identity_complete = not root.has_error
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int,
+                 metadata: dict | None = None) -> None:
+        definition_counts[nid] = definition_counts.get(nid, 0) + 1
+        if metadata is not None:
+            identity_ids.add(nid)
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({
+            item = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
                 "source_location": f"L{line}",
-            })
+                **({"metadata": metadata} if metadata is not None else {}),
+            }
+            nodes.append(item)
+            nodes_by_id[nid] = item
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -125,7 +137,9 @@ def extract_fortran(path: Path) -> dict:
         edges.append(edge)
 
     file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
+    add_node(file_nid, path.name, 1, {
+        "language": "fortran", "kind": "file", "fortran_structure_schema": 1,
+    })
 
     # (type_nid, implementing_procedure_name, line) for every type-bound
     # procedure. Resolved after the whole tree is walked, once the module's
@@ -140,8 +154,45 @@ def extract_fortran(path: Path) -> dict:
         """Extract name from a *_statement node. Fortran is case-insensitive; lowercase."""
         for child in stmt_node.children:
             if child.type in ("name", "identifier"):
-                return _read_text(child, source).lower()
+                name = _read_text(child, source).casefold()
+                return name if _IDENTITY_RE.fullmatch(name) else None
         return None
+
+    def _identity_name(node) -> str | None:
+        if node is None or node.type not in ("name", "module_name"):
+            return None
+        name = _read_text(node, source).casefold()
+        return name if _IDENTITY_RE.fullmatch(name) else None
+
+    def _procedure_role(stmt, module_name: str | None,
+                        submodule_lineage: tuple[str, str, str] | None,
+                        in_interface: bool) -> str | None:
+        nonlocal identity_complete
+        if not any(c.type == "procedure_qualifier" and
+                   _read_text(c, source).casefold() == "module"
+                   for c in stmt.children):
+            return None
+        if not module_name or (not in_interface and not submodule_lineage):
+            identity_complete = False
+            return None
+        return "procedure_implementation" if submodule_lineage else "procedure_declaration"
+
+    def _tag_procedure(nid: str, name: str, role: str | None,
+                       module_name: str | None) -> None:
+        if role is None or module_name is None:
+            return
+        identity_ids.add(nid)
+        item = nodes_by_id.get(nid)
+        if item is None:
+            return
+        # A legacy ID shared by another role must never be repurposed.
+        if "metadata" not in item:
+            item["metadata"] = {
+                "language": "fortran", "kind": role,
+                "module": module_name, "name": name,
+            }
+        elif item["metadata"].get("kind") != role:
+            item["metadata"].pop("kind", None)
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(stem, name)
@@ -261,7 +312,10 @@ def extract_fortran(path: Path) -> dict:
         for child in node.children:
             walk_calls(child, scope_nid)
 
-    def walk(node, scope_nid: str) -> None:
+    def walk(node, scope_nid: str, module_name: str | None = None,
+             submodule_lineage: tuple[str, str, str] | None = None,
+             in_interface: bool = False) -> None:
+        nonlocal identity_complete
         t = node.type
 
         if t == "program":
@@ -274,25 +328,80 @@ def extract_fortran(path: Path) -> dict:
                 add_edge(file_nid, nid, "defines", line)
                 scope_bodies.append((nid, node))
                 for child in node.children:
-                    walk(child, nid)
+                    walk(child, nid, module_name, submodule_lineage, in_interface)
             return
 
         if t == "module":
             stmt = next((c for c in node.children if c.type == "module_statement"), None)
+            if stmt is None and not node.is_named:
+                return
             name = _fortran_name(stmt) if stmt else None
             if name:
                 nid = _make_id(stem, name)
                 line = node.start_point[0] + 1
-                add_node(nid, name, line)
+                add_node(nid, name, line, {
+                    "language": "fortran", "kind": "module", "module": name,
+                    "name": name,
+                })
                 add_edge(file_nid, nid, "defines", line)
                 for child in node.children:
-                    walk(child, nid)
+                    walk(child, nid, name)
+            else:
+                identity_complete = False
+            return
+
+        if t == "submodule":
+            stmt = next((c for c in node.children if c.type == "submodule_statement"), None)
+            if stmt is None and not node.is_named:
+                return
+            ancestors = [
+                _identity_name(c) for c in stmt.children if c.type == "module_name"
+            ] if stmt is not None else []
+            children = [
+                _identity_name(c) for c in stmt.children if c.type == "name"
+            ] if stmt is not None else []
+            if (len(ancestors) not in (1, 2) or len(children) != 1 or
+                    any(n is None for n in (*ancestors, *children))):
+                identity_complete = False
+                return
+            ancestor = ancestors[0]
+            parent = ancestors[1] if len(ancestors) == 2 else ""
+            child_name = children[0]
+            assert ancestor is not None and parent is not None and child_name is not None
+            nid = _make_id(stem, "submodule", ancestor, parent, child_name)
+            line = node.start_point[0] + 1
+            add_node(nid, child_name, line, {
+                "language": "fortran", "kind": "submodule",
+                "module": ":".join(part for part in (ancestor, parent, child_name) if part),
+                "name": child_name,
+                "ancestor": ancestor, "parent": parent, "child": child_name,
+            })
+            add_edge(file_nid, nid, "defines", line)
+            lineage = (ancestor, parent, child_name)
+            for child in node.children:
+                walk(child, nid, ancestor, lineage)
             return
 
         # subroutines/functions inside a module live under internal_procedures
         if t == "internal_procedures":
             for child in node.children:
-                walk(child, scope_nid)
+                walk(child, scope_nid, module_name, submodule_lineage, in_interface)
+            return
+
+        if t == "module_procedure":
+            stmt = next((c for c in node.children if c.type == "module_procedure_statement"), None)
+            name = _fortran_name(stmt) if stmt is not None else None
+            if stmt is None or not name or not module_name or not submodule_lineage:
+                identity_complete = False
+                return
+            nid = _make_id(stem, name)
+            line = stmt.start_point[0] + 1
+            add_node(nid, f"{name}()", line)
+            _tag_procedure(nid, name, "procedure_implementation", module_name)
+            add_edge(scope_nid, nid, "defines", line)
+            scope_bodies.append((nid, node))
+            for child in node.children:
+                walk(child, nid, module_name, submodule_lineage)
             return
 
         if t == "derived_type_definition":
@@ -324,29 +433,37 @@ def extract_fortran(path: Path) -> dict:
         if t == "subroutine":
             stmt = next((c for c in node.children if c.type == "subroutine_statement"), None)
             name = _fortran_name(stmt) if stmt else None
+            role = _procedure_role(stmt, module_name, submodule_lineage, in_interface) if stmt else None
             if name:
                 nid = _make_id(stem, name)
                 line = node.start_point[0] + 1
                 add_node(nid, f"{name}()", line)
+                _tag_procedure(nid, name, role, module_name)
                 add_edge(scope_nid, nid, "defines", line)
                 scope_bodies.append((nid, node))
                 emit_signature_refs(node, nid, is_function=False)
                 for child in node.children:
-                    walk(child, nid)
+                    walk(child, nid, module_name, submodule_lineage, in_interface)
+            elif role:
+                identity_complete = False
             return
 
         if t == "function":
             stmt = next((c for c in node.children if c.type == "function_statement"), None)
             name = _fortran_name(stmt) if stmt else None
+            role = _procedure_role(stmt, module_name, submodule_lineage, in_interface) if stmt else None
             if name:
                 nid = _make_id(stem, name)
                 line = node.start_point[0] + 1
                 add_node(nid, f"{name}()", line)
+                _tag_procedure(nid, name, role, module_name)
                 add_edge(scope_nid, nid, "defines", line)
                 scope_bodies.append((nid, node))
                 emit_signature_refs(node, nid, is_function=True)
                 for child in node.children:
-                    walk(child, nid)
+                    walk(child, nid, module_name, submodule_lineage, in_interface)
+            elif role:
+                identity_complete = False
             return
 
         if t == "interface":
@@ -369,6 +486,9 @@ def extract_fortran(path: Path) -> dict:
                 add_node(gen_nid, f"{gen_name}()", line)
                 add_edge(scope_nid, gen_nid, "defines", line)
                 for proc_stmt in node.children:
+                    if proc_stmt.type in ("subroutine", "function"):
+                        walk(proc_stmt, scope_nid, module_name,
+                             submodule_lineage, True)
                     if proc_stmt.type != "procedure_statement":
                         continue
                     for mn in proc_stmt.children:
@@ -382,7 +502,7 @@ def extract_fortran(path: Path) -> dict:
             # Unnamed abstract/explicit interface: recurse so the procedure
             # declarations it holds still get nodes (unchanged behaviour).
             for child in node.children:
-                walk(child, scope_nid)
+                walk(child, scope_nid, module_name, submodule_lineage, True)
             return
 
         if t == "use_statement":
@@ -397,7 +517,7 @@ def extract_fortran(path: Path) -> dict:
             return
 
         for child in node.children:
-            walk(child, scope_nid)
+            walk(child, scope_nid, module_name, submodule_lineage, in_interface)
 
     walk(root, file_nid)
 
@@ -428,4 +548,23 @@ def extract_fortran(path: Path) -> dict:
             if child.type not in _stmt_headers:
                 walk_calls(child, scope_nid)
 
-    return {"nodes": nodes, "edges": edges}
+    # Legacy file-scoped IDs can collapse distinct qualified declarations in
+    # one file. Preserve those IDs, but never certify incomplete identity facts.
+    if any(definition_counts.get(nid, 0) > 1 for nid in identity_ids):
+        identity_complete = False
+    result = {"nodes": nodes, "edges": edges,
+              "fortran_identity_complete": identity_complete}
+    if root.has_error:
+        errors = []
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            if current.type == "ERROR" or current.is_missing:
+                errors.append(current)
+            else:
+                pending.extend(current.children)
+        result["parse_errors"] = {
+            "first_error_line": min((n.start_point[0] + 1 for n in errors), default=1),
+            "multiline_error": any(n.start_point[0] != n.end_point[0] for n in errors),
+        }
+    return result

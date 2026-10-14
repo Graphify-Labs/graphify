@@ -2744,6 +2744,68 @@ def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
     assert stub["source_file"] == ""
 
 
+def test_fortran_qualified_identity_facts_and_legacy_ids(tmp_path):
+    module = tmp_path / "decl.f90"
+    module.write_text(
+        "module ROOT\ninterface\nmodule subroutine RUN()\nend subroutine\n"
+        "end interface\nend module\n"
+    )
+    submodule = tmp_path / "impl.f90"
+    submodule.write_text(
+        "submodule (ROOT) CHILD\ncontains\nmodule procedure RUN\n"
+        "end procedure\nend submodule\n"
+    )
+    declaration = extract_fortran(module)
+    implementation = extract_fortran(submodule)
+    assert declaration["fortran_identity_complete"] is True
+    assert implementation["fortran_identity_complete"] is True
+    assert all(r["nodes"][0]["metadata"] == {
+        "language": "fortran", "kind": "file", "fortran_structure_schema": 1,
+    } for r in (declaration, implementation))
+    decl_node = next(n for n in declaration["nodes"] if n["label"] == "run()")
+    impl_node = next(n for n in implementation["nodes"] if n["label"] == "run()")
+    child_node = next(n for n in implementation["nodes"] if n["label"] == "child")
+    assert decl_node["id"].endswith("decl_run")
+    assert impl_node["id"].endswith("impl_run")
+    assert decl_node["metadata"] == {
+        "language": "fortran", "kind": "procedure_declaration",
+        "module": "root", "name": "run",
+    }
+    assert impl_node["metadata"] == {
+        "language": "fortran", "kind": "procedure_implementation",
+        "module": "root", "name": "run",
+    }
+    assert child_node["metadata"] == {
+        "language": "fortran", "kind": "submodule", "module": "root:child",
+        "name": "child", "ancestor": "root", "parent": "", "child": "child",
+    }
+
+
+def test_fortran_recovered_and_undecodable_identity_are_incomplete(tmp_path, monkeypatch):
+    recovered = tmp_path / "recovered.f90"
+    recovered.write_text("module good\nend module\nsubmodule (good) child\nBROKEN ???\nend submodule\n")
+    partial = extract_fortran(recovered)
+    assert partial["nodes"]
+    assert partial["fortran_identity_complete"] is False
+    assert partial["parse_errors"]["first_error_line"] >= 1
+
+    clean = tmp_path / "clean.f90"
+    clean.write_text("submodule (good) child\nend submodule\n")
+    from graphify.extractors import fortran as fortran_module
+    original = fortran_module._read_text
+
+    def undecodable(node, source):
+        if node.type == "module_name":
+            return ""
+        return original(node, source)
+
+    monkeypatch.setattr(fortran_module, "_read_text", undecodable)
+    result = extract_fortran(clean)
+    assert result["fortran_identity_complete"] is False
+    assert "parse_errors" not in result
+    assert not any(n.get("metadata", {}).get("kind") == "submodule" for n in result["nodes"])
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():

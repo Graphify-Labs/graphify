@@ -37,6 +37,48 @@ def test_update_reference_does_not_dump_incremental_corpus():
     assert "graphify-out/.graphify_incremental.json" in text
 
 
+@pytest.mark.parametrize("current,retained,docs", [
+    (True, False, False), (False, True, False), (True, True, True),
+])
+def test_update_reference_refreshes_fortran_before_unchanged_return(
+    tmp_path, monkeypatch, current, retained, docs,
+):
+    """Execute the recipe's first step, including persisted-only Fortran."""
+    import json
+    import re
+    import subprocess
+    from graphify import detect, paths
+
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    if retained:
+        (out / "graph.json").write_text(json.dumps({"nodes": [{
+            "id": "retained", "source_file": "old.f90",
+        }]}))
+    result = {"new_total": int(docs),
+              "new_files": {"docs": ["readme.md"] if docs else []},
+              "files": {"code": ["current.f90"] if current else []},
+              "deleted_files": []}
+    monkeypatch.setattr(detect, "detect_incremental", lambda *a, **kw: result)
+    monkeypatch.setattr(paths, "out_path", lambda: out)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda command, **kw: calls.append((command, kw)))
+    text = (gen.FRAGMENTS_DIR / "references" / "shared" / "update.md").read_text()
+    match = re.search(r'-c "(.*?)\n"', text, re.DOTALL)
+    assert match is not None
+    snippet = match.group(1).replace('\\"', '"')
+    if docs:
+        exec(compile(snippet, "update-reference", "exec"), {})
+        assert calls == []  # mixed changes continue to the documented final refresh
+    else:
+        with pytest.raises(SystemExit) as exc:
+            exec(compile(snippet, "update-reference", "exec"), {})
+        assert exc.value.code == 0
+        assert calls == [([sys.executable, "-m", "graphify", "update", "INPUT_PATH"],
+                          {"check": True})]
+
+
 def test_check_passes():
     """The committed artifacts and the expected/ snapshot match a fresh render.
 

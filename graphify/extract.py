@@ -8975,6 +8975,87 @@ def _extract_sequential(
 _PARALLEL_THRESHOLD = 20
 
 
+def _resolve_fortran_structure(
+    fresh_nodes: list[dict], edges: list[dict], context_nodes: list[dict]
+) -> None:
+    """Connect only unique, fresh, qualified Fortran identity facts."""
+    roles = {
+        "module", "submodule", "procedure_declaration", "procedure_implementation",
+    }
+    all_nodes = [*fresh_nodes, *context_nodes]
+    fresh_objects = {id(node) for node in fresh_nodes}
+    identity_nodes = [
+        node for node in all_nodes
+        if node.get("metadata", {}).get("language") == "fortran"
+        and node.get("metadata", {}).get("kind") in roles
+    ]
+    id_claims: dict[str, set[tuple]] = {}
+    for node in all_nodes:
+        meta = node.get("metadata") or {}
+        id_claims.setdefault(node.get("id", ""), set()).add((
+            node.get("source_file"), meta.get("kind"), meta.get("module"),
+            meta.get("name"), meta.get("parent"),
+        ))
+    ambiguous_ids = {nid for nid, claims in id_claims.items() if len(claims) > 1}
+
+    modules: dict[str, list[dict]] = {}
+    submodules: dict[tuple[str, str], list[dict]] = {}
+    declarations: dict[tuple[str, str], list[dict]] = {}
+    implementations: dict[tuple[str, str], list[dict]] = {}
+    for node in identity_nodes:
+        meta = node["metadata"]
+        kind = meta["kind"]
+        if kind == "module":
+            modules.setdefault(meta["module"], []).append(node)
+        elif kind == "submodule":
+            submodules.setdefault((meta["ancestor"], meta["child"]), []).append(node)
+        elif kind == "procedure_declaration":
+            declarations.setdefault((meta["module"], meta["name"]), []).append(node)
+        elif kind == "procedure_implementation":
+            implementations.setdefault((meta["module"], meta["name"]), []).append(node)
+
+    def unique_fresh(candidates: list[dict]) -> dict | None:
+        if len(candidates) != 1:
+            return None
+        node = candidates[0]
+        if id(node) not in fresh_objects or node["id"] in ambiguous_ids:
+            return None
+        return node
+
+    for children in submodules.values():
+        child = unique_fresh(children)
+        if child is None:
+            continue
+        meta = child["metadata"]
+        if meta["parent"]:
+            parent = unique_fresh(submodules.get((meta["ancestor"], meta["parent"]), []))
+        else:
+            parent = unique_fresh(modules.get(meta["ancestor"], []))
+        if parent is None or parent["id"] == child["id"]:
+            continue
+        edges.append({
+            "source": parent["id"], "target": child["id"],
+            "relation": "contains", "confidence": "EXTRACTED",
+            "source_file": parent["source_file"], "weight": 1.0,
+            "metadata": {"fortran_structure_schema": 1}, "_origin": "ast",
+        })
+
+    for key, candidates in implementations.items():
+        implementation = unique_fresh(candidates)
+        declaration = unique_fresh(declarations.get(key, []))
+        if (implementation is None or declaration is None or
+                implementation["id"] == declaration["id"]):
+            continue
+        edges.append({
+            "source": implementation["id"], "target": declaration["id"],
+            "relation": "implements", "confidence": "EXTRACTED",
+            "source_file": implementation["source_file"],
+            "source_location": implementation["source_location"],
+            "weight": 1.0, "metadata": {"fortran_structure_schema": 1},
+            "_origin": "ast",
+        })
+
+
 def extract(
     paths: list[Path],
     cache_root: Path | None = None,
@@ -9208,9 +9289,16 @@ def extract(
     # (or the transient failure self-heals) without deleting graphify-out/.
     _failed_sources: list[str] = []
     _failed_seen: set[str] = set()
+    _fortran_identity_incomplete_sources: list[str] = []
+    _fortran_suffixes = {suffix for suffix, extractor in _DISPATCH.items()
+                         if extractor is extract_fortran}
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
         _key = str(_p)
+        if (effective_suffix(_p) in _fortran_suffixes and
+                _get_extractor(_p) is extract_fortran and
+                _res.get("fortran_identity_complete") is not True):
+            _fortran_identity_incomplete_sources.append(_key)
         if _res.get("error"):
             if _key not in _failed_seen:
                 _failed_sources.append(_key)
@@ -10754,6 +10842,14 @@ def extract(
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
 
+    # This is an explicit-batch resolver. Unchanged context can rule out a
+    # unique match, but cannot supply a fresh endpoint or certify completeness.
+    _fortran_failed = any(
+        effective_suffix(Path(p)) in _fortran_suffixes for p in _failed_sources
+    )
+    if not _fortran_identity_incomplete_sources and not _fortran_failed:
+        _resolve_fortran_structure(all_nodes, all_edges, resolution_context_nodes or [])
+
     return {
         "nodes": all_nodes,
         "edges": all_edges,
@@ -10763,6 +10859,7 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        "fortran_identity_incomplete_sources": _fortran_identity_incomplete_sources,
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
@@ -10775,7 +10872,9 @@ def extract(
 # raw extraction as graph.json (--no-cluster) must leave them out: they put the
 # checkout path and OS username into the graph, and differ between the first
 # build and a rebuild of the same tree.
-RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources"})
+RUN_ONLY_EXTRACTION_KEYS = frozenset({
+    "extracted_sources", "failed_sources", "fortran_identity_incomplete_sources",
+})
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:

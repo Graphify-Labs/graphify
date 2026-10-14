@@ -4,7 +4,7 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 
 ## For --update (incremental re-extraction)
 
-Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
+Use when you've added or modified files since the last run. Non-Fortran files use the changed subset. Fortran module/submodule links need current facts from the full accepted Fortran corpus, including evidence that no third file makes a name ambiguous. Use the repository refresh below even for unchanged or deletion-only Fortran runs. A failed parse or retained source outside the accepted corpus removes these structural links while preserving ordinary nodes; a full command alone does not certify completeness.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -13,7 +13,7 @@ from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
 from graphify.paths import out_path
-from graphify.watch import _read_build_excludes, _read_build_gitignore
+from graphify.watch import _read_build_excludes, _read_build_gitignore, _is_fortran_source, _fortran_sources
 result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 nf = result.get('new_files', {})
@@ -28,6 +28,15 @@ print(json.dumps({
 print('Full result: graphify-out/.graphify_incremental.json')
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
 deleted = list(result.get('deleted_files', []))
+prior_path = out_path() / 'graph.json'
+prior = json.loads(prior_path.read_text(encoding='utf-8')) if prior_path.exists() else {}
+fortran_refresh = any(_is_fortran_source(p) for p in result.get('files', {}).get('code', [])) or bool(_fortran_sources(prior, str))
+noncode_changes = any(files for kind, files in nf.items() if kind != 'code')
+if fortran_refresh and not noncode_changes:
+    import subprocess
+    subprocess.run([sys.executable, '-m', 'graphify', 'update', 'INPUT_PATH'], check=True)
+    print('Fortran corpus refresh complete. Stop this update recipe here.')
+    raise SystemExit(0)
 if new_total == 0 and not deleted:
     print('No files changed since last run. Nothing to update.')
     raise SystemExit(0)
@@ -37,6 +46,8 @@ if new_total > 0:
     print(f'{new_total} new/changed file(s) to re-extract.')
 "
 ```
+
+If the command reports **Fortran corpus refresh complete**, the update is finished; do not run the partial extraction/merge recipe below. For mixed code and document changes, continue below and perform the final repository refresh after Steps 4–8 before querying or reporting the graph.
 
 Then populate `.graphify_detect.json` so Steps 3A–6 (which read it unconditionally) see the right state for an incremental run. `files` carries the changed subset (drives Step 3A AST + Step 3B0 cache check on only what changed); `all_files` carries the full corpus for any step that needs corpus-wide context:
 
@@ -176,7 +187,11 @@ print('[graphify update] Manifest saved.')
 "
 ```
 
-Then run Steps 4–8 on the merged graph as normal.
+Then run Steps 4–8 on the merged graph as normal. If the corpus or its previous graph contains Fortran, finish with the following AST-only refresh before reading or reporting the graph. This recomputes complete accepted Fortran facts, retires stale structural links, and preserves the semantic layer produced above. Do not parse ignored, sensitive, out-of-root or rejected-symlink sources to recover missing facts.
+
+```bash
+$(cat graphify-out/.graphify_python) -m graphify update INPUT_PATH
+```
 
 After Step 4, show the graph diff:
 
