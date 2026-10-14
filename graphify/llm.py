@@ -243,6 +243,20 @@ BACKENDS: dict[str, dict] = {
         # CLI's Read tool rather than as inline base64 (see `_call_claude_cli`).
         "vision": True,
     },
+    "litellm": {
+        # Routes through the LiteLLM SDK, so any model string LiteLLM understands
+        # works with that provider's own credentials (bedrock/..., vertex_ai/...,
+        # azure/..., ollama/..., openrouter/...). Credentials come from the
+        # provider's usual environment (AWS_*, GOOGLE_APPLICATION_CREDENTIALS,
+        # AZURE_API_KEY, OPENROUTER_API_KEY, ...), so there is no env_key here.
+        # LiteLLM model strings are provider-prefixed, so there is no sensible
+        # default: set GRAPHIFY_LITELLM_MODEL or pass --model.
+        "default_model": "",
+        "model_env_key": "GRAPHIFY_LITELLM_MODEL",
+        "pricing": {"input": 0.0, "output": 0.0},  # depends on the routed model; not estimated
+        "temperature": 0,
+        "max_tokens": 8192,
+    },
 }
 
 
@@ -2063,6 +2077,62 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     return result
 
 
+def _litellm_completion(model: str, messages: list[dict], max_tokens: int):
+    """Run one LiteLLM chat completion with graphify's timeout/retry/temperature knobs."""
+    # LiteLLM fetches its model-cost map from GitHub on import unless told to use
+    # the copy bundled in the wheel. graphify only needs the bundled one, and an
+    # extraction run should not make an extra outbound request. An explicit value
+    # from the user's environment still wins.
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    try:
+        import litellm
+    except ImportError as exc:
+        raise ImportError(_backend_pkg_hint("litellm", "litellm")) from exc
+    if not model:
+        raise ValueError(
+            "The litellm backend needs a model. Set GRAPHIFY_LITELLM_MODEL or pass --model "
+            "with a LiteLLM model string, e.g. bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0, "
+            "vertex_ai/gemini-2.0-flash, azure/<deployment> or ollama/llama3.1."
+        )
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "timeout": _resolve_api_timeout(),
+        "num_retries": _resolve_max_retries(),
+        # Providers disagree about which sampling params they accept; drop the
+        # ones the routed model does not support instead of failing the chunk.
+        "drop_params": True,
+    }
+    temperature = _resolve_temperature(BACKENDS["litellm"].get("temperature", 0), model)
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return litellm.completion(**kwargs)
+
+
+def _call_litellm(model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False) -> dict:
+    """Call any LiteLLM-supported model (bedrock/, vertex_ai/, azure/, ollama/, ...) and return parsed JSON."""
+    resp = _litellm_completion(
+        model,
+        [
+            {"role": "system", "content": _extraction_system(deep=deep_mode)},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens,
+    )
+    if not resp.choices or resp.choices[0].message is None:
+        raise ValueError("LiteLLM returned empty or filtered response")
+    raw_content = resp.choices[0].message.content
+    result = _parse_llm_json(raw_content or "{}")
+    usage = getattr(resp, "usage", None)
+    result["input_tokens"] = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+    result["output_tokens"] = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+    result["model"] = model
+    result["finish_reason"] = resp.choices[0].finish_reason
+    _mark_hollow(result, raw_content, "litellm")
+    return result
+
+
 def extract_files_direct(
     files: list[Path],
     backend: str | None = None,
@@ -2097,7 +2167,8 @@ def extract_files_direct(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
                 "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
-                "or AWS credentials. Pass backend= explicitly to select a provider."
+                "GRAPHIFY_LITELLM_MODEL, or AWS credentials. Pass backend= explicitly "
+                "to select a provider."
             )
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
@@ -2117,7 +2188,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "litellm"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -2143,6 +2214,8 @@ def extract_files_direct(
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "bedrock":
         result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "litellm":
+        result = _call_litellm(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode)
     elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
@@ -3071,7 +3144,7 @@ def _call_llm(
         ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "litellm"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -3176,6 +3249,15 @@ def _call_llm(
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
         return _bedrock_response_text(resp, default="")
+
+    if backend == "litellm":
+        resp = _litellm_completion(mdl, [{"role": "user", "content": prompt}], max_tokens)
+        if not resp.choices or resp.choices[0].message is None:
+            raise ValueError("LiteLLM returned empty or filtered response")
+        lu = getattr(resp, "usage", None)
+        if lu is not None:
+            _rec(getattr(lu, "prompt_tokens", 0), getattr(lu, "completion_tokens", 0))
+        return resp.choices[0].message.content or ""
 
     if backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -3343,6 +3425,7 @@ _BACKEND_DETECTION_EXTRA_ENV = (
     "OLLAMA_BASE_URL", "OLLAMA_HOST",
     # The explicit selector/disable switch, read by _graphify_backend_setting().
     "GRAPHIFY_BACKEND",
+    "GRAPHIFY_LITELLM_MODEL",
 )
 
 
@@ -3407,6 +3490,12 @@ def detect_backend_with_source() -> "tuple[str | None, str]":
     priority order: gemini → kimi → claude → openai → deepseek → azure → bedrock
     → ollama (last, opt-in), then any custom registered backend.
 
+    After ``GRAPHIFY_BACKEND``, a set ``GRAPHIFY_LITELLM_MODEL`` selects litellm
+    before any ambient key is probed. It is a deliberate, graphify-specific
+    choice of provider (often a governed route such as bedrock/ or vertex_ai/),
+    so an unrelated key left in the environment must not silently send the
+    corpus to a different provider.
+
     Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
     is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
     — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
@@ -3418,6 +3507,8 @@ def detect_backend_with_source() -> "tuple[str | None, str]":
         if setting.lower() in _BACKEND_DISABLE_SENTINELS:
             return None, f"GRAPHIFY_BACKEND={setting}"
         return setting, f"GRAPHIFY_BACKEND={setting}"
+    if os.environ.get("GRAPHIFY_LITELLM_MODEL", "").strip():
+        return "litellm", "GRAPHIFY_LITELLM_MODEL"
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
             env = _first_set_env(_backend_env_keys(backend)) or backend
@@ -3435,7 +3526,7 @@ def detect_backend_with_source() -> "tuple[str | None, str]":
         _validate_ollama_base_url(ollama_url)
         return "ollama", "auto-detected from Ollama configuration"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli", "litellm"):
             if _get_backend_api_key(name):
                 env = _first_set_env(_backend_env_keys(name)) or name
                 return name, f"auto-detected from {env}"

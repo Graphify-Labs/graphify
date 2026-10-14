@@ -4176,7 +4176,7 @@ def dispatch_command(cmd: str) -> None:
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
-                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
+                    "DEEPSEEK_API_KEY (deepseek), GRAPHIFY_LITELLM_MODEL (litellm), or pass --backend. A code-only "
                     "corpus needs no key." + hint,
                     file=sys.stderr,
                 )
@@ -4212,6 +4212,18 @@ def dispatch_command(cmd: str) -> None:
                         or os.environ.get("AWS_DEFAULT_REGION")
                         or os.environ.get("AWS_ACCESS_KEY_ID")
                     )
+                elif backend == "litellm":
+                    # Credentials come from the routed provider's own environment,
+                    # so the only thing graphify can require up front is a model.
+                    allow_no_key = bool(model or os.environ.get("GRAPHIFY_LITELLM_MODEL", "").strip())
+                    if not allow_no_key:
+                        print(
+                            "error: backend 'litellm' requires a model: set GRAPHIFY_LITELLM_MODEL "
+                            "or pass --model (e.g. bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0, "
+                            "vertex_ai/gemini-2.0-flash, azure/<deployment>, ollama/llama3.1).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
                 elif backend == "claude-cli":
                     import shutil as _shutil
                     allow_no_key = _shutil.which("claude") is not None
