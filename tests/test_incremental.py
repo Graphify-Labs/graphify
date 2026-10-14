@@ -618,11 +618,20 @@ def test_update_absolute_graphify_out_keeps_inherited_location(tmp_path, monkeyp
     shared = tmp_path / "shared-graphify-out"
     ignored = tmp_path / "ignored-prefix"
     monkeypatch.setenv("GRAPHIFY_OUT", str(shared))
+    initial = _run(["update", "project", "--no-cluster"], tmp_path)
+    assert initial.returncode == 0, initial.stderr
+    before_sources = {
+        node["id"]: node.get("source_file")
+        for node in json.loads((shared / "graph.json").read_text())["nodes"]
+    }
     result = _run(
-        ["update", str(project), "--out", str(ignored), "--no-cluster"], tmp_path
+        ["update", "project", "--out", str(ignored), "--no-cluster"], tmp_path
     )
     assert result.returncode == 0, result.stderr
-    assert (shared / "graph.json").exists()
+    assert {
+        node["id"]: node.get("source_file")
+        for node in json.loads((shared / "graph.json").read_text())["nodes"]
+    } == before_sources
     assert (shared / "manifest.json").exists()
     assert (shared / ".graphify_root").read_text(encoding="utf-8") == str(project.resolve())
     assert (shared / "cache" / "stat-index.json").exists()
@@ -659,17 +668,76 @@ def test_update_same_root_out_keeps_portable_marker(tmp_path, monkeypatch, sourc
     project = original / source_arg
     project.mkdir(parents=True)
     (other / source_arg).mkdir(parents=True)
-    (project / "app.py").write_text("def from_original(): pass\n", encoding="utf-8")
+    (project / "src").mkdir()
+    (project / "src" / "util.py").write_text("def helper(): return 1\n", encoding="utf-8")
+    (project / "src" / "guide.txt").write_text("A live guide.\n", encoding="utf-8")
+    caller = project / "app.py"
+    caller.write_text(
+        "from src.util import helper\n\ndef from_original(): return helper()\n",
+        encoding="utf-8",
+    )
     (other / source_arg / "app.py").write_text("def from_other(): pass\n", encoding="utf-8")
     initial = _run(
         ["extract", source_arg, "--out", source_arg, "--code-only", "--no-cluster"],
         original,
     )
     assert initial.returncode == 0, initial.stderr
-    result = _run(["update", source_arg, "--out", source_arg, "--no-cluster"], original)
-    assert result.returncode == 0, result.stderr
     out = project / "graphify-out"
+    graph_path = out / "graph.json"
+    seeded = json.loads(graph_path.read_text())
+    seeded["nodes"].append({
+        "id": "guide_topic", "label": "Guide", "file_type": "concept",
+        "source_file": "src/guide.txt", "_origin": "semantic",
+    })
+    seeded["links" if "links" in seeded else "edges"].append({
+        "source": "guide_topic", "target": "app_from_original",
+        "relation": "implemented_by", "confidence": "INFERRED",
+        "source_file": "src/guide.txt",
+    })
+    graph_path.write_text(json.dumps(seeded))
+
+    def assert_retained(prefix=""):
+        graph = json.loads(graph_path.read_text())
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        assert nodes["src_util_helper"]["source_file"] == prefix + "src/util.py"
+        assert nodes["guide_topic"]["source_file"] == prefix + "src/guide.txt"
+        edges = graph.get("links", graph.get("edges", []))
+        assert any(
+            edge.get("relation") == "calls"
+            and edge["source"] == "app_from_original"
+            and edge["target"] == "src_util_helper"
+            for edge in edges
+        )
+        assert any(
+            edge["source"] == "guide_topic" and edge["target"] == "app_from_original"
+            for edge in edges
+        )
+
+    for _ in range(2):
+        result = _run(["update", source_arg, "--out", source_arg, "--no-cluster"], original)
+        assert result.returncode == 0, result.stderr
+        assert_retained()
+    assert (out / ".graphify_root").read_text() == "."
+
+    # A changed-path rebuild must retain the unchanged nested call target too.
+    from graphify.watch import _rebuild_code
+
+    monkeypatch.chdir(original)
+    caller.write_text(caller.read_text() + "\ndef added(): return 2\n", encoding="utf-8")
+    assert _rebuild_code(
+        Path(source_arg), changed_paths=[caller], output_root=Path(source_arg),
+        no_cluster=True, acquire_lock=False,
+    ) is True
+    assert_retained()
+
+    # No-flag callers keep their historical CWD-relative graph and marker.
+    legacy = _run(["update", source_arg, "--no-cluster"], original)
+    assert legacy.returncode == 0, legacy.stderr
+    assert_retained("src/" if source_arg == "src" else "")
     assert (out / ".graphify_root").read_text() == source_arg
+    explicit = _run(["update", source_arg, "--out", source_arg, "--no-cluster"], original)
+    assert explicit.returncode == 0, explicit.stderr
+    assert_retained()
 
     recovered = _run(["update", "--out", str(project), "--no-cluster"], other)
     assert recovered.returncode == 0, recovered.stderr
@@ -677,7 +745,8 @@ def test_update_same_root_out_keeps_portable_marker(tmp_path, monkeypatch, sourc
     ids = {node["id"] for node in graph["nodes"]}
     assert "app_from_original" in ids
     assert "app_from_other" not in ids
-    assert (out / ".graphify_root").read_text() == str(project.resolve())
+    assert_retained()
+    assert (out / ".graphify_root").read_text() == "."
     assert not (other / source_arg / "graphify-out").exists()
 
 

@@ -435,6 +435,10 @@ def _graphify_root_marker_value(watch_path: Path, *, out_dir: Path | None = None
         and out_dir.resolve() != (watch_path / _GRAPHIFY_OUT).resolve()
     ):
         return str(watch_path.resolve())
+    if out_dir is not None:
+        # Explicit same-root updates store scan-relative paths. A dot avoids
+        # confusing a nested source prefix with a legacy CWD-relative marker.
+        return "."
     return str(watch_path)
 
 
@@ -564,6 +568,8 @@ class _StoredSourcePaths:
                                 break
                         else:
                             self.existing_source_root = resolved
+                elif saved_root == Path("."):
+                    self.existing_source_root = watch_root
                 else:
                     invocation_root = Path.cwd().resolve()
                     if (invocation_root / saved_root).resolve() == watch_root:
@@ -1783,7 +1789,7 @@ def _rebuild_code(
     # stay scan-relative, aligned with the saved marker. Source-only callers
     # retain the legacy CWD anchor for relative invocations.
     project_root = (
-        watch_root if output_root is not None or watch_path.is_absolute()
+        watch_root if cache_root is not None or watch_path.is_absolute()
         else Path.cwd().resolve()
     )
     report_root = _report_root_label(watch_path)
@@ -2323,7 +2329,9 @@ def _rebuild_code(
             # _graphify_root_marker_value for why this isn't always the raw
             # caller-supplied value (#3375).
             (out / ".graphify_root").write_text(
-                _graphify_root_marker_value(watch_path, out_dir=out), encoding="utf-8"
+                _graphify_root_marker_value(
+                    watch_path, out_dir=out if cache_root is not None else None
+                ), encoding="utf-8"
             )
 
             try:
@@ -2607,7 +2615,9 @@ def _rebuild_code(
         # See _graphify_root_marker_value for why this isn't always the raw
         # caller-supplied value (#3375).
         (out / ".graphify_root").write_text(
-            _graphify_root_marker_value(watch_path, out_dir=out), encoding="utf-8"
+            _graphify_root_marker_value(
+                watch_path, out_dir=out if cache_root is not None else None
+            ), encoding="utf-8"
         )
 
         try:

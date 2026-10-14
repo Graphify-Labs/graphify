@@ -459,15 +459,18 @@ def test_rebuild_omitted_output_root_preserves_detect_default(tmp_path, monkeypa
     assert (tmp_path / "graphify-out" / "graph.json").exists()
 
 
-def test_rebuild_explicit_same_root_keeps_portable_marker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source_arg", [".", "corpus"])
+def test_rebuild_explicit_same_root_keeps_portable_marker(tmp_path, monkeypatch, source_arg):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
-    monkeypatch.chdir(corpus)
+    monkeypatch.chdir(corpus if source_arg == "." else tmp_path)
     assert _rebuild_code(
-        Path("."), output_root=corpus, no_cluster=True, acquire_lock=False
+        Path(source_arg), output_root=corpus, no_cluster=True, acquire_lock=False
     ) is True
     assert (corpus / "graphify-out" / ".graphify_root").read_text() == "."
+    assert _rebuild_code(Path(source_arg), no_cluster=True, acquire_lock=False) is True
+    assert (corpus / "graphify-out" / ".graphify_root").read_text() == source_arg
 
 
 def test_rebuild_code_writes_community_name(tmp_path):
