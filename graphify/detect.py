@@ -1218,12 +1218,46 @@ def _parse_gitignore_line(raw: str) -> str:
     return _nfc(line)
 
 
+def _is_valid_git_marker(dot_git: Path) -> bool:
+    """Whether ``dot_git`` is a ``.git`` that git itself would accept (#4444).
+
+    A ``.git`` directory needs ``HEAD``, ``objects/`` and ``refs/``, the same
+    entries git's own repository check looks for. A ``.git`` file (linked
+    worktree, submodule) must start with ``gitdir:``. An empty or partial
+    ``.git`` directory, e.g. one left in a home directory, is not a repo and
+    must not become the ignore-walk ceiling. No git subprocess is used.
+    """
+    try:
+        if dot_git.is_dir():
+            return (dot_git / "HEAD").is_file() and (dot_git / "objects").is_dir() and (dot_git / "refs").is_dir()
+        if dot_git.is_file():
+            with dot_git.open("rb") as fh:
+                return fh.read(7) == b"gitdir:"
+    except OSError:
+        pass
+    return False
+
+
+def _has_vcs_marker(directory: Path) -> bool:
+    for marker in _VCS_MARKERS:
+        path = directory / marker
+        if marker == ".git":
+            if _is_valid_git_marker(path):
+                return True
+        elif path.exists():
+            return True
+    return False
+
+
 def _find_vcs_root(start: Path) -> Path | None:
-    """Walk upward from start; return the first directory containing a VCS marker."""
+    """Walk upward from start; return the first directory containing a VCS marker.
+
+    ``.git`` only counts when it is a valid repo marker (#4444).
+    """
     current = start.resolve()
     home = Path.home()
     while True:
-        if any((current / m).exists() for m in _VCS_MARKERS):
+        if _has_vcs_marker(current):
             return current
         parent = current.parent
         if parent == current or current == home:
