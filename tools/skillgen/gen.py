@@ -1275,6 +1275,54 @@ def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
     )
 
 
+def _is_behind_default_branch_fix_line(line: str) -> bool:
+    """Whether a line is part of the Step 1 behind-check / built_at_commit fix (#4427).
+
+    Step 1 now prints the branch and how far HEAD is behind its upstream (or
+    origin's default branch) for git inputs, and the Step 4/5 ``generate()``
+    calls pass ``built_at_commit`` so GRAPH_REPORT.md gets a Graph Freshness
+    section. These are the added block lines, the reworded "print nothing" line,
+    and the old/new ``generate()`` calls.
+    """
+    return line.strip() in _BEHIND_DEFAULT_BRANCH_FIX_LINES
+
+
+_BEHIND_DEFAULT_BRANCH_FIX_LINES = frozenset((
+        '"',
+        "# Same commit `graphify update` stamps: graph.json's built_at_commit, else the input's git HEAD.",
+        '$(cat graphify-out/.graphify_python) -c "',
+        'If the import succeeds, print nothing and move straight to Step 2.',
+        'If the import succeeds, print nothing and continue below.',
+        'Then, if the input is a git checkout, check it is not behind (prints nothing for a non-git path or one with no upstream/remote):',
+        'This compares against the last-fetched remote refs (no fetch). If it printed a WARNING, tell the user and offer to scan a fresh worktree of the default branch instead (`git -C INPUT_PATH worktree add <tmp-dir> <base>`, then use `<tmp-dir>` as INPUT_PATH and re-run Step 1). Otherwise continue to Step 2.',
+        '```',
+        '```bash',
+        "base = git('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}') or git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD')",
+        "behind = git('rev-list', '--count', 'HEAD..' + base) if base else ''",
+        "branch = git('rev-parse', '--abbrev-ref', 'HEAD')",
+        'built_at_commit = json.loads(Path(\'graphify-out/graph.json\').read_text(encoding=\\"utf-8\\")).get(\'built_at_commit\') or _git_head(cwd=Path(\'INPUT_PATH\').resolve())',
+        'def git(*args):',
+        'except Exception:',
+        'from graphify.watch import _git_head',
+        'from pathlib import Path',
+        "if behind != '0':",
+        'if behind:',
+        "if git('rev-parse', '--is-inside-work-tree') == 'true':",
+        'import subprocess',
+        "print(f'WARNING: this checkout is {behind} commit(s) behind {base}; the graph will describe older code.')",
+        "print(f'git: on {branch}, {behind} commit(s) behind {base}')",
+        "r = subprocess.run(['git', '-C', root, *args], capture_output=True, text=True, timeout=10)",
+        "report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)",
+        "report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions, built_at_commit=built_at_commit)",
+        "report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)",
+        "report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions, built_at_commit=built_at_commit)",
+        "return ''",
+        "return r.stdout.strip() if r.returncode == 0 else ''",
+        "root = Path('graphify-out/.graphify_root').read_text(encoding='utf-8').strip()",
+        'try:',
+))
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1302,6 +1350,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
+    _is_behind_default_branch_fix_line,
 )
 
 

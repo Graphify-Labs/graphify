@@ -134,9 +134,35 @@ INPUT_PATH
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
 ```
 
-If the import succeeds, print nothing and move straight to Step 2.
+If the import succeeds, print nothing and continue below.
 
 **In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**
+
+Then, if the input is a git checkout, check it is not behind (prints nothing for a non-git path or one with no upstream/remote):
+
+```powershell
+@'
+import subprocess
+from pathlib import Path
+root = Path('graphify-out/.graphify_root').read_text(encoding='utf-8').strip()
+def git(*args):
+    try:
+        r = subprocess.run(['git', '-C', root, *args], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ''
+    return r.stdout.strip() if r.returncode == 0 else ''
+if git('rev-parse', '--is-inside-work-tree') == 'true':
+    branch = git('rev-parse', '--abbrev-ref', 'HEAD')
+    base = git('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}') or git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
+    behind = git('rev-list', '--count', 'HEAD..' + base) if base else ''
+    if behind:
+        print(f'git: on {branch}, {behind} commit(s) behind {base}')
+        if behind != '0':
+            print(f'WARNING: this checkout is {behind} commit(s) behind {base}; the graph will describe older code.')
+'@ | & (Get-Content graphify-out\.graphify_python) -
+```
+
+This compares against the last-fetched remote refs (no fetch). If it printed a WARNING, tell the user and offer to scan a fresh worktree of the default branch instead (`git -C INPUT_PATH worktree add <tmp-dir> <base>`, then use `<tmp-dir>` as INPUT_PATH and re-run Step 1). Otherwise continue to Step 2.
 
 ### Step 2 - Detect files
 
@@ -490,7 +516,10 @@ if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
     raise SystemExit(1)
-report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
+# Same commit `graphify update` stamps: graph.json's built_at_commit, else the input's git HEAD.
+from graphify.watch import _git_head
+built_at_commit = json.loads(Path('graphify-out/graph.json').read_text(encoding="utf-8")).get('built_at_commit') or _git_head(cwd=Path('INPUT_PATH').resolve())
+report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions, built_at_commit=built_at_commit)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding="utf-8")
 analysis = {
     'communities': {str(k): v for k, v in communities.items()},
@@ -566,7 +595,10 @@ labels = LABELS_DICT
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
 
-report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
+# Same commit `graphify update` stamps: graph.json's built_at_commit, else the input's git HEAD.
+from graphify.watch import _git_head
+built_at_commit = json.loads(Path('graphify-out/graph.json').read_text(encoding="utf-8")).get('built_at_commit') or _git_head(cwd=Path('INPUT_PATH').resolve())
+report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions, built_at_commit=built_at_commit)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding="utf-8")
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
 # Re-export so graph.json nodes carry the curated community_name (#2490).
