@@ -2435,11 +2435,12 @@ def _rebuild_code(
         # rebuild that adds nodes, cid 30 can cover a completely different community
         # and its old name is then simply wrong. Validate every reused label against
         # the membership signature saved beside the labels — the same guard the
-        # cluster-only path applies — and drop any whose community changed so the
+        # cluster-only path applies — and drop any whose overlap is not a strict
+        # majority of both the saved members and the current members so the
         # hub-fill below renames it, deterministically and correct-by-construction.
         # Without this, an incremental `graphify update` launders stale names into
         # labels.json as though they were current (#label-stale).
-        from graphify.cluster import community_member_sigs
+        from graphify.cluster import community_member_sigs, label_still_applies
         cur_sigs = community_member_sigs(communities)
         saved_sigs: dict[int, str] = {}
         if sig_file.exists():
@@ -2452,16 +2453,36 @@ def _rebuild_code(
             except Exception:
                 saved_sigs = {}
         if saved_sigs:
-            # Precise: the signature tells us exactly which communities changed.
-            stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
+            # Equal signature, or a strict majority of both the saved members
+            # and the current members (#2298).
+            stale = {
+                cid for cid in labels
+                if not label_still_applies(
+                    cid,
+                    communities.get(cid, []),
+                    previous_node_community,
+                    saved_sigs.get(cid),
+                    cur_sigs.get(cid),
+                )
+            }
+        elif len(raw) != len(communities):
+            # No sidecar (labels predate it). A differing community count used
+            # to drop every label; keep one only on that same majority overlap.
+            # Compare against the tracked file alone (`raw`), not the
+            # pending-merged `labels` -- a from-empty rebuild's fresh pending
+            # entries must not count toward "how many labels were saved".
+            stale = {
+                cid for cid in labels
+                if not label_still_applies(
+                    cid,
+                    communities.get(cid, []),
+                    previous_node_community,
+                    None,
+                    None,
+                )
+            }
         else:
-            # No sidecar (labels predate it). A differing community COUNT means the
-            # labels describe a different clustering, so no cid's label is trustworthy;
-            # an equal count is the best available "unchanged" signal. Compare
-            # against the tracked file alone (`raw`), not the pending-merged
-            # `labels` -- a from-empty rebuild's fresh pending entries must not
-            # count toward "how many labels were saved".
-            stale = set(labels) if len(raw) != len(communities) else set()
+            stale = set()
         for cid in stale:
             del labels[cid]
             pending_cids.discard(cid)

@@ -493,6 +493,65 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
             )
 
 
+def test_rebuild_keeps_label_on_majority_overlap(tmp_path, monkeypatch):
+    """#2298: an update that adds one node to a community keeps the saved name
+    when the previous members are still a strict majority of the new set."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = (
+        "def alpha():\n    return beta()\n\n"
+        "def beta():\n    return gamma()\n\n"
+        "def gamma():\n    return 1\n"
+    )
+    (corpus / "a.py").write_text(source, encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    communities: dict[int, list[str]] = {}
+    previous: dict[str, int] = {}
+    for node in graph["nodes"]:
+        cid = node.get("community")
+        node_id = node.get("id")
+        if cid is None or node_id is None:
+            continue
+        communities.setdefault(int(cid), []).append(str(node_id))
+        previous[str(node_id)] = int(cid)
+    assert communities, "expected the first rebuild to cluster at least one community"
+    largest = max(communities, key=lambda cid: (len(communities[cid]), -cid))
+    assert len(communities[largest]) >= 2, (
+        f"largest community {largest} has {communities[largest]}; need at least 2 nodes"
+    )
+
+    distinctive = "Kept Majority Name"
+    labels_file.write_text(json.dumps({str(largest): distinctive}), encoding="utf-8")
+
+    (corpus / "a.py").write_text(
+        source + "\ndef delta():\n    return alpha()\n",
+        encoding="utf-8",
+    )
+
+    def _cluster_extend_largest(G, *args, **kwargs):
+        grouped: dict[int, list[str]] = {}
+        for node in G.nodes:
+            nid = str(node)
+            cid = previous.get(nid, largest)
+            grouped.setdefault(cid, []).append(nid)
+        return grouped
+
+    import graphify.cluster  # bind the submodule; the package attribute is lazy
+
+    monkeypatch.setattr(graphify.cluster, "cluster", _cluster_extend_largest)
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    saved = json.loads(labels_file.read_text(encoding="utf-8"))
+    assert distinctive in saved.values()
+
+
 def test_rebuild_code_keeps_hub_fallback_labels_out_of_the_tracked_file(tmp_path):
     """#3334: a from-empty rebuild (a fresh clone, a new worktree, any CI job
     with no prior graphify-out/) names every community by its deterministic

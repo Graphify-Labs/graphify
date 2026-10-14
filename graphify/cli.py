@@ -2523,12 +2523,19 @@ def dispatch_command(cmd: str) -> None:
             # been re-scoped/re-clustered since labeling, in which case a cid now
             # covers a DIFFERENT community and its old (LLM) name is wrong (#label-stale).
             # Validate each community against the membership signature saved beside the
-            # labels; any community that changed (or has no saved label) is renamed by
-            # its current hub — deterministic and correct-by-construction — and the user
+            # labels; a community whose overlap is not a strict majority of both
+            # the saved members and the current members (or that has no saved
+            # label) is renamed by its current hub — deterministic and
+            # correct-by-construction — and the user
             # is told to `graphify label` for fresh LLM names. Unchanged communities keep
             # their saved label. When no signature sidecar exists (labels predate this),
-            # fall back to hub-filling only the communities missing a label.
-            from graphify.cluster import community_member_sigs, label_communities_by_hub
+            # an equal community count still hub-fills only communities missing a
+            # label; a changed count keeps a label only on majority overlap.
+            from graphify.cluster import (
+                community_member_sigs,
+                label_communities_by_hub,
+                label_still_applies,
+            )
             sig_path = labels_path.parent / (labels_path.name + ".sig")
             saved_sigs: dict[int, str] = {}
             if sig_path.exists():
@@ -2555,14 +2562,29 @@ def dispatch_command(cmd: str) -> None:
                     and existing_labels[cid] != f"Community {cid}"
                 )
                 if saved_sigs:
-                    # Precise: the membership signature tells us if this exact
-                    # community changed since it was labeled.
-                    fresh = have_label and saved_sigs.get(cid) == cur_sigs.get(cid)
+                    # Equal signature, or a strict majority of both the saved
+                    # members and the current members (#2298).
+                    fresh = have_label and label_still_applies(
+                        cid,
+                        communities[cid],
+                        previous_node_community,
+                        saved_sigs.get(cid),
+                        cur_sigs.get(cid),
+                    )
+                elif count_mismatch:
+                    # No signature sidecar. A changed count used to drop every
+                    # label; keep one only on that same majority overlap.
+                    fresh = have_label and label_still_applies(
+                        cid,
+                        communities[cid],
+                        previous_node_community,
+                        None,
+                        None,
+                    )
                 else:
-                    # No signature sidecar (labels predate it). A differing community
-                    # COUNT means the labels describe a different clustering, so a cid's
-                    # old label can't be trusted; equal count is the best "same" signal.
-                    fresh = have_label and not count_mismatch
+                    # No signature sidecar and an equal community count: that
+                    # count is still the best available "unchanged" signal.
+                    fresh = have_label
                 if fresh:
                     labels[cid] = existing_labels[cid]
                 else:
