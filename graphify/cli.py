@@ -2801,6 +2801,15 @@ def dispatch_command(cmd: str) -> None:
                 # .strip()), which would make this recovered path fail exists()
                 # (#3028). Match the other .graphify_root readers.
                 watch_path = Path(saved.read_text(encoding="utf-8-sig").strip())
+                if (
+                    output_root is not None
+                    and not Path(_GRAPHIFY_OUT).is_absolute()
+                    and not watch_path.is_absolute()
+                ):
+                    # A portable marker belongs to same-root output. The
+                    # selected root identifies its source even from another CWD;
+                    # joining the marker would double a relative path like src.
+                    watch_path = output_root
             else:
                 watch_path = Path(".")
         if not watch_path.exists():

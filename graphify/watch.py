@@ -1779,11 +1779,13 @@ def _rebuild_code(
             return ok
 
     watch_root = watch_path.resolve()
-    # project_root stays CWD-anchored for a relative invocation on purpose: the
-    # persisted graph rehomes source_file across invocation styles against it
-    # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
-    # with a different anchor — see the save_manifest calls below.
-    project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
+    # Explicit output is reusable from another CWD: persisted source paths must
+    # stay scan-relative, aligned with the saved marker. Source-only callers
+    # retain the legacy CWD anchor for relative invocations.
+    project_root = (
+        watch_root if output_root is not None or watch_path.is_absolute()
+        else Path.cwd().resolve()
+    )
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor

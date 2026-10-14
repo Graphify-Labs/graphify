@@ -485,13 +485,14 @@ def test_update_external_output_keeps_nested_identity_and_unchanged_call_target(
         encoding="utf-8",
     )
     external = tmp_path / "external"
+    source_arg = "project"
     out_arg = "external" if relative_out else str(external)
     out = external / "graphify-out"
     graph_path = out / "graph.json"
     manifest_path = out / "manifest.json"
 
     first = _run(
-        ["extract", str(project), "--code-only", "--no-cluster", "--out", out_arg],
+        ["extract", source_arg, "--code-only", "--no-cluster", "--out", out_arg],
         tmp_path,
     )
     assert first.returncode == 0, first.stderr
@@ -508,6 +509,18 @@ def test_update_external_output_keeps_nested_identity_and_unchanged_call_target(
         and edge.get("target") == "services_util_helper"
         for edge in _edges(graph_path)
     )
+    # Preserve a live semantic layer across relative-source and cross-CWD updates.
+    (project / "guide.txt").write_text("A guide to this project.\n", encoding="utf-8")
+    before["nodes"].append({
+        "id": "guide_topic", "label": "Guide", "file_type": "concept",
+        "source_file": "guide.txt", "_origin": "semantic",
+    })
+    before["links" if "links" in before else "edges"].append({
+        "source": "guide_topic", "target": "app_caller_use",
+        "relation": "implemented_by", "confidence": "INFERRED",
+        "source_file": "guide.txt",
+    })
+    graph_path.write_text(json.dumps(before), encoding="utf-8")
     before_manifest = manifest_path.read_text(encoding="utf-8")
 
     # Change only the caller; the callee must be reused under its original ID.
@@ -517,7 +530,7 @@ def test_update_external_output_keeps_nested_identity_and_unchanged_call_target(
         encoding="utf-8",
     )
     out_option = [f"--out={out_arg}"] if relative_out else ["--out", out_arg]
-    second = _run(["update", str(project), *out_option, "--no-cluster"], tmp_path)
+    second = _run(["update", source_arg, *out_option, "--no-cluster"], tmp_path)
     assert second.returncode == 0, second.stderr
     after = json.loads(graph_path.read_text(encoding="utf-8"))
     after_nodes = {node["id"]: node for node in after["nodes"]}
@@ -530,6 +543,20 @@ def test_update_external_output_keeps_nested_identity_and_unchanged_call_target(
         and edge.get("target") == "services_util_helper"
         for edge in _edges(graph_path)
     ), after.get("links", after.get("edges", []))
+    assert after_nodes["guide_topic"]["source_file"] == "guide.txt"
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    recovered = _run(["update", "--out", str(external), "--no-cluster"], other_cwd)
+    assert recovered.returncode == 0, recovered.stderr
+    retained = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert any(
+        node["id"] == "guide_topic" and node["source_file"] == "guide.txt"
+        for node in retained["nodes"]
+    )
+    assert any(
+        edge["source"] == "guide_topic" and edge["target"] == "app_caller_use"
+        for edge in retained.get("links", retained.get("edges", []))
+    )
     assert manifest_path.read_text(encoding="utf-8") != before_manifest
     assert (out / "cache" / "stat-index.json").exists()
     assert not (project / "graphify-out").exists()
@@ -559,6 +586,7 @@ def test_update_external_output_keeps_nested_identity_and_unchanged_call_target(
         and edge.get("target") == "services_util_helper"
         for edge in partial.get("links", partial.get("edges", []))
     ), partial.get("links", partial.get("edges", []))
+    assert partial_nodes["guide_topic"]["source_file"] == "guide.txt"
     if not relative_out:
         assert (out / "GRAPH_REPORT.md").exists()
     assert not (project / "graphify-out").exists()
@@ -623,12 +651,34 @@ def test_update_rejects_missing_output_root(tmp_path, options):
     assert not (tmp_path / "graphify-out").exists()
 
 
-def test_update_same_root_out_keeps_portable_marker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source_arg", [".", "src"])
+def test_update_same_root_out_keeps_portable_marker(tmp_path, monkeypatch, source_arg):
     monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
-    (tmp_path / "app.py").write_text("def run(): pass\n", encoding="utf-8")
-    result = _run(["update", ".", "--out", ".", "--no-cluster"], tmp_path)
+    original = tmp_path / "original"
+    other = tmp_path / "other"
+    project = original / source_arg
+    project.mkdir(parents=True)
+    (other / source_arg).mkdir(parents=True)
+    (project / "app.py").write_text("def from_original(): pass\n", encoding="utf-8")
+    (other / source_arg / "app.py").write_text("def from_other(): pass\n", encoding="utf-8")
+    initial = _run(
+        ["extract", source_arg, "--out", source_arg, "--code-only", "--no-cluster"],
+        original,
+    )
+    assert initial.returncode == 0, initial.stderr
+    result = _run(["update", source_arg, "--out", source_arg, "--no-cluster"], original)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "graphify-out" / ".graphify_root").read_text() == "."
+    out = project / "graphify-out"
+    assert (out / ".graphify_root").read_text() == source_arg
+
+    recovered = _run(["update", "--out", str(project), "--no-cluster"], other)
+    assert recovered.returncode == 0, recovered.stderr
+    graph = json.loads((out / "graph.json").read_text())
+    ids = {node["id"] for node in graph["nodes"]}
+    assert "app_from_original" in ids
+    assert "app_from_other" not in ids
+    assert (out / ".graphify_root").read_text() == str(project.resolve())
+    assert not (other / source_arg / "graphify-out").exists()
 
 
 def test_update_does_not_resurrect_a_dropped_cross_file_edge_via_context(tmp_path):
