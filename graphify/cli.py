@@ -4201,6 +4201,29 @@ def dispatch_command(cmd: str) -> None:
                 [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
             )
 
+        from graphify.watch import (
+            _is_fortran_source, _fortran_sources, _fortran_structure_complete,
+            _fortran_structure_edge,
+        )
+        _fortran_files = [Path(p) for p in files_by_type.get("code", [])
+                          if _is_fortran_source(p)]
+        _fortran_prior = {}
+        _fortran_prior_unreadable = False
+        if has_path and existing_graph_path.exists():
+            from graphify.security import check_graph_file_size_cap
+            try:
+                check_graph_file_size_cap(existing_graph_path)
+                _fortran_prior = json.loads(existing_graph_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # Leave refusal/force behavior and diagnostics to the existing
+                # persistence guards. Unknown prior facts cannot certify links.
+                _fortran_prior_unreadable = True
+        _fortran_active = bool(_fortran_files or _fortran_sources(_fortran_prior, str))
+        # Corpus relations depend on negative evidence from every accepted
+        # Fortran file. Keep other languages narrow and let the AST cache serve
+        # unchanged Fortran, without reading excluded files to complete facts.
+        code_files = list(dict.fromkeys([*code_files, *_fortran_files]))
+
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -4234,9 +4257,7 @@ def dispatch_command(cmd: str) -> None:
                         check_graph_file_size_cap as _ctx_size_cap,
                     )
                     _ctx_size_cap(existing_graph_path)
-                    _ctx_graph = json.loads(
-                        existing_graph_path.read_text(encoding="utf-8")
-                    )
+                    _ctx_graph = _fortran_prior
                     _ctx_root = Path(os.path.abspath(target))
 
                     def _ctx_identity(source_file) -> str | None:
@@ -4716,6 +4737,27 @@ def dispatch_command(cmd: str) -> None:
                 print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+        def _fortran_identity(source_file):
+            if not source_file:
+                return None
+            path = Path(str(source_file))
+            if not path.is_absolute():
+                path = target / path
+            return Path(os.path.abspath(path)).as_posix()
+
+        _fortran_persisted = _fortran_sources(_fortran_prior, _fortran_identity)
+        _fortran_reconciled = {
+            _fortran_identity(p)
+            for p in [*deleted_files, *excluded_files, *graph_stale_sources]
+        }
+        _fortran_complete = not _fortran_prior_unreadable and _fortran_structure_complete(
+            ast_result, _fortran_files,
+            _fortran_persisted, _fortran_reconciled,
+            _fortran_identity,
+        )
+        if not _fortran_complete:
+            merged["edges"] = [e for e in merged["edges"] if not _fortran_structure_edge(e)]
+
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
@@ -4733,6 +4775,7 @@ def dispatch_command(cmd: str) -> None:
                 and not code_files
                 and not semantic_files
                 and not deleted_files
+                and not _fortran_active
                 and not pg_result.get("nodes")
                 and not pg_result.get("edges")
                 and not cargo_result.get("nodes")
@@ -4807,6 +4850,8 @@ def dispatch_command(cmd: str) -> None:
                         f for _flist in _manifest_files.values() for f in _flist
                     }
                     _cleared_semantic = _shrink[2]
+            if not _fortran_complete:
+                merged["edges"] = [e for e in merged["edges"] if not _fortran_structure_edge(e)]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
@@ -4964,8 +5009,18 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
         else:
             G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+        if not _fortran_complete:
+            G.remove_edges_from([(a, b) for a, b, edge in G.edges(data=True)
+                                 if _fortran_structure_edge(edge)])
         stages.mark("build")
-        if G.number_of_nodes() == 0:
+        # Deleting/pruning the last Fortran sources is a verified empty result,
+        # not failed extraction. Persist it through the normal guarded writer.
+        _fortran_emptied = (
+            bool(_fortran_persisted) and not code_files and not semantic_files
+            and _fortran_persisted <= _fortran_reconciled
+            and _fortran_complete and not _extraction_incomplete
+        )
+        if G.number_of_nodes() == 0 and not _fortran_emptied:
             print(
                 "[graphify extract] graph is empty — extraction produced no nodes. "
                 "Possible causes: all files skipped, binary-only corpus, or LLM "
