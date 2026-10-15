@@ -1275,6 +1275,23 @@ def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
     )
 
 
+def _is_needs_update_flag_fix_line(line: str) -> bool:
+    """Whether a line is part of the staleness-flag name fix (#2440).
+
+    Step 9's cleanup deleted ``graphify-out/.needs_update`` -- a leading dot
+    picked up from the dotted temp files removed on the line above -- while
+    ``watch.py`` writes and ``cli.py`` reads ``graphify-out/needs_update``. The
+    ``rm`` therefore matched nothing: a full rebuild through the skill never
+    cleared a flag set by ``--watch``, and the read hook kept emitting the stale
+    nudge after a complete, successful rebuild. Both the old dotted form
+    (removed) and the undotted form (added) are sanctioned here.
+    """
+    return line.strip() in (
+        "rm -f graphify-out/.needs_update 2>/dev/null || true",
+        "rm -f graphify-out/needs_update 2>/dev/null || true",
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1302,6 +1319,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
+    _is_needs_update_flag_fix_line,
 )
 
 
