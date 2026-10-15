@@ -279,3 +279,79 @@ def test_a_stdlib_named_module_in_another_repo_is_never_bound(tmp_path: Path):
     )})
     lib = _build(tmp_path, "lib", {"collections.py": "def deque(x):\n    return x\n"})
     assert _cross_repo_edges(_merge(tmp_path, app, lib)) == set()
+
+
+# --- review follow-ups on #4474 ---------------------------------------------
+
+CALLERS = (
+    "import functools\n"
+    "from config_validator import validator_from_json\n"
+    "\n"
+    "\n"
+    "def load(payload):\n"
+    "    return validator_from_json(payload)\n"
+    "\n"
+    "\n"
+    "@functools.lru_cache\n"
+    "def load_cached(payload):\n"
+    "    return validator_from_json(payload)\n"
+    "\n"
+    "\n"
+    "class Service:\n"
+    "    def run(self, payload):\n"
+    "        return validator_from_json(payload)\n"
+)
+
+
+def test_decorated_functions_and_methods_park_their_calls(tmp_path: Path):
+    """Flask/FastAPI/Click code is mostly decorated functions; the facts pass's
+    own call walk skipped them and every method. Parking reads the per-file raw
+    calls, the same facts the joint scan binds these calls from."""
+    app = _build(tmp_path, "app", {"app.py": CALLERS})
+    callers = sorted(label for label, e in _parked(app) if e.get("relation") != "imports")
+    assert callers == [".run()", "load()", "load_cached()"], callers
+
+
+def test_decorated_functions_and_methods_link_like_the_joint_scan(tmp_path: Path):
+    app = _build(tmp_path, "app", {"app.py": CALLERS})
+    lib = _build(tmp_path, "lib", {"config_validator.py": LIB})
+    calls = {src for src, rel, _ in _cross_repo_edges(_merge(tmp_path, app, lib))
+             if rel == "calls"}
+    assert calls == {"load()", "load_cached()", ".run()"}, calls
+
+
+def test_a_module_inside_a_package_does_not_answer_a_bare_import(tmp_path: Path):
+    """`mylib/utils.py` is importable only as `mylib.utils`, so it must not answer
+    `from utils import retry` — the in-repo resolver refuses it too (#2072)."""
+    app = _build(tmp_path, "app", {"app.py": (
+        "from utils import retry\n"
+        "\n"
+        "\n"
+        "def load():\n"
+        "    return retry()\n"
+    )})
+    lib = _build(tmp_path, "lib", {
+        "mylib/__init__.py": "",
+        "mylib/utils.py": "def retry():\n    return 1\n",
+    })
+    assert _cross_repo_edges(_merge(tmp_path, app, lib)) == set()
+
+
+def test_a_loose_module_in_a_non_package_directory_still_answers(tmp_path: Path):
+    """The package guard keys on `__init__.py`, not on nesting: a module in a
+    plain directory (scripts on the path, src layouts without a package) binds."""
+    app = _build(tmp_path, "app", {"app.py": APP})
+    lib = _build(tmp_path, "lib", {"src/config_validator.py": LIB})
+    edges = _cross_repo_edges(_merge(tmp_path, app, lib))
+    assert ("load()", "calls", "validator_from_json()") in edges, edges
+
+
+def test_the_merge_summary_does_not_call_import_edges_member_calls(tmp_path: Path):
+    app = _build(tmp_path, "app", {"app.py": APP})
+    lib = _build(tmp_path, "lib", {"config_validator.py": LIB})
+    out = tmp_path / "merged.json"
+    result = subprocess.run([PYTHON, "-m", "graphify", "merge-graphs", str(app), str(lib),
+                             "--out", str(out)], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "linked 3 edge(s) across repos (calls and imports)" in result.stdout, result.stdout
+    assert "member call(s)" not in result.stdout

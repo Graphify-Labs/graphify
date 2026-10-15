@@ -213,6 +213,14 @@ def _link_parked_python_imports(merged: "nx.Graph", parked_nodes: list[tuple[str
         return 0
 
     suffixes = _LANG_SUFFIXES["python"]
+    # A module beside an `__init__.py` belongs to that package: it is importable
+    # as `pkg.mod`, never as a bare `mod`, so it must not answer `from mod import`
+    # — the same refusal the in-repo resolver makes (#2072).
+    package_dirs = {
+        (data.get("repo"), os.path.dirname(str(data.get("source_file") or "")))
+        for _, data in merged.nodes(data=True)
+        if os.path.basename(str(data.get("source_file") or "")) == "__init__.py"
+    }
     modules: dict[str, list[str]] = defaultdict(list)
     for node, data in merged.nodes(data=True):
         source_file = str(data.get("source_file") or "")
@@ -220,6 +228,8 @@ def _link_parked_python_imports(merged: "nx.Graph", parked_nodes: list[tuple[str
             continue
         if str(data.get("label") or "") != os.path.basename(source_file):
             continue  # a definition, not the module's own file node
+        if (data.get("repo"), os.path.dirname(source_file)) in package_dirs:
+            continue
         modules[os.path.splitext(os.path.basename(source_file))[0]].append(node)
     if not modules:
         return 0
