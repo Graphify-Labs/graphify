@@ -1109,21 +1109,14 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *,
-                      seeds: list[str] | None = None, compact: bool = False) -> str:
+def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
-
-    compact: write the same answer in fewer tokens. The budget cut, the notices
-    and the order are decided exactly as in the default rendering; only the
-    NODE lines that survive are rewritten, grouped under their source file (see
-    _compact_node_block). Default False: output unchanged.
     """
     char_budget = token_budget * 3
     lines = []
-    node_parts: list[tuple[str, str, str, str, str]] = []   # per NODE line: label, src, loc, community, suffixes
     # Work-memory overlay (derived sidecar) stashed on the graph at load time.
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
@@ -1196,20 +1189,15 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             if len(attrs_summary) > 200:
                 attrs_summary = attrs_summary[:197] + "..."
             attrs_suffix = f" attrs={{{sanitize_label(attrs_summary)}}}"
-        label_s = sanitize_label(d.get('label', nid))
-        src_s = sanitize_label(str(d.get('source_file', '')))
-        loc_s = sanitize_label(str(d.get('source_location', '')))
-        community_s = sanitize_label(str(d.get('community_name') or d.get('community', '')))
         line = (
-            f"NODE {label_s} "
-            f"[src={src_s} "
-            f"loc={loc_s} "
-            f"community={community_s}"
+            f"NODE {sanitize_label(d.get('label', nid))} "
+            f"[src={sanitize_label(str(d.get('source_file', '')))} "
+            f"loc={sanitize_label(str(d.get('source_location', '')))} "
+            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}"
             f"{attrs_suffix}]"
         )
         lines.append(line)
-        node_parts.append((label_s, src_s, loc_s, community_s, f"{learning_suffix}{attrs_suffix}"))
     for u, v in edges:
         if u in nodes and v in nodes:
             raw = G[u][v]
@@ -1277,13 +1265,6 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             # Reached only inside `len(output) > char_budget`, so every node
             # fits but the full nodes+edges output does not: an honest
             # over-budget notice, never a truncation.
-            if compact:
-                # The compact form of a complete answer is shorter; report its
-                # own size, and only when it is still over the budget.
-                small = _compact_node_block(output, node_parts)
-                if len(small) <= char_budget:
-                    return small
-                output = small
             total_edges = sum(1 for l in lines if l.startswith("EDGE "))
             est_tokens = len(output) // 3
             return (
@@ -1313,37 +1294,46 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
             f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
         )
-    return _compact_node_block(output, node_parts) if compact else output
+    return output
 
 
-def _compact_node_block(text: str, node_parts: list[tuple[str, str, str, str, str]]) -> str:
-    """Rewrite the NODE lines of a rendered answer in fewer tokens, keeping
-    everything else (header, notices, EDGE lines) as it is.
+_COMPACT_NODE = re.compile(
+    r"^NODE (?P<label>.*) \[src=(?P<src>[^\]]*?) loc=(?P<loc>[^\]]*?) community=(?P<community>.*?)"
+    r"(?P<suffix>(?: learning=[^\]\s]*)?(?: attrs=\{.*\})?)\]$"
+)
 
-    The NODE lines are contiguous and in rank order, and a budget cut keeps a
-    prefix of them, so the k NODE lines in ``text`` are ``node_parts[:k]``. Each
-    source file is written once, in the order of its first node, with its nodes
-    beneath it in their original order:
+
+def _compact_answer(text: str, token_budget: int) -> str:
+    """The same rendered answer in fewer tokens: rewrite its NODE lines, keep
+    everything else (notices, EDGE lines) as it is.
+
+    Applied to the output of _subgraph_to_text, so the budget cut, the notices
+    and the node order are exactly the default ones. NODE lines are contiguous
+    and in rank order. Each source file is written once, in the order of its
+    first node, with its nodes beneath it in their original order:
 
         FILE django/db/models/query.py community=Query API
           QuerySet.filter() L1203
           Prefetch L2148 community=Prefetching
 
-    so a reader finds the same files in the same order as in the default
-    rendering. A FILE line carries the community most of its nodes share, and a
-    node names its own community only when it differs. Empty fields are left
-    out, and a file's own node (its label is the file name, at L1) is dropped
-    because the FILE line already names it, unless it carries a learning or
-    attrs annotation or a community of its own. Nodes with no source file sit
-    under ``FILE (none)``.
+    so a reader finds the same files in the same order. A FILE line carries the
+    community most of its nodes share, and a node names its own community only
+    when it differs. Empty fields are left out, and a file's own node (its label
+    is the file name, at L1) is dropped because the FILE line already names it,
+    unless it carries a learning or attrs annotation or a community of its own.
+    Nodes with no source file sit under ``FILE (none)``. If any NODE line does
+    not parse, the answer is returned unchanged: compaction never loses a field.
     """
     lines = text.split("\n")
     idx = [i for i, l in enumerate(lines) if l.startswith("NODE ")]
     if not idx:
         return text
-    first, k = idx[0], len(idx)
     groups: dict[str, list[tuple[str, str, str, str, bool]]] = {}
-    for label, src, loc, community, suffix in node_parts[:k]:
+    for i in idx:
+        m = _COMPACT_NODE.match(lines[i])
+        if not m:
+            return text
+        label, src, loc, community, suffix = m.group("label", "src", "loc", "community", "suffix")
         base = src.rsplit("/", 1)[-1]
         own = bool(src) and loc in ("", "L1") and (label in (base, src) or src.endswith("/" + label))
         groups.setdefault(src or "(none)", []).append((label, loc, community, suffix, own))
@@ -1360,7 +1350,15 @@ def _compact_node_block(text: str, node_parts: list[tuple[str, str, str, str, st
             if own and not mine and not suffix:
                 continue
             block.append(f"  {label}" + (f" {loc}" if loc else "") + (f" community={mine}" if mine else "") + suffix)
-    return "\n".join(lines[:first] + block + lines[first + k:])
+    out = "\n".join(lines[:idx[0]] + block + lines[idx[-1] + 1:])
+    # A complete answer that was over budget only in its default form: once the
+    # compact form fits, the over-budget notice no longer applies.
+    if out.startswith("[i] Complete answer over budget") and "\n\n" in out:
+        rest = out.split("\n\n", 1)[1]
+        if len(rest) <= token_budget * 3:
+            out = rest
+    return out
+
 
 def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
     """Render pre-built lines under the same ~3-chars/token budget rule as
@@ -1569,7 +1567,8 @@ def _render_query(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes, compact=compact)
+    body = _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + (_compact_answer(body, token_budget) if compact else body)
 
 
 def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:

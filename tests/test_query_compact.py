@@ -1,15 +1,16 @@
 """`compact` writes the same query answer in fewer tokens.
 
-The budget cut, the notices and the node order are decided exactly as in the default rendering; only the NODE lines
-that survive are rewritten, each source file once with its nodes beneath. A reader finds the same files in the same
-order. Default rendering is unchanged."""
+_compact_answer is a pure pass over the output of _subgraph_to_text, applied by _render_query only when compact is
+asked for, so the budget cut, the notices and the node order are the default ones. It rewrites the NODE lines, each
+source file once with its nodes beneath, and a reader finds the same files in the same order. _subgraph_to_text and
+the default output are unchanged."""
 from __future__ import annotations
 
 import re
 
 import networkx as nx
 
-from graphify.serve import _compact_node_block, _query_graph_text, _subgraph_to_text
+from graphify.serve import _compact_answer, _query_graph_text, _subgraph_to_text
 
 
 def _graph():
@@ -26,6 +27,11 @@ def _graph():
     return G
 
 
+def _render(G, compact, budget=2000, seeds=None):
+    text = _subgraph_to_text(G, set(G.nodes), list(G.edges), budget, seeds=seeds)
+    return _compact_answer(text, budget) if compact else text
+
+
 def _files_default(text):
     files = []
     for p in re.findall(r"(?m)^NODE .*?\[src=([^ \]]*)", text):
@@ -39,10 +45,10 @@ def _files_compact(text):
     return re.findall(r"(?m)^FILE (.+?)(?: community=.*)?$", text)
 
 
-def test_default_rendering_is_unchanged_by_the_new_parameter():
+def test_compact_false_is_the_default_answer():
     G = _graph()
-    assert _subgraph_to_text(G, set(G.nodes), list(G.edges), 2000) == \
-        _subgraph_to_text(G, set(G.nodes), list(G.edges), 2000, compact=False)
+    assert _query_graph_text(G, "filter QuerySet", mode="bfs", depth=3) == \
+        _query_graph_text(G, "filter QuerySet", mode="bfs", depth=3, compact=False)
 
 
 def test_compact_keeps_the_same_files_in_the_same_order_and_is_shorter():
@@ -56,16 +62,14 @@ def test_compact_keeps_the_same_files_in_the_same_order_and_is_shorter():
 
 
 def test_each_node_keeps_its_label_and_location_and_empty_fields_are_dropped():
-    G = _graph()
-    compact = _subgraph_to_text(G, set(G.nodes), list(G.edges), 2000, compact=True)
+    compact = _render(_graph(), compact=True)
     assert "  filter() L1203" in compact and "  WhereNode L14" in compact
     assert "community=" not in compact                                  # every community is empty here
     assert "FILE (none)" in compact and "  os" in compact               # a node with no file is still shown
 
 
 def test_a_files_own_node_is_dropped_because_the_file_line_names_it():
-    G = _graph()
-    compact = _subgraph_to_text(G, set(G.nodes), list(G.edges), 2000, compact=True)
+    compact = _render(_graph(), compact=True)
     assert "FILE db/models/query.py" in compact
     assert "  query.py" not in compact
 
@@ -75,7 +79,7 @@ def test_a_file_carries_its_shared_community_once_and_a_node_names_only_a_differ
     for n in ("query_py", "qs", "flt"):
         G.nodes[n]["community_name"] = "Query API"
     G.nodes["excl"]["community_name"] = "Filtering"
-    compact = _subgraph_to_text(G, set(G.nodes), list(G.edges), 2000, compact=True)
+    compact = _render(G, compact=True)
     assert "FILE db/models/query.py community=Query API" in compact
     assert "  QuerySet L280\n" in compact and "  filter() L1203\n" in compact     # the shared one is not repeated
     assert "  _filter_or_exclude() L1219 community=Filtering" in compact
@@ -87,8 +91,7 @@ def test_a_files_own_node_with_a_community_of_its_own_is_kept():
     for n in ("qs", "flt", "excl"):
         G.nodes[n]["community_name"] = "Query API"
     G.nodes["query_py"]["community_name"] = "Module Index"
-    compact = _subgraph_to_text(G, set(G.nodes), list(G.edges), 2000, compact=True)
-    assert "  query.py L1 community=Module Index" in compact
+    assert "  query.py L1 community=Module Index" in _render(G, compact=True)
 
 
 def test_a_truncated_answer_compacts_exactly_the_nodes_the_default_shows():
@@ -97,8 +100,8 @@ def test_a_truncated_answer_compacts_exactly_the_nodes_the_default_shows():
         G.add_node(f"n{i}", label=f"handler_{i}", source_file=f"pkg/mod_{i % 37}.py", source_location=f"L{10 + i}")
         if i:
             G.add_edge("n0", f"n{i}", relation="calls", confidence="EXTRACTED")
-    default = _subgraph_to_text(G, set(G.nodes), list(G.edges), 300, seeds=["n0"])
-    compact = _subgraph_to_text(G, set(G.nodes), list(G.edges), 300, seeds=["n0"], compact=True)
+    default = _render(G, compact=False, budget=300, seeds=["n0"])
+    compact = _render(G, compact=True, budget=300, seeds=["n0"])
     assert default.startswith("[!] TRUNCATED") and compact.startswith("[!] TRUNCATED")
     assert compact.splitlines()[0] == default.splitlines()[0]          # the same notice, the same counts
     by_file_default: dict[str, list[str]] = {}
@@ -117,11 +120,14 @@ def test_a_truncated_answer_compacts_exactly_the_nodes_the_default_shows():
 
 
 def test_learning_and_attrs_annotations_survive_compaction():
-    parts = [("handler", "pkg/a.py", "L9", "", " learning=useful attrs={kind=\"route\"}")]
-    text = "Traversal: BFS depth=2\n\nNODE handler [src=pkg/a.py loc=L9 community= learning=useful attrs={kind=\"route\"}]"
-    out = _compact_node_block(text, parts)
-    assert out.endswith("FILE pkg/a.py\n  handler L9 learning=useful attrs={kind=\"route\"}")
+    text = 'Traversal: BFS depth=2\n\nNODE handler [src=pkg/a.py loc=L9 community= learning=useful attrs={kind="route"}]'
+    assert _compact_answer(text, 2000).endswith('FILE pkg/a.py\n  handler L9 learning=useful attrs={kind="route"}')
+
+
+def test_a_node_line_that_does_not_parse_leaves_the_answer_unchanged():
+    text = "NODE odd label with no fields\nNODE handler [src=pkg/a.py loc=L9 community=]"
+    assert _compact_answer(text, 2000) == text
 
 
 def test_text_without_node_lines_is_returned_unchanged():
-    assert _compact_node_block("No matching nodes found.", []) == "No matching nodes found."
+    assert _compact_answer("No matching nodes found.", 2000) == "No matching nodes found."
