@@ -120,3 +120,29 @@ def test_the_real_pipeline_save_result_reflect_then_query(tmp_path: Path):
     assert G.graph["_learning_overlay"]["bp"]["status"] == "tentative"
     text = _query_graph_text(G, "a blueprint name containing a dot must raise an error", mode="bfs", depth=2, learned=True)
     assert "Learned (past useful answers): ['blueprints.py']" in text
+
+
+def test_a_running_server_sees_a_reflect_done_after_it_loaded_the_graph(tmp_path: Path):
+    # The MCP server caches each graph by graph.json's stat; `reflect` writes only the sidecar, so the cached
+    # graph has to pick the new overlay up on the next call, without a graph reload.
+    from graphify.serve import _GraphContextCache
+
+    root = tmp_path / "repo"
+    (root / "src" / "flask").mkdir(parents=True)
+    for f in ("blueprints.py", "app.py", "scaffold.py", "cli.py"):
+        (root / "src" / "flask" / f).write_text(f"# {f}\n", encoding="utf-8")
+    out = root / "graphify-out"
+    out.mkdir()
+    gp = out / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(_graph(), edges="links")), encoding="utf-8")
+    cache = _GraphContextCache(2)
+    question = "a blueprint name containing a dot must raise an error"
+    G, _ = cache.load(str(gp.resolve()), pinned=True)
+    assert "Learned" not in _query_graph_text(G, question, mode="bfs", depth=2, learned=True)
+    save_query_result(question="Raise error when blueprint name contains a dot", answer="see blueprints.py",
+                      memory_dir=out / "memory", source_nodes=["bp"], outcome="useful")
+    reflect(out / "memory", out / "reflections" / "LESSONS.md", graph_path=gp)
+    G2, _ = cache.load(str(gp.resolve()), pinned=True)
+    assert G2 is G                                     # same cached graph, overlay refreshed in place
+    assert "Learned (past useful answers): ['blueprints.py']" in _query_graph_text(G2, question, mode="bfs", depth=2,
+                                                                                    learned=True)

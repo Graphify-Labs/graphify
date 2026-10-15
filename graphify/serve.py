@@ -130,6 +130,16 @@ def _max_server_contexts() -> int:
         return 8
 
 
+def _learning_sidecar_key(graph_path: str) -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` of the work-memory sidecar next to ``graph_path``, or None when there is none."""
+    from graphify.reflect import LEARNING_SIDECAR_NAME
+    try:
+        st = (Path(graph_path).parent / LEARNING_SIDECAR_NAME).stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 class _GraphContextCache:
     """Thread-safe graph contexts: one pinned default plus an LRU of projects."""
 
@@ -177,13 +187,24 @@ class _GraphContextCache:
                 raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
             key = (stat_result.st_mtime_ns, stat_result.st_size)
             entries = self._pinned if pinned else self._entries
+            memory_key = _learning_sidecar_key(resolved_path)
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
+                if entry.get("memory_key") != memory_key:
+                    # `graphify reflect` rewrote the work-memory sidecar while the
+                    # server ran: re-read the overlay only, not the whole graph.
+                    try:
+                        from graphify.reflect import load_learning_overlay
+                        entry["G"].graph["_learning_overlay"] = load_learning_overlay(Path(resolved_path))
+                    except Exception:
+                        entry["G"].graph["_learning_overlay"] = {}
+                    entry["memory_key"] = memory_key
                 if not pinned:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
             entry = self._load_entry(resolved_path, key)
+            entry["memory_key"] = memory_key
             entries[resolved_path] = entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
