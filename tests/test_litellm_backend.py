@@ -236,6 +236,18 @@ def test_extract_files_direct_routes_to_litellm_with_no_api_key(monkeypatch, tmp
     assert result["nodes"]
 
 
+def test_extract_files_direct_forwards_an_explicit_api_key(monkeypatch, tmp_path):
+    calls = _fake_litellm(monkeypatch)
+    doc = tmp_path / "notes.md"
+    doc.write_text("# Notes\nThe entry point.\n", encoding="utf-8")
+
+    llm.extract_files_direct([doc], backend="litellm", api_key="sk-test", model=_MODEL, root=tmp_path)
+    llm.extract_files_direct([doc], backend="litellm", model=_MODEL, root=tmp_path)
+
+    assert calls[0]["api_key"] == "sk-test"
+    assert "api_key" not in calls[1]
+
+
 def test_extract_files_direct_reads_the_model_from_the_environment(monkeypatch, tmp_path):
     calls = _fake_litellm(monkeypatch)
     monkeypatch.setenv("GRAPHIFY_LITELLM_MODEL", "azure/my-deployment")
