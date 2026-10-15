@@ -48,6 +48,28 @@ def test_scoped_package_import_is_ref_namespaced():
     assert tgt.startswith("ref")
 
 
+# ── #3595: a package subpath import must resolve to the package root, not the ─
+# whole specifier, so it lands on the same node as a bare import of that
+# package (and the package.json dependency node itself) instead of dangling.
+
+
+def test_package_subpath_import_resolves_to_the_same_target_as_a_bare_import():
+    bare_tgt, _ = _resolve_js_import_target("next", "src/bare.ts")
+    subpath_tgt, resolved_path = _resolve_js_import_target("next/image", "src/subpath.ts")
+    assert resolved_path is None
+    assert subpath_tgt == bare_tgt
+
+
+def test_scoped_package_subpath_import_resolves_to_the_scope_and_package_only():
+    bare_tgt, _ = _resolve_js_import_target("@scope/pkg", "src/bare.ts")
+    subpath_tgt, resolved_path = _resolve_js_import_target("@scope/pkg/deep/sub", "src/subpath.ts")
+    assert resolved_path is None
+    assert subpath_tgt == bare_tgt
+    # Must not fold onto a DIFFERENT package under the same scope.
+    other_tgt, _ = _resolve_js_import_target("@scope/other", "src/other.ts")
+    assert subpath_tgt != other_tgt
+
+
 # ── end-to-end: the reporter's exact synthetic monorepo ─────────────────────
 
 
@@ -114,3 +136,54 @@ def test_multiple_tsx_files_do_not_all_alias_onto_one_python_file(tmp_path: Path
         if d.get("relation") == "imports_from" and ({u, v} & py_ids)
     ]
     assert not phantom, f"phantom edges onto colors.py: {phantom}"
+
+
+def test_subpath_import_does_not_dangle_like_a_bare_import(tmp_path: Path):
+    """The reporter's exact repro for #3595: a package subpath import
+    ("next/image") produced no edge at all, while a bare import of the same
+    package ("next") resolved fine, so a file that only ever imports
+    subpaths came out fully disconnected from the framework it depends on."""
+    _write(
+        tmp_path / "package.json",
+        '{"name": "mre", "dependencies": {"next": "16.2.7"}}\n',
+    )
+    bare = _write(
+        tmp_path / "bare.ts",
+        'import type { Metadata } from "next";\n'
+        "export const meta: Metadata = {};\n",
+    )
+    subpath = _write(
+        tmp_path / "subpath.ts",
+        'import Image from "next/image";\n'
+        "export const i = Image;\n",
+    )
+
+    result = extract(
+        [tmp_path / "package.json", bare, subpath], cache_root=tmp_path / "graphify-out"
+    )
+    G = build_from_json(result, root=str(tmp_path))
+
+    def _imports_from(nid):
+        # The built graph may be undirected, which loses (u, v) edge-iteration
+        # order -- direction is preserved separately as _src/_tgt (build.py).
+        return {
+            d.get("_tgt") for u, v, d in G.edges(data=True)
+            if d.get("relation") == "imports_from" and d.get("_src") == nid
+        }
+
+    bare_id = next(
+        n for n, d in G.nodes(data=True)
+        if str(d.get("source_file", "")).endswith("bare.ts")
+    )
+    subpath_id = next(
+        n for n, d in G.nodes(data=True)
+        if str(d.get("source_file", "")).endswith("subpath.ts")
+    )
+    bare_targets = _imports_from(bare_id)
+    subpath_targets = _imports_from(subpath_id)
+    assert bare_targets, "the bare import must resolve"
+    assert subpath_targets, "the subpath import must resolve, not dangle"
+    assert subpath_targets == bare_targets, (
+        "a subpath import of a package must land on the same node as a bare "
+        "import of that package"
+    )
