@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify.tree_html import build_tree
+from graphify.tree_html import build_tree, emit_html
 
 PYTHON = sys.executable
 
@@ -111,3 +111,38 @@ def test_tree_cli_partial_match_root_succeeds(tmp_path):
     r = _run(["tree", "--root", "pkg"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "graphify-out" / "GRAPH_TREE.html").exists()
+
+
+# ── Expand All budget ─────────────────────────────────────────────────────────
+
+UNBOUNDED = "window.expandAll = () => { expandBranch(rootNode); updateTree(rootNode); };"
+
+
+def _wide_tree(n_files: int):
+    return build_tree(_graph({f"pkg/mod{i}.py": f"sym{i}" for i in range(n_files)}))
+
+
+def test_expand_all_does_not_mount_the_whole_tree_in_one_join():
+    """Expand All used to be expandBranch(rootNode) with no ceiling. On a
+    257k-node graph that is ~709k SVG elements in a single D3 join and the
+    renderer never recovers, so the handler must go through a budget."""
+    html = emit_html(_wide_tree(20), title="t", header="h")
+
+    assert UNBOUNDED not in html
+    assert "expandWithinBudget(rootNode, EXPAND_ALL_NODE_BUDGET)" in html
+
+
+def test_expand_all_budget_is_emitted_and_overridable():
+    from graphify.tree_html import DEFAULT_EXPAND_ALL_BUDGET
+
+    default_html = emit_html(_wide_tree(5), title="t", header="h")
+    assert f"const EXPAND_ALL_NODE_BUDGET = {DEFAULT_EXPAND_ALL_BUDGET};" in default_html
+
+    custom_html = emit_html(_wide_tree(5), title="t", header="h", expand_all_budget=1234)
+    assert "const EXPAND_ALL_NODE_BUDGET = 1234;" in custom_html
+
+
+def test_expand_all_reports_what_it_left_collapsed():
+    html = emit_html(_wide_tree(5), title="t", header="h")
+    assert 'id="expand-status"' in html
+    assert "setExpandStatus(" in html
