@@ -47,6 +47,7 @@ _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "objc": frozenset({".h", ".m", ".mm"}),
     "swift": frozenset({".swift"}),
     "php": frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
+    "python": frozenset({".py"}),
     # TS and JS share one key: a TS class legitimately answers a JS call site, so
     # splitting them would drop every TS<->JS cross-repo call. An SFC script block is
     # TS/JS too, so a class exported from `.vue` answers as well.
@@ -172,21 +173,111 @@ def _member_keys(lang: str, callee: str) -> tuple[str, ...]:
     return (callee,)
 
 
+def _add_cross_repo_edge(merged: "nx.Graph", source: str, target: str, relation: str,
+                         caller_data: dict, entry: dict) -> bool:
+    if target == source or merged.has_edge(source, target):
+        return False
+    merged.add_edge(
+        source,
+        target,
+        relation=relation,
+        context="cross_repo",
+        confidence="INFERRED",
+        confidence_score=0.85,
+        source_file=str(caller_data.get("source_file") or ""),
+        source_location=entry.get("line"),
+        weight=1.0,
+        _src=source,
+        _tgt=target,
+        **{CROSS_REPO_CALL_MARKER: True},
+    )
+    return True
+
+
+def _link_parked_python_imports(merged: "nx.Graph", parked_nodes: list[tuple[str, dict]]) -> int:
+    """Finish parked Python `from module import name` entries by module stem (#3744).
+
+    Python's cross-repo dependency is not receiver-typed: the parked entry names a
+    module and a top-level binding in it. It binds when exactly one other-repo
+    ``.py`` file node has that stem and exactly one top-level definition (a
+    ``contains`` child, so never a method) of that name. An ``imports`` entry
+    becomes the file's ``imports`` edge to the definition plus ``imports_from`` to
+    the module file; any other entry is a ``calls`` edge from its caller. The
+    sourceless placeholder the single-repo build left is not touched: this pass
+    adds edges only.
+    """
+    entries = [(caller, data, entry) for caller, data in parked_nodes
+               for entry in _parked_entries(data)
+               if entry.get("lang") == "python" and entry.get("module")]
+    if not entries:
+        return 0
+
+    suffixes = _LANG_SUFFIXES["python"]
+    modules: dict[str, list[str]] = defaultdict(list)
+    for node, data in merged.nodes(data=True):
+        source_file = str(data.get("source_file") or "")
+        if not source_file or not data.get("repo") or _suffix(source_file) not in suffixes:
+            continue
+        if str(data.get("label") or "") != os.path.basename(source_file):
+            continue  # a definition, not the module's own file node
+        modules[os.path.splitext(os.path.basename(source_file))[0]].append(node)
+    if not modules:
+        return 0
+    module_files = {node for nodes in modules.values() for node in nodes}
+
+    top_level: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for u, v, data in merged.edges(data=True):
+        if data.get("relation") != "contains":
+            continue
+        if u in module_files and v not in module_files:
+            owner, member = u, v
+        elif v in module_files and u not in module_files:
+            owner, member = v, u
+        else:
+            continue
+        name = _key(merged.nodes[member].get("label"))
+        if name:
+            top_level[(owner, name)].append(member)
+
+    added = 0
+    for caller, caller_data, entry in entries:
+        caller_repo = caller_data.get("repo")
+        callee = _key(entry.get("callee"))
+        if not caller_repo or not callee:
+            continue
+        candidates = [node for node in modules.get(str(entry["module"]), [])
+                      if merged.nodes[node].get("repo") != caller_repo]
+        if len(candidates) != 1:
+            continue
+        targets = top_level.get((candidates[0], callee), [])
+        if len(targets) != 1:
+            continue
+        if entry.get("relation") == "imports":
+            added += _add_cross_repo_edge(merged, caller, targets[0], "imports", caller_data, entry)
+            added += _add_cross_repo_edge(merged, caller, candidates[0], "imports_from",
+                                          caller_data, entry)
+        else:
+            added += _add_cross_repo_edge(merged, caller, targets[0], "calls", caller_data, entry)
+    return added
+
+
 def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     """Emit `calls` edges for parked member calls another repo answers.
 
     Returns the number of edges added. Idempotent: the pass drops its own earlier
     output first, so re-merging or adding a repo twice cannot duplicate an edge.
+    Parked Python module imports are finished here too (#3744).
     """
     _drop_previous_output(merged)
     parked_nodes = [(node, data) for node, data in merged.nodes(data=True)
                     if _parked_entries(data)]
     if not parked_nodes:
         return 0
+    added = _link_parked_python_imports(merged, parked_nodes)
 
     by_name, type_ids = _index_declarations(merged)
     if not by_name:
-        return 0
+        return added
     members_by_relation = _index_members(merged, type_ids)
 
     # C# parked calls need the same namespace/using visibility check as C# type
@@ -209,7 +300,6 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
         ]
         csharp_resolver = CsharpNameResolver(resolver_nodes, resolver_edges)
 
-    added = 0
     for caller, caller_data in parked_nodes:
         caller_repo = caller_data.get("repo")
         if not caller_repo:
@@ -252,22 +342,5 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                     break
             if len(targets) != 1:
                 continue
-            target = targets[0]
-            if target == caller or merged.has_edge(caller, target):
-                continue
-            merged.add_edge(
-                caller,
-                target,
-                relation="calls",
-                context="cross_repo",
-                confidence="INFERRED",
-                confidence_score=0.85,
-                source_file=str(caller_data.get("source_file") or ""),
-                source_location=entry.get("line"),
-                weight=1.0,
-                _src=caller,
-                _tgt=target,
-                **{CROSS_REPO_CALL_MARKER: True},
-            )
-            added += 1
+            added += _add_cross_repo_edge(merged, caller, targets[0], "calls", caller_data, entry)
     return added
