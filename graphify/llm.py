@@ -61,6 +61,21 @@ def _get_tokenizer():
 # Cached at import time. None if tiktoken is unavailable; consumers must handle.
 _TOKENIZER = _get_tokenizer()
 
+# Anything past Latin Extended (CJK, Devanagari, Cyrillic, Arabic, ...).
+_NON_LATIN_RE = re.compile(r"[^\u0000-ɏ]")
+
+
+def _estimate_prompt_tokens(text: str) -> int:
+    """Rough token count for sizing a local model's context window.
+
+    chars/4 holds for English and code but not other scripts: on qwen2.5 a
+    Chinese doc came out 2.8x larger than chars/4 and a Hindi one 3.7x, so
+    num_ctx was too small and Ollama cut the prompt. Count non-Latin
+    characters as one token each, which errs on the safe side for both.
+    """
+    non_latin = len(_NON_LATIN_RE.findall(text))
+    return (len(text) - non_latin) // _CHARS_PER_TOKEN + non_latin
+
 
 def _resolve_ollama_base_url(default: str) -> str:
     """Resolve the Ollama base URL. Honors an explicit OLLAMA_BASE_URL first
@@ -1392,7 +1407,8 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
     )
 
 
-def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dict:
+def _ollama_request_extras(user_message: str, max_completion_tokens: int,
+                           system_prompt: str = "") -> dict:
     """num_ctx/keep_alive for an Ollama request, sized to the prompt."""
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
@@ -1400,12 +1416,14 @@ def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dic
     # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
     # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
     # hollow-200 symptom — just from a different direction (#798 follow-up).
-    # Formula: actual input tokens + output cap + system prompt headroom.
+    # Formula: input tokens (user message + system prompt) + output cap + margin.
     # Capped at 131072 (enough for the default 60k token_budget); env var wins.
     num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
     # Auto-derive num_ctx from actual chunk size regardless — used as the
     # fallback and for the mismatch check below.
-    estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
+    # The system prompt is measured rather than assumed: a flat 400 was short
+    # of the ~760 tokens the extraction prompt really takes.
+    estimated_input = _estimate_prompt_tokens(user_message) + _estimate_prompt_tokens(system_prompt)
     auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 131072)
     auto_num_ctx = max(auto_num_ctx, 8192)
     if num_ctx_raw:
@@ -1432,8 +1450,6 @@ def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dic
                     file=sys.stderr,
                 )
     else:
-        # Estimate input tokens: user_message chars / 4 (standard BPE
-        # heuristic) + 400 for the system prompt, then add output headroom.
         num_ctx = auto_num_ctx
     keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
     return {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
@@ -1583,7 +1599,8 @@ def _call_openai_compat(
         # above, and replacing it here made the flag silently inert on ollama (#3988).
         kwargs["extra_body"] = {
             **kwargs.get("extra_body", {}),
-            **_ollama_request_extras(user_message, max_completion_tokens),
+            **_ollama_request_extras(user_message, max_completion_tokens,
+                                     kwargs["messages"][0]["content"]),
         }
     native = None
     if backend == "ollama" and extra_body is None:
