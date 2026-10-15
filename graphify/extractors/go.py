@@ -269,7 +269,7 @@ def extract_go(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
 
     def ensure_named_node(name: str, line: int) -> str:
-        nid = _make_id(pkg_scope, name)
+        nid = type_symbol_nid(name)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
@@ -357,6 +357,12 @@ def extract_go(path: Path) -> dict:
     # once the sibling exists, so salting it re-points nothing. When the collision
     # has no unique exported member (`Run`/`RUN`), every member is salted rather
     # than picking one arbitrarily, so the result never depends on declaration order.
+    #
+    # Type declarations follow the same rule: `type ResponseWriter interface` and
+    # `type responseWriter struct` share an id too, and the struct used to vanish
+    # with its methods hung off the interface. A salted type's methods, receivers
+    # and in-file references go through the salted id. The census is per file, so a
+    # pair split across two files of one package is not covered here.
     case_groups: dict[str, set[str]] = {}
 
     def _receiver_type_of(node) -> str | None:
@@ -380,16 +386,29 @@ def extract_go(path: Path) -> dict:
         name = _read_text(name_node, source)
         if node.type == "method_declaration":
             receiver_type = _receiver_type_of(node)
-            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
+            base = type_symbol_nid(receiver_type) if receiver_type else stem
         else:
             base = stem
         return _make_id(base, name), name
+
+    def _scan_type_names(node) -> None:
+        # Types first: a method is keyed under its owner's final id, which is
+        # salted when the owner's own name collides.
+        if node.type == "type_spec":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                case_groups.setdefault(_make_id(pkg_scope, name), set()).add(name)
+        if node.type in ("function_declaration", "method_declaration"):
+            return
+        for child in node.children:
+            _scan_type_names(child)
 
     def _scan_declarations(node) -> None:
         if node.type == "type_spec":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                owner_nid = _make_id(pkg_scope, _read_text(name_node, source))
+                owner_nid = type_symbol_nid(_read_text(name_node, source))
                 for body in node.children:
                     if body.type != "interface_type":
                         continue
@@ -418,6 +437,12 @@ def extract_go(path: Path) -> dict:
             return plain_nid
         salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
         return _make_id(plain_nid, salt)
+
+    def type_symbol_nid(name: str) -> str:
+        plain_nid = _make_id(pkg_scope, name)
+        if name not in case_groups.get(plain_nid, ()):
+            return plain_nid
+        return symbol_nid(plain_nid, name)
 
     def walk(node) -> None:
         t = node.type
@@ -462,7 +487,7 @@ def extract_go(path: Path) -> dict:
             line = node.start_point[0] + 1
 
             if receiver_type:
-                parent_nid = _make_id(pkg_scope, receiver_type)
+                parent_nid = type_symbol_nid(receiver_type)
                 add_node(parent_nid, receiver_type, line)
                 callable_class_nids.add(parent_nid)
                 method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
@@ -491,7 +516,7 @@ def extract_go(path: Path) -> dict:
                     continue
                 type_name = _read_text(name_node, source)
                 line = child.start_point[0] + 1
-                type_nid = _make_id(pkg_scope, type_name)
+                type_nid = type_symbol_nid(type_name)
                 add_node(type_nid, type_name, line)
                 callable_class_nids.add(type_nid)
                 add_edge(file_nid, type_nid, "contains", line)
@@ -622,6 +647,7 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
+    _scan_type_names(root)
     _scan_declarations(root)
     walk(root)
 
