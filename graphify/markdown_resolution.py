@@ -25,8 +25,17 @@ to the code node that defines it:
   Only nodes the extractors marked ``_callable`` qualify, for the reason the
   indirect-call pass gives (#1566): a by-name match must land on a real
   function, method or class, never on a same-named data symbol such as a
-  JSON key. No tie-breaking: an ambiguous name is a guess, and a guess is
-  not an edge. The match is INFERRED (0.95, a named cross-file reference).
+  JSON key. A dotted mention (``pkg.Widget``, ``Widget.render``) keeps its
+  qualifiers, and a candidate survives only when every qualifier is a label
+  on its ``contains`` / ``method`` owner chain or a segment (or stem) of its
+  source path: ``time.sleep`` never lands on a repo's own ``sleep``, and
+  ``Widget.render`` picks the ``render`` that ``Widget`` owns. No other
+  tie-breaking: an ambiguous name is a guess, and a guess is not an edge.
+  The match is INFERRED (0.95, a named cross-file reference).
+
+An explicit relative cite (``./`` or ``../``) resolves against the document's
+directory only; it never falls through to the suffix rule, so a path that
+escapes the corpus cannot land on an unrelated copy of the file elsewhere.
 
 The shared cross-file call pass in ``extract`` skips ``markdown`` raw calls,
 so a mention never surfaces as a ``calls`` edge.
@@ -34,6 +43,7 @@ so a mention never surfaces as a ``calls`` edge.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS
@@ -41,6 +51,10 @@ from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS
 MARKDOWN_MENTION_SUFFIXES = frozenset({".md", ".mdx", ".qmd", ".skill"})
 
 _CONTAINMENT_RELATIONS = frozenset({"contains", "method"})
+
+#: Leading ``./`` and ``../`` segments of a cited path, stripped as whole
+#: segments (``lstrip("./")`` would eat the dot of ``.github/...``).
+_RELATIVE_PREFIX_RE = re.compile(r"^(\.\.?/)+")
 
 
 def _symbol_label(node: dict[str, Any]) -> str:
@@ -63,17 +77,54 @@ def _match_cited_file(cited: str, doc_file: str, source_files: set[str]) -> str 
 
     Tries the path relative to the citing document first (``../src/mod.py``
     from ``docs/guide.md``), then an exact match, then a unique
-    segment-aligned suffix (``src/mod.py`` naming ``/repo/src/mod.py``).
+    segment-aligned suffix (``src/mod.py`` naming ``/repo/src/mod.py``). A
+    cite that is explicitly relative (``./x`` or ``../x``) stops after the
+    first step: it names one location, and a suffix match elsewhere would be a
+    different file.
     """
     cited_posix = _posix(cited)
     doc_dir = os.path.dirname(doc_file)
-    relative = _posix(os.path.normpath(os.path.join(doc_dir, cited)))
-    for candidate in (relative, cited_posix):
-        if candidate in source_files:
-            return candidate
-    suffix = "/" + cited_posix.lstrip("./")
-    matches = [sf for sf in source_files if sf.endswith(suffix)]
+    relative = _posix(os.path.normpath(os.path.join(doc_dir, cited_posix)))
+    if relative in source_files:
+        return relative
+    if cited_posix.startswith(("./", "../")):
+        return None
+    if cited_posix in source_files:
+        return cited_posix
+    stripped = _RELATIVE_PREFIX_RE.sub("", cited_posix)
+    matches = [sf for sf in source_files
+               if sf == stripped or sf.endswith("/" + stripped)]
     return matches[0] if len(matches) == 1 else None
+
+
+def _evidence(node_id: str, nodes_by_id: dict[str, dict[str, Any]],
+              parents: dict[str, set[str]]) -> set[str]:
+    """Labels a dotted mention may qualify ``node_id`` with.
+
+    The labels of every node on its ``contains`` / ``method`` owner chain
+    (``Widget`` for ``Widget.render``) plus each segment and stem of its
+    source path (``pkg`` and ``mod`` for ``pkg.mod.Widget``).
+    """
+    evidence: set[str] = set()
+    frontier = {node_id}
+    seen: set[str] = set()
+    while frontier:
+        nid = frontier.pop()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        owners = parents.get(nid, set())
+        for owner in owners:
+            node = nodes_by_id.get(owner)
+            if node is not None:
+                evidence.add(_symbol_label(node))
+        frontier |= owners
+    node = nodes_by_id.get(node_id, {})
+    for segment in _posix(str(node.get("source_file", ""))).split("/"):
+        if segment:
+            evidence.add(segment)
+            evidence.add(os.path.splitext(segment)[0])
+    return evidence
 
 
 def _markdown_raw_calls(per_file: list[dict]) -> list[dict]:
@@ -118,7 +169,8 @@ def resolve_markdown_mentions(
     for e in all_edges:
         if e.get("relation") in _CONTAINMENT_RELATIONS:
             parents.setdefault(str(e.get("target")), set()).add(str(e.get("source")))
-    node_ids = {n["id"] for n in all_nodes if n.get("id")}
+    nodes_by_id = {n["id"]: n for n in all_nodes if n.get("id")}
+    node_ids = set(nodes_by_id)
     existing = {
         (e.get("source"), e.get("target"))
         for e in all_edges if e.get("relation") == "references"
@@ -156,7 +208,11 @@ def resolve_markdown_mentions(
         else:
             if callee in _LANGUAGE_BUILTIN_GLOBALS:
                 continue
-            candidates = by_label.get(callee, [])
+            qualifiers = set(names[:-1])
+            candidates = [
+                c for c in by_label.get(callee, [])
+                if qualifiers <= _evidence(c, nodes_by_id, parents)
+            ]
             target = candidates[0] if len(candidates) == 1 else None
             confidence, score = "INFERRED", 0.95
         if target is None or target == caller or (caller, target) in existing:
