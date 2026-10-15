@@ -275,6 +275,9 @@ from networkx.readwrite import json_graph
 from pathlib import Path
 
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
+# Canonical exports use directed:false, but each stored link retains its arc.
+# Match the CLI explain loader so incoming and parallel links remain distinct.
+data['directed'] = True
 G = json_graph.node_link_graph(data, edges='links')
 
 term = 'NODE_NAME'
@@ -298,13 +301,26 @@ print(f'  type: {data_n.get(\"file_type\",\"unknown\")}')
 print(f'  degree: {G.degree(nid)}')
 print()
 print('CONNECTIONS:')
-for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+connections = list(G.out_edges(nid, keys=True, data=True)) if G.is_multigraph() else [
+    (u, v, None, edge) for u, v, edge in G.out_edges(nid, data=True)
+]
+connections += list(G.in_edges(nid, keys=True, data=True)) if G.is_multigraph() else [
+    (u, v, None, edge) for u, v, edge in G.in_edges(nid, data=True)
+]
+seen = set()
+for source, target, key, edge in connections:
+    if (source, target, key) in seen:
+        continue
+    seen.add((source, target, key))
+    neighbor = target if source == nid else source
+    arrow = '-->' if edge.get('_src', source) == nid else '<--'
     nlabel = G.nodes[neighbor].get('label', neighbor)
     rel = edge.get('relation', '')
     conf = edge.get('confidence', '')
-    src_file = G.nodes[neighbor].get('source_file', '')
-    print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
+    source_file = edge.get('source_file', '')
+    location = edge.get('source_location', '')
+    at = f' {source_file}:{location}' if location else ''
+    print(f'  {arrow} {nlabel} [{rel}] [{conf}]{at}')
 "
 ```
 
