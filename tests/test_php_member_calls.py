@@ -352,7 +352,10 @@ def test_untyped_receiver_keeps_same_file_edge(tmp_path: Path):
 
 
 def test_static_call_edge_unchanged(tmp_path: Path):
-    """`Class::method()` still targets the CLASS node, as before this feature."""
+    """`Class::method()` targets the called METHOD, EXTRACTED (#3872).
+
+    It targeted the CLASS node until the 0.9.92 sync folded upstream's static-call
+    tier into `_resolve_php_member_calls`."""
     calls, r = _calls(tmp_path, {
         "app/Context/SucursalContext.php": (
             "<?php\nnamespace App\\Context;\n"
@@ -374,7 +377,10 @@ def test_static_call_edge_unchanged(tmp_path: Path):
 
     index = _find(r, ".index()", "leadcontroller")
     context_class = _find(r, "SucursalContext", "app_context_sucursalcontext_sucursalcontext")
-    assert (index, context_class) in calls
+    context_id = _find(r, ".id()", "sucursalcontext")
+    assert (index, context_id) in calls
+    assert calls[(index, context_id)]["confidence"] == "EXTRACTED"
+    assert (index, context_class) not in calls
 
 
 # ── Inline instantiation receivers: `(new Service())->method()` (#3) ──────────

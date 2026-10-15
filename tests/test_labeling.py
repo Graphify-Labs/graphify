@@ -841,6 +841,150 @@ def test_cluster_only_heals_persisted_placeholder_but_reuses_genuine(tmp_path, m
     assert saved["1"] == "Payment Flow", "genuine label was not reused"
 
 
+def _auth_billing_graph(out: Path) -> None:
+    """Two saved communities plus one unclustered node (#2298)."""
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "a1", "label": "auth_hub", "community": 0},
+            {"id": "a2", "label": "auth_a", "community": 0},
+            {"id": "a3", "label": "auth_b", "community": 0},
+            {"id": "a4", "label": "auth_c", "community": 0},
+            {"id": "b1", "label": "bill_hub", "community": 1},
+            {"id": "b2", "label": "bill_a", "community": 1},
+            {"id": "b3", "label": "bill_b", "community": 1},
+            {"id": "b4", "label": "bill_c", "community": 1},
+            {"id": "a_new", "label": "auth_new"},
+        ],
+        "links": [
+            {"source": "a1", "target": "a2", "relation": "calls"},
+            {"source": "a1", "target": "a3", "relation": "calls"},
+            {"source": "a1", "target": "a4", "relation": "calls"},
+            {"source": "b1", "target": "b2", "relation": "calls"},
+            {"source": "b1", "target": "b3", "relation": "calls"},
+            {"source": "b1", "target": "b4", "relation": "calls"},
+        ],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+
+def _patch_cluster_only_reuse(monkeypatch):
+    # `graphify.cluster` is a lazy function on the package until the submodule
+    # is imported. cluster-only does `from graphify.cluster import cluster`.
+    import graphify.cluster  # noqa: F401
+    import graphify.__main__ as cli
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
+
+    def _fail_generate(*a, **k):
+        raise AssertionError("generate_community_labels must not be called on the reuse path")
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", _fail_generate)
+    return cli
+
+
+def test_cluster_only_keeps_label_on_majority_membership_overlap(tmp_path, monkeypatch):
+    """#2298: one added node must not replace a saved name when the shared
+    members are a strict majority of both the saved set and the current set.
+    A one-node fragment of a large community must not keep that name."""
+    from graphify.cluster import community_member_sigs
+
+    cli = _patch_cluster_only_reuse(monkeypatch)
+
+    root = tmp_path / "add-one"
+    out = root / "graphify-out"
+    out.mkdir(parents=True)
+    _auth_billing_graph(out)
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(
+        json.dumps({"0": "Auth Engine", "1": "Billing Desk"}), encoding="utf-8"
+    )
+    old_members = {
+        0: ["a1", "a2", "a3", "a4"],
+        1: ["b1", "b2", "b3", "b4"],
+    }
+    (out / ".graphify_labels.json.sig").write_text(
+        json.dumps({str(k): v for k, v in community_member_sigs(old_members).items()}),
+        encoding="utf-8",
+    )
+
+    def _cluster_with_new(G, *args, **kwargs):
+        return {
+            0: ["a1", "a2", "a3", "a4", "a_new"],
+            1: ["b1", "b2", "b3", "b4"],
+        }
+
+    monkeypatch.setattr("graphify.cluster.cluster", _cluster_with_new)
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(root), "--no-viz"])
+    cli.main()
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels["0"] == "Auth Engine"
+    assert labels["1"] == "Billing Desk"
+
+    fragment = tmp_path / "fragment"
+    fragment_out = fragment / "graphify-out"
+    fragment_out.mkdir(parents=True)
+    member_ids = [f"n{i:03d}" for i in range(200)]
+    fragment_graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": nid, "label": nid, "community": 0}
+            for nid in member_ids
+        ],
+        "links": [],
+    }
+    (fragment_out / "graph.json").write_text(json.dumps(fragment_graph), encoding="utf-8")
+    (fragment_out / ".graphify_labels.json").write_text(
+        json.dumps({"0": "Big Service"}), encoding="utf-8"
+    )
+    (fragment_out / ".graphify_labels.json.sig").write_text(
+        json.dumps({str(k): v for k, v in community_member_sigs({0: member_ids}).items()}),
+        encoding="utf-8",
+    )
+
+    def _cluster_singletons(G, *args, **kwargs):
+        return {i: [f"n{i:03d}"] for i in range(200)}
+
+    monkeypatch.setattr("graphify.cluster.cluster", _cluster_singletons)
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(fragment), "--no-viz"])
+    cli.main()
+    fragment_labels = json.loads(
+        (fragment_out / ".graphify_labels.json").read_text(encoding="utf-8")
+    )
+    assert "Big Service" not in fragment_labels.values()
+
+
+def test_cluster_only_keeps_unchanged_label_when_count_changes(tmp_path, monkeypatch):
+    """#2298: with no signature file, a new singleton community must not hub-rename
+    communities whose membership did not shrink."""
+    cli = _patch_cluster_only_reuse(monkeypatch)
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _auth_billing_graph(out)
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(
+        json.dumps({"0": "Auth Engine", "1": "Billing Desk"}), encoding="utf-8"
+    )
+
+    def _cluster_plus_singleton(G, *args, **kwargs):
+        return {
+            0: ["a1", "a2", "a3", "a4"],
+            1: ["b1", "b2", "b3", "b4"],
+            2: ["a_new"],
+        }
+
+    monkeypatch.setattr("graphify.cluster.cluster", _cluster_plus_singleton)
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
+    cli.main()
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels["0"] == "Auth Engine"
+    assert labels["1"] == "Billing Desk"
+
+
 # ── #2534 case 2: prompt key must not collide with the placeholder sentinel ──
 
 

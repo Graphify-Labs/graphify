@@ -2427,6 +2427,57 @@ def test_julia_macro_definition_is_extracted(tmp_path):
     assert ("@sayhello", "@sayhello") not in _edge_labels(r, "calls")
 
 
+def test_julia_where_clause_functions_are_extracted(tmp_path):
+    """Methods with a `where` clause (long and short form) must be extracted with
+    their body calls. The `where` clause wraps the call head in a
+    `where_expression`, so the name lookup missed it and the whole method (and its
+    calls) was dropped (#4126)."""
+    f = tmp_path / "where.jl"
+    f.write_text(
+        "function combine(a::Vector{T}, b::Vector{T}) where {T<:Number}\n"
+        "    merge_all(a, b)\n"
+        "end\n"
+        "function merge_all(a, b)\n"
+        "    return a\n"
+        "end\n"
+        "short(x::T) where {T} = merge_all(x, x)\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "combine()" in labels, "long-form where method dropped"
+    assert "short()" in labels, "short-form where method dropped"
+    calls = _edge_labels(r, "calls")
+    assert ("combine", "merge_all") in calls
+    assert ("short", "merge_all") in calls
+
+
+def test_julia_parametric_types_are_extracted(tmp_path):
+    """Parametric type definitions (`struct Box{T}`, `abstract type Shape{T}`,
+    `struct Sq{T} <: Shape{T}`, `mutable struct M{T,U}`) must be extracted. The
+    name sits inside a `parametrized_type_expression`, so the head-name lookup
+    missed it and dropped the type entirely (#4128). A declared type parameter
+    (`value::T`) must not leak out as a phantom field-type reference node."""
+    f = tmp_path / "params.jl"
+    f.write_text(
+        "struct Box{T}\n"
+        "    value::T\n"
+        "end\n"
+        "abstract type Shape{T} end\n"
+        "struct Sq{T} <: Shape{T}\n"
+        "end\n"
+        "mutable struct M{T,U}\n"
+        "    a::T\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert {"Box", "Shape", "Sq", "M"} <= set(labels), f"parametric type dropped: {labels}"
+    assert ("Sq", "Shape") in _edge_labels(r, "inherits")
+    assert "T" not in labels, "type parameter leaked as a phantom field-type node"
+
+
 def test_julia_enum_and_members_are_extracted(tmp_path):
     """`@enum` defines a type and its members across the inline, begin/end block,
     explicit-value, and typed forms. The whole macrocall was previously ignored,
@@ -2624,6 +2675,48 @@ def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
     methods = _edge_labels(r, "method", "type_bound_procedure")
     assert ("circle", "circle_area") in methods
     assert ("circle", "scale") in methods
+
+
+def test_fortran_generic_interface_is_a_callable_node(tmp_path):
+    """A named generic interface (`interface area; module procedure …`) names a
+    callable that dispatches to its specific procedures.
+
+    The interface was never a node, so a call to the generic name dangled (a
+    function call only resolves to an in-file node) and the dispatch set was
+    invisible — even though the specific procedures were extracted. The generic
+    name must be a node, linked to the procedures it groups, so `area(x)`
+    resolves.
+    """
+    src = tmp_path / "shapes.f90"
+    src.write_text(
+        "module shapes\n"
+        "  interface area\n"
+        "    module procedure area_circle, area_square\n"
+        "  end interface\n"
+        "contains\n"
+        "  real function area_circle(r)\n"
+        "    real :: r\n"
+        "    area_circle = r\n"
+        "  end function\n"
+        "  real function area_square(s)\n"
+        "    real :: s\n"
+        "    area_square = s\n"
+        "  end function\n"
+        "  subroutine report(x)\n"
+        "    real :: x, a\n"
+        "    a = area(x)\n"
+        "  end subroutine\n"
+        "end module\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert "area()" in [n["label"] for n in r["nodes"]], "generic interface dropped"
+    dispatch = _edge_labels(r, "dispatches_to", "generic_interface")
+    assert ("area", "area_circle") in dispatch
+    assert ("area", "area_square") in dispatch
+    # A call to the generic name now resolves instead of dangling.
+    assert ("report", "area") in _edge_labels(r, "calls")
 
 
 def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
@@ -2999,6 +3092,49 @@ def test_powershell_dot_source_inside_function_emits_edge():
     )
 
 
+
+@pytest.mark.parametrize("line", [
+    '. "$PSScriptRoot\\lib.ps1"',   # quoted path with variable (most common in real scripts)
+    ". $PSScriptRoot\\lib.ps1",     # unquoted path with variable -> path_command_name
+    ". '.\\lib.ps1'",               # single-quoted relative path -> string_literal
+])
+def test_powershell_dot_source_quoted_or_variable_path_emits_edge(tmp_path, line):
+    """Dot-source with a quoted or $PSScriptRoot-based path emits imports_from (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(line + "\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any(t.endswith("lib") for t in targets), f"Missing dot-source lib edge; targets={targets}"
+
+
+def test_powershell_script_scope_call_is_recorded(tmp_path):
+    """A call at script scope (outside any function) is attributed to the file (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "Helper\n"
+        "Get-External\n"
+    )
+    r = extract_powershell(f)
+    calls = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    raw = {c["callee"] for c in r["raw_calls"]}
+    assert any(t.endswith("helper") for t in calls), f"Missing script-scope call to Helper; calls={calls}"
+    assert "Get-External" in raw, f"Missing script-scope raw call; raw={raw}"
+
+
+def test_powershell_script_scope_walk_does_not_duplicate_function_calls(tmp_path):
+    """Walking the file root must not re-attribute calls made inside function bodies."""
+    f = tmp_path / "mod.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "function Run { Helper }\n"
+    )
+    r = extract_powershell(f)
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == f.name)
+    callers = {e["source"] for e in r["edges"] if e["relation"] == "calls"}
+    callers |= {c["caller_nid"] for c in r["raw_calls"]}
+    assert file_nid not in callers, f"File node became a caller; callers={callers}"
+
 # ── PowerShell manifest (.psd1) (#1331) ──────────────────────────────────────
 
 def test_powershell_psd1_dispatched():
@@ -3076,6 +3212,30 @@ def test_powershell_psd1_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"Dangling source in edge: {e}"
+
+
+def test_powershell_functions_in_file_scope_begin_block_are_extracted(tmp_path):
+    # File-scope begin/process/end blocks parse as pseudo-commands (command_name
+    # 'begin'), not named_block, so functions defined inside them were dropped (#4270).
+    f = tmp_path / "advanced.ps1"
+    f.write_text(
+        "[CmdletBinding()]\n"
+        "param()\n"
+        "begin {\n"
+        "    function Get-Foo { Get-Bar }\n"
+        "    function Get-Bar { 'bar' }\n"
+        "}\n"
+        "process {\n"
+        "    Get-Foo\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert "Get-Foo()" in labels and "Get-Bar()" in labels
+    # the call between the two helpers (inside Get-Foo's body) is recovered
+    assert ("Get-Foo", "Get-Bar") in _edge_labels(r, "calls")
 
 
 # ── TypeScript dynamic imports ───────────────────────────────────────────────
@@ -3621,9 +3781,9 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
     vault = tmp_path / "vault"
     (vault / "log").mkdir(parents=True)
     name_nfc = unicodedata.normalize("NFC", "어휘 노트")
-    (vault / f"{name_nfc}.md").write_text("# Term\n")
+    (vault / f"{name_nfc}.md").write_text("# Term\n", encoding="utf-8")
     name_nfd = unicodedata.normalize("NFD", name_nfc)
-    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n")
+    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n", encoding="utf-8")
     _, refs, page_id = _vault_extract(
         vault, [vault / f"{name_nfc}.md", vault / "log" / "entry.md"])
     entry_id = page_id(vault / "log" / "entry.md")
@@ -5548,3 +5708,94 @@ def test_kotlin_bracketed_annotations_emits_multiple_attribute_edges(tmp_path):
     refs = _edge_labels(result, "references", "attribute")
     assert ("Foo", "Inject") in refs
     assert ("Foo", "VisibleForTesting") in refs
+
+
+_JULIA_DISPATCH_SRC = '''
+module Demo
+abstract type Shape end
+struct Circle{T<:Real} <: Shape
+    r::T
+end
+helper(x) = 2x
+function param(x::T) where {T<:Real}
+    helper(x)
+end
+function rettype(x)::Float64
+    param(x)
+end
+function Base.show(io::IO, c::Circle)
+    print(io, c.r)
+end
+Base.length(c::Circle) = 1
+area(c::Circle{T}) where T = pi * c.r^2
+(c::Circle)(x) = area(c) * x
+Base.:+(a::Circle, b::Circle) = Circle(a.r + b.r)
+@inline function fast(x)
+    x |> helper
+end
+bcast(xs) = helper.(xs)
+end
+'''
+
+
+def _julia_dispatch(tmp_path):
+    f = tmp_path / "dispatch.jl"
+    f.write_text(_JULIA_DISPATCH_SRC)
+    r = extract_julia(f)
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    return r, labels
+
+
+def test_julia_where_rettype_qualified_operator_functor_defs(tmp_path):
+    _, labels = _julia_dispatch(tmp_path)
+    got = set(labels.values())
+    for want in ("param()", "rettype()", "Base.show()", "Base.length()",
+                 "area()", "(Circle)()", "Base.:+()", "fast()", "bcast()"):
+        assert want in got, want
+
+
+def test_julia_parametric_struct_and_no_typeparam_nodes(tmp_path):
+    r, labels = _julia_dispatch(tmp_path)
+    assert "Circle" in labels.values()
+    assert "T" not in labels.values()
+    inh = [(labels[e["source"]], labels.get(e["target"])) for e in r["edges"]
+           if e["relation"] == "inherits"]
+    assert ("Circle", "Shape") in inh
+
+
+def test_julia_broadcast_and_pipe_calls(tmp_path):
+    r, labels = _julia_dispatch(tmp_path)
+    calls = {(labels.get(e["source"]), labels.get(e["target"])) for e in r["edges"]
+             if e["relation"] == "calls"}
+    assert ("fast()", "helper()") in calls
+    assert ("bcast()", "helper()") in calls
+    assert ("param()", "helper()") in calls
+    assert ("rettype()", "param()") in calls
+
+
+def test_julia_parametric_functor_uses_type_not_variable(tmp_path):
+    f = tmp_path / "functor.jl"
+    f.write_text(
+        "struct Box{T}\n    v::T\nend\n"
+        "(b::Box{T})(x) where T = x\n"
+        "(b::Box)(x, y) = x\n"
+        "(::Box{T})(x, y, z) where T = x\n"
+    )
+    r = extract_julia(f)
+    call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
+    # All three methods of the Box functor share one node labelled by the type.
+    assert [n["label"] for n in call_nodes] == ["(Box)()"]
+
+
+def test_julia_qualified_functor_uses_type_not_variable(tmp_path):
+    f = tmp_path / "functor.jl"
+    f.write_text(
+        "(b::Mod.Box)(x) = x\n"
+        "(b::Mod.Box{T})(x, y) where T = x\n"
+        "(::Mod.Box)(x, y, z) = x\n"
+        "(b::A.B.Box)(x, y, z, w) = x\n"
+    )
+    r = extract_julia(f)
+    call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
+    # Module-qualified receiver types resolve to the bare type, never the variable.
+    assert [n["label"] for n in call_nodes] == ["(Box)()"]

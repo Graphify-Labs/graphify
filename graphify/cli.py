@@ -20,8 +20,9 @@ _SEARCH_NUDGE = json.dumps({
         "hookEventName": "PreToolUse",
         "additionalContext": (
             'MANDATORY: graphify-out/graph.json exists. You MUST run '
-            '`graphify query "<question>"` before grepping raw files. Only grep '
-            'after graphify has oriented you, or to modify/debug specific lines.'
+            '`graphify query "<question>"` before grepping raw files. Grep raw '
+            'files only once you know the exact file and lines you need, from the '
+            'graph or an earlier read.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -32,8 +33,8 @@ _READ_NUDGE = json.dumps({
             'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
             'before reading source files. Use: `graphify query "<question>"` '
             '(scoped subgraph), `graphify explain "<concept>"`, or '
-            '`graphify path "<A>" "<B>"`. Only read raw files after graphify has '
-            'oriented you, or to modify/debug specific lines. This rule applies to '
+            '`graphify path "<A>" "<B>"`. Read raw files only once graphify has '
+            'shown you the exact file and lines you need. This rule applies to '
             'subagents too — include it in every subagent prompt involving code '
             'exploration.'
         ),
@@ -62,16 +63,17 @@ _READ_DENY = json.dumps({
             'graphify strict mode: this project has a fresh knowledge graph that covers '
             'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
             '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
-            'will be allowed. This block fires at most once per session; reading raw '
-            'files to modify or debug specific lines is fine after one query. Apply the '
+            'will be allowed. This block fires at most once per session; after one '
+            'query, read raw files for the exact lines the graph pointed you to. Apply the '
             'same rule in any subagent prompt that explores code.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
 _HOOK_SOURCE_EXTS = (
-    '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.go',
+    '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.ejs', '.go',
     '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
-    '.swift', '.php', '.scala', '.lua', '.sh', '.md', '.rst', '.txt', '.mdx',
+    '.swift', '.php', '.scala', '.lua', '.ps1', '.psm1', '.psd1',  # #4271: PowerShell sources are graphable too
+    '.sh', '.md', '.rst', '.txt', '.mdx',
 )
 _GEMINI_NUDGE_TEXT = (
     'graphify: knowledge graph at graphify-out/. For focused questions, run '
@@ -82,6 +84,11 @@ _GEMINI_NUDGE_TEXT = (
 
 
 _DEFAULT_NUDGE_GRAPH = "graphify-out/graph.json"
+
+# Exit codes of the lookups (explain, path, query), so a script can tell a
+# refusal from an answer: 0 answered, 3 ambiguous name, 4 no matching node.
+EXIT_AMBIGUOUS = 3
+EXIT_NOT_FOUND = 4
 
 
 def _nudge_for_out(nudge: str) -> str:
@@ -104,8 +111,195 @@ def _nudge_for_out(nudge: str) -> str:
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
+def _print_cloud_cta(out_dir: "Path") -> None:
+    """Nudge toward Graphify Cloud once after a successful local graph build.
+
+    Kept precise and shown only to humans running the CLI interactively:
+    suppressed in non-interactive/CI runs (stdout is not a TTY, which also
+    covers the AI-assistant pipeline), when the user opts out
+    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``), and after the first time per
+    project (a marker under ``graphify-out/``) so repeat builds stay quiet.
+    """
+    if os.environ.get("GRAPHIFY_NO_TIPS") or os.environ.get("GRAPHIFY_NO_CTA"):
+        return
+    try:
+        if not sys.stdout.isatty():
+            return
+    except Exception:
+        return
+    marker = out_dir / ".cloud-cta-shown"
+    try:
+        if marker.exists():
+            return
+    except Exception:
+        return
+    print()
+    print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
+    print("  and PR review, with your whole SDLC mapped and always current.")
+    print("  Connect a repo at https://app.graphify.com")
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("1", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _graph_root_for(gp: Path) -> Path:
+    """The analysed repo root for a graph file: <root>/<GRAPHIFY_OUT_NAME>/graph.json, else the file's own directory."""
+    from graphify.paths import GRAPHIFY_OUT_NAME
+    return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+
+
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
+
+
+# Hint for a firing nudge: the graph nodes behind this very call and a command
+# to run, so the nudge shows what the graph knows instead of only asking for it.
+# A direct label scan of graph.json, not `graphify query`: loading the full query
+# stack costs ~1.5 s on a 15k-node graph, too slow for a per-call hook. The scan
+# costs ~0.5 s on an 18 MiB graph; bigger graphs than the cap get the plain nudge.
+_HINT_MAX_NODES = 5
+_HINT_GRAPH_MAX_BYTES = 24 * 1024 * 1024
+_HINT_TERM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_HINT_SAFE_ARG_RE = re.compile(r"[\w.\-() ]+")
+# Declaration keywords a pattern like `def load_config` carries; never the target.
+_HINT_KEYWORDS = frozenset({
+    "def", "class", "function", "func", "const", "let", "var", "import", "export",
+    "async", "return", "struct", "interface", "type", "enum", "impl", "pub",
+})
+# grep/rg/ag/ack options whose value is the next argument, never the pattern.
+_HINT_VALUE_FLAGS = frozenset({
+    "-t", "-T", "-g", "--type", "--type-not", "--glob", "--iglob", "-A", "-B", "-C",
+    "-m", "--max-count", "-j", "--threads", "-f", "--file", "--include", "--exclude",
+    "--exclude-dir", "--max-depth", "-d", "-D", "--color", "--colour",
+})
+
+
+def _pattern_terms(pattern: str) -> list[str]:
+    """Identifier-like words in a search pattern (regex escapes and declaration
+    keywords dropped), at most three."""
+    words = _HINT_TERM_RE.findall(re.sub(r"\\.", " ", pattern))
+    return [w for w in words if w.lower() not in _HINT_KEYWORDS][:3]
+
+
+def _rel_to_root(file_path: str, root: "Path") -> "str | None":
+    """The read target as a root-relative POSIX path, the form graph.json stores."""
+    if not file_path:
+        return None
+    try:
+        p = Path(file_path.replace("\\", "/"))
+        return (p if p.is_absolute() else root / p).resolve().relative_to(root).as_posix()
+    except (ValueError, OSError, RuntimeError):
+        return None
+
+
+def _search_hint_terms(t: dict) -> list[str]:
+    """Words the agent searched for: the Grep `pattern`, or the pattern argument of
+    a shell content search. Empty when there is nothing to go on."""
+    cmd = str(t.get("command") or "")
+    if not cmd:
+        return _pattern_terms(str(t.get("pattern") or ""))
+    import shlex
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return []
+    for i, tok in enumerate(tokens):
+        name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        # Content searches only: find/fd match file names, which labels do not, and
+        # a search fed by a pipe filters that output, not the code.
+        if name not in _SEARCH_COMMANDS or name in ("find", "fd") or (i and tokens[i - 1] == "|"):
+            continue
+        rest = iter(tokens[i + 1:])
+        for arg in rest:
+            if arg in ("-e", "--regexp"):
+                return _pattern_terms(next(rest, ""))
+            if arg in _HINT_VALUE_FLAGS:
+                next(rest, None)
+                continue
+            if arg.startswith("-"):
+                continue
+            return _pattern_terms(arg)  # the first positional argument is the pattern
+        return []
+    return []
+
+
+def _hint_text(value: object, cap: int) -> str:
+    """A graph field as one inert line: graph.json is repository content, so no
+    newline, control character or backtick may reach the model-facing hint."""
+    text = re.sub(r"[\x00-\x1f\x7f`]", " ", str(value))
+    text = " ".join(text.split())
+    return text if len(text) <= cap else text[: cap - 1] + "…"
+
+
+def _graph_hint(terms: "list[str]", rel_file: "str | None") -> tuple[str, list[str]]:
+    """(command, node lines) for a nudge: nodes whose label matches the searched
+    terms, or the symbols in the file being read. ("", []) for an oversized graph
+    or no match."""
+    from graphify.paths import out_path
+    p = out_path("graph.json")
+    if p.stat().st_size > _HINT_GRAPH_MAX_BYTES:
+        return "", []
+    nodes = json.loads(p.read_text(encoding="utf-8")).get("nodes")
+    nodes = [n for n in nodes if isinstance(n, dict)] if isinstance(nodes, list) else []
+
+    def key(n: dict) -> str:
+        return str(n.get("label") or "").lower().removesuffix("()").lstrip(".")
+
+    def line_of(n: dict) -> int:
+        m = re.match(r"L(\d+)", str(n.get("source_location") or ""))
+        return int(m.group(1)) if m else 0
+
+    command = ""
+    if rel_file:
+        base = rel_file.rsplit("/", 1)[-1]
+        picked = sorted((n for n in nodes if n.get("source_file") == rel_file and n.get("label") != base),
+                        key=line_of)[:_HINT_MAX_NODES]
+        if picked and _HINT_SAFE_ARG_RE.fullmatch(base):
+            command = f'graphify explain "{base}"'
+    else:
+        lowered = [term.lower() for term in terms]
+        # Exact label matches first, then labels containing a term; shorter labels first.
+        # Short terms (`src`, `app`) only match exactly: as substrings they hit every path.
+        ranked = sorted(
+            ((0 if key(n) in lowered else 1, len(key(n)), n) for n in nodes
+             if key(n) in lowered or any(len(term) >= 5 and term in key(n) for term in lowered)),
+            key=lambda r: (r[0], r[1]),
+        )
+        picked = [n for _, _, n in ranked[:_HINT_MAX_NODES]]
+        # An exact match's label is a search term ([A-Za-z0-9_]) plus "." or "()": safe to quote.
+        if picked and ranked[0][0] == 0:
+            command = f'graphify explain "{picked[0].get("label")}"'
+        elif picked:
+            command = f'graphify query "{" ".join(terms)}"'
+    lines = []
+    for n in picked:
+        loc = _hint_text(n.get("source_location") or "", 20)
+        src = _hint_text(n.get("source_file") or "?", 120)
+        lines.append(f"- {_hint_text(n.get('label') or '', 80)} ({src}{' ' + loc if loc else ''})")
+    return command, lines
+
+
+def _with_hint(nudge: str, terms: "list[str] | None" = None, rel_file: "str | None" = None) -> str:
+    """Append the call-specific command and matching graph nodes to a nudge or deny.
+    Any failure returns the nudge unchanged: a hint must never cost the nudge."""
+    if not terms and not rel_file:
+        return nudge
+    try:
+        command, lines = _graph_hint(terms or [], rel_file)
+        if not command and not lines:
+            return nudge
+        d = json.loads(nudge)
+        out = d["hookSpecificOutput"]
+        key = "permissionDecisionReason" if "permissionDecisionReason" in out else "additionalContext"
+        extra = f"\nStart with: `{command}`" if command else ""
+        if lines:
+            extra += "\nWhat the graph already has for this call:\n" + "\n".join(lines)
+        out[key] += extra
+        return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
+    except Exception:
+        return nudge
 
 
 def _stamped_manifest_files(
@@ -650,7 +844,7 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic
-    write_json_atomic(graph_path, data, indent=2)
+    write_json_atomic(graph_path, data, compact=True)
     return n_removed
 
 
@@ -730,6 +924,73 @@ def _query_stamp_fresh() -> bool:
         return False
 
 
+def _nudge_allowed(payload: dict) -> bool:
+    """Whether to emit a soft read/search nudge for this tool call (#3435).
+
+    The nudge is advisory context that used to be re-injected on EVERY qualifying
+    Read/Glob/Grep/Bash call — thousands of times per session, far more tokens
+    than the graph queries it asks for. Budgets are per agent: the session id,
+    plus the ``agent_id`` Claude Code sends for subagents (which share the
+    parent's session id but start with an empty context). Per agent:
+
+    * the first nudge always fires. The query stamp is project-wide and cannot
+      say which agent queried, so it must not silence a fresh subagent or session;
+    * after that, a fresh query stamp (query/explain/path within
+      GRAPHIFY_HOOK_STRICT_TTL) means someone oriented recently, so no nudge;
+    * at most GRAPHIFY_HOOK_NUDGE_CAP nudges (default 5; 0 or a non-number
+      disables the cap), counted in a marker next to the strict-mode ones.
+
+    Calls without a session id cannot be counted: only the stamp applies.
+    Fail-open: on a marker error, only the stamp applies.
+    """
+    from graphify.paths import out_path, write_text_atomic
+    import hashlib
+    stamp = _query_stamp_fresh()
+    try:
+        cap = int(os.environ.get("GRAPHIFY_HOOK_NUDGE_CAP", "5"))
+    except ValueError:
+        cap = 0
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", str(payload.get("session_id") or ""))[:64]
+    if not key:
+        return not stamp
+    agent = str(payload.get("agent_id") or "")
+    if agent:
+        # Hashed so long ids cannot truncate two agents into one key.
+        key += "-" + hashlib.sha256(agent.encode("utf-8")).hexdigest()[:16]
+    try:
+        d = out_path("cache", "hook_sessions")
+        d.mkdir(parents=True, exist_ok=True)
+        marker = d / f"{key}.nudges"
+        try:
+            count = int(marker.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            count = 0
+        if count and stamp:
+            return False
+        if 0 < cap <= count:
+            return False
+        write_text_atomic(marker, str(count + 1))
+        if count == 0:
+            _gc_hook_session_markers(d)
+        return True
+    except Exception:
+        return not stamp
+
+
+def _gc_hook_session_markers(d: "Path") -> None:
+    """Best-effort removal of per-session hook markers older than 24h."""
+    try:
+        cutoff = time.time() - 86400
+        for entry in os.scandir(d):
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _mark_session_denied(session_id: str) -> bool:
     """Atomically claim a one-time strict block for this session. Returns True only
     on the FIRST call for a given session id (O_EXCL create wins once); every later
@@ -744,16 +1005,7 @@ def _mark_session_denied(session_id: str) -> bool:
         d.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.close(fd)
-        try:
-            cutoff = time.time() - 86400
-            for entry in os.scandir(d):
-                try:
-                    if entry.stat().st_mtime < cutoff:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        _gc_hook_session_markers(d)
         return True
     except FileExistsError:
         return False
@@ -889,8 +1141,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
-                sys.stdout.write(_nudge_for_out(_SEARCH_NUDGE))
+            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
+                    and _nudge_allowed(d):
+                sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), terms=_search_hint_terms(t)))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             tails = [
@@ -1000,7 +1253,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             except Exception:
                 pass
             if stale:
-                sys.stdout.write(_nudge_for_out(_READ_NUDGE_STALE))
+                if _nudge_allowed(d):
+                    sys.stdout.write(_nudge_for_out(_READ_NUDGE_STALE))
                 return
             # Strict block: Read tool only, first time per session, not recently
             # oriented, and the file is demonstrably indexed.
@@ -1009,9 +1263,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
-                sys.stdout.write(_READ_DENY)
+                sys.stdout.write(_with_hint(_READ_DENY, rel_file=_rel_to_root(fp, root)))
                 return
-            sys.stdout.write(_nudge_for_out(_READ_NUDGE))
+            if _nudge_allowed(d):
+                sys.stdout.write(_with_hint(_nudge_for_out(_READ_NUDGE), rel_file=_rel_to_root(fp, root)))
     except Exception:
         pass
 
@@ -1275,9 +1530,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _query_graph_text
+        from graphify.serve import _QUERY_NO_MATCH, _query_graph_text
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
@@ -1287,6 +1542,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        seeds: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -1310,6 +1566,16 @@ def dispatch_command(cmd: str) -> None:
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
                 i += 1
+            elif args[i] == "--seed" and i + 1 < len(args):
+                seeds.append(args[i + 1])
+                i += 2
+            elif args[i].startswith("--seed=") and args[i].split("=", 1)[1]:
+                seeds.append(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--seed" or args[i] == "--seed=":
+                # Fail closed: a --seed with no value must not quietly become a keyword query.
+                print("error: --seed needs a value (node id, label or file path)", file=sys.stderr)
+                sys.exit(1)
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
@@ -1381,6 +1647,9 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             context_filters=context_filters,
             graph_path=str(gp),
+            seeds=seeds or None,
+            # Same root derivation as `affected` (#2706): <root>/graphify-out/graph.json.
+            seed_root=_graph_root_for(gp),
         )
         querylog.log_query(
             kind="query",
@@ -1391,9 +1660,12 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
+            seeds=seeds or None,
         )
         _touch_query_stamp(gp)
         print(_result)
+        if _result == _QUERY_NO_MATCH:
+            sys.exit(EXIT_NOT_FOUND)
     elif cmd == "affected":
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
@@ -1628,7 +1900,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _resolve_path_endpoint
+        from graphify.serve import _is_ambiguity_refusal, _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -1687,7 +1959,7 @@ def dispatch_command(cmd: str) -> None:
         ):
             if _err or _nid is None:
                 print(_err or f"No node matching '{_label}' found.", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(_err) else EXIT_NOT_FOUND)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -1697,7 +1969,7 @@ def dispatch_command(cmd: str) -> None:
                 f"node '{src_nid}'. Use a more specific label or the exact node ID.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(EXIT_AMBIGUOUS)
         for _name, _scored, _nid in (
             ("source", src_scored, src_nid),
             ("target", tgt_scored, tgt_nid),
@@ -1802,14 +2074,15 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--all] [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _ambiguity_message, _find_node, find_node_ambiguity
+        from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
         args = sys.argv[3:]
+        show_all = "--all" in args
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -1827,15 +2100,10 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        matches = _find_node(G, label)
-        if not matches:
-            print(f"No node matching '{label}' found.")
-            sys.exit(0)
-        rivals = find_node_ambiguity(G, label)
-        if rivals:
-            print(_ambiguity_message(G, label, rivals))
-            sys.exit(1)
-        nid = matches[0]
+        nid, refusal = _resolve_single_node(G, label)
+        if nid is None:
+            print(refusal)
+            sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(refusal) else EXIT_NOT_FOUND)
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")
@@ -1888,7 +2156,8 @@ def dispatch_command(cmd: str) -> None:
         if connections:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
-            for direction, nb, edata in connections[:20]:
+            shown = connections if show_all else connections[:20]
+            for direction, nb, edata in shown:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
                 arrow = "-->" if direction == "out" else "<--"
@@ -1899,9 +2168,9 @@ def dispatch_command(cmd: str) -> None:
                 sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
                 print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
-            if len(connections) > 20:
-                remainder = connections[20:]
-                print(f"  ... and {len(remainder)} more")
+            if len(connections) > len(shown):
+                remainder = connections[len(shown):]
+                print(f"  ... and {len(remainder)} more (--all lists all {len(connections)})")
                 # #2009: a bare count silently hides the answer on high-degree
                 # nodes ("who calls this, what's the impact?"). Group the cut
                 # connections by direction + file so their shape is visible
@@ -2254,12 +2523,19 @@ def dispatch_command(cmd: str) -> None:
             # been re-scoped/re-clustered since labeling, in which case a cid now
             # covers a DIFFERENT community and its old (LLM) name is wrong (#label-stale).
             # Validate each community against the membership signature saved beside the
-            # labels; any community that changed (or has no saved label) is renamed by
-            # its current hub — deterministic and correct-by-construction — and the user
+            # labels; a community whose overlap is not a strict majority of both
+            # the saved members and the current members (or that has no saved
+            # label) is renamed by its current hub — deterministic and
+            # correct-by-construction — and the user
             # is told to `graphify label` for fresh LLM names. Unchanged communities keep
             # their saved label. When no signature sidecar exists (labels predate this),
-            # fall back to hub-filling only the communities missing a label.
-            from graphify.cluster import community_member_sigs, label_communities_by_hub
+            # an equal community count still hub-fills only communities missing a
+            # label; a changed count keeps a label only on majority overlap.
+            from graphify.cluster import (
+                community_member_sigs,
+                label_communities_by_hub,
+                label_still_applies,
+            )
             sig_path = labels_path.parent / (labels_path.name + ".sig")
             saved_sigs: dict[int, str] = {}
             if sig_path.exists():
@@ -2286,14 +2562,29 @@ def dispatch_command(cmd: str) -> None:
                     and existing_labels[cid] != f"Community {cid}"
                 )
                 if saved_sigs:
-                    # Precise: the membership signature tells us if this exact
-                    # community changed since it was labeled.
-                    fresh = have_label and saved_sigs.get(cid) == cur_sigs.get(cid)
+                    # Equal signature, or a strict majority of both the saved
+                    # members and the current members (#2298).
+                    fresh = have_label and label_still_applies(
+                        cid,
+                        communities[cid],
+                        previous_node_community,
+                        saved_sigs.get(cid),
+                        cur_sigs.get(cid),
+                    )
+                elif count_mismatch:
+                    # No signature sidecar. A changed count used to drop every
+                    # label; keep one only on that same majority overlap.
+                    fresh = have_label and label_still_applies(
+                        cid,
+                        communities[cid],
+                        previous_node_community,
+                        None,
+                        None,
+                    )
                 else:
-                    # No signature sidecar (labels predate it). A differing community
-                    # COUNT means the labels describe a different clustering, so a cid's
-                    # old label can't be trusted; equal count is the best "same" signal.
-                    fresh = have_label and not count_mismatch
+                    # No signature sidecar and an equal community count: that
+                    # count is still the best available "unchanged" signal.
+                    fresh = have_label
                 if fresh:
                     labels[cid] = existing_labels[cid]
                 else:
@@ -2691,7 +2982,7 @@ def dispatch_command(cmd: str) -> None:
             if _ts is not None and _tt is not None:
                 _link["source"], _link["target"] = _ts, _tt
         from graphify.paths import write_json_atomic
-        write_json_atomic(_current_path, out_data, indent=2)
+        write_json_atomic(_current_path, out_data, compact=True)
         sys.exit(0)
 
     elif cmd == "merge-graphs":
@@ -2882,7 +3173,7 @@ def dispatch_command(cmd: str) -> None:
         out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
-        _wja(out_path, out_data, indent=2)
+        _wja(out_path, out_data, compact=True)
         print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
         print(f"Written to: {out_path}")
 
@@ -4020,6 +4311,8 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_php_non_class_types", "_php_interfaces",
                             "_php_class_fqns",
+                            "_ts_public_twin", "_py_property", "_java_ret",
+                            "_ts_fields", "_ts_static_fields",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4031,6 +4324,7 @@ def dispatch_command(cmd: str) -> None:
                                     "ruby_resolution_schema",
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
+                                    "python_opaque_bases",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
                                     # Erlang remote-call resolution keys (#3714):
@@ -4048,11 +4342,13 @@ def dispatch_command(cmd: str) -> None:
                             if _fwd_metadata:
                                 _ctx_node["metadata"] = _fwd_metadata
                         _ctx_nodes.append(_ctx_node)
+                    # Import edges come too: a TS field inherited from an unchanged file
+                    # is typed by that file's imports, as in a full build.
                     for _edge in _ctx_graph.get(
                         "links", _ctx_graph.get("edges", [])
                     ):
                         if _edge.get("relation") not in (
-                            "contains", "method", "inherits"
+                            "contains", "method", "inherits", "imports", "imports_from"
                         ):
                             continue
                         if not _ctx_is_ast_tier(_edge):
@@ -4261,12 +4557,32 @@ def dispatch_command(cmd: str) -> None:
                 _omitted_files = list(fresh.get("uncovered_files") or [])
                 if _omitted_files or _partial_semantic_files:
                     _extraction_incomplete = True
+                    _coverage_note = ""
+                    if _omitted_files and not _partial_semantic_files:
+                        # #4101: every omitted file here came back from a
+                        # chunk that was NOT truncated or hollow — the model
+                        # returned a complete, well-formed response that
+                        # simply did not address every dispatched file. A
+                        # bare "a re-run will retry them" reads as transient,
+                        # but re-sending the same oversized chunk reproduces
+                        # the same omission every time, so a retry loop with
+                        # no --token-budget change looks like extraction
+                        # never finishing rather than what it actually is: a
+                        # coverage gap at this chunk size.
+                        _coverage_note = (
+                            " None of this run's chunks came back truncated — the "
+                            "model returned complete, well-formed responses that "
+                            "simply did not address every file. Retrying with the "
+                            "same --token-budget will likely omit the same files "
+                            "again; try a smaller --token-budget to split the "
+                            "corpus into more, smaller chunks."
+                        )
                     print(
                         f"[graphify extract] semantic extraction is incomplete: "
                         f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
-                        f"{len(_partial_semantic_files)} came back truncated or hollow. "
-                        f"The shrink guard stays armed for this write; pass "
-                        f"--allow-partial to overwrite a larger existing graph anyway.",
+                        f"{len(_partial_semantic_files)} came back truncated or hollow."
+                        f"{_coverage_note} The shrink guard stays armed for this write; "
+                        f"pass --allow-partial to overwrite a larger existing graph anyway.",
                         file=sys.stderr,
                     )
                 try:
@@ -4362,6 +4678,14 @@ def dispatch_command(cmd: str) -> None:
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
         # semantic side.
+        # Everything in sem_result is semantic tier - fresh results and cache
+        # hits alike - so say so before the merge (#2843): an unstamped item
+        # is classified by the shape of its source_location, and a doc node
+        # located at 'L12' would read as AST and be deleted by the next
+        # incremental rebuild. Fresh results already carry the stamp
+        # (llm._stamp_semantic_origin); cache entries from before it do not.
+        from graphify.llm import _stamp_semantic_origin as _stamp_sem
+        _stamp_sem(sem_result)
         merged: dict = {
             "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
             "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
@@ -4576,7 +4900,7 @@ def dispatch_command(cmd: str) -> None:
             _write_json_atomic(
                 graph_json_path,
                 {k: v for k, v in merged.items() if k not in _RUN_ONLY_KEYS},
-                indent=2,
+                compact=True,
             )
             try:
                 # Record the scan root so a later build_merge / update runbook can
@@ -4854,6 +5178,7 @@ def dispatch_command(cmd: str) -> None:
             f"`graphify cluster-only {graphify_out.parent}` "
             "to generate GRAPH_REPORT.md and name communities"
         )
+        _print_cloud_cta(graphify_out)
         stages.total()
 
     elif cmd == "cache-check":

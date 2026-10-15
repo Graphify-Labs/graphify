@@ -669,7 +669,13 @@ def test_suggest_questions_diversity_preserves_limit_and_candidates(top_n):
     limited = suggest_questions(G, communities, {}, top_n=top_n)
     assert limited == all_questions[:top_n]
     assert sum(q["type"] == "ambiguous_edge" for q in all_questions) == 10
-    assert all(set(q) == {"type", "question", "why"} for q in all_questions)
+    # #4199 allows an optional ``low_confidence`` tag on AMBIGUOUS entries;
+    # all other required keys must still be present on every question.
+    required = {"type", "question", "why"}
+    for q in all_questions:
+        assert required <= set(q), f"missing required keys in {set(q)}"
+        extra = set(q) - required
+        assert extra <= {"low_confidence"}, f"unexpected key(s) in {extra}"
 
 
 def test_suggest_questions_single_category_uses_available_slots():

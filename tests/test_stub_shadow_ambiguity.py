@@ -17,6 +17,7 @@ from networkx.readwrite import json_graph
 
 import graphify.__main__ as mainmod
 from graphify.affected import resolve_seed
+from graphify.cli import EXIT_AMBIGUOUS
 from graphify.serve import _find_node, find_node_ambiguity
 
 
@@ -126,7 +127,7 @@ def test_explain_refuses_when_only_sourceless_stubs_match(monkeypatch, tmp_path,
     p = _write(tmp_path, [_stub(i) for i in range(3)])
     out, code = _run_explain(monkeypatch, p, LABEL, capsys)
     assert "Ambiguous" in out
-    assert code == 1
+    assert code == EXIT_AMBIGUOUS
     assert "Node: FooRepository\n  ID:" not in out
 
 

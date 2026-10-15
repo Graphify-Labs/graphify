@@ -7,8 +7,11 @@ callee name, so ``parent::setUp()`` produced a raw call to a callee literally
 named ``parent`` — which the cross-file pass then matched, by normalized label,
 against any unrelated ``->parent()`` method in the corpus.
 
-Refusal over guessing: the relative scopes name no callee at all.  Absolute
-scopes (``Helper::format()``) are unaffected.
+Refusal over guessing: the relative scopes never reach the bare-name pass.
+Since the 0.9.92 sync every scoped call is a member call (callee = the method,
+receiver = the scope), and `_resolve_php_member_calls` binds ``self``/``static``
+to the enclosing class and ``parent`` to its single base, or to nothing.
+Absolute scopes (``Helper::format()``) bind to the named class's method.
 """
 from __future__ import annotations
 
@@ -95,7 +98,7 @@ def test_static_scope_mints_no_call_to_unrelated_static_method(tmp_path: Path):
 
 
 def test_absolute_scoped_call_still_resolves(tmp_path: Path):
-    """Positive control: `Helper::format()` still targets the `Helper` class.
+    """Positive control: `Helper::format()` still resolves, to `Helper::format`.
 
     Same corpus shape as the refusal tests, so the refusal is demonstrably
     scoped to the relative names and not to scoped calls in general.
@@ -117,5 +120,5 @@ def test_absolute_scoped_call_still_resolves(tmp_path: Path):
     })
 
     set_up = _find(r, ".setUp()", "app_a_a_setup")
-    helper = _find(r, "Helper", "app_support_helper_helper")
-    assert (set_up, helper) in calls
+    fmt = _find(r, ".format()", "helper")
+    assert (set_up, fmt) in calls

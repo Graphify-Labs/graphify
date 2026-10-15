@@ -6,10 +6,11 @@ conformer's `.fetch()` is a separate node with nothing joining the two, so a
 directed walk stops at the protocol and every chain through an injected
 dependency is cut there — the Swift twin of the C# gap #3003 closed.
 
-`resolve_swift_protocol_dispatch` links the requirement to the implementing
-method when the protocol has exactly one conformer and that conformer owns
-exactly one method of the same name. Ambiguity at either step leaves the pair
-alone, the same single-owner guard the C#, Pascal and Ruby resolvers use.
+`resolve_swift_protocol_dispatch` links the requirement to every conforming
+method, as long as that conformer owns exactly one method of the same name.
+A conformer's own ambiguity leaves only that conformer's edge out, the same
+single-owner guard the C#, Pascal and Ruby resolvers use. Confidence falls as
+the conformer count grows (0.85 / 0.75 / 0.65).
 """
 from __future__ import annotations
 
@@ -152,13 +153,20 @@ def test_class_conformer_of_a_protocol_in_another_file_is_a_known_limit(tmp_path
     assert not dispatch
 
 
-def test_two_conformers_produce_no_edge(tmp_path):
-    dispatch, _ = _extract(tmp_path, {"S.swift": (
+def test_two_conformers_both_get_an_edge_at_lower_confidence(tmp_path):
+    dispatch, r = _extract(tmp_path, {"S.swift": (
         "protocol Shape { func area() -> Double }\n"
         "struct Square: Shape { func area() -> Double { 1 } }\n"
         "struct Circle: Shape { func area() -> Double { 2 } }\n"
     )})
-    assert not dispatch
+    requirement = _find(r, ".area()", "s_shape")
+    assert dispatch == {
+        (requirement, _find(r, ".area()", "square")),
+        (requirement, _find(r, ".area()", "circle")),
+    }
+    for edge in r["edges"]:
+        if edge["relation"] == "dispatches_to":
+            assert edge["confidence_score"] == 0.75
 
 
 def test_no_matching_member_produces_no_edge(tmp_path):

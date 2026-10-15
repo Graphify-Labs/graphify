@@ -7,7 +7,9 @@ import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from graphify.hooks import (
+    install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
+)
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -114,6 +116,35 @@ def test_uninstall_removes_post_checkout_hook(tmp_path):
     assert not hook.exists()
 
 
+def test_install_creates_post_merge_hook(tmp_path):
+    # #2418: a merge hook is needed to heal a symbol the union merge driver
+    # resurrects on one side of a merge, since nothing else ever
+    # re-extracts that file's nodes unless it is touched again.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert hook.exists()
+    assert _MERGE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_merge_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert not hook.exists()
+
+
 def test_status_shows_both_hooks(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
@@ -121,6 +152,17 @@ def test_status_shows_both_hooks(tmp_path):
     assert "post-commit" in result
     assert "post-checkout" in result
     assert result.count("installed") >= 2
+
+
+def test_status_shows_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    result = status(repo)
+    assert "post-merge: installed" in result
+
+    uninstall(repo)
+    result = status(repo)
+    assert "post-merge: not installed" in result
 
 
 
@@ -229,12 +271,17 @@ import re  # noqa: E402
 from graphify.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
+    _MERGE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
 )
 
-_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+_HOOK_SCRIPTS = [
+    ("post-commit", _HOOK_SCRIPT),
+    ("post-checkout", _CHECKOUT_SCRIPT),
+    ("post-merge", _MERGE_SCRIPT),
+]
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -382,6 +429,35 @@ def test_rebuild_bodies_honour_an_in_repo_graphify_root(name, body, tmp_path, mo
     ns = {"Path": Path, "os": os}
     exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
     assert ns["_root"].resolve() == (repo / "backend").resolve(), f"{name} lost the scoped root"
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_treat_blank_graphify_out_as_default(name, body, tmp_path):
+    """A set-but-empty GRAPHIFY_OUT must resolve to graphify-out/ like every other
+    reader (paths._out_from_env), not to the repo root, or the hook misses
+    .graphify_root. Runs in a fresh process because the hook reads the value
+    when graphify.paths is first imported."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "graphify-out" / ".graphify_root").write_text("backend", encoding="utf-8")
+    script = (
+        "import os\nfrom pathlib import Path\n"
+        + _extract_root_resolution(body)
+        + "\nprint(_root.resolve())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env={**os.environ, "GRAPHIFY_OUT": ""},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert Path(result.stdout.strip()) == (repo / "backend").resolve(), f"{name} ignored graphify-out/"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
@@ -769,8 +845,10 @@ def test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail(tmp_path):
     mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
-    assert f"RESOLVED={other}" not in res.stdout
+    # sh may print an MSYS-style path on Windows, so compare the home-relative tail
+    resolved = [ln for ln in res.stdout.splitlines() if ln.startswith("RESOLVED=")]
+    assert [ln.endswith(mine.relative_to(home).as_posix()) for ln in resolved] == [True], res.stdout + res.stderr
+    assert other.relative_to(home).as_posix() not in res.stdout
     assert "could not locate" not in res.stderr
 
 
@@ -823,7 +901,8 @@ def test_shebang_parse_requires_leading_hash_bang(tmp_path):
     launcher.chmod(0o755)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    resolved = [ln for ln in res.stdout.splitlines() if ln.startswith("RESOLVED=")]
+    assert [ln.endswith(mine.relative_to(home).as_posix()) for ln in resolved] == [True], res.stdout + res.stderr
     assert "fakepy" not in res.stdout
 
 
@@ -1652,3 +1731,66 @@ def test_status_compares_only_the_graphify_block(tmp_path):
     hook.write_text(hook.read_text(encoding="utf-8") + "echo 'user after'\n", encoding="utf-8")
 
     assert "out of date" not in status(repo)
+
+
+# ── git quotes non-ASCII paths in `git diff --name-only` ────────────────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("pkg/plain.py", "pkg/plain.py"),
+    ("ünïcödé/naïve.py", "ünïcödé/naïve.py"),
+    ('"\\303\\274n\\303\\257c\\303\\266d\\303\\251/na\\303\\257ve.py"', "ünïcödé/naïve.py"),
+    ('"\\344\\270\\255\\346\\226\\207/a.py"', "中文/a.py"),
+    ('"say \\"hi\\".py"', 'say "hi".py'),
+    ('"tab\\there.py"', "tab\there.py"),
+    ('"back\\\\slash.py"', "back\\slash.py"),
+])
+def test_unquote_git_path(raw, expected):
+    """git C-quotes some paths in --name-only output; the hook must decode them
+    back to the real file name or the change never reaches the rebuild."""
+    from graphify.hooks import _unquote_git_path
+    assert _unquote_git_path(raw) == expected
+
+
+def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
+    """End-to-end against real git: every path the post-commit hook collects
+    for a commit touching non-ASCII and quote-bearing names must exist on disk
+    after decoding, so the incremental rebuild actually re-extracts them."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    if shutil.which("sh") is None:  # pragma: no cover
+        pytest.skip("sh not available")
+    from graphify.hooks import _HOOK_SCRIPT, _unquote_git_path
+
+    names = ["plain.py", "ünïcödé/naïve.py", "中文/用户.py"]
+    if os.name != "nt":
+        names.append('say "hi".py')
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q", ".")
+    _git("config", "user.email", "t@t.co")
+    _git("config", "user.name", "t")
+    _git("config", "core.quotePath", "true")  # git's default; pin it against user config
+    (tmp_path / "seed.txt").write_text("x")
+    _git("add", "-A")
+    _git("commit", "-qm", "init")
+    for name in names:
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def f():\n    return 1\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-qm", "edit")
+
+    changed_line = next(l for l in _HOOK_SCRIPT.splitlines() if l.startswith("CHANGED=$("))
+    r = subprocess.run(["sh", "-c", changed_line + '\nprintf "%s\\n" "$CHANGED"'],
+                       cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
+    raw = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    # Non-ASCII names come through verbatim (core.quotePath=false)...
+    for name in names:
+        if '"' not in name:
+            assert name in raw
+    # ...and names git still quotes decode back to the real file.
+    got = [_unquote_git_path(l) for l in raw]
+    assert sorted(got) == sorted(names)
+    assert all((tmp_path / g).is_file() for g in got)

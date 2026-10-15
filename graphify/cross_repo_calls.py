@@ -41,8 +41,17 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
+    "go": frozenset({".go"}),
     "java": frozenset({".java"}),
+    "kotlin": frozenset({".kt", ".kts"}),
+    "objc": frozenset({".h", ".m", ".mm"}),
     "swift": frozenset({".swift"}),
+    "php": frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
+    # TS and JS share one key: a TS class legitimately answers a JS call site, so
+    # splitting them would drop every TS<->JS cross-repo call. An SFC script block is
+    # TS/JS too, so a class exported from `.vue` answers as well.
+    "typescript": frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+                             ".vue", ".svelte", ".astro"}),
 }
 
 # A declaration owns its members through a `method` edge, except in C++, where an
@@ -57,7 +66,8 @@ def _key(label: object) -> str:
     Type labels are plain (``Greeter``) while method labels carry the extractor's
     decoration (``.greet()``). Case is preserved: every language that parks calls
     here is case-sensitive, and folding case would let `greeter` answer for
-    `Greeter`.
+    `Greeter`. Objective-C's ``+``/``-`` sigil is deliberately kept, so an ObjC
+    ``-greet`` and a C++ ``.greet()`` stay distinct members of a shared header.
     """
     return str(label or "").strip().removeprefix(".").removesuffix("()")
 
@@ -148,6 +158,20 @@ def _member_relations(lang: str) -> tuple[str, ...]:
     return ("method", "defines") if lang == "cpp" else ("method",)
 
 
+def _member_keys(lang: str, callee: str) -> tuple[str, ...]:
+    """Which member-index keys a parked callee may answer to.
+
+    An ObjC selector carries no class/instance distinction, so both sigils are
+    tried; a type declaring `+greet` and `-greet` both is an ambiguity, not a hit.
+    A selector cannot itself begin with a sigil, so stripping one first keeps an
+    entry that already carries it from asking for `--greet`.
+    """
+    if lang == "objc":
+        selector = callee.lstrip("+-")
+        return (f"-{selector}", f"+{selector}")
+    return (callee,)
+
+
 def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     """Emit `calls` edges for parked member calls another repo answers.
 
@@ -221,7 +245,9 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                     continue
             targets: list[str] = []
             for relation in _member_relations(lang):
-                targets = members_by_relation[relation].get((candidates[0], callee), [])
+                members = members_by_relation[relation]
+                for member_key in _member_keys(lang, callee):
+                    targets.extend(members.get((candidates[0], member_key), []))
                 if targets:
                     break
             if len(targets) != 1:
