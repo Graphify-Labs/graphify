@@ -146,12 +146,15 @@ def test_methods_are_still_methods(tmp_path):
 
 
 def test_case_only_sibling_properties_do_not_duplicate_an_edge(tmp_path):
-    # Legal C#, and one id after normalization. One node, one edge, rather than a
-    # second edge hung on the first property's node.
+    # Legal C#, and one id after normalization. Each property gets its own node
+    # (#4415) and one edge, rather than a second edge hung on the first
+    # property's node.
     defines, r = _extract(tmp_path, {"S.cs": (
         "public class Odd {\n"
         "    public int Count { get; set; }\n"
         "    public int count { get; set; }\n"
         "}\n"
     )})
-    assert len(defines) == 1
+    odd = _find(r, "Odd")
+    assert defines == {(odd, _find(r, "Count")), (odd, _find(r, "count"))}
+    assert _find(r, "Count") != _find(r, "count")

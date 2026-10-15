@@ -91,6 +91,8 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
         info = _PARSERS[eco](text)
     except Exception as exc:  # noqa: BLE001 — a malformed manifest must not abort extraction
         return {"nodes": [], "edges": [], "error": f"manifest parse error: {exc}"}
+    if isinstance(info, dict) and info.get("skipped"):
+        return {"nodes": [], "edges": [], "skipped": info["skipped"]}
     if not info or not info.get("name"):
         return {"nodes": [], "edges": []}
 
@@ -237,6 +239,8 @@ def _parse_cargo(text: str) -> dict | None:
     # package of its own — emit nothing rather than a fabricated node. ``name`` is
     # never workspace-inheritable in Cargo, but guard on the type anyway.
     if not isinstance(name, str) or not name:
+        if isinstance(data.get("workspace"), dict):
+            return {"name": None, "skipped": "virtual workspace root Cargo.toml"}
         return None
     # ``version`` may be workspace-inherited (``version.workspace = true``), which
     # parses to a table; keep only a concrete string version.
@@ -289,17 +293,39 @@ def _parse_pom(text: str) -> dict | None:
     text = re.sub(r'\sxmlns="[^"]*"', '', text, count=1)
     root = ET.fromstring(text)
     aid = root.findtext("artifactId")
-    gid = root.findtext("groupId")
+    gid = root.findtext("groupId") or root.findtext("parent/groupId")
+    version = root.findtext("version") or root.findtext("parent/version")
     if not aid:
         return None
+    props: dict[str, str] = {}
+    for prop in root.findall("properties/*"):
+        if isinstance(prop.tag, str) and prop.text:
+            props[prop.tag] = prop.text.strip()
+    for key, value in (
+        ("project.groupId", gid),
+        ("project.artifactId", aid),
+        ("project.version", version),
+        ("project.parent.groupId", root.findtext("parent/groupId")),
+        ("project.parent.version", root.findtext("parent/version")),
+    ):
+        if value:
+            props.setdefault(key, value.strip())
+
+    def _resolve(value: str | None) -> str | None:
+        if not value:
+            return value
+        return re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), value.strip())
+
+    gid = _resolve(gid)
+    version = _resolve(version)
     name = f"{gid}:{aid}" if gid else aid
     deps: list[str] = []
     for dep in root.findall(".//dependencies/dependency"):
-        da = dep.findtext("artifactId")
-        dg = dep.findtext("groupId")
+        da = _resolve(dep.findtext("artifactId"))
+        dg = _resolve(dep.findtext("groupId"))
         if da:
             deps.append(f"{dg}:{da}" if dg else da)
-    return {"name": name, "version": root.findtext("version"), "deps": deps}
+    return {"name": name, "version": version, "deps": deps}
 
 
 _PARSERS = {

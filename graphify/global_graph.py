@@ -108,7 +108,7 @@ def _save_global_graph(G: nx.Graph) -> None:
     except TypeError:
         data = _jg.node_link_data(G)
     from graphify.paths import write_json_atomic
-    write_json_atomic(_GLOBAL_GRAPH, data, indent=2)
+    write_json_atomic(_GLOBAL_GRAPH, data, compact=True)
 
 
 def _hash_file_streaming(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -300,6 +300,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         data = json.loads(raw_bytes.decode("utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
+        from graphify.paths import restore_arc_direction
+        data = restore_arc_direction(data)
         try:
             src_G = _jg.node_link_graph(data, edges="links")
         except TypeError:
@@ -348,6 +350,11 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         for u, v, data in prefixed.edges(data=True):
             u = remap.get(u, u)
             v = remap.get(v, v)
+            # The direction markers name endpoints too; rewire them with u/v so
+            # they never point at a deduplicated (absent) external node.
+            for key in ("_src", "_tgt"):
+                if data.get(key) in remap:
+                    data = {**data, key: remap[data[key]]}
             if u != v:  # don't introduce self-loops via remapping
                 G.add_edge(u, v, **data)
 
