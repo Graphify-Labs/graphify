@@ -1237,7 +1237,9 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
         )
     else:
         content, newline = "", "\n"
-        new_content = _always_on("gemini-md")
+        new_content = _replace_or_append_section(
+            content, _GEMINI_MD_MARKER, _always_on("gemini-md")
+        )
 
     if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -1416,7 +1418,12 @@ def vscode_install(project_dir: Path | None = None) -> None:
             _write_keep_newline(instructions, new_content, newline)
             print(f"  {instructions}  ->  graphify section {'updated' if _VSCODE_INSTRUCTIONS_MARKER in content else 'added'}")
     else:
-        _write_keep_newline(instructions, _always_on("vscode-instructions"))
+        _write_keep_newline(
+            instructions,
+            _replace_or_append_section(
+                "", _VSCODE_INSTRUCTIONS_MARKER, _always_on("vscode-instructions")
+            ),
+        )
         print(f"  {instructions}  ->  created")
 
     print()
@@ -2105,7 +2112,9 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         )
     else:
         content, newline = "", "\n"
-        new_content = _always_on("agents-md")
+        new_content = _replace_or_append_section(
+            content, _AGENTS_MD_MARKER, _always_on("agents-md")
+        )
 
     if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -2344,7 +2353,9 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
         )
     else:
         content, newline = "", "\n"
-        new_content = _always_on("claude-md")
+        new_content = _replace_or_append_section(
+            content, _CLAUDE_MD_MARKER, _always_on("claude-md")
+        )
 
     if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -2569,7 +2580,9 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
         )
     else:
         content, newline = "", "\n"
-        new_content = _always_on("claude-md")
+        new_content = _replace_or_append_section(
+            content, _CODEBUDDY_MD_MARKER, _always_on("claude-md")
+        )
 
     if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
