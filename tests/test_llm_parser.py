@@ -83,6 +83,43 @@ def test_empty_response_returns_empty_fragment():
     assert llm._parse_llm_json("") == {"nodes": [], "edges": [], "hyperedges": []}
 
 
+def test_parse_llm_json_preserves_math_notation_and_latex_braces():
+    """Valid JSON containing inline math ($...), display math ($$...$$),
+    escaped LaTeX backslashes (\\sum, \\frac), and curly braces must parse
+    without corruption, character stripping, or brace-tracking errors (#3560).
+    """
+    raw = (
+        "Here is the extraction:\n\n"
+        "```json\n"
+        "{\n"
+        '  "nodes": [\n'
+        "    {\n"
+        '      "id": "concept_loss",\n'
+        '      "label": "Empirical Risk $R^2$",\n'
+        '      "file_type": "concept",\n'
+        r'      "rationale": "Optimizes $w(S_0)$ where bound is $$\\sum_{i=1}^n \\frac{a_i}{b_i} \\le R^2$$."' "\n"
+        "    }\n"
+        "  ],\n"
+        '  "edges": [],\n'
+        '  "hyperedges": []\n'
+        "}\n"
+        "```"
+    )
+    result = llm._parse_llm_json(raw)
+    assert len(result["nodes"]) == 1
+    node = result["nodes"][0]
+    expected_rationale = (
+        "Optimizes $w(S_0)$ where bound is "
+        "$$\\sum_{i=1}^n \\frac{a_i}{b_i} \\le R^2$$."
+    )
+    assert node["rationale"] == expected_rationale
+    assert "$w(S_0)$" in node["rationale"]
+    assert "$$\\sum_{i=1}^n \\frac{a_i}{b_i} \\le R^2$$" in node["rationale"]
+    assert "\\sum" in node["rationale"]
+    assert "\\frac" in node["rationale"]
+
+
+
 # ---------- _call_claude_cli: argv shape ----------
 
 
