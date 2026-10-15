@@ -9,6 +9,7 @@ import networkx as nx
 import pytest
 from networkx.readwrite import json_graph
 import graphify.__main__ as mainmod
+from graphify.cli import EXIT_AMBIGUOUS, EXIT_NOT_FOUND
 
 
 def _write_graph(tmp_path):
@@ -385,7 +386,7 @@ def test_path_refuses_ambiguous_endpoint(monkeypatch, tmp_path, capsys, ends):
         ["graphify", "path", *ends, "--graph", str(gp)])
     with pytest.raises(SystemExit) as exc_info:
         mainmod.main()
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == EXIT_AMBIGUOUS
     captured = capsys.readouterr()
     assert "Shortest path" not in captured.out
     assert "Ambiguous: '.nonce()' matches 2 nodes in different files." in captured.err
@@ -462,7 +463,7 @@ def test_path_refuses_same_file_duplicate_endpoint(monkeypatch, tmp_path, capsys
         ["graphify", "path", "run()", target, "--graph", str(gp)])
     with pytest.raises(SystemExit) as exc_info:
         mainmod.main()
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == EXIT_AMBIGUOUS
     captured = capsys.readouterr()
     assert "Shortest path" not in captured.out
     assert f"Ambiguous: '{target}' matches 2 nodes in src/x.ts." in captured.err
@@ -534,7 +535,7 @@ def test_path_scoped_endpoint_refuses_when_file_has_no_symbol(monkeypatch, tmp_p
         ["graphify", "path", "src/admin/route.ts::readRoute", "chargeCard", "--graph", str(gp)])
     with pytest.raises(SystemExit) as exc_info:
         mainmod.main()
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == EXIT_NOT_FOUND
     captured = capsys.readouterr()
     assert "Shortest path" not in captured.out
     assert "src/admin/route.ts" in captured.err and "readRoute" in captured.err

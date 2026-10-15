@@ -7,7 +7,9 @@ import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from graphify.hooks import (
+    install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
+)
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -114,6 +116,35 @@ def test_uninstall_removes_post_checkout_hook(tmp_path):
     assert not hook.exists()
 
 
+def test_install_creates_post_merge_hook(tmp_path):
+    # #2418: a merge hook is needed to heal a symbol the union merge driver
+    # resurrects on one side of a merge, since nothing else ever
+    # re-extracts that file's nodes unless it is touched again.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert hook.exists()
+    assert _MERGE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_merge_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert not hook.exists()
+
+
 def test_status_shows_both_hooks(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
@@ -121,6 +152,17 @@ def test_status_shows_both_hooks(tmp_path):
     assert "post-commit" in result
     assert "post-checkout" in result
     assert result.count("installed") >= 2
+
+
+def test_status_shows_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    result = status(repo)
+    assert "post-merge: installed" in result
+
+    uninstall(repo)
+    result = status(repo)
+    assert "post-merge: not installed" in result
 
 
 
@@ -229,12 +271,17 @@ import re  # noqa: E402
 from graphify.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
+    _MERGE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
 )
 
-_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+_HOOK_SCRIPTS = [
+    ("post-commit", _HOOK_SCRIPT),
+    ("post-checkout", _CHECKOUT_SCRIPT),
+    ("post-merge", _MERGE_SCRIPT),
+]
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -382,6 +429,35 @@ def test_rebuild_bodies_honour_an_in_repo_graphify_root(name, body, tmp_path, mo
     ns = {"Path": Path, "os": os}
     exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
     assert ns["_root"].resolve() == (repo / "backend").resolve(), f"{name} lost the scoped root"
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_treat_blank_graphify_out_as_default(name, body, tmp_path):
+    """A set-but-empty GRAPHIFY_OUT must resolve to graphify-out/ like every other
+    reader (paths._out_from_env), not to the repo root, or the hook misses
+    .graphify_root. Runs in a fresh process because the hook reads the value
+    when graphify.paths is first imported."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "graphify-out" / ".graphify_root").write_text("backend", encoding="utf-8")
+    script = (
+        "import os\nfrom pathlib import Path\n"
+        + _extract_root_resolution(body)
+        + "\nprint(_root.resolve())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env={**os.environ, "GRAPHIFY_OUT": ""},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert Path(result.stdout.strip()) == (repo / "backend").resolve(), f"{name} ignored graphify-out/"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")

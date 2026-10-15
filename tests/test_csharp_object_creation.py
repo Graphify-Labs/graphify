@@ -281,3 +281,93 @@ def test_qualified_construction_of_a_foreign_type_makes_no_stub_edge(tmp_path):
     )})
     builders = {n["id"] for n in r["nodes"] if n["label"] == "StringBuilder"}
     assert not any(target in builders for _, target in calls)
+
+
+# `new X()` constructs a type. A method that merely shares X's name is never its
+# target, yet the call was resolved against every same-named definition: inside
+# the method it became a self-loop (`static Bounds Bounds(..) => new Bounds(..)`
+# on Unity's Bounds), and across files the bare-name pass bound every
+# `new List<T>()` in the corpus to a `List()` method as an INFERRED hub.
+
+
+def test_construction_never_binds_to_a_same_named_method_cross_file(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "Market.cs": (
+            "namespace Demo { public class Market {"
+            " public static int List(int a) { return a; } } }\n"
+        ),
+        "Use.cs": (
+            "namespace Demo { public class Use {"
+            " public void Run() { var xs = new List<int>(); } } }\n"
+        ),
+    })
+    run = _find(r, ".Run()", "run")
+    assert (run, _find(r, ".List()", "market")) not in calls
+
+
+def test_construction_inside_a_same_named_method_is_no_self_loop(tmp_path):
+    calls, r = _extract(tmp_path, {"Box.cs": (
+        "namespace Demo { public class Box {"
+        " static Bounds Bounds(int a) { return new Bounds(a); } } }\n"
+    )})
+    bounds = _find(r, ".Bounds()", "box")
+    assert (bounds, bounds) not in calls
+
+
+def test_construction_still_binds_to_the_type_beside_a_same_named_method(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "Kit.cs": "namespace Demo { public class Piece { } }\n",
+        "Shop.cs": (
+            "namespace Demo { public class Shop {"
+            " public static int Piece() { return 0; } } }\n"
+        ),
+        "Setup.cs": (
+            "namespace Demo { public class Setup {"
+            " public void Link() { var p = new Piece(); } } }\n"
+        ),
+    })
+    link = _find(r, ".Link()", "link")
+    assert (link, _find(r, "Piece", "kit")) in calls
+    assert (link, _find(r, ".Piece()", "shop")) not in calls
+
+
+def test_qualified_nested_construction_follows_its_outer_type(tmp_path):
+    # `new QuickSlotsBar.Slot()` names the outer type. Two `Slot` classes make
+    # the bare name ambiguous, and the path-proximity tie-break picked the one
+    # next to the caller — the wrong Slot. With method candidates no longer
+    # muddying the tie, that guess would fire more often; a qualified
+    # construction now takes the Slot nested in QuickSlotsBar, or no edge.
+    calls, r = _extract(tmp_path, {
+        "UI/Bar.cs": (
+            "namespace Game.UI { public class QuickSlotsBar {"
+            " public class Slot { public int kind; } } }\n"
+        ),
+        "Editor/Towers.cs": (
+            "namespace Game.Tools { public class Towers {"
+            " class Slot { public string texture; } } }\n"
+        ),
+        "Editor/Hud.cs": (
+            "using Game.UI;\nnamespace Game.Tools { public class Hud {"
+            " public void Ensure() { var s = new QuickSlotsBar.Slot { kind = 1 }; } } }\n"
+        ),
+    })
+    ensure = _find(r, ".Ensure()", "ensure")
+    def slot_in(stem):
+        return next(n["id"] for n in r["nodes"]
+                    if n["label"] == "Slot" and stem in str(n.get("source_file", "")))
+    assert (ensure, slot_in("Towers")) not in calls
+    assert (ensure, slot_in("Bar")) in calls
+
+
+def test_qualified_construction_with_an_unknown_outer_type_gives_no_edge(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "UI/Bar.cs": "namespace Game.UI { public class Bar { public class Slot { } } }\n",
+        "Editor/Towers.cs": "namespace Game.Tools { public class Towers { class Slot { } } }\n",
+        "Editor/Hud.cs": (
+            "namespace Game.Tools { public class Hud {"
+            " public void Ensure() { var s = new Missing.Slot(); } } }\n"
+        ),
+    })
+    ensure = _find(r, ".Ensure()", "ensure")
+    slots = {n["id"] for n in r["nodes"] if n["label"] == "Slot"}
+    assert not any(t in slots for s, t in calls if s == ensure)

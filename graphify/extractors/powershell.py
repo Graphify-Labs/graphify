@@ -264,11 +264,14 @@ def extract_powershell(path: Path) -> dict:
                     (c for c in node.children if c.type == "command_name_expr"), None
                 )
                 if name_expr is not None:
+                    # Bare paths parse as command_name; `$PSScriptRoot\x.ps1` as path_command_name;
+                    # quoted paths as string_literal. The basename logic below handles all three.
                     name_node = next(
-                        (c for c in name_expr.children if c.type == "command_name"), None
+                        (c for c in name_expr.children
+                         if c.type in ("command_name", "path_command_name", "string_literal")), None
                     )
                     if name_node:
-                        raw_path = _read_text(name_node, source)
+                        raw_path = _read_text(name_node, source).strip().strip("'\"")
                         # Strip relative path prefix (./ or .\ or just the dot)
                         module_stem = re.sub(r'^[./\\]+', '', raw_path)
                         # Drop extension to get bare module name
@@ -414,6 +417,9 @@ def extract_powershell(path: Path) -> dict:
 
     for caller_nid, body_node, parent_class_nid in function_bodies:
         walk_calls(body_node, caller_nid, parent_class_nid)
+    # Script-scope commands (outside any function/class) are called by the file itself.
+    # walk_calls stops at function_statement/class_statement, so bodies are not walked twice.
+    walk_calls(root, file_nid, None)
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] in ("imports_from", "imports"))]

@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import unicodedata
 import pytest
@@ -648,6 +649,89 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     code = as_posix_list(result["files"]["code"])
     assert any(f.endswith("a/b/keep.py") for f in code), "nested ! must beat root + info/exclude"
     assert not any(f.endswith("drop.py") for f in code)
+
+
+def _git_init(path):
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+
+
+def test_configured_core_excludes_file_is_honoured(tmp_path):
+    """A file git ignores only through core.excludesFile must stay out of the
+    graph too (#4335)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    excludes = tmp_path / "my-ignore"
+    excludes.write_text("secret.py\n")
+    subprocess.run(["git", "-C", str(repo), "config", "core.excludesFile", str(excludes)],
+                   check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 1")
+    (repo / "secret.py").write_text("SECRET = 'abc'")
+
+    code = as_posix_list(detect(repo)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("a.py") for f in code)
+
+
+def test_default_global_git_ignore_is_honoured(tmp_path):
+    """With core.excludesFile unset git still reads ~/.config/git/ignore (or
+    $XDG_CONFIG_HOME/git/ignore); HOME is sandboxed by conftest (#4335)."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("**/config.local.json\nsecret.py\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.local.json").write_text('{"token": "x"}')
+    (tmp_path / "secret.py").write_text("SECRET = 'abc'")
+    (tmp_path / "a.py").write_text("x = 1")
+
+    files = as_posix_list(f for fs in detect(tmp_path)["files"].values() for f in fs)
+    assert not any(f.endswith("secret.py") or f.endswith("config.local.json") for f in files)
+    assert any(f.endswith("a.py") for f in files)
+
+
+def test_xdg_config_home_global_git_ignore_is_honoured(tmp_path, monkeypatch):
+    xdg = tmp_path / "xdg"
+    (xdg / "git").mkdir(parents=True)
+    (xdg / "git" / "ignore").write_text("secret.py\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "secret.py").write_text("SECRET = 'abc'")
+    (repo / "a.py").write_text("x = 1")
+
+    code = as_posix_list(detect(repo)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("a.py") for f in code)
+
+
+def test_global_git_ignore_ranks_lowest_and_respects_no_gitignore(tmp_path):
+    """A project `.gitignore` `!` re-include beats the global file, and
+    --no-gitignore turns the global file off like the other git sources."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("*.py\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("!keep.py\n")
+    (tmp_path / "keep.py").write_text("x = 1")
+    (tmp_path / "drop.py").write_text("y = 1")
+
+    code = as_posix_list(detect(tmp_path)["files"]["code"])
+    assert any(f.endswith("keep.py") for f in code), "project ! must beat the global file"
+    assert not any(f.endswith("drop.py") for f in code)
+
+    code = as_posix_list(detect(tmp_path, gitignore=False)["files"]["code"])
+    assert any(f.endswith("drop.py") for f in code)
+
+
+def test_global_git_ignore_needs_a_git_repo(tmp_path):
+    """git only applies its global excludes inside a repo; neither should we."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("secret.py\n")
+    (tmp_path / "secret.py").write_text("SECRET = 'abc'")
+
+    code = as_posix_list(detect(tmp_path)["files"]["code"])
+    assert any(f.endswith("secret.py") for f in code)
 
 
 def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):
