@@ -225,23 +225,52 @@ def _stamped_manifest_files(
     }
 
 
-def _shrink_is_self_explained(unverified_shrink, existing_n, new_n) -> bool:
-    """Does the graph's total net shrink amount to no more than what the
-    flagged files' own (prior -> fresh) counts already account for?
+def _node_counts_by_source(nodes) -> dict:
+    """Per-``source_file`` node counts from an iterable of node attribute dicts.
+
+    Accepts a plain list of node dicts (the raw ``--no-cluster`` path) or
+    the attribute dicts from ``G.nodes(data=True)`` (the clustered path) —
+    both expose ``source_file`` the same way, as a plain dict key. Builds
+    the NEW side of the #3412 self-explained shrink exemption's per-source
+    comparison; the OLD side comes from
+    :func:`graphify.export.existing_graph_node_counts_by_source` (#3412 review).
+    """
+    counts: dict[str, int] = {}
+    for n in nodes:
+        sf = (n.get("source_file") if isinstance(n, dict) else None) or ""
+        counts[sf] = counts.get(sf, 0) + 1
+    return counts
+
+
+def _shrink_is_self_explained(unverified_shrink, old_counts_by_source, new_counts_by_source) -> bool:
+    """Is every source whose node count went down one of the flagged files?
 
     The #3203 guard exists because an unverified per-file drop could be
     masking a loss somewhere else in the graph that the guard cannot see.
-    When the flagged files' own numbers already explain the entire net
-    shrink, there is nothing left outside them for the guard to be worried
-    about, so a write that would otherwise be refused can proceed (#3412).
-    Deliberately conservative in the other direction: any shortfall those
-    numbers do not cover (an unrelated failure, a second shrunk file that
-    was never flagged) leaves the guard armed exactly as before.
+    When nothing OUTSIDE the flagged files lost any nodes, there is nothing
+    left for the guard to be worried about, so a write that would otherwise
+    be refused can proceed (#3412).
+
+    Checked per source, not as one net total (#3412 review): comparing only
+    the graph's net shrink against the flagged files' own reported drop lets
+    unrelated growth elsewhere (a new file, more AST nodes) mask a genuine,
+    unflagged loss. `_shrink_is_self_explained({"README.md": (3, 1)}, {"a.py":
+    7, "README.md": 3}, {"a.py": 5, "README.md": 1})` used to return True:
+    a.py silently lost 2 nodes nobody flagged, offset in the net total by
+    nothing here but by unrelated growth in a real graph, yet the guard
+    waved it through because the net shrink equaled README's own explained
+    drop. Requiring that no unflagged source shrank at all closes that gap
+    regardless of what grew elsewhere, since growth can no longer cancel out
+    an unrelated loss in a per-source comparison the way it could in a sum.
     """
-    if not unverified_shrink or not isinstance(existing_n, int):
+    if not unverified_shrink or not isinstance(old_counts_by_source, dict):
         return False
-    explained = sum(max(0, prior - fresh) for prior, fresh in unverified_shrink.values())
-    return existing_n - new_n <= explained
+    flagged = set(unverified_shrink)
+    return all(
+        new_counts_by_source.get(source, 0) >= old_n
+        for source, old_n in old_counts_by_source.items()
+        if source not in flagged
+    )
 
 
 def _handle_unverified_semantic_shrink(
@@ -4502,6 +4531,7 @@ def dispatch_command(cmd: str) -> None:
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
+                existing_graph_node_counts_by_source as _existing_graph_node_counts_by_source,
             )
             if (
                 incremental_mode
@@ -4615,7 +4645,9 @@ def dispatch_command(cmd: str) -> None:
                 _malformed = _existing_n is _MALFORMED_GRAPH
                 _shrinks = isinstance(_existing_n, int) and len(merged["nodes"]) < _existing_n
                 if _shrinks and _shrink_is_self_explained(
-                    _unverified_shrink_detail, _existing_n, len(merged["nodes"])
+                    _unverified_shrink_detail,
+                    _existing_graph_node_counts_by_source(graph_json_path),
+                    _node_counts_by_source(merged["nodes"]),
                 ):
                     # #3412: the flagged files' own reported counts already
                     # account for the entire net shrink, so nothing outside
@@ -4705,6 +4737,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import (
             to_json as _to_json,
             existing_graph_node_count as _existing_graph_node_count,
+            existing_graph_node_counts_by_source as _existing_graph_node_counts_by_source,
         )
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
@@ -4808,8 +4841,8 @@ def dispatch_command(cmd: str) -> None:
         _force_write = cli_allow_partial or not _extraction_incomplete
         if not _force_write and _shrink_is_self_explained(
             _unverified_shrink_detail,
-            _existing_graph_node_count(existing_graph_path),
-            G.number_of_nodes(),
+            _existing_graph_node_counts_by_source(existing_graph_path),
+            _node_counts_by_source(data for _, data in G.nodes(data=True)),
         ):
             # #3412: the flagged files' own reported counts already account
             # for the entire net shrink, so nothing outside them went
