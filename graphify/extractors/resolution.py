@@ -1584,6 +1584,44 @@ def _apply_symbol_resolution_facts(
             import_fact.file_path,
         )
 
+    # The structural extractor names the imported symbol on the immediate barrel,
+    # which defines nothing, so its edge dangles and build mints an external stub
+    # beside the edge the loop above added to the defining symbol (#4486). Drop
+    # it once that import resolved through the barrel to a node the corpus owns.
+    # A chain that ends outside the corpus keeps its edge, as before.
+    import_sites: dict[tuple[Path, str, Path], list[_SymbolImportFact]] = {}
+    for import_fact in facts.imports:
+        site = (
+            _resolve_cached(import_fact.file_path),
+            f"L{import_fact.line}",
+            _resolve_cached(import_fact.target_path),
+        )
+        import_sites.setdefault(site, []).append(import_fact)
+    superseded: set[int] = set()
+    for edge in edges:
+        if edge.get("relation") != "imports" or edge.get("target") in owned_ids:
+            continue
+        target_file = edge.get("target_file")
+        source_path = _js_source_path(str(edge.get("source_file", "")), root)
+        if not target_file or source_path is None:
+            continue
+        target_path = Path(target_file)
+        site = (source_path, str(edge.get("source_location", "")), _resolve_cached(target_path))
+        for import_fact in import_sites.get(site, []):
+            if edge.get("target") != _make_id(_file_stem(target_path), import_fact.imported_name):
+                continue
+            # Only a single candidate: a barrel exporting one name from two modules
+            # leaves the edge on the barrel rather than guess (#2034).
+            barrel_key = (_resolve_cached(import_fact.target_path), import_fact.imported_name)
+            candidates, _ = exported_candidates(barrel_key, frozenset())
+            if len(candidates) == 1:
+                origin = next(iter(candidates))
+                if origin != barrel_key and symbol_nodes.get(origin) in owned_ids:
+                    superseded.add(id(edge))
+            break
+    if superseded:
+        edges[:] = [edge for edge in edges if id(edge) not in superseded]
+
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
     # #3777: retract provisional `imports_from` AST edges whose package ID coincided
     # with a same-named sibling module file (e.g. `from nettacker import logger`
