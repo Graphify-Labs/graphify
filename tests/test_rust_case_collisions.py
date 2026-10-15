@@ -138,3 +138,24 @@ def test_cfg_twins_still_share_one_node(tmp_path: Path) -> None:
     assert len(_sourced(result, "device_num()")) == 1
     assert len(_sourced(result, "Device_Num")) == 1
     assert _sourced(result, "Device_Num")[0]["id"] == twin_nodes[0]["id"]
+
+
+def test_forward_reference_to_the_retained_type_lands_on_it(tmp_path: Path) -> None:
+    """A reference above ``struct Ignore`` in a file that also has ``fn ignore``
+    resolves to the struct even when another file declares an ``Ignore`` too,
+    so the corpus-level rewire cannot fold a sourceless stub back onto it."""
+    (tmp_path / "dir.rs").write_text(
+        "fn before() -> Ignore {\n    ignore()\n}\n\n" + _IGNORE_RS, encoding="utf-8"
+    )
+    (tmp_path / "other.rs").write_text("pub struct Ignore;\n", encoding="utf-8")
+    result = extract(sorted(tmp_path.glob("*.rs")), cache_root=tmp_path, root=tmp_path,
+                     parallel=False)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    before = next(n["id"] for n in result["nodes"] if n.get("label") == "before()")
+    targets = [
+        by_id[e["target"]] for e in result["edges"]
+        if e.get("relation") == "references" and e.get("source") == before
+    ]
+    assert [(n["label"], Path(n["source_file"]).name if n.get("source_file") else "")
+            for n in targets] == [("Ignore", "dir.rs")]
+
