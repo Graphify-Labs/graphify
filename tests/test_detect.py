@@ -388,7 +388,7 @@ def test_graphifyignore_hermetic_without_vcs(tmp_path):
 
 def test_graphifyignore_discovered_from_parent_in_vcs(tmp_path):
     """Inside a VCS repo, parent .graphifyignore applies to subdirectory scans."""
-    (tmp_path / ".git").mkdir()
+    _git(tmp_path, "init", "-q")
     (tmp_path / ".graphifyignore").write_text("vendor/\n")
     sub = tmp_path / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -409,7 +409,7 @@ def test_graphifyignore_stops_at_git_boundary(tmp_path):
     (tmp_path / ".graphifyignore").write_text("main.py\n")
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _git(repo, "init", "-q")
     sub = repo / "sub"
     sub.mkdir()
     (sub / "main.py").write_text("x = 1")
@@ -420,11 +420,31 @@ def test_graphifyignore_stops_at_git_boundary(tmp_path):
     assert result["graphifyignore_patterns"] == 0
 
 
+def test_graphifyignore_ignores_invalid_parent_git_marker(tmp_path, monkeypatch):
+    """Ignore rules outside a valid VCS repository must not leak into scans."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".git").mkdir()
+    (home / ".gitignore").write_text("node_modules\n")
+
+    scan = home / "AppData" / "Local" / "Temp" / "project"
+    scan.mkdir(parents=True)
+    (scan / ".graphifyignore").write_text("vendor/\n")
+    (scan / "main.py").write_text("x = 1")
+
+    monkeypatch.setattr("graphify.detect.Path.home", lambda: home)
+
+    patterns = _load_graphifyignore(scan)
+
+    assert all(pattern != "node_modules" for _, pattern in patterns)
+    assert any(pattern == "vendor/" for _, pattern in patterns)
+
+
 def test_graphifyignore_at_git_root_is_included(tmp_path):
     """A .graphifyignore at the git repo root is included when scanning a subdir."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _git(repo, "init", "-q")
     (repo / ".graphifyignore").write_text("vendor/\n")
     sub = repo / "packages" / "mylib"
     sub.mkdir(parents=True)
