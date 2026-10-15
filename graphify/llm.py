@@ -2067,7 +2067,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     return result
 
 
-def _litellm_completion(model: str, messages: list[dict], max_tokens: int):
+def _litellm_completion(model: str, messages: list[dict], max_tokens: int, api_key: str | None = None):
     """Run one LiteLLM chat completion with graphify's timeout/retry/temperature knobs."""
     # LiteLLM fetches its model-cost map from GitHub on import unless told to use
     # the copy bundled in the wheel. graphify only needs the bundled one, and an
@@ -2097,10 +2097,16 @@ def _litellm_completion(model: str, messages: list[dict], max_tokens: int):
     temperature = _resolve_temperature(BACKENDS["litellm"].get("temperature", 0), model)
     if temperature is not None:
         kwargs["temperature"] = temperature
+    # Only a key the caller passed explicitly; otherwise LiteLLM reads the
+    # routed provider's own environment.
+    if api_key:
+        kwargs["api_key"] = api_key
     return litellm.completion(**kwargs)
 
 
-def _call_litellm(model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False) -> dict:
+def _call_litellm(
+    model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, api_key: str | None = None
+) -> dict:
     """Call any LiteLLM-supported model (bedrock/, vertex_ai/, azure/, ollama/, ...) and return parsed JSON."""
     resp = _litellm_completion(
         model,
@@ -2109,6 +2115,7 @@ def _call_litellm(model: str, user_message: str, max_tokens: int = 8192, *, deep
             {"role": "user", "content": user_message},
         ],
         max_tokens,
+        api_key=api_key,
     )
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LiteLLM returned empty or filtered response")
@@ -2200,7 +2207,7 @@ def extract_files_direct(
     elif backend == "bedrock":
         result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "litellm":
-        result = _call_litellm(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode)
+        result = _call_litellm(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, api_key=key)
     elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
