@@ -447,3 +447,16 @@ def test_case_only_sibling_type_ids_do_not_depend_on_declaration_order(tmp_path:
     forward = ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT))
     backward = ids(_gin_corpus(tmp_path, _GIN_STRUCT, _GIN_IFACE, _GIN_CONTEXT))
     assert forward == backward
+
+
+def test_non_colliding_types_keep_their_ids_beside_a_colliding_pair(tmp_path: Path) -> None:
+    """Only the members of a collision group can move: the other types in the
+    file, exported or not, keep the ids they have in a file without the pair."""
+    other = "type node struct {\n\tpath string\n}\n"
+
+    def ids(result: dict) -> dict[str, str]:
+        return {n["label"]: n["id"] for n in result["nodes"]
+                if n.get("label") in ("Context", "node")}
+
+    alone = ids(_gin_corpus(tmp_path, _GIN_CONTEXT, other))
+    assert ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT, other)) == alone

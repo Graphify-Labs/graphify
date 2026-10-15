@@ -159,3 +159,15 @@ def test_forward_reference_to_the_retained_type_lands_on_it(tmp_path: Path) -> N
     assert [(n["label"], Path(n["source_file"]).name if n.get("source_file") else "")
             for n in targets] == [("Ignore", "dir.rs")]
 
+
+def test_calls_to_salted_functions_keep_their_in_file_edges(tmp_path: Path) -> None:
+    """In-file calls bind by the name as written, so they reach the salted ids."""
+    result = _extract(
+        tmp_path,
+        _IGNORE_RS
+        + "\nfn e(s: &str) -> u32 {\n    1\n}\n"
+        + "\nfn E(s: &str) -> u32 {\n    2\n}\n"
+        + "\nfn caller() -> u32 {\n    let _ = ignore();\n    e(\"a\") + E(\"b\")\n}\n",
+    )
+    calls = _edges(result, "calls")
+    assert {("caller()", "ignore()"), ("caller()", "e()"), ("caller()", "E()")} <= calls, calls
