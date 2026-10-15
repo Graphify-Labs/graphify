@@ -28,8 +28,21 @@ DEFAULT_AFFECTED_RELATIONS = (
     "uses",
     "mixes_in",
     "embeds",
+    # `defines` — emitted when a file declares a named symbol (class, function,
+    # type, etc.). Without it, `affected "<Symbol>"` is blind in languages
+    # where the only incoming edge to a symbol is its `defines` edge from the
+    # source file — Dart/Flutter, Python, Go, etc. — because every other
+    # relation (calls, references, imports) targets the *file* node, not the
+    # symbol node. The reverse walk follows `defines` from the symbol back to
+    # its defining file and then continues through `imports` to consumers.
+    "defines",
     "requires",
 )
+
+
+# Edges from a type to the types it derives from. A method declared again in a
+# subtype overrides the supertype's same-named member.
+_SUPERTYPE_RELATIONS = frozenset({"inherits", "extends", "implements"})
 
 
 @dataclass(frozen=True)
@@ -187,6 +200,47 @@ def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str |
     return None
 
 
+def _supertypes(graph: nx.DiGraph, type_id: str, cache: dict[str, list[str]]) -> list[str]:
+    """Every type ``type_id`` derives from, nearest first (cycles cut)."""
+    if type_id in cache:
+        return cache[type_id]
+    found: list[str] = []
+    seen = {type_id}
+    frontier = [type_id]
+    while frontier:
+        nxt = []
+        for t in frontier:
+            for _s, base, data in graph.out_edges(t, data=True):
+                base = str(base)
+                if str(data.get("relation", "")) in _SUPERTYPE_RELATIONS and base not in seen:
+                    seen.add(base)
+                    found.append(base)
+                    nxt.append(base)
+        frontier = nxt
+    cache[type_id] = found
+    return found
+
+
+def _overridden_members(graph: nx.DiGraph, node: str, cache: dict[str, list[str]]) -> list[str]:
+    """The supertype members ``node`` overrides: same-named methods of the types
+    its class derives from. A call bound to one of them can run ``node`` at
+    runtime (`visitor.head()` typed `NodeVisitor` runs `FormattingVisitor.head`)."""
+    owners = [str(s) for s, _t, d in graph.in_edges(node, data=True)
+              if str(d.get("relation", "")) == "method"]
+    if not owners:
+        return []
+    label = graph.nodes[node].get("label")
+    found: list[str] = []
+    for owner in owners:
+        for base in _supertypes(graph, owner, cache):
+            for _s, member, data in graph.out_edges(base, data=True):
+                member = str(member)
+                if (str(data.get("relation", "")) == "method" and member != node
+                        and graph.nodes[member].get("label") == label):
+                    found.append(member)
+    return found
+
+
 def affected_nodes(
     graph: nx.Graph,
     seed: str,
@@ -220,10 +274,27 @@ def affected_nodes(
             seen.add(member)
             queue.append((member, 0))
 
+    supertype_cache: dict[str, list[str]] = {}
+    # Overridden members walked without being reported; one that a real edge
+    # also reaches (an overload calling the abstract one) is reported then.
+    stepping_stones: set[str] = set()
     while queue:
         current, current_depth = queue.popleft()
         if current_depth >= depth:
             continue
+        # A caller bound to the supertype member a method overrides depends on
+        # the override too, so walk that member's callers at the same depth. The
+        # member itself did not change: like the seed's members above, it is a
+        # stepping stone, not a hit. Needs edge direction, so directed graphs only
+        # (MultiDiGraph, what load_graph returns, is a DiGraph subclass).
+        if isinstance(graph, nx.DiGraph):
+            for overridden in _overridden_members(graph, current, supertype_cache):
+                if overridden not in seen:
+                    seen.add(overridden)
+                    stepping_stones.add(overridden)
+                    # front of the queue: same depth as `current`, so it must be
+                    # walked before the deeper nodes already queued
+                    queue.appendleft((overridden, current_depth))
         if hasattr(graph, "in_edges"):
             incoming = graph.in_edges(current, data=True)
         else:
@@ -237,7 +308,10 @@ def affected_nodes(
             if relation not in relation_set:
                 continue
             source = str(source)
-            if source in seen:
+            queued = source in stepping_stones
+            if queued:
+                stepping_stones.discard(source)  # walked already; report it now
+            elif source in seen:
                 continue
             seen.add(source)
             # Carry the matched edge's location (taken from the SAME edge dict
@@ -250,7 +324,8 @@ def affected_nodes(
                 via_location=str(data.get("source_location") or "") or None,
             )
             hits.append(hit)
-            queue.append((source, current_depth + 1))
+            if not queued:
+                queue.append((source, current_depth + 1))
 
     return hits
 

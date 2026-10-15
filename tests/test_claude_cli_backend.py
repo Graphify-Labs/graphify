@@ -172,6 +172,61 @@ def test_call_llm_success_still_returns_result_text():
         assert llm._call_llm("dummy", backend="claude-cli") == "a fine label"
 
 
+@pytest.mark.parametrize(
+    ("env_model", "explicit_model", "expected_model"),
+    [
+        ("haiku", None, "haiku"),
+        (" claude-haiku-4-5-20251001 ", None, "claude-haiku-4-5-20251001"),
+        ("haiku", "sonnet", "sonnet"),
+        (None, "sonnet", "sonnet"),
+        (None, None, None),
+        ("", None, None),
+        ("   ", None, None),
+        ("haiku", "", "claude-code-plan"),
+    ],
+)
+def test_call_llm_model_precedence(
+    monkeypatch, env_model, explicit_model, expected_model,
+):
+    """Plain Claude CLI calls honor the env model without changing explicit defaults."""
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_CLI_MODEL", raising=False)
+    if env_model is not None:
+        monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", env_model)
+    envelope = dict(_ENVELOPE, result="a fine label")
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        if explicit_model is None:
+            result = llm._call_llm("dummy", backend="claude-cli")
+        else:
+            result = llm._call_llm(
+                "dummy", backend="claude-cli", model=explicit_model,
+            )
+    assert result == "a fine label"
+    argv = run.call_args.args[0]
+    if expected_model is None:
+        assert "--model" not in argv
+    else:
+        assert argv.count("--model") == 1
+        assert argv[argv.index("--model") + 1] == expected_model
+
+
+def test_label_batch_uses_claude_cli_model_env(monkeypatch):
+    """The label call chain forwards env-only model selection and still parses labels."""
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", "haiku")
+    envelope = dict(_ENVELOPE, result=json.dumps({"7": "Model Routing"}))
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        labels = llm._label_batch_with_retry(
+            [7], ["7: Claude CLI, Community Labels"],
+            backend="claude-cli", model=None,
+        )
+    assert labels == {7: "Model Routing"}
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--model") + 1] == "haiku"
+
+
 _MCP_PREAMBLE = (
     "Client.listTools() called but server does not advertise tools capability "
     "- returning empty list\n"

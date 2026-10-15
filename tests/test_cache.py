@@ -221,6 +221,37 @@ def test_save_cached_relativizes_source_file(tmp_path):
     assert edge_sources == {"src/foo.py"}
 
 
+def test_save_cached_survives_a_winerror_17_replace(tmp_path, monkeypatch):
+    """#3508: on some Windows/filesystem combinations, `os.replace` raises
+    WinError 17 ("cannot move to a different disk drive") even for a temp file
+    and destination in the same directory on the same drive -- reported for
+    exactly this AST cache write path. WinError 17 is a plain OSError, not a
+    PermissionError, so it must still trigger the copy-then-delete fallback."""
+    import os
+    from graphify.cache import save_cached, file_hash, cache_dir
+
+    src = tmp_path / "foo.py"
+    src.write_text("def x(): pass\n")
+
+    real_replace = os.replace
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    try:
+        save_cached(src, {"nodes": [], "edges": []}, root=tmp_path, kind="ast")
+    finally:
+        monkeypatch.setattr(os, "replace", real_replace)
+
+    h = file_hash(src, tmp_path)
+    entry = cache_dir(tmp_path, "ast") / f"{h}.json"
+    assert entry.exists()
+    assert not any(p.name.endswith(".tmp") for p in entry.parent.iterdir())
+
+
 def test_load_cached_absolutizes_source_file(tmp_path):
     """``load_cached`` returns the same absolute-path shape that a fresh
     extraction produces, so consumers don't need to special-case cache
@@ -606,6 +637,38 @@ def test_ast_cache_schema_rejects_same_version_legacy_collision(
 
     assert load_cached(target, root=tmp_path, kind="ast") is None
     assert not old_dir.exists()
+
+
+def test_python_receiver_shadow_schema_retires_same_version_raw_calls(
+    tmp_path, monkeypatch,
+):
+    """Schema-4 raw calls lack the lexical fact required by external resolution."""
+    import graphify.cache as cache_mod
+    from graphify.extract import extract
+
+    target = tmp_path / "caller.py"
+    target.write_text("import requests\n\ndef fetch():\n    return requests.get('/data')\n")
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 4)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    save_cached(target, {"nodes": [], "edges": [], "raw_calls": [
+        {"caller_nid": "old", "receiver": "requests", "callee": "get"}
+    ]}, root=tmp_path, kind="ast")
+    old_dir = cache_dir(tmp_path, "ast")
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 5)
+    assert load_cached(target, root=tmp_path, kind="ast") is None
+    assert not old_dir.exists()
+    cold = extract([target], cache_root=tmp_path, root=tmp_path)
+    fresh = load_cached(target, root=tmp_path, kind="ast")
+    assert fresh is not None
+    assert any(rc.get("_python_receiver_shadowed") is False
+               for rc in fresh.get("raw_calls", []))
+    warm = extract([target], cache_root=tmp_path, root=tmp_path)
+    assert len([e for e in cold["edges"] if e["relation"] == "calls"]) == 1
+    assert [e for e in cold["edges"] if e["relation"] == "calls"] == [
+        e for e in warm["edges"] if e["relation"] == "calls"
+    ]
 
 
 def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):

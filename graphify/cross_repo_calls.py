@@ -41,8 +41,17 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
+    "go": frozenset({".go"}),
     "java": frozenset({".java"}),
+    "kotlin": frozenset({".kt", ".kts"}),
+    "objc": frozenset({".h", ".m", ".mm"}),
     "swift": frozenset({".swift"}),
+    "php": frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
+    # TS and JS share one key: a TS class legitimately answers a JS call site, so
+    # splitting them would drop every TS<->JS cross-repo call. An SFC script block is
+    # TS/JS too, so a class exported from `.vue` answers as well.
+    "typescript": frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+                             ".vue", ".svelte", ".astro"}),
 }
 
 # A declaration owns its members through a `method` edge, except in C++, where an
@@ -57,7 +66,8 @@ def _key(label: object) -> str:
     Type labels are plain (``Greeter``) while method labels carry the extractor's
     decoration (``.greet()``). Case is preserved: every language that parks calls
     here is case-sensitive, and folding case would let `greeter` answer for
-    `Greeter`.
+    `Greeter`. Objective-C's ``+``/``-`` sigil is deliberately kept, so an ObjC
+    ``-greet`` and a C++ ``.greet()`` stay distinct members of a shared header.
     """
     return str(label or "").strip().removeprefix(".").removesuffix("()")
 
@@ -148,6 +158,20 @@ def _member_relations(lang: str) -> tuple[str, ...]:
     return ("method", "defines") if lang == "cpp" else ("method",)
 
 
+def _member_keys(lang: str, callee: str) -> tuple[str, ...]:
+    """Which member-index keys a parked callee may answer to.
+
+    An ObjC selector carries no class/instance distinction, so both sigils are
+    tried; a type declaring `+greet` and `-greet` both is an ambiguity, not a hit.
+    A selector cannot itself begin with a sigil, so stripping one first keeps an
+    entry that already carries it from asking for `--greet`.
+    """
+    if lang == "objc":
+        selector = callee.lstrip("+-")
+        return (f"-{selector}", f"+{selector}")
+    return (callee,)
+
+
 def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     """Emit `calls` edges for parked member calls another repo answers.
 
@@ -164,6 +188,26 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     if not by_name:
         return 0
     members_by_relation = _index_members(merged, type_ids)
+
+    # C# parked calls need the same namespace/using visibility check as C# type
+    # references. Without it, an unresolved third-party receiver such as
+    # `FluentValidation.IValidator` can bind to an unrelated `IValidator` that
+    # happens to be declared in one merged repository (#3360). Build this only
+    # when needed; the other parked languages use their existing suffix guard.
+    csharp_resolver = None
+    if any(
+        str(entry.get("lang") or "") == "csharp"
+        for _, data in parked_nodes
+        for entry in _parked_entries(data)
+    ):
+        from graphify.extractors.csharp import CsharpNameResolver
+
+        resolver_nodes = [dict(data, id=node) for node, data in merged.nodes(data=True)]
+        resolver_edges = [
+            dict(data, source=source, target=target)
+            for source, target, data in merged.edges(data=True)
+        ]
+        csharp_resolver = CsharpNameResolver(resolver_nodes, resolver_edges)
 
     added = 0
     for caller, caller_data in parked_nodes:
@@ -188,9 +232,22 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 # The same guard the single-repo resolvers apply: two repos
                 # declaring the same name is an ambiguity, not a hit.
                 continue
+            if lang == "csharp":
+                # Reuse the extractor's authoritative C# visibility rules. A
+                # candidate is valid only when the caller's namespace, using,
+                # or alias resolves this exact receiver name to that node.
+                resolved, _decisive = csharp_resolver.resolve_type_name(
+                    receiver_type,
+                    dict(caller_data, id=caller),
+                    str(caller_data.get("source_file") or ""),
+                )
+                if resolved != candidates[0]:
+                    continue
             targets: list[str] = []
             for relation in _member_relations(lang):
-                targets = members_by_relation[relation].get((candidates[0], callee), [])
+                members = members_by_relation[relation]
+                for member_key in _member_keys(lang, callee):
+                    targets.extend(members.get((candidates[0], member_key), []))
                 if targets:
                     break
             if len(targets) != 1:
@@ -204,7 +261,7 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 relation="calls",
                 context="cross_repo",
                 confidence="INFERRED",
-                confidence_score=0.8,
+                confidence_score=0.85,
                 source_file=str(caller_data.get("source_file") or ""),
                 source_location=entry.get("line"),
                 weight=1.0,
