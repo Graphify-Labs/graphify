@@ -1219,14 +1219,39 @@ def _parse_gitignore_line(raw: str) -> str:
 
 
 def _find_vcs_root(start: Path) -> Path | None:
-    """Walk upward from start; return the first directory containing a VCS marker."""
+    """Walk upward from start; return the first valid VCS root."""
     current = start.resolve()
     home = Path.home()
+
     while True:
-        if any((current / m).exists() for m in _VCS_MARKERS):
+        if current == home:
+            return None
+
+        for marker in _VCS_MARKERS:
+            marker_path = current / marker
+            if not marker_path.exists():
+                continue
+
+            if marker == ".git":
+                try:
+                    result = subprocess.run(
+                        ["git", "-C", str(current), "rev-parse", "--show-toplevel"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=5,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    continue
+
+                if result.returncode != 0:
+                    continue
+
             return current
+
         parent = current.parent
-        if parent == current or current == home:
+        if parent == current:
             return None
         current = parent
 
