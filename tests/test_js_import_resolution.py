@@ -2154,3 +2154,63 @@ def test_workspace_main_dist_target_used_when_no_source_entry_exists(tmp_path: P
     result = _extract_for([dist_target, importer], tmp_path)
 
     assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+# --- #4485: the same fallback when `exports` names only dist/ -----------------
+
+
+def _dist_only_exports_package(root: Path, *, built: bool) -> Path:
+    _write(root / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        root / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "type": "module",
+            "main": "dist/index.js",
+            "exports": {
+                ".": {"import": "./dist/index.js", "types": "./dist/index.d.ts"},
+                "./sub": {"import": "./dist/sub.js"},
+            },
+        }),
+    )
+    if built:
+        _write(root / "packages/pkg-a/dist/index.js", "export const value = 'dist';\n")
+        _write(root / "packages/pkg-a/dist/sub.js", "export const sub = 'dist';\n")
+    _write(root / "packages/pkg-a/src/sub.ts", "export const sub = 'ok';\n")
+    return _write(root / "packages/pkg-a/src/index.ts", "export const value = 'ok';\n")
+
+
+@pytest.mark.parametrize("built", [True, False], ids=["built", "clean-clone"])
+def test_workspace_exports_into_dist_fall_through_to_src(tmp_path: Path, built: bool):
+    source_target = _dist_only_exports_package(tmp_path, built=built)
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\n"
+        "import { sub } from '@example/pkg-a/sub'\n"
+        "export const v = value + sub\n",
+    )
+
+    result = _extract_for(
+        [source_target, tmp_path / "packages/pkg-a/src/sub.ts", importer], tmp_path
+    )
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/sub.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+def test_workspace_exports_into_dist_used_when_no_source_exists(tmp_path: Path):
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a", "exports": {".": {"import": "./dist/index.js"}}}),
+    )
+    dist_target = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const value = 1;\n")
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([dist_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
