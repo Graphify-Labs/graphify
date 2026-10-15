@@ -5044,6 +5044,10 @@ def _resolve_typescript_member_calls(
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
+    # Exact member name -> node. `_key` drops `_`/`$`/`#`, and since #4475
+    # `updateHash` / `_updateHash` are two nodes of one class, so the exact
+    # name is tried first and `_key` stays the fallback.
+    method_exact: dict[tuple[str, str], str] = {}
     class_of_method: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
@@ -5052,6 +5056,7 @@ def _resolve_typescript_member_calls(
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
+            method_exact[(src, str(tnode.get("label", "")).removesuffix("()").removeprefix("."))] = tgt
         if isinstance(src, str) and isinstance(tgt, str):
             class_of_method[tgt] = src
 
@@ -5181,7 +5186,10 @@ def _resolve_typescript_member_calls(
         if len(visible) != 1:
             continue
         type_nid = visible[0]
-        method_nid = method_index.get((type_nid, _key(callee)))
+        method_nid = method_exact.get((type_nid, str(callee)))
+        exact = method_nid is not None
+        if not exact:
+            method_nid = method_index.get((type_nid, _key(callee)))
         if not method_nid:
             # Receiver typed, but the type has no such method. The old fallback
             # (a `references` edge to the type node) was another fabrication
@@ -5192,7 +5200,7 @@ def _resolve_typescript_member_calls(
         # declares a public `foo` (the node is marked); otherwise its `foo` comes
         # from elsewhere and the private method is not the target.
         method_node = node_by_id.get(method_nid, {})
-        if (str(method_node.get("label", "")).lstrip(".").startswith("#")
+        if (not exact and str(method_node.get("label", "")).lstrip(".").startswith("#")
                 and not str(callee).startswith("#")
                 and not method_node.get("_ts_public_twin")):
             continue

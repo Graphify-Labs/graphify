@@ -1290,7 +1290,8 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
     return {nid: names for nid, names in groups.items() if len(names) >= 2}
 
 
-def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]]) -> str:
+def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]],
+                           private_prefixes: tuple[str, ...] = ("_",)) -> str:
     """Resolve a declaration's real node id against the collision map.
 
     Shared by the Python and C# pre-scans (#3302, #4415). A name with no
@@ -1303,15 +1304,61 @@ def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]
     `_x`/`__x` colliding with no public member at all) is salted, so the outcome
     never depends on declaration order — mirrors the exported/unexported rule
     the Go extractor uses for its own case-only collision (#2779).
+    ``private_prefixes`` widens what counts as non-public: JS/TS also marks
+    members private with ``$`` and ``#`` (#4475).
     """
     names = groups.get(plain_nid)
     if not names or len(names) < 2:
         return plain_nid
-    public = [n for n in names if not n.startswith("_")]
+    public = [n for n in names if not n.startswith(private_prefixes)]
     if len(public) == 1 and name == public[0]:
         return plain_nid
     salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
     return _make_id(plain_nid, salt)
+
+
+_JS_PRIVATE_MEMBER_PREFIXES = ("_", "$", "#")
+_JS_MEMBER_METHOD_TYPES = ("method_definition", "method_signature", "abstract_method_signature")
+
+
+def _js_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                   groups_cache: dict) -> str:
+    """Node id for a JS/TS class member, salted when a sibling collides (#4475).
+
+    ``make_id`` drops ``_``, ``$`` and ``#``, so ``updateHash`` / ``_updateHash``,
+    ``close`` / ``#close`` and ``set`` / ``$set`` in one class body mint one id
+    and the second declaration vanished. The member names of the enclosing
+    class body are grouped by the id they would get (methods, signatures and
+    function-valued fields, the members the walk turns into ``.name()`` nodes),
+    then ``_underscore_salted_nid`` applies the Python/C# rule: a unique public
+    name keeps the plain id, every other colliding name gets a salted one.
+    Members that collide with nothing keep their old id. Getter/setter pairs
+    and overloads share one name, so they are not a collision.
+    """
+    body = member_node.parent
+    if body is None:
+        return _make_id(class_nid, name)
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        for c in body.children:
+            if c.type in _JS_MEMBER_METHOD_TYPES:
+                name_node = c.child_by_field_name("name")
+            elif c.type in ("field_definition", "public_field_definition"):
+                value = c.child_by_field_name("value")
+                if value is None or value.type not in _JS_FUNCTION_VALUE_TYPES:
+                    continue
+                name_node = c.child_by_field_name("property") or c.child_by_field_name("name")
+            else:
+                continue
+            text = _read_text(name_node, source) if name_node is not None else ""
+            if text:
+                names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups,
+                                  _JS_PRIVATE_MEMBER_PREFIXES)
 
 
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
@@ -3927,7 +3974,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
                    closure_locals_by_body: dict | None = None,
-                   config=None) -> bool:
+                   config=None, js_member_groups: dict | None = None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -4065,7 +4112,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             field_name = _read_text(prop, source)
             if field_name:
                 line = node.start_point[0] + 1
-                nid = _make_id(parent_class_nid, field_name)
+                nid = _js_member_nid(parent_class_nid, node, field_name, source,
+                                     js_member_groups if js_member_groups is not None else {})
                 add_node_fn(nid, f".{field_name}()", line)
                 add_edge_fn(parent_class_nid, nid, "method", line)
                 if callable_def_nids is not None:
@@ -5676,6 +5724,9 @@ def _extract_generic(
     swift_class_names: set[str] = set()
     if config.ts_module == "tree_sitter_swift":
         swift_protocol_names, swift_class_names = _swift_pre_scan(root, source)
+
+    # JS/TS class body -> member collision groups, filled lazily (#4475).
+    js_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -7333,6 +7384,11 @@ def _extract_generic(
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, csharp_member_groups
                     )
+                elif (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                      and t in _JS_MEMBER_METHOD_TYPES):
+                    func_nid = _js_member_nid(
+                        parent_class_nid, node, sanitized_name, source, js_member_groups
+                    )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
                     kinds = ruby_method_kinds.setdefault(func_nid, set())
@@ -7923,7 +7979,8 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
-                              closure_locals_by_body, config=config):
+                              closure_locals_by_body, config=config,
+                              js_member_groups=js_member_groups):
                 return
 
         # TS enum members, and namespace / module containers
