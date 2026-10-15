@@ -1,6 +1,7 @@
 """Tests for `graphify extract` CLI dispatch path in graphify.__main__."""
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -168,6 +169,15 @@ def test_extract_exits_nonzero_when_all_semantic_chunks_fail(
     assert not (out_dir / "graphify-out" / "graph.json").exists(), (
         "graph.json must not be written when semantic extraction fails"
     )
+    status = json.loads(
+        (out_dir / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["ok"] is False
+    assert status["exit_code"] == 1
+    assert status["incomplete"] is True
+    assert status["chunks_total"] == 1
+    assert status["chunks_failed"] == 1
+    assert "all semantic chunks failed" in status["error"]
 
 
 def test_extract_succeeds_when_at_least_one_chunk_completes(
@@ -617,6 +627,17 @@ def test_extract_force_flag_redispatches_and_stamps_manifest(monkeypatch, tmp_pa
         "--force over a warm tree must re-dispatch every semantic file"
     )
     assert calls[1]["paths"] == [str(corpus / "README.md")]
+
+    # The upstream force/cache path and the run-status finalizer must coexist:
+    # a warm-cache override still records the actual code and semantic dispatch.
+    status = json.loads(
+        (corpus / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["ok"] is True
+    assert status["wrote_graph"] is True
+    assert status["files_dispatched"] == 2
+    assert status["chunks_total"] == 1
+    assert status["chunks_failed"] == 0
 
     # The forced run still wrote the semantic cache and stamped the manifest.
     # Entries nest under a p{prompt-fingerprint}/ subdir (#1939).
