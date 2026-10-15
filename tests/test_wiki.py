@@ -309,6 +309,33 @@ def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
     assert len(set(lowered)) == len(lowered), [p.name for p in articles]
 
 
+def test_to_wiki_article_labelled_index_does_not_overwrite_index_md(tmp_path):
+    """index.md is the wiki's reserved entry point. A community whose label slugs
+    to "index" (the default hub labeler names a community after its hub node, so a
+    hub `index()` view or an `Index` class does this) or a god node labelled
+    `index()` must get its own file, not be written to index.md and then
+    overwritten by the catalog - which also made its catalog link point back at
+    the index itself."""
+    G = nx.Graph()
+    G.add_node("n1", label="index()", file_type="code", source_file="views.py")
+    G.add_node("n2", label="render", file_type="code", source_file="views.py")
+    G.add_node("n3", label="Index", file_type="code", source_file="search.py")
+    G.add_node("n4", label="query", file_type="code", source_file="search.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n3", "n4", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1", "n2"], 1: ["n3", "n4"]}
+    labels = {0: "index", 1: "Search"}
+    god_nodes = [{"id": "n3", "label": "Index", "degree": 1}]
+    n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    articles = [p for p in tmp_path.glob("*.md") if p.stem.lower() != "index"]
+    # every article survives as its own file next to the catalog
+    assert len(articles) == n == 3, sorted(p.name for p in tmp_path.glob("*.md"))
+    index_text = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert index_text.startswith("# Knowledge Graph Index")
+    # no catalog entry links back to the catalog itself
+    assert "(index.md)" not in index_text, index_text
+
+
 # Regression tests for portable wiki links - Obsidian [[wikilinks]] break in
 # every non-Obsidian renderer (VS Code preview, GitHub, GitLab, plain browsers).
 
@@ -428,3 +455,76 @@ def test_wiki_links_use_collision_suffixed_slug(tmp_path):
     assert "parser_2.md" in index_targets  # link points at the suffixed file...
     for t in index_targets:
         assert (tmp_path / t).exists(), t  # ...and every target is a real file
+
+
+# Regression tests for #3032 / #3033 - two articles whose labels are *identical*
+# (not merely case-variant, as above) each get their own file, so the index has
+# to link each row to the file that row's article was actually written to.
+
+
+def test_index_links_same_labelled_communities_to_own_articles(tmp_path):
+    """Two communities may carry the same label. Each is written to its own file
+    (`Core.md`, `Core_2.md`), so the index rows must target one each. Resolving
+    the target from the label instead points both rows at whichever community
+    was slugged first, orphaning the second article (#3032)."""
+    G = nx.Graph()
+    G.add_node("n1", label="a", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="b", file_type="code", source_file="b.py", community=0)
+    G.add_node("n3", label="c", file_type="code", source_file="c.py", community=1)
+    G.add_node("n4", label="d", file_type="code", source_file="d.py", community=1)
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n3", "n4", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n1", "n3", relation="references", confidence="INFERRED", weight=1.0)
+    communities = {0: ["n1", "n2"], 1: ["n3", "n4"]}
+    labels = {0: "Core", 1: "Core"}  # identical, not just case-variant
+    to_wiki(G, communities, tmp_path, community_labels=labels)
+    index_targets = [t for _, t in _inline_links((tmp_path / "index.md").read_text())]
+    assert sorted(index_targets) == ["Core.md", "Core_2.md"], index_targets
+    for t in index_targets:
+        assert (tmp_path / t).exists(), t
+
+
+def test_index_links_same_labelled_god_nodes_to_own_articles(tmp_path):
+    """Same for god nodes: two nodes sharing a label get one article each, and
+    the index must link each row to its own. Resolving by label sends both rows
+    to the first article and leaves `GameState_2.md` unreachable (#3033)."""
+    G = nx.Graph()
+    G.add_node("n1", label="GameState", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="GameState", file_type="code", source_file="b.py", community=0)
+    G.add_node("n3", label="helper", file_type="code", source_file="c.py", community=0)
+    G.add_edge("n1", "n3", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n2", "n3", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1", "n2", "n3"]}
+    labels = {0: "Only Community"}
+    god_nodes = [
+        {"id": "n1", "label": "GameState", "degree": 1},
+        {"id": "n2", "label": "GameState", "degree": 1},
+    ]
+    to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    index_targets = [t for _, t in _inline_links((tmp_path / "index.md").read_text())]
+    god_targets = [t for t in index_targets if t.startswith("GameState")]
+    assert sorted(god_targets) == ["GameState.md", "GameState_2.md"], index_targets
+    for t in index_targets:
+        assert (tmp_path / t).exists(), t
+
+
+def test_index_links_every_article_written(tmp_path):
+    """Every article `to_wiki` writes must be reachable from the index. This is
+    the general form of #3032/#3033: any row that resolves its target by label
+    rather than by the slug the article was written under leaves a real file
+    with no way in."""
+    G = nx.Graph()
+    G.add_node("n1", label="GameState", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="GameState", file_type="code", source_file="b.py", community=1)
+    G.add_edge("n1", "n2", relation="references", confidence="INFERRED", weight=1.0)
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: "Core", 1: "Core"}
+    god_nodes = [
+        {"id": "n1", "label": "GameState", "degree": 1},
+        {"id": "n2", "label": "GameState", "degree": 1},
+    ]
+    n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    articles = {p.name for p in tmp_path.glob("*.md")} - {"index.md"}
+    assert len(articles) == n == 4, sorted(articles)
+    linked = {t for _, t in _inline_links((tmp_path / "index.md").read_text())}
+    assert articles <= linked, sorted(articles - linked)  # no orphaned article

@@ -30,6 +30,12 @@ _SLUG_SUFFIX_RESERVE = 5
 _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
+# The navigation footer links the catalog by its fixed filename rather than via
+# the label resolver, so an article whose own label is "index" resolves to its
+# own (deduplicated) file instead of the catalog.
+_INDEX_LINK = "[index](index.md)"
+
+
 def _safe_filename(name: str, limit: int = 200) -> str:
     """Make a label safe for use as a filename across platforms AND as a
     markdown link destination.
@@ -83,8 +89,19 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
     god nodes get article files — render as plain text instead of a dead link
     that points nowhere even inside Obsidian.
     """
+    return _md_link_to(label, resolver.get(label))
+
+
+def _md_link_to(label: str, slug: str | None) -> str:
+    """Render ``[label](slug.md)`` for a slug that is already known.
+
+    Same output as :func:`_md_link`, minus the label lookup. The index knows the
+    exact slug of every article it lists — two same-labelled articles have
+    distinct slugs — so it links by that slug instead of re-deriving one from the
+    label, which collapses duplicates onto whichever was registered first
+    (#3032/#3033). ``None`` means no article exists, rendered as plain text.
+    """
     text = label.replace("[", r"\[").replace("]", r"\]")
-    slug = resolver.get(label)
     if slug is None:
         return text
     return f"[{text}]({slug}.md)"
@@ -178,7 +195,7 @@ def _community_article(
         lines.append(f"- {conf}: {n} ({pct}%)")
     lines.append("")
 
-    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
+    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_INDEX_LINK} to navigate.*"]
     return "\n".join(lines)
 
 
@@ -224,7 +241,7 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
             )
         lines.append("")
 
-    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
+    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_INDEX_LINK} to navigate.*"]
     return "\n".join(lines)
 
 
@@ -234,9 +251,21 @@ def _index_md(
     god_nodes_data: list[dict],
     total_nodes: int,
     total_edges: int,
-    resolver: dict[str, str] | None = None,
+    community_slugs: dict[int, str],
+    god_articles: list[tuple[str, str]],
 ) -> str:
-    resolver = resolver or {}
+    """Render index.md.
+
+    Takes the slugs the articles were actually written under —
+    ``community_slugs`` (cid -> slug) and ``god_articles`` ((node_id, slug)) —
+    rather than the label -> slug resolver the articles use for prose links.
+    Two communities, or two god nodes, can share a label while owning separate
+    files, and a label lookup cannot tell them apart: it points every row at
+    whichever was registered first and orphans the rest (#3032/#3033).
+    """
+    # A node with no article of its own is absent here, so it renders as plain
+    # text rather than linking to a same-labelled article that isn't it.
+    god_slugs = dict(god_articles)
     lines: list[str] = [
         "# Knowledge Graph Index",
         "",
@@ -253,13 +282,15 @@ def _index_md(
 
     for cid, nodes in sorted(communities.items(), key=lambda x: -len(x[1])):
         label = labels.get(cid, f"Community {cid}")
-        lines.append(f"- {_md_link(label, resolver)} — {len(nodes)} nodes")
+        slug = community_slugs.get(cid)
+        lines.append(f"- {_md_link_to(label, slug)} — {len(nodes)} nodes")
     lines.append("")
 
     if god_nodes_data:
         lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
         for node in god_nodes_data:
-            lines.append(f"- {_md_link(node['label'], resolver)} — {node['degree']} connections")
+            slug = god_slugs.get(node.get("id"))
+            lines.append(f"- {_md_link_to(node['label'], slug)} — {node['degree']} connections")
         lines.append("")
 
     lines += [
@@ -338,7 +369,10 @@ def to_wiki(
     node_community: dict[str, int] = {n: cid for cid, nodes in communities.items() for n in nodes}
 
     count = 0
-    used_slugs: set[str] = set()
+    # "index" is reserved for the catalog written below: an article slugged
+    # "index" (a community named after an `index()` hub, an `Index` god node on a
+    # case-insensitive filesystem) would otherwise be overwritten by index.md.
+    used_slugs: set[str] = {"index"}
 
     # Articles are capped against THIS wiki directory, not just NAME_MAX: on
     # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
@@ -368,7 +402,7 @@ def to_wiki(
     # _md_link renders them as plain text. Communities are slugged before god nodes
     # (and setdefault keeps the first), preserving the filename-assignment order
     # the case-collision dedup relies on.
-    resolver: dict[str, str] = {"index": "index"}
+    resolver: dict[str, str] = {}
 
     community_slugs: dict[int, str] = {}
     for cid in communities:
@@ -404,7 +438,11 @@ def to_wiki(
     # Index
     write_text_atomic_if_changed(
         out / "index.md",
-        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver),
+        _index_md(
+            communities, labels, god_nodes_data,
+            G.number_of_nodes(), G.number_of_edges(),
+            community_slugs, god_articles,
+        ),
     )
     produced.add("index.md")
 

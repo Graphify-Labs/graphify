@@ -47,6 +47,25 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: pr
+    attributes:
+      label: Are you willing to submit a PR?
+      options:
+        - Yes, I can work on this
+        - Yes, but I will need guidance
+        - No, I just wanted to request it
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility / behavior impact
+      description: Does this affect node/edge IDs, cache semantics, graph.json schema, generated skills, MCP output, or incremental updates?
+    validations:
+      required: true
+
   - type: textarea
     id: context
     attributes:
