@@ -368,6 +368,53 @@ def test_global_add_rewires_edges_to_deduplicated_externals(tmp_path):
     assert G.edges["repoB::modb", "repoA::requests"]["relation"] == "imports"
 
 
+def test_global_remove_of_first_owner_keeps_shared_external_node(tmp_path):
+    """Removing the repo that happened to add a shared external node first must
+    not delete it out from under a second repo that still references it."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    GA = _make_graph(
+        [
+            {"id": "moda", "label": "ModA", "source_file": "src/a.py"},
+            {"id": "requests", "label": "requests"},
+        ],
+        [{"source": "moda", "target": "requests", "relation": "imports"}],
+    )
+    GB = _make_graph(
+        [
+            {"id": "modb", "label": "ModB", "source_file": "src/b.py"},
+            {"id": "requests", "label": "requests"},
+        ],
+        [{"source": "modb", "target": "requests", "relation": "imports"}],
+    )
+    _graph_to_json(GA, g1)
+    _graph_to_json(GB, g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, global_remove, _load_global_graph
+        global_add(g1, "repoA")
+        global_add(g2, "repoB")  # dedups onto repoA's "requests" node
+        global_remove("repoA")
+        G = _load_global_graph()
+
+    # repoB's own node is untouched
+    assert "repoB::modb" in G.nodes
+    # the shared external node must survive - repoB still depends on it
+    assert "repoA::requests" in G.nodes
+    assert G.has_edge("repoB::modb", "repoA::requests")
+    # and it only disappears once the last referencing repo is also removed
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_remove, _load_global_graph
+        global_remove("repoB")
+        G2 = _load_global_graph()
+    assert G2.number_of_nodes() == 0
+
+
 def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
     """#F4: global_add must refuse to read a source graph.json that
     exceeds the size cap, rather than json.loads-ing it into memory."""
