@@ -153,3 +153,68 @@ def test_no_model_flag_when_env_var_unset(mock_run, _which, monkeypatch):
     llm._call_claude_cli("payload")
     argv = mock_run.call_args.args[0]
     assert "--model" not in argv
+
+
+# ---------- _parse_llm_json: repair pass for near-valid replies ----------
+
+
+def test_stray_member_token_is_pruned_and_fragment_recovered(monkeypatch, capsys):
+    """A single bare string sitting where an object member belongs
+    (`{"stray", "id": ...`) makes every candidate in the ladder fail
+    strict parsing; the brace scanner then settles on the first inner
+    object that happens to parse and the fragment scores zero. Stage 1
+    of the repair pass drops the stray token and re-runs the same
+    ladder, so the whole chunk comes back with its ids intact. It must
+    not depend on the optional json_repair package."""
+    monkeypatch.setattr(llm, "_json_repair", None)
+    raw = (
+        "```json\n"
+        '{"nodes": [{"stray", "id": "a", "label": "A"}, {"id": "b", "label": "B"}],'
+        ' "edges": [{"source": "a", "target": "b", "relation": "uses"}]}\n'
+        "```"
+    )
+    result = llm._parse_llm_json(raw)
+    assert [n["id"] for n in result["nodes"]] == ["a", "b"]
+    assert len(result["edges"]) == 1
+    assert "repaired via stray-member prune (1 token)" in capsys.readouterr().err
+
+
+def test_clean_reply_never_reaches_repair():
+    """The repair pass runs only after the strict parse and the candidate
+    ladder both fail to find a fragment with content, so a reply that
+    parses today is byte-for-byte untouched."""
+    raw = '{"nodes": [{"id": "a", "label": "A"}], "edges": []}'
+    with patch.object(llm, "_repair_llm_json") as repair:
+        result = llm._parse_llm_json(raw)
+    repair.assert_not_called()
+    assert [n["id"] for n in result["nodes"]] == ["a"]
+
+
+def test_prose_reply_is_still_empty_after_repair():
+    """Repair recovers structure that was nearly there; it must not
+    conjure a fragment out of a reply that has none, which would mask
+    a hollow response instead of surfacing it."""
+    result = llm._parse_llm_json("I could not find any entities in this file.")
+    assert not result.get("nodes")
+    assert not result.get("edges")
+
+
+def test_json_repair_stage_recovers_single_quoted_reply(capsys):
+    """Stage 2 is the general net for defects the stray-member prune does
+    not cover, here a reply written with single quotes. Skipped when the
+    optional package is absent, since stage 1 does not fire on this input."""
+    pytest.importorskip("json_repair")
+    raw = "{'nodes': [{'id': 'a', 'label': 'A'}, {'id': 'b', 'label': 'B'}], 'edges': []}"
+    result = llm._parse_llm_json(raw)
+    assert [n["id"] for n in result["nodes"]] == ["a", "b"]
+    assert "repaired via json_repair" in capsys.readouterr().err
+
+
+def test_half_generated_reply_stays_empty_after_repair():
+    """json_repair closes whatever it is handed, so `{"nodes": [{"id":` would
+    come back as one node with an empty id. That is a hollow response wearing
+    a fragment, and the openai-compat backend relies on it staying hollow so
+    the chunk is retried rather than recorded as extracted."""
+    pytest.importorskip("json_repair")
+    result = llm._parse_llm_json('{"nodes": [{"id":')
+    assert not result.get("nodes")
