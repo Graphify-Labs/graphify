@@ -15,6 +15,8 @@ import pytest
 
 import graphify.__main__ as mainmod
 from graphify.build import build_merge, merge_raw_extraction
+from graphify.cli import _node_counts_by_source, _shrink_is_self_explained
+from graphify.export import existing_graph_node_counts_by_source
 import graphify.llm as llmmod
 
 
@@ -485,3 +487,58 @@ def test_3203_allow_partial_override_permits_intentional_reduction(tmp_path, mon
     # With override, the 1-node graph is persisted
     graph = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
     assert len(graph["nodes"]) == 1
+
+
+# ── Review finding: net-total comparison masks an unflagged loss (#3412 review) ──
+
+def test_shrink_is_self_explained_rejects_a_masked_unflagged_loss():
+    """Review finding on #3412: comparing the NET total shrink against the
+    flagged file's own reported drop lets unrelated growth elsewhere mask a
+    genuine, unflagged loss. README.md explains a drop of 2 (3 -> 1); a.py
+    silently also lost 2 nodes nobody flagged, but a brand new file gained 2
+    nodes elsewhere, so the net total shrink (old 10 -> new 8, down 2) still
+    exactly equals README's own explained drop -- the old net-sum comparison
+    returned True here, waving through a undetected loss that is exactly
+    what the #3203 guard exists to catch. The per-source check must refuse:
+    a.py shrank and is not one of the flagged sources."""
+    unverified_shrink = {"README.md": (3, 1)}
+    old_counts = {"README.md": 3, "a.py": 7}
+    new_counts = {"README.md": 1, "a.py": 5, "new_file.py": 2}
+    assert _shrink_is_self_explained(unverified_shrink, old_counts, new_counts) is False
+
+
+def test_shrink_is_self_explained_accepts_a_genuinely_self_explained_shrink():
+    """The positive case the #3412 exemption exists for: only the flagged
+    file's count went down, nothing else in the corpus shrank at all."""
+    unverified_shrink = {"README.md": (3, 1)}
+    old_counts = {"README.md": 3, "a.py": 7}
+    new_counts = {"README.md": 1, "a.py": 7}
+    assert _shrink_is_self_explained(unverified_shrink, old_counts, new_counts) is True
+
+
+def test_shrink_is_self_explained_accepts_unflagged_growth_not_just_equality():
+    """An unflagged source is only a problem if it SHRANK; growing further
+    (e.g. new content appended during the same run) is not itself suspicious
+    and must not re-arm a guard that would otherwise release."""
+    unverified_shrink = {"README.md": (3, 1)}
+    old_counts = {"README.md": 3, "a.py": 7}
+    new_counts = {"README.md": 1, "a.py": 9}
+    assert _shrink_is_self_explained(unverified_shrink, old_counts, new_counts) is True
+
+
+def test_node_counts_by_source_groups_a_plain_node_list():
+    nodes = [
+        {"id": "a1", "source_file": "a.py"},
+        {"id": "a2", "source_file": "a.py"},
+        {"id": "b1", "source_file": "b.py"},
+    ]
+    assert _node_counts_by_source(nodes) == {"a.py": 2, "b.py": 1}
+
+
+def test_existing_graph_node_counts_by_source_groups_an_existing_graph(tmp_path):
+    gp = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        gp,
+        [_sem_node("doc.md", f"n{i}") for i in range(3)] + [_sem_node("other.md", "n0")],
+    )
+    assert existing_graph_node_counts_by_source(gp) == {"doc.md": 3, "other.md": 1}
