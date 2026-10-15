@@ -99,6 +99,34 @@ def test_cross_file_ts_typed_receiver_hits_each_member(tmp_path):
     assert ("b()", ".$set()") in calls and ("b()", ".set()") not in calls
 
 
+
+@pytest.mark.parametrize("members,call", [
+    ("  close(): void {}\n  #close(): void {}\n", "c._close()"),
+    ("  updateHash(): void {}\n  _updateHash(): void {}\n", "c.$updateHash()"),
+    ("  updateHash(): void {}\n  _updateHash(): void {}\n", "c.UpdateHash()"),
+    ("  set(v: number): void {}\n  $set(v: number): void {}\n", "c._set(1)"),
+    ("  _a(): void {}\n  $a(): void {}\n", "c.a()"),
+])
+def test_cross_file_call_matching_no_member_exactly_is_not_guessed(tmp_path, members, call):
+    # Review on #4479: neither member has the called name, and the loose key fits
+    # both, so picking one would be a guess (it was whichever registered last).
+    r = _extract(tmp_path, {
+        "ctx.ts": "export class Ctx {\n" + members + "}\n",
+        "use.ts": ('import { Ctx } from "./ctx";\n'
+                   "export function go(c: Ctx) { " + call + "; }\n"),
+    })
+    assert not [t for s, t in _calls(r) if s == "go()"], _calls(r)
+
+
+def test_cross_file_loose_match_with_a_single_candidate_is_unchanged(tmp_path):
+    # One member per key still resolves loosely, as on v8 (not touched here).
+    r = _extract(tmp_path, {
+        "ctx.ts": "export class Ctx {\n  _close(): void {}\n}\n",
+        "use.ts": ('import { Ctx } from "./ctx";\n'
+                   "export function go(c: Ctx) { c.close(); }\n"),
+    })
+    assert ("go()", "._close()") in _calls(r)
+
 def test_dedup_build_and_merge_keep_both(tmp_path):
     from graphify.build import build, build_merge
     from graphify.cluster import cluster

@@ -5048,6 +5048,8 @@ def _resolve_typescript_member_calls(
     # `updateHash` / `_updateHash` are two nodes of one class, so the exact
     # name is tried first and `_key` stays the fallback.
     method_exact: dict[tuple[str, str], str] = {}
+    # Keys more than one member normalizes to: the fallback can't tell them apart.
+    method_key_ambiguous: set[tuple[str, str]] = set()
     class_of_method: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
@@ -5055,7 +5057,10 @@ def _resolve_typescript_member_calls(
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            key = (src, _key(tnode.get("label", "")))
+            if method_index.get(key, tgt) != tgt:
+                method_key_ambiguous.add(key)
+            method_index[key] = tgt
             method_exact[(src, str(tnode.get("label", "")).removesuffix("()").removeprefix("."))] = tgt
         if isinstance(src, str) and isinstance(tgt, str):
             class_of_method[tgt] = src
@@ -5188,7 +5193,7 @@ def _resolve_typescript_member_calls(
         type_nid = visible[0]
         method_nid = method_exact.get((type_nid, str(callee)))
         exact = method_nid is not None
-        if not exact:
+        if not exact and (type_nid, _key(callee)) not in method_key_ambiguous:
             method_nid = method_index.get((type_nid, _key(callee)))
         if not method_nid:
             # Receiver typed, but the type has no such method. The old fallback
