@@ -110,6 +110,22 @@ def _file_stem(path: Path) -> str:
     return path.with_suffix("").as_posix()
 
 
+def file_id_stem(path: "str | Path", root: "str | Path | None" = None) -> str:
+    """Canonical node-id prefix of ``path``: ``make_id(_file_stem(...))`` of its
+    root-relative form (#4432). Both sides are resolved first, so an absolute path
+    from detect and a relative root such as ``.`` still line up. "" when no
+    root-relative form exists, so a checkout location is never baked into an id."""
+    p = Path(path)
+    if root is not None:
+        try:
+            p = p.resolve().relative_to(Path(root).resolve())
+        except (OSError, RuntimeError, ValueError):
+            pass
+    if p.is_absolute():
+        return ""
+    return make_id(_file_stem(p))
+
+
 def _read_text(node, source: bytes) -> str:
     return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 

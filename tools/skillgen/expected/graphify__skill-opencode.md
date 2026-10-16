@@ -242,7 +242,8 @@ detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encodin
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH', prompt_file='SPEC_PATH')
+root = 'INPUT_PATH'
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root=root, prompt_file='SPEC_PATH')
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
 # run so Part C never merges a stale .graphify_cached.json (#1392).
@@ -251,6 +252,10 @@ if cached_nodes or cached_edges or cached_hyperedges:
 else:
     Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
+# One path<TAB>stem line per uncached file, same order: the subagents copy the stem
+# instead of guessing it (#4432). Computed here in code, never pasted.
+from graphify.extractors.base import file_id_stem
+Path('graphify-out/.graphify_uncached_stems.txt').write_text('\n'.join(f'{f}{chr(9)}{file_id_stem(f, root)}' for f in uncached), encoding=\"utf-8\")
 # Nothing has been dispatched yet, so any chunk file on disk is a leftover from an
 # interrupted run, and Step B3 merges every .graphify_chunk_*.json it finds.
 for stale in Path('graphify-out').glob('.graphify_chunk_*.json'):
@@ -263,7 +268,7 @@ Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt
 
 **Step B1 - Split into chunks**
 
-Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
+Load the lines of `graphify-out/.graphify_uncached_stems.txt` (the same files in the same order as `.graphify_uncached.txt`, each as `path<TAB>stem`; if that file is missing, fall back to `.graphify_uncached.txt`, one bare path per line). Split into chunks of 20-25 files each; a chunk's FILE_LIST is its lines, copied unchanged. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
 
 **Step B2 - Dispatch ALL subagents in a single message (OpenCode)**
 
@@ -361,7 +366,7 @@ Path('graphify-out/.graphify_semantic.json').write_text(json.dumps(merged, inden
 print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
 "
 ```
-Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.graphify_uncached.txt graphify-out/.graphify_semantic_new.json`
+Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.graphify_uncached.txt graphify-out/.graphify_uncached_stems.txt graphify-out/.graphify_semantic_new.json`
 
 #### Part C - Merge AST + semantic into final extraction
 
