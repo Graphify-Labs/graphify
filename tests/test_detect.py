@@ -389,6 +389,7 @@ def test_graphifyignore_hermetic_without_vcs(tmp_path):
 def test_graphifyignore_discovered_from_parent_in_vcs(tmp_path):
     """Inside a VCS repo, parent .graphifyignore applies to subdirectory scans."""
     (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (tmp_path / ".graphifyignore").write_text("vendor/\n")
     sub = tmp_path / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -425,6 +426,7 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (repo / ".graphifyignore").write_text("vendor/\n")
     sub = repo / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -732,6 +734,54 @@ def test_global_git_ignore_needs_a_git_repo(tmp_path):
 
     code = as_posix_list(detect(tmp_path)["files"]["code"])
     assert any(f.endswith("secret.py") for f in code)
+
+
+def test_incomplete_home_git_marker_is_not_a_vcs_root(_sandbox_home):
+    """#4444: a project scanned from under a home directory whose own
+    `.git` is incomplete (no HEAD -- a stray leftover, never a real repo)
+    must not pick up that home's own .gitignore. On a platform that nests
+    its temp dir under home (reported on Windows), the scan's walk upward
+    passes right through it."""
+    home = _sandbox_home
+    (home / ".git").mkdir()  # no HEAD: not a real git dir
+    (home / ".gitignore").write_text("leaked.py\n")
+
+    project = home / "project"
+    project.mkdir()
+    (project / ".graphifyignore").write_text("vendor/\n*.generated.py\n")
+    vendor = project / "vendor"
+    vendor.mkdir()
+    (vendor / "lib.py").write_text("x = 1")
+    (project / "main.py").write_text("print('hi')")
+    (project / "schema.generated.py").write_text("x = 1")
+    (project / "leaked.py").write_text("x = 1")
+
+    result = detect(project)
+    assert result["graphifyignore_patterns"] == 2
+    code = as_posix_list(result["files"]["code"])
+    assert any(f.endswith("main.py") for f in code)
+    assert any(f.endswith("leaked.py") for f in code), (
+        "home's own .gitignore must not leak into a project under an "
+        "incomplete .git -- only .graphifyignore's own two patterns apply"
+    )
+
+
+def test_complete_home_git_marker_is_still_a_valid_vcs_root(_sandbox_home):
+    """The #4444 fix only tightens an incomplete `.git`; a home directory
+    that really is its own repo (a dotfiles checkout) must still work."""
+    home = _sandbox_home
+    (home / ".git").mkdir()
+    (home / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (home / ".gitignore").write_text("secret.py\n")
+
+    project = home / "project"
+    project.mkdir()
+    (project / "secret.py").write_text("SECRET = 'abc'")
+    (project / "main.py").write_text("print('hi')")
+
+    code = as_posix_list(detect(project)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("main.py") for f in code)
 
 
 def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):

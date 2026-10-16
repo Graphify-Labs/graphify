@@ -1177,6 +1177,36 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
 _VCS_MARKERS = (".git", ".hg", ".svn", "_darcs", ".fossil")
 
 
+def _is_valid_git_marker(dot_git: Path) -> bool:
+    """True when ``dot_git`` is a real git marker, not a leftover/incomplete
+    ``.git`` entry (#4444).
+
+    ``_find_vcs_root`` used to accept any ``.git`` that merely *existed*. A
+    home directory with a stray, incomplete ``.git`` -- one left behind by a
+    half finished ``git init`` or an IDE's own bookkeeping, never a real
+    repository -- was then treated as a VCS root whenever a scan's walk
+    happened to pass through home (its own temp dir, on a platform that nests
+    temp dirs under home), pulling in home level ignore patterns that have
+    nothing to do with the project being scanned.
+
+    A real git dir, standard or bare, always has a ``HEAD`` file -- it is the
+    first thing ``git init`` writes. A linked worktree or submodule's ``.git``
+    is a FILE whose content points at the real one (``gitdir: <path>``); it
+    is real whenever it parses as that pointer, regardless of whether the
+    target still exists (a worktree who's gitdir was pruned is still evidence
+    this location was once a real checkout, not a stray directory).
+    """
+    if dot_git.is_dir():
+        return (dot_git / "HEAD").exists()
+    if dot_git.is_file():
+        try:
+            content = dot_git.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            return False
+        return content.startswith("gitdir:")
+    return False
+
+
 def _nfc(text: str) -> str:
     """Normalize text to NFC so ignore matching survives Unicode form drift.
 
@@ -1219,12 +1249,22 @@ def _parse_gitignore_line(raw: str) -> str:
 
 
 def _find_vcs_root(start: Path) -> Path | None:
-    """Walk upward from start; return the first directory containing a VCS marker."""
+    """Walk upward from start; return the first directory containing a VCS marker.
+
+    A ``.git`` entry is checked for validity (#4444): an incomplete or stray
+    one must not stop the walk and get treated as the project's root, pulling
+    in ignore rules from wherever the walk happens to pass through (most
+    often home, on a platform that nests temp dirs under it). The other VCS
+    markers are checked by existence alone, as before -- there is no report
+    of an incomplete one of those causing this.
+    """
     current = start.resolve()
     home = Path.home()
     while True:
-        if any((current / m).exists() for m in _VCS_MARKERS):
-            return current
+        for m in _VCS_MARKERS:
+            marker = current / m
+            if marker.exists() and (m != ".git" or _is_valid_git_marker(marker)):
+                return current
         parent = current.parent
         if parent == current or current == home:
             return None
