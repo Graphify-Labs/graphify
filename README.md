@@ -394,6 +394,40 @@ The declaration flows through classification, extractor selection, grammar and r
 
 ---
 
+## GitHub Action
+
+Graphify can run in CI to map your repository automatically. The action supports uploading the graph as a ZIP artifact or committing it directly back to the repo.
+
+```yaml
+jobs:
+  graphify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Graphify
+        uses: Graphify-Labs/graphify@main
+        with:
+          subfolders: "."
+          options: "--force"
+          
+      # Example 1: Upload as an artifact
+      - name: Upload Graph
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-output
+          path: graphify-out/
+          
+      # Example 2: Commit the graph back to the repo
+      - name: Commit Graph
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update graphify maps"
+          file_pattern: "graphify-out/"
+```
+
+---
+
 ## Team setup
 
 Commit or share the graph so your whole team queries the same context, and review pull requests with graph context. See **[Share context with your team](https://docs.graphify.com/guides/team-workflows)** and **[Review pull requests](https://docs.graphify.com/guides/pull-requests)**.
