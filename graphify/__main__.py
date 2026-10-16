@@ -911,6 +911,8 @@ def _run_cli() -> None:
         print("    --seed X                start at node X (id, label or file path; repeatable)")
         print("                            instead of the question's keyword matches")
         print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --learned               also start from nodes past useful answers to a similar question")
+        print("                            cited (save-result --outcome useful, then reflect --graph)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  query, path and explain exit 0 with an answer, 3 when a name is ambiguous")
         print("  (the candidates are listed), 4 when no node matches")
