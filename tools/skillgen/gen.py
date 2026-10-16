@@ -537,6 +537,12 @@ def _core_to_powershell(body: str) -> str:
     return translated
 
 
+# Step B3's re-run hints name the agent that can write chunk files. A dispatch
+# variant whose host has no `general-purpose` agent names its own (#4494).
+_DEFAULT_WRITER_AGENT = ("general-purpose agent", '`subagent_type="general-purpose"`')
+_WRITER_AGENT = {"pi-subagents": ("the `delegate` agent", "the `delegate` agent")}
+
+
 def _render_core(platform: Platform) -> str:
     """Fill the shared core template's per-platform slots for this platform.
 
@@ -553,6 +559,7 @@ def _render_core(platform: Platform) -> str:
     interp_guard = _read_fragment(f"shell/interpreter-guard-{platform.shell}.md").rstrip("\n")
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
     query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
+    writer_agent, writer_agent_arg = _WRITER_AGENT.get(platform.dispatch, _DEFAULT_WRITER_AGENT)
 
     if platform.extra_sections:
         extra = "".join(
@@ -567,6 +574,8 @@ def _render_core(platform: Platform) -> str:
         .replace("@@INSTALL@@", install)
         .replace("@@INTERP_GUARD@@", interp_guard)
         .replace("@@DISPATCH@@", dispatch)
+        .replace("@@WRITER_AGENT@@", writer_agent)
+        .replace("@@WRITER_AGENT_ARG@@", writer_agent_arg)
         .replace("@@QUERY_STUB@@", query_stub)
         .replace("@@HOOKS_TARGET@@", platform.hooks_target)
         .replace("@@EXTRA@@", extra)
