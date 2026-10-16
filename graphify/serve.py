@@ -2074,6 +2074,50 @@ def _neighbors_text(G: nx.Graph, nid: str, rel_filter: str = "", token_budget: i
     )
 
 
+_CALL_RELATIONS = frozenset({"calls", "indirect_call"})
+_CALLS_SHOWN = 12
+
+
+def _node_call_lines(G: nx.Graph, nid: str) -> list[str]:
+    """`Calls` / `Called by` lines for get_node: each name with where it is defined.
+
+    get_node used to return only the node's own file and start line, so an
+    agent tracing a call chain read the file around that line to find the
+    callers and callees the graph already had: half of all get_node calls in
+    the #985 benchmark were followed by a file read. Callees are listed in
+    call-site order, tests are only counted, and both lists are capped;
+    get_neighbors still has everything with call sites.
+    """
+    def _entry(other: str, d: dict) -> str:
+        od = G.nodes[other]
+        loc = f"{od.get('source_file') or ''}:{od.get('source_location') or ''}".strip(":")
+        conf = d.get("confidence")
+        mark = f", {str(conf).lower()}" if conf and conf != "EXTRACTED" else ""
+        return sanitize_label(f"{od.get('label', other)} [{loc}{mark}]" if loc else str(od.get("label", other)))
+
+    def _site(d: dict) -> int:
+        m = re.search(r"\d+", str(d.get("source_location") or ""))
+        return int(m.group()) if m else 0
+
+    def _line(title: str, pairs: list[tuple[str, dict]]) -> list[str]:
+        code = [(o, d) for o, d in pairs if not _importer_sort_key(G, o)[0]]
+        n_tests = len(pairs) - len(code)
+        if not pairs:
+            return []
+        parts = [_entry(o, d) for o, d in code[:_CALLS_SHOWN]]
+        if len(code) > _CALLS_SHOWN:
+            parts.append(f"+{len(code) - _CALLS_SHOWN} more")
+        if n_tests:
+            parts.append(f"{n_tests} test{'s' if n_tests > 1 else ''}")
+        return [f"  {title} ({len(pairs)}): {', '.join(parts)}"]
+
+    callees = [(v, d) for v in G.successors(nid) if (d := _first_edge(G, nid, v, _CALL_RELATIONS))]
+    callers = [(u, d) for u in G.predecessors(nid) if (d := _first_edge(G, u, nid, _CALL_RELATIONS))]
+    callees.sort(key=lambda p: (_site(p[1]), str(G.nodes[p[0]].get("label", p[0]))))
+    callers.sort(key=lambda p: _importer_sort_key(G, p[0]))
+    return _line("Calls", callees) + _line("Called by", callers)
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -2532,6 +2576,7 @@ def _build_server(graph_path: str):
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
+            *(_node_call_lines(G, nid) if G.is_directed() else []),
             *attrs_line,
         ])
 
