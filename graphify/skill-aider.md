@@ -1171,6 +1171,9 @@ from networkx.readwrite import json_graph
 from pathlib import Path
 
 data = json.loads(Path('graphify-out/graph.json').read_text())
+if 'links' not in data and 'edges' in data:
+    data = dict(data, links=data['edges'])
+data = dict(data, directed=True)  # recover the stored call direction regardless of the export's own flag
 G = json_graph.node_link_graph(data, edges='links')
 
 term = 'NODE_NAME'
@@ -1194,13 +1197,32 @@ print(f'  type: {data_n.get(\"file_type\",\"unknown\")}')
 print(f'  degree: {G.degree(nid)}')
 print()
 print('CONNECTIONS:')
-for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-    nlabel = G.nodes[neighbor].get('label', neighbor)
+
+def _parallel_edges(u, v):
+    raw = G[u][v]
+    return list(raw.values()) if isinstance(G, nx.MultiDiGraph) else [raw]
+
+conns = []
+loop_seen = False
+for nb in G.successors(nid):
+    for edge in _parallel_edges(nid, nb):
+        conns.append(('out' if edge.get('_src', nid) == nid else 'in', nb, edge))
+    loop_seen = loop_seen or nb == nid
+for nb in G.predecessors(nid):
+    if nb == nid and loop_seen:
+        continue  # the self loop was already recorded from the successors pass above
+    for edge in _parallel_edges(nb, nid):
+        conns.append(('in' if edge.get('_src', nb) == nb else 'out', nb, edge))
+
+for direction, nb, edge in conns:
+    nlabel = G.nodes[nb].get('label', nb)
     rel = edge.get('relation', '')
     conf = edge.get('confidence', '')
-    src_file = G.nodes[neighbor].get('source_file', '')
-    print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
+    loc = edge.get('source_location') or ''
+    sfile = edge.get('source_file') or ''
+    at = f' ({sfile}:{loc})' if loc else (f' ({sfile})' if sfile else '')
+    arrow = f'--{rel}-->' if direction == 'out' else f'<--{rel}--'
+    print(f'  {arrow} {nlabel} [{conf}]{at}')
 "
 ```
 
