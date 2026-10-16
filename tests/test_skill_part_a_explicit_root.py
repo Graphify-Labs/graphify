@@ -98,7 +98,11 @@ def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
     scan_root = tmp_path / "proj"
     (scan_root / "pkg").mkdir(parents=True)
     module = scan_root / "pkg" / "mod.py"
-    module.write_text("def hello():\n    return 1\n", encoding="utf-8")
+    module.write_text(
+        "def helper():\n    return 1\n\n"
+        "def hello():\n    return helper()\n",
+        encoding="utf-8",
+    )
     elsewhere = tmp_path / "cache-elsewhere"
     elsewhere.mkdir()
 
@@ -111,11 +115,35 @@ def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
     assert in_place != relocated
 
     scope = {"extract": extract, "Path": Path, "code_files": [module]}
-    ids_in_place = sorted(n["id"] for n in eval(in_place, dict(scope))["nodes"])
-    ids_relocated = sorted(n["id"] for n in eval(relocated, dict(scope))["nodes"])
+    result_in_place = eval(in_place, dict(scope))
+    result_relocated = eval(relocated, dict(scope))
+    ids_in_place = {n["id"] for n in result_in_place["nodes"]}
+    ids_relocated = {n["id"] for n in result_relocated["nodes"]}
 
     assert ids_in_place, "expected AST nodes for the module"
-    assert ids_relocated == ids_in_place, (
-        "moving only the cache renamed the code nodes: "
-        f"{ids_in_place} -> {ids_relocated}"
+    assert ids_relocated == ids_in_place, "moving only the cache renamed the code nodes"
+
+    source_files_in_place = {n["source_file"] for n in result_in_place["nodes"]}
+    source_files_relocated = {n["source_file"] for n in result_relocated["nodes"]}
+    assert source_files_in_place == source_files_relocated == {"pkg/mod.py"}, (
+        "moving only the cache changed source_file paths: "
+        f"{source_files_in_place} -> {source_files_relocated}"
     )
+
+    def edge_signatures(result):
+        return {
+            (edge["source"], edge["target"], edge.get("relation"))
+            for edge in result["edges"]
+        }
+
+    edges_in_place = edge_signatures(result_in_place)
+    edges_relocated = edge_signatures(result_relocated)
+    assert edges_in_place, "expected the helper call to produce a code edge"
+    assert edges_relocated == edges_in_place, (
+        "moving only the cache changed code-edge identities: "
+        f"{edges_in_place} -> {edges_relocated}"
+    )
+    assert all(
+        source in ids_relocated and target in ids_relocated
+        for source, target, _ in edges_relocated
+    ), "cache relocation left an edge pointing at a missing code node"
