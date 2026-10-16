@@ -181,4 +181,4 @@ def test_a_class_from_another_language_never_answers_a_php_receiver(tmp_path):
     parked = [(n.get("metadata") or {}).get("unresolved_calls") for n in result["nodes"]
               if "run" in str(n["label"]) and n.get("metadata")]
     assert parked == [[{"callee": "greet", "receiver_type": "Greeter",
-                        "lang": "php", "line": "L4"}]], parked
+                        "lang": "php", "reason": "external_unresolved", "line": "L4"}]], parked

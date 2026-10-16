@@ -153,7 +153,7 @@ def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):
     parked = [(n.get("metadata") or {}).get("unresolved_calls")
               for n in result["nodes"] if n["label"] == "Run()"]
     assert parked == [[{"callee": "Greet", "receiver_type": "Greeter",
-                        "lang": "go", "line": "L3"}]], parked
+                        "lang": "go", "reason": "external_unresolved", "line": "L3"}]], parked
 
 
 def test_the_methods_own_receiver_outranks_an_earlier_binding_of_the_name(tmp_path):
