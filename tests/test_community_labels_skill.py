@@ -8,7 +8,7 @@ Two guards:
 
 2. A template lint over the generated ``graphify/skill*.md`` bodies (and the
    fragments they render from): the Step-5 / post-labels code block — the one
-   that builds the curated ``labels = LABELS_DICT`` dict — must re-export
+   that loads the curated labels from ``labels_file`` — must re-export
    ``graphify-out/graph.json`` with ``community_labels=labels``. This locks the
    #2490 fix so a future template edit cannot silently drop the kwarg again.
 """
@@ -88,7 +88,7 @@ def _skill_bodies() -> list[Path]:
 
 @pytest.mark.parametrize("path", _skill_bodies(), ids=lambda p: p.name)
 def test_skill_step5_reexports_graph_json_with_curated_labels(path: Path):
-    """Every post-labels (LABELS_DICT) block re-exports graph.json with the kwarg.
+    """Every post-labels (labels_file) block re-exports graph.json with the kwarg.
 
     The Step-5 block is the only place the curated labels dict exists, so it is
     the block that must call ``to_json(..., community_labels=labels)``. Any
@@ -97,9 +97,9 @@ def test_skill_step5_reexports_graph_json_with_curated_labels(path: Path):
     """
     text = path.read_text(encoding="utf-8")
     post_labels_blocks = [
-        b for b in _code_blocks(text) if "labels = LABELS_DICT" in b
+        b for b in _code_blocks(text) if "labels_file = Path(" in b
     ]
-    assert post_labels_blocks, f"{path.name}: no Step-5 (LABELS_DICT) code block found"
+    assert post_labels_blocks, f"{path.name}: no Step-5 (labels_file) code block found"
     for block in post_labels_blocks:
         assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
             f"{path.name}: the post-labels Step-5 block must re-export "
@@ -121,9 +121,9 @@ def test_core_fragments_step5_reexport_with_curated_labels(fragment: Path):
     """Same lint at the source of truth: the core fragments skillgen renders from."""
     text = fragment.read_text(encoding="utf-8")
     post_labels_blocks = [
-        b for b in _code_blocks(text) if "labels = LABELS_DICT" in b
+        b for b in _code_blocks(text) if "labels_file = Path(" in b
     ]
-    assert post_labels_blocks, f"{fragment.name}: no Step-5 (LABELS_DICT) code block found"
+    assert post_labels_blocks, f"{fragment.name}: no Step-5 (labels_file) code block found"
     for block in post_labels_blocks:
         assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
             f"{fragment.name}: the post-labels Step-5 block must re-export "

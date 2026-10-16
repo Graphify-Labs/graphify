@@ -1,3 +1,5 @@
+If the scan path contains a line break (a newline or carriage return), stop and ask the user for a different path. Do not run the block below: a path line could end the heredoc early and run the lines after it as shell.
+
 ```bash
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
 PYTHON=""
@@ -31,15 +33,15 @@ fi
 mkdir -p graphify-out
 "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
 # Save scan root so `graphify update` (no args) knows where to look next time.
-# The scan path is passed through a quoted heredoc, never substituted into the
-# command line itself: a bare `cd <path>` (or an unquoted heredoc, which
-# still expands $()/backticks in its body) would let a malicious path execute
-# as shell code the moment this line runs.
-"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+# The shell never expands the scan path: it goes through a quoted heredoc, not the
+# command line. A path with a line break is refused, because it could end the
+# heredoc early and run the lines after it as shell; the Python below also
+# rejects input of more than one line.
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); raw = sys.stdin.read(); path = raw[:-1] if raw.endswith('\n') else raw; sys.exit('graphify: the scan path has a line break, so it was not used; give a single-line path') if ('\n' in path or '\r' in path) else None; os.chdir(path); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
 INPUT_PATH
 GRAPHIFY_ROOT_EOF
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
+**In every subsequent bash block, replace `python3` with `"$(cat graphify-out/.graphify_python)"` to use the correct interpreter.**

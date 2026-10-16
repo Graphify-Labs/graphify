@@ -437,6 +437,26 @@ def out_path(*parts: str) -> Path:
     return Path(GRAPHIFY_OUT, *parts)
 
 
+def read_scan_root() -> Path:
+    """The scan root Step 1 recorded in ``<out>/.graphify_root``.
+
+    Skill steps read the root from here instead of having the agent paste it into
+    a script, so a hostile folder name is data, never code (#4309). The root may
+    sit outside the cwd: ``/graphify ~/other/project`` writes it from anywhere.
+    """
+    marker = out_path(".graphify_root")
+    if not marker.is_file():
+        raise FileNotFoundError(f"{marker} not found; run Step 1 first")
+    # Exact path: drop only a BOM (#3028) and a trailing newline, never spaces (#4346).
+    text = marker.read_text(encoding="utf-8-sig").removesuffix("\n").removesuffix("\r")
+    if not text:
+        raise ValueError(f"{marker} is empty; run Step 1 first")
+    root = Path(text)
+    if not root.is_dir():
+        raise ValueError(f"{marker} points at {text!r}, which is not a directory")
+    return root.resolve()
+
+
 def default_graph_json() -> str:
     """Default ``graph.json`` path under the configured output dir.
 
