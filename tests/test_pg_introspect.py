@@ -13,7 +13,7 @@ from graphify.validate import validate_extraction
 # Shared mock infrastructure
 # ---------------------------------------------------------------------------
 
-def _make_mock_psycopg(tables, views, routines, fks,
+def _make_mock_psycopg(tables, views, routines, fks, policies=(),
                         host="myhost", dbname="mydb",
                         connect_raises=None):
     """Return a mock psycopg module wired to the provided catalog data.
@@ -21,6 +21,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
     ``routines`` rows must be 5-tuples: (schema, name, rtype, body, ext_lang).
     ``fks`` rows must be 7-tuples:
         (constraint_name, t_schema, t_name, [cols], r_schema, r_name, [r_cols])
+    ``policies`` rows must be 3-tuples: (schema, table, policy_name).
     ``connect_raises``, if set, is an exception *instance* raised by connect().
     """
 
@@ -47,6 +48,8 @@ def _make_mock_psycopg(tables, views, routines, fks,
                 return routines
             elif "pg_constraint" in q:
                 return fks
+            elif "pg_policy" in q:
+                return policies
             return []
 
     class MockConnection:
@@ -329,6 +332,91 @@ def test_pg_introspect_fk_edges_survive_unparseable_function_stubs():
         f"FK edges lost to parser error recovery: expected {n}, "
         f"got {len(ref_pairs)}: {sorted(ref_pairs)}"
     )
+
+
+def test_pg_introspect_emits_rls_policies():
+    """#3401: an RLS schema's policies must reach the graph, attached to the
+    table they guard.
+
+    Nothing in the introspection path queried pg_policy, so a database whose
+    entire access-control story is row-level security produced a graph of tables
+    with no indication of who may read a row.
+    """
+    mock_tables = [("public", "employees", "BASE TABLE"),
+                   ("app", "audit_log", "BASE TABLE")]
+    mock_policies = [
+        ("app", "audit_log", "audit_append_only"),
+        ("public", "employees", "employees_select_own"),
+        ("public", "employees", "employees_update_own"),
+    ]
+
+    mock_psycopg = _make_mock_psycopg(mock_tables, [], [], [], policies=mock_policies)
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://myuser:secret@myhost/mydb")
+
+    errors = validate_extraction(res)
+    assert errors == [], f"Validation errors: {errors}"
+
+    ids_to_labels = {node["id"]: node["label"] for node in res["nodes"]}
+    labels = set(ids_to_labels.values())
+    for _schema, _table, pol in mock_policies:
+        assert f'"{pol}"' in labels, f"policy {pol} missing; got {sorted(labels)}"
+
+    # Each policy points at its own table — two policies on employees, one on
+    # audit_log, and no cross-wiring between the two tables.
+    guarded = {
+        (ids_to_labels[e["source"]], ids_to_labels[e["target"]])
+        for e in res["edges"]
+        if e["relation"] == "references"
+    }
+    assert guarded == {
+        ('"audit_append_only"', _q("app", "audit_log")),
+        ('"employees_select_own"', _q("public", "employees")),
+        ('"employees_update_own"', _q("public", "employees")),
+    }, f"policies not attached to their tables: {sorted(guarded)}"
+
+
+def test_pg_introspect_policies_do_not_damage_the_rest_of_the_ddl():
+    """CREATE POLICY has no rule in tree-sitter-sql, so each statement becomes an
+    ERROR node whose recovery consumes what follows it. Policies are therefore
+    emitted last — tables, FKs and routines must be unaffected by their presence.
+    """
+    mock_tables = [("public", "employees", "BASE TABLE"),
+                   ("public", "departments", "BASE TABLE")]
+    mock_routines = [("public", "is_admin", "FUNCTION", "BEGIN SELECT 1; END;", "PLPGSQL")]
+    mock_fks = [("fk_dept", "public", "employees", ["dept_id"],
+                 "public", "departments", ["id"])]
+    mock_policies = [("public", "employees", "employees_select_own")]
+
+    def _extract(policies):
+        mock_psycopg = _make_mock_psycopg(
+            mock_tables, [], mock_routines, mock_fks, policies=policies
+        )
+        with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+            return introspect_postgres("postgresql://myuser:secret@myhost/mydb")
+
+    without = _extract(())
+    with_policies = _extract(mock_policies)
+
+    base_labels = {n["label"] for n in without["nodes"]}
+    assert base_labels <= {n["label"] for n in with_policies["nodes"]}, (
+        "adding policies to the DDL lost nodes that were there without them"
+    )
+    assert f'{_q("public", "is_admin")}()' in base_labels
+
+    def _fk_pairs(res):
+        ids = {n["id"]: n["label"] for n in res["nodes"]}
+        return {
+            (ids[e["source"]], ids[e["target"]])
+            for e in res["edges"]
+            if e["relation"] == "references"
+            and ids[e["source"]] == _q("public", "employees")
+        }
+
+    assert _fk_pairs(with_policies) == _fk_pairs(without) == {
+        (_q("public", "employees"), _q("public", "departments"))
+    }
 
 
 def test_pg_introspect_connection_error():

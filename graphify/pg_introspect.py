@@ -96,6 +96,25 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 ORDER BY ns.nspname, rel.relname, con.conname;
             """)
             fks = cur.fetchall()
+
+            # 5. Query row-level-security policies. There is no
+            # information_schema view for these, and pg_policies (the
+            # human-readable one) filters rows the current role cannot see, so
+            # read pg_catalog.pg_policy directly — same reasoning as the FK
+            # query above. Policies are the access-control layer of an RLS
+            # schema; without them the graph shows the tables but nothing about
+            # who may read a row (#3401).
+            cur.execute("""
+                SELECT ns.nspname AS table_schema,
+                       rel.relname AS table_name,
+                       pol.polname AS policy_name
+                FROM pg_catalog.pg_policy pol
+                JOIN pg_catalog.pg_class rel ON rel.oid = pol.polrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                WHERE ns.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY ns.nspname, rel.relname, pol.polname;
+            """)
+            policies = cur.fetchall()
     finally:
         conn.close()
 
@@ -143,6 +162,20 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 f"CREATE FUNCTION {fn_sig} RETURNS void"
                 f" AS $gfx$ {actual_body} $gfx$ LANGUAGE {lang};"
             )
+
+    # RLS policies — emitted LAST, for the mirror image of the reason the FKs are
+    # emitted first. tree-sitter-sql has no rule for CREATE POLICY at all, so each
+    # of these statements shreds into an ERROR node that consumes the statements
+    # following it; anything after them would be lost from the AST. They survive
+    # being last because the SQL extractor recovers policies by regex over the
+    # whole file rather than from the tree (see _POLICY_RECOVERY_RX), which is
+    # also why no body/USING clause is reconstructed here: only the name and the
+    # table it guards are read, and both fit in the header.
+    for p_schema, p_table, p_name in policies:
+        ddl.append(
+            f"CREATE POLICY {_quote_ident(p_name)} "
+            f"ON {_quote_ident(p_schema)}.{_quote_ident(p_table)};"
+        )
 
     ddl_string = "\n".join(ddl)
 
