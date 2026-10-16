@@ -228,7 +228,7 @@ try:
     from graphify.paths import GRAPHIFY_OUT as _out
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
-        _txt = _saved.read_text(encoding='utf-8-sig').strip()
+        _txt = _saved.read_text(encoding='utf-8-sig').removesuffix(chr(10)).removesuffix(chr(13))
         if _txt:
             _candidate = Path(_txt)
             try:
@@ -303,7 +303,7 @@ try:
     from graphify.paths import GRAPHIFY_OUT as _out
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
-        _txt = _saved.read_text(encoding='utf-8-sig').strip()
+        _txt = _saved.read_text(encoding='utf-8-sig').removesuffix(chr(10)).removesuffix(chr(13))
         if _txt:
             _candidate = Path(_txt)
             try:

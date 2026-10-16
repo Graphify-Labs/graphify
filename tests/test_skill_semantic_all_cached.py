@@ -80,9 +80,12 @@ def test_all_cached_run_reaches_part_c_with_cached_nodes_and_no_stale_chunks(tmp
     (out / ".graphify_chunk_01.json").write_text(
         json.dumps({"nodes": [{"id": "stale_node", "label": "old", "source_file": "x.md"}],
                     "edges": []}), encoding="utf-8")
+    # Step 1 records the scan root here; every later step reads it back.
+    (out / ".graphify_root").write_text(corpus.as_posix(), encoding="utf-8")
+    # Step B0 records the spec path here; B0 and B3 read it back.
+    (out / ".graphify_spec_path").write_text(spec.as_posix(), encoding="utf-8")
 
     for src in b0 + b3 + part_c:
-        src = src.replace("INPUT_PATH", corpus.as_posix()).replace("SPEC_PATH", spec.as_posix())
         subprocess.run([sys.executable, "-c", src], cwd=tmp_path, check=True,
                        capture_output=True, text=True)
 

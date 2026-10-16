@@ -748,7 +748,8 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     try:
         marker = parent / ".graphify_root"
         if marker.exists():
-            recorded = marker.read_text(encoding="utf-8-sig").strip()
+            from .paths import read_root_marker
+            recorded = read_root_marker(marker)
             recorded_path = Path(recorded)
             if recorded and recorded_path.is_dir():
                 return str(recorded_path.resolve())

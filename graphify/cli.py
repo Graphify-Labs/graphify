@@ -12,6 +12,7 @@ import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import read_root_marker
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -2802,11 +2803,15 @@ def dispatch_command(cmd: str) -> None:
             # Try to recover the scan root saved by the last full build
             saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
             if saved.exists():
-                # utf-8-sig: a marker written by Windows PowerShell 5.1 carries a
-                # UTF-8 BOM that plain utf-8 keeps as U+FEFF (not stripped by
-                # .strip()), which would make this recovered path fail exists()
-                # (#3028). Match the other .graphify_root readers.
-                watch_path = Path(saved.read_text(encoding="utf-8-sig").strip())
+                # Read the path exactly: drop only a BOM (#3028) and a trailing
+                # newline, never spaces (#4346).
+                recorded = read_root_marker(saved)
+                if not recorded:
+                    # An empty marker means Step 1 failed; don't guess the cwd (#4346).
+                    print(f"error: {saved} is empty; pass a path or rerun /graphify",
+                          file=sys.stderr)
+                    sys.exit(1)
+                watch_path = Path(recorded)
             else:
                 watch_path = Path(".")
         if not watch_path.exists():
