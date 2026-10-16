@@ -1308,6 +1308,69 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     return output
 
 
+_COMPACT_NODE = re.compile(
+    r"^NODE (?P<label>.*) \[src=(?P<src>[^\]]*?) loc=(?P<loc>[^\]]*?) community=(?P<community>.*?)"
+    r"(?P<suffix>(?: learning=[^\]\s]*)?(?: attrs=\{.*\})?)\]$"
+)
+
+
+def _compact_answer(text: str, token_budget: int) -> str:
+    """The same rendered answer in fewer tokens: rewrite its NODE lines, keep
+    everything else (notices, EDGE lines) as it is.
+
+    Applied to the output of _subgraph_to_text, so the budget cut, the notices
+    and the node order are exactly the default ones. NODE lines are contiguous
+    and in rank order. Each source file is written once, in the order of its
+    first node, with its nodes beneath it in their original order:
+
+        FILE django/db/models/query.py community=Query API
+          QuerySet.filter() L1203
+          Prefetch L2148 community=Prefetching
+
+    so a reader finds the same files in the same order. A FILE line carries the
+    community most of its nodes share, and a node names its own community only
+    when it differs. Empty fields are left out, and a file's own node (its label
+    is the file name, at L1) is dropped because the FILE line already names it,
+    unless it carries a learning or attrs annotation or a community of its own.
+    Nodes with no source file sit under ``FILE (none)``. If any NODE line does
+    not parse, the answer is returned unchanged: compaction never loses a field.
+    """
+    lines = text.split("\n")
+    idx = [i for i, l in enumerate(lines) if l.startswith("NODE ")]
+    if not idx:
+        return text
+    groups: dict[str, list[tuple[str, str, str, str, bool]]] = {}
+    for i in idx:
+        m = _COMPACT_NODE.match(lines[i])
+        if not m:
+            return text
+        label, src, loc, community, suffix = m.group("label", "src", "loc", "community", "suffix")
+        base = src.rsplit("/", 1)[-1]
+        own = bool(src) and loc in ("", "L1") and (label in (base, src) or src.endswith("/" + label))
+        groups.setdefault(src or "(none)", []).append((label, loc, community, suffix, own))
+    block = []
+    for key, entries in groups.items():
+        counts: dict[str, int] = {}
+        for _, _, community, _, _ in entries:
+            if community:
+                counts[community] = counts.get(community, 0) + 1
+        shared = max(counts, key=lambda c: (counts[c], c)) if counts else ""
+        block.append(f"FILE {key}" + (f" community={shared}" if shared else ""))
+        for label, loc, community, suffix, own in entries:
+            mine = community if community != shared else ""
+            if own and not mine and not suffix:
+                continue
+            block.append(f"  {label}" + (f" {loc}" if loc else "") + (f" community={mine}" if mine else "") + suffix)
+    out = "\n".join(lines[:idx[0]] + block + lines[idx[-1] + 1:])
+    # A complete answer that was over budget only in its default form: once the
+    # compact form fits, the over-budget notice no longer applies.
+    if out.startswith("[i] Complete answer over budget") and "\n\n" in out:
+        rest = out.split("\n\n", 1)[1]
+        if len(rest) <= token_budget * 3:
+            out = rest
+    return out
+
+
 def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
     """Render pre-built lines under the same ~3-chars/token budget rule as
     _subgraph_to_text; over-budget output is cut at a line boundary with a count and a
@@ -1421,6 +1484,7 @@ def _query_graph_text(
     graph_path: str | None = None,
     seeds: list[str] | None = None,
     seed_root: Path | None = None,
+    compact: bool = False,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1443,7 +1507,8 @@ def _query_graph_text(
         if not start_nodes:
             return "No unique node match for --seed: " + ", ".join(seeds)
         return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                             context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
+                             context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved,
+                             compact=compact)
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
@@ -1469,7 +1534,7 @@ def _query_graph_text(
     if not start_nodes:
         return _QUERY_NO_MATCH
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                         context_filters=context_filters, graph_path=graph_path)
+                         context_filters=context_filters, graph_path=graph_path, compact=compact)
 
 
 def _render_query(
@@ -1484,6 +1549,7 @@ def _render_query(
     graph_path: str | None,
     given: bool = False,
     unresolved: list[str] | None = None,
+    compact: bool = False,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
@@ -1512,7 +1578,8 @@ def _render_query(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    body = _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + (_compact_answer(body, token_budget) if compact else body)
 
 
 def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
@@ -2215,6 +2282,8 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "compact": {"type": "boolean", "default": False,
+                                    "description": "Same answer in fewer tokens: each file once, its nodes beneath"},
                     },
                     "required": ["question"],
                 },
@@ -2362,6 +2431,7 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        compact = bool(arguments.get("compact", False))
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -2371,6 +2441,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            compact=compact,
         )
         querylog.log_query(
             kind="mcp_query",

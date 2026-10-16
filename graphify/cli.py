@@ -1530,7 +1530,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--compact] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _QUERY_NO_MATCH, _query_graph_text
         from graphify.security import sanitize_label
@@ -1539,6 +1539,7 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        compact = "--compact" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
@@ -1650,6 +1651,7 @@ def dispatch_command(cmd: str) -> None:
             seeds=seeds or None,
             # Same root derivation as `affected` (#2706): <root>/graphify-out/graph.json.
             seed_root=_graph_root_for(gp),
+            compact=compact,
         )
         querylog.log_query(
             kind="query",

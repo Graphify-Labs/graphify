@@ -911,6 +911,7 @@ def _run_cli() -> None:
         print("    --seed X                start at node X (id, label or file path; repeatable)")
         print("                            instead of the question's keyword matches")
         print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --compact               the same answer in fewer tokens: each file once, its nodes beneath")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  query, path and explain exit 0 with an answer, 3 when a name is ambiguous")
         print("  (the candidates are listed), 4 when no node matches")
