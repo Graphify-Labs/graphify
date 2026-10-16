@@ -16,10 +16,10 @@ def extract_dart(path: Path) -> dict:
 
     # Remove inline and multi-line comments while leaving string literals untouched to prevent stripping URLs/paths inside strings
     comment_string_pattern = re.compile(
-        r'"""(?:\\.|[\s\S])*?"""'
-        r"|'''(?:\\.|[\s\S])*?'''"
-        r'|"(?:\\.|[^"\\])*"'
-        r"|'(?:\\.|[^'\\])*'"
+        r'r?"""(?:\\.|[\s\S])*?"""'  # Add r? to match raw triple-quoted strings
+        r"|r?'''(?:\\.|[\s\S])*?'''"  # Add r? here too
+        r'|r?"(?:\\.|[^"\\])*"'        # Add r? for regular double-quoted
+        r"|r?'(?:\\.|[^'\\])*'"        # Add r? for regular single-quoted
         r"|/\*[\s\S]*?\*/"
         r"|//[^\n]*"
     )
