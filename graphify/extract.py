@@ -63,6 +63,8 @@ from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.erlang import extract_erlang, resolve_erlang_remote_calls  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
+from graphify.extractors.gdscript import extract_gdscript, resolve_gdscript_references  # noqa: F401
+from graphify.extractors.godot_resource import extract_godot_resource  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
@@ -3800,6 +3802,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".cs": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
+    ".gd": "gdscript", ".tscn": "gdscript", ".tres": "gdscript", ".godot": "gdscript",
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
@@ -7443,6 +7446,9 @@ register_language_resolver(
     )
 )
 register_language_resolver(
+    LanguageResolver("gdscript_references", frozenset({".gd"}), resolve_gdscript_references)
+)
+register_language_resolver(
     LanguageResolver(
         "elixir_import_targets",
         frozenset({".ex", ".exs"}),
@@ -8579,6 +8585,10 @@ _DISPATCH: dict[str, Any] = {
     ".luau": extract_lua,
     ".toc": extract_lua,
     ".zig": extract_zig,
+    ".gd": extract_gdscript,
+    ".tscn": extract_godot_resource,
+    ".tres": extract_godot_resource,
+    ".godot": extract_godot_resource,
     ".ps1": extract_powershell,
     ".psm1": extract_powershell,
     ".psd1": extract_powershell_manifest,
@@ -8662,6 +8672,7 @@ _DISPATCH: dict[str, Any] = {
 _EXTRA_FOR_EXTENSION = {
     ".vb": "vbnet",
     ".r": "r",
+    ".gd": "gdscript",
     ".sol": "solidity",
     ".erl": "erlang",
     ".hrl": "erlang",
