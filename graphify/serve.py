@@ -413,11 +413,42 @@ def _node_rationale_text(data: dict) -> str:
     over a list — join it. Missing or empty -> "" so callers can `if rationale`.
     """
     raw = data.get("rationale")
-    if not raw:
-        return ""
     if isinstance(raw, (list, tuple)):
         raw = " ".join(str(part) for part in raw if part)
-    return _strip_diacritics(str(raw)).lower()
+    # Docstrings attached by _attach_docstrings: a symbol's own description is
+    # the same kind of recall evidence as a semantic rationale.
+    raw = " ".join(str(part) for part in (raw, data.get("_docstring")) if part)
+    if not raw:
+        return ""
+    return _strip_diacritics(raw).lower()
+
+
+def _attach_docstrings(G: nx.Graph) -> None:
+    """Copy each docstring/rationale node's text onto the symbol it documents.
+
+    AST extraction stores a docstring as its own `rationale` node linked by a
+    `rationale_for` edge, so a function whose name shares no words with a
+    question ("which function resolves generic call sites?") was unreachable
+    by search even when its docstring answers it (#985 benchmark). Attaching
+    the text as in-memory `_docstring` lets the rationale tier match it.
+    Idempotent per graph object; never written back to graph.json.
+    """
+    if G.graph.get("_docstrings_attached"):
+        return
+    G.graph["_docstrings_attached"] = True
+    for u, v, d in G.edges(data=True):
+        if d.get("relation") != "rationale_for":
+            continue
+        # Stored direction is doc -> symbol, but an undirected load may yield
+        # either order; the doc end is the `rationale` node.
+        doc, target = (u, v) if G.nodes[u].get("file_type") == "rationale" else (v, u)
+        doc_data, target_data = G.nodes[doc], G.nodes[target]
+        if doc_data.get("file_type") != "rationale" or target_data.get("file_type") == "rationale":
+            continue
+        text = doc_data.get("text") or doc_data.get("label")
+        if text:
+            prev = target_data.get("_docstring")
+            target_data["_docstring"] = f"{prev} {text}" if prev else str(text)
 
 
 def _node_search_text(data: dict, nid: str) -> str:
@@ -477,6 +508,9 @@ def _get_trigram_index(G: nx.Graph) -> dict:
     idx = G.graph.get("_trigram_index")
     if idx is not None:
         return idx
+    # Before indexing: docstring text is part of what a node can be found by.
+    # Every search path (CLI query, MCP, find_node) reaches this first.
+    _attach_docstrings(G)
     ids = list(G.nodes())
     postings: dict[str, array] = {}
     for i, nid in enumerate(ids):
