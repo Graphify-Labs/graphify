@@ -724,6 +724,27 @@ def edge_datas(G: nx.Graph, u: str, v: str) -> list[dict]:
     return [raw]
 
 
+def has_parallel_links(links: "list[dict]", directed: bool = True) -> bool:
+    """True when any two link dicts share the same endpoints.
+
+    Used to keep the serialized ``multigraph`` flag consistent with the links
+    actually stored (#4500): a simple-graph write-back can restore parallel
+    links from ``original_links`` while ``node_link_data`` derived
+    ``multigraph: false`` from the in-memory graph, and readers that honour
+    the flag then collapse the parallel edges on load.
+    """
+    seen: set = set()
+    for link in links or []:
+        if not isinstance(link, dict):
+            continue
+        endpoints = (link.get("source"), link.get("target"))
+        key = endpoints if directed else frozenset(endpoints)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
 def dedupe_nodes(nodes: list[dict]) -> list[dict]:
     """Collapse nodes sharing an ``id``, last-writer-wins on attributes.
 

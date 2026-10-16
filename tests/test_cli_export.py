@@ -1011,3 +1011,61 @@ def test_cluster_only_preserves_parallel_edges_across_an_id_remap(tmp_path):
         ("claude_claude_alpha", "pkg_beta", "mentions"),
         ("claude_claude_alpha", "pkg_beta", "references"),
     ], pairs
+
+
+def test_to_json_declares_multigraph_when_original_links_have_parallel_edges(tmp_path):
+    """#4500: to_json restored original_links (which may hold parallel edges,
+    #3999) while node_link_data derived "multigraph": false from the simple
+    in-memory graph. The flag must match the links actually written."""
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+
+    extraction = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "App()", "file_type": "code", "source_file": "src/App.tsx"},
+            {"id": "b", "label": "applySeed()", "file_type": "code", "source_file": "src/App.tsx"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "80"},
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "163"},
+        ],
+    }
+    G = build_from_json(extraction, directed=True)
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    assert to_json(G, communities, str(out), original_links=extraction["links"])
+
+    data = json.loads(out.read_text())
+    assert data["multigraph"] is True
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    assert pairs == [("a", "b", "calls"), ("a", "b", "contains")], pairs
+
+
+def test_to_json_keeps_multigraph_false_without_parallel_edges(tmp_path):
+    """#4500: the flag repair must not flip graphs that have no parallel edges."""
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+
+    extraction = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "b", "file_type": "code", "source_file": "a.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    G = build_from_json(extraction, directed=True)
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    assert to_json(G, communities, str(out), original_links=extraction["links"])
+
+    data = json.loads(out.read_text())
+    assert data["multigraph"] is False
+    assert len(data["links"]) == 1
