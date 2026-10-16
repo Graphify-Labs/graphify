@@ -475,8 +475,21 @@ def extract_markdown(path: Path) -> dict:
     frontmatter = sanitize_metadata(_parse_frontmatter(fm_lines))
 
     file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1, node_kind="page",
-             extra={"frontmatter": frontmatter} if frontmatter else None)
+    _page_extra: "dict | None" = {"frontmatter": frontmatter} if frontmatter else None
+    # A note-per-fact vault (e.g. a markdown-memory tool) often puts the one
+    # line that actually describes the file in frontmatter (`description:`,
+    # `summary:`) rather than in a body paragraph the structural pass would
+    # capture. _node_search_text's body tier (#3313) is the single documented
+    # place non-extraction free text goes, and it already reads a page's
+    # `body` attribute — but nothing wrote one from frontmatter, so a query
+    # for a term that only appears in `description:` found nothing even
+    # though the text is right there on the node (#3313 follow-up).
+    for _fm_key in ("description", "summary"):
+        _fm_val = frontmatter.get(_fm_key)
+        if isinstance(_fm_val, str) and _fm_val.strip():
+            _page_extra = dict(_page_extra or {}, body=_fm_val)
+            break
+    add_node(file_nid, path.name, 1, node_kind="page", extra=_page_extra)
 
     source_dir = path.parent
     # Dedup link edges by resolved target node so a hub doc that links to the
