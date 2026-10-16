@@ -33,7 +33,7 @@ import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
-from .validate import validate_extraction
+from .validate import VALID_CONFIDENCES, validate_extraction
 
 
 # Deterministic (AST) extractors emit source_location "L<line>"; the semantic
@@ -470,36 +470,74 @@ def _fold_node_aliases(node: dict) -> None:
                 break
 
 
-def _fold_edge_aliases(edge: dict) -> None:
-    """Fold legacy edge field aliases onto canonical keys, in place (#2194).
+def _fold_confidence(obj: dict) -> None:
+    """Fold a legacy/drifted ``confidence`` onto the enum, in place (#2194, #4495).
 
-    ``type``/``relationship`` -> ``relation`` (``type`` checked first). A
-    ``confidence_score`` float with no ``confidence`` enum backfills
-    ``confidence: "INFERRED"`` — never EXTRACTED (alias recovery is not
-    provenance) and never a threshold mapping of the float. The
-    ``confidence_score`` key itself is NOT popped: it is a legitimate companion
-    field that the edge loop sanitizes and to_json round-trips.
+    Shared by edges and hyperedges, both of which carry the same
+    ``confidence``/``confidence_score`` pair and the same two failure modes.
 
     A NUMERIC ``confidence`` (pre-enum graphs stored the LLM pass's float —
     1.0/0.95/0.9/0.85 — directly in the field) normalizes to ``INFERRED``:
     numeric confidences only ever came from the LLM semantic pass, and
-    LLM-derived edges are INFERRED by definition. The original float moves to
-    ``confidence_score`` unless an explicit one is already present (the
-    companion field is the authority). Without this fold, every reload of a
-    pre-enum graph re-warns once per legacy edge, forever. ``bool`` is
-    excluded despite subclassing ``int``: ``True`` is not a score.
+    LLM-derived edges/hyperedges are INFERRED by definition. The original
+    float moves to ``confidence_score`` unless an explicit one is already
+    present (the companion field is the authority). Without this fold, every
+    reload of a pre-enum graph re-warns once per legacy entry, forever.
+    ``bool`` is excluded despite subclassing ``int``: ``True`` is not a score.
+
+    A non-exact-match STRING ``confidence`` is model drift from the same
+    semantic pass, not a documented format — the extraction spec asks for the
+    enum plus a separate ``confidence_score`` float, so anything else here can
+    only have come from a model ignoring that spec, never a user or
+    extractor. Two shapes of drift are folded differently:
+
+    * A case variant of a real enum value (a lowercase ``"inferred"``) is
+      corrected to its canonical uppercase spelling, nothing more — it IS the
+      enum value, just mis-cased, so treating it as an unknown word and
+      re-deriving ``confidence_score`` from it (next bullet) would be wrong.
+    * Anything else (``"high"``, ``"confirmed"``, ``"medium-high"``, ...)
+      folds like the numeric case above: a value that parses as a float
+      backfills ``confidence_score``, and the field becomes ``INFERRED``
+      regardless of whether it parsed. Without this, a graph with
+      model-drifted string confidences re-warns on every command forever,
+      identically to the numeric gap above.
+
+    ``confidence_score`` itself is NOT popped in either case: it is a
+    legitimate companion field the edge loop sanitizes and to_json
+    round-trips.
+    """
+    _conf = obj.get("confidence")
+    if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
+        if obj.get("confidence_score") is None:
+            obj["confidence_score"] = float(_conf)
+        obj["confidence"] = "INFERRED"
+    elif isinstance(_conf, str) and _conf not in VALID_CONFIDENCES:
+        _upper = _conf.upper()
+        if _upper in VALID_CONFIDENCES:
+            obj["confidence"] = _upper
+        else:
+            if obj.get("confidence_score") is None:
+                try:
+                    obj["confidence_score"] = float(_conf)
+                except ValueError:
+                    pass
+            obj["confidence"] = "INFERRED"
+    if not obj.get("confidence") and obj.get("confidence_score") is not None:
+        obj["confidence"] = "INFERRED"
+
+
+def _fold_edge_aliases(edge: dict) -> None:
+    """Fold legacy edge field aliases onto canonical keys, in place (#2194).
+
+    ``type``/``relationship`` -> ``relation`` (``type`` checked first), then
+    ``confidence``/``confidence_score`` via ``_fold_confidence`` (see its own
+    docstring for the numeric and string drift cases it folds).
     """
     if not edge.get("relation") and isinstance(edge.get("type"), str) and edge["type"]:
         edge["relation"] = edge.pop("type")
     if not edge.get("relation") and isinstance(edge.get("relationship"), str) and edge["relationship"]:
         edge["relation"] = edge.pop("relationship")
-    _conf = edge.get("confidence")
-    if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
-        if edge.get("confidence_score") is None:
-            edge["confidence_score"] = float(_conf)
-        edge["confidence"] = "INFERRED"
-    if not edge.get("confidence") and edge.get("confidence_score") is not None:
-        edge["confidence"] = "INFERRED"
+    _fold_confidence(edge)
 
 
 def _coerce_id(value: object) -> object:
@@ -1155,8 +1193,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # `nodes` here — BEFORE validation and the semantic-rekey loop below — so
     # every downstream consumer (rekey, source_file relativize, to_json) reads
     # one canonical key, the same way edge endpoints alias from/to at build.
+    # Confidence is folded here too (#4495): a hyperedge carries the same
+    # confidence/confidence_score pair an edge does, and the same legacy
+    # numeric or model-drifted string values, but had no fold of its own.
     for he in extraction.get("hyperedges", []) or []:
-        _normalize_hyperedge_members(he)
+        if isinstance(he, dict):
+            _normalize_hyperedge_members(he)
+            _fold_confidence(he)
 
     # Fold legacy edge field aliases (`type`->`relation`,
     # `confidence_score`->`confidence`, #2194) BEFORE validation. The existing
