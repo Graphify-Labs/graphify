@@ -1466,10 +1466,14 @@ def _query_graph_text(
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term, term_order=qs.term_order)
+    # A file the question names seeds first: its path never survives term
+    # splitting as a label match (#985).
+    named_files = _mentioned_file_nodes(G, question)
+    start_nodes = named_files + [n for n in start_nodes if n not in named_files]
     if not start_nodes:
         return _QUERY_NO_MATCH
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                         context_filters=context_filters, graph_path=graph_path)
+                         context_filters=context_filters, graph_path=graph_path, named_files=named_files)
 
 
 def _render_query(
@@ -1484,6 +1488,7 @@ def _render_query(
     graph_path: str | None,
     given: bool = False,
     unresolved: list[str] | None = None,
+    named_files: list[str] | None = None,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
@@ -1509,6 +1514,14 @@ def _render_query(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
+    # Who imports a named file, rolled up from symbol imports: the traversal
+    # alone misses importers two hops away or behind a context filter (#985).
+    # Needs the logical direction, so only on a directed graph (MCP); the CLI
+    # loads the graph undirected and keeps its old output.
+    if G.is_directed() and named_files:
+        summaries = [line for line in (_importers_summary(G, n) for n in named_files) if line]
+        if summaries:
+            header += "\n".join(summaries) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
@@ -2116,6 +2129,41 @@ def _node_call_lines(G: nx.Graph, nid: str) -> list[str]:
     callees.sort(key=lambda p: (_site(p[1]), str(G.nodes[p[0]].get("label", p[0]))))
     callers.sort(key=lambda p: _importer_sort_key(G, p[0]))
     return _line("Calls", callees) + _line("Called by", callers)
+
+
+# A file named in a question: `cache.py`, `graphify/cache.py`, `src\app.ts`.
+_FILE_MENTION_RE = re.compile(r"[\w.\\/-]*\w\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w.])")
+
+
+def _mentioned_file_nodes(G: nx.Graph, question: str) -> list[str]:
+    """File nodes the question names by file name or path.
+
+    `_query_terms` splits `graphify/cache.py` into `graphify`, `cache`, `py`, so
+    no term equals the file node's label and the file can rank hundreds of
+    places below symbols that merely contain `cache` (#985). A mention is used
+    only when it resolves to exactly one file node: a bare `__init__.py` that
+    names many files seeds none of them rather than a guessed one.
+    """
+    mentions: list[str] = []
+    for raw in _FILE_MENTION_RE.findall(question):
+        m = raw.replace("\\", "/").lstrip("./").lower()
+        if m and m not in mentions:
+            mentions.append(m)
+    if not mentions:
+        return []
+    hits: dict[str, list[str]] = {m: [] for m in mentions}
+    for nid, data in G.nodes(data=True):
+        if not _is_file_node(data):
+            continue
+        src = str(data.get("source_file")).replace("\\", "/").lower()
+        for m in mentions:
+            if src == m or src.endswith("/" + m):
+                hits[m].append(nid)
+    found: list[str] = []
+    for m in mentions:
+        if len(hits[m]) == 1 and hits[m][0] not in found:
+            found.append(hits[m][0])
+    return found
 
 
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
