@@ -600,3 +600,63 @@ def test_js_short_rationale_comment_unchanged(tmp_path):
     assert [n["label"] for n in rationale] == [
         "NOTE: must run before compile() or the linker will fail"
     ]
+
+
+def test_truncated_docstring_keeps_full_text_for_search(tmp_path):
+    """#985: the 80-char label drops the words a question is likely to use, so a
+    truncated docstring keeps its whitespace-collapsed full text in ``text``."""
+    docstring = ("The callee identifier of a call-site name node. A plain identifier "
+                 "reads as-is; a generic_name reads its identifier child so the "
+                 "type-argument list never leaks into the callee name.")
+    path = _write_py(tmp_path, f'''
+        def bare_call_name(name_node):
+            """{docstring}"""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert len(rationale) == 1
+    assert "generic_name" not in rationale[0]["label"]
+    assert rationale[0]["text"] == docstring
+
+
+def test_untruncated_docstring_adds_no_text_field(tmp_path):
+    """The label already holds a short docstring verbatim; don't duplicate it."""
+    path = _write_py(tmp_path, '''
+        def process():
+            """We use chunked processing here because the full dataset exceeds RAM."""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert len(rationale) == 1
+    assert "text" not in rationale[0]
+
+
+def test_rationale_text_is_capped(tmp_path):
+    """Full text is bounded so a huge docstring can't bloat graph.json."""
+    from graphify.extract import _RATIONALE_TEXT_CAP
+    docstring = "word " * 400
+    path = _write_py(tmp_path, f'''
+        def huge():
+            """{docstring}"""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert len(rationale[0]["text"]) == _RATIONALE_TEXT_CAP
+    assert rationale[0]["text"].endswith("…")
+
+
+def test_js_truncated_rationale_keeps_full_text(tmp_path):
+    """Same invariant at the JS/TS site."""
+    from graphify.extract import extract_js
+    comment_text = ("retries are capped because the upstream billing service "
+                     "enforces a strict per-tenant rate limit that keeps dropping requests")
+    path = _write_ts(tmp_path, f'''
+        // WHY: {comment_text}
+        export function fetchData(): void {{}}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert rationale[0]["text"] == f"WHY: {comment_text}"
