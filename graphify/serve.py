@@ -1964,6 +1964,116 @@ def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
     return H
 
 
+_IMPORT_RELATIONS = frozenset({"imports", "imports_from", "dynamic_import"})
+
+
+def _is_file_node(data: dict) -> bool:
+    """A file/module node is labelled with its own file name (e.g. `cache.py`)."""
+    source_file = str(data.get("source_file") or "")
+    return bool(source_file) and data.get("label") == source_file.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _file_importers(G: nx.Graph, nid: str) -> dict[str, list[str]]:
+    """Importers of a file node: importer id -> the symbols it imports from the file.
+
+    `from pkg.mod import f` is extracted as an edge to `f`, not to `mod`, so a
+    file's own predecessors miss every caller that imports names rather than
+    the module. Roll imports of the symbols the file contains up to the file.
+    A direct module import maps to an empty symbol list.
+    """
+    importers: dict[str, list[str]] = {}
+    own_file = G.nodes[nid].get("source_file")
+    for p in G.predecessors(nid):
+        if _first_edge(G, p, nid, _IMPORT_RELATIONS):
+            importers.setdefault(p, [])
+    for child in G.successors(nid):
+        if not _first_edge(G, nid, child, {"contains"}):
+            continue
+        for p in G.predecessors(child):
+            if p == nid or G.nodes[p].get("source_file") == own_file:
+                continue
+            if _first_edge(G, p, child, _IMPORT_RELATIONS):
+                importers.setdefault(p, []).append(child)
+    return importers
+
+
+def _first_edge(G: nx.Graph, u: str, v: str, relations: "frozenset[str] | set[str]") -> dict | None:
+    """The earliest-sited u -> v edge whose relation is in `relations`, looking at
+    every parallel edge between the pair (#4500), or None."""
+    hits = [d for d in edge_datas(G, u, v) if d.get("relation") in relations]
+    if not hits:
+        return None
+
+    def _line_no(d: dict) -> int:
+        m = re.search(r"\d+", str(d.get("source_location") or ""))
+        return int(m.group()) if m else 0
+    return min(hits, key=_line_no)
+
+
+def _importer_sort_key(G: nx.Graph, p: str) -> tuple[bool, str]:
+    # Source files before tests, which otherwise crowd out the answer.
+    path = str(G.nodes[p].get("source_file") or "").replace("\\", "/")
+    is_test = path.startswith("tests/") or "/tests/" in path or path.rsplit("/", 1)[-1].startswith("test_")
+    return is_test, str(G.nodes[p].get("label", p))
+
+
+_IMPORTERS_SHOWN = 25
+
+
+def _importers_summary(G: nx.Graph, nid: str) -> str:
+    """One line naming every file that imports file node `nid` (see _file_importers)."""
+    importers = sorted(_file_importers(G, nid), key=lambda p: _importer_sort_key(G, p))
+    if not importers:
+        return ""
+    names = [sanitize_label(str(G.nodes[p].get("source_file") or G.nodes[p].get("label", p)))
+             for p in importers[:_IMPORTERS_SHOWN]]
+    more = f" +{len(importers) - _IMPORTERS_SHOWN} more" if len(importers) > _IMPORTERS_SHOWN else ""
+    label = sanitize_label(str(G.nodes[nid].get("label", nid)))
+    return (f"{label} is imported by {len(importers)} files "
+            f"(directly or via symbols defined in it): {', '.join(names)}{more}")
+
+
+def _neighbors_text(G: nx.Graph, nid: str, rel_filter: str = "", token_budget: int = 2000) -> str:
+    """Text for the get_neighbors tool: nid's outgoing (-->) and incoming (<--) edges.
+
+    For a file node, importers come first, including files that import only
+    symbols defined in it (see _file_importers), so "who imports this file"
+    survives the budget cut instead of sitting behind its `contains` list.
+    """
+    rel_filter = rel_filter.lower()
+    lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
+
+
+    listed_importers: set[str] = set()
+    if _is_file_node(G.nodes[nid]) and (not rel_filter or "import" in rel_filter):
+        importers = _file_importers(G, nid)
+        via_symbols = {p: syms for p, syms in importers.items() if syms}
+
+        if via_symbols:
+            names = [sanitize_label(str(G.nodes[p].get("label", p))) for p in sorted(importers, key=lambda p: _importer_sort_key(G, p))]
+            lines.append(f"  Imported by {len(names)} (directly or via symbols defined here): {', '.join(names)}")
+            # Every importer goes here, direct module imports included, so the
+            # section is complete on its own; they are skipped further down.
+            listed_importers = set(importers)
+            for p in sorted(importers, key=lambda p: _importer_sort_key(G, p)):
+                syms = importers[p]
+                d = _first_edge(G, p, syms[0] if syms else nid, _IMPORT_RELATIONS) or {}
+                via = ""
+                if syms:
+                    shown = ", ".join(sanitize_label(str(G.nodes[s].get("label", s))) for s in syms[:3])
+                    via = f" via {shown}" + (f" +{len(syms) - 3} more" if len(syms) > 3 else "")
+                lines.append(
+                    f"  <-- {sanitize_label(str(G.nodes[p].get('label', p)))} "
+                    f"[{sanitize_label(str(d.get('relation', '')))}] [{sanitize_label(str(d.get('confidence', '')))}]"
+                    f"{via}{_edge_site(d)}"
+                )
+
+    lines.extend(_neighbor_lines(G, nid, rel_filter, listed_importers))
+    return _cut_lines_to_budget(
+        lines, token_budget, "Narrow with relation_filter or use get_node for a specific symbol"
+    )
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -2090,20 +2200,26 @@ def _community_header(cid: int, community_name) -> str:
     return base
 
 
-def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
+def _edge_site(d: dict) -> str:
+    """` at=file:Lnn` for an edge, or "". Edge location = the relation SITE
+    (call/import line) in the source node's file, not a def line (#BUG1)."""
+    loc = str(d.get("source_location") or "")
+    return (
+        f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+        if loc else ""
+    )
+
+
+def _neighbor_lines(
+    G: nx.Graph, nid: str, rel_filter: str = "", skip_importers: "set[str] | frozenset[str]" = frozenset()
+) -> list[str]:
     """One output line per relationship incident to ``nid``.
 
     Parallel edges between the same pair each render as their own line with
     their own metadata (#4500); ``edge_data()`` would return only the first.
+    Incoming import edges from ``skip_importers`` are left out: _neighbors_text
+    has already listed those files in its importer section (#985).
     """
-    def _edge_at(d: dict) -> str:
-        # Edge location = the relation SITE (call/import line) in the source
-        # node's file, not a def line (#BUG1).
-        loc = str(d.get("source_location") or "")
-        return (
-            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
-            if loc else ""
-        )
     lines: list[str] = []
     for nb in G.successors(nid):
         for d in edge_datas(G, nid, nb):
@@ -2112,16 +2228,18 @@ def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
                 continue
             lines.append(
                 f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_site(d)}"
             )
     for nb in G.predecessors(nid):
         for d in edge_datas(G, nb, nid):
             rel = d.get("relation", "")
             if rel_filter and rel_filter not in rel.lower():
                 continue
+            if nb in skip_importers and rel in _IMPORT_RELATIONS:
+                continue
             lines.append(
                 f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_site(d)}"
             )
     return lines
 
@@ -2421,16 +2539,11 @@ def _build_server(graph_path: str):
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
-        label = raw.lower()
-        rel_filter = arguments.get("relation_filter", "").lower()
-        nid, err = _resolve_single_node(G, label)
-        if err:
-            return err
-        lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
-        lines.extend(_neighbor_lines(G, nid, rel_filter))
-        budget = int(arguments.get("token_budget", 2000))
-        return _cut_lines_to_budget(
-            lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
+        nid, err = _resolve_single_node(G, raw.lower())
+        if err or nid is None:
+            return err or f"No node matching '{raw}' found."
+        return _neighbors_text(
+            G, nid, arguments.get("relation_filter", ""), int(arguments.get("token_budget", 2000))
         )
 
     def _tool_get_community(arguments: dict) -> str:
