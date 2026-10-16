@@ -136,6 +136,63 @@ def test_stale_graph_softens_never_denies(tmp_path, monkeypatch):
     assert "stale" in out.lower() and "MANDATORY" not in out
 
 
+def test_recent_repository_commit_softens_even_when_file_is_fresh(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, fresh=True)
+
+    class _GitResult:
+        stdout = str(time.time() + 60)
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: _GitResult())
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+
+    assert not _is_deny(out)
+    assert "stale" in out.lower() and "MANDATORY" not in out
+
+
+def test_older_repository_commit_does_not_soften(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, fresh=True)
+
+    class _GitResult:
+        stdout = str(time.time() - 60)
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: _GitResult())
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+
+    assert _is_deny(out)
+
+
+def test_repository_commit_probe_fails_open(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, fresh=True)
+
+    def _unavailable(*args, **kwargs):
+        raise OSError("git is unavailable")
+
+    monkeypatch.setattr(cli.subprocess, "run", _unavailable)
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+
+    assert _is_deny(out)
+
+
+def test_repository_commit_probe_is_cached_per_session(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, fresh=True)
+    calls = 0
+
+    class _GitResult:
+        stdout = str(time.time() + 60)
+
+    def _git(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _GitResult()
+
+    monkeypatch.setattr(cli.subprocess, "run", _git)
+    first = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+    second = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+
+    assert "stale" in first.lower() and "stale" in second.lower()
+    assert calls == 1
+
+
 def test_needs_update_flag_softens(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     (tmp_path / "graphify-out" / "needs_update").write_text("1", encoding="utf-8")
@@ -167,7 +224,15 @@ def test_search_never_denies(tmp_path, monkeypatch):
 def test_no_session_id_never_denies(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     payload = {"tool_name": "Read", "tool_input": {"file_path": str(f)}}  # no session_id
+    calls = 0
+
+    def _git(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(cli.subprocess, "run", _git)
     assert not _is_deny(_invoke("read", payload, tmp_path, monkeypatch, strict=True))
+    assert calls == 0
 
 
 def test_not_indexed_file_not_denied(tmp_path, monkeypatch):
