@@ -9,7 +9,9 @@ and every cached edge into code left dangling. A node-count guard cannot see it.
 """
 from __future__ import annotations
 
+import ast
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 from graphify.extract import extract  # noqa: E402
 from tools.skillgen import gen  # noqa: E402
 
-_CALL = "extract(code_files, cache_root="
+_CALL_START = "result = extract("
 
 
 def _split_hosts() -> list[gen.Platform]:
@@ -32,7 +34,48 @@ def _split_hosts() -> list[gen.Platform]:
 
 def _part_a_calls(platform: gen.Platform) -> list[str]:
     body = gen.render(platform)[0].content
-    return [line.strip() for line in body.splitlines() if _CALL in line]
+    lines = body.splitlines()
+    calls: list[str] = []
+    for start, line in enumerate(lines):
+        if not line.lstrip().startswith(_CALL_START):
+            continue
+        for end in range(start, min(start + 30, len(lines))):
+            if end > start and lines[end].lstrip().startswith("```"):
+                break
+            candidate = textwrap.dedent("\n".join(lines[start : end + 1])).strip()
+            try:
+                tree = ast.parse(candidate)
+            except SyntaxError:
+                continue
+            if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
+                break
+            value = tree.body[0].value
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "extract"
+            ):
+                calls.append(candidate)
+                break
+            break
+    return calls
+
+
+def _has_explicit_input_root(call: str) -> bool:
+    tree = ast.parse(call)
+    value = tree.body[0].value
+    if not isinstance(value, ast.Call):
+        return False
+    root = next((keyword.value for keyword in value.keywords if keyword.arg == "root"), None)
+    return (
+        isinstance(root, ast.Call)
+        and isinstance(root.func, ast.Name)
+        and root.func.id == "Path"
+        and len(root.args) == 1
+        and isinstance(root.args[0], ast.Constant)
+        and root.args[0].value == "INPUT_PATH"
+        and not root.keywords
+    )
 
 
 def test_split_hosts_are_discovered():
@@ -45,7 +88,7 @@ def test_part_a_passes_an_explicit_root(platform: gen.Platform):
     calls = _part_a_calls(platform)
     assert calls, f"[{platform.key}] Part A extract() call not found"
     for call in calls:
-        assert "root=Path('INPUT_PATH')" in call.replace("cache_root=Path('INPUT_PATH')", ""), (
+        assert _has_explicit_input_root(call), (
             f"[{platform.key}] Part A calls extract() with cache_root but no root= (#3727): {call!r}"
         )
 
