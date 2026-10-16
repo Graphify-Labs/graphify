@@ -1308,6 +1308,48 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     return output
 
 
+# Lead file: a natural-language question (3+ terms) is usually about one file
+# whose nodes, together, match it best, rather than about the single best-
+# scoring node, which is often a test or a same-named helper elsewhere. Among
+# the best-scored candidates, files are ranked by the sum of their candidates'
+# scores; the best node of the best file becomes the first start node. A test
+# file never leads unless the question asks about tests. Measured on SWE-bench
+# Lite (285 issues, 12 repos), fixed file printed first: 78 -> 88 asked by the
+# issue title, 67 -> 80 by title plus 400 characters (in the first five files:
+# 131 -> 136 and 122 -> 140). The constants were chosen on django and sympy;
+# on the 10 other repos alone: 24 -> 27 and 20 -> 29.
+_LEAD_FILE_CANDIDATES = 50
+_LEAD_FILE_MIN_TERMS = 3
+_TEST_QUERY_TERMS = frozenset({"test", "tests", "testing", "pytest", "unittest", "fixture", "fixtures", "spec", "specs"})
+
+
+def _lead_by_file(G: nx.Graph, ranked: list[tuple[float, str]], norm_terms: list[str]) -> str | None:
+    """The first start node for a natural-language question, chosen by file.
+
+    Returns the best-scored node of the file whose candidates (among the
+    ``_LEAD_FILE_CANDIDATES`` best-scored nodes) have the highest summed score,
+    or None for a short query (fewer than ``_LEAD_FILE_MIN_TERMS`` terms), so an
+    identifier lookup keeps its exact match first. Test files (`_is_test_path`)
+    are passed over unless the question names tests, or unless only test files
+    match. Ties break by path, so the choice is deterministic.
+    """
+    if len(norm_terms) < _LEAD_FILE_MIN_TERMS:
+        return None
+    from graphify.paths import _is_test_path
+    totals: dict[str, float] = {}
+    best: dict[str, str] = {}
+    for score, nid in ranked[:_LEAD_FILE_CANDIDATES]:
+        src = (G.nodes[nid].get("source_file") or "") if nid in G else ""
+        if not src:
+            continue
+        totals[src] = totals.get(src, 0.0) + score
+        best.setdefault(src, nid)
+    files = sorted(totals, key=lambda f: (-totals[f], f))
+    if not set(norm_terms) & _TEST_QUERY_TERMS:
+        files = [f for f in files if not _is_test_path(f)] or files
+    return best[files[0]] if files else None
+
+
 def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
     """Render pre-built lines under the same ~3-chars/token budget rule as
     _subgraph_to_text; over-budget output is cut at a line boundary with a count and a
@@ -1466,6 +1508,11 @@ def _query_graph_text(
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term, term_order=qs.term_order)
+    # A natural-language question leads with the best node of its best-matching
+    # file; the other seeds keep their order behind it (see _lead_by_file).
+    lead = _lead_by_file(G, qs.ranked, list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t))))
+    if lead is not None:
+        start_nodes = [lead] + [n for n in start_nodes if n != lead]
     if not start_nodes:
         return _QUERY_NO_MATCH
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
