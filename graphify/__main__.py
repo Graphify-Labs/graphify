@@ -118,6 +118,7 @@ from graphify.install import (  # noqa: E402,F401
     _KILO_CONFIG_JSONC_PATH,
     _OPENCODE_PLUGIN_JS,
     _OPENCODE_PLUGIN_PATH,
+    _OPENCODE_COMMAND_PATH,
     _OPENCODE_CONFIG_PATH,
     _OPENCODE_PLUGIN_HEADER,
     _drop_opencode_config_entry,
