@@ -98,9 +98,9 @@ def test_cpp_instance_member_call_resolves(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("main()", "calls", "bar", "INFERRED") in calls
+    assert ("main()", "calls", ".bar()", "INFERRED") in calls
     # Exactly one bar call edge from main (no fan-out, no duplicate).
-    bar_calls = [c for c in calls if c[0] == "main()" and c[2] == "bar"]
+    bar_calls = [c for c in calls if c[0] == "main()" and c[2] == ".bar()"]
     assert len(bar_calls) == 1
 
 
@@ -113,7 +113,7 @@ def test_cpp_pointer_member_call_resolves(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("main()", "calls", "bar", "INFERRED") in calls
+    assert ("main()", "calls", ".bar()", "INFERRED") in calls
 
 
 def test_cpp_qualified_member_call_is_extracted(tmp_path: Path):
@@ -125,7 +125,7 @@ def test_cpp_qualified_member_call_is_extracted(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("main()", "calls", "bar", "EXTRACTED") in calls
+    assert ("main()", "calls", ".bar()", "EXTRACTED") in calls
 
 
 def test_cpp_qualified_call_resolves_to_a_qualified_only_definition(tmp_path: Path):
@@ -218,7 +218,7 @@ def test_cpp_this_member_call_resolves_to_enclosing_class(tmp_path: Path):
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
     calls = _call_edges(result)
-    assert ("baz", "calls", "bar", "EXTRACTED") in calls
+    assert (".baz()", "calls", ".bar()", "EXTRACTED") in calls
 
 
 def test_cpp_godnode_guard_ambiguous_and_unknown_receiver(tmp_path: Path):
@@ -238,7 +238,7 @@ def test_cpp_godnode_guard_ambiguous_and_unknown_receiver(tmp_path: Path):
         e for e in result["edges"]
         if e.get("relation") == "calls"
         and _label(result, e["source"]) == "main()"
-        and _label(result, e["target"]) == "run"
+        and _label(result, e["target"]) == ".run()"
     ]
     # Exactly one resolved run() call, and it targets A's run (not B's, not both).
     assert len(run_calls) == 1
