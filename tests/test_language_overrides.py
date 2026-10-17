@@ -515,10 +515,13 @@ def test_a_declared_csharp_file_disambiguates_inherits_by_namespace(tmp_path):
     assert target_node.get("source_file", "").replace("\\", "/").endswith("Pkg1/Shape.cs")
 
 
-def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys):
-    # .ets (ArkTS) is a recognized CODE_EXTENSIONS member with no registered
-    # AST extractor (unlike .r, which upstream now implements behind an
-    # optional dependency and would instead warn "dependency is missing").
+def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys, monkeypatch):
+    # A remap to a recognized CODE_EXTENSIONS member with no registered AST
+    # extractor must still warn. Every such extension now has an extractor (.ets
+    # gained one; MATLAB .m is only extractor-less via content sniffing, which a
+    # remap bypasses), so drop .ets from the dispatch table to model the case.
+    import graphify.extract as extract_mod
+    monkeypatch.delitem(extract_mod._DISPATCH, ".ets")
     (tmp_path / "a.tpl").write_text("class Foo {}\n", encoding="utf-8")
     (tmp_path / ".graphifyrc").write_text("language.tpl=.ets\n", encoding="utf-8")
     _quiet_extract([tmp_path / "a.tpl"], cache_root=tmp_path, root=tmp_path)

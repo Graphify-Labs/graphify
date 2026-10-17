@@ -5479,18 +5479,19 @@ def test_case_insensitive_suffix_filtering(tmp_path):
 
 
 def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
-    # #1689: .ets is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
-    # so ArkTS files silently contribute nothing. extract() must surface that instead of
-    # reporting success as if the language were mapped.
-    r1 = tmp_path / "analysis.ets"; r1.write_text("@Component struct Analysis {}\n")
-    r2 = tmp_path / "helper.ets"; r2.write_text("@Component struct Helper {}\n")
+    # #1689: a CODE_EXTENSIONS file with no AST extractor silently contributes nothing.
+    # extract() must surface that instead of reporting success as if the language were
+    # mapped. MATLAB `.m` is the remaining case: it is left without an extractor rather
+    # than force-parsed as Objective-C (#1702).
+    r1 = tmp_path / "analysis.m"; r1.write_text("function y = analysis(x)\n  y = x;\nend\n")
+    r2 = tmp_path / "helper.m"; r2.write_text("function y = helper(x)\n  y = x + 1;\nend\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
 
     result = extract([r1, r2, py], cache_root=tmp_path)
     err = capsys.readouterr().err
 
     assert "no AST extractor" in err
-    assert ".ets (2)" in err
+    assert ".m (2)" in err
     assert "#1689" in err
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
@@ -5610,8 +5611,8 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     for i in range(100):
         (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
     for i in range(5):
-        (tmp_path / f"s{i}.ets").write_text(f"function g{i}(x) {{ return x; }}\n")  # no extractor
-    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.ets"))  # total 105
+        (tmp_path / f"s{i}.m").write_text(f"function y = g{i}(x)\n  y = x;\nend\n")  # MATLAB: no extractor
+    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.m"))  # total 105
 
     extract(paths, cache_root=tmp_path, parallel=False)
     out = capsys.readouterr().out

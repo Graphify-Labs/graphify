@@ -1,0 +1,20 @@
+{
+  "routerMap": [
+    {
+      "name": "GuidePage",
+      "pageSourceFile": "src/main/ets/pages/GuidePage.ets",
+      "buildFunction": "GuidePageBuilder"
+    },
+    {
+      "name": "EnvCheckPage",
+      "pageSourceFile": "src/main/ets/pages/EnvCheckPage.ets",
+      "buildFunction": "EnvCheckPageBuilder",
+      "data": { "description": "env check page" }
+    },
+    {
+      "name": "UploadPage",
+      "pageSourceFile": "src/main/ets/pages/UploadPage.ets",
+      "buildFunction": "UploadPageBuilder"
+    }
+  ]
+}
