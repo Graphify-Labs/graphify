@@ -1620,6 +1620,9 @@ def _strip_json_comments(raw: str) -> str:
             in_string = True
         i += 1
 
+    if block_comment:
+        result.append("/*")
+
     # Remove trailing commas only outside JSON strings. A regex applied to the
     # complete document would also alter values containing sequences such as
     # `,}` or `,]`.
@@ -1867,10 +1870,66 @@ import { spawn } from "child_process";
 export const GraphifyPlugin = async (ctx = {}) => {
   const workspaceRoot = ctx?.directory || process.cwd();
   const graphPath = join(workspaceRoot, "graphify-out", "graph.json");
+  const MAX_TRACKED_ENTRIES = 500;
+  const MAX_CONCURRENT_QUERIES = 2;
   const seenMessageIds = new Set();
-  let lastQueriedPrompt = "";
-  let isQuerying = false;
+  const lastQueriedPrompt = new Map();
+  const inFlightQueries = new Map();
+  const remindedSessions = new Set();
   let toolReminded = false;
+  let activeQueryCount = 0;
+  const pendingQueryQueue = [];
+
+  const rememberBoundedSet = (set, key) => {
+    if (!key) return;
+    if (set.has(key)) set.delete(key);
+    set.add(key);
+    while (set.size > MAX_TRACKED_ENTRIES) {
+      const oldest = set.values().next().value;
+      if (oldest === undefined) break;
+      set.delete(oldest);
+    }
+  };
+
+  const rememberBoundedMap = (map, key, val) => {
+    if (!key) return;
+    if (map.has(key)) map.delete(key);
+    map.set(key, val);
+    while (map.size > MAX_TRACKED_ENTRIES) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  };
+
+  const withQuerySlot = (task) => {
+    return new Promise((resolveSlot) => {
+      const runNext = () => {
+        activeQueryCount += 1;
+        Promise.resolve()
+          .then(task)
+          .then(
+            (val) => {
+              activeQueryCount -= 1;
+              const next = pendingQueryQueue.shift();
+              if (next) next();
+              resolveSlot(val);
+            },
+            () => {
+              activeQueryCount -= 1;
+              const next = pendingQueryQueue.shift();
+              if (next) next();
+              resolveSlot(null);
+            }
+          );
+      };
+      if (activeQueryCount < MAX_CONCURRENT_QUERIES) {
+        runNext();
+      } else {
+        pendingQueryQueue.push(runNext);
+      }
+    });
+  };
 
   const resolveGraphifyBin = () => {
     const isWindows = process.platform === "win32";
@@ -1917,82 +1976,98 @@ export const GraphifyPlugin = async (ctx = {}) => {
   };
 
   const runGraphifyQuery = (question) => {
-    return new Promise((res) => {
-      if (!existsSync(graphPath) || !question || isQuerying) {
-        return res(null);
-      }
-      isQuerying = true;
-      try {
-        const trimmedQuestion = question.trim().slice(0, 500);
-        if (!trimmedQuestion) {
-          isQuerying = false;
-          return res(null);
-        }
+    if (!existsSync(graphPath) || typeof question !== "string") {
+      return Promise.resolve(null);
+    }
+    const trimmedQuestion = question.trim().slice(0, 500);
+    if (!trimmedQuestion) {
+      return Promise.resolve(null);
+    }
 
-        const bin = resolveGraphifyBin();
-        if (!bin || !isAbsolute(bin)) {
-          isQuerying = false;
-          return res(null);
-        }
+    const existingPromise = inFlightQueries.get(trimmedQuestion);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const queryPromise = withQuerySlot(() => {
+      return new Promise((res) => {
+        let settled = false;
+        let timer = null;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          res(value);
+        };
 
         try {
-          if (!existsSync(bin)) {
-            isQuerying = false;
-            return res(null);
+          if (!existsSync(graphPath)) {
+            return finish(null);
           }
-        } catch {
-          isQuerying = false;
-          return res(null);
-        }
 
-        const args = ["query", trimmedQuestion, "--graph", graphPath, "--budget", "1500"];
-        let stdout = "";
-        let timer = null;
-        let killed = false;
+          const bin = resolveGraphifyBin();
+          if (!bin || !isAbsolute(bin)) {
+            return finish(null);
+          }
 
-        const child = spawn(bin, args, {
-          cwd: workspaceRoot,
-          shell: false,
-          windowsHide: true,
-        });
-
-        timer = setTimeout(() => {
-          killed = true;
           try {
-            child.kill("SIGKILL");
-          } catch {}
-          isQuerying = false;
-          res(null);
-        }, 4000);
-
-        child.stdout?.on("data", (chunk) => {
-          stdout += chunk.toString("utf-8");
-          if (stdout.length > 16000) {
-            try { child.kill(); } catch {}
+            if (!existsSync(bin)) {
+              return finish(null);
+            }
+          } catch {
+            return finish(null);
           }
-        });
 
-        child.on("error", () => {
-          if (timer) clearTimeout(timer);
-          isQuerying = false;
-          res(null);
-        });
+          const args = ["query", trimmedQuestion, "--graph", graphPath, "--budget", "1500"];
+          let stdout = "";
+          let killed = false;
 
-        child.on("close", (code) => {
-          if (timer) clearTimeout(timer);
-          isQuerying = false;
-          if (!killed && code === 0 && stdout && stdout.trim()) {
-            const text = stdout.trim();
-            const capped = text.length > 8000 ? text.slice(0, 8000) + "\\n...[truncated]" : text;
-            return res(capped);
-          }
-          res(null);
-        });
-      } catch {
-        isQuerying = false;
-        res(null);
-      }
+          const child = spawn(bin, args, {
+            cwd: workspaceRoot,
+            shell: false,
+            windowsHide: true,
+          });
+
+          timer = setTimeout(() => {
+            killed = true;
+            try {
+              child.kill("SIGKILL");
+            } catch {}
+            finish(null);
+          }, 4000);
+
+          child.stdout?.on("data", (chunk) => {
+            stdout += chunk.toString("utf-8");
+            if (stdout.length > 16000) {
+              try { child.kill(); } catch {}
+            }
+          });
+
+          child.on("error", () => {
+            finish(null);
+          });
+
+          child.on("close", (code) => {
+            if (!killed && code === 0 && stdout && stdout.trim()) {
+              const text = stdout.trim();
+              const capped = text.length > 8000 ? text.slice(0, 8000) + "\\n...[truncated]" : text;
+              return finish(capped);
+            }
+            finish(null);
+          });
+        } catch {
+          finish(null);
+        }
+      });
+    }).finally(() => {
+      inFlightQueries.delete(trimmedQuestion);
     });
+
+    inFlightQueries.set(trimmedQuestion, queryPromise);
+    return queryPromise;
   };
 
   return {
@@ -2006,14 +2081,25 @@ export const GraphifyPlugin = async (ctx = {}) => {
       if (!Array.isArray(parts)) return;
 
       const textParts = parts.filter((p) => p && p.type === "text" && typeof p.text === "string");
-      const userText = textParts.map((p) => p.text).join("\\n").trim();
-      if (!userText || userText === lastQueriedPrompt) return;
+      if (textParts.some((p) => p.text.includes("<!-- Graphify Knowledge Graph Context"))) return;
 
-      if (msgId) seenMessageIds.add(msgId);
-      lastQueriedPrompt = userText;
+      const userText = textParts.map((p) => p.text).join("\\n").trim();
+      if (!userText) return;
+
+      const sessionKey = input?.sessionID || input?.session?.id || input?.message?.sessionID || "__default__";
+      if (!msgId && lastQueriedPrompt.get(sessionKey) === userText) return;
+
+      if (msgId) {
+        rememberBoundedSet(seenMessageIds, msgId);
+      } else {
+        rememberBoundedMap(lastQueriedPrompt, sessionKey, userText);
+      }
 
       const graphContext = await runGraphifyQuery(userText);
       if (graphContext) {
+        if (parts.some((p) => p && typeof p.text === "string" && p.text.includes("<!-- Graphify Knowledge Graph Context"))) {
+          return;
+        }
         const injected = `\\n\\n<!-- Graphify Knowledge Graph Context (Untrusted Project Data) -->\\n${graphContext}\\n<!-- End Graphify Context -->`;
         if (textParts.length > 0) {
           textParts[textParts.length - 1].text += injected;
@@ -2024,14 +2110,19 @@ export const GraphifyPlugin = async (ctx = {}) => {
     },
 
     "tool.execute.before": async (input, output) => {
-      if (toolReminded) return;
       if (!existsSync(graphPath)) return;
+      const sessionKey = input?.sessionID || input?.session?.id;
+      if (sessionKey ? remindedSessions.has(sessionKey) : toolReminded) return;
 
       if (input && input.tool === "bash" && output && output.args && typeof output.args.command === "string") {
         output.args.command =
           'echo "[graphify] Knowledge graph active at graphify-out/. Use \\'graphify query\\' for targeted questions." ; ' +
           output.args.command;
-        toolReminded = true;
+        if (sessionKey) {
+          rememberBoundedSet(remindedSessions, sessionKey);
+        } else {
+          toolReminded = true;
+        }
       }
     },
   };
@@ -2112,6 +2203,38 @@ def _is_mimo_plugin_entry(candidate: object, possible_entries: set[str] | None =
     return False
 
 
+def _mimo_plugin_candidates(project_dir: Path, *, project: bool = False) -> tuple[Path, str, set[str]]:
+    """Return (plugin_file, canonical_entry, possible_entries) for MiMo plugin config."""
+    if project:
+        plugin_file = project_dir / ".mimocode" / "plugins" / "graphify.js"
+        canonical_entry = "./plugins/graphify.js"
+        possible_entries = {
+            "./plugins/graphify.js",
+            ".mimocode/plugins/graphify.js",
+            plugin_file.resolve().as_uri(),
+            plugin_file.as_posix(),
+            plugin_file.resolve().as_posix(),
+        }
+    else:
+        global_dir = _mimo_global_config_dir()
+        plugin_file = global_dir / "plugins" / "graphify.js"
+        canonical_entry = plugin_file.resolve().as_uri()
+        possible_entries = {
+            "./plugins/graphify.js",
+            plugin_file.resolve().as_uri(),
+            plugin_file.as_posix(),
+            plugin_file.resolve().as_posix(),
+        }
+    return plugin_file, canonical_entry, possible_entries
+
+
+def _is_jsonc_config(raw: str, config_file: Path | None = None) -> bool:
+    """Return True if config_file is .jsonc or raw contains comments outside strings."""
+    if config_file is not None and config_file.suffix == ".jsonc":
+        return True
+    return any(t[0] in ("LINE_COMMENT", "BLOCK_COMMENT") for t in _tokenize_jsonc(raw))
+
+
 def _verify_mimo_plugins_val(data: dict, config_path: Path | None = None) -> None:
     """Refuse to modify config when 'plugin' or 'plugins' is not a string or list."""
     for key in ("plugin", "plugins"):
@@ -2120,7 +2243,171 @@ def _verify_mimo_plugins_val(data: dict, config_path: Path | None = None) -> Non
             _refuse_to_modify(config_path or Path("mimocode.json"))
 
 
-def _preserve_jsonc_plugin_add(raw: str, entry: str) -> str:
+def _remove_jsonc_item_span(
+    raw: str,
+    item_start: int,
+    item_end: int,
+    prev_comma_span: tuple[int, int] | None = None,
+) -> str:
+    """Remove raw[item_start:item_end] (and its whole line if standalone) plus optional preceding comma."""
+    line_start = raw.rfind("\n", 0, item_start)
+    if line_start != -1 and raw[line_start + 1 : item_start].strip() == "":
+        del_start = line_start + 1
+        if raw[item_end:].startswith("\r\n"):
+            del_end = item_end + 2
+        elif raw[item_end:].startswith("\n"):
+            del_end = item_end + 1
+        else:
+            del_end = item_end
+        updated = raw[:del_start] + raw[del_end:]
+        if prev_comma_span is not None:
+            c_start, c_end = prev_comma_span
+            updated = updated[:c_start] + updated[c_end:]
+        return updated
+
+    if prev_comma_span is not None and raw[prev_comma_span[1] : item_start].strip() == "":
+        return raw[: prev_comma_span[0]] + raw[item_end:]
+
+    del_end = item_end + 1 if raw[item_end:].startswith(" ") else item_end
+    updated = raw[:item_start] + raw[del_end:]
+    if prev_comma_span is not None:
+        c_start, c_end = prev_comma_span
+        updated = updated[:c_start] + updated[c_end:]
+    return updated
+
+
+def _remove_single_jsonc_plugin_entry(raw: str, possible_entries: set[str] | None) -> tuple[str, bool]:
+    """Remove at most one matching Graphify plugin entry from root 'plugin'. Returns (new_raw, removed)."""
+    tokens = _tokenize_jsonc(raw)
+
+    plugin_key_idx = None
+    depth = 0
+    for i, t in enumerate(tokens):
+        if t[0] == "PUNCT":
+            if t[3] in "{[":
+                depth += 1
+            elif t[3] in "}]":
+                depth -= 1
+        elif t[0] == "STRING" and t[3] == '"plugin"' and depth == 1:
+            j = i + 1
+            while j < len(tokens) and tokens[j][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+                j += 1
+            if j < len(tokens) and tokens[j][0] == "PUNCT" and tokens[j][3] == ":":
+                plugin_key_idx = i
+                break
+
+    if plugin_key_idx is None:
+        return raw, False
+
+    colon_idx = plugin_key_idx + 1
+    while colon_idx < len(tokens) and tokens[colon_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+        colon_idx += 1
+
+    val_idx = colon_idx + 1
+    while val_idx < len(tokens) and tokens[val_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+        val_idx += 1
+
+    if val_idx >= len(tokens):
+        return raw, False
+
+    val_token = tokens[val_idx]
+    if val_token[0] == "STRING":
+        val = json.loads(val_token[3])
+        if _is_mimo_plugin_entry(val, possible_entries):
+            next_tok_idx = val_idx + 1
+            while next_tok_idx < len(tokens) and tokens[next_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+                next_tok_idx += 1
+
+            prev_tok_idx = plugin_key_idx - 1
+            while prev_tok_idx >= 0 and tokens[prev_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+                prev_tok_idx -= 1
+
+            has_prev_comma = prev_tok_idx >= 0 and tokens[prev_tok_idx][0] == "PUNCT" and tokens[prev_tok_idx][3] == ","
+            if next_tok_idx < len(tokens) and tokens[next_tok_idx][0] == "PUNCT" and tokens[next_tok_idx][3] == ",":
+                after_comma_idx = next_tok_idx + 1
+                while after_comma_idx < len(tokens) and tokens[after_comma_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+                    after_comma_idx += 1
+                trailing_comma_at_end = after_comma_idx < len(tokens) and tokens[after_comma_idx][0] == "PUNCT" and tokens[after_comma_idx][3] == "}"
+                prev_span = (tokens[prev_tok_idx][1], tokens[prev_tok_idx][2]) if (trailing_comma_at_end and has_prev_comma) else None
+                return _remove_jsonc_item_span(raw, tokens[plugin_key_idx][1], tokens[next_tok_idx][2], prev_span), True
+
+            prev_span = (tokens[prev_tok_idx][1], tokens[prev_tok_idx][2]) if has_prev_comma else None
+            return _remove_jsonc_item_span(raw, tokens[plugin_key_idx][1], tokens[val_idx][2], prev_span), True
+        return raw, False
+
+    if val_token[0] == "PUNCT" and val_token[3] == "[":
+        arr_open_idx = val_idx
+        arr_depth = 1
+        match_tok_idx = None
+        arr_close_idx = None
+        for j in range(arr_open_idx + 1, len(tokens)):
+            t = tokens[j]
+            if t[0] == "PUNCT":
+                if t[3] in "{[":
+                    arr_depth += 1
+                elif t[3] in "}]":
+                    arr_depth -= 1
+                    if arr_depth == 0 and t[3] == "]":
+                        arr_close_idx = j
+                        break
+            elif t[0] == "STRING" and arr_depth == 1 and match_tok_idx is None:
+                val = json.loads(t[3])
+                if _is_mimo_plugin_entry(val, possible_entries):
+                    match_tok_idx = j
+
+        if arr_close_idx is None:
+            raise ValueError("Unmatched bracket for plugin array")
+
+        if match_tok_idx is None:
+            return raw, False
+
+        next_tok_idx = match_tok_idx + 1
+        while next_tok_idx < arr_close_idx and tokens[next_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+            next_tok_idx += 1
+
+        prev_tok_idx = match_tok_idx - 1
+        while prev_tok_idx > arr_open_idx and tokens[prev_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+            prev_tok_idx -= 1
+
+        has_prev_comma = prev_tok_idx > arr_open_idx and tokens[prev_tok_idx][0] == "PUNCT" and tokens[prev_tok_idx][3] == ","
+        if next_tok_idx < arr_close_idx and tokens[next_tok_idx][0] == "PUNCT" and tokens[next_tok_idx][3] == ",":
+            after_comma_idx = next_tok_idx + 1
+            while after_comma_idx < arr_close_idx and tokens[after_comma_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+                after_comma_idx += 1
+            trailing_comma_at_end = after_comma_idx == arr_close_idx
+            prev_span = (tokens[prev_tok_idx][1], tokens[prev_tok_idx][2]) if (trailing_comma_at_end and has_prev_comma) else None
+            return _remove_jsonc_item_span(raw, tokens[match_tok_idx][1], tokens[next_tok_idx][2], prev_span), True
+
+        prev_span = (tokens[prev_tok_idx][1], tokens[prev_tok_idx][2]) if has_prev_comma else None
+        return _remove_jsonc_item_span(raw, tokens[match_tok_idx][1], tokens[match_tok_idx][2], prev_span), True
+
+    return raw, False
+
+
+def _preserve_jsonc_plugin_remove(raw: str, possible_entries: set[str] | None = None) -> str:
+    """Surgically remove all matching Graphify plugin entries from a JSONC file while preserving comments."""
+    try:
+        stripped = _strip_json_comments(raw)
+        data = json.loads(stripped)
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON/JSONC: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("JSONC root must be an object")
+
+    if "plugin" not in data:
+        return raw
+
+    current = raw
+    max_iterations = (len(data["plugin"]) + 2) if isinstance(data.get("plugin"), list) else 2
+    for _ in range(max(max_iterations, 2)):
+        current, removed = _remove_single_jsonc_plugin_entry(current, possible_entries)
+        if not removed:
+            break
+    return current
+
+
+def _preserve_jsonc_plugin_add(raw: str, entry: str, possible_entries: set[str] | None = None) -> str:
     """Surgically add Graphify plugin entry to a JSONC file while preserving comments."""
     try:
         stripped = _strip_json_comments(raw)
@@ -2133,11 +2420,25 @@ def _preserve_jsonc_plugin_add(raw: str, entry: str) -> str:
 
     _verify_mimo_plugins_val(data)
 
+    match_entries = set(possible_entries) if possible_entries else {entry}
+    match_entries.add(entry)
+
     existing_plugins = data.get("plugin")
-    if isinstance(existing_plugins, list) and entry in existing_plugins:
-        return raw
-    if isinstance(existing_plugins, str) and existing_plugins == entry:
-        return raw
+    if isinstance(existing_plugins, str):
+        if existing_plugins == entry:
+            return raw
+        if _is_mimo_plugin_entry(existing_plugins, match_entries):
+            raw = _preserve_jsonc_plugin_remove(raw, match_entries)
+            data = json.loads(_strip_json_comments(raw))
+            existing_plugins = data.get("plugin")
+    elif isinstance(existing_plugins, list):
+        matching = [p for p in existing_plugins if isinstance(p, str) and _is_mimo_plugin_entry(p, match_entries)]
+        if matching == [entry]:
+            return raw
+        if matching:
+            raw = _preserve_jsonc_plugin_remove(raw, match_entries)
+            data = json.loads(_strip_json_comments(raw))
+            existing_plugins = data.get("plugin")
 
     tokens = _tokenize_jsonc(raw)
 
@@ -2328,152 +2629,6 @@ def _preserve_jsonc_plugin_add(raw: str, entry: str) -> str:
     return new_raw
 
 
-def _preserve_jsonc_plugin_remove(raw: str, possible_entries: set[str] | None = None) -> str:
-    """Surgically remove Graphify plugin entry from a JSONC file while preserving comments."""
-    try:
-        stripped = _strip_json_comments(raw)
-        data = json.loads(stripped)
-    except Exception as exc:
-        raise ValueError(f"Invalid JSON/JSONC: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise ValueError("JSONC root must be an object")
-
-    if "plugin" not in data:
-        return raw
-
-    tokens = _tokenize_jsonc(raw)
-
-    plugin_key_idx = None
-    depth = 0
-    for i, t in enumerate(tokens):
-        if t[0] == "PUNCT":
-            if t[3] in "{[":
-                depth += 1
-            elif t[3] in "}]":
-                depth -= 1
-        elif t[0] == "STRING" and t[3] == '"plugin"' and depth == 1:
-            j = i + 1
-            while j < len(tokens) and tokens[j][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-                j += 1
-            if j < len(tokens) and tokens[j][0] == "PUNCT" and tokens[j][3] == ":":
-                plugin_key_idx = i
-                break
-
-    if plugin_key_idx is None:
-        return raw
-
-    colon_idx = plugin_key_idx + 1
-    while colon_idx < len(tokens) and tokens[colon_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-        colon_idx += 1
-
-    val_idx = colon_idx + 1
-    while val_idx < len(tokens) and tokens[val_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-        val_idx += 1
-
-    val_token = tokens[val_idx]
-    if val_token[0] == "STRING":
-        val = json.loads(val_token[3])
-        if _is_mimo_plugin_entry(val, possible_entries):
-            next_tok_idx = val_idx + 1
-            while next_tok_idx < len(tokens) and tokens[next_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-                next_tok_idx += 1
-
-            if next_tok_idx < len(tokens) and tokens[next_tok_idx][0] == "PUNCT" and tokens[next_tok_idx][3] == ",":
-                start_pos = tokens[plugin_key_idx][1]
-                end_pos = tokens[next_tok_idx][2]
-            else:
-                prev_tok_idx = plugin_key_idx - 1
-                while prev_tok_idx >= 0 and tokens[prev_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-                    prev_tok_idx -= 1
-                if prev_tok_idx >= 0 and tokens[prev_tok_idx][0] == "PUNCT" and tokens[prev_tok_idx][3] == ",":
-                    start_pos = tokens[prev_tok_idx][1]
-                    end_pos = tokens[val_idx][2]
-                else:
-                    start_pos = tokens[plugin_key_idx][1]
-                    end_pos = tokens[val_idx][2]
-
-            pre = raw[:start_pos]
-            post = raw[end_pos:]
-            if post.startswith("\n"):
-                post = post[1:]
-            elif post.startswith("\r\n"):
-                post = post[2:]
-            return pre + post
-
-    elif val_token[0] == "PUNCT" and val_token[3] == "[":
-        arr_open_idx = val_idx
-        arr_depth = 1
-        match_tok_idx = None
-        arr_close_idx = None
-        for j in range(arr_open_idx + 1, len(tokens)):
-            t = tokens[j]
-            if t[0] == "PUNCT":
-                if t[3] in "{[":
-                    arr_depth += 1
-                elif t[3] in "}]":
-                    arr_depth -= 1
-                    if arr_depth == 0 and t[3] == "]":
-                        arr_close_idx = j
-                        break
-            elif t[0] == "STRING" and arr_depth == 1:
-                val = json.loads(t[3])
-                if _is_mimo_plugin_entry(val, possible_entries):
-                    match_tok_idx = j
-                    break
-
-        if arr_close_idx is None and match_tok_idx is None:
-            raise ValueError("Unmatched bracket for plugin array")
-
-        if match_tok_idx is not None:
-            if arr_close_idx is None:
-                temp_depth = arr_depth
-                for k in range(match_tok_idx + 1, len(tokens)):
-                    tk = tokens[k]
-                    if tk[0] == "PUNCT":
-                        if tk[3] in "{[":
-                            temp_depth += 1
-                        elif tk[3] in "}]":
-                            temp_depth -= 1
-                            if temp_depth == 0 and tk[3] == "]":
-                                arr_close_idx = k
-                                break
-
-            assert arr_close_idx is not None
-            next_tok_idx = match_tok_idx + 1
-            while next_tok_idx < arr_close_idx and tokens[next_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-                next_tok_idx += 1
-
-            if next_tok_idx < arr_close_idx and tokens[next_tok_idx][0] == "PUNCT" and tokens[next_tok_idx][3] == ",":
-                start_pos = tokens[match_tok_idx][1]
-                end_pos = tokens[next_tok_idx][2]
-            else:
-                prev_tok_idx = match_tok_idx - 1
-                while prev_tok_idx > arr_open_idx and tokens[prev_tok_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
-                    prev_tok_idx -= 1
-                if prev_tok_idx > arr_open_idx and tokens[prev_tok_idx][0] == "PUNCT" and tokens[prev_tok_idx][3] == ",":
-                    start_pos = tokens[prev_tok_idx][1]
-                    end_pos = tokens[match_tok_idx][2]
-                else:
-                    start_pos = tokens[match_tok_idx][1]
-                    end_pos = tokens[match_tok_idx][2]
-
-            pre = raw[:start_pos]
-            post = raw[end_pos:]
-            if post.startswith("\n") and pre.endswith((" ", "\t")):
-                pre_last_nl = pre.rfind("\n")
-                if pre_last_nl != -1 and pre[pre_last_nl + 1 :].isspace():
-                    pre = pre[:pre_last_nl]
-            elif post.startswith("\r\n") and pre.endswith((" ", "\t")):
-                pre_last_nl = pre.rfind("\n")
-                if pre_last_nl != -1 and pre[pre_last_nl + 1 :].isspace():
-                    pre = pre[:pre_last_nl]
-
-            return pre + post
-
-    return raw
-
-
 def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[Path, str, bool]:
     """Precompute and validate the final JSON/JSONC configuration output.
 
@@ -2484,15 +2639,14 @@ def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[P
     jsonc_file = mimo_dir / "mimocode.jsonc"
     json_file = mimo_dir / "mimocode.json"
     config_file = jsonc_file if jsonc_file.exists() else json_file
-    plugin_file = mimo_dir / "plugins" / "graphify.js"
-    entry = "./plugins/graphify.js" if project else plugin_file.resolve().as_uri()
+    _, entry, possible_entries = _mimo_plugin_candidates(project_dir, project=project)
 
     if not config_file.exists():
         new_content = json.dumps({"plugin": [entry]}, indent=2) + "\n"
         return config_file, new_content, False
 
     raw = config_file.read_text(encoding="utf-8-sig")
-    is_jsonc = (config_file.suffix == ".jsonc") or ("//" in raw) or ("/*" in raw)
+    is_jsonc = _is_jsonc_config(raw, config_file)
 
     try:
         data = json.loads(_strip_json_comments(raw) if is_jsonc else raw)
@@ -2504,14 +2658,23 @@ def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[P
     _verify_mimo_plugins_val(data, config_file)
 
     existing_plugins = data.get("plugin")
-    if isinstance(existing_plugins, list) and entry in existing_plugins:
-        return config_file, raw, True
-    if isinstance(existing_plugins, str) and existing_plugins == entry:
-        return config_file, raw, True
+    matching_entries: list[str] = []
+    if isinstance(existing_plugins, list):
+        matching_entries = [
+            p for p in existing_plugins if isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries)
+        ]
+        if matching_entries == [entry]:
+            return config_file, raw, True
+    elif isinstance(existing_plugins, str):
+        if existing_plugins == entry:
+            return config_file, raw, True
 
     if is_jsonc:
         try:
-            new_content = _preserve_jsonc_plugin_add(raw, entry)
+            working_raw = raw
+            if (isinstance(existing_plugins, str) and _is_mimo_plugin_entry(existing_plugins, possible_entries)) or matching_entries:
+                working_raw = _preserve_jsonc_plugin_remove(raw, possible_entries)
+            new_content = _preserve_jsonc_plugin_add(working_raw, entry)
         except Exception as exc:
             print(f"[graphify] surgical JSONC insertion failed for {config_file}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -2522,16 +2685,36 @@ def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[P
             print(f"[graphify] surgical JSONC insertion produced invalid output for {config_file}: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        if not isinstance(parsed, dict) or entry not in parsed.get("plugin", []):
+        parsed_plugins = parsed.get("plugin", []) if isinstance(parsed, dict) else []
+        parsed_matching = (
+            [p for p in parsed_plugins if isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries)]
+            if isinstance(parsed_plugins, list)
+            else []
+        )
+        if not isinstance(parsed, dict) or parsed_matching != [entry]:
             print(f"[graphify] verification failed after surgical insertion for {config_file}", file=sys.stderr)
             sys.exit(1)
 
         return config_file, new_content, False
 
     if isinstance(existing_plugins, list):
-        existing_plugins.append(entry)
+        normalized: list = []
+        inserted = False
+        for item in existing_plugins:
+            if isinstance(item, str) and _is_mimo_plugin_entry(item, possible_entries):
+                if not inserted:
+                    normalized.append(entry)
+                    inserted = True
+            else:
+                normalized.append(item)
+        if not inserted:
+            normalized.append(entry)
+        data["plugin"] = normalized
     elif isinstance(existing_plugins, str):
-        data["plugin"] = [existing_plugins, entry]
+        if _is_mimo_plugin_entry(existing_plugins, possible_entries):
+            data["plugin"] = [entry]
+        else:
+            data["plugin"] = [existing_plugins, entry]
     else:
         data["plugin"] = [entry]
 
@@ -2579,15 +2762,12 @@ def _prepare_mimo_uninstall(project_dir: Path, *, project: bool = False) -> tupl
     - Any JSONC edit fails.
     - Graphify entries remain in any config after proposed edit.
     """
+    plugin_file, _, possible_entries = _mimo_plugin_candidates(project_dir, project=project)
     if project:
-        plugin_file = project_dir / ".mimocode" / "plugins" / "graphify.js"
         config_files = [project_dir / ".mimocode" / "mimocode.json", project_dir / ".mimocode" / "mimocode.jsonc"]
-        possible_entries = {"./plugins/graphify.js", ".mimocode/plugins/graphify.js", plugin_file.resolve().as_uri(), plugin_file.as_posix()}
     else:
         global_dir = _mimo_global_config_dir()
-        plugin_file = global_dir / "plugins" / "graphify.js"
         config_files = [global_dir / "mimocode.json", global_dir / "mimocode.jsonc"]
-        possible_entries = {plugin_file.resolve().as_uri(), plugin_file.as_posix()}
 
     planned_writes: list[tuple[Path, str]] = []
 
@@ -2596,7 +2776,7 @@ def _prepare_mimo_uninstall(project_dir: Path, *, project: bool = False) -> tupl
             continue
 
         raw = config_file.read_text(encoding="utf-8-sig")
-        is_jsonc = (config_file.suffix == ".jsonc") or ("//" in raw) or ("/*" in raw)
+        is_jsonc = _is_jsonc_config(raw, config_file)
 
         if is_jsonc:
             try:
@@ -2800,12 +2980,7 @@ def _mimo_status(project_dir: Path | None = None, *, project: bool = False) -> N
         print(f"  Skill:        Not installed ({skill_dst})")
 
     global_dir = _mimo_global_config_dir()
-    if project:
-        plugin_file = project_dir / ".mimocode" / "plugins" / "graphify.js"
-        possible_entries = {"./plugins/graphify.js", ".mimocode/plugins/graphify.js", plugin_file.resolve().as_uri(), plugin_file.as_posix()}
-    else:
-        plugin_file = global_dir / "plugins" / "graphify.js"
-        possible_entries = {plugin_file.resolve().as_uri(), plugin_file.as_posix()}
+    plugin_file, _, possible_entries = _mimo_plugin_candidates(project_dir, project=project)
     if plugin_file.exists():
         print(f"  Plugin:       Installed at {plugin_file}")
     else:

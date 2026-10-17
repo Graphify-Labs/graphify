@@ -425,8 +425,8 @@ def test_mimo_uninstall_atomicity_aborts_on_failed_surgical_removal(tmp_path, mo
     assert agents_md.read_bytes() == original_agents_bytes
 
 
-def test_mimo_uninstall_atomicity_aborts_on_duplicate_registrations(tmp_path, monkeypatch):
-    """Uninstall aborts without changing config or artifacts if duplicate registrations remain."""
+def test_mimo_uninstall_removes_all_duplicate_and_legacy_registrations(tmp_path, monkeypatch):
+    """Uninstall removes every matching duplicate/legacy Graphify registration while preserving comments."""
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
@@ -440,7 +440,54 @@ def test_mimo_uninstall_atomicity_aborts_on_duplicate_registrations(tmp_path, mo
         "{\n"
         "  // User comment\n"
         '  "plugin": [\n'
+        '    "custom-before.js", // keep inline comment\n'
         '    "./plugins/graphify.js",\n'
+        '    ".mimocode/plugins/graphify.js",\n'
+        '    "./plugins/graphify.js"\n'
+        "  ]\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    skill = mimo_dir / "skills" / "graphify" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# graphify skill\n", encoding="utf-8")
+
+    plugin = mimo_dir / "plugins" / "graphify.js"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("// graphify plugin\n", encoding="utf-8")
+
+    agents_md = project / "AGENTS.md"
+    agents_md.write_text("## graphify\nRule text here\n", encoding="utf-8")
+
+    _mimo_uninstall(project, project=True)
+
+    updated = jsonc_file.read_text(encoding="utf-8")
+    assert "// User comment" in updated
+    assert "// keep inline comment" in updated
+    assert "graphify.js" not in updated
+    parsed = json.loads(_strip_json_comments(updated))
+    assert parsed["plugin"] == ["custom-before.js"]
+    assert not skill.exists()
+    assert not plugin.exists()
+    assert not agents_md.exists()
+
+
+def test_mimo_uninstall_atomicity_aborts_if_entry_remains_after_removal(tmp_path, monkeypatch):
+    """Uninstall aborts without changing config or artifacts if removal leaves a Graphify registration."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(project)
+
+    mimo_dir = project / ".mimocode"
+    mimo_dir.mkdir(parents=True)
+    jsonc_file = mimo_dir / "mimocode.jsonc"
+    jsonc_file.write_text(
+        "{\n"
+        "  // User comment\n"
+        '  "plugin": [\n'
         '    "./plugins/graphify.js"\n'
         "  ]\n"
         "}\n",
@@ -459,6 +506,11 @@ def test_mimo_uninstall_atomicity_aborts_on_duplicate_registrations(tmp_path, mo
     agents_md = project / "AGENTS.md"
     agents_md.write_text("## graphify\nRule text here\n", encoding="utf-8")
     original_agents_bytes = agents_md.read_bytes()
+
+    monkeypatch.setattr(
+        "graphify.install._preserve_jsonc_plugin_remove",
+        lambda raw, possible_entries=None: raw,
+    )
 
     with pytest.raises(SystemExit) as excinfo:
         _mimo_uninstall(project, project=True)
@@ -926,3 +978,154 @@ def test_mimo_plugin_resolves_bin_outside_workspace():
     assert "resolveGraphifyBin" in _MIMO_PLUGIN_JS
     assert "normWorkspace" in _MIMO_PLUGIN_JS
     assert "isAbsolute" in _MIMO_PLUGIN_JS
+
+
+def test_preserve_jsonc_plugin_remove_multiple_and_trailing_comma_variants():
+    """_preserve_jsonc_plugin_remove removes all matching entries and preserves comments/syntax."""
+    possible = {"./plugins/graphify.js", ".mimocode/plugins/graphify.js"}
+
+    # 1. Multiple duplicates + legacy entries + inline comments + trailing comma
+    raw = (
+        "{\n"
+        "  // Header comment\n"
+        '  "plugin": [\n'
+        '    "./plugins/graphify.js",\n'
+        '    "keep-first.js", // keep comment 1\n'
+        '    ".mimocode/plugins/graphify.js",\n'
+        '    "keep-second.js", /* keep comment 2 */\n'
+        '    "./plugins/graphify.js",\n'
+        "  ],\n"
+        '  "theme": "dark"\n'
+        "}\n"
+    )
+    cleaned = _preserve_jsonc_plugin_remove(raw, possible)
+    assert "// Header comment" in cleaned
+    assert "// keep comment 1" in cleaned
+    assert "/* keep comment 2 */" in cleaned
+    assert "graphify.js" not in cleaned
+    parsed = json.loads(_strip_json_comments(cleaned))
+    assert parsed["plugin"] == ["keep-first.js", "keep-second.js"]
+    assert parsed["theme"] == "dark"
+
+    # 2. Single-line array with duplicates
+    single_line = '{"plugin": ["a.js", "./plugins/graphify.js", ".mimocode/plugins/graphify.js"]}'
+    cleaned_single = _preserve_jsonc_plugin_remove(single_line, possible)
+    assert json.loads(cleaned_single)["plugin"] == ["a.js"]
+
+    # 3. Scalar plugin with trailing comma after preceding property
+    scalar_trailing = '{\n  "theme": "dark",\n  "plugin": "./plugins/graphify.js",\n}'
+    cleaned_scalar = _preserve_jsonc_plugin_remove(scalar_trailing, possible)
+    parsed_scalar = json.loads(cleaned_scalar)
+    assert parsed_scalar == {"theme": "dark"}
+
+
+def test_mimo_install_normalizes_legacy_and_duplicate_registrations(tmp_path, monkeypatch):
+    """Install normalizes legacy and duplicate Graphify entries instead of adding duplicates."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(project)
+
+    mimo_dir = project / ".mimocode"
+    mimo_dir.mkdir(parents=True)
+
+    # 1. Plain JSON with legacy + duplicate entries + unrelated plugin
+    json_file = mimo_dir / "mimocode.json"
+    json_file.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    ".mimocode/plugins/graphify.js",
+                    "unrelated-plugin.js",
+                    "./plugins/graphify.js",
+                ],
+                "theme": "dark",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    _mimo_install(project, project=True)
+    data = json.loads(json_file.read_text(encoding="utf-8"))
+    assert data["plugin"] == ["./plugins/graphify.js", "unrelated-plugin.js"]
+    assert data["theme"] == "dark"
+
+    # Repeat install when already canonical does not rewrite mimocode.json
+    canonical_bytes = json_file.read_bytes()
+    bak_file = mimo_dir / "mimocode.json.graphify-bak"
+    bak_file.unlink(missing_ok=True)
+    _mimo_install(project, project=True)
+    assert json_file.read_bytes() == canonical_bytes
+    assert not bak_file.exists(), "No-op install should not rewrite config or create backup"
+
+
+def test_mimo_install_jsonc_normalizes_legacy_registration_preserving_comments(tmp_path, monkeypatch):
+    """JSONC install replaces legacy/duplicate Graphify entries with a single canonical entry."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(project)
+
+    mimo_dir = project / ".mimocode"
+    mimo_dir.mkdir(parents=True)
+    jsonc_file = mimo_dir / "mimocode.jsonc"
+    jsonc_file.write_text(
+        "{\n"
+        "  // Preserve user comment\n"
+        '  "plugin": [\n'
+        '    "custom-plugin.js", // keep custom comment\n'
+        '    ".mimocode/plugins/graphify.js"\n'
+        "  ]\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    _mimo_install(project, project=True)
+    updated = jsonc_file.read_text(encoding="utf-8")
+    assert "// Preserve user comment" in updated
+    assert "// keep custom comment" in updated
+    parsed = json.loads(_strip_json_comments(updated))
+    assert parsed["plugin"] == ["custom-plugin.js", "./plugins/graphify.js"]
+
+    # Second install is a true no-op on the JSONC file
+    after_first_bytes = jsonc_file.read_bytes()
+    _mimo_install(project, project=True)
+    assert jsonc_file.read_bytes() == after_first_bytes
+
+
+def test_mimo_plugin_js_concurrency_and_bounded_state():
+    """Verify _MIMO_PLUGIN_JS correlates concurrent queries without dropping and bounds state."""
+    assert "let isQuerying = false" not in _MIMO_PLUGIN_JS
+    assert "inFlightQueries" in _MIMO_PLUGIN_JS
+    assert "withQuerySlot" in _MIMO_PLUGIN_JS
+    assert "MAX_CONCURRENT_QUERIES" in _MIMO_PLUGIN_JS
+    assert "MAX_TRACKED_ENTRIES" in _MIMO_PLUGIN_JS
+    assert "rememberBoundedSet" in _MIMO_PLUGIN_JS
+    assert "rememberBoundedMap" in _MIMO_PLUGIN_JS
+    assert "inFlightQueries.delete(trimmedQuestion)" in _MIMO_PLUGIN_JS
+
+
+def test_strip_json_comments_strings_escapes_and_unterminated_block():
+    """Verify _strip_json_comments preserves strings with comment markers/escapes and rejects unterminated comments."""
+    raw = (
+        "{\n"
+        "  // Top comment\n"
+        '  "url": "https://example.com/a//b/*not-a-comment*/",\n'
+        '  "escaped": "quote: \\" // still string /* also string */ \\\\ tail",\n'
+        '  "nested": {\n'
+        '    "arr": ["x,}", "y,]",],\n'
+        "  },\n"
+        "}\n"
+    )
+    stripped = _strip_json_comments(raw)
+    parsed = json.loads(stripped)
+    assert parsed["url"] == "https://example.com/a//b/*not-a-comment*/"
+    assert parsed["escaped"] == 'quote: " // still string /* also string */ \\ tail'
+    assert parsed["nested"]["arr"] == ["x,}", "y,]"]
+
+    # Unterminated block comment must fail closed when parsed
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(_strip_json_comments('{"a": 1 /* unterminated }'))
