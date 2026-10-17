@@ -47,7 +47,7 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     - .graphify_labels.json contains at least one non-default community label
       (graph has been curated by a human or skill).
 
-    Returns the backup folder path, or None if no backup was taken.
+    Returns the backup folder path, or None if skipped, failed, or incomplete.
     Never raises — backup failure prints a warning but never blocks the write.
     Set GRAPHIFY_NO_BACKUP=1 to disable.
     """
@@ -73,35 +73,47 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     reason = "+".join(filter(None, ["semantic" if is_semantic else "", "curated" if is_curated else ""]))
     today = date.today().isoformat()
     backup_dir = out / today
-    graph_src = out / "graph.json"
-
-    # Skip re-copying if today's backup already has identical graph.json content.
-    # If content differs (graph changed since the last backup today), overwrite
-    # the backup in place — one folder per day, always the latest pre-overwrite state.
-    if backup_dir.exists() and (backup_dir / "graph.json").exists():
-        src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
-        bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
-        if src_hash == bak_hash:
-            return backup_dir  # identical content, nothing to do
-
     try:
+        artifacts = [
+            name for name in _BACKUP_ARTIFACTS
+            if name == "graph.json" or (out / name).exists()
+        ]
+        # Reuse today's folder only when every selected artifact matches.
+        # A previous partial copy must remain retryable even if graph.json matches.
+        try:
+            if all(
+                (backup_dir / name).is_file()
+                and hashlib.sha256((out / name).read_bytes()).digest()
+                == hashlib.sha256((backup_dir / name).read_bytes()).digest()
+                for name in artifacts
+            ):
+                return backup_dir
+        except OSError:
+            pass  # Comparison is optional; a copy may still repair the backup.
+
         backup_dir.mkdir(parents=True, exist_ok=True)
-        copied = 0
-        for name in _BACKUP_ARTIFACTS:
-            src = out / name
-            if src.exists():
-                try:
-                    shutil.copy2(src, backup_dir / name)
-                    copied += 1
-                except Exception:
-                    pass
-        if copied:
-            print(f"[graphify] backed up {reason} graph ({copied} files) -> {backup_dir.name}/")
-        return backup_dir
+        failures = []
+        for name in artifacts:
+            try:
+                destination = backup_dir / name
+                if destination.is_dir():
+                    raise IsADirectoryError(f"backup destination is a directory: {destination}")
+                shutil.copy2(out / name, destination)
+            except Exception as exc:
+                failures.append(f"{name}: {exc}")
+        if failures:
+            raise OSError("; ".join(failures))
     except Exception as exc:
-        import sys
-        print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
+        try:
+            print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
+        except (OSError, ValueError):
+            pass
         return None
+    try:
+        print(f"[graphify] backed up {reason} graph ({len(artifacts)} files) -> {backup_dir.name}/")
+    except (OSError, ValueError):
+        pass
+    return backup_dir
 
 def _obsidian_tag(name: str) -> str:
     r"""Sanitize a community name for use as an Obsidian tag.
