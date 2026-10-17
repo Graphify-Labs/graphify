@@ -66,6 +66,17 @@ Token reduction scales with corpus size. Six files already fits in a context win
 
 Each `worked/` folder in the repo has the raw input files and actual output (`GRAPH_REPORT.md`, `graph.json`) so you can run it yourself and verify.
 
+## Answer-quality benchmark
+
+A small answer is only useful if it is the right one. `graphify benchmark --questions FILE` asks `query_graph` each question the way the MCP tool does (BFS, depth 3, ~2000-token budget) and reports how often the files a right answer names are among the first 1, 3 and 5 files the answer shows, how often they appear at all, and how large the answers are.
+
+`FILE` is a JSON list or JSON Lines of `{"question": "...", "files": ["pkg/module.py"]}`. A ready-made source is a project's own history: an issue title as the question and the files its fix changed as the answer.
+
+```bash
+graphify benchmark graphify-out/graph.json --questions questions.jsonl
+graphify benchmark --questions questions.jsonl --depth 2 --budget 4000 --json
+```
+
 ---
 
 ## Parallel extraction

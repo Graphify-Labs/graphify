@@ -1,6 +1,10 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
 from __future__ import annotations
+import json
+import re
 import sys
+from pathlib import Path
+
 import networkx as nx
 
 from graphify.serve import _query_graph_text, _read_graph
@@ -118,4 +122,139 @@ def print_benchmark(result: dict) -> None:
     print(f"\n  Per question:")
     for p in result["per_question"]:
         print(f"    [{p['reduction']}x] {p['question'][:55]}")
+    print()
+
+
+# ── Answer-quality benchmark ─────────────────────────────────────────────────
+# The token benchmark above says how small an answer is, not whether it is the
+# right one. This one asks query_graph each question exactly as the MCP tool
+# does and checks where the files a right answer names first appear in what
+# the agent is shown.
+
+_ANSWER_NODE_RE = re.compile(r"^NODE .*? \[src=(.*?) loc=", re.M)
+
+
+def load_benchmark_questions(path: str | Path) -> list[dict]:
+    """Read benchmark questions: a JSON list, or JSON Lines, of objects
+    ``{"question": "...", "files": ["pkg/module.py", ...]}``, where ``files`` are
+    the repo-relative files a right answer names (e.g. the files a fix changed)."""
+    text = Path(path).read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    items = json.loads(text) if text.startswith("[") else [
+        json.loads(line) for line in text.splitlines() if line.strip()
+    ]
+    questions = []
+    for i, item in enumerate(items, 1):
+        question = item.get("question") if isinstance(item, dict) else None
+        files = item.get("files") if isinstance(item, dict) else None
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError(f"question {i}: needs a non-empty \"question\" string")
+        if not isinstance(files, list) or not files or not all(isinstance(f, str) and f for f in files):
+            raise ValueError(f"question {i}: needs a non-empty \"files\" list of paths")
+        questions.append({"question": question, "files": [_norm_path(f) for f in files]})
+    return questions
+
+
+def _norm_path(path: str) -> str:
+    path = path.replace("\\", "/").strip()
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _answer_files(text: str) -> list[str]:
+    """Files of the NODE lines a query_graph answer shows, in the order shown."""
+    files: list[str] = []
+    for match in _ANSWER_NODE_RE.finditer(text):
+        path = _norm_path(match.group(1))
+        if path and path not in files:
+            files.append(path)
+    return files
+
+
+def _score_answer(question: str, expected: list[str], text: str) -> dict:
+    """One question's row: where the first expected file sits among the files
+    the answer shows (None when it shows none), and the answer's size."""
+    shown = _answer_files(text)
+    wanted = set(expected)
+    return {
+        "question": question,
+        "files": expected,
+        "rank": next((i for i, f in enumerate(shown) if f in wanted), None),
+        "tokens": len(text) // 3,
+        # query_graph's own notice: every node fit, so edges were kept past the budget
+        "over_budget": "[i] Complete answer over budget" in text,
+        "files_shown": len(shown),
+        "top_files": shown[:5],
+    }
+
+
+def run_answer_benchmark(
+    graph_path: str | None,
+    questions: list[dict],
+    *,
+    depth: int = 3,
+    token_budget: int = 2000,
+) -> dict:
+    """Ask query_graph each question (BFS, the MCP tool's defaults) and score it.
+
+    Per question: ``rank`` is the position (0-based) of the first expected file
+    among the distinct files the answer shows, None when none is shown;
+    ``tokens`` uses the ~3 chars/token rule the budget itself uses; ``over_budget``
+    is query_graph's own "Complete answer over budget" notice (the header and
+    notices sit outside the budget by design, so a raw size check would not do).
+    Returns per_question plus hit@1 / hit@3 / hit@5 / found counts.
+    """
+    from graphify.serve import _load_graph, _query_graph_text
+
+    G = _load_graph(str(graph_path or _default_graph_json()))
+    per_question = [
+        _score_answer(item["question"], item["files"],
+                      _query_graph_text(G, item["question"], mode="bfs", depth=depth, token_budget=token_budget))
+        for item in questions
+    ]
+    ranks = [p["rank"] for p in per_question]
+    tokens = sorted(p["tokens"] for p in per_question)
+    n = len(per_question)
+    return {
+        "nodes": G.number_of_nodes(),
+        "edges": G.number_of_edges(),
+        "questions": n,
+        "depth": depth,
+        "token_budget": token_budget,
+        "hit_at_1": sum(1 for r in ranks if r is not None and r < 1),
+        "hit_at_3": sum(1 for r in ranks if r is not None and r < 3),
+        "hit_at_5": sum(1 for r in ranks if r is not None and r < 5),
+        "found": sum(1 for r in ranks if r is not None),
+        "median_tokens": tokens[n // 2] if n else 0,
+        "over_budget": sum(1 for p in per_question if p["over_budget"]),
+        "per_question": per_question,
+    }
+
+
+def print_answer_benchmark(result: dict) -> None:
+    """Print a human-readable answer-quality report."""
+    n = result["questions"]
+    if not n:
+        print("Answer benchmark: no questions.")
+        return
+    pct = lambda k: f"{result[k]}/{n} ({100 * result[k] / n:.0f}%)"  # noqa: E731
+    print("\ngraphify answer benchmark")
+    print(_hr(50))
+    print(f"  Graph:           {result['nodes']:,} nodes, {result['edges']:,} edges")
+    print(f"  Questions:       {n} (query_graph, BFS depth {result['depth']}, ~{result['token_budget']}-token budget)")
+    print(f"  Expected file shown first:      {pct('hit_at_1')}")
+    print(f"  Expected file in first 3 files: {pct('hit_at_3')}")
+    print(f"  Expected file in first 5 files: {pct('hit_at_5')}")
+    print(f"  Expected file anywhere:         {pct('found')}")
+    print(f"  Answer size:     median ~{result['median_tokens']:,} tokens; {result['over_budget']} kept past the budget "
+          f"(query_graph's \"complete answer over budget\")")
+    missed = [p for p in result["per_question"] if p["rank"] is None]
+    if missed:
+        print("\n  Not found:")
+        for p in missed[:20]:
+            print(f"    - {p['question'][:70]}")
+        if len(missed) > 20:
+            print(f"    ... and {len(missed) - 20} more")
     print()
