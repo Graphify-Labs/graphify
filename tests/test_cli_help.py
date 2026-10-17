@@ -39,3 +39,18 @@ def test_help_lists_prs_provider_and_export_formats():
     # Silent hook internals — deliberately excluded from user-facing help.
     assert "hook-check" not in out
     assert "hook-guard" not in out
+
+
+def test_help_describes_update_output_root_precedence():
+    result = subprocess.run(
+        [PYTHON, "-m", "graphify", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    update_help = result.stdout.split("  update [path]", 1)[1].split(
+        "  cluster-only", 1
+    )[0]
+    assert "--out DIR" in update_help
+    assert "relative DIR is from CWD" in update_help
+    assert "absolute GRAPHIFY_OUT keeps precedence" in update_help

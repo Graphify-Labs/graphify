@@ -2781,12 +2781,28 @@ def dispatch_command(cmd: str) -> None:
         no_cluster = False
         args = sys.argv[2:]
         watch_arg: str | None = None
-        for a in args:
+        output_root: Path | None = None
+        args_iter = iter(args)
+        for a in args_iter:
             if a == "--force":
                 force = True
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--out":
+                value = next(args_iter, None)
+                if not value or value.startswith("-"):
+                    print("error: --out requires a directory", file=sys.stderr)
+                    sys.exit(2)
+                output_root = Path(value).resolve()
+                continue
+            if a.startswith("--out="):
+                value = a.split("=", 1)[1]
+                if not value:
+                    print("error: --out requires a directory", file=sys.stderr)
+                    sys.exit(2)
+                output_root = Path(value).resolve()
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2800,13 +2816,22 @@ def dispatch_command(cmd: str) -> None:
             watch_path = Path(watch_arg)
         else:
             # Try to recover the scan root saved by the last full build
-            saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
+            saved = (output_root or Path(".")) / _GRAPHIFY_OUT / ".graphify_root"
             if saved.exists():
                 # utf-8-sig: a marker written by Windows PowerShell 5.1 carries a
                 # UTF-8 BOM that plain utf-8 keeps as U+FEFF (not stripped by
                 # .strip()), which would make this recovered path fail exists()
                 # (#3028). Match the other .graphify_root readers.
                 watch_path = Path(saved.read_text(encoding="utf-8-sig").strip())
+                if (
+                    output_root is not None
+                    and not Path(_GRAPHIFY_OUT).is_absolute()
+                    and not watch_path.is_absolute()
+                ):
+                    # A portable marker belongs to same-root output. The
+                    # selected root identifies its source even from another CWD;
+                    # joining the marker would double a relative path like src.
+                    watch_path = output_root
             else:
                 watch_path = Path(".")
         if not watch_path.exists():
@@ -2818,7 +2843,10 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        ok = _rebuild_code(
+            watch_path, force=force, no_cluster=no_cluster, block_on_lock=True,
+            output_root=output_root,
+        )
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
