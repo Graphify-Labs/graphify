@@ -13,6 +13,7 @@ the canonical id and merge at build time).
 Mirrors ``mcp_ingest``: recognized by filename, routed to the deterministic AST
 path (never the LLM), so a manifest is extracted exactly once.
 """
+
 from __future__ import annotations
 
 import re
@@ -56,10 +57,12 @@ def _load_toml_module():
     """
     try:
         import tomllib as _toml  # type: ignore[import-not-found]
+
         return _toml
     except ImportError:
         try:
             import tomli as _toml  # type: ignore[import-not-found,no-redef]
+
             return _toml
         except ImportError as exc:
             raise ImportError(_TOMLI_REQUIRED) from exc
@@ -88,7 +91,10 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
 
     eco = PACKAGE_MANIFEST_NAMES[path.name.lower()]
     try:
-        info = _PARSERS[eco](text)
+        if eco == "maven":
+            info = _PARSERS[eco](text, path)
+        else:
+            info = _PARSERS[eco](text)
     except Exception as exc:  # noqa: BLE001 — a malformed manifest must not abort extraction
         return {"nodes": [], "edges": [], "error": f"manifest parse error: {exc}"}
     if isinstance(info, dict) and info.get("skipped"):
@@ -102,7 +108,7 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
     node: dict[str, Any] = {
         "id": pkg_nid,
         "label": name,
-        "file_type": "code",   # valid schema type; `type` distinguishes packages
+        "file_type": "code",  # valid schema type; `type` distinguishes packages
         "type": "package",
         "ecosystem": eco,
         "source_file": str_path,
@@ -126,21 +132,24 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
         # the dependency is external, build_from_json prunes the dangling edge. We
         # deliberately do NOT emit a stub node — a stub with an empty source_file
         # would risk clobbering the real node's source_file under id-dedup.
-        edges.append({
-            "source": pkg_nid,
-            "target": dep_nid,
-            "relation": "depends_on",
-            "context": "dependency",
-            "confidence": "EXTRACTED",
-            "confidence_score": 1.0,
-            "source_file": str_path,
-            "source_location": "L1",
-            "weight": 1.0,
-        })
+        edges.append(
+            {
+                "source": pkg_nid,
+                "target": dep_nid,
+                "relation": "depends_on",
+                "context": "dependency",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": str_path,
+                "source_location": "L1",
+                "weight": 1.0,
+            }
+        )
     return {"nodes": nodes, "edges": edges}
 
 
 # ── per-ecosystem parsers: text -> {"name", "version"?, "deps": [str]} | None ──
+
 
 def _coerce_deps(value: Any) -> list[str]:
     """A dependency block may be a list of names or a name->spec map."""
@@ -193,38 +202,48 @@ def _parse_apm_fallback(text: str) -> dict | None:
             if m:
                 version = m.group(1)
                 continue
-        if re.match(r'^dependencies:\s*$', line):
+        if re.match(r"^dependencies:\s*$", line):
             in_deps = True
             continue
         if in_deps:
-            dm = (re.match(r'^\s*-\s*["\']?([^"\'\s#:]+)', line)
-                  or re.match(r'^\s{2,}([A-Za-z0-9._/@-]+)\s*:', line))
+            dm = re.match(r'^\s*-\s*["\']?([^"\'\s#:]+)', line) or re.match(
+                r"^\s{2,}([A-Za-z0-9._/@-]+)\s*:", line
+            )
             if dm:
                 deps.append(dm.group(1))
-            elif re.match(r'^\S', line):  # next top-level key ends the block
+            elif re.match(r"^\S", line):  # next top-level key ends the block
                 in_deps = False
     return {"name": name, "version": version, "deps": deps} if name else None
 
 
 def _pep508_name(spec: str) -> str:
     """`requests>=2.0` -> `requests`; `pkg[extra]==1; python_version<'3.9'` -> `pkg`."""
-    return re.split(r'[\s<>=!~;\[\(]', spec.strip(), maxsplit=1)[0]
+    return re.split(r"[\s<>=!~;\[\(]", spec.strip(), maxsplit=1)[0]
 
 
 def _parse_pyproject(text: str) -> dict | None:
     _toml = _load_toml_module()
     data = _toml.loads(text)
     proj = data.get("project", {}) if isinstance(data.get("project"), dict) else {}
-    poetry = (data.get("tool", {}) or {}).get("poetry", {}) if isinstance(data.get("tool"), dict) else {}
+    poetry = (
+        (data.get("tool", {}) or {}).get("poetry", {}) if isinstance(data.get("tool"), dict) else {}
+    )
     name = proj.get("name") or (poetry.get("name") if isinstance(poetry, dict) else None)
     if not name:
         return None
-    deps: list[str] = [_pep508_name(s) for s in (proj.get("dependencies") or []) if isinstance(s, str)]
+    deps: list[str] = [
+        _pep508_name(s) for s in (proj.get("dependencies") or []) if isinstance(s, str)
+    ]
     if isinstance(poetry, dict):
-        for dep in (poetry.get("dependencies") or {}):
+        for dep in poetry.get("dependencies") or {}:
             if str(dep).lower() != "python":
                 deps.append(str(dep))
-    return {"name": name, "version": proj.get("version") or (poetry.get("version") if isinstance(poetry, dict) else None), "deps": deps}
+    return {
+        "name": name,
+        "version": proj.get("version")
+        or (poetry.get("version") if isinstance(poetry, dict) else None),
+        "deps": deps,
+    }
 
 
 def _parse_cargo(text: str) -> dict | None:
@@ -267,40 +286,42 @@ def _parse_gomod(text: str) -> dict | None:
     for line in text.splitlines():
         s = line.strip()
         if name is None:
-            m = re.match(r'^module\s+(\S+)', s)
+            m = re.match(r"^module\s+(\S+)", s)
             if m:
                 name = m.group(1)
                 continue
-        if re.match(r'^require\s*\(', s):
+        if re.match(r"^require\s*\(", s):
             in_block = True
             continue
         if in_block:
-            if s.startswith(')'):
+            if s.startswith(")"):
                 in_block = False
                 continue
-            dm = re.match(r'^(\S+)\s+v\S+', s)
+            dm = re.match(r"^(\S+)\s+v\S+", s)
             if dm:
                 deps.append(dm.group(1))
         else:
-            dm = re.match(r'^require\s+(\S+)\s+v\S+', s)
+            dm = re.match(r"^require\s+(\S+)\s+v\S+", s)
             if dm:
                 deps.append(dm.group(1))
     return {"name": name, "version": None, "deps": deps} if name else None
 
 
-def _parse_pom(text: str) -> dict | None:
-    # Drop the default namespace so findtext/findall don't need the {uri} prefix.
-    text = re.sub(r'\sxmlns="[^"]*"', '', text, count=1)
-    root = ET.fromstring(text)
+def _parse_pom(text: str, pom: Path | None = None) -> dict | None:
+    root = _pom_root(text)
     aid = root.findtext("artifactId")
     gid = root.findtext("groupId") or root.findtext("parent/groupId")
     version = root.findtext("version") or root.findtext("parent/version")
     if not aid:
         return None
-    props: dict[str, str] = {}
+    # Ancestor properties first, so this POM's own <properties> override them.
+    props: dict[str, str] = _inherited_pom_properties(pom, root) if pom is not None else {}
     for prop in root.findall("properties/*"):
         if isinstance(prop.tag, str) and prop.text:
             props[prop.tag] = prop.text.strip()
+    # A module may name itself with an inherited property; resolve it so
+    # dependents referencing the same literal match.
+    aid = _expand(aid, props)
     for key, value in (
         ("project.groupId", gid),
         ("project.artifactId", aid),
@@ -311,21 +332,105 @@ def _parse_pom(text: str) -> dict | None:
         if value:
             props.setdefault(key, value.strip())
 
-    def _resolve(value: str | None) -> str | None:
-        if not value:
-            return value
-        return re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), value.strip())
-
-    gid = _resolve(gid)
-    version = _resolve(version)
+    gid = _expand(gid, props)
+    version = _expand(version, props)
     name = f"{gid}:{aid}" if gid else aid
     deps: list[str] = []
     for dep in root.findall(".//dependencies/dependency"):
-        da = _resolve(dep.findtext("artifactId"))
-        dg = _resolve(dep.findtext("groupId"))
+        da = _expand(dep.findtext("artifactId"), props)
+        dg = _expand(dep.findtext("groupId"), props)
         if da:
             deps.append(f"{dg}:{da}" if dg else da)
     return {"name": name, "version": version, "deps": deps}
+
+
+# ── pom.xml: parent-chain property inheritance ────────────────────────────────
+
+# Bounds the <parent> chain walk; real chains are a few levels deep.
+_MAX_POM_ANCESTORS = 32
+
+
+def _pom_root(text: str) -> ET.Element:
+    """Parse a POM's ``<project>`` element, dropping the default namespace so
+    findtext/findall don't need the ``{uri}`` prefix."""
+    return ET.fromstring(re.sub(r'\sxmlns="[^"]*"', "", text, count=1))
+
+
+def _expand(value: str | None, props: dict[str, str]) -> str | None:
+    """Substitute ``${...}`` from ``props``; unknown keys are left literal."""
+    if not value:
+        return value
+    return re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), value.strip())
+
+
+def _parent_pom_path(pom: Path, root: ET.Element) -> Path | None:
+    """Parent POM location per Maven's ``<relativePath>`` rule (default
+    ``../pom.xml``); ``None`` for ``<relativePath/>`` (repository parent) or
+    an absolute path outside the POM's repository."""
+    parent = root.find("parent")
+    if parent is None:
+        return None
+    rel = parent.findtext("relativePath")
+    if rel is not None and not rel.strip():
+        return None
+    path = pom.parent / (rel.strip() if rel else "../pom.xml")
+    if path.is_absolute():
+        from graphify.detect import _find_vcs_root
+
+        vcs_root = _find_vcs_root(pom)
+        if vcs_root is not None and not path.resolve().is_relative_to(vcs_root):
+            return None
+    return path
+
+
+def _inherited_pom_properties(pom: Path, root: ET.Element) -> dict[str, str]:
+    """``<properties>`` declared by ``pom``'s ancestors, outermost first.
+
+    The chain stops at the first ancestor that isn't on disk (a parent like
+    ``org.apache:apache`` lives in the repository, not the tree).
+    """
+    levels: list[dict[str, str]] = []
+    seen: set[Path] = {pom.resolve()}
+    cur_pom, cur_root = pom, root
+    while len(seen) <= _MAX_POM_ANCESTORS:
+        parent_el = cur_root.find("parent")
+        if parent_el is None:
+            break
+        parent_pom = _parent_pom_path(cur_pom, cur_root)
+        if parent_pom is None:
+            break
+        parent_pom = parent_pom.resolve()
+        if parent_pom in seen or not parent_pom.is_file():
+            break
+        seen.add(parent_pom)
+        try:
+            if parent_pom.stat().st_size > _MAX_MANIFEST_BYTES:
+                break
+            cur_root = _pom_root(parent_pom.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ET.ParseError):
+            break
+        # Inherit only from the declared parent, not any file at that path.
+        if any(
+            (want := parent_el.findtext(tag))
+            and (have := cur_root.findtext(tag) or cur_root.findtext(f"parent/{tag}"))
+            and want.strip() != have.strip()
+            for tag in ("groupId", "artifactId", "version")
+        ):
+            break
+        cur_pom = parent_pom
+        levels.append(
+            {
+                p.tag: p.text.strip()
+                for p in cur_root.findall("properties/*")
+                if isinstance(p.tag, str) and p.text
+            }
+        )
+    # Merge outermost-first so each level can reference its parent's properties.
+    props: dict[str, str] = {}
+    for level in reversed(levels):
+        for key, value in level.items():
+            props[key] = _expand(value, props) or value
+    return props
 
 
 _PARSERS = {
