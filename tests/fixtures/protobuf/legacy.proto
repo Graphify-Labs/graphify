@@ -1,0 +1,17 @@
+syntax = "proto2";
+
+package shop.legacy;
+
+import "orders.proto";
+
+message Shipment {
+  optional string id = 1;
+  repeated group Parcel = 2 {
+    required string barcode = 3;
+    optional shop.orders.v1.Order order = 4;
+  }
+}
+
+extend shop.orders.v1.Order {
+  optional Shipment shipment = 100;
+}

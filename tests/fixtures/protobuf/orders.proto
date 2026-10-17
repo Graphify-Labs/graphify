@@ -1,0 +1,60 @@
+// Order service contract used by the protobuf extractor tests.
+syntax = "proto3";
+
+package shop.orders.v1;
+
+import "common/money.proto";
+import public "google/protobuf/timestamp.proto";
+
+option java_package = "com.example.shop.orders";
+
+/* Block comments are skipped,
+   including ones spanning lines. */
+message Order {
+  string id = 1;
+  repeated LineItem items = 2;
+  Status status = 3 [deprecated = true];
+  map<string, LineItem> items_by_sku = 4;
+  shop.common.Money total = 5;
+  google.protobuf.Timestamp created_at = 6;
+
+  oneof payment {
+    Card card = 7;
+    .shop.orders.v1.Invoice invoice = 8;
+  }
+
+  message LineItem {
+    string sku = 1;
+    shop.common.Money price = 2;
+    Discount discount = 3;
+  }
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_PAID = 1;
+  }
+
+  reserved 9, 10;
+  option (custom.message_opt) = { label: "order" };
+}
+
+message Discount {
+  string code = 1;
+}
+
+message Card {
+  string token = 1;
+}
+
+message Invoice {
+  string number = 1;
+}
+
+message GetOrderRequest { string id = 1; }
+
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc WatchOrders(stream GetOrderRequest) returns (stream Order) {
+    option deprecated = true;
+  }
+}
