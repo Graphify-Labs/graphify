@@ -3778,6 +3778,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".r": "r",
     ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
+    ".proto": "protobuf",
     ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
@@ -7421,6 +7422,11 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver(
+        "protobuf_references", frozenset({".proto"}), resolve_protobuf_references
+    )
+)
+register_language_resolver(
+    LanguageResolver(
         "erlang_remote_calls",
         frozenset({".erl", ".hrl", ".escript"}),
         resolve_erlang_remote_calls,
@@ -8535,6 +8541,7 @@ _DISPATCH: dict[str, Any] = {
     ".rs": extract_rust,
     ".r": extract_r,
     ".sol": extract_solidity,
+    ".proto": extract_protobuf,
     ".java": extract_java,
     ".groovy": extract_groovy,
     ".gradle": extract_groovy,
