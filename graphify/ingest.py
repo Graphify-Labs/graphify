@@ -222,9 +222,21 @@ Source: {url}
 
 
 def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
-    """Download a binary file (PDF, image) directly."""
+    """Save a sequential capture without replacing an existing directory entry.
+
+    Selection and writing are separate; concurrent captures are not atomic.
+    """
     filename = _safe_filename(url, suffix)
+    stem = Path(filename).stem
     out_path = target_dir / filename
+    counter = 1
+    while True:
+        try:
+            out_path.lstat()
+        except FileNotFoundError:
+            break
+        out_path = target_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
     out_path.write_bytes(safe_fetch(url))
     return out_path
 

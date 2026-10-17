@@ -153,7 +153,7 @@ def generate(
                 f"the graph (top: {top})"
             )
 
-    from .analyze import _is_file_node, _is_concept_node
+    from .analyze import _is_file_node, _is_concept_node, _is_contains_only_ast_node
 
     def _real_node(n) -> bool:
         # The one definition of "real" (structural, not file/concept/
@@ -324,7 +324,10 @@ def generate(
             ]
 
     # --- Gaps section ---
-    isolated = [n for n in G.nodes() if G.degree(n) <= 1 and _real_node(n)]
+    isolated = [
+        n for n in G.nodes()
+        if G.degree(n) <= 1 and _real_node(n) and not _is_contains_only_ast_node(G, n)
+    ]
     # Same threshold the Summary and Communities headers used (#3148): this
     # was a hardcoded 3, so with --min-community-size anything else the count
     # here disagreed with the label text beside it, which already printed
@@ -377,16 +380,29 @@ def generate(
     _learning_section(lines, learning)
 
     if suggested_questions:
-        lines += ["", "## Suggested Questions"]
         no_signal = len(suggested_questions) == 1 and suggested_questions[0].get("type") == "no_signal"
+        # #4199 — split AMBIGUOUS-tagged questions out of the main list so
+        # low-confidence hints do not crowd EXTRACTED/INFERRED bridges.
+        high_conf = [q for q in suggested_questions if not q.get("low_confidence")]
+        low_conf = [q for q in suggested_questions if q.get("low_confidence")]
+
+        lines += ["", "## Suggested Questions"]
         if no_signal:
             lines.append(f"_{suggested_questions[0]['why']}_")
         else:
             lines.append("_Questions this graph is uniquely positioned to answer:_")
             lines.append("")
-            for q in suggested_questions:
+            for q in high_conf:
                 if q.get("question"):
                     lines.append(f"- **{q['question']}**")
                     lines.append(f"  _{q['why']}_")
+            if low_conf:
+                lines += ["", "### Low-confidence Hints"]
+                lines.append("_AMBIGUOUS edges — the extractor was unsure. Verify before acting on these._")
+                lines.append("")
+                for q in low_conf:
+                    if q.get("question"):
+                        lines.append(f"- **{q['question']}**")
+                        lines.append(f"  _{q['why']}_")
 
     return "\n".join(lines)

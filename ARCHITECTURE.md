@@ -64,6 +64,12 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+## Edge direction in graph.json
+
+`graph.json` is written `"directed": false`, but every link is directed: **arc order is the direction** (`source` → `target`, #563). Older canonicalized files carry it in `_src`/`_tgt` markers instead, and those win where present (#2309).
+
+A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-orders each edge's endpoints by node-list position. Load through `paths.load_node_link_graph()` (or apply `paths.restore_arc_direction()` to the raw dict first), which stamps `_src`/`_tgt` on every edge. Then read direction as `data.get("_src", u)` / `data.get("_tgt", v)`, never from `u, v`. Anything that writes graph.json back out pops the markers into arc order first, as `export.to_json()` does.
+
 ## Confidence labels
 
 | Label | Meaning |
@@ -106,3 +112,22 @@ pytest tests/ -q
 ```
 
 The test suite is designed to avoid network access and uncontrolled filesystem effects; most tests are isolated with temporary directories and environment fixtures.
+
+Python nested class ids include their enclosing class id. Same-named nested
+classes under different parents retain separate definitions, methods, and
+containment edges; top-level class ids are unchanged. AST cache schema 7 prevents
+older cached definitions from retaining the collapsed identities.
+
+C# partial types merge across files by their path inside the namespace,
+enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
+assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
+`Foo<T>` stay separate types. AST cache schema 9 retires cached C# results that
+lack this path. The merge runs after colliding ids are salted apart by path, so
+a half whose file stem collides with another file's (`Spec.cs` and `_Spec.cs`,
+`Cfg/Helpers.cs` and `Cfg_Helpers.cs`) still merges and keeps its members.
+
+R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
+When normal ID normalization removes an entire binding name, its UTF-8 bytes
+provide a deterministic operator suffix within the same lexical owner. Its double
+underscore separators cannot collide with an ordinary normalized binding ID. Local
+call resolution stops if malformed scope metadata cycles.

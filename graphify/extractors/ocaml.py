@@ -8,7 +8,8 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
+from graphify.rcfile import effective_suffix
 
 
 def extract_ocaml(path: Path) -> dict:
@@ -21,12 +22,12 @@ def extract_ocaml(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-ocaml not installed"}
 
     try:
-        if path.suffix == ".mli":
+        if effective_suffix(path) == ".mli":
             language = Language(tsocaml.language_ocaml_interface())
         else:
             language = Language(tsocaml.language_ocaml())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
