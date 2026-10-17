@@ -8,6 +8,57 @@ import pytest
 import graphify.__main__ as mainmod
 
 
+@pytest.mark.parametrize("option", ["--api-timeout", "--resolution"])
+@pytest.mark.parametrize("value", ["nan", "inf"])
+@pytest.mark.parametrize("inline", [False, True])
+def test_extract_rejects_nonfinite_options_before_side_effects(
+    monkeypatch, tmp_path, capsys, option, value, inline
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "sample.py").write_text("def sample():\n    return 1\n")
+    out_dir = tmp_path / "output"
+    monkeypatch.setenv("GRAPHIFY_API_TIMEOUT", "23")
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "7")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def unexpected_detection(*args, **kwargs):
+        pytest.fail("invalid options reached corpus detection")
+
+    monkeypatch.setattr("graphify.detect.detect", unexpected_detection)
+    option_args = [f"{option}={value}"] if inline else [option, value]
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--code-only", "--max-workers", "1",
+         "--out", str(out_dir), *option_args],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    assert option in capsys.readouterr().err
+    assert not out_dir.exists()
+    assert not (corpus / "graphify-out").exists()
+    assert os.environ["GRAPHIFY_API_TIMEOUT"] == "23"
+    assert os.environ["GRAPHIFY_MAX_WORKERS"] == "7"
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_extract_dedup_shrink_flag_validates_before_missing_target(
+    monkeypatch, tmp_path, capsys, inline
+):
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    flag = "--allow-dedup-shrink=true" if inline else "--allow-dedup-shrink"
+    monkeypatch.setattr(
+        mainmod.sys, "argv", ["graphify", "extract", str(tmp_path / "missing"), flag]
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == (2 if inline else 1)
+    assert ("does not take a value" if inline else "path not found") in capsys.readouterr().err
+
+
 def _make_corpus(tmp_path):
     """Minimal corpus: one Go code file + one Markdown doc.
 
