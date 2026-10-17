@@ -1752,12 +1752,25 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
+def _file_identity(G: nx.Graph, nid: str) -> str:
+    """File identity for same-file vs cross-file decisions and listings.
+
+    ``source_file`` is repo-relative, so in a merged (multi-repo) graph two
+    nodes from different repos can share a basename (#4512); prefixing the
+    merge's ``repo`` tag keeps file identity distinct. Empty for sourceless
+    stubs, as before.
+    """
+    data = G.nodes[nid]
+    source = str(data.get("source_file") or "")
+    repo = data.get("repo")
+    return f"{repo}/{source}" if repo and source else source
+
+
 def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
     """One node id per distinct source file in *tier*, or `[]` for a single file."""
     by_source: dict[str, str] = {}
     for nid in tier:
-        source = str(G.nodes[nid].get("source_file") or "")
-        by_source.setdefault(source, nid)
+        by_source.setdefault(_file_identity(G, nid), nid)
     return list(by_source.values()) if len(by_source) > 1 else []
 
 
@@ -1810,7 +1823,7 @@ def _is_ambiguity_refusal(message: str | None) -> bool:
 
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
     listing = "\n".join(
-        f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+        f"  {_file_identity(G, r) or r}\n    id: {r}" for r in rivals
     )
     # The example names the matched node's own label: echoing the query would
     # nest a path-scoped one (`index.ts::foo()`) behind a second path.
@@ -1824,7 +1837,7 @@ def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
 
 
 def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> str:
-    source = G.nodes[hits[0]].get("source_file")
+    source = _file_identity(G, hits[0])
     where = f"in {source}" if source else "with no source file"
     listing = "\n".join(
         f"  {G.nodes[h].get('source_location') or G.nodes[h].get('label', h)}\n    id: {h}"
