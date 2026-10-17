@@ -22,6 +22,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -149,23 +150,34 @@ def _skill_lock(skill_dir: Path, *, wait: bool = True):
 def _write_version_stamp(skill_dst: Path, version: str) -> None:
     """Atomically write ``.graphify_version`` beside ``skill_dst``.
 
-    Matches the SKILL.md install path: temp file in the same directory, then
-    ``os.replace``. Unlike ``Path.write_text`` (and unlike
+    Matches the SKILL.md install path: unique temp file in the same directory,
+    then ``os.replace``. Unlike ``Path.write_text`` (and unlike
     ``paths.write_text_atomic``, which resolves through symlinks), ``os.replace``
     replaces a managed symlink in place — consistent with SKILL.md /
     ``references/`` and crash-safe against a half-written stamp (#3286).
     """
     version_file = skill_dst.parent / ".graphify_version"
-    tmp = version_file.with_name(".graphify_version.tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(skill_dst.parent),
+        prefix=".graphify_version.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
+    fd_closed = False
     try:
-        tmp.write_text(version, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd_closed = True
+            fh.write(version)
+        with contextlib.suppress(OSError):
+            if version_file.exists() and not version_file.is_symlink():
+                os.chmod(tmp, stat.S_IMODE(version_file.stat().st_mode))
         _os_replace_with_fallback(tmp, version_file)
-    except Exception:
-        try:
+    finally:
+        if not fd_closed:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
 
 
 @functools.lru_cache(maxsize=None)
@@ -280,15 +292,20 @@ def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
 def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
     """Atomically install a packaged references/ sidecar next to SKILL.md.
 
-    Stages the packaged dir into ``references.tmp`` (copytree), drops any stale
-    ``references/`` already on disk, then ``os.replace``-renames the staged dir
-    into place. The rename is atomic on the same filesystem, so an interrupted
-    install never leaves a half-written references/ visible to the agent.
+    Stages the packaged dir into a unique temporary directory (copytree), drops
+    any stale ``references/`` already on disk, then ``os.replace``-renames the
+    staged dir into place. The rename is atomic on the same filesystem, so an
+    interrupted install never leaves a half-written references/ visible to the
+    agent.
     """
     refs_dst = skill_dst.parent / "references"
-    refs_staged = skill_dst.parent / "references.tmp"
-    if refs_staged.exists():
-        shutil.rmtree(refs_staged)
+    legacy_staged = skill_dst.parent / "references.tmp"
+    if not legacy_staged.is_symlink() and legacy_staged.is_dir():
+        shutil.rmtree(legacy_staged, ignore_errors=True)
+    staging_root = Path(
+        tempfile.mkdtemp(dir=str(skill_dst.parent), prefix=".references.", suffix=".tmp")
+    )
+    refs_staged = staging_root / "references"
     try:
         shutil.copytree(refs_src, refs_staged)
         # copytree preserves the source's mode bits, and a packaged bundle can
@@ -298,13 +315,17 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
         # below would fail with EACCES. Restore owner-write on the staged copy.
         for path in (refs_staged, *refs_staged.rglob("*")):
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
-        if refs_dst.exists():
+        if refs_dst.is_symlink():
+            refs_dst.unlink()
+        elif refs_dst.exists():
             shutil.rmtree(refs_dst)
         os.replace(refs_staged, refs_dst)
-    except Exception:
-        if refs_staged.exists():
-            shutil.rmtree(refs_staged, ignore_errors=True)
-        raise
+    finally:
+        if staging_root.is_symlink():
+            with contextlib.suppress(OSError):
+                staging_root.unlink()
+        elif staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
 def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Copy a packaged skill file and write its version stamp.
 
@@ -362,16 +383,26 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         except OSError:
             pass  # a failed backup must not block the install
         # SKILL.md last (crash-safety), via an atomic temp + rename.
-        tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(skill_dst.parent),
+            prefix=f".{skill_dst.name}.",
+            suffix=".tmp",
+        )
+        tmp_dst = Path(tmp_name)
+        fd_closed = False
         try:
-            shutil.copy(skill_src, tmp_dst)
+            with os.fdopen(fd, "wb") as dst_fh:
+                fd_closed = True
+                with open(skill_src, "rb") as src_fh:
+                    shutil.copyfileobj(src_fh, dst_fh)
+            shutil.copymode(skill_src, tmp_dst)
             _os_replace_with_fallback(tmp_dst, skill_dst)
-        except Exception:
-            try:
+        finally:
+            if not fd_closed:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            with contextlib.suppress(OSError):
                 tmp_dst.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
 
         _write_version_stamp(skill_dst, __version__)
         print(f"  skill installed  ->  {skill_dst}")
@@ -1181,16 +1212,26 @@ def vscode_install(project_dir: Path | None = None) -> None:
     skill_dst = _vscode_skill_destination()
     with _skill_lock(skill_dst.parent):
         skill_dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(skill_dst.parent),
+            prefix=f".{skill_dst.name}.",
+            suffix=".tmp",
+        )
+        tmp_dst = Path(tmp_name)
+        fd_closed = False
         try:
-            shutil.copy(skill_src, tmp_dst)
+            with os.fdopen(fd, "wb") as dst_fh:
+                fd_closed = True
+                with open(skill_src, "rb") as src_fh:
+                    shutil.copyfileobj(src_fh, dst_fh)
+            shutil.copymode(skill_src, tmp_dst)
             _os_replace_with_fallback(tmp_dst, skill_dst)
-        except Exception:
-            try:
+        finally:
+            if not fd_closed:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            with contextlib.suppress(OSError):
                 tmp_dst.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
         # Progressive-capable: install the packaged references/ sidecar when present.
         refs_src = Path(__file__).parent / "skills" / refs_bundle / "references"
         if refs_src.exists():
