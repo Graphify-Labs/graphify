@@ -65,31 +65,20 @@ def _make_truncation_leaf(extra: int) -> Dict[str, Any]:
     return {"name": f"(+{extra} more)", "total_count": extra, "children": []}
 
 
-def build_tree(
-    graph: Dict[str, Any],
+def _attach_files(
+    file_nodes: List[Dict[str, Any]],
     *,
-    root: Optional[str] = None,
-    max_children: int = DEFAULT_MAX_CHILDREN,
-    project_label: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build a ``{name, total_count, children}`` hierarchy.
+    root: str,
+    max_children: int,
+    label: Optional[str],
+) -> "tuple[Dict[str, Any], int, Dict[str, List[Dict[str, Any]]]]":
+    """Build one directory tree from ``file_nodes`` (all carry ``source_file``).
 
-    Each leaf is either a code symbol (class / top-level function) or
-    a synthetic "(+N more)" placeholder for truncated wide directories.
-    Each interior node carries ``total_count = sum of leaf counts``.
-
-    Raises ``ValueError`` when an explicit ``root`` matches none of the
-    graph's ``source_file`` paths — every file would silently attach flat
-    to the root and the hierarchy would be lost (#2534).
+    Returns ``(root_node, matched_files, by_file)``. ``matched_files`` counts
+    the files that sit under ``root``; files outside it attach flat to the
+    root. Each call owns its own ``dir_index``, so two calls never share
+    directory nodes even when their relative paths are identical.
     """
-    nodes: List[Dict[str, Any]] = list(graph.get("nodes", []))
-    file_nodes = [n for n in nodes if n.get("source_file")]
-    if not file_nodes:
-        return {"name": "(empty graph)", "total_count": 0, "children": []}
-
-    explicit_root = root is not None
-    if root is None:
-        root = _common_root([n["source_file"] for n in file_nodes])
     root_path = Path(root)
 
     by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -98,7 +87,7 @@ def build_tree(
 
     # Build dir tree.
     dir_index: Dict[str, Dict[str, Any]] = {}
-    label_root = project_label or root_path.name or root or "/"
+    label_root = label or root_path.name or root or "/"
     root_node: Dict[str, Any] = {
         "name": label_root, "total_count": 0, "children": [],
     }
@@ -160,14 +149,96 @@ def build_tree(
         }
         parent_dir["children"].append(file_node)
 
+    return root_node, matched_files, by_file
+
+
+def _repo_groups(
+    file_nodes: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Group nodes by their ``repo`` tag (set by ``merge-graphs`` / ``global add``).
+
+    Nodes without a usable tag go under ``"(no repo)"`` so they are not lost.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for n in file_nodes:
+        tag = n.get("repo")
+        groups[tag if isinstance(tag, str) and tag else "(no repo)"].append(n)
+    return groups
+
+
+def build_tree(
+    graph: Dict[str, Any],
+    *,
+    root: Optional[str] = None,
+    max_children: int = DEFAULT_MAX_CHILDREN,
+    project_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a ``{name, total_count, children}`` hierarchy.
+
+    Each leaf is either a code symbol (class / top-level function) or
+    a synthetic "(+N more)" placeholder for truncated wide directories.
+    Each interior node carries ``total_count = sum of leaf counts``.
+
+    A graph whose nodes carry two or more distinct ``repo`` tags (a
+    ``merge-graphs`` / ``global add`` result) gets one top-level root per
+    repo, each with its own directory tree, so identical repo-relative paths
+    in different repos stay separate. Graphs with fewer than two tags are
+    built exactly as before.
+
+    Raises ``ValueError`` when an explicit ``root`` matches none of the
+    graph's ``source_file`` paths — every file would silently attach flat
+    to the root and the hierarchy would be lost (#2534).
+    """
+    nodes: List[Dict[str, Any]] = list(graph.get("nodes", []))
+    file_nodes = [n for n in nodes if n.get("source_file")]
+    if not file_nodes:
+        return {"name": "(empty graph)", "total_count": 0, "children": []}
+
+    explicit_root = root is not None
+    groups = _repo_groups(file_nodes)
+
+    if len(groups) < 2:
+        if root is None:
+            root = _common_root([n["source_file"] for n in file_nodes])
+        root_node, matched_files, by_file = _attach_files(
+            file_nodes, root=root, max_children=max_children,
+            label=project_label,
+        )
+        total_matched, total_files = matched_files, len(by_file)
+        sample = min(by_file)
+    else:
+        root_node = {
+            "name": project_label or "(merged graph)",
+            "total_count": 0,
+            "children": [],
+        }
+        total_matched = total_files = 0
+        sample = ""
+        for tag in sorted(groups):
+            group = groups[tag]
+            paths = [n["source_file"] for n in group]
+            if root is not None:
+                group_root = root
+            elif all(not Path(p).is_absolute() for p in paths):
+                # repo-relative paths: keep the full directory hierarchy
+                group_root = ""
+            else:
+                group_root = _common_root(paths)
+            repo_node, matched, by_file = _attach_files(
+                group, root=group_root, max_children=max_children, label=tag,
+            )
+            root_node["children"].append(repo_node)
+            total_matched += matched
+            total_files += len(by_file)
+            sample = sample or min(by_file)
+
     # An explicit --root that matches NOTHING would silently flatten the whole
     # hierarchy (every file attaches to the root); the common case is passing an
     # absolute checkout path while source_file is stored repo-relative (#2534).
     # A PARTIAL match stays fine — files outside the root legitimately attach flat.
-    if explicit_root and matched_files == 0:
-        sample = min(by_file)
+    if explicit_root and total_matched == 0:
         raise ValueError(
-            f"--root {root} matched 0 of {len(by_file)} source files "
+            f"--root {root} matched 0 of {total_files} source files "
             f"(source_file paths are stored repo-relative, e.g. {sample!r})"
         )
 
