@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from graphify.build import (
     build_from_json,
@@ -129,3 +130,109 @@ def test_no_cluster_update_leaves_no_undeclared_endpoint(tmp_path: Path):
     # the stdlib imports resolved to typed external stubs
     externals = {n["id"] for n in data["nodes"] if n.get("external")}
     assert {"typing", "pathlib", "re"} <= externals
+
+
+def _graph(corpus: Path) -> dict:
+    return json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+
+
+def _two_file_corpus(tmp_path: Path) -> Path:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "import bisect\nimport json\n\n\ndef find(xs, x):\n    return bisect.bisect_left(xs, x)\n",
+        encoding="utf-8",
+    )
+    (corpus / "b.py").write_text(
+        "import json\nfrom a import find\n\n\ndef use():\n    return json.dumps(find([1, 2], 2))\n",
+        encoding="utf-8",
+    )
+    return corpus
+
+
+@pytest.mark.parametrize("no_cluster", [True, False], ids=["no_cluster", "clustered"])
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "incremental"])
+def test_external_stub_is_dropped_with_its_last_import(tmp_path: Path, no_cluster: bool, incremental: bool):
+    """A stub outlived its last import edge: the reload backfill stamped it
+    `_origin=semantic`, reconcile keeps semantic nodes, and the node stayed in
+    graph.json forever with no edge — a node a fresh build does not have."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _two_file_corpus(tmp_path)
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
+    assert "bisect" in {n["id"] for n in _graph(corpus)["nodes"]}
+
+    (corpus / "a.py").write_text(
+        "import json\n\n\ndef find(xs, x):\n    return xs.index(x)\n", encoding="utf-8"
+    )
+    changed = [corpus / "a.py"] if incremental else None
+    assert _rebuild_code(corpus, changed_paths=changed, no_cluster=no_cluster, acquire_lock=False) is True
+
+    data = _graph(corpus)
+    ids = {n["id"] for n in data["nodes"]}
+    assert "bisect" not in ids, "stub of a removed import must not outlive its last edge"
+    # a stub other import edges still point at is kept
+    assert "json" in ids
+    links = data.get("links", data.get("edges", []))
+    assert any(e["target"] == "json" for e in links)
+
+
+def test_rebuild_writes_external_stubs_like_a_fresh_build(tmp_path: Path):
+    """Rebuilding an unchanged tree gave external stubs `_origin: semantic`
+    that the first build never wrote, so the same tree had two graph.json files."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _two_file_corpus(tmp_path)
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    first = {n["id"]: n for n in _graph(corpus)["nodes"]}
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    second = {n["id"]: n for n in _graph(corpus)["nodes"]}
+    assert first["bisect"] == second["bisect"]
+    assert first["json"] == second["json"]
+    assert "_origin" not in second["json"]
+
+
+def test_rebuild_heals_stub_left_by_an_earlier_version(tmp_path: Path):
+    """A graph written before the fix carries `_origin: semantic` stubs, some
+    with no edge left. One rebuild drops the orphan and clears the stamp."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _two_file_corpus(tmp_path)
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = _graph(corpus)
+    for node in data["nodes"]:
+        if node.get("external"):
+            node["_origin"] = "semantic"
+    data["nodes"].append({
+        "id": "requests", "label": "requests", "file_type": "concept", "type": "external",
+        "external": True, "source_file": "", "_origin": "semantic",
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    nodes = {n["id"]: n for n in _graph(corpus)["nodes"]}
+    assert "requests" not in nodes
+    assert "_origin" not in nodes["bisect"]
+
+
+def test_backfill_origin_leaves_external_stubs_unstamped():
+    from graphify.build import _backfill_origin
+
+    stub = {"id": "os", "label": "os", "file_type": "concept", "type": "external",
+            "external": True, "source_file": "", "_origin": "semantic"}
+    _backfill_origin(stub)
+    assert "_origin" not in stub
+
+    legacy_ast = {"id": "a_f", "source_file": "a.py", "source_location": "L3"}
+    _backfill_origin(legacy_ast)
+    assert legacy_ast["_origin"] == "ast"
+
+    legacy_semantic = {"id": "concept_x", "source_file": "notes.md", "source_location": None}
+    _backfill_origin(legacy_semantic)
+    assert legacy_semantic["_origin"] == "semantic"
+
+    stamped = {"id": "b_g", "source_file": "b.py", "_origin": "semantic", "external": True}
+    _backfill_origin(stamped)  # not a stub (has a source file): an explicit stamp wins
+    assert stamped["_origin"] == "semantic"

@@ -42,8 +42,9 @@ git remote add upstream https://github.com/Graphify-Labs/graphify.git
 git fetch upstream
 git checkout -b my-feature-branch upstream/v8  # Always branch off upstream v8, never commit directly to v8
 
-# Set up the environment
-uv sync
+# Set up the environment (--all-extras installs the optional grammars and SDKs,
+# matching CI; without it the tests that need them are skipped)
+uv sync --all-extras
 uv run pre-commit install
 
 # Run the test suite to confirm your setup
@@ -123,6 +124,15 @@ Use a conventional-commit prefix (e.g., `fix:`, `feat:`, `docs:`, `fix(extract):
 - Document limitations / unsupported cases.
 - Keep description synchronized with final implementation.
 - Rebase/resolve conflicts before requesting final review.
+
+## Working with AI Coding Agents
+AI assistants are welcome, but every rule in this guide applies to the code they write, and you remain the author of the PR.
+- Point your agent at this file and [ARCHITECTURE.md](ARCHITECTURE.md) before it changes anything.
+- Branch off `upstream/v8`, keep the PR to one concern, and never let an agent hand-edit generated skill files.
+- For bug fixes, confirm the regression test fails without the fix, not only that it passes with it.
+- Run the checks yourself before opening the PR: `uv run pytest tests`, `uv run ruff check .`, `uv run pyright`.
+- Disclose material AI help with a `Co-Authored-By:` trailer, as described under [Commit Messages](#commit-messages).
+- Write the PR description yourself, and list the commands you actually ran.
 
 ## Issue Reports
 ### Bugs

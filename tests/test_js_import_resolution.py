@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from graphify.build import build_from_json
+from graphify.export import to_json
 from graphify.extract import _file_node_id, _file_stem, _make_id, extract
 
 
@@ -16,6 +19,12 @@ def _write(path: Path, text: str) -> Path:
 
 def _extract_for(paths: list[Path], root: Path):
     return extract(paths, cache_root=root)
+
+
+def _unresolved_reexport_id(path: Path) -> str:
+    identity = path.as_posix()
+    salt = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]  # nosec
+    return _make_id("unresolved_reexport", _file_stem(path), salt)
 
 
 def _has_edge(result: dict, source: str, target: str, relation: str = "imports_from") -> bool:
@@ -104,6 +113,108 @@ def test_ts_directory_import_resolves_index_ts(tmp_path: Path):
     assert _has_edge(result, "src/lib/page.ts", "src/lib/server/queue/index.ts")
 
 
+@pytest.mark.parametrize(
+    ("specifier", "target_path"),
+    [
+        ("./missing", None),
+        ("./directory", "directory/index.d.ts"),
+        ("./type", "type.d.ts"),
+    ],
+)
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "export * from {specifier!r}\n",
+        "export * as values from {specifier!r}\n",
+        "export {{ Value }} from {specifier!r}\n",
+    ],
+)
+def test_unresolved_ts_reexport_ids_are_portable_across_checkout_paths(
+    tmp_path: Path,
+    specifier: str,
+    target_path: str | None,
+    statement: str,
+):
+    def build(checkout: Path) -> dict:
+        root = tmp_path / checkout
+        if target_path is not None:
+            _write(root / target_path, "export interface Value { id: string }\n")
+        barrel = _write(root / "index.ts", statement.format(specifier=specifier))
+
+        result = _extract_for([barrel], root)
+        projection = {
+            "nodes": result["nodes"],
+            "edges": result["edges"],
+        }
+        serialized = json.dumps(projection, sort_keys=True)
+        assert str(root) not in serialized
+        assert _make_id(str(root)) not in serialized
+
+        expected_target = _unresolved_reexport_id(Path(specifier.removeprefix("./")))
+        reexport_targets = {
+            edge["target"]
+            for edge in result["edges"]
+            if edge["relation"] == "re_exports"
+        }
+        assert expected_target in reexport_targets
+        return projection
+
+    first = build(Path("checkout-a"))
+    second = build(Path("nested/checkout-b"))
+
+    assert first == second
+
+
+def test_unresolved_ts_reexport_does_not_bind_a_colliding_context_node(tmp_path: Path):
+    root = tmp_path / "repo"
+    barrel = _write(root / "index.ts", "export * from './a-b/x'\n")
+    context_node = {
+        "id": _file_node_id(Path("a/b/x.ts")),
+        "label": "x.ts",
+        "file_type": "code",
+        "source_file": "a/b/x.ts",
+        "source_location": "L1",
+        "_origin": "ast",
+    }
+
+    result = extract(
+        [barrel],
+        cache_root=root,
+        root=root,
+        parallel=False,
+        resolution_context_nodes=[context_node],
+    )
+
+    target = next(
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "re_exports"
+    )
+    assert target == _unresolved_reexport_id(Path("a-b/x"))
+    assert target != context_node["id"]
+
+
+def test_unresolved_ts_reexport_external_stub_is_portable(tmp_path: Path):
+    root = tmp_path / "checkout"
+    barrel = _write(root / "index.ts", "export * from './missing'\n")
+    result = _extract_for([barrel], root)
+    graph = build_from_json(result, root=root)
+    output = tmp_path / "graph.json"
+
+    assert to_json(graph, {}, str(output), force=True)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    expected_id = _unresolved_reexport_id(Path("missing"))
+    stub = next(node for node in payload["nodes"] if node["id"] == expected_id)
+    assert stub["external"] is True
+    assert stub["label"] == expected_id
+    assert stub["norm_label"] == expected_id
+    assert any(edge["target"] == expected_id for edge in payload["links"])
+    serialized = json.dumps(payload, sort_keys=True)
+    assert str(root) not in serialized
+    assert _make_id(str(root)) not in serialized
+
+
 def test_ts_named_reexport_alias_from_index_resolves_imported_symbol_to_origin(tmp_path: Path):
     target = _write(tmp_path / "src/lib/foo.ts", "export class InternalFoo { id = '' }\n")
     barrel = _write(
@@ -124,6 +235,28 @@ def test_ts_named_reexport_alias_from_index_resolves_imported_symbol_to_origin(t
         "src/lib/foo.ts",
         "InternalFoo",
     )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_re_export_survives_for_both_files_whose_ids_collide(tmp_path: Path, reverse: bool):
+    """`a-b/x.ts` and `a/b/x.ts` both normalize to `a_b_x`. Each re-exports the
+    same module, so each must keep its own re_exports edge whatever the order the
+    files are processed in; the second one used to be deduped as a copy of the
+    first before the colliding ids were split."""
+    util = _write(tmp_path / "lib/util.ts", "export function helper() { return 1; }\n")
+    dashed = _write(tmp_path / "a-b/x.ts", "export * from '../lib/util'\n")
+    nested = _write(tmp_path / "a/b/x.ts", "export * from '../../lib/util'\n")
+    paths = [util, dashed, nested]
+
+    result = _extract_for(list(reversed(paths)) if reverse else paths, tmp_path)
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    re_exporters = sorted(
+        Path(by_id[edge["source"]]["source_file"]).as_posix()
+        for edge in result["edges"]
+        if edge["relation"] == "re_exports" and edge["target"] == _file_node_id(Path("lib/util.ts"))
+    )
+    assert re_exporters == ["a-b/x.ts", "a/b/x.ts"]
 
 
 def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: Path):
@@ -1092,6 +1225,37 @@ def test_unresolved_relative_import_uses_stable_ref_target(tmp_path: Path):
     )
 
 
+
+def test_unresolved_relative_require_uses_stable_ref_target(tmp_path: Path):
+    """CommonJS require() of a missing local module took a separate path from
+    static imports and still minted its target, and every destructured symbol
+    under it, from the attempted absolute path: the checkout location and the
+    OS username ended up in node ids (#2457 residual)."""
+    importer = _write(
+        tmp_path / "src/consumer.js",
+        "const { loadFoundation } = require('./generated/api');\n"
+        "function run() { return loadFoundation(); }\n"
+        "module.exports = { run };\n",
+    )
+
+    result = _extract_for([importer], tmp_path)
+    source = _file_node_id(Path("src/consumer.js"))
+    imports_from = [
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports_from"
+    ]
+
+    assert imports_from == [_make_id("ref", "./generated/api")]
+    checkout = _make_id(str(tmp_path))
+    leaked = [
+        endpoint
+        for edge in result["edges"]
+        for endpoint in (edge["source"], edge["target"])
+        if checkout in endpoint
+    ] + [node["id"] for node in result["nodes"] if checkout in node["id"]]
+    assert leaked == []
+
 # ── #927: wildcard tsconfig path patterns ────────────────────────────────────
 
 
@@ -1667,6 +1831,70 @@ def test_ambiguous_barrel_reexport_chain_does_not_guess(tmp_path, monkeypatch):
     assert _make_id(_file_stem(Path("src/lib/b.ts")), "dup") in reexport_targets
 
 
+# --- #4486: a named import through a barrel ----------------------------------
+# The structural extractor names the imported symbol on the barrel itself. The
+# barrel defines nothing, so that edge dangled next to the one resolved to the
+# defining symbol, and build minted it as a phantom external node.
+
+
+def _deal_barrel_fixture(tmp_path: Path, barrel: str) -> None:
+    _write(
+        tmp_path / "src/lib/deal.ts",
+        "export interface DealDto { id: string }\n"
+        "export function makeDeal(id: string): DealDto { return { id } }\n",
+    )
+    _write(tmp_path / "src/lib/index.ts", barrel)
+
+
+def _import_targets(result: dict, path: Path) -> list[str]:
+    source = _file_node_id(path)
+    return sorted(
+        edge["target"] for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports"
+    )
+
+
+@pytest.mark.parametrize(
+    "barrel",
+    ["export * from './deal'\n", "export { makeDeal, type DealDto } from './deal'\n"],
+    ids=["star", "named"],
+)
+def test_named_import_through_barrel_is_one_edge_to_the_definition(tmp_path, monkeypatch, barrel):
+    _deal_barrel_fixture(tmp_path, barrel)
+    _write(
+        tmp_path / "src/route.ts",
+        "import { makeDeal, type DealDto } from './lib/index'\n"
+        "export function route(): DealDto { return makeDeal('1') }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(sorted(Path("src").rglob("*.ts")), cache_root=Path("."))
+
+    deal = _file_stem(Path("src/lib/deal.ts"))
+    assert _import_targets(result, Path("src/route.ts")) == sorted(
+        [_make_id(deal, "DealDto"), _make_id(deal, "makeDeal")]
+    )
+
+
+def test_named_import_through_barrel_into_a_package_keeps_its_edge(tmp_path, monkeypatch):
+    _deal_barrel_fixture(tmp_path, "export * from './deal'\nexport { eq } from 'drizzle-orm'\n")
+    _write(
+        tmp_path / "src/route.ts",
+        "import { makeDeal, eq } from './lib/index'\n"
+        "export function route() { eq(); return makeDeal('1') }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(sorted(Path("src").rglob("*.ts")), cache_root=Path("."))
+
+    targets = _import_targets(result, Path("src/route.ts"))
+    index = _file_stem(Path("src/lib/index.ts"))
+    # `eq` resolves to nothing in the corpus, so its edge is the only trace of it.
+    assert _make_id(index, "eq") in targets
+    assert _make_id(index, "makeDeal") not in targets
+    assert _make_id(_file_stem(Path("src/lib/deal.ts")), "makeDeal") in targets
+
+
 # ── #3487: the exports-map condition must follow the importer ────────────────
 
 
@@ -1982,6 +2210,66 @@ def test_workspace_main_dist_target_used_when_no_source_entry_exists(tmp_path: P
         tmp_path / "packages/pkg-a/dist/index.js",
         'export const value = "from-dist";\n',
     )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([dist_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+# --- #4485: the same fallback when `exports` names only dist/ -----------------
+
+
+def _dist_only_exports_package(root: Path, *, built: bool) -> Path:
+    _write(root / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        root / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "type": "module",
+            "main": "dist/index.js",
+            "exports": {
+                ".": {"import": "./dist/index.js", "types": "./dist/index.d.ts"},
+                "./sub": {"import": "./dist/sub.js"},
+            },
+        }),
+    )
+    if built:
+        _write(root / "packages/pkg-a/dist/index.js", "export const value = 'dist';\n")
+        _write(root / "packages/pkg-a/dist/sub.js", "export const sub = 'dist';\n")
+    _write(root / "packages/pkg-a/src/sub.ts", "export const sub = 'ok';\n")
+    return _write(root / "packages/pkg-a/src/index.ts", "export const value = 'ok';\n")
+
+
+@pytest.mark.parametrize("built", [True, False], ids=["built", "clean-clone"])
+def test_workspace_exports_into_dist_fall_through_to_src(tmp_path: Path, built: bool):
+    source_target = _dist_only_exports_package(tmp_path, built=built)
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\n"
+        "import { sub } from '@example/pkg-a/sub'\n"
+        "export const v = value + sub\n",
+    )
+
+    result = _extract_for(
+        [source_target, tmp_path / "packages/pkg-a/src/sub.ts", importer], tmp_path
+    )
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/sub.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+def test_workspace_exports_into_dist_used_when_no_source_exists(tmp_path: Path):
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a", "exports": {".": {"import": "./dist/index.js"}}}),
+    )
+    dist_target = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const value = 1;\n")
     importer = _write(
         tmp_path / "apps/web/src/consumer.ts",
         "import { value } from '@example/pkg-a'\nexport const v = value\n",

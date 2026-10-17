@@ -30,6 +30,18 @@ def test_to_json_valid_json():
         assert "nodes" in data
         assert "links" in data
 
+
+def test_to_json_includes_graph_schema_metadata(tmp_path):
+    G = make_graph()
+    out = tmp_path / "graph.json"
+
+    assert to_json(G, {}, str(out))
+
+    graph_metadata = json.loads(out.read_text())["graph"]
+    assert graph_metadata["schema_version"] == 1
+    assert graph_metadata["graphify_version"]
+
+
 def test_to_json_nodes_have_community():
     G = make_graph()
     communities = cluster(G)
@@ -1033,6 +1045,84 @@ def test_to_json_refuses_shrink(tmp_path):
     assert to_json(_mkG(2), {}, str(p), force=True) is True  # force overrides
 
 
+def test_to_json_refuses_lost_semantic_id_when_total_grows(tmp_path, capsys):
+    """#2229: AST growth and a new stub must not replace a saved rationale id."""
+    import networkx as nx
+
+    saved_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "app_ts_main", "label": "main", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L2", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "rationale_lost", "label": "lost", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ]
+    new_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "app_ts_main", "label": "main", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L2", "file_type": "code"},
+        {"id": "app_ts_hook", "label": "hook", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L10", "file_type": "code"},
+        {"id": "app_ts_route", "label": "route", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L20", "file_type": "code"},
+        {"id": "app_ts_util", "label": "util", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L30", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "pathlib_Path", "label": "Path", "source_file": "", "source_location": None, "file_type": "concept"},
+    ]
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": saved_nodes, "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    for node in new_nodes:
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    assert G.number_of_nodes() > len(saved_nodes)
+    assert to_json(G, {}, str(p), force=False) is False
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert "rationale_lost" in {n["id"] for n in written["nodes"]}
+    assert "rationale_lost" in capsys.readouterr().err
+
+
+def test_to_json_allows_ast_growth_that_keeps_semantic_ids(tmp_path):
+    """AST nodes may be added when every saved rationale id is still present."""
+    import networkx as nx
+
+    saved_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "rationale_lost", "label": "lost", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ]
+    new_nodes = saved_nodes + [
+        {"id": "app_ts_hook", "label": "hook", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L10", "file_type": "code"},
+    ]
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": saved_nodes, "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    for node in new_nodes:
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    assert to_json(G, {}, str(p), force=False) is True
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert {"rationale_kept", "rationale_lost"} <= {n["id"] for n in written["nodes"]}
+
+
+def test_to_json_rewrites_the_same_integer_node_ids(tmp_path):
+    """An unstamped integer id that is still in the graph is not a lost semantic node."""
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    G.add_edges_from([(1, 2, {}), (1, 3, {}), (2, 3, {})])
+    p = tmp_path / "racecar"
+    assert to_json(G, {}, str(p), force=False) is True
+    assert to_json(G, {}, str(p), force=False) is True
+    assert {n["id"] for n in json.loads(p.read_text(encoding="utf-8"))["nodes"]} == {1, 2, 3}
+
+
+def test_to_json_refuses_a_missing_integer_semantic_id(tmp_path):
+    """A saved integer id that the new graph dropped is still refused when the total grows."""
+    import networkx as nx
+
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": [{"id": 4}], "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    assert to_json(G, {}, str(p), force=False) is False
+    assert json.loads(p.read_text(encoding="utf-8"))["nodes"] == [{"id": 4}]
+
+
 def test_to_json_fails_safe_on_corrupt_existing(tmp_path):
     """A non-empty but unparseable existing graph.json (corrupt or mid-write)
     must NOT be silently overwritten — we can't verify the new graph isn't a
@@ -1266,6 +1356,7 @@ const mockElem = () => ({{
 }});
 
 const doc = {{
+  body: mockElem(),
   elements: {{
     'info-content': mockElem(),
     'graph': mockElem(),
@@ -1373,3 +1464,210 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
     assert '<div class="field">Degree: 1</div>' in info_html
     assert "Type: unknown" not in info_html
     assert "Source: -" not in info_html
+
+
+def _run_sidebar_harness(html_content: str, epilogue: str):
+    """Run graph.html's client script in Node.js with DOM mocks that record
+    children and listeners, then run `epilogue` and return what it prints as JSON."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
+    assert m, "vis script block not found in html"
+    harness = """
+const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remove() {} }, children: [], listeners: {},
+  offsetWidth: 200, offsetHeight: 30,
+  appendChild(c) { this.children.push(c); }, addEventListener(t, f) { this.listeners[t] = f; }, prepend() {} });
+const els = {};
+const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
+  createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
+const window = { innerWidth: 1280, innerHeight: 800 };
+class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
+  get(id) { return this.map.get(id); } update() {} }
+const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}
+  getConnectedNodes(id) { return RAW_NODES.map(n => n.id).filter(x => x !== id); } } };
+""" + m.group(1) + "\n" + epilogue
+    proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def _parse_html_fragment(fragment: str) -> list:
+    """Return (tag, attrs dict, text) for each start tag; HTMLParser decodes entities."""
+    from html.parser import HTMLParser
+    tags: list = []
+    open_: list = []
+
+    class _P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tags.append([tag, dict(attrs), ""])
+            open_.append(tags[-1])
+
+        def handle_endtag(self, tag):
+            if open_:
+                open_.pop()
+
+        def handle_data(self, data):
+            if open_:
+                open_[-1][2] += data
+
+    _P(convert_charrefs=True).feed(fragment)
+    return tags
+
+
+def test_to_html_legend_label_escaped_once_without_title(tmp_path):
+    """The legend label is HTML-escaped once for the innerHTML sink, so its DOM
+    text (what the sidebar tooltip shows) is the raw label; no title attributes."""
+    import networkx as nx
+    G = nx.Graph()
+    for nid in ("n1", "n2", "n3", "n4"):
+        G.add_node(nid, label=nid, file_type="code", source_file=f"{nid}.py")
+    label = "Team \"A\" & <B> 'c'"
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"], 1: ["n4"]}, str(out), community_labels={0: label, 1: "Solo"})
+    items = _run_sidebar_harness(out.read_text(encoding="utf-8"),
+                                 "console.log(JSON.stringify(legendEl.children.map(c => c.innerHTML)));")
+    assert "&amp;amp;" not in items[0]
+    tags = [t for frag in items for t in _parse_html_fragment(frag)]
+    assert {t[0] for t in tags} == {"div", "span"}
+    assert not any("title" in t[1] for t in tags)
+    assert [t[2] for t in tags if t[1].get("class") == "legend-label"] == [label, "Solo"]
+    assert [t[2] for t in tags if t[1].get("class") == "legend-count"] == ["3", "1"]
+
+
+def test_to_html_sidebar_tooltip_shows_truncated_text_and_node_counts(tmp_path):
+    """One shared .vis-tooltip: names only when truncated, counts always as
+    'N node(s)'; text set via textContent so & " ' < > show literally."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="a", file_type="code", source_file="a.py")
+    label = "Team \"A\" & <b>B</b> 'c' <img src=x onerror=alert(1)>"
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+    assert "sidebarTip.innerHTML" not in content
+    assert "max-width: 360px; overflow-wrap: break-word" in content
+    result = _run_sidebar_harness(content, _SIDEBAR_DOM_JS + """
+const hover = (cls, text, truncated) => {
+  const el = cls.startsWith('legend-') ? legendRow(cls === 'legend-label' ? text : 'x', truncated, text)[cls]
+    : domNode(cls, text, null, truncated);
+  document.listeners.mouseover({ target: el, clientX: 100, clientY: 100 });
+  const shown = tip.style.visibility === 'visible' ? tip.textContent : null;
+  const pos = [tip.style.left, tip.style.top];
+  document.listeners.mouseout({ target: el, relatedTarget: null });
+  return [shown, tip.style.visibility, tip.innerHTML, tip.textContent, shown === null ? null : pos];
+};
+const L = %s;
+console.log(JSON.stringify({ count: tips.length, hovers: [
+  hover('legend-label', L, true), hover('search-item', L, true), hover('neighbor-link', L, true),
+  hover('legend-label', 'short', false), hover('search-item', 'short', false), hover('neighbor-link', 'short', false),
+  hover('legend-count', '3', false), hover('legend-count', '1', false)], styles: tip.styleLog }));""" % json.dumps(label))
+    assert result["count"] == 1
+    # Shown 12px right of and 16px below the cursor at (100, 100); hidden and
+    # emptied again on mouseout.
+    at = ["112px", "116px"]
+    assert result["hovers"] == [[label, "hidden", "", "", at]] * 3 + [[None, "hidden", "", "", None]] * 3 + [
+        ["3 nodes", "hidden", "", "", at], ["1 node", "hidden", "", "", at]]
+    assert result["styles"] and not any("NaN" in v for v in result["styles"])
+
+
+# Parent-linked DOM nodes for the sidebar tooltip tests: enough of closest(),
+# contains() and querySelector() to hover any part of a real legend row, which
+# the client builds as checkbox + dot + label + count inside a .legend-item.
+# `tip` is the shared tooltip; tip.styleLog records every left/top it is given.
+_SIDEBAR_DOM_JS = """
+globalThis.setTimeout = f => f();
+const tips = document.body.children.filter(c => c.className === 'vis-tooltip');
+const tip = tips[0];
+tip.styleLog = [];
+tip.style = new Proxy(tip.style, { set(s, k, v) { if (k === 'left' || k === 'top') tip.styleLog.push(String(v));
+  s[k] = v; return true; } });
+const domNode = (cls, text, parent, truncated) => {
+  const el = { textContent: text, parent, kids: [], scrollWidth: truncated ? 300 : 100, clientWidth: 100,
+    classList: { contains: c => c === cls },
+    contains(o) { for (let x = o; x; x = x.parent) if (x === el) return true; return false; },
+    closest(sel) { const want = sel.split(', ').map(s => s.slice(1));
+      for (let x = el; x; x = x.parent) if (want.some(w => x.classList.contains(w))) return x; return null; },
+    querySelector(sel) { const q = [...el.kids];
+      while (q.length) { const k = q.shift(); if (k.classList.contains(sel.slice(1))) return k; q.push(...k.kids); }
+      return null; } };
+  if (parent) parent.kids.push(el);
+  return el;
+};
+const legendRow = (label, truncated, count = '3') => {
+  const row = domNode('legend-item', '', null, false);
+  return { 'legend-item': row, 'legend-cb': domNode('legend-cb', '', row, false),
+    'legend-dot': domNode('legend-dot', '', row, false), 'legend-label': domNode('legend-label', label, row, truncated),
+    'legend-count': domNode('legend-count', count, row, false) };
+};
+const move = (from, to, x = 100, y = 100) => {
+  if (from) document.listeners.mouseout({ target: from, relatedTarget: to });
+  const afterOut = tip.style.visibility;
+  if (to) document.listeners.mouseover({ target: to, clientX: x, clientY: y });
+  return [afterOut, tip.style.visibility, tip.textContent];
+};
+"""
+
+
+def _sidebar_tip_graph_html(tmp_path, label: str = "Core") -> str:
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="a", file_type="code", source_file="a.py")
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: label})
+    return out.read_text(encoding="utf-8")
+
+
+def test_to_html_sidebar_tooltip_stays_inside_viewport_near_edges(tmp_path):
+    """Near the right/bottom edge of the 1280x800 window the 200x30 tooltip is
+    clamped left and flipped above the cursor instead of overflowing."""
+    result = _run_sidebar_harness(_sidebar_tip_graph_html(tmp_path), _SIDEBAR_DOM_JS + """
+const at = (x, y) => { const c = legendRow('x', false)['legend-count']; move(null, c, x, y);
+  const r = [tip.style.left, tip.style.top]; move(c, null); return r; };
+console.log(JSON.stringify({ size: [tip.offsetWidth, tip.offsetHeight],
+  edges: [at(1270, 790), at(1270, 100), at(100, 790), at(0, 0)], styles: tip.styleLog }));""")
+    w, h = result["size"]
+    assert result["edges"] == [["1076px", "752px"], ["1076px", "116px"], ["112px", "752px"], ["12px", "16px"]]
+    for left, top in result["edges"]:
+        assert 0 <= int(left[:-2]) and int(left[:-2]) + w <= 1280
+        assert 0 <= int(top[:-2]) and int(top[:-2]) + h <= 800
+    assert not any("NaN" in v for v in result["styles"])
+
+
+def test_to_html_legend_row_hover_shows_label_anywhere_but_count(tmp_path):
+    """The whole legend row (checkbox, dot, gaps/padding) shows the truncated
+    name; the count still says 'N nodes'; moving inside the row never hides it."""
+    result = _run_sidebar_harness(_sidebar_tip_graph_html(tmp_path), _SIDEBAR_DOM_JS + """
+const long = legendRow('A very long community name', true);
+const short = legendRow('Short', false, '1');
+console.log(JSON.stringify({
+  padding: move(null, long['legend-item']),
+  toDot: move(long['legend-item'], long['legend-dot']),
+  toCheckbox: move(long['legend-dot'], long['legend-cb']),
+  toLabel: move(long['legend-cb'], long['legend-label']),
+  toCount: move(long['legend-label'], long['legend-count']),
+  backToDot: move(long['legend-count'], long['legend-dot']),
+  leave: move(long['legend-dot'], null),
+  shortPadding: move(null, short['legend-item']),
+  shortDot: move(short['legend-item'], short['legend-dot']),
+  shortCount: move(short['legend-dot'], short['legend-count']),
+  shortLeave: move(short['legend-count'], null) }));""")
+    name = "A very long community name"
+    assert result == {
+        "padding": [None, "visible", name],  # never shown before: no visibility set yet
+        # Same row, same text: the tooltip is not hidden between children.
+        "toDot": ["visible", "visible", name],
+        "toCheckbox": ["visible", "visible", name],
+        "toLabel": ["visible", "visible", name],
+        "toCount": ["visible", "visible", "3 nodes"],
+        "backToDot": ["hidden", "visible", name],
+        "leave": ["hidden", "hidden", ""],
+        # A name that fits gets no tooltip from anywhere on its row.
+        "shortPadding": ["hidden", "hidden", ""],
+        "shortDot": ["hidden", "hidden", ""],
+        "shortCount": ["hidden", "visible", "1 node"],
+        "shortLeave": ["hidden", "hidden", ""],
+    }

@@ -367,6 +367,34 @@ def test_merge_graphs_previous_drops_community_for_a_new_node(tmp_path):
     assert "community" not in by_id["beta::b0"]
 
 
+def test_merge_graphs_previous_does_not_resurrect_removed_node(tmp_path):
+    """#4078: --previous restores metadata only for nodes still present."""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_communities(a, [("a0", 0)])
+    _write_with_communities(b, [("b0", 0)])
+
+    previous = tmp_path / "previous-merged.json"
+    _write_with_communities(previous, [
+        ("alpha::a0", 7),
+        ("beta::b0", 12),
+        ("beta::removed", 99),
+    ])
+
+    out = tmp_path / "merged.json"
+    r = _run(
+        ["merge-graphs", str(a), str(b), "--out", str(out), "--previous", str(previous)],
+        tmp_path,
+    )
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    by_id = {n["id"]: n for n in data["nodes"]}
+
+    assert "beta::removed" not in by_id
+    assert by_id["alpha::a0"]["community"] == 7
+    assert by_id["beta::b0"]["community"] == 12
+
+
 def test_merge_graphs_previous_malformed_json_errors_gracefully(tmp_path):
     """A malformed --previous file must fail with a clear message and exit 1,
     not crash with an uncaught JSONDecodeError traceback."""

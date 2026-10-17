@@ -4,14 +4,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
 def extract_razor(path: Path) -> dict:
     """Extract directives, component refs, and @code/@functions methods from .razor/.cshtml."""
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
 
