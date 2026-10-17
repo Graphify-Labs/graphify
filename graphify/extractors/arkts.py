@@ -901,7 +901,11 @@ def extract_harmony_config(path: Path) -> dict:
     edges: list[dict] = []
     seen: set[str] = set()
     str_path = str(path)
-    stem = _file_stem(path)
+    # Only a fallback display name / global-ID component (package or module
+    # without a "name", build profile). Use the bare file stem, never the
+    # path-derived _file_stem: these IDs are global, so a path here would leak
+    # the checkout location into labels and make IDs differ per checkout.
+    stem = path.stem
 
     # File node so edges always have a rooted anchor
     file_nid = _make_id(str_path)

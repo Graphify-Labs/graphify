@@ -335,3 +335,20 @@ def test_harmony_router_map_links_route_to_page_struct(tmp_path):
     page_ids = {n["id"] for n in extract_ets(page)["nodes"] if n["label"] == "DetailView"}
     targets = {e["target"] for e in extract_harmony_config(router)["edges"] if e["relation"] == "route_maps_to"}
     assert page_ids and targets == page_ids
+
+
+def test_harmony_config_ids_and_labels_do_not_embed_the_checkout_path(tmp_path):
+    """A manifest without "name" falls back to the file stem; that fallback feeds
+    global IDs, so the absolute checkout path must not leak into them."""
+    from graphify.extractors.base import _make_id
+    root = tmp_path / "checkout-a"
+    root.mkdir()
+    (root / "oh-package.json5").write_text('{"dependencies": {"@ohos/lib": "1.0.0"}}', encoding="utf-8")
+    (root / "build-profile.json5").write_text('{"app": {"products": []}, "modules": []}', encoding="utf-8")
+    for name in ("oh-package.json5", "build-profile.json5"):
+        r = extract_harmony_config(root / name)
+        for n in r["nodes"]:
+            if n.get("node_type") == "harmony_config":
+                continue  # the file node is keyed by path like every other file node
+            assert str(tmp_path) not in n["label"], n
+            assert _make_id(str(tmp_path)) not in n["id"], n
