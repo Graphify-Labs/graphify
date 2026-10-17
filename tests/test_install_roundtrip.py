@@ -59,6 +59,8 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     monkeypatch.chdir(project_dir)
     # hermes user scope lands under %LOCALAPPDATA% on Windows; keep it inside tmp
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+    monkeypatch.delenv("MIMOCODE_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
     with patch("graphify.__main__.Path.home", return_value=home):
         dst = mainmod._platform_skill_destination(
