@@ -470,8 +470,8 @@ New here? Say hi on [Discord](https://discord.gg/XDnKVpzdXB) or in [GitHub Discu
 
 ## Contributors
 
-<a href="https://github.com/Graphify-Labs/graphify/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
+<a href="https://github.com/graphify-labs/graphify/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=graphify-labs/graphify" />
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
