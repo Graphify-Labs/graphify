@@ -65,6 +65,7 @@ from graphify.extractors.erlang import extract_erlang, resolve_erlang_remote_cal
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
+from graphify.extractors.jsp import extract_jsp  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
@@ -3782,6 +3783,8 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     # JVM interop
     ".java": "jvm", ".kt": "jvm", ".kts": "jvm",
     ".scala": "jvm", ".groovy": "jvm", ".gradle": "jvm",
+    # JSP compiles to a Java servlet and imports Java classes.
+    ".jsp": "jvm", ".jspf": "jvm", ".jspx": "jvm",
     # C-family: shared headers, Objective-C/C++ mix, Swift↔ObjC bridging
     ".c": "native", ".h": "native", ".cpp": "native", ".cc": "native",
     ".cxx": "native", ".hpp": "native", ".cu": "native", ".cuh": "native",
@@ -8648,6 +8651,9 @@ _DISPATCH: dict[str, Any] = {
     ".xaml": extract_xaml,
     ".razor": extract_razor,
     ".cshtml": extract_razor,
+    ".jsp": extract_jsp,
+    ".jspf": extract_jsp,
+    ".jspx": extract_jsp,
     ".robot": extract_robot,
     ".resource": extract_robot,
     ".cls": extract_apex,
