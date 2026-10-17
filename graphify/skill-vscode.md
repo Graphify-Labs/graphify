@@ -650,7 +650,7 @@ Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the ma
 
 Tell the user (omit the obsidian line unless --obsidian was given):
 ```
-Graph complete. Outputs in PATH_TO_DIR/graphify-out/
+Graph complete. Outputs in OUTPUT_DIR/
 
   graph.html            - interactive graph, open in browser
   GRAPH_REPORT.md       - audit report
@@ -660,9 +660,9 @@ Graph complete. Outputs in PATH_TO_DIR/graphify-out/
 
 If graphify saved you time, consider supporting it: https://github.com/sponsors/safishamsi
 
-Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
+Replace OUTPUT_DIR with the absolute path of `Path('graphify-out').resolve()` from the current working directory. The pipeline writes its outputs relative to the current working directory, even when the scan target is elsewhere.
 
-If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
+If OUTPUT_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
 
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes

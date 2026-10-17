@@ -1837,6 +1837,61 @@ def _resolve_graphify_exe(project: bool = False) -> str:
                 found = str(candidate)
                 break
     return (found or "graphify").replace("\\", "/")
+
+
+def _codex_hook_command(graphify_exe: str) -> str:
+    """Return a POSIX hook that skips only when Graphify is unavailable."""
+    import shlex
+
+    quoted_exe = shlex.quote(graphify_exe)
+    if graphify_exe == "graphify":
+        return (
+            "if command -v graphify >/dev/null 2>&1; "
+            "then exec graphify hook-check; fi"
+        )
+
+    return (
+        f"if [ -x {quoted_exe} ]; then exec {quoted_exe} hook-check; fi\n"
+        "if command -v graphify >/dev/null 2>&1; then exec graphify hook-check; fi"
+    )
+
+
+def _codex_hook_command_windows(graphify_exe: str) -> str:
+    """Return Codex's Windows override with the same fail-open behavior."""
+    import base64
+
+    if graphify_exe == "graphify":
+        lookup = "$graphify = Get-Command graphify -CommandType Application -ErrorAction SilentlyContinue"
+    else:
+        escaped_exe = graphify_exe.replace("'", "''")
+        lookup = (
+            f"$graphifyPath = '{escaped_exe}'\n"
+            "if (Test-Path -LiteralPath $graphifyPath -PathType Leaf) {\n"
+            "  & $graphifyPath hook-check\n"
+            "  exit $LASTEXITCODE\n"
+            "}\n"
+            "$graphify = Get-Command graphify -CommandType Application "
+            "-ErrorAction SilentlyContinue"
+        )
+
+    script = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "try {\n"
+        f"  {lookup}\n"
+        "  if ($graphify) {\n"
+        "    & $graphify.Source hook-check\n"
+        "    exit $LASTEXITCODE\n"
+        "  }\n"
+        "} catch {\n"
+        "  [Console]::Error.WriteLine($_)\n"
+        "  exit 1\n"
+        "}\n"
+        "exit 0"
+    )
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return f"powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
+
+
 def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json.
 
@@ -1854,7 +1909,13 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
             "PreToolUse": [
                 {
                     "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": f"{graphify_exe} hook-check"}],
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": _codex_hook_command(graphify_exe),
+                            "commandWindows": _codex_hook_command_windows(graphify_exe),
+                        }
+                    ],
                 }
             ]
         }
