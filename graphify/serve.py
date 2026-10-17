@@ -1739,8 +1739,8 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     `G.nodes()` iteration order — reorder the graph and the same query answers with
     a different file, equally confidently.
 
-    Returns one representative node id per distinct source file when the winning
-    tier is split that way, else `[]`. Several matches *within one file* (a file
+    Returns one representative node id per distinct file (repo plus source file)
+    when the winning tier is split that way, else `[]`. Several matches *within one file* (a file
     node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
 
     `_disambiguate_file_node_labels` (#2032) already relabels colliding *file*
@@ -1753,12 +1753,18 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
 
 
 def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
-    """One node id per distinct source file in *tier*, or `[]` for a single file."""
-    by_source: dict[str, str] = {}
+    """One node id per distinct file in *tier*, or `[]` for a single file.
+
+    A file is its repo plus its source_file. A merged graph keeps source_file relative
+    to each repo, so two repos that both have `dup.py` hold two files, not one (#4512).
+    A single-repo graph has no `repo` attribute and groups by source_file alone.
+    """
+    by_file: dict[tuple[str, str], str] = {}
     for nid in tier:
-        source = str(G.nodes[nid].get("source_file") or "")
-        by_source.setdefault(source, nid)
-    return list(by_source.values()) if len(by_source) > 1 else []
+        data = G.nodes[nid]
+        file_id = (str(data.get("repo") or ""), str(data.get("source_file") or ""))
+        by_file.setdefault(file_id, nid)
+    return list(by_file.values()) if len(by_file) > 1 else []
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
@@ -1809,17 +1815,33 @@ def _is_ambiguity_refusal(message: str | None) -> bool:
 
 
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
-    listing = "\n".join(
-        f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-    )
+    # Name the repo only when the candidates span several: that is when the bare path is
+    # not enough to tell them apart (#4512). One repo, or a graph with no `repo`, keeps
+    # the plain path.
+    several_repos = len({str(G.nodes[r].get("repo") or "") for r in rivals}) > 1
+
+    def where(r: str) -> str:
+        source = G.nodes[r].get("source_file") or ""
+        repo = G.nodes[r].get("repo")
+        return f"{repo}/{source}" if several_repos and repo and source else source
+
+    listing = "\n".join(f"  {where(r) or r}\n    id: {r}" for r in rivals)
     # The example names the matched node's own label: echoing the query would
     # nest a path-scoped one (`index.ts::foo()`) behind a second path.
     symbol = G.nodes[rivals[0]].get("label") or label
+    sources = [str(G.nodes[r].get("source_file") or "") for r in rivals]
+    if any(sources.count(src) > 1 for src in sources if src):
+        # The same path in two repos: `<path>::symbol` matches both, so it would be a
+        # dead end. Only the node id tells them apart.
+        retry = ("Retry with the full node id: the same path exists in more than one repo, "
+                 "so a path cannot tell them apart.")
+    else:
+        retry = (f"Retry with path::symbol using one of the paths above (e.g. "
+                 f"<path>::{symbol}) or the full node id.")
     return (
         f"{_AMBIGUOUS}'{label}' matches {len(rivals)} nodes in different files.\n"
         f"{listing}\n"
-        f"Retry with path::symbol using one of the paths above (e.g. "
-        f"<path>::{symbol}) or the full node id."
+        f"{retry}"
     )
 
 
