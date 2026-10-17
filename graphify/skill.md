@@ -12,8 +12,8 @@ Convert any directory of code, documents, papers, images, or video files into a 
 ```
 /graphify                                             # full pipeline on current directory (HTML viz; add --obsidian for a vault)
 /graphify <path>                                      # full pipeline on specific path
-/graphify [https://github.com/](https://github.com/)<owner>/<repo>           # clone repo then run full pipeline on it
-/graphify [https://github.com/](https://github.com/)<owner>/<repo> --branch <branch>  # clone a specific branch
+/graphify https://github.com/<owner>/<repo>           # clone repo then run full pipeline on it
+/graphify https://github.com/<owner>/<repo> --branch <branch>  # clone a specific branch
 /graphify <url1> <url2> ...                           # clone multiple repos, build each, merge into one cross-repo graph
 /graphify <path> --mode deep                          # thorough extraction, richer INFERRED edges
 /graphify <path> --update                             # incremental - re-extract only new/changed files
