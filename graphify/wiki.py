@@ -3,6 +3,7 @@
 from __future__ import annotations
 from collections import Counter
 from pathlib import Path
+import os
 import re
 import networkx as nx
 
@@ -60,6 +61,16 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     s = _UNSAFE_SLUG_CHARS.sub('_', s)
     s = s.strip('. ')
     return s[:limit] if s else 'unnamed'
+
+
+def _file_id(path: Path) -> tuple[int, int] | None:
+    """(device, inode) of ``path``: the same for every name that reaches one file.
+    None when the path cannot be stat'd (a dangling symlink)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
@@ -448,8 +459,17 @@ def to_wiki(
 
     # Sweep orphans: remove only the *.md this run did not produce, so a relabelled
     # community's stale page is still cleaned up without rewriting the survivors.
+    # Match by file identity, not by name. On a case-insensitive filesystem a page
+    # relabelled only by case ("groups" -> "Groups") is written into the old
+    # directory entry, which keeps the old case, so a name check unlinks the page
+    # this run just wrote (#4508). The entry is renamed to the produced case.
+    produced_by_id = {_file_id(out / f): f for f in produced}
     for old_article in out.glob("*.md"):
-        if old_article.name not in produced:
+        fid = _file_id(old_article)
+        name = produced_by_id.get(fid) if fid is not None else None
+        if name is None:
             old_article.unlink()
+        elif name != old_article.name:
+            os.replace(old_article, out / name)
 
     return count
