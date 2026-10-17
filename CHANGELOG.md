@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the incremental `#2543` self-heal no longer re-queues deliberately declined data JSON (a data-shaped `.json` file that legitimately produces zero nodes, #1224/#2879) on every run, and now makes the decline decision with a shallow `json.load` root-shape/key probe instead of a full tree-sitter parse of every unchanged `.json` file on every incremental run.
+
 ## 0.9.64 (2026-09-18)
 
 - Feature: Terraform block attributes (`ami`, `instance_type`, `cidr_block`, tags, and the like) are now preserved on the resource/data/module node and are queryable and searchable, with typed values (bool/number/list/map) and nested blocks kept separate from direct attributes. Secret-named attribute values (`password`, `*secret*`, `*token*`, `*_key`, connection strings) are redacted before they reach `graph.json` or the model, so a hardcoded credential in a `.tf` file does not leak (#3644, thanks @hopstreax).

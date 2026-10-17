@@ -1395,6 +1395,119 @@ def test_zero_node_heal_still_heals_config_json(tmp_path):
     assert set(map(Path, res)) == {cfg, tsc}, f"config JSON with 0 nodes must be healed, got {res}"
 
 
+def test_zero_node_heal_decline_matches_extract_json_on_jsonc(tmp_path):
+    """The shallow decline probe must agree with extract_json on JSONC (#700)."""
+    import json
+    from pathlib import Path
+    pytest.importorskip("tree_sitter_json")
+    from graphify.cli import _zero_node_stamped_code_sources
+    from graphify.extractors.json_config import extract_json
+
+    graph = tmp_path / "graphify-out" / "graph.json"
+    graph.parent.mkdir(parents=True, exist_ok=True)
+    graph.write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+
+    # Comments *inside* a config object: tree-sitter still extracts it, so the
+    # heal must keep re-queueing it (a genuine zero-node gap).
+    inner = tmp_path / "tsconfig.json"
+    inner.write_text('{\n  // strict\n  "compilerOptions": {"strict": true}\n}')
+    # A *leading* comment becomes the document's first child, so extract_json
+    # declines even a config-shaped file; the heal must exclude it or it would
+    # be re-queued on every run forever.
+    leading = tmp_path / "package.json"
+    leading.write_text('// note\n{"dependencies": {"left-pad": "^1.0.0"}}')
+    # JSONC data object (comments + trailing comma, no config key) is declined.
+    data = tmp_path / "evals.json"
+    data.write_text('{\n  // fixtures\n  "pages": ["a"],\n  "title": "x",\n}')
+
+    assert extract_json(inner).get("skipped") is None
+    assert extract_json(leading).get("skipped")
+    assert extract_json(data).get("skipped")
+
+    res = _zero_node_stamped_code_sources(
+        graph, tmp_path, [str(inner), str(leading), str(data)]
+    )
+    assert set(map(Path, res)) == {inner}, f"only the live config gap may heal, got {res}"
+
+
+def test_zero_node_heal_decline_matches_extract_json_on_malformed(tmp_path):
+    """A truncated (incomplete) config manifest is declined by extract_json, so
+    the heal must not re-queue it forever (no-wedge property)."""
+    import json
+    pytest.importorskip("tree_sitter_json")
+    from graphify.cli import _zero_node_stamped_code_sources
+    from graphify.extractors.json_config import extract_json
+
+    graph = tmp_path / "graphify-out" / "graph.json"
+    graph.parent.mkdir(parents=True, exist_ok=True)
+    graph.write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+
+    truncated = tmp_path / "tsconfig.json"
+    truncated.write_text('{"compilerOptions": {"strict"')  # incomplete object
+    assert extract_json(truncated).get("skipped"), "truncated config is declined"
+
+    res = _zero_node_stamped_code_sources(graph, tmp_path, [str(truncated)])
+    assert res == [], f"declined truncated config must not be healed, got {res}"
+
+
+def test_zero_node_heal_decline_probe_avoids_tree_sitter(tmp_path, monkeypatch):
+    """The #2543 heal must decide decline with a shallow probe, not a per-file
+    tree-sitter parse of every unchanged .json file (cost on the unchanged set)."""
+    import json
+    import graphify.extract as extractmod
+    import graphify.extractors.json_config as json_config
+    from graphify.cli import _zero_node_stamped_code_sources
+
+    def _boom(_path):
+        raise AssertionError("decline probe must not call extract_json (tree-sitter)")
+
+    # Wire the sentinel everywhere the guard could look up the .json extractor.
+    monkeypatch.setattr(json_config, "extract_json", _boom)
+    monkeypatch.setitem(extractmod._DISPATCH, ".json", _boom)
+
+    graph = tmp_path / "graphify-out" / "graph.json"
+    graph.parent.mkdir(parents=True, exist_ok=True)
+    data = tmp_path / "records.json"
+    data.write_text(json.dumps([{"id": 1}]))
+    graph.write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+
+    assert _zero_node_stamped_code_sources(graph, tmp_path, [str(data)]) == []
+
+
+def test_incremental_data_json_not_requeued_end_to_end(monkeypatch, tmp_path, capsys):
+    """#2543/#2879 end-to-end: a manifest-stamped data JSON (zero nodes by
+    design) must not be re-queued on every incremental run."""
+    import json
+    pytest.importorskip("tree_sitter_json")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text(
+        json.dumps({"dependencies": {"left-pad": "^1.0.0"}})
+    )
+    (project / "evals.json").write_text(json.dumps({"pages": ["a"], "title": "docs"}))
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # seed: config JSON extracted, data JSON declined
+    capsys.readouterr()
+    assert _manifest_row(manifest_path, "evals.json")["ast_hash"] != "", (
+        "declined data JSON is legitimately stamped"
+    )
+    assert not any("evals.json" in s for s in _node_sources(graph_path)), (
+        "declined data JSON must contribute no nodes"
+    )
+
+    _run_extract(monkeypatch, argv)  # incremental, nothing changed
+    out_text = capsys.readouterr().out
+    assert "re-queuing" not in out_text, f"declined data JSON re-queued: {out_text}"
+    assert "0 re-extracted" in out_text, out_text
+
+
 def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):
     """#1939: cache-check --prompt-file only counts entries produced by that same
     extraction prompt, so an upgraded prompt reports a miss (re-extract) rather

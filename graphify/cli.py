@@ -422,9 +422,10 @@ def _zero_node_stamped_code_sources(
 
     Deliberately-declined data JSON (#1224) is *legitimately* stamped as
     processed while contributing zero nodes, so it must not be mistaken for a
-    failed extraction. Reuses the same ``skipped`` marker the #2879 fix
-    introduced in ``extract()`` — a file whose extractor returns ``skipped``
-    is excluded here.
+    failed extraction. Mirrors the same ``skipped`` decline the #2879 fix
+    introduced in ``extract()`` — via a shallow root-shape/key probe
+    (``declines_data_json``), not a full tree-sitter parse — and excludes such
+    files here.
 
     Membership mirrors the ``source_file`` spellings extracts store (#1897/
     #1941: scan-root-relative, forward slash; absolute for out-of-root) and
@@ -474,9 +475,17 @@ def _zero_node_stamped_code_sources(
 
     # Reuse the same decline signal as the #2879 fix in extract(): a
     # ``skipped`` result (data JSON, #1224) is not a failure and stays stamped.
+    # ``declines_data_json`` mirrors extract_json's decline decision with a
+    # shallow ``json.load``/root-shape probe instead of a full tree-sitter parse,
+    # so this incremental gate does not re-parse every unchanged .json file on
+    # every run.
     try:
-        from graphify.extractors.json_config import extract_json as _extract_json
+        from graphify.extractors.json_config import (
+            declines_data_json as _declines_data_json,
+            extract_json as _extract_json,
+        )
     except Exception:
+        _declines_data_json = None  # type: ignore[assignment]
         _extract_json = None  # type: ignore[assignment]
 
     healed: list[str] = []
@@ -485,14 +494,9 @@ def _zero_node_stamped_code_sources(
         extractor = _get_extractor(p)
         if extractor is None:
             continue  # no extractor: absence from the graph is expected
-        if _extract_json is not None and extractor is _extract_json:
-            try:
-                _res = _extract_json(p)
-            except Exception:
-                pass
-            else:
-                if _res.get("skipped"):
-                    continue  # deliberately declined data JSON (#2879/#1224)
+        if _declines_data_json is not None and extractor is _extract_json:
+            if _declines_data_json(p):
+                continue  # deliberately declined data JSON (#2879/#1224)
         spellings = {nfc(str(p))}
         try:
             spellings.add(nfc(str(p.resolve())))
