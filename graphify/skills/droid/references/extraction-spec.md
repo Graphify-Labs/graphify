@@ -65,6 +65,11 @@ Generate the extraction JSON matching this schema exactly:
 
 source_file RULE (every node, edge, and hyperedge): set source_file to the path of the originating file EXACTLY as it appears in FILE_LIST — verbatim and absolute. Do NOT shorten to a basename, do NOT re-relativize, do NOT strip any directory prefix, and do NOT change separators (the engine canonicalizes separators and relativizes against the build root downstream). Copy the FILE_LIST entry character-for-character. This keeps the full build and incremental --update on the same base, so build_merge's replace-on-re-extract matches the existing node instead of accumulating a duplicate.
 
+Never create a stub node for a file outside FILE_LIST. Express a reference to an
+external entity as an edge attributed to the originating FILE_LIST file, using
+the complete known target ID. A stem or ID prefix alone is never a valid target
+ID; do not guess one or invent a node to make a reference resolve.
+
 Then write the JSON to disk using the Write tool at this exact absolute path (no relative paths — Write resolves relative paths against an undefined cwd and the file will be silently lost):
 CHUNK_PATH
 ```
