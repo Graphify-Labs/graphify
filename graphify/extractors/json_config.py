@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 
+import json
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
+
+
+_JSON_MAX_BYTES = 1_048_576  # 1 MiB — skip large fixture dumps / GeoJSON blobs
 
 
 _CONFIG_JSON_NAMES = frozenset({
@@ -31,6 +35,15 @@ _CONFIG_JSON_KEYS = frozenset({
 _SCHEMA_DEFINITION_KEYS = frozenset({"$defs", "definitions", "$id"})
 
 
+def _is_config_json_name(path: Path) -> bool:
+    """Filename-only half of :func:`_is_config_json` (no tree-sitter needed)."""
+    name = path.name.casefold()
+    if name in _CONFIG_JSON_NAMES:
+        return True
+    # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
+    return name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
+                          "tsconfig.json", "jsconfig.json"))
+
 def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     """True if a .json file is a recognized config/manifest worth AST-extracting.
 
@@ -55,12 +68,7 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     structure silently (#1224). Pinned by
     ``tests/test_json_schema_config.py::test_minimal_schema_without_defs_or_id_is_still_walked``.
     """
-    name = path.name.casefold()
-    if name in _CONFIG_JSON_NAMES:
-        return True
-    # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
-    if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
-                      "tsconfig.json", "jsconfig.json")):
+    if _is_config_json_name(path):
         return True
     # Collect the root object's immediate keys once (no deep walk), so the
     # schema check below and the config probe agree on the same key set.
@@ -83,6 +91,62 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
         return True
     return False
 
+def declines_data_json(path: Path) -> bool:
+    """True if :func:`extract_json` would decline this file as data JSON (#1224).
+
+    A shallow, tree-sitter-free mirror of the decline branch in
+    :func:`extract_json`: a non-object root, a JSON Schema document (#2255), or
+    an object matching neither a known config filename nor a ``_CONFIG_JSON_KEYS``
+    top-level key, is data JSON and is reported with a ``skipped`` marker. Exists
+    so the incremental #2543 self-heal can make the same decision with a
+    ``json.load`` probe instead of a full tree-sitter parse per unchanged
+    ``.json`` file on every run.
+
+    A size/read failure mirrors ``extract_json``'s ``error`` result (not a
+    decline) and returns False, so the heal still surfaces the file as a
+    candidate; a ``{``-leading file that cannot be parsed is treated as a
+    declined incomplete object, matching the tree-sitter grammar.
+    """
+    try:
+        with path.open("rb") as f:
+            raw = f.read(_JSON_MAX_BYTES + 1)
+    except OSError:
+        return False
+    if len(raw) > _JSON_MAX_BYTES:
+        return False
+    # Root-shape probe, mirroring ``extract_json`` exactly: it takes the
+    # document's *first* child, so a non-object root (empty file, array, scalar,
+    # garbage) is declined, and a leading JSONC comment — which becomes that
+    # first child — makes even a config-shaped file look non-object. Only
+    # leading whitespace is skipped.
+    if raw.lstrip()[:1] != b"{":
+        return True
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        # JSONC (comments / trailing commas) parses under the tree-sitter
+        # grammar but not under json.loads; strip it the same way resolution.py
+        # does and probe the recovered top-level keys (#700).
+        try:
+            from graphify.extractors.resolution import _strip_jsonc
+            obj = json.loads(_strip_jsonc(raw.decode("utf-8", errors="replace")))
+        except Exception:
+            # A ``{``-leading file json.loads cannot finish is an incomplete
+            # object, which the tree-sitter grammar reports as a non-object root
+            # and declines. Treat it the same so a malformed file (even a
+            # truncated config manifest) cannot be re-queued forever; a config
+            # that still yields nodes never needs the heal anyway.
+            return True
+    if not isinstance(obj, dict):
+        return True  # top-level array/scalar => data JSON (#1224)
+    if _is_config_json_name(path):
+        return False
+    # A file that declares the meta-schema AND defines something IS a schema
+    # (#2255), not a config manifest -- mirror _is_config_json's exclusion.
+    if "$schema" in obj and (set(obj) & _SCHEMA_DEFINITION_KEYS):
+        return True
+    return not any(k in _CONFIG_JSON_KEYS for k in obj)
+
 def extract_json(path: Path) -> dict:
     """Extract structure and dependency edges from a *config/manifest* .json file.
 
@@ -92,7 +156,6 @@ def extract_json(path: Path) -> dict:
     documents are skipped for the same reason (#2255). Recognition is by filename
     (package.json, tsconfig.json, …) or a top-level key probe (dependencies /
     extends / $schema / compilerOptions)."""
-    _JSON_MAX_BYTES = 1_048_576  # 1 MiB — skip large fixture dumps / GeoJSON blobs
 
     try:
         import tree_sitter_json as tsjson

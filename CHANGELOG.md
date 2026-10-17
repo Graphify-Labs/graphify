@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: the incremental `#2543` self-heal no longer re-queues deliberately declined data JSON (a data-shaped `.json` file that legitimately produces zero nodes, #1224/#2879) on every run, and now makes the decline decision with a shallow `json.load` root-shape/key probe instead of a full tree-sitter parse of every unchanged `.json` file on every incremental run.
+
 ## 0.9.92 (2026-10-16)
 
 Twenty-three community pull requests: call-resolution and id-collision fixes across JS/TS, Python, Go, Rust and Solidity; graph round-trip, dedup and confidence-folding fixes; skill code-only-update and dispatch fixes; and LLM/Ollama and detection fixes. The AST cache schema is bumped, so the first build after upgrading re-extracts.
