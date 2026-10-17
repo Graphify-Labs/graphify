@@ -1818,3 +1818,60 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+def test_copy_skill_file_ignores_precreated_predictable_tmp_symlink(tmp_path, monkeypatch):
+    """A pre-created symlink at SKILL.md.tmp must not overwrite its target during skill install."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = home / ".claude" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    predictable_tmp = skill_dir / "SKILL.md.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert not list(skill_dir.glob(".SKILL.md.*.tmp"))
+
+
+def test_vscode_install_ignores_precreated_predictable_tmp_symlink(tmp_path, monkeypatch):
+    """A pre-created symlink at SKILL.md.tmp must not overwrite its target during vscode_install."""
+    from graphify.__main__ import vscode_install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = home / ".copilot" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    predictable_tmp = skill_dir / "SKILL.md.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        vscode_install(project_dir=project)
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert not list(skill_dir.glob(".SKILL.md.*.tmp"))
