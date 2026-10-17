@@ -1430,20 +1430,35 @@ def _query_graph_text(
     # of a node reference. Fail closed: a value that does not resolve to exactly
     # one node is reported and skipped, never guessed.
     unresolved: list[str] = []
+    ambiguous_refusals: list[str] = []
     if seeds:
         from graphify.affected import resolve_seed
         start_nodes: list[str] = []
         for value in seeds:
             nid = resolve_seed(G, value, seed_root)
             if nid is None:
-                if value not in unresolved:
+                _nid, refusal = _resolve_single_node(G, value)
+                if _is_ambiguity_refusal(refusal):
+                    if refusal not in ambiguous_refusals:
+                        ambiguous_refusals.append(refusal)
+                elif value not in unresolved:
                     unresolved.append(value)
             elif nid not in start_nodes:
                 start_nodes.append(nid)
         if not start_nodes:
+            # An ambiguous --seed is a refusal, not a miss (#4511). Exit code
+            # is decided by the CLI from the message prefix.
+            if ambiguous_refusals:
+                return "\n".join(ambiguous_refusals)
             return "No unique node match for --seed: " + ", ".join(seeds)
         return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
                              context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
+    # A question that names one symbol shared by several nodes is refused,
+    # matching `explain` and `path` (#4511). A sentence that is not itself a
+    # node name falls through to keyword scoring.
+    _node, _refusal = _resolve_single_node(G, question)
+    if _is_ambiguity_refusal(_refusal):
+        return _refusal
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
