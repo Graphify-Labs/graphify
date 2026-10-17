@@ -1,35 +1,18 @@
 ```bash
-# Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
-PYTHON=""
-GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-# 1. uv tool installs — most reliable on modern Mac/Linux
-if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
-    _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
-    if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
-fi
-# 2. Read shebang from graphify binary (pipx and direct pip installs)
-if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
-    _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-    case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.@-]*) ;;
-        *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
-    esac
-fi
-# 3. Fall back to python3
-if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
-if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+{{python_resolver}}
+if ! graphify_find_python; then
     if command -v uv >/dev/null 2>&1; then
-        uv tool install --upgrade graphifyy -q 2>&1 | tail -3
-        _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
-        if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
+        uv tool install --upgrade graphifyy -q || { echo 'Graphify installation failed.' >&2; exit 1; }
     else
-        "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
-          || "$PYTHON" -m pip install graphifyy -q --break-system-packages 2>&1 | tail -3
+        _GRAPHIFY_INSTALL_PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)
+        [ -n "$_GRAPHIFY_INSTALL_PY" ] || { echo 'Install Python or uv first.' >&2; exit 1; }
+        "$_GRAPHIFY_INSTALL_PY" -m pip install graphifyy -q || { echo 'Graphify installation failed.' >&2; exit 1; }
     fi
+    graphify_find_python || { echo 'No persistent Python interpreter can import graphify.' >&2; exit 1; }
 fi
-# Write interpreter path for all subsequent steps (persists across invocations)
+# Save only the interpreter that passed the persistent-path and import checks.
 mkdir -p graphify-out
-"$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+"$PYTHON" -c "import graphify, sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)" || exit 1
 # Save scan root so `graphify update` (no args) knows where to look next time.
 # The scan path is passed through a quoted heredoc, never substituted into the
 # command line itself: a bare `cd <path>` (or an unquoted heredoc, which
@@ -42,4 +25,4 @@ GRAPHIFY_ROOT_EOF
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
+**In every subsequent bash block, replace `python3` with `"$(cat graphify-out/.graphify_python)"` to use the correct interpreter.**
