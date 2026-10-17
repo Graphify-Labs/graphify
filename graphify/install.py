@@ -2661,52 +2661,39 @@ def _preserve_jsonc_plugin_add(raw: str, entry: str, possible_entries: set[str] 
     return new_raw
 
 
-def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[Path, str, bool]:
-    """Precompute and validate the final JSON/JSONC configuration output.
-
-    Returns (config_file, final_text, already_registered).
-    Aborts without modifying config or artifacts if config is invalid or surgical insertion fails.
-    """
+def _mimo_config_file(project_dir: Path, *, project: bool = False) -> Path:
+    """Return the active or target mimocode config file path."""
     mimo_dir = (project_dir / ".mimocode") if project else _mimo_global_config_dir()
     jsonc_file = mimo_dir / "mimocode.jsonc"
-    json_file = mimo_dir / "mimocode.json"
-    config_file = jsonc_file if jsonc_file.exists() else json_file
-    _, entry, possible_entries = _mimo_plugin_candidates(project_dir, project=project)
+    return jsonc_file if jsonc_file.exists() else (mimo_dir / "mimocode.json")
 
-    if not config_file.exists():
-        new_content = json.dumps({"plugin": [entry]}, indent=2) + "\n"
-        return config_file, new_content, False
 
+def _read_and_validate_mimo_config(config_file: Path) -> tuple[str, bool, dict]:
+    """Read, classify, and validate JSON or JSONC config data."""
     raw = config_file.read_text(encoding="utf-8-sig")
     is_jsonc = _is_jsonc_config(raw, config_file)
-
     try:
         data = json.loads(_strip_json_comments(raw) if is_jsonc else raw)
     except Exception:
         _refuse_to_modify(config_file)
     if not isinstance(data, dict):
         _refuse_to_modify(config_file)
-
     _verify_mimo_plugins_val(data, config_file)
+    return raw, is_jsonc, data
 
-    existing_plugins = data.get("plugin")
-    matching_entries: list[str] = []
-    if isinstance(existing_plugins, list):
-        matching_entries = [
-            p for p in existing_plugins if isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries)
-        ]
-        if matching_entries == [entry]:
-            return config_file, raw, True
-    elif isinstance(existing_plugins, str):
-        if existing_plugins == entry:
-            return config_file, raw, True
 
+def _build_mimo_config_content(
+    config_file: Path,
+    raw: str,
+    is_jsonc: bool,
+    data: dict,
+    entry: str,
+    possible_entries: set[str],
+) -> str:
+    """Generate and verify new config text with Graphify plugin added."""
     if is_jsonc:
         try:
-            working_raw = raw
-            if (isinstance(existing_plugins, str) and _is_mimo_plugin_entry(existing_plugins, possible_entries)) or matching_entries:
-                working_raw = _preserve_jsonc_plugin_remove(raw, possible_entries)
-            new_content = _preserve_jsonc_plugin_add(working_raw, entry)
+            new_content = _preserve_jsonc_plugin_add(raw, entry, possible_entries)
         except Exception as exc:
             print(f"[graphify] surgical JSONC insertion failed for {config_file}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -2727,8 +2714,9 @@ def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[P
             print(f"[graphify] verification failed after surgical insertion for {config_file}", file=sys.stderr)
             sys.exit(1)
 
-        return config_file, new_content, False
+        return new_content
 
+    existing_plugins = data.get("plugin")
     if isinstance(existing_plugins, list):
         normalized: list = []
         inserted = False
@@ -2750,7 +2738,37 @@ def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[P
     else:
         data["plugin"] = [entry]
 
-    return config_file, json.dumps(data, indent=2) + "\n", False
+    return json.dumps(data, indent=2) + "\n"
+
+
+def _prepare_mimo_config(project_dir: Path, *, project: bool = False) -> tuple[Path, str, bool]:
+    """Precompute and validate the final JSON/JSONC configuration output.
+
+    Returns (config_file, final_text, already_registered).
+    Aborts without modifying config or artifacts if config is invalid or surgical insertion fails.
+    """
+    config_file = _mimo_config_file(project_dir, project=project)
+    _, entry, possible_entries = _mimo_plugin_candidates(project_dir, project=project)
+
+    if not config_file.exists():
+        new_content = json.dumps({"plugin": [entry]}, indent=2) + "\n"
+        return config_file, new_content, False
+
+    raw, is_jsonc, data = _read_and_validate_mimo_config(config_file)
+
+    existing_plugins = data.get("plugin")
+    if isinstance(existing_plugins, list):
+        matching_entries = [
+            p for p in existing_plugins if isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries)
+        ]
+        if matching_entries == [entry]:
+            return config_file, raw, True
+    elif isinstance(existing_plugins, str):
+        if existing_plugins == entry:
+            return config_file, raw, True
+
+    new_content = _build_mimo_config_content(config_file, raw, is_jsonc, data, entry, possible_entries)
+    return config_file, new_content, False
 
 
 def _install_mimo_plugin_files(
@@ -2785,6 +2803,78 @@ def _install_mimo_plugin(project_dir: Path, *, project: bool = False) -> None:
     _install_mimo_plugin_files(project_dir, config_file, config_content, already_registered, project=project)
 
 
+def _mimo_config_candidates(project_dir: Path, *, project: bool = False) -> list[Path]:
+    """Return existing mimocode.json and mimocode.jsonc configuration paths."""
+    base_dir = (project_dir / ".mimocode") if project else _mimo_global_config_dir()
+    candidates = [base_dir / "mimocode.json", base_dir / "mimocode.jsonc"]
+    return [p for p in candidates if p.exists()]
+
+
+def _plan_mimo_config_removal(
+    config_file: Path,
+    raw: str,
+    is_jsonc: bool,
+    data: dict,
+    possible_entries: set[str],
+) -> tuple[bool, str]:
+    """Compute updated configuration content removing all Graphify plugin entries."""
+    plugins_val = data.get("plugin")
+    if plugins_val is None:
+        return False, raw
+
+    if is_jsonc:
+        needs_edit = False
+        if isinstance(plugins_val, str):
+            needs_edit = _is_mimo_plugin_entry(plugins_val, possible_entries)
+        elif isinstance(plugins_val, list):
+            needs_edit = any(isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries) for p in plugins_val)
+
+        if not needs_edit:
+            return False, raw
+
+        try:
+            new_content = _preserve_jsonc_plugin_remove(raw, possible_entries)
+        except Exception as exc:
+            print(f"[graphify] surgical JSONC removal failed for {config_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            parsed = json.loads(_strip_json_comments(new_content))
+        except Exception as exc:
+            print(f"[graphify] surgical JSONC removal produced invalid output for {config_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        if not isinstance(parsed, dict):
+            print(f"[graphify] invalid structure after surgical removal for {config_file}", file=sys.stderr)
+            sys.exit(1)
+
+        rem_plugins = parsed.get("plugin")
+        if rem_plugins is not None:
+            if isinstance(rem_plugins, str) and _is_mimo_plugin_entry(rem_plugins, possible_entries):
+                print(f"[graphify] Graphify entries remain after removal in {config_file}", file=sys.stderr)
+                sys.exit(1)
+            elif isinstance(rem_plugins, list) and any(isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries) for p in rem_plugins):
+                print(f"[graphify] Graphify entries remain after removal in {config_file}", file=sys.stderr)
+                sys.exit(1)
+
+        return True, new_content
+
+    if isinstance(plugins_val, str):
+        if _is_mimo_plugin_entry(plugins_val, possible_entries):
+            data.pop("plugin")
+            return True, json.dumps(data, indent=2) + "\n"
+    elif isinstance(plugins_val, list):
+        new_plugins = [p for p in plugins_val if not (isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries))]
+        if len(new_plugins) < len(plugins_val):
+            if not new_plugins:
+                data.pop("plugin")
+            else:
+                data["plugin"] = new_plugins
+            return True, json.dumps(data, indent=2) + "\n"
+
+    return False, raw
+
+
 def _prepare_mimo_uninstall(project_dir: Path, *, project: bool = False) -> tuple[Path, list[tuple[Path, str]]]:
     """Precompute and validate removal output for every existing config file.
 
@@ -2795,97 +2885,16 @@ def _prepare_mimo_uninstall(project_dir: Path, *, project: bool = False) -> tupl
     - Graphify entries remain in any config after proposed edit.
     """
     plugin_file, _, possible_entries = _mimo_plugin_candidates(project_dir, project=project)
-    if project:
-        config_files = [project_dir / ".mimocode" / "mimocode.json", project_dir / ".mimocode" / "mimocode.jsonc"]
-    else:
-        global_dir = _mimo_global_config_dir()
-        config_files = [global_dir / "mimocode.json", global_dir / "mimocode.jsonc"]
-
     planned_writes: list[tuple[Path, str]] = []
 
-    for config_file in config_files:
-        if not config_file.exists():
-            continue
-
-        raw = config_file.read_text(encoding="utf-8-sig")
-        is_jsonc = _is_jsonc_config(raw, config_file)
-
-        if is_jsonc:
-            try:
-                stripped = _strip_json_comments(raw)
-                data = json.loads(stripped)
-            except Exception:
-                _refuse_to_modify(config_file)
-            if not isinstance(data, dict):
-                _refuse_to_modify(config_file)
-
-            _verify_mimo_plugins_val(data, config_file)
-            plugins_val = data.get("plugin")
-            needs_edit = False
-            if isinstance(plugins_val, str):
-                if _is_mimo_plugin_entry(plugins_val, possible_entries):
-                    needs_edit = True
-            elif isinstance(plugins_val, list):
-                if any(isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries) for p in plugins_val):
-                    needs_edit = True
-
-            if needs_edit:
-                try:
-                    new_content = _preserve_jsonc_plugin_remove(raw, possible_entries)
-                except Exception as exc:
-                    print(f"[graphify] surgical JSONC removal failed for {config_file}: {exc}", file=sys.stderr)
-                    sys.exit(1)
-
-                try:
-                    parsed = json.loads(_strip_json_comments(new_content))
-                except Exception as exc:
-                    print(f"[graphify] surgical JSONC removal produced invalid output for {config_file}: {exc}", file=sys.stderr)
-                    sys.exit(1)
-
-                if not isinstance(parsed, dict):
-                    print(f"[graphify] invalid structure after surgical removal for {config_file}", file=sys.stderr)
-                    sys.exit(1)
-
-                rem_plugins = parsed.get("plugin")
-                if rem_plugins is not None:
-                    if isinstance(rem_plugins, str) and _is_mimo_plugin_entry(rem_plugins, possible_entries):
-                        print(f"[graphify] Graphify entries remain after removal in {config_file}", file=sys.stderr)
-                        sys.exit(1)
-                    elif isinstance(rem_plugins, list) and any(isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries) for p in rem_plugins):
-                        print(f"[graphify] Graphify entries remain after removal in {config_file}", file=sys.stderr)
-                        sys.exit(1)
-
-                planned_writes.append((config_file, new_content))
-        else:
-            try:
-                data = json.loads(raw)
-            except Exception:
-                _refuse_to_modify(config_file)
-            if not isinstance(data, dict):
-                _refuse_to_modify(config_file)
-
-            _verify_mimo_plugins_val(data, config_file)
-            plugins_val = data.get("plugin")
-            if plugins_val is not None:
-                if isinstance(plugins_val, str):
-                    if _is_mimo_plugin_entry(plugins_val, possible_entries):
-                        data.pop("plugin")
-                        new_content = json.dumps(data, indent=2) + "\n"
-                        planned_writes.append((config_file, new_content))
-                elif isinstance(plugins_val, list):
-                    new_plugins = [p for p in plugins_val if not (isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries))]
-                    if len(new_plugins) < len(plugins_val):
-                        if not new_plugins:
-                            data.pop("plugin")
-                        else:
-                            data["plugin"] = new_plugins
-                        new_content = json.dumps(data, indent=2) + "\n"
-                        if any(isinstance(p, str) and _is_mimo_plugin_entry(p, possible_entries) for p in data.get("plugin", [])):
-                            print(f"[graphify] Graphify entries remain after removal in {config_file}", file=sys.stderr)
-                            sys.exit(1)
-                        planned_writes.append((config_file, new_content))
+    for config_file in _mimo_config_candidates(project_dir, project=project):
+        raw, is_jsonc, data = _read_and_validate_mimo_config(config_file)
+        modified, new_content = _plan_mimo_config_removal(config_file, raw, is_jsonc, data, possible_entries)
+        if modified:
+            planned_writes.append((config_file, new_content))
 
     return plugin_file, planned_writes
+
 
 
 def _uninstall_mimo_plugin(project_dir: Path, *, project: bool = False) -> None:
@@ -2996,6 +3005,20 @@ def _mimo_uninstall(project_dir: Path | None = None, *, project: bool = False) -
     _remove_mimo_agents_instruction(target_dir, project=project)
 
 
+def _check_mimo_status_config(config_file: Path, possible_entries: set[str]) -> bool | None:
+    """Return True if registered, False if present but missing graphify, or None if unparseable."""
+    try:
+        cfg = json.loads(_strip_json_comments(config_file.read_text(encoding="utf-8-sig")))
+        plugins = cfg.get("plugin", [])
+        if isinstance(plugins, str):
+            return _is_mimo_plugin_entry(plugins, possible_entries)
+        elif isinstance(plugins, list):
+            return any(_is_mimo_plugin_entry(p, possible_entries) for p in plugins)
+        return False
+    except Exception:
+        return None
+
+
 def _mimo_status(project_dir: Path | None = None, *, project: bool = False) -> None:
     """Check Xiaomi MiMo Code integration status."""
     project_dir = project_dir or Path(".")
@@ -3018,23 +3041,15 @@ def _mimo_status(project_dir: Path | None = None, *, project: bool = False) -> N
     else:
         print(f"  Plugin:       Not installed ({plugin_file})")
 
-    config_file = (
-        (project_dir / ".mimocode" / "mimocode.jsonc" if (project_dir / ".mimocode" / "mimocode.jsonc").exists() else (project_dir / ".mimocode" / "mimocode.json"))
-        if project
-        else (global_dir / "mimocode.jsonc" if (global_dir / "mimocode.jsonc").exists() else (global_dir / "mimocode.json"))
-    )
+    config_file = _mimo_config_file(project_dir, project=project)
     if config_file.exists():
-        try:
-            cfg = json.loads(_strip_json_comments(config_file.read_text(encoding="utf-8-sig")))
-            plugins = cfg.get("plugin", [])
-            registered = False
-            if isinstance(plugins, str):
-                registered = _is_mimo_plugin_entry(plugins, possible_entries)
-            elif isinstance(plugins, list):
-                registered = any(_is_mimo_plugin_entry(p, possible_entries) for p in plugins)
-            print(f"  Config:       {'Registered in' if registered else 'Present but missing graphify in'} {config_file}")
-        except Exception:
+        status = _check_mimo_status_config(config_file, possible_entries)
+        if status is None:
             print(f"  Config:       Unparseable JSON at {config_file}")
+        elif status:
+            print(f"  Config:       Registered in {config_file}")
+        else:
+            print(f"  Config:       Present but missing graphify in {config_file}")
     else:
         print(f"  Config:       Not found ({config_file})")
 

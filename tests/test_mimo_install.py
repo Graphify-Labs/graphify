@@ -21,6 +21,19 @@ from graphify.install import (
 )
 
 
+def _run_mimo_install(project_dir=None, *, project=False):
+    return _mimo_install(project_dir, project=project)
+
+
+def _run_mimo_uninstall(project_dir=None, *, project=False):
+    return _mimo_uninstall(project_dir, project=project)
+
+
+def _run_preserve_jsonc_plugin_add(raw, entry, possible_entries=None):
+    return _preserve_jsonc_plugin_add(raw, entry, possible_entries)
+
+
+
 def test_mimo_global_install(tmp_path, monkeypatch):
     """Global install writes skill to ~/.config/mimocode/skills, plugin, config, and AGENTS.md."""
     home = tmp_path / "home"
@@ -55,7 +68,7 @@ def test_mimo_project_install(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
 
     skill = project / ".mimocode" / "skills" / "graphify" / "SKILL.md"
     plugin = project / ".mimocode" / "plugins" / "graphify.js"
@@ -81,8 +94,8 @@ def test_mimo_install_idempotency(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
 
-    _mimo_install(project, project=True)
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
 
     config = project / ".mimocode" / "mimocode.json"
     cfg_data = json.loads(config.read_text(encoding="utf-8"))
@@ -114,9 +127,9 @@ def test_mimo_project_uninstall_preserves_unrelated_content(tmp_path, monkeypatc
     agents_md.write_text("# Project Guidelines\n\nUser instructions here.\n", encoding="utf-8")
 
     # Install
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     # Uninstall
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
 
     assert not (project / ".mimocode" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (project / ".mimocode" / "plugins" / "graphify.js").exists()
@@ -139,8 +152,8 @@ def test_mimo_global_uninstall(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
 
-    _mimo_install(project, project=False)
-    _mimo_uninstall(project, project=False)
+    _run_mimo_install(project, project=False)
+    _run_mimo_uninstall(project, project=False)
 
     skill = home / ".config" / "mimocode" / "skills" / "graphify" / "SKILL.md"
     plugin = home / ".config" / "mimocode" / "plugins" / "graphify.js"
@@ -217,7 +230,7 @@ def test_mimo_status_output(tmp_path, monkeypatch, capsys):
         json.dumps({"nodes": [{"id": "n1"}], "edges": []}), encoding="utf-8"
     )
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     capsys.readouterr()  # clear buffer
 
     _mimo_status(project, project=True)
@@ -261,13 +274,13 @@ def test_mimo_env_overrides(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
 
-    _mimo_install(project, project=False)
+    _run_mimo_install(project, project=False)
     assert (mimo_home / "config" / "skills" / "graphify" / "SKILL.md").exists()
     assert (mimo_home / "config" / "plugins" / "graphify.js").exists()
     assert (mimo_home / "config" / "mimocode.json").exists()
     assert (mimo_home / "config" / "AGENTS.md").exists()
 
-    _mimo_uninstall(project, project=False)
+    _run_mimo_uninstall(project, project=False)
     assert not (mimo_home / "config" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (mimo_home / "config" / "plugins" / "graphify.js").exists()
 
@@ -282,14 +295,14 @@ def test_mimo_env_overrides(tmp_path, monkeypatch):
     jsonc_file = mimo_cfg_dir / "mimocode.jsonc"
     jsonc_file.write_text('{\n  "$schema": "https://mimo.xiaomi.com/mimocode/config.json"\n}\n', encoding="utf-8")
 
-    _mimo_install(project, project=False)
+    _run_mimo_install(project, project=False)
     assert (xdg_config / "mimocode" / "skills" / "graphify" / "SKILL.md").exists()
     assert (xdg_config / "mimocode" / "plugins" / "graphify.js").exists()
     assert jsonc_file.exists()
     data = json.loads(jsonc_file.read_text(encoding="utf-8"))
     assert any("plugins/graphify.js" in p for p in data.get("plugin", []))
 
-    _mimo_uninstall(project, project=False)
+    _run_mimo_uninstall(project, project=False)
     assert not (xdg_config / "mimocode" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (xdg_config / "mimocode" / "plugins" / "graphify.js").exists()
     data_after = json.loads(jsonc_file.read_text(encoding="utf-8"))
@@ -363,7 +376,7 @@ def test_mimo_install_atomicity_aborts_on_surgical_failure(tmp_path, monkeypatch
     monkeypatch.setattr("graphify.install._preserve_jsonc_plugin_add", _failing_add)
 
     with pytest.raises(SystemExit) as excinfo:
-        _mimo_install(project, project=True)
+        _run_mimo_install(project, project=True)
 
     assert excinfo.value.code == 1
     # Config bytes must remain untouched
@@ -415,7 +428,7 @@ def test_mimo_uninstall_atomicity_aborts_on_failed_surgical_removal(tmp_path, mo
     monkeypatch.setattr("graphify.install._preserve_jsonc_plugin_remove", _failing_remove)
 
     with pytest.raises(SystemExit) as excinfo:
-        _mimo_uninstall(project, project=True)
+        _run_mimo_uninstall(project, project=True)
 
     assert excinfo.value.code == 1
     # Config bytes and installation artifacts must remain unchanged
@@ -460,7 +473,7 @@ def test_mimo_uninstall_removes_all_duplicate_and_legacy_registrations(tmp_path,
     agents_md = project / "AGENTS.md"
     agents_md.write_text("## graphify\nRule text here\n", encoding="utf-8")
 
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
 
     updated = jsonc_file.read_text(encoding="utf-8")
     assert "// User comment" in updated
@@ -513,7 +526,7 @@ def test_mimo_uninstall_atomicity_aborts_if_entry_remains_after_removal(tmp_path
     )
 
     with pytest.raises(SystemExit) as excinfo:
-        _mimo_uninstall(project, project=True)
+        _run_mimo_uninstall(project, project=True)
 
     assert excinfo.value.code == 1
     assert jsonc_file.read_bytes() == original_config_bytes
@@ -571,7 +584,7 @@ def test_mimo_uninstall_scalar_unrelated_entry_preserved(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
 
     data = json.loads(config.read_text(encoding="utf-8"))
     assert data.get("plugin") == "unrelated-custom-plugin.js", "Unrelated scalar plugin value must be preserved"
@@ -599,7 +612,7 @@ def test_mimo_install_preserve_line_comment_only_array(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
 
     content = jsonc_file.read_text(encoding="utf-8")
     assert "// Line comment 1: plugins must follow contract" in content
@@ -629,7 +642,7 @@ def test_mimo_install_preserve_block_comment_only_array(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
 
     content = jsonc_file.read_text(encoding="utf-8")
     assert "/* Block comment: plugins are loaded in order */" in content
@@ -642,19 +655,19 @@ def test_preserve_jsonc_plugin_add_empty_array_comment_variants():
     """Unit tests verifying _preserve_jsonc_plugin_add preserves line and block comments."""
     # Line comments only
     raw_line = "{\n  \"plugin\": [\n    // Line comment only\n  ]\n}"
-    res_line = _preserve_jsonc_plugin_add(raw_line, "./plugins/graphify.js")
+    res_line = _run_preserve_jsonc_plugin_add(raw_line, "./plugins/graphify.js")
     assert "// Line comment only" in res_line
     assert json.loads(_strip_json_comments(res_line))["plugin"] == ["./plugins/graphify.js"]
 
     # Block comments only
     raw_block = "{\n  \"plugin\": [\n    /* Block comment only */\n  ]\n}"
-    res_block = _preserve_jsonc_plugin_add(raw_block, "./plugins/graphify.js")
+    res_block = _run_preserve_jsonc_plugin_add(raw_block, "./plugins/graphify.js")
     assert "/* Block comment only */" in res_block
     assert json.loads(_strip_json_comments(res_block))["plugin"] == ["./plugins/graphify.js"]
 
     # Inline block comment
     raw_inline = "{\"plugin\": [/* inline block */]}"
-    res_inline = _preserve_jsonc_plugin_add(raw_inline, "./plugins/graphify.js")
+    res_inline = _run_preserve_jsonc_plugin_add(raw_inline, "./plugins/graphify.js")
     assert "/* inline block */" in res_inline
     assert json.loads(_strip_json_comments(res_inline))["plugin"] == ["./plugins/graphify.js"]
 
@@ -689,8 +702,7 @@ def test_mimo_uninstall_preserves_third_party_urls(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    from graphify.install import _mimo_uninstall
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
 
     content = jsonc_file.read_text(encoding="utf-8")
     assert "./plugins/graphify.js" not in content
@@ -709,10 +721,9 @@ def test_mimo_uninstall_rejects_unsupported_plugin_type(tmp_path, monkeypatch, c
     json_file = mimo_dir / "mimocode.json"
     json_file.write_text('{"plugin": 123}', encoding="utf-8")
 
-    from graphify.install import _mimo_uninstall
     import pytest
     with pytest.raises(SystemExit) as excinfo:
-        _mimo_uninstall(project, project=True)
+        _run_mimo_uninstall(project, project=True)
     assert excinfo.value.code == 1
     assert "refusing to modify" in capsys.readouterr().err
 
@@ -774,10 +785,9 @@ def test_mimo_uninstall_rejects_unsupported_plugin_type_jsonc(tmp_path, monkeypa
     json_file = mimo_dir / "mimocode.jsonc"
     json_file.write_text('// comment\n{"plugin": 123}', encoding="utf-8")
 
-    from graphify.install import _mimo_uninstall
     import pytest
     with pytest.raises(SystemExit) as excinfo:
-        _mimo_uninstall(project, project=True)
+        _run_mimo_uninstall(project, project=True)
     assert excinfo.value.code == 1
     assert "refusing to modify" in capsys.readouterr().err
 
@@ -799,8 +809,7 @@ def test_mimo_uninstall_project_json_unbound_local(tmp_path, monkeypatch):
     global_json = global_dir / "mimocode.json"
     global_json.write_text('{"plugin": ["./plugins/graphify.js"]}', encoding="utf-8")
 
-    from graphify.install import _mimo_uninstall
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
 
     import json
     data = json.loads(json_file.read_text(encoding="utf-8"))
@@ -817,8 +826,7 @@ def test_mimo_install_creates_backup(tmp_path, monkeypatch):
     json_file = mimo_dir / "mimocode.json"
     json_file.write_text('{"theme": "light"}', encoding="utf-8")
 
-    from graphify.install import _mimo_install
-    _mimo_install(tmp_path, project=False)
+    _run_mimo_install(tmp_path, project=False)
 
     bak_file = mimo_dir / "mimocode.json.graphify-bak"
     assert bak_file.exists()
@@ -841,17 +849,16 @@ def test_mimo_install_refuses_invalid_json(tmp_path, monkeypatch, capsys):
     ):
         json_file.write_bytes(invalid_bytes)
 
-        from graphify.install import _mimo_install, _mimo_uninstall
         import pytest
         with pytest.raises(SystemExit) as excinfo:
-            _mimo_install(tmp_path, project=False)
+            _run_mimo_install(tmp_path, project=False)
         assert excinfo.value.code == 1
         assert json_file.read_bytes() == invalid_bytes
         assert not (mimo_dir / "skills" / "graphify" / "SKILL.md").exists()
         assert not (mimo_dir / "plugins" / "graphify.js").exists()
 
         with pytest.raises(SystemExit) as excinfo2:
-            _mimo_uninstall(tmp_path, project=False)
+            _run_mimo_uninstall(tmp_path, project=False)
         assert excinfo2.value.code == 1
         assert json_file.read_bytes() == invalid_bytes
 
@@ -891,7 +898,7 @@ def test_mimo_uninstall_windows_paths(tmp_path, monkeypatch):
 def test_mimo_install_jsonc_strings_with_syntax_chars():
     """JSONC strings containing ,} and ,] remain unchanged."""
     raw = '{\n  "custom_regex": "match,}or,]here",\n  "plugin": []\n}'
-    result = _preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
+    result = _run_preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
 
     assert '"custom_regex": "match,}or,]here"' in result
     assert '"./plugins/graphify.js"' in result
@@ -930,10 +937,9 @@ def test_mimo_install_invalid_jsonc_trailing_commas(tmp_path, monkeypatch):
     original_bytes = b'{\n  "theme": "light",,\n  "plugin": []\n}'
     json_file.write_bytes(original_bytes)
 
-    from graphify.install import _mimo_install
     import pytest
     with pytest.raises(SystemExit) as excinfo:
-        _mimo_install(tmp_path, project=False)
+        _run_mimo_install(tmp_path, project=False)
     assert excinfo.value.code == 1
     assert json_file.read_bytes() == original_bytes
     assert not (mimo_dir / "skills" / "graphify" / "SKILL.md").exists()
@@ -961,8 +967,7 @@ def test_mimo_uninstall_preserves_comments(tmp_path, monkeypatch):
         encoding="utf-8"
     )
 
-    from graphify.install import _mimo_uninstall
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
 
     res = json_file.read_text(encoding="utf-8")
     assert "// My theme" in res
@@ -980,7 +985,7 @@ def test_platform_skill_destination_mimo(tmp_path):
 def test_jsonc_trailing_comment_comma():
     """Comma must be inserted after the value token, before any trailing line comment."""
     raw = '{\n  "theme": "dark" // my trailing comment\n}'
-    result = _preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
+    result = _run_preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
 
     assert '"dark",' in result
     assert not result.strip().endswith("// my trailing comment,")
@@ -993,7 +998,7 @@ def test_invalid_plugin_type_rejected():
     """Reject invalid non-string/non-list plugin values instead of silently overwriting."""
     raw = '{\n  "plugin": 12345\n}'
     with pytest.raises(SystemExit):
-        _preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
+        _run_preserve_jsonc_plugin_add(raw, "./plugins/graphify.js")
 
 
 def test_mimo_plugin_resolves_bin_outside_workspace():
@@ -1070,7 +1075,7 @@ def test_mimo_install_normalizes_legacy_and_duplicate_registrations(tmp_path, mo
         encoding="utf-8",
     )
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     data = json.loads(json_file.read_text(encoding="utf-8"))
     assert data["plugin"] == ["./plugins/graphify.js", "unrelated-plugin.js"]
     assert data["theme"] == "dark"
@@ -1079,7 +1084,7 @@ def test_mimo_install_normalizes_legacy_and_duplicate_registrations(tmp_path, mo
     canonical_bytes = json_file.read_bytes()
     bak_file = mimo_dir / "mimocode.json.graphify-bak"
     bak_file.unlink(missing_ok=True)
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     assert json_file.read_bytes() == canonical_bytes
     assert not bak_file.exists(), "No-op install should not rewrite config or create backup"
 
@@ -1106,7 +1111,7 @@ def test_mimo_install_jsonc_normalizes_legacy_registration_preserving_comments(t
         encoding="utf-8",
     )
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     updated = jsonc_file.read_text(encoding="utf-8")
     assert "// Preserve user comment" in updated
     assert "// keep custom comment" in updated
@@ -1115,7 +1120,7 @@ def test_mimo_install_jsonc_normalizes_legacy_registration_preserving_comments(t
 
     # Second install is a true no-op on the JSONC file
     after_first_bytes = jsonc_file.read_bytes()
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     assert jsonc_file.read_bytes() == after_first_bytes
 
 
@@ -1189,7 +1194,7 @@ def test_mimo_jsonc_trailing_commas_accepted_and_preserved(tmp_path, monkeypatch
     assert parsed_pre["plugin"] == ["custom-plugin.js", "./plugins/graphify.js"]
     assert parsed_pre["endpoint"] == "https://api.mimo.example/v1/chat,}"
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     installed_raw = json_file.read_text(encoding="utf-8")
     parsed_installed = json.loads(_strip_json_comments(installed_raw))
     assert parsed_installed["plugin"] == ["custom-plugin.js", "./plugins/graphify.js"]
@@ -1199,7 +1204,7 @@ def test_mimo_jsonc_trailing_commas_accepted_and_preserved(tmp_path, monkeypatch
     status_out = capsys.readouterr().out
     assert "Registered in" in status_out
 
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
     uninstalled_raw = json_file.read_text(encoding="utf-8")
     parsed_uninstalled = json.loads(_strip_json_comments(uninstalled_raw))
     assert parsed_uninstalled["plugin"] == ["custom-plugin.js"]
@@ -1218,14 +1223,14 @@ def test_mimo_jsonc_trailing_commas_accepted_and_preserved(tmp_path, monkeypatch
         encoding="utf-8",
     )
 
-    _mimo_install(project, project=True)
+    _run_mimo_install(project, project=True)
     jsonc_installed = jsonc_file.read_text(encoding="utf-8")
     assert "// Theme setting" in jsonc_installed
     parsed_jsonc = json.loads(_strip_json_comments(jsonc_installed))
     assert parsed_jsonc["plugin"] == ["./plugins/graphify.js"]
     assert parsed_jsonc["nested"] == {"items": [1, 2]}
 
-    _mimo_uninstall(project, project=True)
+    _run_mimo_uninstall(project, project=True)
     jsonc_uninstalled = jsonc_file.read_text(encoding="utf-8")
     assert "// Theme setting" in jsonc_uninstalled
     parsed_jsonc_after = json.loads(_strip_json_comments(jsonc_uninstalled))
