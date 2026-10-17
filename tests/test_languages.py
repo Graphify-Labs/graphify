@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework, Protocol Buffers."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
-    extract_powershell_manifest, extract_robot,
+    extract_powershell_manifest, extract_robot, extract_protobuf,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -5799,3 +5799,544 @@ def test_julia_qualified_functor_uses_type_not_variable(tmp_path):
     call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
     # Module-qualified receiver types resolve to the bare type, never the variable.
     assert [n["label"] for n in call_nodes] == ["(Box)()"]
+
+
+# ── Protocol Buffers (.proto) ────────────────────────────────────────────────
+
+_PROTO = FIXTURES / "protobuf"
+
+
+def _proto_nodes(r):
+    return {n["metadata"]["fqn"]: n for n in r["nodes"] if "fqn" in n.get("metadata", {})}
+
+
+def _proto_edges(r, relation):
+    by_id = {n["id"]: n for n in r["nodes"]}
+
+    def name(nid):
+        node = by_id.get(nid)
+        if node is None:
+            return nid
+        return node["metadata"].get("fqn") or node["label"]
+
+    return {(name(e["source"]), name(e["target"])) for e in r["edges"] if e["relation"] == relation}
+
+
+def test_protobuf_declarations_and_metadata():
+    r = extract_protobuf(_PROTO / "orders.proto")
+    nodes = _proto_nodes(r)
+    assert nodes["shop.orders.v1.Order"]["metadata"]["kind"] == "message"
+    assert nodes["shop.orders.v1.Order"]["source_location"] == "L13"
+    assert nodes["shop.orders.v1.Order.LineItem"]["label"] == "LineItem"
+    assert nodes["shop.orders.v1.Order.Status"]["metadata"]["kind"] == "enum"
+    assert nodes["shop.orders.v1.OrderService"]["metadata"]["kind"] == "service"
+    get_order = nodes["shop.orders.v1.OrderService.GetOrder"]
+    assert get_order["label"] == ".GetOrder()"
+    assert get_order["metadata"]["client_streaming"] is False
+    watch = nodes["shop.orders.v1.OrderService.WatchOrders"]["metadata"]
+    assert watch["client_streaming"] is True and watch["server_streaming"] is True
+    file_node = next(n for n in r["nodes"] if n["label"] == "orders.proto")
+    assert file_node["metadata"]["package"] == "shop.orders.v1"
+    # Options, reserved ranges and field numbers produce no nodes.
+    declarations = {n["label"] for n in r["nodes"]
+                    if n.get("metadata", {}).get("kind") in ("file", "message", "enum", "service", "rpc")}
+    assert declarations == {
+        "orders.proto", "Order", "LineItem", "Status", "Discount", "Card", "Invoice",
+        "GetOrderRequest", "OrderService", ".GetOrder()", ".WatchOrders()",
+    }
+
+
+def test_protobuf_structure_edges():
+    r = extract_protobuf(_PROTO / "orders.proto")
+    contains = _proto_edges(r, "contains")
+    assert ("shop.orders.v1.Order", "shop.orders.v1.Order.LineItem") in contains
+    assert ("shop.orders.v1.Order", "shop.orders.v1.Order.Status") in contains
+    assert ("orders.proto", "shop.orders.v1.OrderService") in contains
+    methods = _proto_edges(r, "method")
+    assert methods == {
+        ("shop.orders.v1.OrderService", "shop.orders.v1.OrderService.GetOrder"),
+        ("shop.orders.v1.OrderService", "shop.orders.v1.OrderService.WatchOrders"),
+    }
+
+
+def test_protobuf_in_file_type_references_follow_scoping():
+    r = extract_protobuf(_PROTO / "orders.proto")
+    refs = _proto_edges(r, "references")
+    # Nested type, enum, map value, oneof member, absolute (.pkg.Type) name.
+    assert ("shop.orders.v1.Order", "shop.orders.v1.Order.LineItem") in refs
+    assert ("shop.orders.v1.Order", "shop.orders.v1.Order.Status") in refs
+    assert ("shop.orders.v1.Order", "shop.orders.v1.Card") in refs
+    assert ("shop.orders.v1.Order", "shop.orders.v1.Invoice") in refs
+    # A nested message resolves an outer-scope name.
+    assert ("shop.orders.v1.Order.LineItem", "shop.orders.v1.Discount") in refs
+    # rpc request and response types.
+    assert ("shop.orders.v1.OrderService.GetOrder", "shop.orders.v1.GetOrderRequest") in refs
+    assert ("shop.orders.v1.OrderService.GetOrder", "shop.orders.v1.Order") in refs
+    # Scalars never become references.
+    assert not any(t in ("string", "int64") for _, t in refs)
+
+
+def test_protobuf_inner_scope_shadows_outer(tmp_path):
+    f = tmp_path / "shadow.proto"
+    f.write_text(
+        "package p;\n"
+        "message Item {}\n"
+        "message Box {\n"
+        "  message Item {}\n"
+        "  Item inner = 1;\n"
+        "}\n"
+        "message Other { Item outer = 1; }\n"
+    )
+    refs = _proto_edges(extract_protobuf(f), "references")
+    assert ("p.Box", "p.Box.Item") in refs
+    assert ("p.Box", "p.Item") not in refs
+    assert ("p.Other", "p.Item") in refs
+
+
+def test_protobuf_cross_file_resolution(tmp_path):
+    import shutil
+    from graphify.extract import extract
+    from graphify.build import build_from_json
+
+    # A private copy keeps extract() off any shared on-disk cache.
+    corpus = tmp_path / "protobuf"
+    shutil.copytree(_PROTO, corpus)
+    r = extract(sorted(corpus.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+
+    def edges(relation):
+        out = set()
+        for e in r["edges"]:
+            if e["relation"] != relation:
+                continue
+            src, tgt = by_id.get(e["source"]), by_id.get(e["target"])
+            if src and tgt:
+                out.add((src["metadata"].get("fqn") or src["label"],
+                         tgt["metadata"].get("fqn") or tgt["label"], e["confidence"]))
+        return out
+
+    imports = edges("imports")
+    assert ("orders.proto", "money.proto", "EXTRACTED") in imports
+    assert ("legacy.proto", "orders.proto", "EXTRACTED") in imports
+    refs = edges("references")
+    assert ("shop.orders.v1.Order", "shop.common.Money", "EXTRACTED") in refs
+    assert ("shop.orders.v1.Order.LineItem", "shop.common.Money", "EXTRACTED") in refs
+    # proto2 group body and a top-level extend block resolve across files too:
+    # the extension field is a node that references the message it extends.
+    assert ("shop.legacy.Shipment.Parcel", "shop.orders.v1.Order", "EXTRACTED") in refs
+    assert ("shop.legacy.shipment", "shop.orders.v1.Order", "EXTRACTED") in refs
+    assert ("shop.legacy.shipment", "shop.legacy.Shipment", "EXTRACTED") in refs
+    contains = edges("contains")
+    assert ("legacy.proto", "shop.legacy.shipment", "EXTRACTED") in contains
+
+    G = build_from_json(r)
+    # A type outside the corpus (google.protobuf.Timestamp) is dropped, not stubbed...
+    assert not any(str(n).startswith("protobuf_type_") for n in G.nodes)
+    # ...while its import becomes an external stub like any unresolved import.
+    stub = next(n for n, d in G.nodes(data=True) if d.get("external") and "timestamp" in n)
+    assert G.nodes[stub]["source_file"] == ""
+
+
+def test_protobuf_duplicate_declarations_bind_through_imports_or_not_at_all(tmp_path):
+    from graphify.extract import extract
+
+    for d in ("a", "b"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "money.proto").write_text("package shop.common;\nmessage Money {}\n")
+    importer = tmp_path / "a" / "uses.proto"
+    importer.write_text('package app;\nimport "money.proto";\nmessage Price { shop.common.Money m = 1; }\n')
+    orphan = tmp_path / "orphan.proto"
+    orphan.write_text("package app2;\nmessage Price { shop.common.Money m = 1; }\n")
+
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    via_import = next(e for e in refs if by_id[e["source"]]["source_file"].endswith("uses.proto"))
+    assert by_id[via_import["target"]]["source_file"].replace("\\", "/").endswith("a/money.proto")
+    assert via_import["confidence"] == "INFERRED"
+    unbound = next(e for e in refs if by_id[e["source"]]["source_file"].endswith("orphan.proto"))
+    assert unbound["target"] not in by_id  # two copies, no import: left for the builder to drop
+
+
+def test_protobuf_ambiguous_import_stays_unbound(tmp_path):
+    from graphify.extract import extract
+
+    for d in ("x", "y"):
+        (tmp_path / d / "common").mkdir(parents=True)
+        (tmp_path / d / "common" / "types.proto").write_text("package c;\nmessage T {}\n")
+    (tmp_path / "main.proto").write_text('package m;\nimport "common/types.proto";\n')
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    imp = next(e for e in r["edges"] if e["relation"] == "imports")
+    assert imp["target"] not in by_id
+
+
+def test_protobuf_malformed_input_does_not_raise(tmp_path):
+    f = tmp_path / "broken.proto"
+    f.write_text('package p;\nmessage A {\n  B b = 1;\n  message B {\n  string s = \n}\nservice S { rpc X(\n')
+    r = extract_protobuf(f)
+    assert "p.A" in _proto_nodes(r)
+    assert ("p.A", "p.A.B") in _proto_edges(r, "references")
+
+
+def test_protobuf_detected_as_code():
+    from graphify.detect import classify_file, FileType
+
+    assert classify_file(_PROTO / "orders.proto") == FileType.CODE
+
+
+
+def test_protobuf_file_metadata_records_codegen_options(tmp_path):
+    f = tmp_path / "opts.proto"
+    f.write_text(
+        'syntax = "proto3";\n'
+        "package acme.v1;\n"
+        'option java_package = "com.acme" ".v1";\n'
+        "option java_multiple_files = true;\n"
+        'option go_package = "github.com/acme/api/v1;acmev1";\n'
+        'option csharp_namespace = "Acme.V1";\n'
+        'option php_namespace = "Acme\\\\V1";\n'
+        'option (scalapb.options) = { package_name: "acme.scala" flat_package: true nested { package_name: "no" } };\n'
+        "option optimize_for = SPEED;\n"
+        'option (custom.opt) = "ignored";\n'
+    )
+    meta = next(n for n in extract_protobuf(f)["nodes"] if n["label"] == "opts.proto")["metadata"]
+    assert meta["syntax"] == "proto3"
+    assert meta["options"] == {
+        "(scalapb.options).flat_package": True,
+        "(scalapb.options).package_name": "acme.scala",
+        "csharp_namespace": "Acme.V1",
+        "go_package": "github.com/acme/api/v1;acmev1",
+        "java_multiple_files": True,
+        "java_package": "com.acme.v1",
+        "php_namespace": "Acme\\V1",
+    }
+
+
+def test_protobuf_edition_2024_visibility_and_option_imports(tmp_path):
+    f = tmp_path / "ed.proto"
+    f.write_text(
+        'edition = "2024";\n'
+        "package e;\n"
+        'import option "acme/options.proto";\n'
+        "export message Pub {\n"
+        "  local message Priv {}\n"
+        "  Priv p = 1;\n"
+        "  export x = 2;\n"
+        "}\n"
+        "local enum Hidden { HIDDEN_UNSPECIFIED = 0; }\n"
+        "message export {}\n"
+    )
+    r = extract_protobuf(f)
+    nodes = _proto_nodes(r)
+    assert {"e.Pub", "e.Pub.Priv", "e.Hidden", "e.export"} <= set(nodes)
+    assert next(n for n in r["nodes"] if n["label"] == "ed.proto")["metadata"]["edition"] == "2024"
+    refs = _proto_edges(r, "references")
+    assert ("e.Pub", "e.Pub.Priv") in refs
+    # A field whose type is named `export` is a field, not a modifier.
+    assert ("e.Pub", "e.export") in refs
+    assert any(e["relation"] == "imports" and e["context"].endswith("acme/options.proto") for e in r["edges"])
+
+
+def test_protobuf_group_inside_extend_is_declared_in_enclosing_scope(tmp_path):
+    f = tmp_path / "ext.proto"
+    f.write_text(
+        'syntax = "proto2";\n'
+        "package p;\n"
+        "message Base { extensions 10 to 20; }\n"
+        "extend Base { optional group Top = 10 { optional int32 a = 11; } }\n"
+        "message Holder {\n"
+        "  extend Base { repeated group Nested = 12 { optional Holder h = 13; } }\n"
+        "}\n"
+    )
+    r = extract_protobuf(f)
+    nodes = _proto_nodes(r)
+    assert nodes["p.Top"]["metadata"]["kind"] == "group"
+    assert nodes["p.Holder.Nested"]["metadata"]["kind"] == "group"
+    refs = _proto_edges(r, "references")
+    assert ("ext.proto", "p.Top") in refs  # the extension field's type
+    assert ("p.Holder", "p.Holder.Nested") in refs
+    assert ("p.Holder.Nested", "p.Holder") in refs
+    # `group` is a keyword here, never a type name.
+    assert not any(e["context"].endswith(":group") for e in r["edges"] if e["relation"] == "references")
+
+
+def test_protobuf_declaration_line_is_the_keyword_line(tmp_path):
+    f = tmp_path / "split.proto"
+    f.write_text("package p;\nmessage\n  VeryLongName {\n  enum\n    Kind { K = 0; }\n}\nservice\n  S {}\n")
+    nodes = _proto_nodes(extract_protobuf(f))
+    assert nodes["p.VeryLongName"]["source_location"] == "L2"
+    assert nodes["p.VeryLongName.Kind"]["source_location"] == "L4"
+    assert nodes["p.S"]["source_location"] == "L7"
+
+
+def test_protobuf_duplicates_resolve_through_public_import_chain(tmp_path):
+    from graphify.extract import extract
+
+    # Two vendored copies of the re-exported file; only the one reached through
+    # `import public` is visible to the referencing file.
+    for d in ("main", "vendor"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "pub.proto").write_text("package lib;\nmessage Shared {}\n")
+    (tmp_path / "main" / "lib.proto").write_text('package lib;\nimport public "pub.proto";\n')
+    (tmp_path / "main" / "app.proto").write_text(
+        'package app;\nimport "lib.proto";\nmessage Use { lib.Shared s = 1; }\n'
+    )
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    ref = next(e for e in r["edges"] if e["relation"] == "references"
+               and by_id[e["source"]]["label"] == "Use")
+    assert by_id[ref["target"]]["source_file"].replace("\\", "/").endswith("main/pub.proto")
+    assert ref["confidence"] == "INFERRED"
+
+
+def test_protobuf_ambiguous_import_prefers_the_corpus_include_root(tmp_path):
+    from graphify.extract import extract
+
+    # `google/rpc/status.proto` exists under api/ and under api/preview/. Other
+    # imports resolve uniquely through api/, so that is the include root in use.
+    for root in ("api", "api/preview"):
+        (tmp_path / root / "google" / "rpc").mkdir(parents=True)
+        (tmp_path / root / "google" / "rpc" / "status.proto").write_text("package google.rpc;\nmessage Status {}\n")
+    (tmp_path / "api" / "google" / "type").mkdir(parents=True)
+    (tmp_path / "api" / "google" / "type" / "date.proto").write_text("package google.type;\nmessage Date {}\n")
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "svc.proto").write_text(
+        'package svc;\nimport "google/rpc/status.proto";\nimport "google/type/date.proto";\n'
+        "message Reply { google.rpc.Status status = 1; google.type.Date date = 2; }\n"
+    )
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    imports = {by_id[e["target"]]["source_file"].replace("\\", "/"): e["confidence"]
+               for e in r["edges"] if e["relation"] == "imports" and e["target"] in by_id}
+    assert imports == {"api/google/rpc/status.proto": "INFERRED", "api/google/type/date.proto": "EXTRACTED"}
+    status_ref = next(e for e in r["edges"] if e["relation"] == "references"
+                      and by_id.get(e["target"], {}).get("label") == "Status")
+    assert by_id[status_ref["target"]]["source_file"].replace("\\", "/") == "api/google/rpc/status.proto"
+
+
+def test_protobuf_doc_comments_become_rationale_nodes(tmp_path):
+    f = tmp_path / "docs.proto"
+    f.write_text(
+        "package p;\n"
+        "// Detached: separated by a blank line, attached to nothing.\n"
+        "\n"
+        "// An order placed by a customer.\n"
+        "// Second line of the same block.\n"
+        "message Order {\n"
+        "  int32 a = 1;  // trailing comment of a field, not a doc\n"
+        "  /* An earlier, detached block comment. */\n"
+        "  /* Block comment for the nested type. */\n"
+        "  message Line {}\n"
+        "}\n"
+        "enum Status {\n"
+        "  // Not paid yet.\n"
+        "  OPEN = 0;\n"
+        "  PAID = 1; // Paid in full.\n"
+        "}\n"
+        "service S {\n"
+        "  // Fetch an order.\n"
+        "  rpc Get(Order) returns (Order);\n"
+        "}\n"
+    )
+    r = extract_protobuf(f)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    docs = {by_id[e["target"]]["metadata"].get("fqn"): by_id[e["source"]]
+            for e in r["edges"] if e["relation"] == "rationale_for"}
+    assert docs["p.Order"]["label"] == "An order placed by a customer. Second line of the same block."
+    assert docs["p.Order"]["file_type"] == "rationale"
+    assert docs["p.Order"]["source_location"] == "L4"
+    assert docs["p.Order.Line"]["label"] == "Block comment for the nested type."
+    assert docs["p.OPEN"]["label"] == "Not paid yet."
+    assert docs["p.PAID"]["label"] == "Paid in full."
+    assert docs["p.S.Get"]["label"] == "Fetch an order."
+    assert not any("Detached" in n["label"] or "detached" in n["label"] for n in r["nodes"])
+    assert not any("trailing comment" in n["label"] for n in r["nodes"])
+
+
+def test_protobuf_enum_values_are_nodes_scoped_as_siblings(tmp_path):
+    f = tmp_path / "enums.proto"
+    f.write_text(
+        "package p;\n"
+        "enum Color { option allow_alias = true; RED = 0; CRIMSON = 0 [deprecated = true]; "
+        "BLUE = 0x10; NEG = -1; reserved 5 to 9; }\n"
+        "message M { enum Kind { K_UNSPECIFIED = 0; } }\n"
+    )
+    nodes = _proto_nodes(extract_protobuf(f))
+    # protobuf scopes enum values as siblings of their enum, not children.
+    assert nodes["p.RED"]["metadata"]["kind"] == "enum_value"
+    assert nodes["p.RED"]["metadata"]["number"] == 0
+    assert nodes["p.BLUE"]["metadata"]["number"] == 16
+    assert nodes["p.NEG"]["metadata"]["number"] == -1
+    assert nodes["p.CRIMSON"]["metadata"]["deprecated"] is True
+    assert "deprecated" not in nodes["p.RED"]["metadata"]
+    assert nodes["p.M.K_UNSPECIFIED"]["metadata"]["kind"] == "enum_value"
+    contains = _proto_edges(extract_protobuf(f), "contains")
+    assert ("p.Color", "p.RED") in contains and ("p.M.Kind", "p.M.K_UNSPECIFIED") in contains
+
+
+def test_protobuf_deprecated_and_http_bindings(tmp_path):
+    f = tmp_path / "api.proto"
+    f.write_text(
+        "package p;\n"
+        'import "google/api/annotations.proto";\n'
+        "message Old { option deprecated = true; int32 x = 1 [deprecated = true]; }\n"
+        "message New { int32 x = 1 [deprecated = true]; }\n"
+        "service Books {\n"
+        "  option deprecated = true;\n"
+        "  rpc GetBook(Old) returns (Old) {\n"
+        '    option (google.api.http) = { get: "/v1/{name=shelves/*/books/*}" '
+        'additional_bindings { post: "/v1/books:get" body: "*" } '
+        'additional_bindings { custom { kind: "HEAD" path: "/v1/books" } } };\n'
+        "    option deprecated = true;\n"
+        "  }\n"
+        '  rpc ListBooks(Old) returns (Old) { option (google.api.http).get = "/v1/books"; }\n'
+        '  rpc Fetch(Old) returns (Old) {\n'
+        '    option (google.api.http).post = "/v2/discovery:routes";\n'
+        '    option (google.api.http).body = "*";\n'
+        "  }\n"
+        "}\n"
+    )
+    nodes = _proto_nodes(extract_protobuf(f))
+    assert nodes["p.Old"]["metadata"]["deprecated"] is True
+    # A deprecated field must not mark its message deprecated.
+    assert "deprecated" not in nodes["p.New"]["metadata"]
+    assert nodes["p.Books"]["metadata"]["deprecated"] is True
+    get_book = nodes["p.Books.GetBook"]["metadata"]
+    assert get_book["deprecated"] is True
+    assert get_book["http"] == [
+        {"method": "GET", "path": "/v1/{name=shelves/*/books/*}"},
+        {"method": "POST", "path": "/v1/books:get", "body": "*"},
+        {"method": "HEAD", "path": "/v1/books"},
+    ]
+    assert nodes["p.Books.ListBooks"]["metadata"]["http"] == [{"method": "GET", "path": "/v1/books"}]
+    # Dotted parts of one rule, split over statements, merge into one binding.
+    assert nodes["p.Books.Fetch"]["metadata"]["http"] == [
+        {"method": "POST", "path": "/v2/discovery:routes", "body": "*"}
+    ]
+
+
+def test_protobuf_custom_options_link_usages_to_extension_fields(tmp_path):
+    from graphify.extract import extract
+
+    (tmp_path / "opts.proto").write_text(
+        "package acme.opts;\n"
+        'import "google/protobuf/descriptor.proto";\n'
+        "extend google.protobuf.MessageOptions { string table = 50000; }\n"
+        "extend google.protobuf.FieldOptions { bool pii = 50001; }\n"
+        "message Holder { extend google.protobuf.MethodOptions { int32 scope = 50002; } }\n"
+    )
+    (tmp_path / "use.proto").write_text(
+        "package acme.app;\n"
+        'import "opts.proto";\n'
+        "message User {\n"
+        '  option (acme.opts.table) = "users";\n'
+        "  string email = 1 [(acme.opts.pii) = true, deprecated = true];\n"
+        "}\n"
+        "service S { rpc Get(User) returns (User) { option (acme.opts.Holder.scope) = 2; } }\n"
+        'option (unknown.opt) = "x";\n'
+    )
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    ext = {n["metadata"]["fqn"]: n for n in r["nodes"] if n.get("metadata", {}).get("kind") == "extension"}
+    assert set(ext) == {"acme.opts.table", "acme.opts.pii", "acme.opts.Holder.scope"}
+    assert ext["acme.opts.table"]["metadata"]["extendee"] == "google.protobuf.MessageOptions"
+    uses = {
+        (by_id[e["source"]]["metadata"].get("fqn"), by_id[e["target"]]["metadata"]["fqn"])
+        for e in r["edges"]
+        if e.get("context") == "protobuf_option" and e["target"] in by_id
+    }
+    assert uses == {
+        ("acme.app.User", "acme.opts.table"),
+        ("acme.app.User", "acme.opts.pii"),
+        ("acme.app.S.Get", "acme.opts.Holder.scope"),
+    }
+    # An option whose extension is not in the corpus stays unbound.
+    assert any(e.get("context", "").startswith("protobuf_option:") for e in r["edges"])
+
+
+
+def test_protobuf_names_differing_only_in_case_stay_separate(tmp_path):
+    f = tmp_path / "case.proto"
+    f.write_text(
+        "package p;\n"
+        "enum Projection { option allow_alias = true; minimal = 0; MINIMAL = 0; full = 1; FULL = 1; }\n"
+        "message Base { extensions 10 to 20; }\n"
+        "extend Base { Foo_bar foo_bar = 10; }\n"
+        "message Foo_bar {}\n"
+    )
+    r = extract_protobuf(f)
+    nodes = _proto_nodes(r)
+    assert {"p.minimal", "p.MINIMAL", "p.full", "p.FULL", "p.foo_bar", "p.Foo_bar"} <= set(nodes)
+    assert len({nodes[k]["id"] for k in ("p.minimal", "p.MINIMAL", "p.full", "p.FULL")}) == 4
+    assert nodes["p.foo_bar"]["id"] != nodes["p.Foo_bar"]["id"]
+    assert ("p.foo_bar", "p.Foo_bar") in _proto_edges(r, "references")
+
+
+def test_protobuf_unimported_declaration_is_not_bound(tmp_path):
+    from graphify.extract import extract
+
+    (tmp_path / "defs.proto").write_text("package hidden;\nmessage Secret {}\n")
+    # Refers to hidden.Secret without importing defs.proto: protoc rejects this,
+    # so the graph must not invent the edge.
+    (tmp_path / "use.proto").write_text("package app;\nmessage Use { hidden.Secret s = 1; }\n")
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    ref = next(e for e in r["edges"] if e["relation"] == "references"
+               and by_id[e["source"]]["label"] == "Use")
+    assert ref["target"] not in by_id
+
+
+def test_protobuf_unimported_inner_scope_declaration_does_not_shadow(tmp_path):
+    from graphify.extract import extract
+
+    # use.proto (package a.b) writes `Foo` and imports a.proto, which declares a.Foo.
+    # An unrelated, unimported file declares a.b.Foo: protoc never sees it, so the
+    # reference binds the outer a.Foo, as protoc resolves it.
+    (tmp_path / "a.proto").write_text("package a;\nmessage Foo {}\n")
+    (tmp_path / "other.proto").write_text("package a.b;\nmessage Foo {}\n")
+    (tmp_path / "use.proto").write_text('package a.b;\nimport "a.proto";\nmessage Use { Foo f = 1; }\n')
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    ref = next(e for e in r["edges"] if e["relation"] == "references"
+               and by_id[e["source"]]["label"] == "Use")
+    assert by_id[ref["target"]]["metadata"]["fqn"] == "a.Foo"
+    assert by_id[ref["target"]]["source_file"].endswith("a.proto")
+
+
+def test_protobuf_option_from_unimported_file_is_not_bound(tmp_path):
+    from graphify.extract import extract
+
+    (tmp_path / "opts.proto").write_text(
+        'package o;\nimport "google/protobuf/descriptor.proto";\n'
+        "extend google.protobuf.MessageOptions { string table = 50000; }\n"
+    )
+    (tmp_path / "use.proto").write_text('package app;\nmessage M { option (o.table) = "t"; }\n')
+    r = extract(sorted(tmp_path.rglob("*.proto")), root=tmp_path, cache_root=tmp_path)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    use = next(e for e in r["edges"] if str(e.get("context", "")).startswith("protobuf_option")
+               and by_id[e["source"]]["label"] == "M")
+    assert use["target"] not in by_id
+
+
+def test_protobuf_file_option_above_package_and_group_extension_options(tmp_path):
+    f = tmp_path / "opts.proto"
+    f.write_text(
+        'syntax = "proto2";\n'
+        "option (file_opt) = 1;\n"  # above `package`, still resolved in package p
+        "package p;\n"
+        'import "google/protobuf/descriptor.proto";\n'
+        "extend google.protobuf.FileOptions { optional uint64 file_opt = 50000; }\n"
+        "extend google.protobuf.MessageOptions { optional group ComplexOpt = 50001 { optional int32 x = 1; } }\n"
+        "message M { option (complexopt).x = 2; }\n"
+    )
+    r = extract_protobuf(f)
+    nodes = _proto_nodes(r)
+    assert nodes["p.complexopt"]["metadata"]["kind"] == "extension"
+    assert nodes["p.ComplexOpt"]["metadata"]["kind"] == "group"
+    by_id = {n["id"]: n for n in r["nodes"]}
+    uses = {(by_id[e["source"]]["label"], by_id[e["target"]]["metadata"]["fqn"])
+            for e in r["edges"] if e.get("context") == "protobuf_option" and e["target"] in by_id}
+    assert uses == {("opts.proto", "p.file_opt"), ("M", "p.complexopt")}
+    assert ("p.complexopt", "p.ComplexOpt") in _proto_edges(r, "references")
+

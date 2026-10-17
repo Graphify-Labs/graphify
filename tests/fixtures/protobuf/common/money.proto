@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package shop.common;
+
+message Money {
+  string currency = 1;
+  int64 units = 2;
+}
