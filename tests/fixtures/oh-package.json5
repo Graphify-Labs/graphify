@@ -1,0 +1,18 @@
+{
+  "name": "zkj_ai_record",
+  "version": "3.11.0",
+  "description": "AI RTC SDK",
+  "main": "Index.ets",
+  "author": "weiqiang.zhao",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@ohzrtc/lib_zrtc_sdk": "file:./libs/zrtc.har",
+    "@zkj/msxf_face": "file:./libs/msxf_face.har",
+    "@ohos/axios": "2.2.8",
+  },
+  "devDependencies": {
+    "@ohos/hypium": "1.0.19",
+    "@ohos/hamock": "1.0.0",
+  },
+  "dynamicDependencies": {}
+}

@@ -1,0 +1,40 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "srcEntry": "./ets/entryability/EntryAbility.ets",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": ["default", "tablet", "2in1"],
+    "routerMap": "$profile:router_map",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:icon",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "launchType": "singleton",
+        "skills": [
+          {
+            "entities": ["entity.system.home"],
+            "actions": ["action.system.home"]
+          }
+        ]
+      }
+    ],
+    "requestPermissions": [
+      { "name": "ohos.permission.CAMERA" },
+      { "name": "ohos.permission.MICROPHONE" },
+      { "name": "ohos.permission.INTERNET" },
+      { "name": "ohos.permission.MODIFY_AUDIO_SETTINGS" }
+    ],
+    // trailing comma below should be tolerated by JSON5 parser
+    "metadata": [
+      { "name": "avoid_cutout", "value": "true", },
+    ]
+  }
+}

@@ -48,6 +48,7 @@ from graphify.extractors.base import (  # noqa: F401
     set_active_scan_root,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
+from graphify.extractors.arkts import enrich_arkts, extract_harmony_config  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol  # noqa: F401
@@ -2199,6 +2200,32 @@ def extract_js(path: Path) -> dict:
     return result
 
 
+# ArkTS: "struct" -> "class " keeps byte offsets (both 6 bytes), so the
+# TypeScript grammar parses UI components as classes with correct line info.
+_ETS_STRUCT_PATTERN = re.compile(rb"\bstruct\b")
+
+
+def extract_ets(path: Path) -> dict:
+    """Extract from an ArkTS (.ets) file.
+
+    ArkTS = TypeScript + the ``struct`` keyword + HarmonyOS decorators. The
+    source is rewritten struct -> class (same length), parsed by the shared
+    TypeScript extractor, then enriched with ArkTS semantics.
+    """
+    try:
+        raw = _read_source_bytes(path)
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+    result = _extract_generic(path, _TS_CONFIG, source_override=_ETS_STRUCT_PATTERN.sub(b"class ", raw))
+    if "error" in result and not result.get("nodes"):
+        return result
+    try:
+        enrich_arkts(raw.decode("utf-8", errors="replace"), path, result)
+    except Exception:  # enrichment must never drop the base extraction
+        pass
+    return result
+
+
 def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     """Recover ``import('…')`` edges the AST pass does not emit for plain JS/TS.
 
@@ -3778,6 +3805,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     # JS/TS module graph (SFCs embed JS/TS)
     ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
+    ".ets": "jsts",
     ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts", ".ejs": "jsts",
     # JVM interop
     ".java": "jvm", ".kt": "jvm", ".kts": "jvm",
@@ -8547,6 +8575,7 @@ _DISPATCH: dict[str, Any] = {
     ".tsx": extract_js,
     ".mts": extract_js,
     ".cts": extract_js,
+    ".ets": extract_ets,
     ".go": extract_go,
     ".rs": extract_rust,
     ".r": extract_r,
@@ -8802,6 +8831,11 @@ def _get_extractor(path: Path) -> Any | None:
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
     if is_package_manifest_path(path):
         return extract_package_manifest
+    # HarmonyOS project config files (module.json5, router_map.json, ...) are
+    # routed by filename before the generic .json dispatch.
+    from graphify.detect import HARMONY_CONFIG_FILES
+    if path.name in HARMONY_CONFIG_FILES:
+        return extract_harmony_config
     # A project-declared remap (.graphifyrc `language.inc=php`, #2961) wins
     # over every sniff below: the user has said what the extension means in
     # this repo, so a remapped `.h`/`.m` also skips the C++/ObjC probes.
