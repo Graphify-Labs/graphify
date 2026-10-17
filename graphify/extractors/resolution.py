@@ -1763,6 +1763,16 @@ def _apply_symbol_resolution_facts(
             # the dedicated call-graph pass; widening this would duplicate those
             # edges. Import resolution still takes precedence (#1095).
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
+        if (
+            target_id is None
+            and use_fact.relation == "references"
+            and use_fact.context == "value"
+        ):
+            # Same-file module-level value read (`const Foo = {...}` read by a
+            # function/method in the same file): there is no import alias, and the
+            # call-graph pass only covers `calls`. Resolve against this file's own
+            # symbol nodes; import resolution above still wins (#4265).
+            target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
         source_id = use_fact.source_id
@@ -1963,8 +1973,17 @@ def _js_default_export_name(node, source: bytes) -> str | None:
         return _read_text(value, source)
     return None
 
-def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
-    bodies: list[tuple[str, object]] = []
+def _js_top_level_function_nodes(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    """Top-level `function f(){}` / `const g = () => {}` declarations as
+    ``(node_id, node)`` pairs, with exported ones unwrapped from their
+    export_statement.
+
+    `_js_top_level_function_bodies` returns the body subtree; the value-read pass
+    additionally needs the whole function-like node (so parameters are visible
+    when building the scope's bound-name set and the read walk), so both are
+    derived from this one node list.
+    """
+    nodes: list[tuple[str, object]] = []
     stem = _file_stem(path)
     # A top-level `export function f(){}` / `export const g = () => {}` is an
     # export_statement WRAPPING the declaration, not a bare program child, so
@@ -1987,9 +2006,8 @@ def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[
     for node in top_nodes:
         if node.type == "function_declaration":
             name_node = node.child_by_field_name("name")
-            body = node.child_by_field_name("body")
-            if name_node is not None and body is not None:
-                bodies.append((_make_id(stem, _read_text(name_node, source)), body))
+            if name_node is not None:
+                nodes.append((_make_id(stem, _read_text(name_node, source)), node))
             continue
         if node.type != "lexical_declaration":
             continue
@@ -2003,7 +2021,19 @@ def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[
                 and value_node is not None
                 and value_node.type == "arrow_function"
             ):
-                bodies.append((_make_id(stem, _read_text(name_node, source)), value_node))
+                nodes.append((_make_id(stem, _read_text(name_node, source)), value_node))
+    return nodes
+
+
+def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    bodies: list[tuple[str, object]] = []
+    for node_id, node in _js_top_level_function_nodes(path, root_node, source):
+        if node.type == "arrow_function":
+            bodies.append((node_id, node))
+            continue
+        body = node.child_by_field_name("body")
+        if body is not None:
+            bodies.append((node_id, body))
     return bodies
 
 def _js_call_identifier(node, source: bytes) -> str | None:
@@ -2023,6 +2053,250 @@ _JS_PRIMITIVE_TYPES = frozenset({
     "string", "number", "boolean", "any", "unknown", "void", "never",
     "object", "null", "undefined", "bigint", "symbol", "this",
 })
+
+_JS_FUNCTION_LIKE_TYPES = (
+    "function_declaration", "function_expression", "arrow_function",
+    "method_definition", "generator_function", "generator_function_declaration",
+)
+
+# Identifier parents that mark a BINDING position, not a value read: a
+# declarator LHS, a parameter/pattern slot, or an import/export clause name.
+# `engine._js_collect_pattern_idents` is the canonical binding collector; this
+# module cannot import it (engine imports resolution), so the name collector
+# below mirrors it.
+_JS_BINDING_PARENT_TYPES = frozenset({
+    "required_parameter", "optional_parameter", "parameter", "rest_pattern",
+    "assignment_pattern", "pair_pattern", "shorthand_property_identifier_pattern",
+    "object_pattern", "array_pattern",
+})
+
+# Identifier parents that mark a TYPE position (type references have their own
+# dedicated fact passes) or a call/new callee (the call-graph pass owns that
+# edge). Reads in these positions must not mint a `references` edge here.
+_JS_VALUE_READ_SKIP_PARENTS = frozenset({
+    "import_specifier", "import_clause", "namespace_import", "export_specifier",
+    "type_annotation", "type_arguments", "type_parameters", "type_parameter",
+    "omitting_type_annotation", "opting_type_annotation",
+    "interface_declaration", "type_alias_declaration",
+    "call_expression", "new_expression",
+})
+
+
+def _js_collect_binding_names(node, source: bytes, out: set[str]) -> None:
+    """Collect names BOUND by a JS/TS pattern (a parameter or a declarator LHS).
+
+    Mirrors ``engine._js_collect_pattern_idents`` (which cannot be imported here
+    without a cycle): recurses through destructuring (object/array patterns,
+    rest) but never into the default-value side of ``x = default`` or a type
+    annotation, so only names actually bound by the pattern are collected.
+    """
+    if node is None:
+        return
+    t = node.type
+    if t in ("identifier", "shorthand_property_identifier_pattern"):
+        name = _read_text(node, source)
+        if name:
+            out.add(name)
+        return
+    if t == "type_annotation":
+        return
+    if t == "assignment_pattern":  # `x = default` — only x is bound
+        left = node.child_by_field_name("left")
+        if left is not None:
+            _js_collect_binding_names(left, source, out)
+        return
+    if t == "pair_pattern":  # `{ a: localName }` — localName is bound
+        val = node.child_by_field_name("value")
+        if val is not None:
+            _js_collect_binding_names(val, source, out)
+        return
+    for c in node.children:
+        if c.is_named:
+            _js_collect_binding_names(c, source, out)
+
+
+def _js_bound_names_in(scope_node, source: bytes) -> set[str]:
+    """Every name bound anywhere inside ``scope_node``'s subtree.
+
+    Deliberately an OVER-approximation: declarator targets, every function-like
+    node's parameters (including nested ones), `for`/`for-in`/`for-of` bindings
+    and `catch` parameters. A false "bound" only suppresses a reference edge
+    (fail-closed); it never invents one. The enclosing function's own parameters
+    are covered because the walk starts AT the function node.
+    """
+    bound: set[str] = set()
+    for child in _walk_js_tree(scope_node):
+        t = child.type
+        if t == "variable_declarator":
+            _js_collect_binding_names(child.child_by_field_name("name"), source, bound)
+        elif t == "for_in_statement":
+            _js_collect_binding_names(child.child_by_field_name("left"), source, bound)
+        elif t == "for_statement":
+            initializer = child.child_by_field_name("initializer")
+            if initializer is not None:
+                for d in _walk_js_tree(initializer):
+                    if d.type == "variable_declarator":
+                        _js_collect_binding_names(
+                            d.child_by_field_name("name"), source, bound)
+        elif t == "catch_clause":
+            _js_collect_binding_names(child.child_by_field_name("parameter"), source, bound)
+        elif t in _JS_FUNCTION_LIKE_TYPES:
+            _js_collect_binding_names(child.child_by_field_name("parameters"), source, bound)
+            _js_collect_binding_names(child.child_by_field_name("parameter"), source, bound)
+    return bound
+
+
+def _js_value_read_names(scope_node, source: bytes):
+    """Yield ``(name, line)`` for identifier nodes that READ a value.
+
+    Skips binding positions, import/export clause names, type positions, and a
+    call's own callee. ``SeatInput.parse`` yields ``SeatInput`` (a read of the
+    imported object) because the member's ``property_identifier`` is a different
+    node type and is skipped by the type filter.
+    """
+    for child in _walk_js_tree(scope_node):
+        if child.type not in ("identifier", "shorthand_property_identifier"):
+            continue
+        parent = child.parent
+        if parent is None:
+            continue
+        pt = parent.type
+        if child.type == "shorthand_property_identifier":
+            # `{ X }` in an expression reads X; the pattern form is a different
+            # node type (`shorthand_property_identifier_pattern`) and is filtered
+            # out above.
+            yield _read_text(child, source), child.start_point[0] + 1
+            continue
+        if pt in _JS_VALUE_READ_SKIP_PARENTS or pt in _JS_BINDING_PARENT_TYPES:
+            continue
+        if pt == "variable_declarator" and parent.child_by_field_name("name") == child:
+            continue
+        if pt in ("function_declaration", "class_declaration",
+                  "abstract_class_declaration"):
+            if parent.child_by_field_name("name") == child:
+                continue
+        yield _read_text(child, source), child.start_point[0] + 1
+
+
+def _js_namespace_import_name(node, source: bytes) -> str | None:
+    """Local binding of `import * as ns from './x'`."""
+    for child in node.children:
+        if child.type != "import_clause":
+            continue
+        for sub in _walk_js_tree(child):
+            if sub.type != "namespace_import":
+                continue
+            for g in sub.children:
+                if g.type == "identifier":
+                    return _read_text(g, source) or None
+    return None
+
+
+def _js_module_scope_binding_names(root_node, source: bytes) -> set[str]:
+    """Module-level binding names declared in this file.
+
+    Covers `const`/`let`/`var` declarators and `function`/`class`/`interface`
+    declarations, with exported declarations unwrapped from their
+    export_statement. Value reads of these names resolve against the file's own
+    symbol nodes (same-file fallback in `_apply_symbol_resolution_facts`).
+    """
+    names: set[str] = set()
+    for node in root_node.children:
+        decl = node
+        if node.type == "export_statement":
+            inner = node.child_by_field_name("declaration")
+            if inner is None:
+                continue
+            decl = inner
+        t = decl.type
+        if t in ("lexical_declaration", "variable_declaration"):
+            for d in decl.children:
+                if d.type == "variable_declarator":
+                    _js_collect_binding_names(d.child_by_field_name("name"), source, names)
+        elif t in ("function_declaration", "class_declaration",
+                   "abstract_class_declaration", "interface_declaration"):
+            name_node = decl.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                if name:
+                    names.add(name)
+    return names
+
+
+def _js_value_reference_names(root_node, source: bytes) -> set[str]:
+    """Names in this file that a value read could resolve to: imported bindings
+    (named, default, namespace) plus module-level declarations."""
+    names = _js_module_scope_binding_names(root_node, source)
+    for node in _walk_js_tree(root_node):
+        if node.type != "import_statement":
+            continue
+        for _imported, local in _js_named_specifiers(node, source, "import_specifier"):
+            names.add(local)
+        default_local = _js_default_import_name(node, source)
+        if default_local:
+            names.add(default_local)
+        namespace_local = _js_namespace_import_name(node, source)
+        if namespace_local:
+            names.add(namespace_local)
+    return names
+
+
+def _js_invoked_names(scope_node, source: bytes) -> set[str]:
+    """Names invoked as a call/new/JSX tag anywhere inside ``scope_node``.
+
+    The value-read pass must not also emit a `references` edge for such a name:
+    a call edge (direct or JSX) is owned by the call-graph pass, and a second
+    `references` edge for the same (caller, target) pair would make the
+    relation-blind cross-file call dedup in extract() skip the real `calls`
+    edge (JSX `<Bubble />` regression).
+    """
+    names: set[str] = set()
+    for child in _walk_js_tree(scope_node):
+        t = child.type
+        if t == "call_expression":
+            fn = child.child_by_field_name("function")
+            if fn is not None and fn.type in ("identifier", "type_identifier"):
+                name = _read_text(fn, source)
+                if name:
+                    names.add(name)
+        elif t == "new_expression":
+            ctor = child.child_by_field_name("constructor")
+            if ctor is not None and ctor.type in ("identifier", "type_identifier"):
+                name = _read_text(ctor, source)
+                if name:
+                    names.add(name)
+        elif t in ("jsx_opening_element", "jsx_self_closing_element"):
+            nm = child.child_by_field_name("name")
+            if nm is not None and nm.type == "identifier":
+                name = _read_text(nm, source)
+                if name:
+                    names.add(name)
+    return names
+
+
+def _js_append_value_use_facts(
+    path: Path,
+    source_id: str,
+    scope_node,
+    source: bytes,
+    candidates: set[str],
+    facts: _SymbolResolutionFacts,
+) -> None:
+    """Emit `references` use facts for value reads inside one function-like node.
+
+    Only names that could resolve (import bindings / module-level declarations)
+    are emitted; reads shadowed by any local binding in the same subtree, and
+    names the scope also invokes as a call/JSX tag, are dropped. Resolution to
+    actual nodes happens in `_apply_symbol_resolution_facts`.
+    """
+    bound = _js_bound_names_in(scope_node, source)
+    invoked = _js_invoked_names(scope_node, source)
+    for name, line in _js_value_read_names(scope_node, source):
+        if not name or name in bound or name in invoked or name not in candidates:
+            continue
+        facts.uses.append(
+            _SymbolUseFact(path, source_id, name, "references", "value", line)
+        )
 
 def _ts_heritage_clause_entries(clause_node, source: bytes) -> list[str]:
     """Return base/interface type names from an extends_clause or implements_clause."""
@@ -2100,7 +2374,8 @@ def _ts_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
                 _ts_collect_type_refs(c, source, generic, out)
 
 def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str,
-                            facts: _SymbolResolutionFacts) -> None:
+                            facts: _SymbolResolutionFacts,
+                            candidates: "set[str] | None" = None) -> None:
     """Emit type-relation and type-reference use facts for a class declaration node."""
     line = class_node.start_point[0] + 1
     for child in class_node.children:
@@ -2180,6 +2455,11 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                     facts.uses.append(
                         _SymbolUseFact(path, method_nid, name, "references", ctx, m_line)
                     )
+            # Value reads inside the method body (#4265): attribute a read of an
+            # imported/module-level value to the method, not the class or file.
+            if candidates and member.child_by_field_name("body") is not None:
+                _js_append_value_use_facts(
+                    path, method_nid, member, source, candidates, facts)
         elif member.type in ("public_field_definition", "property_signature"):
             type_anno = None
             for c in member.children:
@@ -2392,13 +2672,32 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
+    # Value reads: a function body that reads an imported or module-level value
+    # (`SeatInput`, `SeatInput.parse`, a constant handed to a call) has no edge
+    # to it today — the graph only carries `file --imports--> symbol`, so
+    # `affected`/`path` stop at the file rather than naming the functions that
+    # depend on the value (#4265). Mirror the calls pass above: emit a
+    # `references` use fact per read, resolved through the same import table.
     for path in js_paths:
         resolved_path = _resolve_cached(path)
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
-        source, _root_node, indexed = parsed
+        source, root_node, _indexed = parsed
+        candidates = _js_value_reference_names(root_node, source)
+        if not candidates:
+            continue
+        for source_id, func_node in _js_top_level_function_nodes(path, root_node, source):
+            _js_append_value_use_facts(path, source_id, func_node, source, candidates, facts)
+
+    for path in js_paths:
+        resolved_path = _resolve_cached(path)
+        parsed = trees.get(resolved_path)
+        if parsed is None:
+            continue
+        source, root_node, indexed = parsed
         stem = _file_stem(path)
+        candidates = _js_value_reference_names(root_node, source)
         for node in indexed:
             if node.type not in (
                 "class_declaration",
@@ -2413,7 +2712,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             if not class_name:
                 continue
             class_nid = _make_id(stem, class_name)
-            _ts_walk_class_members(node, source, path, class_nid, facts)
+            _ts_walk_class_members(node, source, path, class_nid, facts, candidates)
 
 @functools.lru_cache(maxsize=2048)
 def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
