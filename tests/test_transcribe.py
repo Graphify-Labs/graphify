@@ -1,6 +1,7 @@
 """Tests for graphify.transcribe — video/audio transcription support."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ from graphify.transcribe import (
     build_whisper_prompt,
     transcribe,
     transcribe_all,
+    update_detect_with_transcripts,
 )
 
 
@@ -145,3 +147,146 @@ def test_transcribe_all_skips_failed(tmp_path):
         results = transcribe_all([str(video)], output_dir=tmp_path / "out")
 
     assert results == []
+
+
+def _transcribe_fragment() -> str:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "references"
+        / "shared"
+        / "transcribe.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_transcribe_reference_does_not_require_first_build_analysis() -> None:
+    fragment = _transcribe_fragment()
+
+    assert ".graphify_detect.json` contains only a file inventory" in fragment
+    assert "only when that file exists and belongs to this corpus" in fragment
+    assert "On a first build, the analysis file has not been produced yet" in fragment
+    assert "Never fabricate god-node labels" in fragment
+    assert "Use proper punctuation and paragraph breaks." in fragment
+    assert "Skip this step entirely if `detect` returned zero `video` files." in fragment
+
+
+def test_transcribe_reference_updates_inventory_before_semantic_cache_check() -> None:
+    fragment = _transcribe_fragment()
+    core = (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "core"
+        / "core.md"
+    ).read_text(encoding="utf-8")
+
+    assert "update_detect_with_transcripts(" in fragment
+    assert "graphify-out/.graphify_detect.json" in fragment
+    assert "This detection update must happen before Step B0" in fragment
+    assert "do not run B0 with a stale or incomplete inventory" in fragment
+    assert "all_files = [f for cat in ('document', 'paper', 'image')" in core
+
+
+def test_transcripts_are_added_to_the_inventory_consumed_by_b0(tmp_path: Path) -> None:
+    project = tmp_path / "project with spaces"
+    output = project / "graphify-out"
+    transcript_dir = output / "transcripts"
+    transcript_dir.mkdir(parents=True)
+
+    document = project / "meeting notes.md"
+    paper = project / "paper.pdf"
+    image = project / "diagram.png"
+    video = project / "talk.mp4"
+    stale_transcript = transcript_dir / "old talk.txt"
+    for path in (document, paper, image, video, stale_transcript):
+        path.write_text("fixture", encoding="utf-8")
+
+    detect_path = output / ".graphify_detect.json"
+    manifest_path = output / ".graphify_transcripts.json"
+    detection = {
+        "scan_root": str(project),
+        "total_files": 4,
+        "other_metadata": {"preserve": True},
+        "files": {
+            "document": [str(document), str(stale_transcript)],
+            "paper": [str(paper)],
+            "image": [str(image)],
+            "video": [str(video)],
+            "code": [],
+        },
+    }
+    detect_path.write_text(json.dumps(detection), encoding="utf-8")
+    manifest_path.write_text(json.dumps([str(stale_transcript)]), encoding="utf-8")
+
+    first = transcript_dir / "successful talk.txt"
+    second = transcript_dir / "interview with spaces.txt"
+    outside = project / "outside.txt"
+    first.write_text("first transcript", encoding="utf-8")
+    second.write_text("second transcript", encoding="utf-8")
+    outside.write_text("not a generated transcript", encoding="utf-8")
+    missing = transcript_dir / "failed video.txt"
+
+    recorded = update_detect_with_transcripts(
+        detect_path,
+        manifest_path,
+        [str(first), str(missing), str(outside), str(second), str(first)],
+        transcripts_dir=transcript_dir,
+    )
+
+    expected_transcripts = [str(first.resolve()), str(second.resolve())]
+    updated = json.loads(detect_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    semantic_inputs = [
+        path
+        for category in ("document", "paper", "image")
+        for path in updated["files"].get(category, [])
+    ]
+
+    assert recorded == expected_transcripts
+    assert manifest == expected_transcripts
+    assert updated["files"]["document"] == [str(document), *expected_transcripts]
+    assert str(stale_transcript) not in semantic_inputs
+    assert all(path in semantic_inputs for path in expected_transcripts)
+    assert updated["files"]["paper"] == [str(paper)]
+    assert updated["files"]["image"] == [str(image)]
+    assert updated["files"]["video"] == [str(video)]
+    assert updated["other_metadata"] == {"preserve": True}
+    assert updated["total_files"] == 4
+
+
+def test_failed_transcription_clears_old_manifest_and_inventory_entries(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    output = project / "graphify-out"
+    transcript_dir = output / "transcripts"
+    transcript_dir.mkdir(parents=True)
+
+    document = project / "notes.md"
+    old_transcript = transcript_dir / "previous run.txt"
+    document.write_text("notes", encoding="utf-8")
+    old_transcript.write_text("old transcript", encoding="utf-8")
+
+    detect_path = output / ".graphify_detect.json"
+    manifest_path = output / ".graphify_transcripts.json"
+    detect_path.write_text(
+        json.dumps({
+            "scan_root": str(project),
+            "files": {"document": [str(document), str(old_transcript)]},
+        }),
+        encoding="utf-8",
+    )
+    manifest_path.write_text(json.dumps([str(old_transcript)]), encoding="utf-8")
+
+    recorded = update_detect_with_transcripts(
+        detect_path,
+        manifest_path,
+        [str(transcript_dir / "failed transcript.txt")],
+        transcripts_dir=transcript_dir,
+    )
+
+    updated = json.loads(detect_path.read_text(encoding="utf-8"))
+    assert recorded == []
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == []
+    assert updated["files"]["document"] == [str(document)]
