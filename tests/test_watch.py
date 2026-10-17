@@ -5281,11 +5281,15 @@ def test_clustered_rebuild_survives_a_permission_error_on_replace(tmp_path, monk
 
 
 def _sourced(*pairs: "tuple[str, int]") -> dict:
-    """Graph data whose nodes carry a source_file: (path, node count) per source."""
+    """Graph data of AST nodes that carry a source_file: (path, node count) per source.
+
+    Stamped ``_origin: ast`` because an unstamped node reads as semantic, and the
+    saved-semantic-id check (#2229) refuses its loss before this guard runs.
+    """
     nodes = []
     for source, count in pairs:
         for i in range(count):
-            nodes.append({"id": f"{source}:{i}", "source_file": source})
+            nodes.append({"id": f"{source}:{i}", "source_file": source, "_origin": "ast"})
     return {"nodes": nodes, "links": []}
 
 
@@ -5362,8 +5366,8 @@ def test_check_shrink_still_refuses_a_failed_source():
 
 def test_check_shrink_still_allows_a_loss_with_no_source_file():
     """Nodes without a source_file were always accounted and still are."""
-    existing = {"nodes": [{"id": "x"}, {"id": "y"}, {"id": "z"}], "links": []}
-    new = {"nodes": [{"id": "x"}], "links": []}
+    existing = {"nodes": [{"id": i, "_origin": "ast"} for i in "xyz"], "links": []}
+    new = {"nodes": [{"id": "x", "_origin": "ast"}], "links": []}
     assert _check_shrink(
         force=False, existing_data=existing, new_data=new, rebuilt_sources={"a.py"}
     ) is True
