@@ -499,6 +499,137 @@ def test_cli_save_result_requires_answer_or_answer_file(tmp_path):
     assert "--answer" in (r.stderr + r.stdout)
 
 
+def test_cli_save_result_reads_question_and_correction_from_file(tmp_path):
+    """#3439: --question-file/--correction-file mirror --answer-file for the
+    same reason -- a value a skill's instructions build this command from
+    (the user's verbatim question, an LLM-generated correction) is free
+    text of unpredictable content, and substituting it directly into a
+    shell command string risks corruption or injection via an embedded
+    quote, backtick, or $(). A file has no such surface. Round-trips
+    adversarial content (backticks, $(), both quote styles) through both
+    fields at once, unexecuted and uncorrupted."""
+    q = tmp_path / "question.txt"
+    q.write_text("what about $(whoami) and `id` and 'quotes' and \"more\"?\n", encoding="utf-8")
+    c = tmp_path / "correction.txt"
+    c.write_text("actually it's `AuthMiddleware`, not $(OldAuth); check 'both'.\n", encoding="utf-8")
+    r = _run(["save-result", "--question-file", str(q), "--answer", "a",
+              "--outcome", "corrected", "--correction-file", str(c)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    docs = list((tmp_path / "graphify-out" / "memory").glob("*.md"))
+    assert docs, "save-result wrote no memory doc"
+    body = docs[0].read_text(encoding="utf-8")
+    assert "$(whoami)" in body and "`id`" in body
+    assert "`AuthMiddleware`" in body and "$(OldAuth)" in body
+
+
+def test_cli_save_result_requires_question_or_question_file(tmp_path):
+    """Neither --question nor --question-file -> clean argparse error, not a crash."""
+    r = _run(["save-result", "--answer", "a", "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    assert "--question" in (r.stderr + r.stdout)
+
+
+def test_cli_save_result_rejects_present_but_empty_question_distinctly(tmp_path):
+    """An explicitly empty --question is still rejected -- an empty question
+    is never useful content to save -- but with a message that says so,
+    distinct from the "required" error a genuinely absent flag gets."""
+    r = _run(["save-result", "--question", "", "--answer", "a",
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    err = r.stderr
+    assert "must not be empty" in err
+    assert "required" not in err
+
+
+def test_cli_save_result_rejects_present_but_empty_answer_distinctly(tmp_path):
+    r = _run(["save-result", "--question", "q", "--answer", "",
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    err = r.stderr
+    assert "must not be empty" in err
+    assert "required" not in err
+
+
+def test_cli_save_result_reads_nodes_from_file(tmp_path):
+    """#3439 follow up: a node label the skill instructions build this
+    command from can come from extracted document content, so it is free
+    text of unpredictable content just like the question and answer.
+    --nodes-file mirrors --question-file/--answer-file for the node list,
+    one label per line, so the label never has to touch a shell argument.
+    Round-trips adversarial content (backticks, $(), quotes) unexecuted."""
+    nodes = tmp_path / "nodes.txt"
+    nodes.write_text("what about $(whoami)\n`AuthMiddleware`\n\n", encoding="utf-8")
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "useful", "--nodes-file", str(nodes)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    docs = list((tmp_path / "graphify-out" / "memory").glob("*.md"))
+    assert docs, "save-result wrote no memory doc"
+    body = docs[0].read_text(encoding="utf-8")
+    assert "$(whoami)" in body
+    assert "`AuthMiddleware`" in body
+
+
+def test_cli_save_result_reads_nodes_from_multiple_files(tmp_path):
+    """--nodes-file accepts more than one path, each contributing its own
+    label -- the path/explain fallback scripts reserve one file per label
+    specifically so a label containing a literal newline still lands as
+    exactly one entry, instead of relying on a shared file holding a fixed
+    number of lines."""
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("Concept A\n", encoding="utf-8")
+    b.write_text("Concept B\n", encoding="utf-8")
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "useful", "--nodes-file", str(a), str(b)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    docs = list((tmp_path / "graphify-out" / "memory").glob("*.md"))
+    assert docs, "save-result wrote no memory doc"
+    body = docs[0].read_text(encoding="utf-8")
+    assert "Concept A" in body
+    assert "Concept B" in body
+
+
+def test_cli_save_result_missing_answer_file_gives_a_clean_error(tmp_path):
+    """A nonexistent --answer-file path must end in a normal argparse style
+    error, not a raw traceback -- these paths come from the same skill
+    instructions --answer-file exists to protect, so a bad path deserves
+    the same clean handling as a bad flag value."""
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question", "q", "--answer-file", str(missing),
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--answer-file" in r.stderr
+    assert str(missing) in r.stderr
+
+
+def test_cli_save_result_missing_question_file_gives_a_clean_error(tmp_path):
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question-file", str(missing), "--answer", "a",
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--question-file" in r.stderr
+
+
+def test_cli_save_result_missing_nodes_file_gives_a_clean_error(tmp_path):
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "useful", "--nodes-file", str(missing)], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--nodes-file" in r.stderr
+
+
+def test_cli_save_result_missing_correction_file_gives_a_clean_error(tmp_path):
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "corrected", "--correction-file", str(missing)], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--correction-file" in r.stderr
+
+
 def test_cli_reflect_cold_start_writes_empty_lessons(tmp_path):
     """First run with no graphify-out/memory/ still succeeds and writes a valid doc."""
     r = _run(["reflect"], tmp_path)
