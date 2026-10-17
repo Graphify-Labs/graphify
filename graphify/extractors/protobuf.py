@@ -56,6 +56,11 @@ _SCALAPB_OPTIONS = frozenset({"package_name", "flat_package"})
 _HTTP_OPTION = "google.api.http"
 _HTTP_METHODS = ("get", "put", "post", "delete", "patch")
 _TYPE_KINDS = frozenset({"message", "enum", "group"})
+# Nesting cap for messages and option literals, which the walker recurses into.
+# Real schemas nest a handful of levels (googleapis peaks at 7); deeper input is
+# skipped iteratively instead of exhausting Python's recursion limit, which would
+# otherwise drop the whole file.
+_MAX_NESTING = 100
 
 # Edge context prefixes. A reference bound inside the file carries the bare
 # context; an unbound one carries "<context>:<scope>:<name>" until the corpus
@@ -270,15 +275,31 @@ class _Walker:
             return {"true": True, "false": False}.get(tok[1], tok[1])
         return None
 
-    def aggregate(self) -> dict[str, Any]:
+    def skip_literal(self) -> None:
+        """Skip a balanced ``{...}`` / ``<...>`` literal whose opener is the next token."""
+        depth = 0
+        while (tok := self.next()) is not None:
+            if tok[0] != "punct":
+                continue
+            if tok[1] in "{<":
+                depth += 1
+            elif tok[1] in "}>":
+                depth -= 1
+                if depth <= 0:
+                    return
+
+    def aggregate(self, depth: int = 0) -> dict[str, Any]:
         """Read a text-format message literal ``{ key: value key2 { ... } }`` into a dict.
 
         A key that repeats collects its values into a list. The opening '{' or '<'
-        is the next token.
+        is the next token. Literals nested past ``_MAX_NESTING`` are skipped.
         """
         result: dict[str, Any] = {}
         close = {"{": "}", "<": ">"}.get(self.value() or "")
         if close is None:
+            return result
+        if depth >= _MAX_NESTING:
+            self.skip_literal()
             return result
         self.i += 1
         while (v := self.value()) is not None and v != close:
@@ -299,7 +320,7 @@ class _Walker:
                 key = tok[1]
             self.accept(":")
             if self.value() in ("{", "<"):
-                value: Any = self.aggregate()
+                value: Any = self.aggregate(depth + 1)
             elif self.value() == "[":
                 self.i += 1
                 items = []
@@ -307,7 +328,7 @@ class _Walker:
                     if iv == ",":
                         self.i += 1
                     elif iv in ("{", "<"):
-                        items.append(self.aggregate())
+                        items.append(self.aggregate(depth + 1))
                     else:
                         c = self.constant()
                         if c is None:
@@ -642,8 +663,21 @@ def extract_protobuf(path: Path) -> dict:
             parse_bracket_options(source, scope, describes_owner=source != owner)
         w.skip_statement()
 
+    nesting = 0  # depth of the message / group being parsed
+
     def parse_message(container_nid: str, scope: str, local_scope: str, kind: str = "message") -> None:
         # The 'message' / 'group' keyword has been consumed; next token is the name.
+        nonlocal nesting
+        if nesting >= _MAX_NESTING:
+            w.skip_statement()
+            return
+        nesting += 1
+        try:
+            _parse_message(container_nid, scope, local_scope, kind)
+        finally:
+            nesting -= 1
+
+    def _parse_message(container_nid: str, scope: str, local_scope: str, kind: str) -> None:
         line = w.prev_line()
         tok = w.next()
         if tok is None or tok[0] != "ident":

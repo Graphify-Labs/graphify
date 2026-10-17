@@ -6340,3 +6340,27 @@ def test_protobuf_file_option_above_package_and_group_extension_options(tmp_path
     assert uses == {("opts.proto", "p.file_opt"), ("M", "p.complexopt")}
     assert ("p.complexopt", "p.ComplexOpt") in _proto_edges(r, "references")
 
+
+
+def test_protobuf_deep_nesting_is_capped_not_fatal(tmp_path):
+    # Real schemas nest a handful of levels (googleapis peaks at 7); thousands of
+    # levels must not hit Python's recursion limit and lose the whole file.
+    deep_literal = "{a" * 3000 + "}" * 3000
+    f = tmp_path / "deep.proto"
+    f.write_text(
+        "package p;\n"
+        f"option (scalapb.options) = {deep_literal};\n"
+        "service S { rpc R(Before) returns (Before) {\n"
+        f"  option (google.api.http) = {deep_literal};\n"
+        "} }\n"
+        "message Before {}\n"
+        + "message Deep {" * 5000 + "}" * 5000 + "\n"
+        "message After { Before b = 1; }\n"
+    )
+    r = extract_protobuf(f)
+    nodes = _proto_nodes(r)
+    assert {"p.Before", "p.After", "p.S.R", "p.Deep"} <= set(nodes)
+    assert ("p.After", "p.Before") in _proto_edges(r, "references")
+    # Declarations past the cap are skipped, not extracted.
+    depth = max(fqn.count(".") for fqn in nodes if fqn.startswith("p.Deep"))
+    assert depth == 100
