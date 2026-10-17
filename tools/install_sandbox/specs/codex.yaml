@@ -1,0 +1,30 @@
+universal_uninstall_scopes: [user, project]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .codex/skills/graphify/SKILL.md
+        source: graphify/skill-codex.md
+        reference_bundle: codex
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .codex/skills/graphify/SKILL.md
+        source: graphify/skill-codex.md
+        reference_bundle: codex
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md
+      - kind: json
+        root: project
+        path: .codex/hooks.json
+        preserves_backup: true
+        entries:
+          hooks:
+            PreToolUse:
+              - matcher: Bash
+        required_text: [graphify, hook-check]
