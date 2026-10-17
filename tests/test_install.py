@@ -20,6 +20,7 @@ PLATFORMS = {
     "trae": (".trae/skills/graphify/SKILL.md",),
     "trae-cn": (".trae-cn/skills/graphify/SKILL.md",),
     "windows": (".claude/skills/graphify/SKILL.md",),
+    "mimo": (".config/mimocode/skills/graphify/SKILL.md",),
 }
 
 
