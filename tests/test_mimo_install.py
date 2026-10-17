@@ -825,27 +825,36 @@ def test_mimo_install_creates_backup(tmp_path, monkeypatch):
     assert '{"theme": "light"}' in bak_file.read_text(encoding="utf-8")
 
 def test_mimo_install_refuses_invalid_json(tmp_path, monkeypatch, capsys):
-    """Invalid JSON is refused without clobbering the original bytes."""
+    """Invalid JSON/JSONC is refused without clobbering the original bytes or creating artifacts."""
     home = tmp_path / "home"
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     mimo_dir = home / ".config" / "mimocode"
     mimo_dir.mkdir(parents=True)
     json_file = mimo_dir / "mimocode.json"
-    original_bytes = b'{"theme": "light", }'
-    json_file.write_bytes(original_bytes)
 
-    from graphify.install import _mimo_install
-    import pytest
-    with pytest.raises(SystemExit) as excinfo:
-        _mimo_install(tmp_path, project=False)
-    assert excinfo.value.code == 1
-    assert json_file.read_bytes() == original_bytes
+    for invalid_bytes in (
+        b'{"theme": "light",, }',
+        b'{"theme": "light", , }',
+        b'{"theme": }',
+        b'{,}',
+        b'{"plugin": [,]}',
+    ):
+        json_file.write_bytes(invalid_bytes)
 
-    from graphify.install import _mimo_uninstall
-    with pytest.raises(SystemExit) as excinfo2:
-        _mimo_uninstall(tmp_path, project=False)
-    assert excinfo2.value.code == 1
-    assert json_file.read_bytes() == original_bytes
+        from graphify.install import _mimo_install, _mimo_uninstall
+        import pytest
+        with pytest.raises(SystemExit) as excinfo:
+            _mimo_install(tmp_path, project=False)
+        assert excinfo.value.code == 1
+        assert json_file.read_bytes() == invalid_bytes
+        assert not (mimo_dir / "skills" / "graphify" / "SKILL.md").exists()
+        assert not (mimo_dir / "plugins" / "graphify.js").exists()
+
+        with pytest.raises(SystemExit) as excinfo2:
+            _mimo_uninstall(tmp_path, project=False)
+        assert excinfo2.value.code == 1
+        assert json_file.read_bytes() == invalid_bytes
+
 
 def test_mimo_cli_scope_parsing(tmp_path, monkeypatch):
     """--scope project and --scope=project parsing works."""
@@ -865,6 +874,7 @@ def test_mimo_cli_scope_parsing(tmp_path, monkeypatch):
     assert dispatch_install_cli("mimo")
     assert not (project / ".mimocode" / "skills" / "graphify" / "SKILL.md").exists()
 
+
 def test_mimo_uninstall_windows_paths(tmp_path, monkeypatch):
     """Windows path deregistration variants are handled."""
     from graphify.install import _preserve_jsonc_plugin_remove
@@ -876,6 +886,7 @@ def test_mimo_uninstall_windows_paths(tmp_path, monkeypatch):
     possible = {actual_path, actual_path.replace("\\", "/")}
     res = _preserve_jsonc_plugin_remove(raw, possible)
     assert json_path not in res
+
 
 def test_mimo_install_jsonc_strings_with_syntax_chars():
     """JSONC strings containing ,} and ,] remain unchanged."""
@@ -891,10 +902,19 @@ def test_mimo_install_jsonc_strings_with_syntax_chars():
     assert parsed["plugin"] == ["./plugins/graphify.js"]
 
 
-def test_strip_json_comments_does_not_normalize_repeated_commas():
+def test_strip_json_comments_does_not_normalize_repeated_or_bare_commas():
     from graphify.install import _strip_json_comments
 
-    for raw in ('{"theme": "dark",,}', '{"items": [1,,]}'):
+    for raw in (
+        '{"theme": "dark",,}',
+        '{"theme": "dark", ,}',
+        '{"theme": "dark", /* comment */ ,}',
+        '{"items": [1,,]}',
+        '{"items": [1, ,]}',
+        '{,}',
+        '{"items": [,]}',
+        '{"theme": ,}',
+    ):
         with pytest.raises(json.JSONDecodeError):
             json.loads(_strip_json_comments(raw))
 
@@ -916,6 +936,9 @@ def test_mimo_install_invalid_jsonc_trailing_commas(tmp_path, monkeypatch):
         _mimo_install(tmp_path, project=False)
     assert excinfo.value.code == 1
     assert json_file.read_bytes() == original_bytes
+    assert not (mimo_dir / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (mimo_dir / "plugins" / "graphify.js").exists()
+
 
 def test_mimo_uninstall_preserves_comments(tmp_path, monkeypatch):
     """JSONC comments are preserved through uninstall."""
@@ -1129,3 +1152,160 @@ def test_strip_json_comments_strings_escapes_and_unterminated_block():
     # Unterminated block comment must fail closed when parsed
     with pytest.raises(json.JSONDecodeError):
         json.loads(_strip_json_comments('{"a": 1 /* unterminated }'))
+
+
+def test_mimo_jsonc_trailing_commas_accepted_and_preserved(tmp_path, monkeypatch, capsys):
+    """Valid JSONC configs with trailing commas in arrays and objects are accepted and preserved."""
+    from graphify.install import _is_jsonc_config, _prepare_mimo_config
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(project)
+
+    # 1. Trailing commas without comments are detected as JSONC even in mimocode.json
+    trailing_only_raw = (
+        "{\n"
+        '  "theme": "light",\n'
+        '  "endpoint": "https://api.mimo.example/v1/chat,}",\n'
+        '  "escaped": "val \\" ,] // /* */",\n'
+        '  "plugin": [\n'
+        '    "custom-plugin.js",\n'
+        "  ],\n"
+        "}\n"
+    )
+    assert _is_jsonc_config(trailing_only_raw)
+
+    mimo_dir = project / ".mimocode"
+    mimo_dir.mkdir(parents=True)
+    json_file = mimo_dir / "mimocode.json"
+    json_file.write_text(trailing_only_raw, encoding="utf-8")
+
+    cfg_path, final_text, already = _prepare_mimo_config(project, project=True)
+    assert cfg_path == json_file
+    assert not already
+    parsed_pre = json.loads(_strip_json_comments(final_text))
+    assert parsed_pre["plugin"] == ["custom-plugin.js", "./plugins/graphify.js"]
+    assert parsed_pre["endpoint"] == "https://api.mimo.example/v1/chat,}"
+
+    _mimo_install(project, project=True)
+    installed_raw = json_file.read_text(encoding="utf-8")
+    parsed_installed = json.loads(_strip_json_comments(installed_raw))
+    assert parsed_installed["plugin"] == ["custom-plugin.js", "./plugins/graphify.js"]
+    assert parsed_installed["theme"] == "light"
+
+    _mimo_status(project, project=True)
+    status_out = capsys.readouterr().out
+    assert "Registered in" in status_out
+
+    _mimo_uninstall(project, project=True)
+    uninstalled_raw = json_file.read_text(encoding="utf-8")
+    parsed_uninstalled = json.loads(_strip_json_comments(uninstalled_raw))
+    assert parsed_uninstalled["plugin"] == ["custom-plugin.js"]
+    assert parsed_uninstalled["theme"] == "light"
+    assert parsed_uninstalled["endpoint"] == "https://api.mimo.example/v1/chat,}"
+
+    # 2. mimocode.jsonc with comments + trailing commas in root object and scalar plugin
+    json_file.unlink()
+    jsonc_file = mimo_dir / "mimocode.jsonc"
+    jsonc_file.write_text(
+        "{\n"
+        "  // Theme setting\n"
+        '  "theme": "dark",\n'
+        '  "nested": {"items": [1, 2,],},\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    _mimo_install(project, project=True)
+    jsonc_installed = jsonc_file.read_text(encoding="utf-8")
+    assert "// Theme setting" in jsonc_installed
+    parsed_jsonc = json.loads(_strip_json_comments(jsonc_installed))
+    assert parsed_jsonc["plugin"] == ["./plugins/graphify.js"]
+    assert parsed_jsonc["nested"] == {"items": [1, 2]}
+
+    _mimo_uninstall(project, project=True)
+    jsonc_uninstalled = jsonc_file.read_text(encoding="utf-8")
+    assert "// Theme setting" in jsonc_uninstalled
+    parsed_jsonc_after = json.loads(_strip_json_comments(jsonc_uninstalled))
+    assert parsed_jsonc_after.get("plugin", []) == []
+    assert parsed_jsonc_after["nested"] == {"items": [1, 2]}
+
+
+def test_mimo_main_cli_real_dispatch_global_and_project(tmp_path, monkeypatch, capsys):
+    """Exercise graphify.__main__.main() directly for mimo install/status/uninstall and platform flags."""
+    import sys
+    import graphify.__main__ as m
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(project)
+
+    # 1. Global install, status, uninstall via `graphify mimo ...`
+    monkeypatch.setattr(sys, "argv", ["graphify", "mimo", "install"])
+    m.main()
+    global_skill = home / ".config" / "mimocode" / "skills" / "graphify" / "SKILL.md"
+    global_plugin = home / ".config" / "mimocode" / "plugins" / "graphify.js"
+    assert global_skill.exists()
+    assert global_plugin.exists()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "mimo", "status"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "Xiaomi MiMo Code Integration Status (Global):" in out
+    assert "Installed at" in out
+    assert "Registered in" in out
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "mimo", "uninstall"])
+    m.main()
+    assert not global_skill.exists()
+    assert not global_plugin.exists()
+    capsys.readouterr()
+
+    # 2. Project install, status, uninstall via `graphify mimo ... --project` and `--scope`
+    monkeypatch.setattr(sys, "argv", ["graphify", "mimo", "install", "--project"])
+    m.main()
+    proj_skill = project / ".mimocode" / "skills" / "graphify" / "SKILL.md"
+    proj_plugin = project / ".mimocode" / "plugins" / "graphify.js"
+    assert proj_skill.exists()
+    assert proj_plugin.exists()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "mimo", "status", "--project"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "Xiaomi MiMo Code Integration Status (Project-scoped):" in out
+    assert "Installed at" in out
+    assert "Registered in" in out
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "mimo", "uninstall", "--scope=project"])
+    m.main()
+    assert not proj_skill.exists()
+    assert not proj_plugin.exists()
+    capsys.readouterr()
+
+    # 3. `graphify install --platform mimo --project` and `graphify uninstall --project --platform mimo`
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", "mimo", "--project"])
+    m.main()
+    assert proj_skill.exists()
+    assert proj_plugin.exists()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "uninstall", "--project", "--platform", "mimo"])
+    m.main()
+    assert not proj_skill.exists()
+    assert not proj_plugin.exists()
+    capsys.readouterr()
+
+    # 4. Existing platform command dispatch remains unchanged
+    monkeypatch.setattr(sys, "argv", ["graphify", "claude", "install", "--project"])
+    m.main()
+    claude_skill = project / ".claude" / "skills" / "graphify" / "SKILL.md"
+    assert claude_skill.exists()
+    monkeypatch.setattr(sys, "argv", ["graphify", "claude", "uninstall", "--project"])
+    m.main()
+    assert not claude_skill.exists()

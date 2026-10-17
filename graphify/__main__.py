@@ -49,6 +49,7 @@ from graphify.install import (  # noqa: E402,F401
     _cursor_uninstall,
     _devin_rules_install,
     _devin_rules_uninstall,
+    _dispatch_mimo_cli,
     _gemini_hook,
     _install_claude_hook,
     _install_codebuddy_hook,

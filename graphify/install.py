@@ -1623,21 +1623,17 @@ def _strip_json_comments(raw: str) -> str:
     if block_comment:
         result.append("/*")
 
-    # Remove trailing commas only outside JSON strings. A regex applied to the
-    # complete document would also alter values containing sequences such as
-    # `,}` or `,]`.
+    # Remove valid trailing commas only outside JSON strings. Bare commas like
+    # `[,]` or `{,}` and repeated commas like `[1,,]` are left intact so
+    # json.loads fails closed on invalid syntax.
     no_comments = "".join(result)
-    parts: list[str] = []
-    last_end = 0
-    for match in re.finditer(r'"(?:\\.|[^"\\])*"', no_comments, re.DOTALL):
-        non_string = no_comments[last_end : match.start()]
-        parts.append(re.sub(r",(\s*[}\]])", r"\1", non_string))
-        parts.append(match.group(0))
-        last_end = match.end()
+    tokens = _tokenize_jsonc(no_comments)
+    return "".join(
+        tok[3]
+        for idx, tok in enumerate(tokens)
+        if not _is_jsonc_trailing_comma(tokens, idx)
+    )
 
-    non_string = no_comments[last_end:]
-    parts.append(re.sub(r",(\s*[}\]])", r"\1", non_string))
-    return "".join(parts)
 def _load_json_like(config_file: Path) -> dict:
     if not config_file.exists():
         return {}
@@ -2228,11 +2224,43 @@ def _mimo_plugin_candidates(project_dir: Path, *, project: bool = False) -> tupl
     return plugin_file, canonical_entry, possible_entries
 
 
+def _is_jsonc_trailing_comma(tokens: list[tuple[str, int, int, str]], idx: int) -> bool:
+    """Return True if tokens[idx] is a valid JSONC trailing comma before '}' or ']'."""
+    tok = tokens[idx]
+    if tok[0] != "PUNCT" or tok[3] != ",":
+        return False
+
+    prev_idx = idx - 1
+    while prev_idx >= 0 and tokens[prev_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+        prev_idx -= 1
+    if prev_idx < 0:
+        return False
+    prev_tok = tokens[prev_idx]
+    if not (
+        prev_tok[0] in ("STRING", "OTHER")
+        or (prev_tok[0] == "PUNCT" and prev_tok[3] in "}]")
+    ):
+        return False
+
+    next_idx = idx + 1
+    while next_idx < len(tokens) and tokens[next_idx][0] in ("WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT"):
+        next_idx += 1
+    if next_idx >= len(tokens):
+        return False
+    next_tok = tokens[next_idx]
+    return next_tok[0] == "PUNCT" and next_tok[3] in "}]"
+
+
 def _is_jsonc_config(raw: str, config_file: Path | None = None) -> bool:
-    """Return True if config_file is .jsonc or raw contains comments outside strings."""
+    """Return True if config_file is .jsonc or raw contains JSONC comments or trailing commas."""
     if config_file is not None and config_file.suffix == ".jsonc":
         return True
-    return any(t[0] in ("LINE_COMMENT", "BLOCK_COMMENT") for t in _tokenize_jsonc(raw))
+    tokens = _tokenize_jsonc(raw)
+    return any(
+        t[0] in ("LINE_COMMENT", "BLOCK_COMMENT") or _is_jsonc_trailing_comma(tokens, idx)
+        for idx, t in enumerate(tokens)
+    )
+
 
 
 def _verify_mimo_plugins_val(data: dict, config_path: Path | None = None) -> None:
@@ -2581,7 +2609,11 @@ def _preserve_jsonc_plugin_add(raw: str, entry: str, possible_entries: set[str] 
             return new_raw
         if val_tok[0] == "STRING":
             replacement = f"[\n    {val_tok[3]},\n    {entry_str}\n  ]"
-            return raw[:val_tok[1]] + replacement + raw[val_tok[2]:]
+            new_raw = raw[:val_tok[1]] + replacement + raw[val_tok[2]:]
+            validated = json.loads(_strip_json_comments(new_raw))
+            if entry not in validated.get("plugin", []):
+                raise ValueError("Verification failed: entry not in plugins after insertion")
+            return new_raw
         raise ValueError("'plugin' value is neither string nor array")
 
     bracket_close_pos = tokens[root_close_idx][1]
@@ -2993,7 +3025,7 @@ def _mimo_status(project_dir: Path | None = None, *, project: bool = False) -> N
     )
     if config_file.exists():
         try:
-            cfg = json.loads(_strip_json_comments(config_file.read_text(encoding="utf-8")))
+            cfg = json.loads(_strip_json_comments(config_file.read_text(encoding="utf-8-sig")))
             plugins = cfg.get("plugin", [])
             registered = False
             if isinstance(plugins, str):
@@ -3028,6 +3060,9 @@ def _mimo_status(project_dir: Path | None = None, *, project: bool = False) -> N
 def _dispatch_mimo_cli() -> None:
     """Handle `graphify mimo [install|uninstall|status]` CLI subcommands."""
     subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+    if subcmd in ("-h", "--help"):
+        print("Usage: graphify mimo [install|uninstall|status] [--project] [--scope project|global]", file=sys.stderr)
+        return
     args = sys.argv[3:]
     project_scope = False
     i = 0
@@ -3036,10 +3071,10 @@ def _dispatch_mimo_cli() -> None:
         if arg in ("-h", "--help"):
             print("Usage: graphify mimo [install|uninstall|status] [--project] [--scope project|global]", file=sys.stderr)
             return
-        elif arg in ("--project", "--scope=project"):
+        elif arg in ("-p", "--project", "--scope=project"):
             project_scope = True
             i += 1
-        elif arg == "--scope=global":
+        elif arg in ("--global", "--scope=global"):
             project_scope = False
             i += 1
         elif arg == "--scope":
@@ -3071,6 +3106,7 @@ def _dispatch_mimo_cli() -> None:
     else:
         print("Usage: graphify mimo [install|uninstall|status] [--project]", file=sys.stderr)
         sys.exit(1)
+
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
