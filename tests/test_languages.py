@@ -4628,6 +4628,23 @@ def test_plain_c_header_stays_on_c_extractor():
     assert _get_extractor(p).__name__ == "extract_c"
 
 
+def test_extern_c_header_routes_to_cpp_extractor(tmp_path):
+    """A C-API header wrapped in `#ifdef __cplusplus extern "C" {` must route to
+    extract_cpp: the C grammar rejects the linkage block and extracts nothing."""
+    p = tmp_path / "api.h"
+    p.write_text(
+        '#ifdef __cplusplus\nextern "C" {\n#endif\n\n'
+        "struct api_ctx;\nstruct api_ctx * api_init(const char * path);\n"
+        "void api_free(struct api_ctx * ctx);\n\n"
+        "#ifdef __cplusplus\n}\n#endif\n",
+        encoding="utf-8",
+    )
+    assert _is_cpp_header(p)
+    assert _get_extractor(p).__name__ == "extract_cpp"
+    labels = {n["label"] for n in _get_extractor(p)(p)["nodes"]}
+    assert "api_ctx" in labels, labels
+
+
 def test_cpp_paired_single_class_node():
     """Foo.h (class) + Foo.cpp (Foo::bar def) + Main.cpp must yield exactly ONE
     Foo class node — not a foo_h + foo_cpp pair, and no junk `class` stub."""

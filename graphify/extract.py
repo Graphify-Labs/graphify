@@ -8752,10 +8752,12 @@ def _is_objc_header(path: Path) -> bool:
 # `class` stub); routing to extract_cpp recovers the real type. Kept CONSERVATIVE:
 # a plain C header with none of these stays on extract_c. ObjC sniffing keeps
 # priority (an ObjC header can legitimately contain `::`/`class` inside an inline
-# C++ block when compiled as Objective-C++).
+# C++ block when compiled as Objective-C++). `extern "C"` covers the common
+# C-API header guarded by `#ifdef __cplusplus`: the C grammar rejects the
+# linkage block and the whole header extracts zero symbols.
 _CPP_HEADER_MARKERS = (
     b"class ", b"namespace ", b"template", b"::",
-    b"public:", b"private:", b"protected:",
+    b"public:", b"private:", b"protected:", b'extern "C"',
 )
 
 
