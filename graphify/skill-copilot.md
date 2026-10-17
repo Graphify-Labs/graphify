@@ -16,6 +16,8 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 /graphify https://github.com/<owner>/<repo> --branch <branch>  # clone a specific branch
 /graphify <url1> <url2> ...                           # clone multiple repos, build each, merge into one cross-repo graph
 /graphify <path> --mode deep                          # thorough extraction, richer INFERRED edges
+/graphify <path> --no-cluster                         # skip community detection and use one "Full Corpus" group
+/graphify <path> --force                              # allow an intentional graph shrink after verifying the extraction
 /graphify <path> --update                             # incremental - re-extract only new/changed files
 /graphify <path> --directed                            # build directed graph (preserves edge direction: source→target)
 /graphify <path> --whisper-model medium                # use a larger Whisper model for better transcription accuracy
@@ -148,7 +150,7 @@ Then act on it:
   - Concatenate all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
   - Filter out any path that starts with `scan_root + "/graphify-out/"` to exclude converted sidecars.
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
-  - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
+  - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Tell the user `/graphify <path> --no-cluster` can skip community detection; keep clustering enabled unless the user explicitly chooses that option.
   - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
 
@@ -158,7 +160,7 @@ Skip this step entirely if `detect` returned zero `video` files. When the corpus
 
 ### Step 3 - Extract entities and relationships
 
-**Before starting:** note whether `--mode deep` was given. You must pass `DEEP_MODE=true` to every subagent in Step B2 if it was. Track this from the original invocation - do not lose it.
+**Before starting:** note whether `--mode deep` was given. You must pass `DEEP_MODE=true` to every subagent in Step B2 if it was. Track this from the original invocation - do not lose it. Also track whether the user explicitly supplied `--no-cluster` or `--force`; do not infer either option from corpus size or a shrink-guard warning.
 
 This step has two parts: **structural extraction** (deterministic, free) and **semantic extraction** (LLM, costs tokens).
 
@@ -421,6 +423,8 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 **Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
 
+Before running this block, replace `NO_CLUSTER` with `True` only if the user explicitly supplied or chose `--no-cluster`; otherwise replace it with `False`. Replace `IS_FORCE` with `True` only when `--force` was explicitly supplied; otherwise replace it with `False`. `--force` bypasses the shrink guard, so never set it just because the guard refused a write.
+
 ```bash
 mkdir -p graphify-out
 $(cat graphify-out/.graphify_python) -c "
@@ -444,24 +448,32 @@ if G.number_of_nodes() == 0:
     print('ERROR: Graph is empty - extraction produced no nodes.')
     print('Possible causes: all files were skipped, binary-only corpus, or extraction failed.')
     raise SystemExit(1)
-communities = cluster(G)
+if NO_CLUSTER:
+    communities = {0: list(G.nodes())}
+    labels = {0: 'Full Corpus'}
+else:
+    communities = cluster(G)
+    labels = {cid: 'Community ' + str(cid) for cid in communities}
 cohesion = score_all(G, communities)
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
 gods = god_nodes(G)
 surprises = surprising_connections(G, communities)
-labels = {cid: 'Community ' + str(cid) for cid in communities}
-# Placeholder questions - regenerated with real labels in Step 5
+# Placeholder questions are regenerated with real labels in Step 5 unless NO_CLUSTER.
 questions = suggest_questions(G, communities, labels)
 
 # Export FIRST and honor the #479 shrink-guard: to_json returns False (writing
 # nothing) when the new graph is smaller than the existing graph.json. Only write
 # GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
 # they never describe a graph that graph.json doesn't contain (#1392).
-wrote = to_json(G, communities, 'graphify-out/graph.json')
+wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE,
+                community_labels=labels if NO_CLUSTER else None)
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
-    print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
+    print('Use --force only after verifying the shrink is intentional and extraction completed successfully.')
     raise SystemExit(1)
+if NO_CLUSTER:
+    Path('graphify-out/.graphify_labels.json').write_text(
+        json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
 analysis = {
@@ -508,9 +520,9 @@ Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNI
 
 ### Step 5 - Label communities
 
-Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
+**If `NO_CLUSTER` is true, skip this step.** Step 4 already assigned the `Full Corpus` label and wrote matching graph, report, analysis, and label sidecars. Otherwise, read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
 
-Then regenerate the report and save the labels for the visualizer:
+For the clustering path, reuse the same IS_FORCE value selected in Step 4. Then regenerate the report and save the labels for the visualizer:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -537,17 +549,16 @@ labels = LABELS_DICT
 
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
-
+# Re-export so graph.json nodes carry the curated community_name (#2490).
+# Keep all derived sidecars untouched if the shrink-guard refuses the graph.
+wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE, community_labels=labels)
+if not wrote:
+    print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
+    print('Use --force only after verifying the shrink is intentional and extraction completed successfully.')
+    raise SystemExit(1)
 report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding=\"utf-8\")
-# Re-export so graph.json nodes carry the curated community_name (#2490).
-# Same extraction as Step 4, so the #479 shrink-guard passes on node count;
-# if it still refuses, surface the guard message - do not force past it.
-wrote = to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)
-if not wrote:
-    print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
-    print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
 print('Report updated with community labels')
 "
 ```
@@ -574,6 +585,8 @@ Generate the HTML graph (always, unless `--no-viz`):
 graphify export html  # auto-aggregates to community view if graph > 5000 nodes
 # or: graphify export html --no-viz
 ```
+
+If a no-cluster run has more than 5,000 nodes, the HTML exporter may report `Single community - aggregated view not useful. Skipping graph.html.` Continue with the valid JSON and report, tell the user that HTML was skipped, and do not list `graph.html` as generated.
 
 ### Steps 6b-8 - Wiki, Neo4j, FalkorDB, SVG, GraphML, MCP, benchmark (only on their flags)
 
@@ -665,6 +678,7 @@ Graph complete. Outputs in PATH_TO_DIR/graphify-out/
 If graphify saved you time, consider supporting it: https://github.com/sponsors/safishamsi
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
+List only output files that exist; omit `graph.html` when Step 6 reported that it was skipped.
 
 If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
 

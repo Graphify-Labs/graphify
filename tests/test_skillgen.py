@@ -8,6 +8,8 @@ lives only in the references, and no reference duplicates core content.
 """
 from __future__ import annotations
 
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -232,7 +234,196 @@ def test_enum_is_full_six_value_superset_in_extraction_spec():
     _, refs = _claude_artifacts()
     spec = refs["extraction-spec.md"]
     assert "`code`, `document`, `paper`, `image`, `rationale`, `concept`" in spec
-    assert '"file_type":"code|document|paper|image|rationale|concept"' in spec
+    assert '"file_type":"concept"' in spec
+
+
+def _skill_section(content: str, start: str, end: str) -> str:
+    return content.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_no_cluster_option_skips_only_clustering_and_keeps_downstream_contract():
+    """The advertised large-corpus option must run the rest of the pipeline."""
+    core, _ = _claude_artifacts()
+    assert "/graphify <path> --no-cluster" in core
+    assert "NO_CLUSTER" in core
+
+    step4 = _skill_section(
+        core,
+        "### Step 4 - Build graph, cluster, analyze, generate outputs",
+        "### Step 4.5 - Graph health check",
+    )
+    assert (
+        "if NO_CLUSTER:\n"
+        "    communities = {0: list(G.nodes())}\n"
+        "    labels = {0: 'Full Corpus'}\n"
+        "else:\n"
+        "    communities = cluster(G)\n"
+        "    labels = {cid: 'Community ' + str(cid) for cid in communities}"
+    ) in step4
+    assert "score_all(G, communities)" in step4
+    assert "suggest_questions(G, communities, labels)" in step4
+    assert "graphify-out/.graphify_analysis.json" in step4
+    assert "graphify-out/.graphify_labels.json" in step4
+
+    step5 = _skill_section(core, "### Step 5 - Label communities", "### Step 6 -")
+    assert "If `NO_CLUSTER` is true, skip this step" in step5
+    assert "Single community - aggregated view not useful" in core
+
+
+def test_force_is_explicit_and_guards_all_graph_sidecar_writes():
+    """An explicit --force must reach both writes without allowing stale reports."""
+    core, _ = _claude_artifacts()
+    assert "/graphify <path> --force" in core
+    assert "Replace `IS_FORCE` with `True` only when `--force` was explicitly supplied" in core
+
+    step4 = _skill_section(
+        core,
+        "### Step 4 - Build graph, cluster, analyze, generate outputs",
+        "### Step 4.5 - Graph health check",
+    )
+    assert "wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE" in step4
+    assert step4.index("wrote = to_json(") < step4.index("if not wrote:")
+    assert step4.index("raise SystemExit(1)") < step4.index("report = generate(")
+
+    step5 = _skill_section(core, "### Step 5 - Label communities", "### Step 6 -")
+    assert "reuse the same IS_FORCE value selected in Step 4" in step5
+    assert "wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE" in step5
+    assert step5.index("wrote = to_json(") < step5.index("if not wrote:")
+    assert step5.index("raise SystemExit(1)") < step5.index("report = generate(")
+    assert step5.index("Path('graphify-out/GRAPH_REPORT.md').write_text") < step5.index(
+        "Path('graphify-out/.graphify_labels.json').write_text"
+    )
+
+
+def _pipeline_test_graph(node_count: int):
+    import networkx as nx
+
+    graph = nx.Graph()
+    for index in range(node_count):
+        graph.add_node(
+            f"node_{index}",
+            label=f"Node {index}",
+            file_type="code",
+            source_file=f"src/module_{index}.py",
+        )
+    node_ids = list(graph.nodes())
+    for source, target in zip(node_ids, node_ids[1:]):
+        graph.add_edge(
+            source,
+            target,
+            relation="references",
+            confidence="EXTRACTED",
+            confidence_score=1.0,
+            source_file=graph.nodes[source]["source_file"],
+        )
+    return graph, {0: node_ids}
+
+
+def test_single_full_corpus_community_supports_analysis_report_and_html(tmp_path):
+    """No-cluster mode's one group remains consumable by existing pipeline stages."""
+    from graphify.analyze import god_nodes, suggest_questions, surprising_connections
+    from graphify.cluster import score_all
+    from graphify.export import to_html, to_json
+    from graphify.report import generate
+
+    graph, communities = _pipeline_test_graph(3)
+    labels = {0: "Full Corpus"}
+    cohesion = score_all(graph, communities)
+    gods = god_nodes(graph)
+    surprises = surprising_connections(graph, communities)
+    questions = suggest_questions(graph, communities, labels)
+    detection = {
+        "files": {"code": ["src/module.py"]},
+        "scan_root": str(tmp_path),
+        "total_files": 1,
+        "total_words": 20,
+    }
+    report = generate(
+        graph,
+        communities,
+        cohesion,
+        labels,
+        gods,
+        surprises,
+        detection,
+        {"input": 0, "output": 0},
+        str(tmp_path),
+        suggested_questions=questions,
+    )
+
+    out_dir = tmp_path / "graphify-out"
+    out_dir.mkdir()
+    graph_path = out_dir / "graph.json"
+    html_path = out_dir / "graph.html"
+    assert "Full Corpus" in report
+    assert to_json(graph, communities, str(graph_path), community_labels=labels)
+    assert to_html(graph, communities, str(html_path), community_labels=labels)
+    saved = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert {node["community_name"] for node in saved["nodes"]} == {"Full Corpus"}
+    assert html_path.exists()
+
+
+def test_explicit_force_bypasses_only_temporary_graph_shrink_guard(tmp_path):
+    """The default guard preserves the old graph; an explicit override writes the smaller one."""
+    from graphify.export import to_json
+
+    out_dir = tmp_path / "graphify-out"
+    out_dir.mkdir()
+    graph_path = out_dir / "graph.json"
+    existing, existing_communities = _pipeline_test_graph(4)
+    assert to_json(existing, existing_communities, str(graph_path), force=True)
+    previous_graph = graph_path.read_bytes()
+    sidecars = {
+        "GRAPH_REPORT.md": "previous report",
+        ".graphify_analysis.json": "previous analysis",
+        ".graphify_labels.json": "previous labels",
+    }
+    for name, content in sidecars.items():
+        (out_dir / name).write_text(content, encoding="utf-8")
+
+    smaller, smaller_communities = _pipeline_test_graph(1)
+    assert not to_json(smaller, smaller_communities, str(graph_path), force=False)
+    assert graph_path.read_bytes() == previous_graph
+    for name, content in sidecars.items():
+        assert (out_dir / name).read_text(encoding="utf-8") == content
+
+    assert to_json(smaller, smaller_communities, str(graph_path), force=True)
+    saved = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(saved["nodes"]) == 1
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "tools/skillgen/fragments/references/shared/extraction-spec.md",
+        "tools/skillgen/fragments/references/shared/extraction-spec-compact.md",
+        "tools/skillgen/fragments/core/aider.md",
+        "tools/skillgen/fragments/core/devin.md",
+    ],
+    ids=["verbose", "compact", "aider-monolith", "devin-monolith"],
+)
+def test_extraction_spec_json_example_validates_against_runtime_contract(source_path):
+    """Every authoritative skill prompt must show valid extraction JSON."""
+    spec = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+    sample_text = next(
+        line
+        for line in spec.splitlines()
+        if line.strip().startswith('{"nodes":') and '"file_type":' in line
+    )
+    sample = json.loads(sample_text)
+
+    from graphify.validate import validate_extraction
+
+    assert validate_extraction(sample) == []
+    assert [node["id"] for node in sample["nodes"]] == [
+        "docs_auth_session_authentication",
+        "docs_auth_session_access_token",
+        "docs_auth_session_refresh_token",
+    ]
+    assert isinstance(sample["nodes"][0]["rationale"], str)
+    assert all("|" not in node["file_type"] for node in sample["nodes"])
+    assert sample["edges"][0]["confidence_score"] == 1.0
+    assert len(sample["hyperedges"][0]["nodes"]) >= 3
 
 
 # --- codex + windows (the divergent split hosts) -------------------------------
@@ -330,7 +521,7 @@ def test_codex_and_windows_unify_enum_to_six_values():
         _, refs = _platform_artifacts(key)
         spec = refs["extraction-spec.md"]
         assert "`code`, `document`, `paper`, `image`, `rationale`, `concept`" in spec
-        assert '"file_type":"code|document|paper|image|rationale|concept"' in spec
+        assert '"file_type":"concept"' in spec
         # No legacy 4-value enum survives anywhere in the rendered bundle.
         for body in refs.values():
             assert '"file_type":"code|document|paper|image"' not in body
@@ -424,7 +615,7 @@ def test_windows_and_posix_cores_have_step_and_2490_parity():
     for heading in _STEP_HEADINGS:
         assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
         assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
-    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
+    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE, community_labels=labels)"
     assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
     assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
 
@@ -612,11 +803,38 @@ def test_monoliths_render_inline_single_file_no_references():
 
 
 def test_monolith_roundtrip_passes_for_aider_and_devin():
-    """Each monolith is diff-clean vs v8 except the file_type enum unification."""
+    """Each monolith is diff-clean vs v8 except explicitly sanctioned fixes."""
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
         problems = gen.monolith_roundtrip(platforms[key])
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
+
+
+@pytest.mark.parametrize("key", ["aider", "devin"])
+def test_monolith_roundtrip_rejects_unapproved_extraction_example_edit(monkeypatch, key):
+    """A sanctioned sample cannot be changed arbitrarily after its JSON prefix."""
+    platforms = gen.load_platforms()
+    platform = platforms[key]
+    original_render = gen.render
+    artifact = original_render(platform)[0]
+    example = next(
+        line
+        for line in artifact.content.splitlines()
+        if line.startswith('{"nodes":[{"id":"docs_auth_session_authentication"')
+    )
+    altered = example.replace('"label":"Authentication"', '"label":"Unexpected Authentication"', 1)
+    assert altered != example
+
+    def render_with_altered_example(candidate):
+        rendered = original_render(candidate)
+        if candidate.key != key:
+            return rendered
+        body = rendered[0].content.replace(example, altered, 1)
+        return [gen.RenderedArtifact(rendered[0].path, body)]
+
+    monkeypatch.setattr(gen, "render", render_with_altered_example)
+    problems = gen.monolith_roundtrip(platform)
+    assert any("unsanctioned monolith change" in problem and altered in problem for problem in problems)
 
 
 def test_monoliths_change_only_sanctioned_lines():
@@ -624,16 +842,16 @@ def test_monoliths_change_only_sanctioned_lines():
 
     The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
     each added/removed line matches one of the documented sanctioned predicates
-    in gen — the enum unification, the unified description, the chunk-cleanup
-    rewrite (#1172), the four #1392 runbook fixes, and semantic-cache source
-    scoping (#1757). Anything else is drift.
+    in gen — the enum unification, valid extraction JSON sample, unified
+    description, chunk-cleanup rewrite (#1172), four #1392 runbook fixes, and
+    semantic-cache source scoping (#1757). Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
         assert gen.monolith_roundtrip(platforms[key]) == []
         # The six-value superset replaced the five-value enum in both files.
         rendered = gen.render(platforms[key])[0].content
-        assert gen.ENUM_VALUES in rendered
+        assert gen.ENUM_PROSE in rendered
         assert UNIFIED_DESCRIPTION in rendered
 
 

@@ -90,8 +90,9 @@ def _skill_bodies() -> list[Path]:
 def test_skill_step5_reexports_graph_json_with_curated_labels(path: Path):
     """Every post-labels (LABELS_DICT) block re-exports graph.json with the kwarg.
 
-    The Step-5 block is the only place the curated labels dict exists, so it is
-    the block that must call ``to_json(..., community_labels=labels)``. Any
+    The Step-5 block is the only place the curated labels dict exists, so it must
+    pass ``community_labels=labels`` to ``to_json``. Split-host pipelines also
+    pass the explicitly selected force option. Any
     ``to_json(...graphify-out/graph.json...)`` call in that block without the
     kwarg would ship graph.json nodes with no ``community_name`` (#2490).
     """
@@ -101,7 +102,7 @@ def test_skill_step5_reexports_graph_json_with_curated_labels(path: Path):
     ]
     assert post_labels_blocks, f"{path.name}: no Step-5 (LABELS_DICT) code block found"
     for block in post_labels_blocks:
-        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
+        assert "community_labels=labels" in block, (
             f"{path.name}: the post-labels Step-5 block must re-export "
             f"graphify-out/graph.json with community_labels=labels (#2490)"
         )
@@ -125,7 +126,7 @@ def test_core_fragments_step5_reexport_with_curated_labels(fragment: Path):
     ]
     assert post_labels_blocks, f"{fragment.name}: no Step-5 (LABELS_DICT) code block found"
     for block in post_labels_blocks:
-        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
+        assert "community_labels=labels" in block, (
             f"{fragment.name}: the post-labels Step-5 block must re-export "
             f"graphify-out/graph.json with community_labels=labels (#2490)"
         )
