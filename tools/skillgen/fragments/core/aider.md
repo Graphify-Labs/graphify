@@ -90,6 +90,14 @@ fi
 # Write interpreter path for all subsequent steps (persists across invocations)
 mkdir -p graphify-out
 "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# The scan path is passed through a quoted heredoc, never substituted into the
+# command line itself: a bare `cd <path>` (or an unquoted heredoc, which
+# still expands $()/backticks in its body) would let a malicious path execute
+# as shell code the moment this line runs.
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+INPUT_PATH
+GRAPHIFY_ROOT_EOF
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -103,7 +111,9 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-result = detect(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 print(json.dumps(result))
 " > .graphify_detect.json
 ```
@@ -211,7 +221,15 @@ else:
 
 #### Part B - Semantic extraction (parallel subagents)
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do.
+**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+Path('.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
+"
+```
 
 > **Aider platform:** Multi-agent support is still early on Aider. Extraction runs sequentially — you read and extract each file yourself. This is slower than parallel platforms but fully reliable.
 
@@ -360,6 +378,18 @@ from pathlib import Path
 
 ast = json.loads(Path('.graphify_ast.json').read_text())
 sem = json.loads(Path('.graphify_semantic.json').read_text())
+
+# Stamp tier provenance on the semantic side. build._is_ast_tier reads
+# _origin when present and otherwise guesses from the SHAPE of
+# source_location ('L<line>' means AST). A subagent that writes 'L12' for a
+# doc section therefore made that node read as AST, and the next
+# graphify update deleted it along with the re-extracted code file it
+# seemed to belong to (#2843). extract() stamps its own items 'ast'; the
+# semantic side must say so explicitly.
+for n in sem['nodes']:
+    n.setdefault('_origin', 'semantic')
+for e in sem['edges']:
+    e.setdefault('_origin', 'semantic')
 
 # Merge: AST nodes first, semantic nodes deduplicated by id
 seen = {n['id'] for n in ast['nodes']}
@@ -737,6 +767,8 @@ If graphify saved you time, consider supporting it: https://github.com/sponsors/
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
 
+If PATH_TO_DIR is inside a git repository, add one line to the report: `graphify-out/` was written into the working tree, so unless the repository already ignores it, it will show in `git status`; the user can add `graphify-out/` to `.gitignore`, or commit only the outputs their team should share (see https://docs.graphify.com/guides/team-workflows).
+
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes
 - Surprising Connections
@@ -764,7 +796,9 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+from graphify.paths import out_path
+from graphify.watch import _read_build_excludes, _read_build_gitignore
+result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('.graphify_incremental.json').write_text(json.dumps(result))
@@ -776,6 +810,24 @@ if deleted:
     print(f'{len(deleted)} deleted file(s) to prune.')
 if new_total > 0:
     print(f'{new_total} new/changed file(s) to re-extract.')
+"
+```
+
+Then populate `.graphify_detect.json` so Steps 3A–6 (which read it unconditionally) see the right state for an incremental run. `files` carries the changed subset (what Part A and Part B's cache check read); `all_files` carries the full corpus for any step that needs corpus-wide context:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+r = json.loads(Path('.graphify_incremental.json').read_text())
+Path('.graphify_detect.json').write_text(json.dumps({
+    'files': r.get('new_files', {}),
+    'all_files': r.get('files', {}),
+    'total_files': r.get('new_total', 0),
+    'total_words': r.get('total_words', 0),
+    'skipped_sensitive': r.get('skipped_sensitive', []),
+    'needs_graph': True,
+}))
 "
 ```
 
@@ -795,7 +847,7 @@ print('code_only:', code_only)
 "
 ```
 
-If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no subagents), then go straight to merge and Steps 4–8.
+If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run Step 3A (AST) on the changed files, then run the Part B fast path to write an empty `.graphify_semantic.json`, then run Part C, which builds `.graphify_extract.json` from the new AST result. Do not dispatch subagents or read the semantic cache. Then go on to the merge and Steps 4–8.
 
 If `code_only` is False (any changed file is a doc/paper/image): run the full Steps 3A–3C pipeline as normal.
 
@@ -803,12 +855,12 @@ If `code_only` is False (any changed file is a doc/paper/image): run the full St
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:
 
 ```bash
-if [ ! -f graphify-out/.graphify_extract.json ]; then
+if [ ! -f .graphify_extract.json ]; then
     echo '[graphify update] Only deletions -- creating empty extraction for merge.'
     $(cat graphify-out/.graphify_python) -c "
 import json
 from pathlib import Path
-Path('graphify-out/.graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
+Path('.graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
 "
 fi
 ```
@@ -848,7 +900,7 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
-from networkx.readwrite import json_graph
+from graphify.paths import load_node_link_graph
 import networkx as nx
 from pathlib import Path
 
@@ -858,7 +910,7 @@ new_extract = json.loads(Path('.graphify_extract.json').read_text())
 G_new = build_from_json(new_extract, directed=IS_DIRECTED)
 
 if old_data:
-    G_old = json_graph.node_link_graph(old_data, edges='links')
+    G_old = load_node_link_graph(old_data)
     diff = graph_diff(G_old, G_new)
     print(diff['summary'])
     if diff['new_nodes']:
@@ -1226,10 +1278,10 @@ Supported URL types (auto-detected):
 Start a background watcher that monitors a folder and auto-updates the graph when files change.
 
 ```bash
-python3 -m graphify.watch INPUT_PATH --debounce 3
+$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3
 ```
 
-Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:
+This watches the same folder graphify extracted, read from the trusted `graphify-out/.graphify_root` that Step 1 resolved - there is no path to substitute, so a scan root containing shell metacharacters can never be re-interpreted here. Behavior depends on what changed:
 
 - **Code files only (.py, .ts, .go, etc.):** re-runs AST extraction + rebuild + cluster immediately, no LLM needed. `graph.json` and `GRAPH_REPORT.md` are updated automatically.
 - **Docs, papers, or images:** writes a `graphify-out/needs_update` flag and prints a notification to run `/graphify --update` (LLM semantic re-extraction required).

@@ -7,7 +7,10 @@ import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from graphify.hooks import (
+    install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
+    _REWRITE_HOOK_MARKER,
+)
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -114,6 +117,35 @@ def test_uninstall_removes_post_checkout_hook(tmp_path):
     assert not hook.exists()
 
 
+def test_install_creates_post_merge_hook(tmp_path):
+    # #2418: a merge hook is needed to heal a symbol the union merge driver
+    # resurrects on one side of a merge, since nothing else ever
+    # re-extracts that file's nodes unless it is touched again.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert hook.exists()
+    assert _MERGE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_merge_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert not hook.exists()
+
+
 def test_status_shows_both_hooks(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
@@ -121,6 +153,70 @@ def test_status_shows_both_hooks(tmp_path):
     assert "post-commit" in result
     assert "post-checkout" in result
     assert result.count("installed") >= 2
+
+
+def test_status_shows_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    result = status(repo)
+    assert "post-merge: installed" in result
+
+    uninstall(repo)
+    result = status(repo)
+    assert "post-merge: not installed" in result
+
+
+def test_install_creates_post_rewrite_hook(tmp_path):
+    # #4490: git runs post-rewrite once when a rebase (or pull --rebase) finishes;
+    # post-commit skips every replayed commit, so nothing else rebuilds after one.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-rewrite"
+    assert hook.exists()
+    assert _REWRITE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_rewrite_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-rewrite"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_rewrite_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    assert not (repo / ".git" / "hooks" / "post-rewrite").exists()
+
+
+def test_status_shows_post_rewrite_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    assert "post-rewrite: installed" in status(repo)
+
+    uninstall(repo)
+    assert "post-rewrite: not installed" in status(repo)
+
+
+def test_install_appends_to_a_user_post_rewrite_hook_and_uninstall_keeps_it(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    hook = repo / ".git" / "hooks" / "post-rewrite"
+    hook.write_text("#!/bin/sh\necho 'user rewrite hook'\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    assert "appended to existing post-rewrite hook" in install(repo)
+    content = hook.read_text(encoding="utf-8")
+    assert "echo 'user rewrite hook'" in content
+    assert _REWRITE_HOOK_MARKER in content
+
+    uninstall(repo)
+    content = hook.read_text(encoding="utf-8")
+    assert "echo 'user rewrite hook'" in content
+    assert _REWRITE_HOOK_MARKER not in content
 
 
 
@@ -229,12 +325,19 @@ import re  # noqa: E402
 from graphify.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
+    _MERGE_SCRIPT,
+    _REWRITE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
 )
 
-_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+_HOOK_SCRIPTS = [
+    ("post-commit", _HOOK_SCRIPT),
+    ("post-checkout", _CHECKOUT_SCRIPT),
+    ("post-merge", _MERGE_SCRIPT),
+    ("post-rewrite", _REWRITE_SCRIPT),
+]
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -382,6 +485,35 @@ def test_rebuild_bodies_honour_an_in_repo_graphify_root(name, body, tmp_path, mo
     ns = {"Path": Path, "os": os}
     exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
     assert ns["_root"].resolve() == (repo / "backend").resolve(), f"{name} lost the scoped root"
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_treat_blank_graphify_out_as_default(name, body, tmp_path):
+    """A set-but-empty GRAPHIFY_OUT must resolve to graphify-out/ like every other
+    reader (paths._out_from_env), not to the repo root, or the hook misses
+    .graphify_root. Runs in a fresh process because the hook reads the value
+    when graphify.paths is first imported."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "graphify-out" / ".graphify_root").write_text("backend", encoding="utf-8")
+    script = (
+        "import os\nfrom pathlib import Path\n"
+        + _extract_root_resolution(body)
+        + "\nprint(_root.resolve())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env={**os.environ, "GRAPHIFY_OUT": ""},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert Path(result.stdout.strip()) == (repo / "backend").resolve(), f"{name} ignored graphify-out/"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
@@ -589,6 +721,70 @@ def test_posix_custom_hookspath_still_works(tmp_path):
     assert (repo / ".husky" / "post-commit").exists()
 
 
+def test_hookspath_outside_repo_falls_back_to_default(tmp_path, capsys):
+    """#3869: an absolute core.hooksPath outside the repo must not be created.
+
+    The setting lives in local git config (a zip of .git can carry it; a clone
+    does not). hook install used to mkdir that path and write post-commit there.
+    """
+    repo = _make_git_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    _set_hookspath(repo, str(outside))
+    msg = install(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not outside.exists()
+    assert (repo / ".git" / "hooks" / "post-commit").exists()
+    assert (repo / ".git" / "hooks" / "post-checkout").exists()
+    assert ".git" in msg and "hooks" in msg
+
+
+def test_hookspath_relative_escape_falls_back_to_default(tmp_path, capsys):
+    """#3869: a relative core.hooksPath that resolves outside the repo is refused."""
+    repo = _make_git_repo(tmp_path / "repo")
+    _set_hookspath(repo, "../escaped")
+    _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not (tmp_path / "escaped").exists()
+    assert _hooks_dir(repo) == (repo / ".git" / "hooks").resolve()
+
+
+def test_linked_worktree_keeps_its_default_hooks_dir(tmp_path):
+    """A linked worktree's hooks live under the common git dir, outside the
+    worktree root. That default must still be used when core.hooksPath is unset."""
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init", str(main)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.email", "t@example.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.name", "t"],
+                   check=True, capture_output=True)
+    (main / "f").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(main), "add", "f"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "commit", "-m", "x"],
+                   check=True, capture_output=True)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+                   check=True, capture_output=True)
+    expected = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--git-path", "hooks"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    got = _hooks_dir(wt)
+    assert got == (wt / expected).resolve()
+    assert _is_within_repo_git(got, main)
+    assert not (wt / ".git" / "hooks").exists()
+
+
+def _is_within_repo_git(hooks: Path, main: Path) -> bool:
+    try:
+        hooks.resolve().relative_to((main / ".git").resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def test_default_hooks_dir_unaffected(tmp_path):
     """No core.hooksPath -> normal .git/hooks install, no rejection."""
     repo = _make_git_repo(tmp_path)
@@ -705,8 +901,10 @@ def test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail(tmp_path):
     mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
-    assert f"RESOLVED={other}" not in res.stdout
+    # sh may print an MSYS-style path on Windows, so compare the home-relative tail
+    resolved = [ln for ln in res.stdout.splitlines() if ln.startswith("RESOLVED=")]
+    assert [ln.endswith(mine.relative_to(home).as_posix()) for ln in resolved] == [True], res.stdout + res.stderr
+    assert other.relative_to(home).as_posix() not in res.stdout
     assert "could not locate" not in res.stderr
 
 
@@ -759,7 +957,8 @@ def test_shebang_parse_requires_leading_hash_bang(tmp_path):
     launcher.chmod(0o755)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    resolved = [ln for ln in res.stdout.splitlines() if ln.startswith("RESOLVED=")]
+    assert [ln.endswith(mine.relative_to(home).as_posix()) for ln in resolved] == [True], res.stdout + res.stderr
     assert "fakepy" not in res.stdout
 
 
@@ -924,7 +1123,10 @@ def test_hooks_reuse_git_dir_from_env(name, script):
     """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
     when the script is invoked by hand — each extra git exec costs 1s+ on
     AV-scanned Windows machines and lands in the commit's foreground."""
-    assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"
+    # A script that never reads $GIT_DIR (post-rewrite) has no rev-parse fallback to guard.
+    assert "GIT_DIR=${GIT_DIR:-" in script or "$GIT_DIR" not in script, (
+        f"{name} always re-runs git rev-parse"
+    )
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -1502,6 +1704,153 @@ def test_checkout_hook_still_skips_when_no_graph_was_built(tmp_path):
 
 
 @_SH_ONLY
+def test_rewrite_hook_rebuilds_when_graphify_out_is_renamed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "custom-out").mkdir()  # the configured output dir; no graphify-out/
+    result = _emitted_hook_run(repo, _REWRITE_SCRIPT, ["rebase"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+@_SH_ONLY
+def test_rewrite_hook_ignores_amend(tmp_path):
+    """amend already rebuilt through post-commit; a second rebuild would double it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    result = _emitted_hook_run(repo, _REWRITE_SCRIPT, ["amend"], {})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_rewrite_hook_runs_while_rebase_merge_is_still_on_disk(tmp_path):
+    """git runs post-rewrite before it removes rebase-merge/, so that dir is not a skip signal."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    (repo / ".git" / "rebase-merge").mkdir()
+    result = _emitted_hook_run(repo, _REWRITE_SCRIPT, ["rebase"], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+def _repo_with_code_commits(tmp_path: Path, names: tuple[str, ...]) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    for name in names:
+        (repo / name).write_text(f"def {name[0]}(): pass\n", encoding="utf-8")
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", name)
+    return repo
+
+
+def _head(repo: Path, rev: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", rev], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _write_sequencer(repo: Path, todo: str, head: str | None = None) -> None:
+    seq = repo / ".git" / "sequencer"
+    seq.mkdir()
+    (seq / "todo").write_text(todo, encoding="utf-8")
+    if head is not None:
+        (seq / "head").write_text(head + "\n", encoding="utf-8")
+
+
+def _changed_dump(tmp_path: Path, monkeypatch) -> Path:
+    """Make the emitted-hook stub record what the hook hands the rebuild launcher in
+    GRAPHIFY_CHANGED (it passes the find_spec probe like the stock stub; the probe runs
+    before GRAPHIFY_CHANGED is set, hence the guard)."""
+    dump = tmp_path / "changed.txt"
+
+    def dumping_stub(where: Path) -> Path:
+        py = where / "stubpy"
+        py.write_text(
+            f'#!/bin/sh\n[ -n "$GRAPHIFY_CHANGED" ] && printf %s "$GRAPHIFY_CHANGED" > "{dump}"\nexit 0\n',
+            encoding="utf-8", newline="\n",
+        )
+        py.chmod(0o755)
+        return py
+
+    monkeypatch.setattr(sys.modules[__name__], "_stub_python", dumping_stub)
+    return dump
+
+
+@_SH_ONLY
+def test_commit_hook_does_not_skip_on_cherry_pick_head(tmp_path):
+    """git leaves CHERRY_PICK_HEAD on disk while post-commit runs, so it is not a skip signal (#4490)."""
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py"))
+    (repo / ".git" / "CHERRY_PICK_HEAD").write_text("0" * 40 + "\n", encoding="utf-8")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+@_SH_ONLY
+def test_commit_hook_skips_a_pick_while_more_picks_are_pending(tmp_path):
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py"))
+    # The first todo line names the commit just made (HEAD's subject, "b.py"), so it is live.
+    _write_sequencer(repo, "pick aaaaaaa b.py\npick bbbbbbb c.py\n")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_skips_a_revert_step_while_more_steps_are_pending(tmp_path):
+    repo = _repo_with_code_commits(tmp_path, ("a.py",))
+    (repo / "x.py").write_text("def x(): pass\n", encoding="utf-8")
+    _git(repo, "add", "x.py")
+    _git(repo, "commit", "-q", "-m", 'Revert "x"')
+    _write_sequencer(repo, "revert aaaaaaa x\nrevert bbbbbbb y\n")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+@pytest.mark.parametrize("todo", [
+    "pick aaaaaaa some other commit\npick bbbbbbb c.py\n",   # first step is not the commit just made
+    "revert aaaaaaa b.py\nrevert bbbbbbb c.py\n",             # a revert step, but HEAD is not a Revert "..." commit
+    "squash aaaaaaa b.py\npick bbbbbbb c.py\n",               # a verb the hook does not recognise
+    "",                                                        # empty todo
+])
+def test_commit_hook_ignores_a_stale_sequencer(tmp_path, todo):
+    """An abandoned pick (git reset --hard instead of --abort) leaves sequencer/ behind;
+    trusting its pending steps would silence every later commit."""
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py"))
+    _write_sequencer(repo, todo)
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+@_SH_ONLY
+def test_commit_hook_rebuilds_on_the_last_pick_from_where_the_sequence_began(tmp_path, monkeypatch):
+    """On the last pick the changed set is everything since sequencer/head, not just HEAD~1..HEAD."""
+    dump = _changed_dump(tmp_path, monkeypatch)
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py", "c.py"))
+    _write_sequencer(repo, "pick ccccccc c.py\n", head=_head(repo, "HEAD~2"))
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    assert set(dump.read_text(encoding="utf-8").split()) == {"b.py", "c.py"}
+
+
+@_SH_ONLY
+def test_commit_hook_ignores_the_base_of_a_stale_sequencer(tmp_path, monkeypatch):
+    """A stale single-line todo must not widen the changed set to everything since its head."""
+    dump = _changed_dump(tmp_path, monkeypatch)
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py", "c.py"))
+    _write_sequencer(repo, "pick ccccccc not-the-last-commit\n", head=_head(repo, "HEAD~2"))
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    assert set(dump.read_text(encoding="utf-8").split()) == {"c.py"}
+
+
+@_SH_ONLY
 def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_path):
     repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
     result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
@@ -1509,6 +1858,46 @@ def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_pa
     assert _LAUNCH_LINE not in result.stdout, (
         "post-commit launched a rebuild for a commit that only touched the configured "
         f"output dir\nstdout={result.stdout!r}"
+    )
+
+
+@_SH_ONLY
+def test_post_merge_hook_runs_after_a_real_merge(tmp_path):
+    # git writes MERGE_HEAD before running post-merge and deletes it only
+    # after, so a MERGE_HEAD guard here exited on every non-fast-forward
+    # merge and the rebuild never launched (#4463).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),  # keeps the rebuild log out of the real ~/.cache
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.co",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.co",
+    }
+    quiet = {**env, "GRAPHIFY_SKIP_HOOK": "1"}  # no rebuilds during setup
+
+    def git(*args, env=env):
+        return subprocess.run(["git", *args], cwd=repo, env=env,
+                              capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    (repo / "graphify-out").mkdir()
+    (repo / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    (repo / "a.py").write_text("def a(): pass\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "init", env=quiet)
+    install(repo)
+    git("checkout", "-qb", "feat", env=quiet)
+    (repo / "b.py").write_text("def b(): pass\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "b", env=quiet)
+    git("checkout", "-q", "main", env=quiet)
+
+    out = git("merge", "--no-ff", "-m", "merge feat", "feat")
+
+    assert _LAUNCH_LINE in out.stdout + out.stderr, (
+        "post-merge exited before the launch\n"
+        f"stdout={out.stdout!r}\nstderr={out.stderr!r}"
     )
 
 
@@ -1533,3 +1922,121 @@ def test_commit_hook_still_rebuilds_for_a_source_change(tmp_path):
     result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
     assert result.returncode == 0, result.stderr
     assert _LAUNCH_LINE in result.stdout, result.stdout
+
+
+# Launcher flags a hook installed before the #2253 fix still carries on disk.
+_PRE_2253_FLAGS = "0x00000008 | 0x00000200"  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+
+def _status_line(result: str, name: str) -> str:
+    return next(line for line in result.splitlines() if line.startswith(f"{name}:"))
+
+
+def test_status_flags_a_hook_block_from_an_older_graphify(tmp_path):
+    """Upgrading the package never rewrites hooks already on disk, so a block
+    written by an older release keeps its old launcher (#3771). `status` must
+    say so and name the command that refreshes it, not report "installed"."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    assert "0x08000000 | 0x00000200" in text
+    hook.write_text(text.replace("0x08000000 | 0x00000200", _PRE_2253_FLAGS), encoding="utf-8")
+
+    res = status(repo)
+    assert "out of date" in _status_line(res, "post-commit")
+    assert "graphify hook install" in _status_line(res, "post-commit")
+    assert "out of date" not in _status_line(res, "post-checkout")
+
+    assert "updated existing post-commit hook" in install(repo)
+    assert "out of date" not in status(repo)
+
+
+def test_status_ignores_the_pinned_interpreter(tmp_path):
+    """`_PINNED` is whichever interpreter ran `hook install`. A hook pinned to a
+    different one is not stale, so it must not be reported as out of date."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    repinned = re.sub(r"(?m)^_PINNED='[^']*'$", "_PINNED='/opt/other/bin/python3'", text)
+    assert repinned != text
+    hook.write_text(repinned, encoding="utf-8")
+
+    assert "out of date" not in status(repo)
+
+
+def test_status_compares_only_the_graphify_block(tmp_path):
+    """User commands around the graphify block are not graphify's to judge."""
+    repo = _make_git_repo(tmp_path)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "post-commit").write_text("#!/bin/sh\necho 'user before'\n", encoding="utf-8")
+    install(repo)
+    hook = hooks_dir / "post-commit"
+    hook.write_text(hook.read_text(encoding="utf-8") + "echo 'user after'\n", encoding="utf-8")
+
+    assert "out of date" not in status(repo)
+
+
+# ── git quotes non-ASCII paths in `git diff --name-only` ────────────────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("pkg/plain.py", "pkg/plain.py"),
+    ("ünïcödé/naïve.py", "ünïcödé/naïve.py"),
+    ('"\\303\\274n\\303\\257c\\303\\266d\\303\\251/na\\303\\257ve.py"', "ünïcödé/naïve.py"),
+    ('"\\344\\270\\255\\346\\226\\207/a.py"', "中文/a.py"),
+    ('"say \\"hi\\".py"', 'say "hi".py'),
+    ('"tab\\there.py"', "tab\there.py"),
+    ('"back\\\\slash.py"', "back\\slash.py"),
+])
+def test_unquote_git_path(raw, expected):
+    """git C-quotes some paths in --name-only output; the hook must decode them
+    back to the real file name or the change never reaches the rebuild."""
+    from graphify.hooks import _unquote_git_path
+    assert _unquote_git_path(raw) == expected
+
+
+def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
+    """End-to-end against real git: every path the post-commit hook collects
+    for a commit touching non-ASCII and quote-bearing names must exist on disk
+    after decoding, so the incremental rebuild actually re-extracts them."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    if shutil.which("sh") is None:  # pragma: no cover
+        pytest.skip("sh not available")
+    from graphify.hooks import _HOOK_SCRIPT, _unquote_git_path
+
+    names = ["plain.py", "ünïcödé/naïve.py", "中文/用户.py"]
+    if os.name != "nt":
+        names.append('say "hi".py')
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q", ".")
+    _git("config", "user.email", "t@t.co")
+    _git("config", "user.name", "t")
+    _git("config", "core.quotePath", "true")  # git's default; pin it against user config
+    (tmp_path / "seed.txt").write_text("x")
+    _git("add", "-A")
+    _git("commit", "-qm", "init")
+    for name in names:
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def f():\n    return 1\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-qm", "edit")
+
+    changed_line = next(l for l in _HOOK_SCRIPT.splitlines() if l.startswith("CHANGED=$("))
+    r = subprocess.run(["sh", "-c", changed_line + '\nprintf "%s\\n" "$CHANGED"'],
+                       cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
+    raw = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    # Non-ASCII names come through verbatim (core.quotePath=false)...
+    for name in names:
+        if '"' not in name:
+            assert name in raw
+    # ...and names git still quotes decode back to the real file.
+    got = [_unquote_git_path(l) for l in raw]
+    assert sorted(got) == sorted(names)
+    assert all((tmp_path / g).is_file() for g in got)

@@ -32,9 +32,9 @@ import sys
 _PROBE = """
 import json, os, sys
 calls = []
-os.execvpe = lambda *a: calls.append(a)
 sys.argv = {argv!r}
 import graphify.__main__ as mainmod
+mainmod._reexec = lambda argv, env: calls.append((argv[0], argv, env))
 mainmod._pin_hash_seed_if_needed()
 print(json.dumps({{"called": bool(calls), "argv": calls[0][1] if calls else None,
                     "env_hashseed": calls[0][2].get("PYTHONHASHSEED") if calls else None}}))
@@ -56,8 +56,21 @@ def test_reexecs_for_hash_sensitive_commands_when_unset():
     for cmd in ("update", "extract", "cluster-only", "label"):
         outcome = _run_probe(["graphify", cmd, "."])
         assert outcome["called"], f"{cmd} must re-exec with PYTHONHASHSEED pinned"
-        assert outcome["argv"] == [sys.executable, "graphify", cmd, "."]
+        assert outcome["argv"] == [sys.executable, "-m", "graphify", cmd, "."]
         assert outcome["env_hashseed"] == "0"
+
+
+def test_reexec_does_not_depend_on_argv0_being_a_runnable_script():
+    """#3779: a uv/pip/pipx console-script launcher on Windows is a native
+    .exe with no .py content, so `python.exe <that .exe path>` fails
+    outright with "can't open file" the moment argv[0] is replayed as a
+    script path. Re-execing via `-m graphify` never touches argv[0] at
+    all, so a launcher stub that isn't even a real file must not matter."""
+    outcome = _run_probe(["/some/launcher/stub/with/no/py/content", "update", "."])
+    assert outcome["called"]
+    assert outcome["argv"] == [sys.executable, "-m", "graphify", "update", "."], (
+        "the launcher stub path must never appear in the re-exec argv"
+    )
 
 
 def test_does_not_reexec_when_already_set():
@@ -93,9 +106,9 @@ def test_degrades_instead_of_raising_when_reexec_fails():
 import os, sys
 def _raise(*a):
     raise OSError("exec not permitted")
-os.execvpe = _raise
 sys.argv = ["graphify", "update", "."]
 import graphify.__main__ as mainmod
+mainmod._reexec = _raise
 mainmod._pin_hash_seed_if_needed()  # must not raise
 print("survived")
 """
@@ -124,3 +137,38 @@ def test_update_still_runs_end_to_end_with_hashseed_unset(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "graphify-out" / "graph.json").exists()
+
+
+def test_reexec_uses_execvpe_on_posix(monkeypatch):
+    import graphify.__main__ as mainmod
+    calls = []
+    monkeypatch.setattr(mainmod.os, "execvpe", lambda *a: calls.append(a))
+    mainmod._reexec(["py", "-m", "graphify", "update", "."], {"PYTHONHASHSEED": "0"}, windows=False)
+    assert calls == [("py", ["py", "-m", "graphify", "update", "."], {"PYTHONHASHSEED": "0"})]
+
+
+def test_reexec_waits_and_propagates_exit_code_on_windows(monkeypatch):
+    """#3799: on Windows os.exec* spawns a detached process and the parent
+    exits at once (sometimes with an access violation), so the caller saw
+    the command finish before graph.json was written. The Windows branch
+    must run the child synchronously and exit with the child's status."""
+    import subprocess
+    import graphify.__main__ as mainmod
+    seen = {}
+
+    class _Done:
+        returncode = 3
+
+    def _run(argv, env=None, **kw):
+        seen["argv"], seen["env"] = argv, env
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(mainmod.os, "execvpe", lambda *a: (_ for _ in ()).throw(AssertionError("execvpe used on Windows")))
+    try:
+        mainmod._reexec(["py", "-m", "graphify", "extract", "."], {"PYTHONHASHSEED": "0"}, windows=True)
+    except SystemExit as e:
+        assert e.code == 3
+    else:
+        raise AssertionError("must exit with the child's return code")
+    assert seen == {"argv": ["py", "-m", "graphify", "extract", "."], "env": {"PYTHONHASHSEED": "0"}}
