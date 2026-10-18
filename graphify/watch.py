@@ -990,6 +990,52 @@ def _referenced_unscanned_identities(
     return referenced - produced_by_itself
 
 
+def _is_fortran_source(source_file) -> bool:
+    """Use the registered dispatch; generic include files are not Fortran."""
+    from graphify.extract import _DISPATCH, extract_fortran
+    return bool(source_file) and _DISPATCH.get(Path(str(source_file)).suffix) is extract_fortran
+
+
+def _fortran_structure_edge(edge: dict) -> bool:
+    metadata = edge.get("metadata")
+    return (edge.get("relation") in {"contains", "implements"}
+            and isinstance(metadata, dict)
+            and metadata.get("fortran_structure_schema") == 1)
+
+
+def _fortran_sources(graph: dict, identity: Callable) -> set[str]:
+    return {
+        key for bucket in ("nodes", "edges", "links", "hyperedges")
+        for item in graph.get(bucket, [])
+        if _is_fortran_source(item.get("source_file"))
+        if (key := identity(item["source_file"]))
+    }
+
+
+def _fortran_structure_complete(
+    result: dict, accepted: list[Path], persisted: set[str], reconciled: set[str],
+    identity: Callable,
+) -> bool:
+    """Require current complete facts or positive removal for every identity.
+
+    The separate structural-incomplete list must never change generic AST
+    stamping, retries or shrink accounting. No excluded source is opened here.
+    """
+    current = {identity(str(p)) for p in accepted if _is_fortran_source(p)}
+    extracted = {identity(p) for p in result.get("extracted_sources", [])}
+    failed = {identity(p) for key in ("failed_sources", "fortran_identity_incomplete_sources")
+              for p in result.get(key, [])}
+    marked = {
+        identity(node.get("source_file")) for node in result.get("nodes", [])
+        if isinstance(node.get("metadata"), dict)
+        and node["metadata"].get("language") == "fortran"
+        and node["metadata"].get("kind") == "file"
+        and node["metadata"].get("fortran_structure_schema") == 1
+    }
+    successful = (extracted & marked) - failed - {None}
+    return not ((current - successful) | (persisted - successful - reconciled))
+
+
 def _reconcile_existing_graph(
     existing_graph: Path,
     result: dict,
@@ -1202,6 +1248,14 @@ def _reconcile_existing_graph(
                 "changed?). Add them to .graphifyignore if the exclusion is intentional."
             )
 
+        fortran_complete = _fortran_structure_complete(
+            result, code_files, _fortran_sources(existing, source_paths.identity),
+            edge_evicted_source_identities - excluded_alive_files,
+            lambda sf: source_paths.absolute_identity(sf, project_root),
+        )
+        if not fortran_complete:
+            result["edges"] = [e for e in result["edges"] if not _fortran_structure_edge(e)]
+
         # A full re-extraction owns the AST nodes of every source it actually
         # re-extracted (extract_targets, via rebuilt_source_identities) — NOT
         # every AST node under watch_root: a semantic-backed doc is excluded
@@ -1248,6 +1302,7 @@ def _reconcile_existing_graph(
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
+            and not _fortran_structure_edge(edge)
             and not (
                 source_paths.is_evicted(edge, edge_evicted_source_identities)
                 and not source_paths.is_evicted(edge, excluded_alive_files)
@@ -1326,6 +1381,7 @@ def _reconcile_existing_graph(
             "extraction only.",
             file=sys.stderr,
         )
+        result["edges"] = [e for e in result.get("edges", []) if not _fortran_structure_edge(e)]
         return result, existing_graph_data
 
 
@@ -1902,6 +1958,21 @@ def _rebuild_code(
             except Exception:
                 semantic_doc_files = set()
 
+        # A persisted relation also depends on the absence of a third duplicate
+        # declaration. Refresh accepted Fortran facts together; other languages
+        # keep their changed-file targets. Cache hits avoid reparsing warm files.
+        fortran_files = [p for p in code_files if _is_fortran_source(p)]
+        fortran_prior = {}
+        if existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                fortran_prior = json.loads(existing_graph.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(f"error: Cannot read {existing_graph}: {exc}. Refusing to overwrite.",
+                      file=sys.stderr)
+                return False
+        fortran_active = bool(fortran_files or _fortran_sources(fortran_prior, str))
+
         # Incremental path: when the caller passed an explicit change list,
         # extract only changed-and-still-existing files. Deleted paths are
         # tracked separately so their stale nodes can be evicted below.
@@ -1965,7 +2036,8 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
-            if not wanted and not deleted_paths:
+            wanted = list(dict.fromkeys([*wanted, *fortran_files]))
+            if not wanted and not deleted_paths and not fortran_active:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
             extract_targets = wanted

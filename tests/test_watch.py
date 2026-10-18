@@ -5592,3 +5592,118 @@ def test_rebuild_code_sidecar_writes_are_atomic_and_labels_first(tmp_path, monke
     # Both sidecars must be parseable — a torn write would fail here.
     assert json.loads(sig_file.read_text(encoding="utf-8")) is not None
     assert json.loads(labels_file.read_text(encoding="utf-8")) is not None
+
+
+def _fortran_watch_corpus(tmp_path):
+    corpus = tmp_path / 'fortran'
+    corpus.mkdir()
+    (corpus / 'a.f90').write_text(
+        'module m\ninterface\nmodule integer function f()\n'
+        'end function\nend interface\nend module\n')
+    (corpus / 'b.f90').write_text(
+        'submodule(m) s\ncontains\nmodule procedure f\nf=1\n'
+        'end procedure\nend submodule\n')
+    (corpus / 'keep.py').write_text('def keep():\n    return 1\n')
+    return corpus, corpus / 'graphify-out' / 'graph.json'
+
+
+def _fortran_graph_relations(graph_path):
+    data = json.loads(graph_path.read_text())
+    relations = [e for e in data.get('links', data.get('edges', []))
+                 if e.get('metadata', {}).get('fortran_structure_schema') == 1]
+    return data, relations
+
+
+@pytest.mark.parametrize('no_cluster', [False, True])
+def test_fortran_rebuild_incomplete_duplicate_then_deleted(tmp_path, no_cluster):
+    """A third file's failed or duplicate facts cannot leave A/B links behind."""
+    corpus, graph_path = _fortran_watch_corpus(tmp_path)
+    def rebuild(changed=None):
+        assert _rebuild_code(corpus, changed_paths=changed, no_cluster=no_cluster,
+                             acquire_lock=False)
+        return _fortran_graph_relations(graph_path)
+    data, edges = rebuild()
+    assert {e['relation'] for e in edges} == {'contains', 'implements'}
+    initial_ids = {n['id'] for n in data['nodes']}
+    third = corpus / 'c.f90'
+    third.write_text('module broken\ninterface\nmodule function\nend module\n')
+    data, edges = rebuild([third])
+    assert not edges
+    assert any(str(n.get('source_file', '')).endswith('c.f90') for n in data['nodes'])
+    third.write_text((corpus / 'a.f90').read_text())
+    assert not rebuild([third])[1]
+    third.unlink()
+    data, edges = rebuild([third])
+    assert {e['relation'] for e in edges} == {'contains', 'implements'}
+    assert {n['id'] for n in data['nodes']} == initial_ids
+    assert 'fortran_identity_incomplete_sources' not in data
+
+
+def test_fortran_ignored_third_file_stays_incomplete_across_hooks(tmp_path):
+    corpus, graph_path = _fortran_watch_corpus(tmp_path)
+    third = corpus / 'c.f90'
+    third.write_text('module unrelated\nend module\n')
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False)
+    assert len(_fortran_graph_relations(graph_path)[1]) == 2
+    (corpus / '.gitignore').write_text('c.f90\n')
+    for value in (2, 3):
+        (corpus / 'keep.py').write_text(f'def keep():\n    return {value}\n')
+        assert _rebuild_code(corpus, changed_paths=[corpus / 'keep.py'],
+                             no_cluster=True, acquire_lock=False)
+        data, edges = _fortran_graph_relations(graph_path)
+        assert not edges
+        assert any(str(n.get('source_file', '')).endswith('c.f90') for n in data['nodes'])
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False)
+    data, edges = _fortran_graph_relations(graph_path)
+    assert len(edges) == 2
+    assert not any(str(n.get('source_file', '')).endswith('c.f90') for n in data['nodes'])
+
+
+def test_fortran_full_rebuild_does_not_trust_alive_outside_source(tmp_path):
+    corpus, graph_path = _fortran_watch_corpus(tmp_path)
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False)
+    data, _ = _fortran_graph_relations(graph_path)
+    outside = tmp_path / 'outside.f90'
+    outside.write_text('module m\nend module\n')
+    data['nodes'].append({'id': 'outside-fortran', 'label': 'm', 'file_type': 'code',
+                          'source_file': str(outside), 'source_location': 'L1', '_origin': 'ast'})
+    graph_path.write_text(json.dumps(data))
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False)
+    data, edges = _fortran_graph_relations(graph_path)
+    assert not edges
+    assert any(n['id'] == 'outside-fortran' for n in data['nodes'])
+    # No live Fortran is also a real reconciliation, including a rename list
+    # containing only the destination rather than the old source paths.
+    (corpus / 'a.f90').unlink()
+    (corpus / 'b.f90').unlink()
+    assert _rebuild_code(corpus, changed_paths=[corpus / 'keep.py'],
+                         no_cluster=True, acquire_lock=False)
+    data, edges = _fortran_graph_relations(graph_path)
+    assert not edges
+    assert any(n['id'] == 'outside-fortran' for n in data['nodes'])
+    assert not any(str(n.get('source_file', '')).endswith(('a.f90', 'b.f90')) for n in data['nodes'])
+
+
+@pytest.mark.parametrize('no_cluster', [False, True])
+def test_fortran_submodule_interface_retires_persisted_relations(tmp_path, no_cluster):
+    """A clean but unsupported declaration scope enters J without losing nodes."""
+    corpus, graph_path = _fortran_watch_corpus(tmp_path)
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False)
+    before, edges = _fortran_graph_relations(graph_path)
+    assert len(edges) == 2
+    child = corpus / 'b.f90'
+    original = child.read_text()
+    child.write_text(original.replace('contains\n',
+        'interface\nmodule subroutine helper()\nend subroutine\nend interface\ncontains\n'))
+    assert _rebuild_code(corpus, changed_paths=[child], no_cluster=no_cluster,
+                         acquire_lock=False)
+    after, edges = _fortran_graph_relations(graph_path)
+    assert not edges
+    assert {n['id'] for n in before['nodes']} <= {n['id'] for n in after['nodes']}
+    helper = next(n for n in after['nodes'] if n['label'].lower() == 'helper()')
+    assert helper['source_file'].endswith('b.f90')
+    assert helper['source_location']
+    child.write_text(original)
+    assert _rebuild_code(corpus, changed_paths=[child], no_cluster=no_cluster,
+                         acquire_lock=False)
+    assert len(_fortran_graph_relations(graph_path)[1]) == 2
