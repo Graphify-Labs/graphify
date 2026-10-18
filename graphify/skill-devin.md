@@ -1003,6 +1003,8 @@ Path('graphify-out/.graphify_extract.json').write_text(json.dumps({'nodes':[],'e
 fi
 ```
 
+Before the merge, save the current graph so the diff after Step 4 has the pre-update graph to compare against (Step 4 rewrites `graphify-out/graph.json`): `cp graphify-out/graph.json graphify-out/.graphify_old.json`
+
 Then:
 
 ```bash
@@ -1053,11 +1055,12 @@ if old_data:
         print('New nodes:', ', '.join(n['label'] for n in diff['new_nodes'][:5]))
     if diff['new_edges']:
         print('New edges:', len(diff['new_edges']))
+else:
+    print('No pre-update backup at graphify-out/.graphify_old.json - graph diff skipped.')
 "
 ```
 
-Before the merge step, save the old graph: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
-Clean up after: `rm -f graphify-out/.graphify_old.json`
+Clean up after the diff: `rm -f graphify-out/.graphify_old.json`
 
 ---
 
