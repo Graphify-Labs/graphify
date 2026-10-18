@@ -19,8 +19,8 @@
     {
       "id": "q001",
       "question": "How are ambiguous seeds handled?",
-      "relevant_node_ids": ["graphify/affected.py::resolve_seed"],
-      "relevant_pairs": [["graphify/affected.py::resolve_seed", "synthetic-001"]],
+      "relevant_node_ids": ["graphify_affected_resolve_seed"],
+      "relevant_pairs": [["graphify_affected_resolve_seed", "synthetic-001"]],
       "observation_ids": ["synthetic-001"]
     },
     {

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 from collections import Counter
 from pathlib import Path
@@ -10,6 +11,12 @@ from graphify.build import build_from_json
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def scan_fixtures(tmp_path):
+    # The checkout itself may live under .worktrees, which Graphify skips.
+    return shutil.copytree(FIXTURES, tmp_path / "fixtures")
 
 
 def test_make_id_strips_dots_and_underscores():
@@ -480,18 +487,18 @@ def test_extract_does_not_rewire_constructor_method_to_same_named_class(tmp_path
     )
 
 
-def test_collect_files_from_dir():
+def test_collect_files_from_dir(scan_fixtures):
     from graphify.extract import _DISPATCH
-    files = collect_files(FIXTURES)
+    files = collect_files(scan_fixtures)
     supported = set(_DISPATCH.keys())
     assert all(f.suffix in supported for f in files)
     assert len(files) > 0
 
 
-def test_collect_files_skips_hidden():
-    files = collect_files(FIXTURES)
+def test_collect_files_skips_hidden(scan_fixtures):
+    files = collect_files(scan_fixtures)
     for f in files:
-        assert not any(part.startswith(".") for part in f.relative_to(FIXTURES).parts)
+        assert not any(part.startswith(".") for part in f.relative_to(scan_fixtures).parts)
 
 
 def test_collect_files_follows_symlinked_directory(requires_symlinks, tmp_path):
@@ -560,8 +567,8 @@ def _legacy_collect_files(target, *, root=None):
     return sorted(results)
 
 
-def test_collect_files_parity_with_legacy_on_fixtures():
-    assert collect_files(FIXTURES) == _legacy_collect_files(FIXTURES)
+def test_collect_files_parity_with_legacy_on_fixtures(scan_fixtures):
+    assert collect_files(scan_fixtures) == _legacy_collect_files(scan_fixtures)
 
 
 def test_collect_files_parity_with_legacy_synthetic(tmp_path):
