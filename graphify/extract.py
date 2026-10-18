@@ -11041,11 +11041,11 @@ def extract(
 
 
 # Keys of an extract() result that only steer the current run (#2543, #3411).
-# They hold the absolute paths of this run's inputs, so a writer that dumps the
-# raw extraction as graph.json (--no-cluster) must leave them out: they put the
-# checkout path and OS username into the graph, and differ between the first
-# build and a rebuild of the same tree.
-RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources"})
+# Input-path bookkeeping and completeness receipts are not stable graph data.
+# A writer that dumps raw extraction as graph.json (--no-cluster) must omit
+# them: paths leak checkout details, and run metadata can differ between the
+# first build and a rebuild of the same tree.
+RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources", _KOTLIN_COMPLETE})
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
