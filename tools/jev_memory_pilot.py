@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import statistics
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -254,6 +255,105 @@ def query_with_decisions(
     }
     write_json_atomic(graph_path.parent / "jev-memory-decisions.json", metadata, indent=2)
     return answer_text
+
+
+def precision_at_k(ranked: list[str], relevant: set[str], k: int = 5) -> float:
+    return len(set(ranked[:k]) & relevant) / k
+
+
+def recall_at_k(ranked: list[str], relevant: set[str], k: int = 5) -> float | None:
+    return len(set(ranked[:k]) & relevant) / len(relevant) if relevant else None
+
+
+def _percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * fraction
+    lower, upper = math.floor(index), math.ceil(index)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower)
+
+
+def evaluate(cases: list[dict], baseline: dict[str, dict], assisted: dict[str, dict]) -> dict:
+    """Score frozen human labels against paired rankings; never infer ground truth."""
+    ids = [case["id"] for case in cases]
+    if len(set(ids)) != len(ids) or set(ids) != set(baseline) or set(ids) != set(assisted):
+        raise ValueError("paired cases do not match")
+    paired = {}
+    candidate_recalls = []
+    base_precisions, assisted_precisions = [], []
+    base_recalls, assisted_recalls = [], []
+    base_latencies, assisted_latencies = [], []
+    unsupported, total_suggestions = 0, 0
+    request_count, actual_cost = 0, 0.0
+    zero_relevant = 0
+    for case in cases:
+        case_id = case["id"]
+        first, second = baseline[case_id], assisted[case_id]
+        pool = first["candidate_node_ids"]
+        if pool != second["candidate_node_ids"]:
+            raise ValueError("candidate pool differs between arms")
+        for arm in (first, second):
+            ranked = arm["ranked_node_ids"]
+            if len(ranked) != len(pool) or set(ranked) != set(pool):
+                raise ValueError("ranking is not a permutation of the candidate pool")
+            count, cost = arm.get("request_count"), arm.get("usage_cost")
+            if (not isinstance(count, int) or isinstance(count, bool) or count < 0
+                    or not isinstance(cost, (int, float)) or isinstance(cost, bool)
+                    or not math.isfinite(cost) or cost < 0 or (count == 0 and cost != 0)):
+                raise ValueError("missing or invalid actual cost")
+            latency = arm.get("latency_ms")
+            if (isinstance(latency, bool) or not isinstance(latency, (int, float))
+                    or not math.isfinite(latency) or latency < 0):
+                raise ValueError("invalid latency")
+        if first["request_count"] != 0:
+            raise ValueError("baseline must have zero paid requests")
+        gold = set(case["relevant_node_ids"])
+        if gold:
+            candidate_recalls.append(len(gold & set(pool)) / len(gold))
+        else:
+            zero_relevant += 1
+        base_p = precision_at_k(first["ranked_node_ids"], gold)
+        assisted_p = precision_at_k(second["ranked_node_ids"], gold)
+        base_r = recall_at_k(first["ranked_node_ids"], gold)
+        assisted_r = recall_at_k(second["ranked_node_ids"], gold)
+        base_precisions.append(base_p)
+        assisted_precisions.append(assisted_p)
+        if base_r is not None and assisted_r is not None:
+            base_recalls.append(base_r)
+            assisted_recalls.append(assisted_r)
+        paired[case_id] = {
+            "precision_at_5_delta": assisted_p - base_p,
+            "recall_at_5_delta": assisted_r - base_r if base_r is not None else None,
+        }
+        base_latencies.append(float(first["latency_ms"]))
+        assisted_latencies.append(float(second["latency_ms"]))
+        request_count += second["request_count"]
+        actual_cost += second["usage_cost"]
+        gold_pairs = {tuple(pair) for pair in case["relevant_pairs"]}
+        for pair in second.get("suggestions", []):
+            total_suggestions += 1
+            if tuple(pair) not in gold_pairs:
+                unsupported += 1
+    return {
+        "cases": len(cases),
+        "zero_relevant_cases": zero_relevant,
+        "candidate_recall": statistics.mean(candidate_recalls) if candidate_recalls else None,
+        "baseline_precision_at_5": statistics.mean(base_precisions) if base_precisions else None,
+        "assisted_precision_at_5": statistics.mean(assisted_precisions) if assisted_precisions else None,
+        "baseline_recall_at_5": statistics.mean(base_recalls) if base_recalls else None,
+        "assisted_recall_at_5": statistics.mean(assisted_recalls) if assisted_recalls else None,
+        "unsupported_suggestions": unsupported,
+        "unsupported_suggestion_fraction": unsupported / total_suggestions if total_suggestions
+        else "not_applicable",
+        "paired": paired,
+        "baseline_latency_ms": {"p50": _percentile(base_latencies, 0.5),
+                                "p95": _percentile(base_latencies, 0.95)},
+        "assisted_latency_ms": {"p50": _percentile(assisted_latencies, 0.5),
+                                "p95": _percentile(assisted_latencies, 0.95)},
+        "request_count": request_count,
+        "actual_cost_usd": actual_cost,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

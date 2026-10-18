@@ -11,6 +11,7 @@ from networkx.readwrite import json_graph
 from tools.jev_memory_pilot import (
     apply_decisions,
     candidate_pool,
+    evaluate,
     load_case,
     main,
     query_with_decisions,
@@ -299,3 +300,51 @@ def test_explicit_live_mode_calls_mock_once(pilot_repo, tmp_path, monkeypatch, c
                      "--live", "--approved-paid-use", "--max-requests", "1"]) == 0
     post.assert_called_once()
     assert "Jev actual cost" in capsys.readouterr().err
+
+
+def test_evaluate_paired_rankings_and_candidate_ceiling():
+    cases = [
+        {"id": "q1", "relevant_node_ids": ["a", "outside"],
+         "relevant_pairs": [["a", "o1"]]},
+        {"id": "q2", "relevant_node_ids": [], "relevant_pairs": []},
+    ]
+    pool = ["b", "a", "c", "d", "e", "f"]
+    baseline = {
+        "q1": {"ranked_node_ids": ["b", "c", "d", "e", "f", "a"],
+               "candidate_node_ids": pool, "latency_ms": 10,
+               "request_count": 0, "usage_cost": 0},
+        "q2": {"ranked_node_ids": pool, "candidate_node_ids": pool,
+               "latency_ms": 12, "request_count": 0, "usage_cost": 0},
+    }
+    assisted = {
+        "q1": {"ranked_node_ids": ["a", "b", "c", "d", "e", "f"],
+               "candidate_node_ids": pool, "latency_ms": 22,
+               "request_count": 1, "usage_cost": 0.0001,
+               "suggestions": [["a", "o1"], ["b", "o1"]]},
+        "q2": {"ranked_node_ids": pool, "candidate_node_ids": pool,
+               "latency_ms": 20, "request_count": 0, "usage_cost": 0,
+               "suggestions": []},
+    }
+    result = evaluate(cases, baseline, assisted)
+    assert result["candidate_recall"] == 0.5
+    assert result["baseline_precision_at_5"] == 0
+    assert result["assisted_precision_at_5"] == 0.1
+    assert result["assisted_recall_at_5"] == 0.5
+    assert result["unsupported_suggestions"] == 1
+    assert result["unsupported_suggestion_fraction"] == 0.5
+    assert result["zero_relevant_cases"] == 1
+    assert result["request_count"] == 1
+    assert result["actual_cost_usd"] == 0.0001
+    assert result["paired"]["q1"]["precision_at_5_delta"] == 0.2
+
+    assisted["q1"]["usage_cost"] = None
+    with pytest.raises(ValueError, match="actual cost"):
+        evaluate(cases, baseline, assisted)
+    assisted["q1"]["usage_cost"] = 0.0001
+    assisted["q1"]["candidate_node_ids"] = ["a", "b"]
+    with pytest.raises(ValueError, match="candidate pool"):
+        evaluate(cases, baseline, assisted)
+    assisted["q1"]["candidate_node_ids"] = pool
+    baseline["q1"]["request_count"] = 1
+    with pytest.raises(ValueError, match="baseline"):
+        evaluate(cases, baseline, assisted)
