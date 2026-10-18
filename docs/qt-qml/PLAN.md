@@ -2874,8 +2874,8 @@ source. The initial full local run completed with 45 shell-environment failures;
 all 45 individually pass after the bounded process-local shell correction, but
 that three-module rerun is not a new complete-suite result. Current corrected
 focused source cases, the final compatibility rerun and fresh isolated artifact/
-install profile pass. Complete corrected-source and hosted evidence, global/team
-adoption and the guarded application
+install profile pass. Complete corrected-source and hosted evidence and global/
+team adoption remain pending. The guarded application
 refresh is separately owned and pending; upstream delivery remains separate from
 this fork-integration repair.
 
