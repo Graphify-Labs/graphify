@@ -8765,9 +8765,18 @@ def _extract_generic(
                 callee_name = _read_text(node, source)
                 self_receiver = "self"
             elif config.ts_module == "tree_sitter_swift":
+                # Freestanding macro call `#stringify(...)`: `macro_invocation` is
+                # `# simple_identifier call_suffix`. The macro is a free top-level
+                # symbol, not a method on `self`, so resolve it by bare name without
+                # a receiver (an unresolved `#name` stays unresolved — fail-closed).
+                if node.type == "macro_invocation":
+                    for child in node.children:
+                        if child.type == "simple_identifier":
+                            callee_name = _read_text(child, source)
+                            break
                 # Swift: first child may be simple_identifier or navigation_expression
                 first = node.children[0] if node.children else None
-                if first:
+                if node.type != "macro_invocation" and first:
                     if first.type == "simple_identifier":
                         callee_name = _read_text(first, source)
                         # Inside a method a bare `save()` is `self.save()`.

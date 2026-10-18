@@ -1701,9 +1701,15 @@ _SWIFT_CONFIG = LanguageConfig(
     # `protocol { ... }`; tree-sitter-swift gives it its own node type rather than
     # reusing `function_declaration`, so without it a protocol's method contract
     # is dropped and the protocol becomes an empty node.
-    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    # `macro_declaration` is the Swift 5.9 `macro stringify(...) = #externalMacro(...)`
+    # form (freestanding or attached). It has no `name` field — the name is a bare
+    # `simple_identifier` child, already covered by `name_fallback_child_types` — so
+    # without it the whole declaration (and its `#name` call sites) was dropped.
+    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration", "macro_declaration"}),
     import_types=frozenset({"import_declaration"}),
-    call_types=frozenset({"call_expression"}),
+    # `macro_invocation` is a freestanding macro call `#stringify(...)`; it is not a
+    # `call_expression`, so it needs its own callee branch in walk_calls.
+    call_types=frozenset({"call_expression", "macro_invocation"}),
     call_function_field="",
     call_accessor_node_types=frozenset({"navigation_expression"}),
     call_accessor_field="",
