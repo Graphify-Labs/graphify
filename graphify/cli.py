@@ -2439,6 +2439,14 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
+        def _label_output_signature():
+            try:
+                stat = (out / "graph.json").stat()
+            except OSError:
+                return None
+            return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+        label_output_signature = _label_output_signature() if cmd == "label" else None
         from networkx.readwrite import json_graph as _jg
         from graphify.build import build_from_json
         from graphify.cluster import cluster, score_all, remap_communities_to_previous
@@ -2671,6 +2679,26 @@ def dispatch_command(cmd: str) -> None:
         if not _commit:
             from graphify.watch import _git_head as _gh
             _commit = _gh(cwd=watch_path)
+        if cmd == "label" and not force_graph_write:
+            try:
+                _check_cap(out / "graph.json")
+            except ValueError:
+                # The shared exporter cannot compare an oversized destination.
+                # Keep unchanged large-graph relabeling, but require explicit
+                # force when it changed during this label run.
+                current_signature = _label_output_signature()
+                if (
+                    label_output_signature is None
+                    or current_signature is None
+                    or current_signature != label_output_signature
+                ):
+                    print(
+                        "graph.json NOT written: the oversized graph changed during labeling. "
+                        "Run label again to load the newer graph, or use label --force "
+                        "to explicitly replace it. Report and label sidecars are unchanged.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
         # Snapshot BEFORE any artifact is replaced: GRAPH_REPORT.md was written
         # first, so the dated folder held the NEW report, not the previous (#2402).
         from graphify.export import backup_if_protected as _backup

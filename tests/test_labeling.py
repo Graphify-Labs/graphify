@@ -529,15 +529,21 @@ def _two_community_graph(out):
 
 
 @pytest.mark.parametrize(
-    ("extra_args", "force"),
+    ("extra_args", "force", "graph_byte_cap", "stale_preexisted"),
     [
-        ([], False),
-        (["--force"], True),
-        (["--backend", "--force"], False),
+        ([], False, None, False),
+        (["--force"], True, None, False),
+        (["--backend", "--force"], False, None, False),
+        ([], False, 1, False),
+        (["--force"], True, 1, False),
+        ([], False, "crossed", False),
+        (["--force"], True, "crossed", False),
+        ([], False, 1, True),
+        ([], False, "crossed", True),
     ],
 )
 def test_label_force_controls_graph_growth_after_load(
-    tmp_path, monkeypatch, extra_args, force,
+    tmp_path, monkeypatch, extra_args, force, graph_byte_cap, stale_preexisted,
 ):
     """#2976: a long label run may observe graph.json grow after loading it."""
     import graphify.__main__ as cli
@@ -546,6 +552,14 @@ def test_label_force_controls_graph_growth_after_load(
     out.mkdir()
     _two_community_graph(out)
     graph_path = out / "graph.json"
+    stale_path = out / ".graph.html.stale"
+    if stale_preexisted:
+        stale_path.touch()
+    if graph_byte_cap is not None:
+        cap = graph_path.stat().st_size + 1 if graph_byte_cap == "crossed" else graph_byte_cap
+        monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", str(cap))
+    backup_calls = []
+    monkeypatch.setattr("graphify.export.backup_if_protected", lambda _out: backup_calls.append(_out))
     report_path = out / "GRAPH_REPORT.md"
     labels_path = out / ".graphify_labels.json"
     analysis_path = out / ".graphify_analysis.json"
@@ -590,6 +604,9 @@ def test_label_force_controls_graph_growth_after_load(
         }
     else:
         assert "concurrent" in persisted_ids
+        assert stale_path.exists() == stale_preexisted
+        if graph_byte_cap is not None:
+            assert backup_calls == []
         assert report_path.read_text(encoding="utf-8") == "previous report"
         assert json.loads(labels_path.read_text(encoding="utf-8")) == {
             "0": "Old orders",
@@ -597,6 +614,35 @@ def test_label_force_controls_graph_growth_after_load(
         assert json.loads(analysis_path.read_text(encoding="utf-8")) == {
             "previous": True,
         }
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_label_can_relabel_an_unchanged_oversized_graph(tmp_path, monkeypatch, force):
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "1")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        "graphify.llm.generate_community_labels",
+        lambda _G, communities, **kwargs: (
+            {cid: f"Fresh community {cid}" for cid in communities}, "test",
+        ),
+    )
+    argv = ["graphify", "label", str(tmp_path), "--no-viz"]
+    if force:
+        argv.append("--force")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    cli.main()
+
+    persisted = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert {node["id"] for node in persisted["nodes"]} == {
+        "orders", "order_db", "payments", "pay_db",
+    }
+    assert all(node["community_name"].startswith("Fresh community ") for node in persisted["nodes"])
 
 
 def test_label_force_rejects_a_detached_graph_source(tmp_path, monkeypatch):
