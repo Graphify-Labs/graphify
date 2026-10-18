@@ -1535,8 +1535,15 @@ _CSHARP_CONFIG = LanguageConfig(
 )
 
 _KOTLIN_CONFIG = LanguageConfig(
+    # `type_alias` is `typealias ClickHandler = (Int) -> Unit`. Without it the
+    # declaration was dropped, yet an in-file field/parameter typed as the alias
+    # still resolved its name through `ensure_named_node` and minted a
+    # *sourceless* stub — a real in-file type losing to a sourceless god node
+    # (provenance). Scala and TypeScript already model type aliases as nodes; the
+    # alias has an `identifier` name (covered by `name_fallback_child_types`) and
+    # no body, so it emits a clean empty type node those references bind to.
     ts_module="tree_sitter_kotlin",
-    class_types=frozenset({"class_declaration", "object_declaration"}),
+    class_types=frozenset({"class_declaration", "object_declaration", "type_alias"}),
     function_types=frozenset({"function_declaration"}),
     # Grammar 1.1.0 (PyPI tree_sitter_kotlin) names the import node `import`;
     # older forks use `import_header`. Accept both (#2526).
