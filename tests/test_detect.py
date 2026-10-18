@@ -2633,6 +2633,35 @@ def test_shebang_interpreter_env_with_assignment(tmp_path):
     assert _shebang_interpreter(script) == "python3"
 
 
+def test_shebang_interpreter_drops_version_suffix(tmp_path):
+    """A shebang naming a specific version (`python3.12`, `python2.7`,
+    `lua5.4`) resolves to the interpreter it is a version of, so the file is
+    classified as code instead of silently dropped from the scan."""
+    from graphify.detect import FileType, _shebang_interpreter, classify_file
+    cases = {
+        b"#!/usr/bin/env python3.12\n": "python3",
+        b"#!/usr/local/bin/python3.11\n": "python3",
+        b"#!/usr/bin/python2.7\n": "python2",
+        b"#!/usr/bin/lua5.4\n": "lua",
+        b"#!/usr/bin/env php8.2\n": "php",
+    }
+    for i, (shebang, expected) in enumerate(cases.items()):
+        script = tmp_path / f"versioned{i}"
+        script.write_bytes(shebang + b"x = 1\n")
+        assert _shebang_interpreter(script) == expected, shebang
+        assert classify_file(script) == FileType.CODE, shebang
+
+
+def test_shebang_interpreter_keeps_unknown_versioned_name(tmp_path):
+    """Stripping a version never invents a match: an unknown interpreter
+    keeps its name and the file stays unclassified."""
+    from graphify.detect import _shebang_interpreter, classify_file
+    script = tmp_path / "custom"
+    script.write_bytes(b"#!/usr/bin/env mytool2.1\nrun\n")
+    assert _shebang_interpreter(script) == "mytool2.1"
+    assert classify_file(script) is None
+
+
 def test_shebang_interpreter_no_shebang(tmp_path):
     """File without shebang returns None."""
     from graphify.detect import _shebang_interpreter
