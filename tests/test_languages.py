@@ -336,6 +336,29 @@ def test_cuda_host_call_edges():
     assert ("main()", "host_norm()") in calls
 
 
+def test_cuda_execution_space_qualifiers_do_not_mint_sourceless_god_nodes():
+    """CUDA's `__global__`/`__device__`/`__host__` are execution-space
+    qualifiers, not C++ types. tree-sitter-cpp parses the leading qualifier as
+    the declaration's `type_identifier`; before the fix each became a sourceless
+    corpus-shared god node (ids `global`/`device`/`host`) that every kernel
+    `references` — a provenance violation. The real struct `Vec3` still resolves.
+    """
+    r = extract_cpp(FIXTURES / "sample.cu")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    for qualifier in ("__global__", "__device__", "__host__"):
+        assert qualifier not in sourceless, (
+            f"CUDA qualifier {qualifier!r} leaked as a sourceless god node"
+        )
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    referenced = {
+        id_to_label.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert referenced.isdisjoint({"__global__", "__device__", "__host__"})
+    assert "Vec3" in referenced
+
+
 # Metal Shading Language is a C++14-derived language, so .metal files route
 # through the C++ extractor just like CUDA does.
 
@@ -355,6 +378,32 @@ def test_metal_finds_kernel_function_and_struct():
     assert any("Vec3" in l for l in labels)
     assert any("dot3" in l for l in labels)
     assert any("saxpy" in l for l in labels)
+
+
+def test_metal_qualifiers_do_not_mint_sourceless_god_nodes():
+    """Metal's `kernel`/`device`/`constant` qualifiers are not C++ types.
+
+    tree-sitter-cpp has no grammar for them, so it parses the leading qualifier
+    as the declaration's `type_identifier`. Before the fix each one became a
+    sourceless, corpus-shared god node that every shader `references` — a
+    provenance violation (a node with no source_file). The real user type (the
+    `Vec3` struct) must still resolve.
+    """
+    r = extract_cpp(FIXTURES / "sample.metal")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    for qualifier in ("kernel", "device", "constant"):
+        assert qualifier not in sourceless, (
+            f"Metal qualifier {qualifier!r} leaked as a sourceless god node"
+        )
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    referenced = {
+        id_to_label.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert referenced.isdisjoint({"kernel", "device", "constant"})
+    # The genuine user-defined struct reference is preserved.
+    assert "Vec3" in referenced
 
 
 # ── Ruby ─────────────────────────────────────────────────────────────────────
