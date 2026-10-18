@@ -33,8 +33,8 @@ def load_rules(path: Path) -> list[dict[str, str]]:
         raise ValueError(f"{path}: expected a 'rules' list")
     out: list[dict[str, str]] = []
     for rule in rules:
-        if not isinstance(rule, dict) or "from" not in rule or "to" not in rule:
-            raise ValueError(f"{path}: each rule needs 'from' and 'to' glob patterns")
+        if not isinstance(rule, dict) or not isinstance(rule.get("from"), str) or not isinstance(rule.get("to"), str):
+            raise ValueError(f"{path}: each rule needs string 'from' and 'to' glob patterns")
         out.append(
             {
                 "name": str(rule.get("name", f"{rule['from']} -> {rule['to']}")),
@@ -50,7 +50,7 @@ def verify_graph(graph_path: Path, rules: list[dict[str, str]]) -> list[Violatio
     nodes_by_id = {
         str(n["id"]): n
         for n in graph.get("nodes", [])
-        if isinstance(n, dict) and "id" in n
+        if isinstance(n, dict) and n.get("id") is not None
     }
     edges = graph.get("links") or graph.get("edges") or []
 
@@ -58,14 +58,18 @@ def verify_graph(graph_path: Path, rules: list[dict[str, str]]) -> list[Violatio
     for edge in edges:
         if not isinstance(edge, dict):
             continue
-        source_id = str(edge.get("source", ""))
-        target_id = str(edge.get("target", ""))
+        if edge.get("source") is None or edge.get("target") is None:
+            continue
+        source_id = str(edge["source"])
+        target_id = str(edge["target"])
         src_node = nodes_by_id.get(source_id)
         tgt_node = nodes_by_id.get(target_id)
         if not src_node or not tgt_node:
             continue
-        src_file = str(src_node.get("source_file", ""))
-        tgt_file = str(tgt_node.get("source_file", ""))
+        src_file = src_node.get("source_file")
+        tgt_file = tgt_node.get("source_file")
+        if not (isinstance(src_file, str) and src_file and isinstance(tgt_file, str) and tgt_file):
+            continue
         if not src_file or not tgt_file:
             continue
         for rule in rules:
@@ -77,8 +81,8 @@ def verify_graph(graph_path: Path, rules: list[dict[str, str]]) -> list[Violatio
                         target=target_id,
                         source_file=src_file,
                         target_file=tgt_file,
-                        relation=str(edge.get("relation", "")),
-                        source_location=str(edge.get("source_location", "")),
+                        relation=str(edge.get("relation") or ""),
+                        source_location=str(edge.get("source_location") or ""),
                     )
                 )
     return violations

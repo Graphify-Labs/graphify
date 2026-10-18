@@ -95,6 +95,32 @@ def test_load_rules_rejects_non_dict_entry(tmp_path: Path) -> None:
         load_rules(rules_path)
 
 
+def test_load_rules_rejects_non_string_patterns(tmp_path: Path) -> None:
+    rules_path = tmp_path / "rules.json"
+    for bad in ({"from": None, "to": "b/*"}, {"from": "a/*", "to": 5}, {"from": ["a/*"], "to": "b/*"}):
+        rules_path.write_text(json.dumps({"rules": [bad]}), encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_rules(rules_path)
+
+
+def test_verify_graph_null_source_file_is_not_a_violation(tmp_path: Path) -> None:
+    graph = {
+        "nodes": [
+            {"id": "a", "source_file": None},
+            {"id": "b", "source_file": None},
+            {"id": None, "source_file": "x.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": None},
+            {"source": None, "target": "b"},
+        ],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    assert verify_graph(graph_path, [{"name": "r", "from": "*", "to": "*"}]) == []
+    assert verify_graph(graph_path, [{"name": "r", "from": "None", "to": "None"}]) == []
+
+
 def test_load_rules_rejects_malformed_json(tmp_path: Path) -> None:
     rules_path = tmp_path / "rules.json"
     rules_path.write_text("{not valid json", encoding="utf-8")
