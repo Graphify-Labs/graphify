@@ -101,10 +101,11 @@ def build_tree(
     by_repo: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for n in file_nodes:
         by_repo[str(n.get("repo") or "")].append(n)
-    if list(by_repo) == [""]:
+    if len(by_repo) == 1:
+        # One repo (or none tagged) needs no wrapper root; a lone tag labels it.
         tree, matched, files = _build_repo_tree(
             file_nodes, root=root, max_children=max_children,
-            project_label=project_label)
+            project_label=project_label or next(iter(by_repo)) or None)
     else:
         tree = {"name": project_label or f"{len(by_repo)} repos",
                 "total_count": 0, "children": []}

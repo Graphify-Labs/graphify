@@ -207,3 +207,12 @@ def test_tree_cli_nodes_without_source_file_exits_1(tmp_path):
     assert r.returncode == 1, r.stdout
     assert "error:" in r.stderr and "source_file" in r.stderr, r.stderr
     assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_build_tree_single_repo_tag_has_no_wrapper_root():
+    """One repo tag builds the plain tree, labelled by the tag — no "1 repos" wrapper."""
+    graph = _repo_graph("solo", {"src/x.py": ["f"], "src/y.py": ["g"]})
+    tree = build_tree(graph)
+    assert tree["name"] == "solo"
+    assert {c["name"] for c in tree["children"]} == {"x.py", "y.py"}
+    assert build_tree(graph, project_label="mine")["name"] == "mine"
