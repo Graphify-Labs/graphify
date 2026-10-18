@@ -145,9 +145,22 @@ def _print_cloud_cta(out_dir: "Path") -> None:
 
 
 def _graph_root_for(gp: Path) -> Path:
-    """The analysed repo root for a graph file: <root>/<GRAPHIFY_OUT_NAME>/graph.json, else the file's own directory."""
+    """Resolve the source root, including graphs stored outside the repository."""
     from graphify.paths import GRAPHIFY_OUT_NAME
-    return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+
+    if gp.parent.name == GRAPHIFY_OUT_NAME:
+        marker = gp.parent / ".graphify_root"
+        try:
+            # This marker is written by extract/update. Don't read arbitrarily
+            # large or broken files when the graph path is user-supplied.
+            if marker.is_file() and marker.stat().st_size <= 4096:
+                root = Path(marker.read_text(encoding="utf-8-sig").strip())
+                if root.is_absolute() and root.is_dir():
+                    return root.resolve()
+        except (OSError, UnicodeError, ValueError):
+            pass
+        return gp.parent.parent
+    return gp.parent
 
 
 def _default_graph_path() -> str:
@@ -1723,8 +1736,7 @@ def dispatch_command(cmd: str) -> None:
         # (#2706). The graph is written to <root>/<GRAPHIFY_OUT_NAME>/graph.json,
         # so the root is the output dir's parent; a graph pointed at directly by
         # --graph falls back to its own directory.
-        from graphify.paths import GRAPHIFY_OUT_NAME
-        graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+        graph_root = _graph_root_for(gp)
         print(
             format_affected(
                 graph,
