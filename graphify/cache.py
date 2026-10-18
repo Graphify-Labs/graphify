@@ -17,6 +17,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_long_path as _os_long_path
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
@@ -1099,10 +1100,11 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         return None
     h = _salted_key(h, salt)
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
-    entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
+    # Extended-length form so a deep root does not push the entry past MAX_PATH.
+    entry = Path(_os_long_path(cache_dir(location, kind, prompt_fp) / f"{h}.json"))
     legacy_hit = False
     if prompt_fp and not entry.exists() and allow_legacy:
-        legacy = cache_dir(location, kind) / f"{h}.json"
+        legacy = Path(_os_long_path(cache_dir(location, kind) / f"{h}.json"))
         if legacy.exists():
             entry, legacy_hit = legacy, True
     if entry.exists():
@@ -1263,8 +1265,10 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         _relativize_ids_in(on_disk, p, root)
     h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
     location = cache_root if cache_root is not None else root
-    target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
-    entry = target_dir / f"{h}.json"
+    # Extended-length form: under a deep root the entry, and its longer temp
+    # name, overrun Windows MAX_PATH and the write fails the whole extraction.
+    target_dir = _os_long_path(cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file)))
+    entry = os.path.join(target_dir, f"{h}.json")
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
         os.write(fd, json.dumps(on_disk).encode())
