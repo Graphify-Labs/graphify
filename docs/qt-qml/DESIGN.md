@@ -22,8 +22,8 @@ cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
 INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
 the recorded local source/artifact profiles. Current integrated analysis uses
-policy 24 and AST schema 13 for the corrected INC-QML-53 repair. Its focused local
-source cases and frozen isolated-wheel profile pass; hosted proof remains pending and policy-22/23
+policy 25 and AST schema 13 for the corrected INC-QML-53 repair. Its focused local
+source cases pass; new wheel/hosted proof remains pending and policy-22/23/24
 evidence remains revision-bound. Expanded
 REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
@@ -1394,8 +1394,8 @@ extraction and mixed-language scans protect that separate boundary.
 
 Dynamic/relevant conditional mutations, unsupported flags, duplicate/unknown or
 not-yet-declared module targets and late property changes produce incomplete
-metadata. Native `.rc` target sources and RC-only include-directory properties
-are ignored only after their literal filenames/property names prove that they
+metadata. Native `.rc` target sources and RC-only include/prerequisite properties
+are exempted only after their literal filenames/property names prove that they
 cannot affect this analyzed membership/resource contract. A property expansion
 in any supported runtime metadata remains unsupported. `DIRECTORY` and
 `TARGET_DIRECTORY` source-property selectors reject before any local property
@@ -1421,8 +1421,38 @@ CMake or Qt runtime equivalence.
 The project-membership consumer uses this combined project URL decision; it
 cannot bypass ambiguity by consulting the explicit resource index alone.
 
-Policy 24 invalidates prior policy-22/23 derived analysis at unchanged input/package identity;
+Policy 25 invalidates prior policy-22/23/24 derived analysis at unchanged input/package identity;
 schema 13, semantic caches and the existing transactional publication owner are
 unchanged. [Traceability](../../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53)
 records focused old/new tests, alias replacement and real metadata-only
 retarget/removal parity; broader artifact/install/adoption proof is separate.
+
+### RC compilation prerequisites — policy-25 refinement
+
+`qml_cmake_properties` extends only the existing native-RC irrelevance proof.
+Every source-path token must be literal and identify an `.rc` input; the paired
+property names must be entirely `INCLUDE_DIRECTORIES`/`OBJECT_DEPENDS`. Either
+name alone, both orders and repeated allowed names are admissible. Those values
+remain opaque even in scoped commands or when they contain CMake expressions;
+the reader neither applies assignments nor evaluates, normalizes or opens their
+include/prerequisite paths. No new runtime/provider/resource fact is promised.
+Source-property scope selectors reject first. Mixed non-RC inputs, runtime or
+unknown properties and malformed pairs retain the ordinary incomplete guard.
+
+CMake's [OBJECT_DEPENDS](https://cmake.org/cmake/help/v3.30/prop_sf/OBJECT_DEPENDS.html)
+describes object compilation prerequisites, implemented by Make/Ninja rather than
+Visual Studio/Xcode. This is build scheduling metadata, not QML/C++ or runtime QRC
+membership. Its bounded exemption must not become a generic property ignore rule.
+Native `HEADER_FILE_ONLY` inputs keep their existing source membership; out-of-root
+declarations remain unavailable without a target read or accepted-corpus expansion.
+As further primary evidence, CMake's
+[AUTOMOC source scan](https://github.com/Kitware/CMake/blob/v3.30.9/Source/cmQtAutoGenInitializer.cxx#L854-L915)
+classifies target headers and C-like source extensions with dedicated autogen
+skip properties; an object-compilation flag does not authorize dropping native
+authoring sources from this analysis.
+
+Policy 25 invalidates earlier policy-23/24 analysis at unchanged input/package
+identity, while schema 13, semantic-cache and transactional publication ownership
+remain unchanged. The assigned local source/retention cases pass; earlier wheel
+proof does not verify this changed behavior. A new frozen artifact/install and
+hosted validation remain pending.

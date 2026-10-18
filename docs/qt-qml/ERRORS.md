@@ -518,3 +518,13 @@ Conflicting records for one Qt module/source/resource declaration identity raise
 consistent source-backed records followed by the normal guarded retry. Generic
 namespace IDs shared across unrelated-language source files retain their existing
 contract; this Qt validation cannot reject those legitimate repeated identities.
+
+The native-RC prerequisite refinement adds no diagnostic code or writer.
+A complete literal RC list with only INCLUDE_DIRECTORIES/OBJECT_DEPENDS is
+build-only evidence, including scoped commands and opaque computed values; it
+cannot create a provider/resource fact or cause a prerequisite-file read. Mixed
+source kinds, unknown/runtime properties, malformed pairs and scope selectors
+retain the existing unsupported/syntax outcomes and guarded publication behavior.
+Out-of-root native declarations retain explicit unavailable membership and no
+new read; the exemption is not a root-admission bypass. Policy-25 local source
+and retention/recovery cases pass; new artifact/hosted proof remains pending.

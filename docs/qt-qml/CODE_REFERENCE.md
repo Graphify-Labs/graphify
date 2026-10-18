@@ -257,7 +257,7 @@ REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 | `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; canonical contained input identity admits real path aliases without rewriting lexical provenance, reading target content, expanding the corpus or mutating borrowed facts |
 | `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
 | `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
-| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 24/schema 13 retain the same owners, preserve combined upstream/Qt facts and refresh prior followed Qt metadata/resource/native-header analysis at unchanged package/source versions |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 25/schema 13 retain the same owners, preserve combined upstream/Qt facts and refresh prior followed Qt metadata/resource/native-header and RC prerequisite analysis at unchanged package/source versions |
 | `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
 | `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
 | `tests/test_qt_project_membership_aliases.py` | Real Windows short-path and parent-symlink admission; unchanged installed-smoke assertions, canonical/cold/warm/full/manual/watch equality, foreign/conflicting transport rejection and durable retention/recovery |
@@ -653,7 +653,7 @@ facts. Native `HEADER_FILE_ONLY` inputs retain `qt_source` membership; source-pr
 scope selectors reject before local state mutation or the RC exemption.
 `qml_cmake_resources.py` owns explicit PREFIX/FILES target-form resource aliases.
 They reuse `ProjectFacts` bounds/original-byte spans and existing resource-path
-validation and rejects `DISCARD_FILE_CONTENTS` instead of treating empty resources
+validation and reject `DISCARD_FILE_CONTENTS` instead of treating empty resources
 as source endpoints. The project index applies `qt_source.resource_alias` to its
 module-prefix provider; malformed overrides cannot reactivate physical spelling.
 Explicit and module-generated resource providers enter one ambiguity decision.
@@ -663,8 +663,16 @@ existing extraction/provenance contract.
 The `qt_project_membership` resource consumer uses that same project-owned URL
 decision rather than reinterpreting the explicit-resource index in isolation.
 
-`qt_incremental` owns policy 24 invalidation; schema 13, semantic-cache and
+`qt_incremental` owns policy 25 invalidation; schema 13, semantic-cache and
 publication modules retain their existing responsibilities. New focused metadata
 tests cover provenance, tooling separation, accepted/rejected mutations and
 actual cold/warm/incremental producer output. Exact executed and pending profiles
 are recorded in [traceability](../../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
+
+The RC prerequisite refinement remains owned by
+`qml_cmake_properties.source_properties`: prove the complete literal RC source
+list and compile-only property-name set before exempting opaque values from
+runtime metadata interpretation. Selector rejection stays before the exemption;
+native source membership remains under its existing producer/index owners.
+`qt_incremental` advances the policy to 25; schema 13 and persistence owners
+stay unchanged. Current local source cases pass; new artifact/hosted evidence is pending.

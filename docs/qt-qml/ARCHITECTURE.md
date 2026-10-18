@@ -829,8 +829,8 @@ Qt effects or upstream released-package delivery.
 
 ## D28 — Bounded syntax recovery keeps semantic and publication authority
 
-Status: **Accepted for INC-QML-53; policy-24 local source and isolated-wheel
-profiles verified; hosted proof pending**.
+Status: **Accepted for INC-QML-53; policy-25 local source cases verified;
+new artifact/install and hosted proof pending**.
 A grammar misclassification of valid empty template-parameter defaults is repaired
 through an AST-validated byte-preserving view. The compatibility adapter may
 remove only the candidate default; the recovered declaration's named parameter
@@ -860,8 +860,18 @@ references and corrected header-processing rationale belong to the
 
 This is source analysis, not general C++ recovery, CMake evaluation or a Qt runtime
 model. It introduces no dependency, SDK execution, second corpus interpretation,
-diagnostic catalogue identity or persistence writer. Qt policy 24 forces the
+diagnostic catalogue identity or persistence writer. Qt policy 25 forces the
 existing derived-product refresh; combined AST schema 13 and semantic-cache
 ownership remain unchanged. Historical policy-22 source/installed/hosted proof
-and the initial policy-23 repair do not validate this correction; new evidence
+and policy-23/24 repair artifacts do not validate this correction; new evidence
 belongs to the INC-QML-53 traceability profile and its explicit pending boundaries.
+
+The policy-25 refinement admits only the proven native-RC
+compilation-property boundary: literal `.rc` source lists with
+`INCLUDE_DIRECTORIES`, `OBJECT_DEPENDS`, or both. Build-only values remain opaque;
+no value reads, expansion or runtime membership authority are introduced. Scope
+selectors still reject before the exemption, and native/out-of-root source
+membership rules remain unchanged. The design owns the exact name/syntax proof
+and CMake references; traceability owns the new execution evidence. Prior
+policy-24 artifact/source acceptance does not verify this changed extension;
+current source cases pass, while new artifact/hosted proof remains pending.

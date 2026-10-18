@@ -7,6 +7,7 @@ from graphify.extractors.qml_project_read import literal_path
 
 
 _NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+_RC_COMPILE_PROPERTIES = {"INCLUDE_DIRECTORIES", "OBJECT_DEPENDS"}
 
 
 def native_source(token):
@@ -44,9 +45,10 @@ def source_properties(facts, command, properties, consumed):
         reject(facts, command)
         return
     names = [token.value for token in pairs[::2]]
-    # RC include search directories affect a native resource compiler, never
-    # the source/module or QRC membership contract analyzed by this reader.
-    if native_resource(paths) and set(names) == {"INCLUDE_DIRECTORIES"}:
+    # These properties affect only RC compilation/rebuild prerequisites, never
+    # QML/native membership or QRC URLs. Values and repeated assignments stay
+    # opaque: no expansion, dependency read, or provider fact is authorized.
+    if native_resource(paths) and set(names) <= _RC_COMPILE_PROPERTIES:
         return
     allowed = {"QT_RESOURCE_ALIAS", "QT_QML_SINGLETON_TYPE", "HEADER_FILE_ONLY"}
     if (command.scoped or len(set(names)) != len(names) or set(names) - allowed

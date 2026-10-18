@@ -43,6 +43,14 @@ do not establish semantic acceptance.
 | Timers, blockers, deletion and ownership | Generic call/source facts may be visible | singleShot delivery, blockSignals/QSignalBlocker, deleteLater and QML ownership transitions have no runtime model. Separate acceptance is required for an extension. |
 | Other Qt modules and test/platform macros | Generic extraction where supported by the existing source parser | No individually verified API/overload or macro-expansion promise. Graphify does not execute QtTest macros, discover SDK internals or run corpus code. |
 
+The policy-25 RC prerequisite refinement has local source verification under INC-QML-53: only
+literal native-RC source lists with `INCLUDE_DIRECTORIES`/`OBJECT_DEPENDS` qualify
+for the build-only exemption. Include/prerequisite values remain uninterpreted,
+including conditions/computed values; source selectors, mixed/runtime/unknown
+properties and malformed syntax still reject. It adds no QML/C++ provider,
+runtime QRC URL or out-of-corpus admission. The earlier policy-24 table/profile
+does not verify this changed boundary; new artifact/hosted evidence is pending.
+
 ## Named macro accountability
 
 The audit reviews macro mechanisms separately from ordinary C++ syntax. The

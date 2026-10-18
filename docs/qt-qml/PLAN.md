@@ -2835,8 +2835,8 @@ head receives normal PR validation and does not inherit a fictitious tested SHA.
 
 ## INC-QML-53 — Bounded parser recovery and literal CMake additions
 
-Status: **Repair implemented; policy-24 local source and isolated artifact/install
-profiles verified; hosted and global/team adoption pending**.
+Status: **Policy-25 local source cases verified; new artifact/install, hosted
+proof and global/team adoption pending**.
 Dependencies: INC-QML-49–52 combined source/identity/publication boundaries.
 Owners: C++ compatibility maintainer; literal CMake maintainer; integration owner
 for policy, installed package and guarded application refresh. This correction
@@ -2847,20 +2847,20 @@ uses existing requirement IDs and public synthetic fixtures only.
 | REQ-QML-001-AC04; REQ-QML-008-AC02/AC04; REQ-QML-018-AC02 | Empty template defaults retain exact callable/native-member identity and byte/newline spans; AST-validated declaration ownership rejects expression/storage/callback ambiguity and malformed neighboring syntax |
 | REQ-QML-009-AC01/AC04; REQ-QML-020-AC01/AC02 | Flat private literal C/C++ additions attach to one preceding local module; native HEADER_FILE_ONLY inputs retain source membership while explicit nonnative tooling remains separately source-owned; native RC-only inputs cannot become QML providers |
 | REQ-QML-009-AC03; REQ-QML-010-AC02/AC04 | Source-property aliases and literal target-form PREFIX/FILES resources retain original provenance and bounded paths; alias overrides replace physical resource URLs; malformed/conflicting targets remain unresolved |
-| REQ-QML-010-AC01/AC03; REQ-QML-011-AC01–AC04 | Source cold/warm identities and metadata-only retarget/removal equal a clean accepted-corpus rebuild; policy 24 refreshes prior policy-22/23 products at unchanged package/source identity |
-| REQ-QML-012-AC01/AC02/AC04; REQ-QML-018-AC06 | Dynamic/scoped/late or malformed mutations retain explicit diagnostics and the prior published graph/manifest/report; force does not bypass the incomplete-extraction guard |
+| REQ-QML-010-AC01/AC03; REQ-QML-011-AC01–AC04 | Source cold/warm identities and metadata-only retarget/removal equal a clean accepted-corpus rebuild; policy 25 refreshes prior policy-22/23/24 products at unchanged package/source identity |
+| REQ-QML-012-AC01/AC02/AC04; REQ-QML-018-AC06 | Runtime-relevant dynamic/scoped/late or malformed mutations retain explicit diagnostics and the prior published graph/manifest/report; force does not bypass the incomplete-extraction guard |
 
 Boundaries: no CMake execution, arbitrary variable expansion, unknown module-target
 guess, bare QML target-source registration, generated runtime admission or Qt SDK
-execution. Source properties must precede metadata use. Resource support is the
+execution. Runtime-affecting source properties must precede metadata use. Resource support is the
 literal target/name/PREFIX/FILES form; BASE, inferred prefixes, output-variable
 forms and extra options including discarded file contents remain unsupported.
 Source-property DIRECTORY/TARGET_DIRECTORY selectors reject before local state
 mutation or an exemption. The only scoped exemption is
-provably irrelevant native `.rc` membership/RC include directories. Existing
+provably irrelevant native `.rc` membership and RC include/prerequisite properties. Existing
 metadata size/token/fact/depth limits remain in force.
 
-Compatibility: Qt policy 24 changes analysis invalidation only; schema 13,
+Compatibility: Qt policy 25 changes analysis invalidation only; schema 13,
 packaging dependencies, semantic cache lifetime and persistence owners stay
 unchanged. Existing diagnostic codes remain authoritative. Successful source
 admission is not a new log outcome or runtime Qt availability claim.
@@ -2872,9 +2872,10 @@ force bypass. Record source/artifact/install/corpus evidence separately. The
 policy-23 wheel/install checkpoint is historical and cannot verify the corrected
 source. The initial full local run completed with 45 shell-environment failures;
 all 45 individually pass after the bounded process-local shell correction, but
-that three-module rerun is not a new complete-suite result. Current corrected
-focused source cases, the final compatibility rerun and fresh isolated artifact/
-install profile pass. Complete corrected-source and hosted evidence and global/
+that three-module rerun is not a new complete-suite result. Earlier policy-24
+compatibility and isolated-install evidence remain historical for the RC change.
+Current policy-25 focused source and adjacent compatibility cases pass; new
+artifact/install, complete corrected-source and hosted evidence and global/
 team adoption remain pending. The guarded application
 refresh is separately owned and pending; upstream delivery remains separate from
 this fork-integration repair.
@@ -2921,10 +2922,36 @@ identity differs, one deliberate existing CI dispatch is bound to and read back
 against the resulting merged SHA; no additional workflow or duplicate full
 feature-branch run is introduced.
 
-The committed local checkpoint is `7e29b34a`: final compatibility reports 297
+The earlier policy-24 committed local checkpoint is `7e29b34a`: compatibility reports 297
 passes with seven unavailable Windows alias profiles, and the fresh isolated
 wheel reports 191 passes with no skips. Source and installed profiles, artifact
 digest, AST-only graph refresh and remaining delivery gaps are recorded in
 [traceability](../../tests/TRACEABILITY.md#committed-local-package-checkpoint--7e29b34a).
 The global tool and team artifact release remain separate from this isolated
 installation proof.
+
+### RC compilation-prerequisite correction — preimplementation matrix
+
+Status: **Implemented; policy-25 local source cases verified; new artifact/install
+and hosted proof pending**.
+This remains the cohesive literal-metadata correction in INC-QML-53 under the
+existing requirement and acceptance identities. The policy-24 `7e29b34a` wheel
+is a historical checkpoint for this changed boundary, not proof of the proposed
+RC exemption. The matrix was recorded before implementation; current source
+execution is assigned in traceability.
+
+| Acceptance IDs | Required observable outcome |
+| --- | --- |
+| REQ-QML-009-AC01/AC04; REQ-QML-010-AC02/AC04 | A complete literal native `.rc` source list accepts only `INCLUDE_DIRECTORIES`, `OBJECT_DEPENDS`, or both in either order as build-only declarations, including repeated allowed names. Scoped commands and computed include/prerequisite values remain uninterpreted; no value is read, expanded or projected to a QML/C++ provider or runtime QRC URL. |
+| REQ-QML-009-AC04; REQ-QML-012-AC01/AC04; REQ-QML-020-AC02 | DIRECTORY/TARGET_DIRECTORY selectors reject before the RC exemption. Dynamic source paths, mixed non-RC sources, runtime-affecting/unknown properties and malformed property syntax retain explicit rejection and existing bounds. Repeated names within an entirely compile-only RC property set do not introduce a rejection. |
+| REQ-QML-009-AC01; REQ-QML-018-AC02; REQ-QML-020-AC01/AC02 | Native HEADER_FILE_ONLY source membership remains unchanged. Out-of-root source declarations remain explicitly unavailable and create no target edge, additional read or corpus expansion; build-only RC evidence cannot authorize them. |
+| REQ-QML-011-AC01–AC04; REQ-QML-012-AC02; REQ-QML-018-AC06 | RC-property-only updates match clean cold/warm rebuilds; no stale provider/resource edge appears. Rejected mixed/scoped-selector/runtime metadata retains graph, manifest, report, analysis state and successful cache ownership; repair and unchanged repeat remain safe. |
+| REQ-QML-011-AC03/AC04; REQ-QML-018-AC02/AC06 | Policy 25 invalidates accepted prior policy-23/24 products at unchanged package/source identity. Rejected refresh retains prior products; corrected retry and repeat commit the current policy without changing AST schema 13. |
+
+The exemption proves irrelevance only for native RC object compilation: its
+include search and prerequisite scheduling cannot create the QML/C++ or runtime
+QRC facts this reader models. It must not become a generic property ignore rule,
+evaluate CMake variables, read prerequisite files, execute build hooks, or expand
+the accepted corpus. Public synthetic tests must cover each matrix row before
+claiming verification. Source, frozen-wheel/isolated-install, hosted and separately
+owned application-adoption evidence remain distinct.

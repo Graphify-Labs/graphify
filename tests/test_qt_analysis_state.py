@@ -107,10 +107,10 @@ def test_package_fact_policy_and_ignore_configuration_invalidate_unchanged_qml(t
     assert inspect_qt_analysis(tmp_path, out, [path], excludes=["generated/"]).changed
 
 
-@pytest.mark.parametrize("prior_policy", [22, 23])
+@pytest.mark.parametrize("prior_policy", [22, 23, 24])
 def test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats(tmp_path, monkeypatch, prior_policy):
     # INC-QML-53 changes parser facts without changing package versions or source
-    # bytes. Policy 24 must retire either earlier accepted checkpoint, then settle.
+    # bytes. Policy 25 must retire every earlier accepted checkpoint, then settle.
     import graphify.qt_incremental as policy
 
     path = tmp_path / "CMakeLists.txt"
@@ -124,7 +124,7 @@ def test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats
         commit_qt_analysis(out, old)
         assert not inspect_qt_analysis(tmp_path, out, [path]).changed
     current = inspect_qt_analysis(tmp_path, out, [path])
-    assert policy.QT_POLICY_VERSION == 24
+    assert policy.QT_POLICY_VERSION == 25
     assert current.changed and current.fingerprint != old.fingerprint
     assert path.read_bytes() == raw
     commit_qt_analysis(out, current)

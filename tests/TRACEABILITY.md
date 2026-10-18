@@ -1625,13 +1625,13 @@ original coverage artifact remain preserved; no upstream PR or merge is performe
 
 ## Bounded parser repair — INC-QML-53
 
-Status: **Repair implemented; policy-24 local source and isolated-wheel profiles
-verified; hosted proof and guarded application refresh pending**.
+Status: **Policy-25 local source cases verified; new artifact/install, hosted
+proof and guarded application refresh pending**.
 This profile extends the
 bounded forms under existing criteria; twenty-one requirements/eighty-five
 acceptance IDs remain unchanged. Historical policy-22 hosted acceptance remains
 bound to its recorded revision and is not evidence for this repair. Current
-corrected repair uses Qt policy 24, AST schema 13 and the existing semantic-cache and
+corrected repair uses Qt policy 25, AST schema 13 and the existing semantic-cache and
 transactional publication owners. Public synthetic fixtures contain no private
 application source, project identity or machine path. The initial policy-23
 assignments and executed checkpoints below are historical evidence for
@@ -1951,3 +1951,91 @@ Ruff and all 134 generated artifacts pass. Full Pyright retains its disclosed
 modules. None of these overlapping runs is a fresh complete-source success or
 hosted validation. Required PR/exact merged-SHA checks, the separately owned
 application graph refresh and any team registry release remain pending.
+
+### Native-RC prerequisite refinement — policy 25
+
+The new RC-only OBJECT_DEPENDS exemption is part of INC-QML-53, under the existing
+acceptance identities and the preimplementation matrix in
+[the plan](../docs/qt-qml/PLAN.md#rc-compilation-prerequisite-correction--preimplementation-matrix).
+The `7e29b34a`/policy-24 source and installed checkpoint above remains historical
+for this changed boundary. Current policy-25 source cases pass; new wheel, hosted
+and application verification remain pending.
+
+| Acceptance IDs | Required production evidence / status |
+| --- | --- |
+| REQ-QML-009-AC01/AC04; REQ-QML-010-AC02/AC04 | `tests/test_qt_cmake_rc_dependencies.py::test_req_qml009_ac04_rc_compile_properties_remain_opaque_with_original_spans`: literal RC lists, INCLUDE_DIRECTORIES/OBJECT_DEPENDS individually, both orders and repeated allowed names; scoped commands, opaque computed values, BOM/CRLF/Unicode and original neighboring declaration spans. No RC property/runtime provider/resource fact is created. Pass in the frozen 277-case local source selection; zero skips. |
+| REQ-QML-009-AC04; REQ-QML-012-AC01/AC04; REQ-QML-020-AC02 | `test_req_qml012_ac01_rc_exemption_rejects_unproven_source_scope_or_property` in that module protects selector-first rejection, dynamic/list source paths, mixed non-RC/runtime/unknown properties and malformed pairs. `test_req_qml009_ac04_rc_dependencies_and_authoring_targets_never_expand_accepted_corpus` guards real outside-file reads while retaining the in-corpus native HEADER_FILE_ONLY provider and explicit unavailable outside membership. Pass in the frozen 277-case local source selection; zero skips. |
+| REQ-QML-011-AC01/AC02/AC04; REQ-QML-012-AC02; REQ-QML-018-AC06 | `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac02_rc_dependency_only_changes_match_full_and_repeat` and `test_req_qml012_ac02_rc_rejection_preserves_products_and_recovers`: property/prerequisite-only parity, stable analysis state, forced/non-forced repeated rejection retaining graph/manifest/report/policy bytes, repair and clean/repeated rebuild. Pass in the frozen 277-case local source selection; zero skips. |
+| REQ-QML-011-AC03/AC04; REQ-QML-018-AC02/AC06 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers earlier policy checkpoints. `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits25` proves actual policy-23/24 accepted products survive rejected forced refresh, then repaired retry/repeat commits policy 25 and matches a clean rebuild. Schema 13 remains unchanged. Local source execution passes; new frozen-wheel/install and hosted outcomes remain separate pending profiles. |
+
+Public fixtures must contain only synthetic project data. This refinement neither
+reads external prerequisite/source contents nor changes corpus admission, native
+membership, persistence ownership or the requirement/increment numbering scheme.
+
+The final before/after comparison uses the exact policy-24 owners and current
+accepted regression assertions. Provisional reload results and the earlier
+overstrict fixture expectation are excluded from release evidence; only the
+final verified receipts below establish the reported negative control.
+
+The first authoring-boundary fixture overreached by requiring every graph node to
+have a source file. The established generic extractor legitimately emits a
+sourceless external QObject reference for inheritance. The corrected expectation
+keeps exact accepted-root ownership for source-backed nodes, explicit outside-read
+guards and unavailable outside membership. It additionally checks that the sole
+generic sentinel keeps its inheritance role without Qt/QML metadata, index
+membership or native binding authority. This corrects the fixture under the
+existing source-backed provenance contract; no production behavior changes for
+that assertion correction.
+
+The frozen policy-25 source command passes **277 cases, zero failures/errors/
+skips**, 17 existing warnings, in 55.08 seconds. The two new RC modules contribute
+150 cases and execute every assignment above, including actual prior-policy
+rejection/repair retention. Its isolated coverage destination preserves unrelated
+coverage evidence:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/parser-repair/rc-followup/final.coverage'
+.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --tb=short --junitxml=.venv/parser-repair/rc-followup/final.xml --cov=graphify.extractors.qml_cmake_properties --cov=graphify.qt_incremental --cov-report=term-missing --cov-report=json:.venv/parser-repair/rc-followup/final-coverage.json tests/test_qt_cmake_rc_dependencies.py tests/test_qt_cmake_rc_updates.py tests/test_qt_analysis_state.py tests/test_qt_cmake_mutations.py tests/test_qt_cmake_review_boundaries.py tests/test_qt_cmake_header_membership.py tests/test_qt_incremental_policy.py > .venv/parser-repair/rc-followup/final.log 2>&1
+```
+
+The final negative control executes exact `cffb2a73` Git blobs for the CMake
+dispatcher, source-property owner and policy owner inside the real module globals,
+preserving eager facade bindings. It first verifies policy 24 and rejection of the
+minimal OBJECT_DEPENDS fixture, then executes the current 150 new cases. Result:
+**96 failed, 54 passing controls**, zero JUnit errors, 15 existing warnings, in
+6.46 seconds. No source checkout or installed-runtime bytes are replaced. Earlier
+swapped-module reload output is invalid evidence because eager consumers retained
+different owners; it is excluded from these counts.
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/parser-repair/rc-followup/negative-final-exact.coverage'
+.venv/Scripts/python.exe .venv/parser-repair/rc-followup/negative.py > .venv/parser-repair/rc-followup/negative-final-exact.log 2>&1
+```
+
+The exact negative-control JUnit is `negative-final-exact.xml` in that same
+directory; printed owner hashes bind its source identity. An independent review
+selection covering both RC modules, native-header membership and the exact policy
+retirement test also passes 167 cases with no skips. These selections overlap and
+are not added into a total.
+
+The adjacent native/persistence/unrelated-language command passes **498 cases,
+zero failures/errors/skips**, 88 existing warnings, in 50.62 seconds, with
+an isolated coverage destination:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/parser-repair/rc-release/adjacent.coverage'
+.venv/Scripts/python.exe -X utf8 -m pytest tests/test_qt_cpp_syntax.py tests/test_qt_product_publication.py tests/test_qt_readonly_publication.py tests/test_languages.py -q --tb=short --junitxml=.venv/parser-repair/rc-release/adjacent-tests.xml
+```
+
+Full Ruff and all 134 generated skill artifacts pass. Full explicit-interpreter
+Pyright retains **605 errors, zero warnings**; the five changed modules separately
+report zero errors/warnings. The source-property helper reaches 71/71 covered
+lines; policy coverage misses only its unchanged legacy lines. The accepted
+metadata parser smoke has zero diagnostics/failures and leaves its input bytes
+unchanged; no application source, path or content hash is retained here.
+
+These results verify the declared local policy-25 source cases. A newly committed
+raw-blob wheel and isolated installation, current hosted/full-source validation,
+application graph refresh and team artifact adoption remain pending. Policy-24
+wheel/install proof and the earlier complete-source result are historical and
+cannot establish those remaining outcomes.
