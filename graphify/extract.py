@@ -1520,6 +1520,13 @@ _CSHARP_CONFIG = LanguageConfig(
         "enum_declaration",
         "struct_declaration",
         "record_declaration",
+        # A `delegate` is a named type. Without it the declaration was dropped,
+        # yet in-file references to the delegate type (a `BinOp` field/parameter)
+        # still ran through `ensure_named_node` and minted a *sourceless* stub —
+        # a provenance violation (a real in-file type losing to a sourceless god
+        # node). It has a `name` field and no body, so it emits a clean empty
+        # type node that those references bind to.
+        "delegate_declaration",
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
