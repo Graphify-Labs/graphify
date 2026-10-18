@@ -155,6 +155,13 @@ def test_resolve_js_to_ts_when_real_file_is_ts(tmp_path):
     assert _resolve_js_module_path(written_as) == target
 
 
+def test_resolve_js_to_tsx_when_real_file_is_tsx(tmp_path):
+    """NodeNext .js specifiers may name a JSX-bearing TypeScript source."""
+    target = _write(tmp_path / "Component.tsx", "export const x = 1")
+    written_as = tmp_path / "Component.js"
+    assert _resolve_js_module_path(written_as) == target
+
+
 def test_resolve_jsx_to_tsx_when_real_file_is_tsx(tmp_path):
     target = _write(tmp_path / "Component.tsx", "export const x = 1")
     written_as = tmp_path / "Component.jsx"
@@ -188,6 +195,20 @@ def test_bare_path_import_resolves_in_ts_file(tmp_path):
     expected = _make_id(str(target))
     assert expected in _import_targets(result), (
         f"Bare-path .ts import must resolve to target node id; "
+        f"expected {expected}; got {_import_targets(result)}"
+    )
+
+
+def test_js_specifier_import_resolves_to_tsx_file(tmp_path):
+    """A NodeNext-style .js import must retain its edge to a .tsx source."""
+    target = _write(tmp_path / "Button.tsx",
+                    "export default function Button() { return null }\n")
+    importer = _write(tmp_path / "page.ts",
+                      "import Button from './Button.js'\nButton()\n")
+    result = extract_js(importer)
+    expected = _make_id(str(target))
+    assert expected in _import_targets(result), (
+        f".js specifier must resolve to the .tsx source node; "
         f"expected {expected}; got {_import_targets(result)}"
     )
 

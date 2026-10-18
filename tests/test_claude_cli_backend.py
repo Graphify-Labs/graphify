@@ -172,6 +172,98 @@ def test_call_llm_success_still_returns_result_text():
         assert llm._call_llm("dummy", backend="claude-cli") == "a fine label"
 
 
+@pytest.mark.parametrize(
+    ("env_model", "explicit_model", "expected_model"),
+    [
+        ("haiku", None, "haiku"),
+        (" claude-haiku-4-5-20251001 ", None, "claude-haiku-4-5-20251001"),
+        ("haiku", "sonnet", "sonnet"),
+        (None, "sonnet", "sonnet"),
+        (None, None, None),
+        ("", None, None),
+        ("   ", None, None),
+        ("haiku", "", "claude-code-plan"),
+    ],
+)
+def test_call_llm_model_precedence(
+    monkeypatch, env_model, explicit_model, expected_model,
+):
+    """Plain Claude CLI calls honor the env model without changing explicit defaults."""
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_CLI_MODEL", raising=False)
+    if env_model is not None:
+        monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", env_model)
+    envelope = dict(_ENVELOPE, result="a fine label")
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        if explicit_model is None:
+            result = llm._call_llm("dummy", backend="claude-cli")
+        else:
+            result = llm._call_llm(
+                "dummy", backend="claude-cli", model=explicit_model,
+            )
+    assert result == "a fine label"
+    argv = run.call_args.args[0]
+    if expected_model is None:
+        assert "--model" not in argv
+    else:
+        assert argv.count("--model") == 1
+        assert argv[argv.index("--model") + 1] == expected_model
+
+
+def test_label_batch_uses_claude_cli_model_env(monkeypatch):
+    """The label call chain forwards env-only model selection and still parses labels."""
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", "haiku")
+    envelope = dict(_ENVELOPE, result=json.dumps({"7": "Model Routing"}))
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        labels = llm._label_batch_with_retry(
+            [7], ["7: Claude CLI, Community Labels"],
+            backend="claude-cli", model=None,
+        )
+    assert labels == {7: "Model Routing"}
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--model") + 1] == "haiku"
+
+
+_MCP_PREAMBLE = (
+    "Client.listTools() called but server does not advertise tools capability "
+    "- returning empty list\n"
+)
+
+
+def test_envelope_survives_a_diagnostic_preamble_on_stdout():
+    """An MCP server that advertises no tools must not kill the whole chunk.
+
+    The CLI writes that notice to stdout ahead of the envelope, so json.loads
+    saw `Client.listTools()...` and raised. The failure lands after the model
+    has answered, so the tokens are already spent and the chunk is dropped --
+    every chunk, for anyone with an MCP server configured.
+    """
+    completed = MagicMock(
+        returncode=0, stdout=_MCP_PREAMBLE + json.dumps(_ENVELOPE), stderr=""
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
+
+
+def test_envelope_survives_preamble_around_array_shaped_stream():
+    """Same, for the >= 2.1 array-of-events shape."""
+    stream = [{"type": "system", "subtype": "init"}, _ENVELOPE]
+    completed = MagicMock(
+        returncode=0,
+        stdout=_MCP_PREAMBLE + json.dumps(stream) + "\ntrailing noise\n",
+        stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
+
+
 def test_raises_on_garbage_envelope():
     completed = MagicMock(returncode=0, stdout="not json", stderr="")
     with patch("shutil.which", return_value="/fake/bin/claude"), \
