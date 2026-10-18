@@ -199,6 +199,20 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     return False
 
 
+def _is_contains_only_ast_node(G: nx.Graph, node_id: str) -> bool:
+    """AST declarations (type aliases, enum members, local consts, JSON keys)
+    whose only edge is the structural `contains` from their declaring file are
+    working as designed, not documentation gaps (#4205)."""
+    from graphify.build import _is_ast_tier
+    attrs = G.nodes[node_id]
+    if not _is_ast_tier(attrs):
+        return False
+    if G.degree(node_id) != 1:
+        return False
+    edges = list(G.edges(node_id, data=True))
+    return len(edges) == 1 and edges[0][2].get("relation") == "contains"
+
+
 from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS
 
 
@@ -478,7 +492,11 @@ def suggest_questions(
     questions = []
     node_community = _node_community_map(communities)
 
-    # 1. AMBIGUOUS edges → unresolved relationship questions
+    # 1. AMBIGUOUS edges → unresolved relationship questions.
+    # Tagged ``low_confidence=True`` (#4199): the audit trail stays
+    # intact but downstream renderers (report.py) move these into a
+    # separate "Low-confidence Hints" section so they do not compete
+    # with EXTRACTED/INFERRED bridges in the main list.
     for u, v, data in G.edges(data=True):
         if data.get("confidence") == "AMBIGUOUS":
             ul = G.nodes[u].get("label", u)
@@ -488,6 +506,7 @@ def suggest_questions(
                 "type": "ambiguous_edge",
                 "question": f"What is the exact relationship between `{ul}` and `{vl}`?",
                 "why": f"Edge tagged AMBIGUOUS (relation: {relation}) - confidence is low.",
+                "low_confidence": True,
             })
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
@@ -552,6 +571,7 @@ def suggest_questions(
         if G.degree(n) <= 1
         and not _is_file_node(G, n)
         and not _is_concept_node(G, n)
+        and not _is_contains_only_ast_node(G, n)
         and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:

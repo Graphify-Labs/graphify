@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 
+import importlib.util as _ilu
 import sys
 
 
@@ -16,7 +17,17 @@ from pathlib import Path
 
 
 
+import pytest
+
 from graphify.extract import extract
+
+# tree-sitter-solidity is an optional extra, not installed by a default
+# `uv sync`. Skip the grammar tests when it is absent; the missing-parser
+# test below still runs because it simulates the absent grammar itself.
+_needs_solidity = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_solidity") is None,
+    reason="tree-sitter-solidity not installed (optional [solidity] extra)",
+)
 
 
 
@@ -37,6 +48,7 @@ def _edge_labels(result: dict, relation: str) -> set[tuple[str, str]]:
     }
 
 
+@_needs_solidity
 def test_solidity_contract_members_and_calls_are_extracted(tmp_path):
     source = tmp_path / "Counter.sol"
     source.write_text(
@@ -57,6 +69,7 @@ def test_solidity_contract_members_and_calls_are_extracted(tmp_path):
     assert ("increment()", "record()") in _edge_labels(result, "calls")
 
 
+@_needs_solidity
 def test_solidity_free_functions_and_their_calls_are_extracted(tmp_path):
     # File-level (free) functions — legal since Solidity 0.7 — live outside any
     # contract. Before the fix the extractor only descended into named type
@@ -76,6 +89,7 @@ def test_solidity_free_functions_and_their_calls_are_extracted(tmp_path):
     assert ("quarter()", "halve()") in _edge_labels(result, "calls")
 
 
+@_needs_solidity
 def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     (tmp_path / "Base.sol").write_text(
         "contract Base { function baseRun() internal {} }\n", encoding="utf-8"
@@ -119,6 +133,7 @@ def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     assert len([edge for edge in result["edges"] if edge["relation"] == "imports_from"]) == 2
 
 
+@_needs_solidity
 def test_solidity_enum_values_emit_case_of_not_contains(tmp_path):
     """A Solidity enum value is a discriminant case, so it must get a `case_of`
     edge like every other language with enums (Java #1719, C#, Swift, Rust,
@@ -153,6 +168,7 @@ def test_solidity_enum_values_emit_case_of_not_contains(tmp_path):
     assert ("Point", "x") not in case_of
 
 
+@_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
 
@@ -161,6 +177,7 @@ def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     assert ('run()', 'helper()') in _edge_labels(result, "calls")
 
 
+@_needs_solidity
 def test_solidity_malformed_tail_comments_and_strings_do_not_create_phantoms(tmp_path):
     source = tmp_path / 'Broken.sol'
     source.write_text('contract Kept { function valid() public {} string constant text = "function Ghost()"; /* function Hidden() {} */', encoding="utf-8")

@@ -2081,3 +2081,34 @@ def test_method_ghost_ambiguous_same_name_in_one_file_is_not_merged_3705():
     assert not G.has_edge("doc", "svc_a_save_state")
     assert not G.has_edge("doc", "svc_b_save_state")
 
+
+
+def test_has_parallel_links_detects_repeated_pairs():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "contains"},
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    assert has_parallel_links(links) is True
+
+
+def test_has_parallel_links_false_without_repeats():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    assert has_parallel_links(links) is False
+    assert has_parallel_links([]) is False
+    assert has_parallel_links(None) is False
+
+
+def test_has_parallel_links_antiparallel_is_not_parallel_when_directed():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "a", "relation": "calls"},
+    ]
+    assert has_parallel_links(links, directed=True) is False
+    assert has_parallel_links(links, directed=False) is True
