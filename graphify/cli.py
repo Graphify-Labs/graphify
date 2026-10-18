@@ -4612,6 +4612,7 @@ def dispatch_command(cmd: str) -> None:
                 # written as a complete cache entry, re-promoting it (#1950).
                 from graphify.llm import (
                     _partial_source_files as _partial_sf,
+                    _semantic_cache_edges as _cache_edges,
                     _strip_partial_markers as _strip_partial,
                 )
                 _partial_semantic_files = set(_partial_sf(fresh))
@@ -4658,7 +4659,7 @@ def dispatch_command(cmd: str) -> None:
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
-                        fresh.get("edges", []),
+                        _cache_edges(fresh),
                         fresh.get("hyperedges", []),
                         root=target,
                         cache_root=out_root,

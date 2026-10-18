@@ -2437,8 +2437,16 @@ def _partial_source_files(result: dict) -> list[str]:
     return sorted(seen)
 
 
+def _semantic_cache_edges(result: dict) -> list:
+    """Keep graph relations from a partial foreign producer out of another cache."""
+    return [
+        edge for edge in result.get("edges", [])
+        if not isinstance(edge, dict) or not edge.get("_provenance_partial")
+    ]
+
+
 def _strip_partial_markers(result: dict) -> None:
-    """Remove the internal ``_partial`` marker from every item in ``result``.
+    """Remove internal partial and cache-eligibility markers from every item.
 
     Call this only AFTER the semantic cache has been saved (the save consumes the
     marker to stamp affected entries ``partial: True``). Stripping it keeps the
@@ -2448,6 +2456,7 @@ def _strip_partial_markers(result: dict) -> None:
         for item in result.get(bucket, []):
             if isinstance(item, dict):
                 item.pop("_partial", None)
+                item.pop("_provenance_partial", None)
 
 
 def _resolve_provenance_path(value: "str | Path", root: Path) -> Path:
@@ -2588,6 +2597,7 @@ def _extract_with_adaptive_retry(
     _depth: int = 0,
     *,
     deep_mode: bool = False,
+    _recovery_accounting: bool = False,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`),
     the API rejects the prompt as too large for the model's context window, or
@@ -2637,12 +2647,38 @@ def _extract_with_adaptive_retry(
     non-splittable file (e.g. one huge code file) can't be made smaller than
     itself, so we return what we got and warn.
     """
+    observed_usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def _extract_once() -> dict:
+        response = extract_files_direct(
+            chunk, backend=backend, api_key=api_key, model=model, root=root,
+            deep_mode=deep_mode,
+        )
+        for key in observed_usage:
+            observed_usage[key] += response.get(key, 0)
+        return response
+
+    def _finish(response: dict, *, includes_children: bool = False) -> dict:
+        if not _recovery_accounting:
+            return response
+        # Each invocation owns its direct calls; children already own theirs.
+        # Do not mutate provider responses, which callers may retain or reuse.
+        return {
+            **response,
+            **{
+                key: observed_usage[key] + (response.get(key, 0) if includes_children else 0)
+                for key in observed_usage
+            },
+        }
+
     def _merge_two(left_units, right_units) -> dict:
         left = _extract_with_adaptive_retry(
-            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
         right = _extract_with_adaptive_retry(
-            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2667,9 +2703,7 @@ def _extract_with_adaptive_retry(
         return None
 
     try:
-        result = extract_files_direct(
-            chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
-        )
+        result = _extract_once()
         attempts = 1
         provenance_retry_available = max_depth > 0
         hollow_delays = iter(_HOLLOW_BACKOFF_S if max_depth > 0 else ())
@@ -2692,15 +2726,13 @@ def _extract_with_adaptive_retry(
                     uncovered_note = f" while leaving {uncovered_names} uncovered"
                 if provenance_retry_available:
                     provenance_retry_available = False
+                    _recovery_accounting = True
                     print(
                         f"[graphify] retrying the same chunk of {len(chunk)} after a provenance "
                         f"mismatch: returned {outside_names} outside the chunk{uncovered_note}",
                         file=sys.stderr,
                     )
-                    result = extract_files_direct(
-                        chunk, backend=backend, api_key=api_key, model=model,
-                        root=root, deep_mode=deep_mode,
-                    )
+                    result = _extract_once()
                     attempts += 1
                     continue
                 print(
@@ -2732,6 +2764,7 @@ def _extract_with_adaptive_retry(
                         continue
                     edge_path = _resolve_provenance_path(edge["source_file"], root)
                     if edge_path.is_file() and _provenance_path_identity(edge_path) not in chunk_sources:
+                        edge["_provenance_partial"] = True
                         edge.pop("_partial", None)
                 result["_partial_files"] = sorted(
                     set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
@@ -2750,9 +2783,7 @@ def _extract_with_adaptive_retry(
                 file=sys.stderr,
             )
             time.sleep(delay)
-            result = extract_files_direct(
-                chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
-            )
+            result = _extract_once()
             attempts += 1
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow or timeout
         is_timeout = _looks_like_timeout(exc)
@@ -2767,14 +2798,14 @@ def _extract_with_adaptive_retry(
                     f"depth {_depth}; splitting the slice and retrying",
                     file=sys.stderr,
                 )
-                return _merge_two([halves[0]], [halves[1]])
+                return _finish(_merge_two([halves[0]], [halves[1]]), includes_children=True)
             fail_desc = "timed out" if is_timeout else "exceeds model context"
             print(
                 f"[graphify] single-file chunk {unit_path(chunk[0])} {fail_desc} "
                 f"and cannot be split further: {exc}",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            return _finish({"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"})
         if _depth >= max_depth:
             persist_desc = "still times out" if is_timeout else "still overflows context"
             print(
@@ -2782,7 +2813,7 @@ def _extract_with_adaptive_retry(
                 f"recursion depth {_depth} (max {max_depth}) — dropping",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            return _finish({"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"})
         print(
             f"[graphify] chunk of {len(chunk)} {reason} at depth "
             f"{_depth} ({type(exc).__name__}); splitting in half and retrying",
@@ -2790,12 +2821,14 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
-        return {
+        return _finish({
             "nodes": left.get("nodes", []) + right.get("nodes", []),
             "edges": left.get("edges", []) + right.get("edges", []),
             "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
@@ -2808,7 +2841,7 @@ def _extract_with_adaptive_retry(
                 left.get("_out_of_chunk_dropped", 0) + right.get("_out_of_chunk_dropped", 0)
             ),
             "_out_of_chunk_node_ids": _merged_out_of_chunk_node_ids(left, right),
-        }
+        }, includes_children=True)
 
     if result.get("finish_reason") == "hollow":
         # Still hollow after every retry. Fail the chunk loudly rather than
@@ -2828,10 +2861,10 @@ def _extract_with_adaptive_retry(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
         result["finish_reason"] = "stop"
-        return result
+        return _finish(result)
 
     if result.get("finish_reason") != "length":
-        return result
+        return _finish(result)
 
     if len(chunk) <= 1:
         halves = _split_lone_slice()
@@ -2841,7 +2874,7 @@ def _extract_with_adaptive_retry(
                 f"splitting the slice and retrying",
                 file=sys.stderr,
             )
-            return _merge_two([halves[0]], [halves[1]])
+            return _finish(_merge_two([halves[0]], [halves[1]]), includes_children=True)
         print(
             f"[graphify] single-file chunk {unit_path(chunk[0])} truncated at "
             f"max_completion_tokens — partial result kept (not cached as complete)",
@@ -2855,7 +2888,7 @@ def _extract_with_adaptive_retry(
         result["_partial_files"] = sorted(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
-        return result
+        return _finish(result)
 
     if _depth >= max_depth:
         print(
@@ -2871,7 +2904,7 @@ def _extract_with_adaptive_retry(
         result["_partial_files"] = sorted(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
-        return result
+        return _finish(result)
 
     print(
         f"[graphify] chunk of {len(chunk)} truncated at depth {_depth}, "
@@ -2881,13 +2914,15 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+        _recovery_accounting=_recovery_accounting,
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+        _recovery_accounting=_recovery_accounting,
     )
 
-    return {
+    return _finish({
         "nodes": left.get("nodes", []) + right.get("nodes", []),
         "edges": left.get("edges", []) + right.get("edges", []),
         "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
@@ -2903,7 +2938,7 @@ def _extract_with_adaptive_retry(
             left.get("_out_of_chunk_dropped", 0) + right.get("_out_of_chunk_dropped", 0)
         ),
         "_out_of_chunk_node_ids": _merged_out_of_chunk_node_ids(left, right),
-    }
+    }, includes_children=True)
 
 
 def extract_corpus_parallel(
@@ -3048,7 +3083,7 @@ def extract_corpus_parallel(
             # entries — and a later standard run never serves deep ones (#1894).
             _scs(
                 result.get("nodes", []),
-                result.get("edges", []),
+                _semantic_cache_edges(result),
                 result.get("hyperedges", []),
                 root=root,
                 cache_root=cache_root,

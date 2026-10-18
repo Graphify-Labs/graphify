@@ -831,11 +831,12 @@ def test_foreign_hyperedge_does_not_get_the_binary_edge_exception(tmp_path):
 
 
 @pytest.mark.parametrize("edge_source", ["B.md", "log.md"])
+@pytest.mark.parametrize("transport", ["serial", "parallel", "adaptive"])
 def test_provisional_foreign_edge_preserves_later_authority_and_warm_cache(
-    tmp_path, edge_source,
+    tmp_path, edge_source, transport,
 ):
     from graphify.cache import check_semantic_cache, load_cached, save_semantic_cache
-    from graphify.llm import _extraction_system, extract_corpus_parallel
+    from graphify.llm import _extraction_system, _semantic_cache_edges, extract_corpus_parallel
 
     first, second, log = [tmp_path / name for name in ("A.md", "B.md", "log.md")]
     for path in (first, second, log):
@@ -846,6 +847,10 @@ def test_provisional_foreign_edge_preserves_later_authority_and_warm_cache(
     def mixed(chunk, **_kwargs):
         name = chunk[0].name
         calls.append(name)
+        if len(chunk) > 1:
+            result = _provenance_result("A.md", "a")
+            result["finish_reason"] = "length"
+            return result
         result = _provenance_result(name, "a" if name == "A.md" else "b")
         if name == "A.md":
             result["nodes"].extend(_provenance_result("B.md", "b")["nodes"])
@@ -861,12 +866,18 @@ def test_provisional_foreign_edge_preserves_later_authority_and_warm_cache(
     with patch("graphify.llm.extract_files_direct", side_effect=mixed):
         result = extract_corpus_parallel(
             [first, second], backend="kimi", root=tmp_path,
-            token_budget=None, chunk_size=1, max_concurrency=1,
-            max_retry_depth=3, on_chunk_done=checkpoint,
+            token_budget=None, chunk_size=2 if transport == "adaptive" else 1,
+            max_concurrency=2 if transport == "parallel" else 1, max_retry_depth=3, on_chunk_done=checkpoint,
         )
 
-    assert calls == ["A.md", "A.md", "B.md"]
-    assert checkpoints == [None]
+    assert sorted(calls) == sorted(
+        ["A.md", "A.md", "B.md"] + (["A.md"] if transport == "adaptive" else [])
+    )
+    if transport == "serial":
+        assert checkpoints == [None]
+    for cached in checkpoints:
+        if cached is not None:
+            assert cached["edges"] == []
     assert [(node["id"], node["source_file"]) for node in result["nodes"]] == [
         ("a", "A.md"), ("b", "B.md"),
     ]
@@ -874,14 +885,15 @@ def test_provisional_foreign_edge_preserves_later_authority_and_warm_cache(
     assert not result["edges"][0].get("_partial")
     assert result["_partial_files"] == [str(first)]
     save_semantic_cache(
-        result["nodes"], result["edges"], result["hyperedges"], root=tmp_path,
+        result["nodes"], _semantic_cache_edges(result), result["hyperedges"], root=tmp_path,
         allowed_source_files=[first, second], partial_source_files=result["_partial_files"],
         prompt=_extraction_system(),
     )
-    cached_nodes, _edges, _hyperedges, uncached = check_semantic_cache(
+    cached_nodes, cached_edges, _hyperedges, uncached = check_semantic_cache(
         [first, second], tmp_path, prompt=_extraction_system(),
     )
     assert uncached == [first]
+    assert cached_edges == []
     assert [node["id"] for node in cached_nodes] == ["b"]
     assert Path(cached_nodes[0]["source_file"]).resolve() == second.resolve()
     assert load_cached(log, tmp_path, kind="semantic", prompt=_extraction_system()) is None
@@ -1565,3 +1577,116 @@ def test_pack_chunks_with_special_token_doc_does_not_crash(tmp_path):
     code = tmp_path / "code.py"; code.write_text("def f():\n    return 1\n")
     chunks = _pack_chunks_by_tokens([doc, code], token_budget=60_000)
     assert chunks  # produced at least one chunk, no exception
+
+
+def _usage_response(source_file, node_id, inputs, outputs, finish="stop"):
+    result = _provenance_result(source_file, node_id)
+    result.update(input_tokens=inputs, output_tokens=outputs, finish_reason=finish)
+    if finish == "hollow":
+        result["nodes"] = []
+    return result
+
+
+@pytest.mark.parametrize("outcome, expected, expected_calls", [
+    ("recovered", (303, 33), 2),
+    ("persistent", (303, 33), 2),
+    ("cap_zero", (101, 11), 1),
+    ("length", (303, 33), 2),
+    ("hollow_recovered", (606, 66), 3),
+    ("hollow_exhausted", (1010, 110), 4),
+    ("hollow_before_provenance", (606, 66), 3),
+    ("legacy_hollow", (202, 22), 2),
+])
+def test_provenance_recovery_reports_known_response_usage(
+    tmp_path, monkeypatch, outcome, expected, expected_calls,
+):
+    import graphify.llm as llm
+
+    dispatched = tmp_path / "A.md"
+    foreign = tmp_path / "B.md"
+    for path in (dispatched, foreign):
+        path.write_text("document")
+    responses = [_usage_response("B.md", "b", 101, 11)]
+    if outcome == "persistent":
+        responses.append(_usage_response("B.md", "b", 202, 22))
+    elif outcome == "length":
+        responses.append(_usage_response("A.md", "a", 202, 22, "length"))
+    elif outcome == "hollow_recovered":
+        responses += [_usage_response("A.md", "a", 202, 22, "hollow"),
+                      _usage_response("A.md", "a", 303, 33)]
+    elif outcome == "hollow_exhausted":
+        responses += [_usage_response("A.md", "a", value, value // 101 * 11, "hollow")
+                      for value in (202, 303, 404)]
+    elif outcome == "hollow_before_provenance":
+        responses = [_usage_response("A.md", "a", 101, 11, "hollow"),
+                     _usage_response("B.md", "b", 202, 22),
+                     _usage_response("A.md", "a", 303, 33)]
+    elif outcome == "legacy_hollow":
+        responses = [_usage_response("A.md", "a", 101, 11, "hollow"),
+                     _usage_response("A.md", "a", 202, 22)]
+    elif outcome != "cap_zero":
+        responses.append(_usage_response("A.md", "a", 202, 22))
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0, 0))
+    with patch("graphify.llm.extract_files_direct", side_effect=responses) as direct:
+        result = llm._extract_with_adaptive_retry(
+            [dispatched], "kimi", None, None, tmp_path,
+            max_depth=0 if outcome == "cap_zero" else 3,
+        )
+    assert direct.call_count == expected_calls
+    assert (result["input_tokens"], result["output_tokens"]) == expected
+    if outcome in {"persistent", "cap_zero", "length", "hollow_exhausted"}:
+        assert str(dispatched) in result["_partial_files"]
+    else:
+        assert not result.get("_partial_files")
+
+
+def test_provenance_usage_survives_nested_length_and_hollow_recovery(tmp_path, monkeypatch):
+    import graphify.llm as llm
+
+    files = [tmp_path / (name + ".md") for name in "ABCD"]
+    for path in [*files, tmp_path / "foreign.md"]:
+        path.write_text("document")
+    responses = [
+        _usage_response("foreign.md", "foreign", 101, 11),
+        _usage_response("A.md", "a", 202, 22, "length"),
+        _usage_response("A.md", "a", 303, 33, "length"),
+        _usage_response("A.md", "a", 11, 1),
+        _usage_response("B.md", "b", 12, 2),
+        _usage_response("C.md", "c", 404, 44, "hollow"),
+        _usage_response("C.md", "c", 505, 55),
+    ]
+    responses[-1]["nodes"].extend(_provenance_result("D.md", "d")["nodes"])
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0, 0))
+    with patch("graphify.llm.extract_files_direct", side_effect=responses) as direct:
+        result = llm._extract_with_adaptive_retry(files, "kimi", None, None, tmp_path, 2)
+    assert [[p.name for p in call.args[0]] for call in direct.call_args_list] == [
+        ["A.md", "B.md", "C.md", "D.md"], ["A.md", "B.md", "C.md", "D.md"],
+        ["A.md", "B.md"], ["A.md"], ["B.md"], ["C.md", "D.md"], ["C.md", "D.md"],
+    ]
+    assert (result["input_tokens"], result["output_tokens"]) == (1538, 168)
+    assert [node["id"] for node in result["nodes"]] == ["a", "b", "c", "d"]
+    assert not result.get("_partial_files")
+
+
+@pytest.mark.parametrize("kind", ["context", "timeout"])
+@pytest.mark.parametrize("size", [1, 2])
+def test_provenance_usage_survives_recognized_exception_recovery(tmp_path, kind, size):
+    import subprocess
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / (name + ".md") for name in "AB"[:size]]
+    for path in [*files, tmp_path / "foreign.md"]:
+        path.write_text("document")
+    error = (RuntimeError("maximum context length exceeded") if kind == "context"
+             else subprocess.TimeoutExpired("mock provider", 1))
+    responses = [_usage_response("foreign.md", "foreign", 101, 11), error]
+    if size == 2:
+        responses += [_usage_response("A.md", "a", 11, 1),
+                      _usage_response("B.md", "b", 22, 2)]
+    with patch("graphify.llm.extract_files_direct", side_effect=responses) as direct:
+        result = _extract_with_adaptive_retry(files, "kimi", None, None, tmp_path, 3)
+    assert direct.call_count == (4 if size == 2 else 2)
+    assert (result["input_tokens"], result["output_tokens"]) == (
+        (134, 14) if size == 2 else (101, 11)
+    )
+    assert [node["id"] for node in result["nodes"]] == (["a", "b"] if size == 2 else [])

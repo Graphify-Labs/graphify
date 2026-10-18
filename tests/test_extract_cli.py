@@ -1843,3 +1843,74 @@ def test_incremental_stray_attribution_preserves_undispatched_file(
     assert "phantom_ts" not in ids, (
         f"stray attributed to a nonexistent path became a phantom node: {ids}"
     )
+
+
+@pytest.mark.parametrize("healthy_b_edge", [False, True])
+def test_extract_keeps_provisional_graph_edge_out_of_complete_sibling_cache(
+    tmp_path, monkeypatch, capsys, healthy_b_edge,
+):
+    import json
+    import graphify.llm as llm
+    from graphify.cache import check_semantic_cache, load_cached
+
+    corpus = _make_corpus(tmp_path)
+    first = corpus / "README.md"
+    second = corpus / "B.md"
+    second.write_text("# B\nAuthoritative sibling.\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    real_parallel = llm.extract_corpus_parallel
+    calls = []
+
+    def direct(chunk, **_kwargs):
+        name = chunk[0].name
+        calls.append(name)
+        result = {
+            "nodes": [{"id": "a" if name == "README.md" else "b", "label": name,
+                       "source_file": name, "file_type": "document"}],
+            "edges": [], "hyperedges": [], "finish_reason": "stop",
+            "input_tokens": 101 if name == "README.md" else 202,
+            "output_tokens": 11 if name == "README.md" else 22,
+        }
+        if name == "README.md":
+            result["nodes"].append({"id": "b", "label": "foreign stub",
+                                    "source_file": "B.md", "file_type": "document"})
+        if name == "README.md" or healthy_b_edge:
+            result["edges"].append({"source": "a", "target": "b", "source_file": "B.md"})
+        return result
+
+    def parallel(paths, **kwargs):
+        kwargs.update(token_budget=None, chunk_size=1, max_concurrency=1)
+        return real_parallel(sorted(paths, key=lambda path: path.name != "README.md"), **kwargs)
+
+    monkeypatch.setattr(llm, "extract_files_direct", direct)
+    monkeypatch.setattr(llm, "extract_corpus_parallel", parallel)
+    monkeypatch.setattr(mainmod.sys, "argv", [
+        "graphify", "extract", str(corpus), "--backend", "claude", "--no-cluster",
+        "--out", str(out_dir),
+    ])
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0)
+
+    assert calls == ["README.md", "README.md", "B.md"]
+    graph = json.loads((out_dir / "graphify-out" / "graph.json").read_text())
+    assert {"a", "b"} <= {node["id"] for node in graph["nodes"]}
+    assert ("a", "b") in [(edge["source"], edge["target"]) for edge in graph["edges"]]
+    assert "tokens: 404 in / 44 out" in capsys.readouterr().out
+    assert all("_partial" not in item and "_provenance_partial" not in item
+               for bucket in ("nodes", "edges") for item in graph[bucket])
+    cached_nodes, cached_edges, _hyperedges, uncached = check_semantic_cache(
+        [first, second], corpus, cache_root=out_dir, prompt=llm._extraction_system(),
+    )
+    assert uncached == [first]
+    assert [node["id"] for node in cached_nodes] == ["b"]
+    assert [(edge["source"], edge["target"]) for edge in cached_edges] == (
+        [("a", "b")] if healthy_b_edge else []
+    )
+    cached_b = load_cached(second, corpus, cache_root=out_dir,
+                           kind="semantic", prompt=llm._extraction_system())
+    assert cached_b is not None and not cached_b.get("partial")
+    assert all("_provenance_partial" not in edge for edge in cached_b["edges"])
