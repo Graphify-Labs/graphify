@@ -192,7 +192,12 @@ def run_statements(
 
 def test_part_c_and_update_files_are_found():
     names = {_rel(p) for p in MERGE_FILES}
-    assert "skill.md" in names and "skills/claude/references/update.md" in names
+    # With #197 the split hosts run `graphify pipeline`; the only generated files
+    # that still carry an inline -c Part C / --update merge are the hand-maintained
+    # aider and devin monoliths. The runtime check must find them (not pass
+    # vacuously), and the split hosts must be free of the inline form.
+    assert "skill-aider.md" in names and "skill-devin.md" in names
+    assert "skill.md" not in names and "skills/claude/references/update.md" not in names
 
 
 @needs_bash
