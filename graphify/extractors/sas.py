@@ -77,8 +77,6 @@ def extract_sas(path: Path) -> dict:
 
     # First pass: collect macro definitions (case-insensitively, per SAS) so
     # call sites resolve regardless of where the definition appears.
-    data_step_index = 0
-    proc_step_index = 0
     for node in root.children:
         if node.type == "macro_definition":
             name = _macro_name_text(node)
@@ -115,19 +113,21 @@ def extract_sas(path: Path) -> dict:
             _emit_macro_calls(node)
         elif node.type == "data_step":
             label = _step_label(node) or "data"
-            # Use a per-kind ordinal so multiple steps (even on one line) stay
-            # distinct while IDs remain stable when CRLF changes byte offsets.
-            data_step_index += 1
-            nid = _make_id(stem, "data", str(data_step_index))
-            add_node(nid, label, node.start_point.row + 1)
-            add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="data_step")
+            # Row/column stays stable across LF and CRLF checkouts while keeping
+            # same-line steps distinct, like the C# scope IDs in the engine.
+            row, column = node.start_point
+            line = row + 1
+            nid = _make_id(stem, "data", f"{row}:{column}")
+            add_node(nid, label, line)
+            add_edge(file_nid, nid, "defines", line, context="data_step")
             _emit_macro_calls(node)
         elif node.type == "proc_step":
             label = _step_label(node) or "proc"
-            proc_step_index += 1
-            nid = _make_id(stem, "proc", str(proc_step_index))
-            add_node(nid, label, node.start_point.row + 1)
-            add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="proc_step")
+            row, column = node.start_point
+            line = row + 1
+            nid = _make_id(stem, "proc", f"{row}:{column}")
+            add_node(nid, label, line)
+            add_edge(file_nid, nid, "defines", line, context="proc_step")
             _emit_macro_calls(node)
         else:
             _emit_macro_calls(node)
