@@ -1602,22 +1602,62 @@ def save_semantic_cache(
             item = {**item, "source_file": norm}
         return item
 
+    # A small local model fills source_file on nodes but routinely leaves it off
+    # edges (#3982: 99% of nodes, 4% of edges), and an item without one has no
+    # cache key, so it was dropped with no message. An edge's endpoints are nodes
+    # of this same result, so their file is the edge's file: take the source
+    # node's, else the target's. A hyperedge takes its members' file only when
+    # they all agree. Copies, so the caller's dicts are never mutated.
+    node_file: dict[str, str] = {}
+    for n in nodes:
+        nid, src = n.get("id"), n.get("source_file")
+        if isinstance(nid, str) and src:
+            node_file.setdefault(nid, src)
+
+    def _backfilled(item: dict, files: list) -> dict:
+        if item.get("source_file") or not files:
+            return item
+        return {**item, "source_file": files[0]}
+
+    def _edge_files(e: dict) -> list:
+        ends = (e.get("source"), e.get("target"))
+        return [node_file[x] for x in ends if isinstance(x, str) and x in node_file]
+
+    def _hyperedge_files(h: dict) -> list:
+        members = h.get("nodes") if isinstance(h.get("nodes"), list) else []
+        files = {node_file[m] for m in members if isinstance(m, str) and m in node_file}
+        return list(files) if len(files) == 1 else []
+
     by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": [], "hyperedges": []})
+    unkeyed = 0
     for n in nodes:
         n = _normalized(n)
         src = n.get("source_file", "")
         if src:
             by_file[src]["nodes"].append(n)
+        else:
+            unkeyed += 1
     for e in edges:
-        e = _normalized(e)
+        e = _normalized(_backfilled(e, _edge_files(e)))
         src = e.get("source_file", "")
         if src:
             by_file[src]["edges"].append(e)
+        else:
+            unkeyed += 1
     for h in (hyperedges or []):
-        h = _normalized(h)
+        h = _normalized(_backfilled(h, _hyperedge_files(h)))
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)
+        else:
+            unkeyed += 1
+    if unkeyed:
+        warnings.warn(
+            f"save_semantic_cache: {unkeyed} node(s)/edge(s)/hyperedge(s) have no "
+            "source_file (and no endpoint that has one), so they were not cached (#3982).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     def resolved_source_path(value: str | Path) -> Path:
         path = source_path(value)
@@ -1652,6 +1692,14 @@ def save_semantic_cache(
         resolved = resolved_source_path(fpath)
         if not resolved.is_file() and allowed_paths is not None:
             candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            if not candidates:
+                name = cache_path.name.casefold()
+                candidates = [ap for ap in allowed_paths if ap.name.casefold() == name]
+            if not candidates and len(allowed_paths) == 1:
+                # One file was dispatched, so a path that names no real file can
+                # only have come from it: a local model invents paths wholesale
+                # (#3982). A path that IS a real file stays out of scope (#1757).
+                candidates = list(allowed_paths)
             if len(candidates) == 1:
                 cache_path = candidates[0]
                 resolved = candidates[0]
@@ -1815,7 +1863,18 @@ def save_semantic_cache(
             "skipped because their paths do not resolve to real files. This usually "
             "means ``root`` is anchored to the wrong directory (e.g. the --out "
             "directory instead of the corpus root). Pass the corpus directory as "
-            "``root`` and the output directory as ``cache_root`` (#1991).",
+            "``root`` and the output directory as ``cache_root`` (#1991). It also "
+            "happens when the model invented the source_file paths (#3982).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    elif skipped_not_file and allowed_paths is not None:
+        # A scoped (checkpoint) write that lost only some groups used to say
+        # nothing, so a chunk "succeeded" while persisting part of itself (#3982).
+        warnings.warn(
+            f"save_semantic_cache: skipped {skipped_not_file} of {len(by_file)} "
+            "source_file group(s) whose paths do not resolve to a dispatched file; "
+            "their nodes were not cached (#3982).",
             RuntimeWarning,
             stacklevel=2,
         )
