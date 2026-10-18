@@ -29,7 +29,8 @@ _RECORD_SEP = "\x1e"
 
 def _norm(path: str, root: Path) -> str:
     """Repo-root-relative POSIX form of a graph ``source_file``."""
-    p = PurePath(path)
+    # Backslashes first: on POSIX, PurePath keeps a Windows-written path as one name.
+    p = PurePath(path.replace("\\", "/"))
     if p.is_absolute():
         try:
             p = Path(path).resolve().relative_to(root.resolve())
@@ -57,7 +58,10 @@ def git_commit_files(
     if since:
         cmd.append(f"--since={since}")
     cmd.append("--")
-    proc = subprocess.run(cmd, capture_output=True, check=False)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+    except OSError as exc:  # git not installed / not on PATH
+        raise RuntimeError(f"cannot run git: {exc}") from exc
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"git log failed in {root}: {err or 'not a git repository?'}")

@@ -1867,7 +1867,11 @@ def dispatch_command(cmd: str) -> None:
                 ver = _pkg_version("graphifyy")
             except PackageNotFoundError:
                 ver = "unknown"
-            Path(opts.sarif).write_text(json.dumps(to_sarif(violations, ver), indent=2), encoding="utf-8")
+            try:
+                Path(opts.sarif).write_text(json.dumps(to_sarif(violations, ver), indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(f"error: cannot write SARIF to {opts.sarif}: {exc}", file=sys.stderr)
+                sys.exit(2)
         print(format_text(violations))
         sys.exit(1 if violations else 0)
     elif cmd in ("dead-code", "dead_code"):

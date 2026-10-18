@@ -89,3 +89,20 @@ def test_cochange_cli_end_to_end(repo, monkeypatch, capsys):
 
     result = json.loads(capsys.readouterr().out)
     assert result["hidden_coupling"][0]["files"] == ["c.py", "cfg.toml"]
+
+
+def test_windows_style_source_files_match_git_paths():
+    G = nx.DiGraph()
+    G.add_node("c", source_file=r"src\c.py")
+    G.add_node("cfg", source_file=r"src\cfg.toml")
+    result = cochange_analysis(G, [["src/c.py", "src/cfg.toml"]] * 3, Path("."))
+    assert result["hidden_coupling"][0]["files"] == ["src/c.py", "src/cfg.toml"]
+
+
+def test_missing_git_binary_is_a_runtime_error(monkeypatch, tmp_path):
+    def boom(*_a, **_k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("graphify.cochange.subprocess.run", boom)
+    with pytest.raises(RuntimeError, match="cannot run git"):
+        git_commit_files(tmp_path)

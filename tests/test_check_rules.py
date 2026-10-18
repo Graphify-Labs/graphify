@@ -121,3 +121,38 @@ def test_cli_exits_2_on_bad_rules(monkeypatch, capsys, tmp_path):
     code, cap = _run(monkeypatch, capsys, tmp_path, {"forbid": "nope"})
     assert code == 2
     assert "'forbid' must be a list" in cap.err
+
+
+def test_cli_exits_2_when_rules_path_is_unreadable(monkeypatch, capsys, tmp_path):
+    rules_dir = tmp_path / "rules-as-dir"
+    rules_dir.mkdir()
+    code, cap = _run(monkeypatch, capsys, tmp_path, {"forbid": []}, "--rules", str(rules_dir))
+    assert code == 2
+    assert "cannot read rules file" in cap.err
+
+
+def test_cli_exits_2_when_sarif_cannot_be_written(monkeypatch, capsys, tmp_path):
+    sarif_dir = tmp_path / "sarif-as-dir"
+    sarif_dir.mkdir()
+    code, cap = _run(monkeypatch, capsys, tmp_path, {"forbid": []}, "--sarif", str(sarif_dir))
+    assert code == 2
+    assert "cannot write SARIF" in cap.err
+
+
+def test_undirected_graph_json_keeps_dependency_direction(monkeypatch, capsys, tmp_path):
+    # graphify's default graph.json is undirected; to_json writes each link's true
+    # direction into source/target and load_graph reads it back directed.
+    data = json_graph.node_link_data(_graph(), edges="links")
+    data["directed"] = False
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    gp = out / "graph.json"
+    gp.write_text(json.dumps(data), encoding="utf-8")
+    (tmp_path / "graphify-rules.json").write_text(
+        json.dumps({"forbid": [{"from": "src/db/*", "to": "src/ui/*"}]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "check", "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0  # view -> repo is not repo -> view
