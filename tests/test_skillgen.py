@@ -584,6 +584,8 @@ def test_subagent_chunks_are_bounded_by_lines_and_reshard_on_the_output_cap():
         assert "over 2000 lines gets a chunk of its own" in b1, f"[{key}] no solo chunk"
         assert "output token maximum" in b3, f"[{key}] B3 misses the output-cap cause"
         assert "never resend a chunk unchanged" in b3, f"[{key}] B3 does not re-split"
+        # The re-split must end: a one-file chunk cannot be split further.
+        assert "already a single file cannot be split" in b3, f"[{key}] no stop rule"
 
 
 def test_pi_never_names_the_claude_general_purpose_agent():

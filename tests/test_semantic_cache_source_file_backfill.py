@@ -117,3 +117,20 @@ def test_basename_recovery_ignores_case(tmp_path):
 
     assert saved == 1
     assert load_cached(a, root=tmp_path, kind="semantic") is not None
+
+
+def test_invented_and_real_path_groups_for_one_file_are_both_kept(tmp_path):
+    """Both groups resolve to the one dispatched file. Written one after the
+    other without merge_existing, the second replaced the first (review of #4543)."""
+    doc = _doc(tmp_path, "docs/a.md")
+    nodes = [
+        {"id": "real", "label": "Real", "source_file": "docs/a.md"},
+        {"id": "made_up", "label": "Made Up", "source_file": "invented/insight_1.md"},
+    ]
+
+    saved = save_semantic_cache(nodes, [], root=tmp_path, allowed_source_files=[doc])
+
+    assert saved == 1
+    cached = load_cached(doc, root=tmp_path, kind="semantic")
+    assert cached is not None
+    assert sorted(n["id"] for n in cached["nodes"]) == ["made_up", "real"]

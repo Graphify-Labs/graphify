@@ -1779,11 +1779,17 @@ def save_semantic_cache(
                     h for h in result["hyperedges"] if not hyperedge_dangles(h)
                 ]
 
-    saved = 0
-    skipped_not_file = 0
+    # A recovered group (#2973, #3982) can land on the same file as a group that
+    # named it correctly. Written one after the other, the second write replaced
+    # the first unless merge_existing was set, so fold every group that resolves
+    # to one file into a single group before writing.
+    folded: dict[str, dict] = {}
+    shown: dict[str, str] = {}  # the source_file as the model wrote it, for messages
     for fpath, result in by_file.items():
         cache_path, p = _recover_group_path(fpath)
+        key = fpath
         if p.is_file():
+            key = str(cache_path)
             if cache_path != source_path(fpath):
                 # #2973: recovery only redirected the WRITE KEY. Each item in
                 # this group still carries the original unresolvable
@@ -1802,10 +1808,21 @@ def save_semantic_cache(
                         {**h, "source_file": corrected} for h in result["hyperedges"]
                     ],
                 }
+        if key in folded:
+            prev_group = folded[key]
+            result = {k: prev_group[k] + result[k] for k in ("nodes", "edges", "hyperedges")}
+        folded[key] = result
+        shown.setdefault(key, fpath)
+
+    saved = 0
+    skipped_not_file = 0
+    for fpath, result in folded.items():
+        cache_path, p = _recover_group_path(fpath)
+        if p.is_file():
             if allowed_paths is not None and cache_path not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "
-                    f"{fpath!r}; the file was not dispatched for extraction",
+                    f"{shown[fpath]!r}; the file was not dispatched for extraction",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -1859,7 +1876,7 @@ def save_semantic_cache(
             saved += 1
         else:
             skipped_not_file += 1
-    if skipped_not_file and skipped_not_file == len(by_file):
+    if skipped_not_file and skipped_not_file == len(folded):
         warnings.warn(
             f"save_semantic_cache: all {skipped_not_file} source_file group(s) were "
             "skipped because their paths do not resolve to real files. This usually "
@@ -1874,7 +1891,7 @@ def save_semantic_cache(
         # A scoped (checkpoint) write that lost only some groups used to say
         # nothing, so a chunk "succeeded" while persisting part of itself (#3982).
         warnings.warn(
-            f"save_semantic_cache: skipped {skipped_not_file} of {len(by_file)} "
+            f"save_semantic_cache: skipped {skipped_not_file} of {len(folded)} "
             "source_file group(s) whose paths do not resolve to a dispatched file; "
             "their nodes were not cached (#3982).",
             RuntimeWarning,
