@@ -176,6 +176,29 @@ def load_decisions(path: Path) -> dict[tuple[str, str], dict]:
     return answers
 
 
+def save_private_payload(repo: Path, case_id: str, payload: dict) -> Path:
+    """Store exact dry-run bytes outside all Git worktrees with private modes."""
+    from tools.jev_memory_pilot_api import serialize_request
+
+    repo_hash = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:12]
+    private_dir = Path.home() / ".local" / "share" / "jev-memory-pilot" / repo_hash
+    private_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private_dir.chmod(0o700)
+    body = serialize_request(payload)
+    name = hashlib.sha256(case_id.encode()).hexdigest()[:12]
+    digest = hashlib.sha256(body).hexdigest()[:12]
+    path = private_dir / f"{name}-{digest}.json"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if path.is_symlink() or path.stat().st_mode & 0o777 != 0o600 or path.read_bytes() != body:
+            raise ValueError("existing dry-run payload differs") from None
+    else:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(body)
+    return path
+
+
 def query_with_decisions(
     graph_path: Path, repo: Path, case: dict, candidates: list[dict],
     answers: dict[tuple[str, str], dict], *, eligible_node_ids: set[str], threshold: float,
@@ -242,15 +265,54 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project", required=True)
     parser.add_argument("--threshold", type=float, default=0.8)
     parser.add_argument("--decisions", type=Path, help="Local offline decision JSON")
+    parser.add_argument("--dry-run", action="store_true", help="Save exact Jev payload privately")
+    parser.add_argument("--print-synthetic-payload", action="store_true")
+    parser.add_argument("--live", action="store_true", help="Opt in to one paid Jev request")
+    parser.add_argument("--approved-paid-use", action="store_true")
+    parser.add_argument("--max-requests", type=int, default=0)
     args = parser.parse_args(argv)
+    if args.live and (args.decisions or args.dry_run):
+        parser.error("--live cannot be combined with --decisions or --dry-run")
+    if args.print_synthetic_payload and not args.dry_run:
+        parser.error("--print-synthetic-payload requires --dry-run")
     graph = _read_graph(str(args.graph))
     case = load_case(args.corpus, args.case_id, set(graph.nodes), args.project)
     candidates = candidate_pool(args.graph, args.repo, case["question"])
     answers = load_decisions(args.decisions) if args.decisions else {}
     eligible_node_ids = {item["node_id"] for item in candidates if item["source_file"]}
+    model_id = None
+    if args.dry_run or args.live:
+        from tools.jev_memory_pilot_api import decide_once, make_request
+
+        payload, pair_map = make_request(args.repo, case["question"], candidates,
+                                         case["observations"])
+        eligible_node_ids = {node_id for node_id, _ in pair_map.values()}
+        if args.dry_run:
+            if args.print_synthetic_payload:
+                own_repo = Path(__file__).resolve().parents[1]
+                fixture = own_repo / "tests" / "fixtures" / "jev_memory_pilot.json"
+                if (args.repo.resolve() != own_repo or args.corpus.resolve() != fixture
+                        or any(not obs["id"].startswith("synthetic-")
+                               for obs in case["observations"])):
+                    parser.error("printing is limited to the public synthetic fixture")
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                path = save_private_payload(args.repo, case["id"], payload)
+                print(f"Dry-run payload: {path}; pairs: {len(pair_map)}", file=sys.stderr)
+            return 0
+        if not args.approved_paid_use or args.max_requests < 1:
+            parser.error("--live requires --approved-paid-use and --max-requests >= 1")
+        # No credential access occurs in default or dry-run mode.
+        key = os.environ.get("JEV_MEMORY_PILOT_API_KEY")
+        answers, model_id, cost = decide_once(
+            payload, pair_map, live=True, approved=True,
+            max_requests=args.max_requests, api_key=key,
+        )
+        if cost is not None:
+            print(f"Jev actual cost: USD {cost:.8f}", file=sys.stderr)
     print(query_with_decisions(args.graph, args.repo, case, candidates, answers,
                                eligible_node_ids=eligible_node_ids,
-                               threshold=args.threshold), end="")
+                               threshold=args.threshold, model_id=model_id), end="")
     return 0
 
 

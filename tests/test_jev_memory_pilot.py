@@ -249,3 +249,53 @@ def test_offline_cli_reads_synthetic_decisions(pilot_repo, tmp_path, capsys):
     assert main(["--repo", str(repo), "--graph", str(graph_path), "--corpus", str(corpus),
                  "--case-id", "q1", "--project", "demo", "--decisions", str(decisions)]) == 0
     assert f"Suggested memory link: {second}" in capsys.readouterr().out
+
+
+def test_dry_run_saves_private_payload_without_network(pilot_repo, tmp_path):
+    from unittest.mock import patch
+
+    repo, graph_path, _ = pilot_repo
+    home = Path.home()
+    corpus = tmp_path / "private-corpus.json"
+    corpus.write_text(json.dumps({
+        "observations": [{"id": "o1", "project": "demo", "date": "2026-10-17",
+                          "summary": "Human-redacted synthetic note.",
+                          "source_ref": "synthetic-o1", "private_extra": "secret-canary"}],
+        "cases": [{"id": "q1", "question": "same_label",
+                   "relevant_node_ids": [], "relevant_pairs": [], "observation_ids": ["o1"]}],
+    }))
+    with patch("tools.jev_memory_pilot_api.call_jev") as post:
+        assert main(["--repo", str(repo), "--graph", str(graph_path),
+                     "--corpus", str(corpus), "--case-id", "q1", "--project", "demo",
+                     "--dry-run"]) == 0
+    post.assert_not_called()
+    payload_file = next((home / ".local/share/jev-memory-pilot").glob("*/*.json"))
+    assert payload_file.stat().st_mode & 0o777 == 0o600
+    assert payload_file.parent.stat().st_mode & 0o777 == 0o700
+    assert "secret-canary" not in payload_file.read_text()
+    assert len(json.loads(payload_file.read_text())["questions"]) == 2
+
+
+def test_explicit_live_mode_calls_mock_once(pilot_repo, tmp_path, monkeypatch, capsys):
+    from unittest.mock import patch
+
+    repo, graph_path, _ = pilot_repo
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps({
+        "observations": [{"id": "o1", "project": "demo", "date": "2026-10-17",
+                          "summary": "Redacted synthetic note.", "source_ref": "synthetic-o1"}],
+        "cases": [{"id": "q1", "question": "same_label",
+                   "relevant_node_ids": [], "relevant_pairs": [], "observation_ids": ["o1"]}],
+    }))
+    monkeypatch.setenv("JEV_MEMORY_PILOT_API_KEY", "test-key")
+    response = {"model": "typesafe/jev-1.14-20261001", "usage": {"cost": 0.0001},
+                "answers": {key: {"type": "choice", "choice": "unrelated",
+                                  "probabilities": {"relevant": 0.1, "unrelated": 0.8,
+                                                    "insufficient_evidence": 0.1}}
+                            for key in ("p000", "p001")}}
+    with patch("tools.jev_memory_pilot_api.call_jev", return_value=response) as post:
+        assert main(["--repo", str(repo), "--graph", str(graph_path),
+                     "--corpus", str(corpus), "--case-id", "q1", "--project", "demo",
+                     "--live", "--approved-paid-use", "--max-requests", "1"]) == 0
+    post.assert_called_once()
+    assert "Jev actual cost" in capsys.readouterr().err
