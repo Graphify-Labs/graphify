@@ -103,11 +103,8 @@ def test_undirected_traversal_dedups_an_edge_by_unordered_pair():
     assert len(edges) == len({frozenset(e) for e in edges}) == 3
 
 
-def test_renderer_shows_one_relation_per_ordered_pair_for_multigraphs():
-    """The renderer surfaces the first relation of a parallel pair
-    (``_subgraph_to_text``), while the reverse edge is a distinct directed
-    edge. This is the query path the skill now uses; the removed inline
-    fallback rendered every parallel relation."""
+def test_traversal_keeps_parallel_relationship_attributes():
+    """Every parallel relation survives, not just the first (3ab2cbab)."""
     graph = nx.MultiDiGraph()
     graph.add_node("a", label="Alpha")
     graph.add_node("b", label="Beta")
@@ -117,8 +114,9 @@ def test_renderer_shows_one_relation_per_ordered_pair_for_multigraphs():
 
     output = _render(graph, ["a", "b"], mode="bfs")
 
-    assert output.count("EDGE ") == 2
+    assert output.count("EDGE ") == 3
     assert "EDGE Alpha --calls [EXTRACTED]--> Beta" in output
+    assert "EDGE Alpha --imports [INFERRED]--> Beta" in output
     assert "EDGE Beta --references [AMBIGUOUS]--> Alpha" in output
 
 
