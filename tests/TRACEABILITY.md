@@ -1625,14 +1625,18 @@ original coverage artifact remain preserved; no upstream PR or merge is performe
 
 ## Bounded parser repair — INC-QML-53
 
-Status: **Implemented; focused local source profiles verified, full/artifact/install
-and guarded application-corpus profiles pending**. This profile extends the
+Status: **Repair implemented; policy-24 focused local source cases verified;
+current artifact/hosted proof and guarded application refresh pending**.
+This profile extends the
 bounded forms under existing criteria; twenty-one requirements/eighty-five
 acceptance IDs remain unchanged. Historical policy-22 hosted acceptance remains
 bound to its recorded revision and is not evidence for this repair. Current
-repair source uses Qt policy 23, AST schema 13 and the existing semantic-cache and
+corrected repair uses Qt policy 24, AST schema 13 and the existing semantic-cache and
 transactional publication owners. Public synthetic fixtures contain no private
-application source, project identity or machine path.
+application source, project identity or machine path. The initial policy-23
+assignments and executed checkpoints below are historical evidence for
+`d13eebe7`; they do not verify the subsequent corrected head. Current correction
+assignments and shell-environment disposition follow those checkpoints.
 
 | Acceptance IDs / changed boundary | Exact automated assignment and observable result |
 | --- | --- |
@@ -1693,7 +1697,9 @@ are assigned by the integration owner after source freeze.
 
 The accepted subset requires source properties before their metadata use and
 flat private C/C++ additions after a unique local module declaration. Explicit
-header-only tooling never supplies runtime membership. Bare QML target additions,
+nonnative tooling never supplies runtime membership. The initial policy-23
+expectation excluding native HEADER_FILE_ONLY inputs is corrected below; the
+current native contract retains their membership. Bare QML target additions,
 unnamed template defaults, ambiguous bare user-type callback declarations,
 arbitrary expansion, relevant conditions, late properties, generated runtime
 inputs, inferred resource prefixes, BASE/options and output-variable resource
@@ -1721,3 +1727,179 @@ the explicit source virtual-environment interpreter reports the documented
 605-error full-repository baseline and no diagnostics in the changed production
 or focused test modules at this checkpoint. The full local pytest run is still
 in progress; artifact/install and guarded application adoption remain pending.
+
+### Frozen wheel and local adoption checkpoint
+
+The repair is committed as `d13eebe7cb1b57fea7199ce4f7c33abcc380a509`, production
+tree `77977178ec05cedbaa93c62404f3b4dd6408b5ff`. A raw Git-blob packaging snapshot
+avoids Windows checkout/archive newline conversion. Every one of the 322 shipped
+package files matches its committed blob; the sole unshipped developer-only
+`extractors/MIGRATION.md` follows the existing package-data exclusion. Existing
+31 extras and 105 dependency declarations remain unchanged. The reviewed wheel
+SHA256 is `e3c8679a79c7374f2e22f4ca19afbbf400ea6facf97fcb56ca70f146ecb76116`.
+
+An isolated offline installation with the 66-distribution locked runtime profile
+and five separate pytest tools passes **106 tests**, zero failures/errors/skips,
+15.90 seconds. It verifies installed payload hashes, policy 23/schema 13, real
+parser/producer/update/retention regressions and the optional parser-absence
+artifact controls. The approved local tool replacement passes independent
+payload/dependency/Python verification and reads the two formerly rejected native
+and metadata inputs without diagnostics or source changes. The historical team
+bootstrap still identifies its earlier wheel; no new team registry release is
+claimed. Windows wheel RFC metadata uses CRLF, so this local verification parses
+its package identity and compares the original installed bytes rather than using
+the older team's LF-specific metadata identity probe.
+
+The repository's own AST-only `graphify update . --no-cluster` succeeds with
+23,337 nodes/54,141 edges. The known malformed Luau fixture warning remains.
+Focused CMake coverage runs 81 cases: both new helper modules reach 100% line
+coverage; uncovered parent/index/policy lines belong to broader adjacent paths
+outside that selection. Full-source pytest and the guarded application refresh
+remain separate pending evidence at this checkpoint. One root coverage invocation
+overwrote the pre-existing untracked generated `.coverage` report; no retained
+copy was found, and later coverage output is isolated. This loss does not supply
+or invalidate any claimed earlier aggregate coverage evidence.
+
+AI attribution: Codex produced the repair. Its initial local source commit omitted
+the required co-author trailer. That omission remains disclosed without rewriting
+history; subsequent implementation/evidence commits must include the required
+trailer and verify their completed commit messages. Remote validation/publication
+remains unperformed at this checkpoint.
+
+### Completed source run and shell-environment disposition — 2026-10-18
+
+The initial complete source command
+`.venv/Scripts/python.exe -X utf8 -m pytest tests/ -q --tb=short --junitxml=.venv/parser-repair/full-tests.xml`
+completed with **9,411 passed, 45 failed, 122 skipped**. Output was redirected to
+the matching `.log`; `COVERAGE_FILE` pointed to a separate `full.coverage` path as
+a precaution, without requesting coverage. Its retained JUnit contains
+9,578 cases and zero collection/runtime errors. Failures are confined to
+`tests/test_hooks.py` (13), `tests/test_shell_portability_helpers.py` (6), and
+`tests/test_skillgen_input_path_injection.py` (26). Forty failures select an
+unusable WindowsApps Bash alias; five cannot find `sh`. These are shell admission
+failures, not Qt/CMake parser assertions.
+
+The eight relevant test/helper/hook/skill files are byte-identical between
+`82a4f296` and `d13eebe7`; running the unchanged base shell helper reproduces both
+environment failures. Prepending the existing Git Bash directories only for the
+verification process resolves the boundary without source, assertion, machine
+PATH, dependency, installed-runtime, or Git changes. The command
+`.venv/Scripts/python.exe -m pytest tests/test_hooks.py tests/test_shell_portability_helpers.py tests/test_skillgen_input_path_injection.py -q --tb=short --junitxml=.venv/parser-repair/handoff-shell-tests.xml`,
+with output redirected to the matching `.log`,
+then reports **164 passed, eight platform skips, zero failures/errors**. Every
+one of the original 45 failed test identities individually passes. Two skips
+require POSIX symlink setup, one requires POSIX execution of a script named
+`python.exe`, and five require the supported POSIX emitted-hook profile. Skips do
+not establish those platform acceptances. The isolated coverage digest remains
+unchanged.
+
+This three-module rerun diagnoses the original failed cases; it is not a fresh
+complete-suite result or evidence for the later policy-24 correction. Local
+receipts retain exact commands, identities and outcomes under
+`.venv/parser-repair/handoff-shell-{baseline,environment,result}.json` and
+`handoff-shell-tests.{xml,log}`. These machine-specific receipts remain outside
+version control. The documented **605-error full-repository Pyright baseline**
+also remains; it is not a passing type gate. Current corrected-source checks,
+fresh artifact/install proof, hosted validation and the separately owned guarded
+application refresh remain pending.
+
+### Policy-24 review correction assignments
+
+The corrected header contract supersedes the policy-23 expectation recorded
+above: `HEADER_FILE_ONLY` controls ordinary object compilation, while CMake's
+AUTOMOC scan includes target headers. Native source membership and the original
+property fact therefore remain available; only explicitly admitted nonnative
+tooling lacks native/module authority. The
+[design references](../docs/qt-qml/DESIGN.md#bounded-c-and-cmake-admission--inc-qml-53)
+also explain scope selectors and discarded resource contents. These source changes
+introduce no new persistence owner or runtime execution.
+
+| Acceptance IDs / boundary | Exact assignment and evidence status |
+| --- | --- |
+| REQ-QML-009-AC03/AC04; REQ-QML-012-AC01 | `tests/test_qt_cmake_review_boundaries.py::test_req_qml009_ac04_source_property_scope_cannot_mutate_local_metadata`: DIRECTORY/TARGET_DIRECTORY, quoted/unquoted values and native-RC exemption attempts reject before local alias/property mutation. `test_req_qml009_ac03_discard_file_contents_never_becomes_source_evidence` rejects the resource option in every argument position; `test_req_qml009_ac03_reserved_looking_literal_paths_require_distinct_path_spelling` distinguishes reserved values from separately validated literal paths. Pass in the 164-case frozen-source selection; zero skips. |
+| REQ-QML-009-AC03; REQ-QML-010-AC02/AC04; REQ-QML-020-AC02 | `tests/test_qt_cmake_resource_collisions.py::test_req_qml009_ac03_cross_representation_resource_collision_never_selects_a_winner`, `test_req_qml009_ac03_unestablished_explicit_provider_cannot_fall_back_to_module`, `test_req_qml009_ac03_missing_module_provider_cannot_borrow_explicit_target`, `test_req_qml009_ac03_duplicate_module_declarations_do_not_coalesce_same_target`: CMake/QRC and generated module providers retain ambiguity, unsupported/missing evidence and order independence, including distinct declarations for one physical target. `test_req_qml010_ac02_identical_declaration_copies_are_not_distinct_providers` protects exact-ID repeats for explicit and module providers. Pass in the 164-case frozen-source selection; zero skips. |
+| REQ-QML-010-AC02/AC04; shared-language regression | `tests/test_qt_cmake_resource_collisions.py::test_req_qml010_ac02_conflicting_copies_of_one_declaration_identity_are_rejected` rejects conflicting Qt metadata in either order. `test_req_qml010_ac02_shared_csharp_namespace_is_not_a_conflicting_qt_declaration` uses real C# extraction and a mixed scan to retain generic shared namespace IDs/provenance in both orders. These cases pass in the frozen-source selection; the C# regression fails twice before its Qt-only scope correction and passes twice after. |
+| REQ-QML-009-AC01/AC04; REQ-QML-020-AC01/AC02 | `tests/test_qt_cmake_header_membership.py::test_req_qml020_ac01_header_only_native_member_keeps_module_and_qml_binding` retains native source/property facts and real QML binding for all six literal Boolean spellings through module and target-source declarations. `test_req_qml009_ac01_non_native_header_only_tooling_cannot_provide_module_membership` retains the separate nonnative tooling boundary. Pass in the 164-case frozen-source selection; zero skips. |
+| REQ-QML-010-AC03/AC04; REQ-QML-020-AC01/AC02 | `tests/test_qt_cmake_resource_collisions.py::test_req_qml010_ac03_published_membership_retains_cross_provider_ambiguity` exercises producer/build/JSON reload and ensures the membership consumer cannot bypass combined resource uncertainty or publish a selected target edge. Existing `tests/test_qt_project_membership.py::test_req_qml020_ac01_unused_component_has_persisted_build_and_resource_membership` and `test_req_qml020_ac02_resources_reuse_existing_alias_guard_decisions` retain the accepted projection and rejection controls. The correction passes the frozen-source selection; the broader compatibility checkpoint has seven separately recorded alias-profile skips. |
+| REQ-QML-008-AC04; native syntax regression | `tests/test_qt_cpp_syntax.py::test_comments_strings_raw_literals_and_preprocessor_definitions_are_inert`, `test_unicode_crlf_macro_spans_are_original_bytes`; `tests/test_qt_cpp_template_defaults.py::test_req_qml001_ac04_empty_defaults_do_not_reclassify_nonparameter_contexts` and `test_req_qml008_ac02_template_recovery_retains_native_member_and_cold_warm_identity` protect inert syntax, original spans, accepted native roles and cold/warm identity. The original 107-case native selection passed for d13eebe7 and its native recovery owner remains unchanged. Current inert-syntax/span cases pass in the 498-case adjacent selection. |
+| REQ-QML-018-AC06; unchanged persistence boundaries | `tests/test_qt_product_publication.py::test_inc25_preparation_and_late_replace_faults_preserve_then_retry`, `test_inc25_successful_ast_cache_does_not_authorize_failed_products`; `tests/test_qt_readonly_publication.py::test_req_qml018_ac06_readonly_graph_preserves_products_then_retries` retain actual replacement/read-only failure, cache/analysis-state ownership and retry protection. No new writer is introduced. All these current Windows cases pass in the 498-case adjacent selection, including real read-only rejection and retry; zero skips. |
+| REQ-QML-011-AC01/AC02/AC04; REQ-QML-012-AC01/AC02; REQ-QML-018-AC06 | `tests/test_qt_cmake_review_updates.py::test_req_qml012_ac02_review_rejection_preserves_products_and_recovery_repeats`: each scope-selector/discard mutation, with and without force, preserves graph/manifest/report/Qt analysis-state bytes, then corrected retry and repeat match the accepted clean rebuild. Pass in the 164-case frozen-source selection; zero skips. |
+| REQ-QML-009-AC03; REQ-QML-011-AC01/AC02/AC04; REQ-QML-020-AC02 | `tests/test_qt_cmake_review_updates.py::test_req_qml011_ac02_metadata_collision_update_removes_stale_edge_and_recovers`: metadata-only alias change removes the formerly resolved resource edge, persists ambiguity, matches a clean rebuild and unchanged repeat, then restores the original mapping after repair. Pass in the 164-case frozen-source selection; zero skips. |
+| REQ-QML-010-AC01; REQ-QML-011-AC03/AC04; REQ-QML-018-AC02 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers both prior policies 22 and 23, requires policy 24, preserves input bytes, refreshes once and retains the accepted checkpoint on unchanged repeat. Pass in the 164-case frozen-source selection; zero skips. |
+
+These assignments describe production boundaries rather than aggregate test
+counts. Their focused current results appear below; complete corrected-source execution, fresh wheel/
+isolated-install proof and exact-head hosted validation remain open. The private
+application graph refresh and any team artifact release are independently owned;
+neither is inferred from a local parser smoke test or the historical wheel.
+
+### Frozen policy-24 source checkpoint — 2026-10-18
+
+The final source-focused command passes **164 cases, zero failures/errors/skips**,
+with 14 existing warnings in 43.79 seconds. The four new review modules contribute
+62 cases. Scope/property/resource/native-header, exact-ID Qt provider integrity,
+real mixed C# namespace compatibility, policy-22/23 retirement, persisted
+uncertainty, forced/non-forced rejection, repair and unchanged repeat all execute
+through the production boundaries assigned above. The command uses an isolated
+coverage destination and does not replace installed Graphify:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/parser-repair/review-frozen.coverage'
+.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --tb=short --junitxml=.venv/parser-repair/review-frozen.xml --cov=graphify.extractors.qml_cmake --cov=graphify.extractors.qml_cmake_properties --cov=graphify.extractors.qml_cmake_resources --cov=graphify.qt_project_index --cov=graphify.qt_project_membership --cov-report=term-missing --cov-report=json:.venv/parser-repair/review-frozen-coverage.json tests/test_qt_cmake_review_boundaries.py tests/test_qt_cmake_resource_collisions.py tests/test_qt_cmake_header_membership.py tests/test_qt_cmake_review_updates.py tests/test_qt_cmake_mutations.py tests/test_qt_cmake_mutation_updates.py tests/test_qt_cmake_alias_resolution.py tests/test_qt_cmake_tooling_order.py tests/test_qt_resource_resolution.py tests/test_qt_analysis_state.py > .venv/parser-repair/review-frozen.log 2>&1
+```
+
+The negative control loads six exact `d13eebe7` owner blobs into a separate
+interpreter without editing the checkout or installed runtime. The same current
+62 new cases produce **42 failures and 20 passing controls**; emitted owner hashes
+bind the comparison to the original repair. Selector-before-use retention and
+collision/stale-edge cases fail before correction. Some discard-retention controls
+already reject through the older late-property guard and are retained as passing
+controls, not presented as new before-fix failures. This establishes the observed
+defects rather than claiming every new assertion fails on the old source. The
+separate C# namespace regression fails in both input orders under the overly broad
+intermediate identity validation and passes after Qt-only validation is applied.
+The final negative-control log/JUnit are
+`.venv/parser-repair/review-original-final.log` and `review-original-owners.xml`.
+
+The broader compatibility command passes **293 cases with seven Windows symlink
+setup skips**, zero failures/errors, in 126.20 seconds. Every skip belongs to
+`test_qt_project_membership_aliases`; those unavailable alias profiles remain
+unverified locally. This checkpoint precedes the final narrowing of declaration
+validation to Qt providers and its four additional cases. The subsequent frozen
+selection covers that changed boundary; the broader run is not represented as a
+repeat against the final source:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/parser-repair/review-scoped.coverage'
+.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --tb=short --junitxml=.venv/parser-repair/review-scoped.xml --cov=graphify.extractors.qml_cmake --cov=graphify.extractors.qml_cmake_properties --cov=graphify.extractors.qml_cmake_resources --cov=graphify.qt_project_index --cov=graphify.qt_project_membership --cov-report=term-missing --cov-report=json:.venv/parser-repair/review-scoped-coverage.json tests/test_qt_cmake_review_boundaries.py tests/test_qt_cmake_resource_collisions.py tests/test_qt_cmake_header_membership.py tests/test_qt_cmake_review_updates.py tests/test_qt_resource_resolution.py tests/test_qt_project_metadata.py tests/test_qt_project_membership.py tests/test_qt_project_membership_updates.py tests/test_qt_project_membership_aliases.py tests/test_qt_project_admission.py tests/test_qt_metadata_admission.py tests/test_qt_metadata_incremental.py tests/test_qt_metadata_boundaries.py tests/test_qt_native_project_integration.py tests/test_qt_config_incremental.py tests/test_qt_incremental_policy.py tests/test_qt_analysis_state.py tests/test_qt_qml_projection.py > .venv/parser-repair/review-scoped.log 2>&1
+```
+
+The final adjacent acceptance/unrelated-language command passes **498 cases with
+zero failures/errors/skips**, 88 existing warnings, in 61.59 seconds. It executes
+native inert syntax/original spans, actual product replacement/cache/read-only
+failure and retry, and the supported generic language regressions. Git Bash is
+admitted only through the verification process's PATH, with a separate coverage
+destination:
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest tests/test_qt_cpp_syntax.py tests/test_qt_product_publication.py tests/test_qt_readonly_publication.py tests/test_languages.py -q --tb=short --junitxml=.venv/parser-repair/release/adjacent-tests.xml
+```
+
+Full-repository Ruff passes and all **134 generated skill artifacts** match.
+Explicit-virtual-environment Pyright retains **605 errors, zero warnings** in the
+full repository; no changed-module diagnostics are reported. This is a disclosed
+baseline, not a passing full type check. Frozen focused line coverage is 100% in
+both new property/resource helpers and 98% in the project index; its three missing
+lines are pre-existing branches. Parent/index/membership coverage remains bounded
+to the selected cases and does not establish runtime Qt or application coverage.
+Local lint/type/artifact logs remain in the ignored repair evidence directory.
+
+These overlapping selections are not added together or substituted for a new
+complete-source run. Current source-local acceptance applies only to the assigned
+executed profiles; the initial complete-source result and its shell repair remain
+separate. The current production policy is 24/schema 13, but the installed runtime
+and historical wheel still identify `d13eebe7`/policy 23. A new committed raw-blob
+wheel, isolated installation, exact-head hosted checks and separately owned
+application refresh remain pending. The initial missing Codex trailer is retained
+as a disclosed history gap; the corrective commit must carry and verify its own
+`Co-authored-by: Codex <noreply@openai.com>` trailer.

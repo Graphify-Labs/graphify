@@ -257,7 +257,7 @@ REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 | `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; canonical contained input identity admits real path aliases without rewriting lexical provenance, reading target content, expanding the corpus or mutating borrowed facts |
 | `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
 | `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
-| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 22/schema 13 retain the same owners, preserve combined upstream/Qt facts and refresh prior followed Qt metadata provenance at unchanged package/source versions |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 24/schema 13 retain the same owners, preserve combined upstream/Qt facts and refresh prior followed Qt metadata/resource/native-header analysis at unchanged package/source versions |
 | `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
 | `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
 | `tests/test_qt_project_membership_aliases.py` | Real Windows short-path and parent-symlink admission; unchanged installed-smoke assertions, canonical/cold/warm/full/manual/watch equality, foreign/conflicting transport rejection and durable retention/recovery |
@@ -606,7 +606,7 @@ to [INC-CORE-08](../COMPATIBILITY.md#native-shell-process-identity--inc-core-08)
 
 ## Current-upstream and followed metadata seams — INC-QML-49/50
 
-The integrated profile uses package 0.9.76, AST schema 13 and Qt policy 22.
+The INC-QML-49/50 checkpoint uses package 0.9.76, AST schema 13 and Qt policy 22.
 The cache owns combined upstream Python/Qt producer compatibility; semantic
 content lifetime remains separate. Discovery combines exact Qt metadata
 admission with installed-Graphify exclusion under one ignore/containment gate.
@@ -618,7 +618,7 @@ Qt endpoint pair before the shared writer publishes.
 selection for FactBuilder, qmldir and literal project/resource/type-description
 readers. The existing physical identity boundary admits inputs; the fact source
 retains each separately walked contained alias and original-byte location.
-Policy 22 refreshes earlier canonical-only derived products. Exact profile
+At that checkpoint policy 22 refreshes earlier canonical-only derived products. Exact profile
 evidence belongs to traceability, with the reproduced earlier failure retained.
 
 ## Runner and metadata fixture seams — INC-QML-51/52
@@ -648,13 +648,22 @@ exercises all three boundaries, not merely parser error flags.
 
 `extractors/qml_cmake.py` owns module declarations and ordered command dispatch.
 `qml_cmake_properties.py` owns source properties, private target-source additions,
-the literal RC-only irrelevance proof and separate `qt_tooling_source` facts.
+the literal RC-only irrelevance proof and separate nonnative `qt_tooling_source`
+facts. Native `HEADER_FILE_ONLY` inputs retain `qt_source` membership; source-property
+scope selectors reject before local state mutation or the RC exemption.
 `qml_cmake_resources.py` owns explicit PREFIX/FILES target-form resource aliases.
 They reuse `ProjectFacts` bounds/original-byte spans and existing resource-path
-validation. The project index applies `qt_source.resource_alias` to its explicit
-module-prefix fallback; malformed overrides cannot reactivate physical spelling.
+validation and rejects `DISCARD_FILE_CONTENTS` instead of treating empty resources
+as source endpoints. The project index applies `qt_source.resource_alias` to its
+module-prefix provider; malformed overrides cannot reactivate physical spelling.
+Explicit and module-generated resource providers enter one ambiguity decision.
+Exact-ID coalescing/conflict validation applies only to source-owned Qt module,
+source and resource declarations; generic shared C# namespace IDs retain their
+existing extraction/provenance contract.
+The `qt_project_membership` resource consumer uses that same project-owned URL
+decision rather than reinterpreting the explicit-resource index in isolation.
 
-`qt_incremental` owns policy 23 invalidation; schema 13, semantic-cache and
+`qt_incremental` owns policy 24 invalidation; schema 13, semantic-cache and
 publication modules retain their existing responsibilities. New focused metadata
 tests cover provenance, tooling separation, accepted/rejected mutations and
 actual cold/warm/incremental producer output. Exact executed and pending profiles

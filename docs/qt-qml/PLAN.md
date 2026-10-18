@@ -2835,7 +2835,8 @@ head receives normal PR validation and does not inherit a fictitious tested SHA.
 
 ## INC-QML-53 — Bounded parser recovery and literal CMake additions
 
-Status: **Implemented; focused local source verification, broader validation pending**.
+Status: **Repair implemented; policy-24 focused local source cases verified;
+current artifact and hosted proof pending**.
 Dependencies: INC-QML-49–52 combined source/identity/publication boundaries.
 Owners: C++ compatibility maintainer; literal CMake maintainer; integration owner
 for policy, installed package and guarded application refresh. This correction
@@ -2844,20 +2845,22 @@ uses existing requirement IDs and public synthetic fixtures only.
 | Acceptance IDs | Scenario and required observable result |
 | --- | --- |
 | REQ-QML-001-AC04; REQ-QML-008-AC02/AC04; REQ-QML-018-AC02 | Empty template defaults retain exact callable/native-member identity and byte/newline spans; AST-validated declaration ownership rejects expression/storage/callback ambiguity and malformed neighboring syntax |
-| REQ-QML-009-AC01/AC04; REQ-QML-020-AC01/AC02 | Flat private literal C/C++ additions attach to one preceding local module; header-only tooling remains separately source-owned; native RC-only inputs cannot become QML providers |
+| REQ-QML-009-AC01/AC04; REQ-QML-020-AC01/AC02 | Flat private literal C/C++ additions attach to one preceding local module; native HEADER_FILE_ONLY inputs retain source membership while explicit nonnative tooling remains separately source-owned; native RC-only inputs cannot become QML providers |
 | REQ-QML-009-AC03; REQ-QML-010-AC02/AC04 | Source-property aliases and literal target-form PREFIX/FILES resources retain original provenance and bounded paths; alias overrides replace physical resource URLs; malformed/conflicting targets remain unresolved |
-| REQ-QML-010-AC01/AC03; REQ-QML-011-AC01–AC04 | Source cold/warm identities and metadata-only retarget/removal equal a clean accepted-corpus rebuild; policy 23 refreshes prior policy-22 products at unchanged package/source identity |
+| REQ-QML-010-AC01/AC03; REQ-QML-011-AC01–AC04 | Source cold/warm identities and metadata-only retarget/removal equal a clean accepted-corpus rebuild; policy 24 refreshes prior policy-22/23 products at unchanged package/source identity |
 | REQ-QML-012-AC01/AC02/AC04; REQ-QML-018-AC06 | Dynamic/scoped/late or malformed mutations retain explicit diagnostics and the prior published graph/manifest/report; force does not bypass the incomplete-extraction guard |
 
 Boundaries: no CMake execution, arbitrary variable expansion, unknown module-target
 guess, bare QML target-source registration, generated runtime admission or Qt SDK
 execution. Source properties must precede metadata use. Resource support is the
 literal target/name/PREFIX/FILES form; BASE, inferred prefixes, output-variable
-forms and extra options remain unsupported. The only scoped exemption is
+forms and extra options including discarded file contents remain unsupported.
+Source-property DIRECTORY/TARGET_DIRECTORY selectors reject before local state
+mutation or an exemption. The only scoped exemption is
 provably irrelevant native `.rc` membership/RC include directories. Existing
 metadata size/token/fact/depth limits remain in force.
 
-Compatibility: Qt policy 23 changes analysis invalidation only; schema 13,
+Compatibility: Qt policy 24 changes analysis invalidation only; schema 13,
 packaging dependencies, semantic cache lifetime and persistence owners stay
 unchanged. Existing diagnostic codes remain authoritative. Successful source
 admission is not a new log outcome or runtime Qt availability claim.
@@ -2865,6 +2868,54 @@ admission is not a new log outcome or runtime Qt availability claim.
 Exit: require focused old/new regression proof, the complete local suite and
 scoped lint/type evidence; build and validate the actual wheel, install the tested
 artifact and complete a bounded guarded corpus refresh without omitted inputs or
-force bypass. Record source/artifact/install/corpus evidence separately; until
-executed, those latter boundaries remain pending. Hosted and upstream delivery
-remain separate from this local repair.
+force bypass. Record source/artifact/install/corpus evidence separately. The
+policy-23 wheel/install checkpoint is historical and cannot verify the corrected
+source. The initial full local run completed with 45 shell-environment failures;
+all 45 individually pass after the bounded process-local shell correction, but
+that three-module rerun is not a new complete-suite result. Current corrected
+focused source cases and adjacent compatibility checks pass; complete corrected-
+source, current artifact and hosted evidence remain pending. The guarded application
+refresh is separately owned and pending; upstream delivery remains separate from
+this fork-integration repair.
+
+### Pre-publication review corrections — 2026-10-18
+
+The independent review found four additional rejection/membership defects inside
+this increment's literal CMake contract. They remain part of INC-QML-53; no new
+requirement or increment identity is allocated. The correction matrix is recorded
+before implementation, and earlier policy-23 artifact/install evidence remains a
+historical checkpoint rather than evidence for the corrected source.
+
+| Acceptance IDs | Required regression outcome |
+| --- | --- |
+| REQ-QML-009-AC03; REQ-QML-012-AC01/AC02 | `DIRECTORY` and `TARGET_DIRECTORY` source-property selectors reject before local property mutation or the native-resource exemption; local aliases/providers and published products retain prior valid state |
+| REQ-QML-009-AC03; REQ-QML-010-AC02/AC04 | Explicit resource and module-generated URL providers are considered together; distinct provider declarations remain ambiguous even when they name the same endpoint, repeated copies of the exact same declaration identity coalesce, and provider order cannot choose a winner |
+| REQ-QML-010-AC02/AC04; unrelated-language compatibility | Conflicting copies of one source-owned Qt declaration identity reject explicitly, while real C# namespace records shared across files retain their generic identity/provenance contract |
+| REQ-QML-009-AC03; REQ-QML-012-AC01/AC02 | `DISCARD_FILE_CONTENTS` rejects in every argument position; an empty resource cannot become a QML source endpoint or an invented filename |
+| REQ-QML-009-AC01/AC04; REQ-QML-020-AC01/AC02 | `HEADER_FILE_ONLY` is a compilation property, not proof of excluded Qt header processing; native source membership is retained, while explicitly declared nonnative tooling stays separate and cannot become a QML/native provider |
+| REQ-QML-010-AC01/AC03; REQ-QML-011-AC01–AC04; REQ-QML-018-AC06 | The corrected analysis policy invalidates earlier policy-23 products; cold/warm and update/removal paths preserve uncertainty, source ownership, and durable-output retention |
+
+The semantic references are CMake's
+[source-property scope selectors](https://cmake.org/cmake/help/v3.30/command/set_source_files_properties.html),
+[HEADER_FILE_ONLY compilation property](https://cmake.org/cmake/help/v3.30/prop_sf/HEADER_FILE_ONLY.html)
+and [AUTOMOC header scan](https://cmake.org/cmake/help/v3.30/prop_tgt/AUTOMOC.html#header-file-processing),
+plus Qt's [discarded-content resource option](https://doc.qt.io/qt-6.12/qt-add-resources.html#arguments-of-the-target-based-variant).
+The earlier native-header exclusion expectation confused object compilation
+with Qt header processing; the corrected contract retains source membership.
+Runtime analysis remains Python/AST-only; no project CMake, QML component, or
+application code is executed.
+The guarded application refresh remains separately owned and pending; local
+parser and package checks do not establish completed application adoption.
+
+Delivery targets the existing full-feature `codex/qml-upstream-integration` line
+through a focused repair PR; it does not replace that profile with the narrower
+upstream contribution. That branch has no automatic push validation trigger, so
+the integration owner must obtain deliberate validation of the exact merged SHA
+after the normal pre-merge PR workflows finish. The external upstream proposal
+and any future default-branch integration remain separate reviewed operations.
+Advancing the integration branch also synchronizes its existing parent PR #7
+against `codex/qml-upstream-base`. Its normal checks must be preserved, but a
+synthetic PR checkout is separate evidence from the actual merge SHA. Where that
+identity differs, one deliberate existing CI dispatch is bound to and read back
+against the resulting merged SHA; no additional workflow or duplicate full
+feature-branch run is introduced.

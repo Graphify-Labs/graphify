@@ -22,8 +22,9 @@ cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
 INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
 the recorded local source/artifact profiles. Current integrated analysis uses
-policy 23 and AST schema 13 for the INC-QML-53 repair. Broader repair verification
-is pending; policy-22 integration evidence remains revision-bound. Expanded
+policy 24 and AST schema 13 for the corrected INC-QML-53 repair. Its focused local
+source cases pass; current artifact/hosted proof remains pending and policy-22/23
+evidence remains revision-bound. Expanded
 REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
 
@@ -1369,9 +1370,10 @@ callback ambiguity remain outside this recovery profile.
 
 `qml_cmake` retains source-local command order. `qml_cmake_properties` records
 literal source properties and attaches flat private C/C++ additions to a unique
-preceding QML module. Header-only inputs use `qt_tooling_source`, distinct from
-runtime `qt_source` membership; IDE descriptors and generator scripts cannot
-become provider evidence. `QT_QML_SINGLETON_TYPE` is preserved as source metadata,
+preceding QML module. Native inputs retain `qt_source` membership even when
+`HEADER_FILE_ONLY` disables their ordinary compilation. Explicit nonnative tooling
+uses `qt_tooling_source`; IDE descriptors and generator scripts cannot become
+provider evidence. `QT_QML_SINGLETON_TYPE` is preserved as source metadata,
 not a claim that a runtime singleton instance exists.
 
 `qml_cmake_resources` projects only the explicit target/name/PREFIX/FILES form
@@ -1379,17 +1381,47 @@ to the existing `resource_alias` contract. It applies the literal alias in effec
 at that declaration and never executes the build or admits another file. The
 project index uses a source `resource_alias` override instead of its physical
 resource spelling, including defensive rejection of malformed transported
-overrides. Ordinary corpus membership, duplicate-alias ambiguity and source/root
-boundaries remain authoritative for the endpoint.
+overrides. Explicit resource and module-generated providers share one endpoint
+ambiguity decision; distinct declaration identities remain ambiguous even when
+they name the same physical target. Only repeated copies of the exact same
+declaration identity coalesce. Provider ordering cannot select a winner.
+Ordinary corpus membership and source/root boundaries remain authoritative.
+Conflicting records for a `qt_module`, `qt_source` or `resource_alias` declaration
+identity reject before index construction. Exact copies coalesce only for these
+source-owned Qt providers; generic namespace IDs can intentionally occur in
+several files and retain their existing provenance policy. Real C# namespace
+extraction and mixed-language scans protect that separate boundary.
 
 Dynamic/relevant conditional mutations, unsupported flags, duplicate/unknown or
 not-yet-declared module targets and late property changes produce incomplete
 metadata. Native `.rc` target sources and RC-only include-directory properties
 are ignored only after their literal filenames/property names prove that they
 cannot affect this analyzed membership/resource contract. A property expansion
-in any supported runtime metadata remains unsupported.
+in any supported runtime metadata remains unsupported. `DIRECTORY` and
+`TARGET_DIRECTORY` source-property selectors reject before any local property
+mutation or RC-only exemption. `DISCARD_FILE_CONTENTS` rejects in every resource
+argument position instead of projecting an empty placeholder to source content.
+Quoting a reserved argument value does not turn it into a filename; an explicit
+path such as `./DISCARD_FILE_CONTENTS` remains a different literal input and must
+still satisfy ordinary resource-path/alias validation.
 
-Policy 23 invalidates prior derived analysis at unchanged input/package identity;
+The corrected native-header contract follows CMake's
+[HEADER_FILE_ONLY](https://cmake.org/cmake/help/v3.30/prop_sf/HEADER_FILE_ONLY.html)
+compilation property and
+[AUTOMOC header processing](https://cmake.org/cmake/help/v3.30/prop_tgt/AUTOMOC.html#header-file-processing).
+The earlier expectation that the compilation flag removed native membership was
+incorrect: target headers remain eligible for Qt processing. CMake's
+[source-property directory selectors](https://cmake.org/cmake/help/v3.30/command/set_source_files_properties.html)
+can affect other scopes, so this source-local reader rejects them. Qt's
+[resource command](https://doc.qt.io/qt-6.12/qt-add-resources.html#arguments-of-the-target-based-variant)
+defines discarded content as empty placeholders; that option cannot establish a
+QML source endpoint. These references explain admission boundaries, not executable
+CMake or Qt runtime equivalence.
+
+The project-membership consumer uses this combined project URL decision; it
+cannot bypass ambiguity by consulting the explicit resource index alone.
+
+Policy 24 invalidates prior policy-22/23 derived analysis at unchanged input/package identity;
 schema 13, semantic caches and the existing transactional publication owner are
 unchanged. [Traceability](../../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53)
 records focused old/new tests, alias replacement and real metadata-only

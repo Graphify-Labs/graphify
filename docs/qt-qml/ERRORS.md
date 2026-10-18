@@ -489,17 +489,32 @@ through ordinary extraction/rebuild reporting, with no synthetic warning or runt
 success claim. Validation outcomes remain `QML_PROJECT_UNSUPPORTED` for unsupported
 CMake mutations, `QML_CMAKE_SYNTAX` for malformed command syntax and `QT_CPP_SYNTAX`
 for malformed or unsupported native syntax. New bounded metadata reasons include
-`unsupported_source_property_value`, `source_property_after_metadata_use`,
+`unsupported_source_property_scope`, `unsupported_source_property_value`,
+`source_property_after_metadata_use`,
 `unsupported_target_source_kind`, `unsupported_literal_resources_arguments` and
 `resource_path_escape_or_invalid_alias`; the existing
 `source_mutation_outside_literal_subset` still covers other rejected mutations.
+Source-property `DIRECTORY`/`TARGET_DIRECTORY` selectors reject before local
+mutation or the RC-only exemption; `DISCARD_FILE_CONTENTS` rejects in every
+resource argument position, including an exactly quoted keyword. Their bounded reasons and recovery are covered
+by the corrected source tests assigned in traceability. Correct either input to
+the supported source-local, content-preserving subset before retrying; force
+cannot authorize an incomplete graph.
 
 Recoverable read/root/access failures keep their existing owner/code/retry advice;
 this repair adds no filesystem write boundary or new persistence outcome.
 Incomplete metadata/native extraction reaches `QML_GRAPH_PRESERVED` at publication,
 retaining the accepted graph and manifest under the existing forced-update guard.
-Duplicate resource providers remain unresolved coverage ambiguity, never an
-arbitrary alias choice. Public synthetic retention tests verify graph/manifest
+Explicit and module-generated providers participate in the same resource
+ambiguity outcome: distinct declarations remain unresolved even for one physical
+endpoint; duplicate copies of one declaration identity coalesce. Provider order
+never selects an arbitrary alias. Public synthetic retention tests verify graph/manifest
 bytes and an existing report; installed/adoption proof remains separately assigned
 in traceability. Missing support is repaired by extending the tested literal/AST
 profile, never by dropping inputs or bypassing the guard.
+
+Conflicting records for one Qt module/source/resource declaration identity raise
+`QML_METADATA` before the index can choose a transported target. Recovery requires
+consistent source-backed records followed by the normal guarded retry. Generic
+namespace IDs shared across unrelated-language source files retain their existing
+contract; this Qt validation cannot reject those legitimate repeated identities.

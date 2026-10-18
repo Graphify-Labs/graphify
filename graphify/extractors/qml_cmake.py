@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from graphify.extractors.qml_cmake_properties import (
-    properties_for, reject, source_properties, target_sources,
+    native_source, properties_for, reject, source_properties, target_sources,
 )
 from graphify.extractors.qml_cmake_resources import add_resources
 from graphify.extractors.qml_cmake_syntax import commands
@@ -87,10 +87,13 @@ def _module(facts, command, properties, consumed):
             fields = {"resource_alias": alias} if alias is not None else {}
             if "QT_QML_SINGLETON_TYPE" in props:
                 fields["singleton_type"] = props["QT_QML_SINGLETON_TYPE"] in {"TRUE", "ON", "1"}
-            # Compile exclusion belongs to this file. Keep the section's source
-            # kind unchanged so a tooling header cannot reclassify its siblings.
+            if "HEADER_FILE_ONLY" in props:
+                fields["header_file_only"] = props["HEADER_FILE_ONLY"] in {"TRUE", "ON", "1"}
+            # Object compilation does not determine native header/AUTOMOC
+            # ownership. Only nonnative IDE inputs become separate tooling facts;
+            # each token keeps its own role without reclassifying its siblings.
             fact_kind, source_kind = "qt_source", kind
-            if kind == "cpp" and props.get("HEADER_FILE_ONLY") in {"TRUE", "ON", "1"}:
+            if kind == "cpp" and fields.get("header_file_only") and not native_source(token):
                 fact_kind = "qt_tooling_source"
                 source_kind = "tooling"
             facts.add_chars(fact_kind, (key, source_kind, token.value), token.value, token.start, token.end,

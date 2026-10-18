@@ -829,7 +829,8 @@ Qt effects or upstream released-package delivery.
 
 ## D28 — Bounded syntax recovery keeps semantic and publication authority
 
-Status: **Accepted for INC-QML-53; focused local verification, broader proof pending**.
+Status: **Accepted for INC-QML-53; policy-24 focused local source cases verified;
+current artifact and hosted proof pending**.
 A grammar misclassification of valid empty template-parameter defaults is repaired
 through an AST-validated byte-preserving view. The compatibility adapter may
 remove only the candidate default; the recovered declaration's named parameter
@@ -839,17 +840,28 @@ borrow that proof. Source bytes and public extractor interfaces stay unchanged.
 
 The literal CMake reader similarly extends its admitted subset through focused
 property/source/resource helpers, retaining original source order and ownership.
-Implementation source additions join a unique preceding local module; explicit
-header-only tooling stays outside runtime membership. Literal resource aliases
+Implementation source additions join a unique preceding local module. Native
+inputs retain source membership when ordinary compilation is disabled;
+only explicit nonnative tooling stays outside runtime membership. Literal aliases
 replace physical resource spelling rather than adding a fabricated runtime URL.
+Explicit and module-generated resource providers share the same ambiguity
+decision. Distinct declarations remain ambiguous even for one physical target;
+only repeated copies of one declaration identity coalesce.
+Conflicting copies of a Qt module/source/resource declaration identity reject
+rather than allowing input order to select transported metadata. This validation
+does not redefine generic namespace identities shared across source files.
 Unsupported or ambiguous mutations keep the closed coverage guard. Native RC-only
 metadata can be excluded from this analysis only when it demonstrably cannot
-change QML/C++ membership or resource identity.
+change QML/C++ membership or resource identity. Unsupported source-property scope
+selectors reject before that exemption or local state mutation; discarded-content
+resources cannot borrow a source file's QML identity. The CMake/Qt semantic
+references and corrected header-processing rationale belong to the
+[design contract](DESIGN.md#bounded-c-and-cmake-admission--inc-qml-53).
 
 This is source analysis, not general C++ recovery, CMake evaluation or a Qt runtime
 model. It introduces no dependency, SDK execution, second corpus interpretation,
-diagnostic catalogue identity or persistence writer. Qt policy 23 forces the
+diagnostic catalogue identity or persistence writer. Qt policy 24 forces the
 existing derived-product refresh; combined AST schema 13 and semantic-cache
 ownership remain unchanged. Historical policy-22 source/installed/hosted proof
-does not validate this repair; new evidence belongs to the INC-QML-53 traceability
-profile and its explicit pending boundaries.
+and the initial policy-23 repair do not validate this correction; new evidence
+belongs to the INC-QML-53 traceability profile and its explicit pending boundaries.

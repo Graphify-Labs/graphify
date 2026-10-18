@@ -75,19 +75,20 @@ def test_REQ_QML_009_conditional_native_resource_properties_are_provably_irrelev
     assert facts(result, "resource_alias") == []
 
 
-@pytest.mark.parametrize("value,tooling", [("TRUE", True), ("ON", True), ("1", True),
-                                         ("FALSE", False), ("OFF", False), ("0", False)])
-def test_REQ_QML_009_explicit_header_only_property_never_creates_runtime_provider(value, tooling):
-    """Both source-declaration forms honor the actual literal compile exclusion."""
+@pytest.mark.parametrize("value,header_only", [("TRUE", True), ("ON", True), ("1", True),
+                                             ("FALSE", False), ("OFF", False), ("0", False)])
+def test_REQ_QML_009_explicit_header_only_property_preserves_native_header_membership(value, header_only):
+    """HEADER_FILE_ONLY does not exclude headers from CMake AUTOMOC processing."""
     source = (f"set_source_files_properties(backend.h worker.h PROPERTIES HEADER_FILE_ONLY {value})\n"
               "qt_add_qml_module(app URI Public.Tools SOURCES backend.h)\n"
               "target_sources(app PRIVATE worker.h)")
     result = parse_cmake(source)
     assert not result.get("error")
-    assert len(facts(result, "qt_tooling_source")) == (2 if tooling else 0)
-    assert len(facts(result, "qt_source")) == (0 if tooling else 2)
-    assert all(qml_metadata(node)["source_kind"] == "tooling"
-               for node in facts(result, "qt_tooling_source"))
+    assert facts(result, "qt_tooling_source") == []
+    assert len(facts(result, "qt_source")) == 2
+    assert all(qml_metadata(node)["source_kind"] == "cpp"
+               and qml_metadata(node)["header_file_only"] == header_only
+               for node in facts(result, "qt_source"))
 
 
 @pytest.mark.parametrize("mutation", [

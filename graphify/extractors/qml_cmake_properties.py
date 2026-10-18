@@ -6,6 +6,14 @@ from pathlib import PurePosixPath
 from graphify.extractors.qml_project_read import literal_path
 
 
+_NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+
+
+def native_source(token):
+    """HEADER_FILE_ONLY controls object compilation, not AUTOMOC header ownership."""
+    return PurePosixPath(token.value).suffix.lower() in _NATIVE_SUFFIXES
+
+
 def reject(facts, command, reason="source_mutation_outside_literal_subset"):
     facts.reject(reason, facts.byte_offsets[command.start], facts.byte_offsets[command.end])
 
@@ -26,6 +34,12 @@ def source_properties(facts, command, properties, consumed):
         return
     split = values.index("PROPERTIES")
     paths, pairs = tokens[:split], tokens[split + 1:]
+    # CMake consumes these argument values as scope selectors even when quoted.
+    # Neither local property authority nor the RC exemption can resolve another
+    # directory's scope. ./DIRECTORY remains a distinct literal path spelling.
+    if any(token.value in {"DIRECTORY", "TARGET_DIRECTORY"} for token in paths):
+        reject(facts, command, "unsupported_source_property_scope")
+        return
     if not paths or not pairs or len(pairs) % 2 or any(token.dynamic for token in paths):
         reject(facts, command)
         return
@@ -78,15 +92,16 @@ def target_sources(facts, command, modules, properties, consumed):
     module, key = owners[0]
     for token in sources:
         props = properties_for(facts, token, properties)
-        tooling = props.get("HEADER_FILE_ONLY") in {"TRUE", "ON", "1"}
-        suffix = PurePosixPath(token.value).suffix.lower()
-        if not tooling and suffix not in {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}:
+        header_only = props.get("HEADER_FILE_ONLY") in {"TRUE", "ON", "1"}
+        tooling = header_only and not native_source(token)
+        if not tooling and not native_source(token):
             reject(facts, command, "unsupported_target_source_kind")
             continue
-        # HEADER_FILE_ONLY inputs describe IDE tooling, not a compiled provider
-        # or runtime QML resource. Preserve that distinction in the fact kind.
+        # Native headers remain target/AUTOMOC inputs regardless of object-file
+        # compilation. Only explicit nonnative IDE inputs lack provider authority.
         kind = "qt_tooling_source" if tooling else "qt_source"
+        fields = {"header_file_only": header_only} if "HEADER_FILE_ONLY" in props else {}
         consumed.add(literal_path(facts.file, token.value) or token.value)
         facts.add_chars(kind, (key, "tooling" if tooling else "cpp", token.value),
                         token.value, token.start, token.end, owner=module, module_key=key,
-                        value=token.value, source_kind="tooling" if tooling else "cpp")
+                        value=token.value, source_kind="tooling" if tooling else "cpp", **fields)

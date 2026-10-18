@@ -27,8 +27,8 @@ uses AST cache schema 13 and Qt policy 22; its
 records current source, native and isolated-install profiles.
 
 INC-QML-53 repairs additional bounded C++ parameter and literal CMake forms under
-the existing criteria. Current repair source uses Qt policy 23 and AST schema 13;
-its focused local evidence and pending full/artifact/adoption verification are
+the existing criteria. The corrected repair uses Qt policy 24 and AST schema 13;
+its revision-bound source, artifact and adoption evidence is
 recorded [separately](../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
 The earlier policy-22 hosted checkpoint does not verify this changed source.
 
@@ -231,20 +231,22 @@ Supported literal CMake, qmake, `qmldir`, `.qmltypes`, and `.qrc` declarations d
 
 **Acceptance Criteria**
 
-1 - Qt 6 CMake and qmake fixtures yield the expected literal module URI/version, sources, imports and resources; macro-based C++ exposure gets its module context from this evidence. A flat literal private C/C++ source addition may join exactly one preceding source-local QML module target. Explicit header-only tooling inputs retain separate facts and cannot establish runtime module membership or a native provider. (`REQ-QML-009-AC01`)
+1 - Qt 6 CMake and qmake fixtures yield the expected literal module URI/version, sources, imports and resources; macro-based C++ exposure gets its module context from this evidence. A flat literal private C/C++ source addition may join exactly one preceding source-local QML module target. Native inputs retain source membership when `HEADER_FILE_ONLY` disables ordinary compilation; that property alone cannot exclude a declared Qt header or its native provider. Explicit nonnative tooling inputs retain separate facts and cannot establish runtime module membership or a native provider. (`REQ-QML-009-AC01`)
 
 2 - Supported `qmldir` and `.qmltypes` fixtures retain exports, flags, members and provenance; conflicting source/generated declarations retain both origins and a conflict diagnostic. (`REQ-QML-009-AC02`)
 
-3 - `.qrc` and supported literal target-form CMake resource prefixes/aliases resolve resource URLs to accepted source files. A source-property alias replaces the physical resource spelling rather than creating a second runtime URL; malformed or conflicting evidence cannot restore that fallback. Traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
+3 - `.qrc` and supported literal target-form CMake resource prefixes/aliases resolve resource URLs to accepted source files. A source-property alias replaces the physical resource spelling rather than creating a second runtime URL; malformed or conflicting evidence cannot restore that fallback. Explicit resource and module-generated providers participate in one ambiguity decision: distinct declarations remain unresolved regardless of discovery order, including when they name one physical endpoint; only repeated copies of the same declaration identity coalesce. Unsupported source-property directory selectors and discarded-content resources cannot establish local aliases or source endpoints. Traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
 
 4 - CMake/qmake conditions or expressions outside the literal subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
 
-Status: **Implemented for the bounded profile; INC-QML-53 focused local verification**.
+Status: **Bounded repair implemented; policy-24 focused local source cases verified**.
+Current artifact/install and hosted acceptance remain pending.
 The extension admits source properties before metadata use and explicit
 `qt_add_resources`/`qt6_add_resources` target/name/PREFIX/FILES mappings. Bare QML
 `target_sources`, unknown/duplicate/not-yet-declared module targets, public or
 interface additions, computed inputs, relevant conditions, late property changes,
-generated inputs and unsupported resource options remain excluded. A literal
+`DIRECTORY`/`TARGET_DIRECTORY` property selectors, generated inputs and unsupported
+resource options including `DISCARD_FILE_CONTENTS` remain excluded. A literal
 native `.rc` addition and its `INCLUDE_DIRECTORIES` property may be ignored only
 because they cannot change analyzed QML/C++ membership or QRC URL identity.
 Existing metadata bounds and publication guards remain mandatory.
@@ -259,7 +261,7 @@ Repeated analysis of identical input has stable IDs and normalized output. Seria
 
 1 - Identical inputs yield equal canonical node/edge/fact output across process count, filesystem order and cache state; case-distinct or normalization-colliding names remain distinguishable. (`REQ-QML-010-AC01`)
 
-2 - Every emitted edge has valid endpoints and every source-backed fact retains an accepted root-relative path and correct source span after ID remapping and JSON reload. (`REQ-QML-010-AC02`)
+2 - Every emitted edge has valid endpoints and every source-backed fact retains an accepted root-relative path and correct source span after ID remapping and JSON reload. Exact copies of one source-owned Qt module/source/resource declaration may coalesce; conflicting copies reject rather than selecting metadata by input order. Generic namespace identities shared across source files retain their established provenance behavior. (`REQ-QML-010-AC02`)
 
 3 - A fixture with different relations on the same endpoint pair round-trips all promised facts through build/export/reload; no relation disappears through simple-graph overwrite. (`REQ-QML-010-AC03`)
 
@@ -716,11 +718,15 @@ that authority. This refines REQ-QML-001-AC04, REQ-QML-008-AC02/AC04 and
 REQ-QML-018-AC02; it does not promise general C++ grammar recovery.
 
 The literal metadata additions above refine REQ-QML-009-AC01/AC03/AC04 and the
-existing provenance, membership and incremental criteria. Qt policy 23 requires
+existing provenance, membership and incremental criteria. Qt policy 24 requires
 refresh at unchanged package/source identity; AST schema 13 and semantic-cache
 ownership are unchanged. Unsupported input still reaches the normal incomplete
 metadata/native syntax diagnostics and cannot replace accepted products, including
 under force. Focused source tests and before-fix regressions pass where assigned
-in traceability; complete source, artifact/install and application-corpus evidence
-remain pending for this repair. No new requirement or acceptance identifier is
+in traceability. The original policy-23 wheel/install checkpoint is historical;
+it does not verify the corrected resource ambiguity, scoped property, empty-resource
+or native-header contracts. The corrected focused source cases and adjacent
+compatibility checks pass within their declared local profiles; current artifact,
+complete corrected-source and hosted evidence, and the separately owned
+application-corpus refresh remain pending. No new requirement or acceptance identifier is
 allocated; REQ-QML-022 remains unallocated.

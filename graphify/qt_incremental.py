@@ -11,10 +11,10 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-# Literal CMake additions/aliases and template-parameter recovery change Qt facts
-# at unchanged source/package versions. Retire prior accepted products through
-# the existing publication owner; the syntax cache has its separate epoch.
-QT_POLICY_VERSION = 23
+# Literal CMake scopes, resource collisions and native header ownership change
+# accepted Qt facts at unchanged source/package versions. Retire policy-23
+# products through the existing owner; syntax-cache ownership stays unchanged.
+QT_POLICY_VERSION = 24
 
 
 def is_qt_metadata(path: str | Path) -> bool:

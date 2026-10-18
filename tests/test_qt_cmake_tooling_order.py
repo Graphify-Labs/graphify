@@ -18,13 +18,14 @@ from graphify.qml_resolution_types import qml_metadata
     ("backend.h", "notes.h", "worker.cpp"),
     ("backend.h", "worker.cpp", "notes.h"),
 ], ids=["tooling_first", "tooling_middle", "tooling_last"])
-@pytest.mark.parametrize("tooling", [True, False], ids=["excluded", "compiled"])
-def test_req_qml009_ac01_mixed_source_order_preserves_native_membership_after_reload(tmp_path, order, tooling):
-    """A file's compile exclusion cannot alter later sources' published roles.
+@pytest.mark.parametrize("header_only", [True, False], ids=["header_only", "compiled"])
+def test_req_qml009_ac01_mixed_source_order_preserves_native_membership_after_reload(tmp_path, order, header_only):
+    """A native file's compile flag cannot alter its own or its siblings' membership.
 
     The real producer joins a native property to QML and publishes/reloads the
     graph. Assertions check each declaration and membership's role and exact
     accepted file endpoint, including both values and all placement boundaries.
+    HEADER_FILE_ONLY controls object compilation, not AUTOMOC header scanning.
     """
     sources = {
         "Main.qml": "import Public.Tools 1.0\nService { property int shown: status }\n",
@@ -34,7 +35,7 @@ def test_req_qml009_ac01_mixed_source_order_preserves_native_membership_after_re
                      "public: int status() const { return 1; } };\n",
         "worker.cpp": "int calculate() { return 1; }\n",
         "CMakeLists.txt": "set_source_files_properties(notes.h PROPERTIES HEADER_FILE_ONLY "
-                          + ("TRUE" if tooling else "FALSE") + ")\n"
+                          + ("TRUE" if header_only else "FALSE") + ")\n"
                           "qt_add_qml_module(app URI Public.Tools VERSION 1.0 QML_FILES Main.qml SOURCES "
                           + " ".join(order) + ")\n",
     }
@@ -55,12 +56,9 @@ def test_req_qml009_ac01_mixed_source_order_preserves_native_membership_after_re
                    if qml_metadata(node).get("kind") == "membership_resolution"}
     for path in order:
         identity, metadata = declarations[path]
-        excluded = path == "notes.h" and tooling
-        assert metadata["kind"] == ("qt_tooling_source" if excluded else "qt_source")
-        assert metadata["source_kind"] == ("tooling" if excluded else "cpp")
-        if excluded:
-            assert identity not in memberships
-            continue
+        assert metadata["kind"] == "qt_source" and metadata["source_kind"] == "cpp"
+        if path == "notes.h":
+            assert metadata["header_file_only"] == header_only
         site, membership = memberships[identity]
         assert membership["source_kind"] == "cpp" and membership["status"] == "resolved"
         target = membership["target_id"]
