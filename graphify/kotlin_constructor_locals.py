@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 import re
 
-SCHEMA = 3
+SCHEMA = 4
 GRAPH_MARKER = "kotlin_constructor_local_schema"
 RESULT_MARKER = "_kotlin_constructor_local_schema"
 COMPLETE = "_kotlin_constructor_local_complete"
@@ -237,6 +237,15 @@ def collect(root, source):
                         and cc[1].type == "value_arguments" and not _children(cc[1])
                         and direct_names[name] == 1 and ctor not in scope_names and ctor not in owner_names)
             bindings[name] = (ctor, prop.end_byte, eligible)
+        # Nested locals are outside the positive proof, but still shadow an
+        # object of the same name only after declaration and within that scope.
+        nested_bindings = [
+            (_name(variable, source), prop.end_byte, prop.parent.end_byte)
+            for prop in _walk(block)
+            if prop.type == "property_declaration" and prop.parent != block
+            and prop.parent.type in {"block", "lambda_literal"}
+            for variable in _children(prop) if variable.type == "variable_declaration"
+        ]
         for call in _walk(block):
             if call.type != "call_expression":
                 continue
@@ -247,6 +256,10 @@ def collect(root, source):
             if len(nav) != 2 or any(n.type != "identifier" for n in nav):
                 continue
             receiver = _identifier(nav[0], source)
+            if any(name == receiver and end < call.start_byte < scope_end
+                   for name, end, scope_end in nested_bindings):
+                calls[call.start_byte] = {"class": "", "eligible": False}
+                continue
             if receiver not in bindings:
                 continue
             ctor, end, eligible = bindings[receiver]

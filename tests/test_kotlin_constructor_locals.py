@@ -308,7 +308,7 @@ fun rebuild() {
     assert edge["confidence_score"] == pytest.approx(0.85)
     for entry in entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 3
+        assert payload["_kotlin_constructor_local_schema"] == 4
         assert isinstance(payload["kotlin_constructor_locals"], dict)
 
 
@@ -562,7 +562,7 @@ def test_java_classifier_names_are_negative_evidence_only(tmp_path, case, java_s
     assert not _calls_from_at(result, "execute", member_line)
 
 
-@pytest.mark.parametrize("prior_schema", [1, 2])
+@pytest.mark.parametrize("prior_schema", [1, 2, 3])
 def test_stale_kotlin_cache_reextracts_under_current_schema(tmp_path, prior_schema):
     files = {
         **_ordinary_files(_emitter()),
@@ -585,7 +585,7 @@ def test_stale_kotlin_cache_reextracts_under_current_schema(tmp_path, prior_sche
     assert _call(result, "execute", "Emitter", "toggle")["confidence_score"] == pytest.approx(0.85)
     for entry in kotlin_entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 3
+        assert payload["_kotlin_constructor_local_schema"] == 4
 
 
 @pytest.mark.parametrize("outside_source", ["Outside.kt", "Outside.java"])
@@ -913,3 +913,48 @@ def test_local_deferral_preserves_object_calls_before_declaration(tmp_path, bind
         assert after[0]["confidence_score"] == pytest.approx(0.85)
     else:
         assert not after
+
+
+@pytest.mark.parametrize(
+    ("case", "nested"),
+    [
+        ("if", "if (true) {\n%s\n    }"),
+        ("when", "when { true -> {\n%s\n    } }"),
+        ("try", "try {\n%s\n    } finally { }"),
+        ("run", "run {\n%s\n    }"),
+        ("lambda", "val action = {\n%s\n    }\n    action()"),
+        ("local_function", "fun nested() {\n%s\n    }\n    nested()"),
+    ],
+)
+def test_nested_capitalized_local_abstains_without_poisoning_object_scope(tmp_path, case, nested):
+    files = {"Provider.kt": "package matrix\n\n" + _emitter()
+             + "\nobject Device {\n    fun toggle(flag: Boolean) { }\n}\n"}
+    callers = []
+    for caller, statements in [
+        ("execute", "val Device = Emitter()\n        Device.toggle(true)"),
+        ("beforeDeclaration", "val Device = Emitter()"),
+        ("afterScope", "val Device = Emitter()"),
+    ]:
+        body = (nested % ("        " + statements)).replace("nested", "nested_" + caller)
+        if caller == "beforeDeclaration":
+            body = "Device.toggle(false)\n    " + body
+        if caller == "afterScope":
+            body += "\n    Device.toggle(false)"
+        callers.append("fun " + caller + "() {\n    " + body + "\n}\n")
+    files["Caller.kt"] = "package matrix\n\n" + "\n".join(callers)
+    root = tmp_path / case
+    for _ in range(2):  # Cold extraction and an unchanged warm-cache replay.
+        result = _extract(root, files)
+        assert result["_kotlin_constructor_local_complete"] is True
+        object_target = _member_id(result, "Device", "toggle")
+        for line, text in enumerate(files["Caller.kt"].splitlines(), 1):
+            if "Device.toggle(" not in text:
+                continue
+            edges = [edge for edge in result["edges"]
+                     if edge["relation"] == "calls" and edge.get("source_file") == "Caller.kt"
+                     and edge.get("source_location") == f"L{line}"]
+            if "true" in text:
+                assert not edges
+            else:
+                assert len(edges) == 1
+                assert edges[0]["target"] == object_target
