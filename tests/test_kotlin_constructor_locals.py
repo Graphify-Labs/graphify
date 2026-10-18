@@ -308,7 +308,7 @@ fun rebuild() {
     assert edge["confidence_score"] == pytest.approx(0.85)
     for entry in entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 4
+        assert payload["_kotlin_constructor_local_schema"] == 5
         assert isinstance(payload["kotlin_constructor_locals"], dict)
 
 
@@ -562,7 +562,7 @@ def test_java_classifier_names_are_negative_evidence_only(tmp_path, case, java_s
     assert not _calls_from_at(result, "execute", member_line)
 
 
-@pytest.mark.parametrize("prior_schema", [1, 2, 3])
+@pytest.mark.parametrize("prior_schema", [1, 2, 3, 4])
 def test_stale_kotlin_cache_reextracts_under_current_schema(tmp_path, prior_schema):
     files = {
         **_ordinary_files(_emitter()),
@@ -585,7 +585,7 @@ def test_stale_kotlin_cache_reextracts_under_current_schema(tmp_path, prior_sche
     assert _call(result, "execute", "Emitter", "toggle")["confidence_score"] == pytest.approx(0.85)
     for entry in kotlin_entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 4
+        assert payload["_kotlin_constructor_local_schema"] == 5
 
 
 @pytest.mark.parametrize("outside_source", ["Outside.kt", "Outside.java"])
@@ -945,6 +945,51 @@ def test_nested_capitalized_local_abstains_without_poisoning_object_scope(tmp_pa
     root = tmp_path / case
     for _ in range(2):  # Cold extraction and an unchanged warm-cache replay.
         result = _extract(root, files)
+        assert result["_kotlin_constructor_local_complete"] is True
+        object_target = _member_id(result, "Device", "toggle")
+        for line, text in enumerate(files["Caller.kt"].splitlines(), 1):
+            if "Device.toggle(" not in text:
+                continue
+            edges = [edge for edge in result["edges"]
+                     if edge["relation"] == "calls" and edge.get("source_file") == "Caller.kt"
+                     and edge.get("source_location") == f"L{line}"]
+            if "true" in text:
+                assert not edges
+            else:
+                assert len(edges) == 1
+                assert edges[0]["target"] == object_target
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["direct", "nested"])
+def test_destructured_local_shadows_abstain_without_poisoning_object_calls(tmp_path, nested):
+    binding = "val (Device, other) = Holder(Emitter(), 1)"
+    body = binding + "\n    Device.toggle(true)"
+    if nested:
+        body = "if (true) {\n        " + binding + "\n        Device.toggle(true)\n    }"
+    files = _ordinary_files(
+        _emitter() + "\nobject Device {\n    fun toggle(flag: Boolean) { }\n}\n"
+        + "data class Holder(val first: Emitter, val second: Int)\n",
+        body,
+    )
+    files["Caller.kt"] += """
+fun beforeDeclaration() {
+    Device.toggle(false)
+    %s
+}
+
+fun afterScope() {
+    if (true) {
+        %s
+    }
+    Device.toggle(false)
+}
+
+fun unshadowed() {
+    Device.toggle(false)
+}
+""" % (binding, binding)
+    for _ in range(2):
+        result = _extract(tmp_path, files)
         assert result["_kotlin_constructor_local_complete"] is True
         object_target = _member_id(result, "Device", "toggle")
         for line, text in enumerate(files["Caller.kt"].splitlines(), 1):

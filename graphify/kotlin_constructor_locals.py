@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 import re
 
-SCHEMA = 4
+SCHEMA = 5
 GRAPH_MARKER = "kotlin_constructor_local_schema"
 RESULT_MARKER = "_kotlin_constructor_local_schema"
 COMPLETE = "_kotlin_constructor_local_complete"
@@ -85,6 +85,16 @@ def _declarations(node, source):
     kinds = {"class_declaration", "object_declaration", "function_declaration",
              "type_alias", "variable_declaration", "parameter", "class_parameter"}
     return [_name(n, source) for n in _walk(node) if n.type in kinds and _name(n, source)]
+
+
+def _property_variables(node):
+    variables = []
+    for child in _children(node):
+        if child.type == "variable_declaration":
+            variables.append(child)
+        elif child.type == "multi_variable_declaration":
+            variables.extend(c for c in _children(child) if c.type == "variable_declaration")
+    return variables
 
 
 def _modifiers(node, source, allowed):
@@ -199,7 +209,7 @@ def collect(root, source):
         direct_names = Counter(
             _name(c, source)
             for prop in _children(block) if prop.type == "property_declaration"
-            for c in _children(prop) if c.type == "variable_declaration"
+            for c in _property_variables(prop)
         )
         owner_names = set()
         if parent.type == "class_body":
@@ -216,16 +226,19 @@ def collect(root, source):
             if prop.type != "property_declaration":
                 continue
             pc = _children(prop)
-            variable = next((c for c in pc if c.type == "variable_declaration"), None)
-            if variable is None:
+            variables = _property_variables(prop)
+            # All bound names shadow objects, even when destructuring or an
+            # annotation/qualified initializer is outside the type proof.
+            for variable in variables:
+                name = _name(variable, source)
+                if name:
+                    bindings[name] = ("", prop.end_byte, False)
+            if len(variables) != 1:
                 continue
+            variable = variables[0]
             name = _name(variable, source)
             if not name:
                 continue
-            # Recognizing a local value is separate from proving its type.
-            # An annotation/qualified initializer must not restore object or
-            # global-name fallback for a capitalized local receiver.
-            bindings[name] = ("", prop.end_byte, False)
             if len(pc) != 2 or pc[0] != variable or pc[1].type != "call_expression":
                 continue
             cc = _children(pc[1])
@@ -244,7 +257,7 @@ def collect(root, source):
             for prop in _walk(block)
             if prop.type == "property_declaration" and prop.parent != block
             and prop.parent.type in {"block", "lambda_literal"}
-            for variable in _children(prop) if variable.type == "variable_declaration"
+            for variable in _property_variables(prop)
         ]
         for call in _walk(block):
             if call.type != "call_expression":
