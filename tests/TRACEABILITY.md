@@ -1626,7 +1626,7 @@ original coverage artifact remain preserved; no upstream PR or merge is performe
 ## Bounded parser repair — INC-QML-53
 
 Status: **Policy-25 local source and isolated artifact/install profiles verified;
-hosted proof and guarded application refresh pending**.
+per-user installation verified; hosted proof and guarded application refresh pending**.
 This profile extends the
 bounded forms under existing criteria; twenty-one requirements/eighty-five
 acceptance IDs remain unchanged. Historical policy-22 hosted acceptance remains
@@ -2088,5 +2088,39 @@ warnings. This remains a disclosed full-repository typing baseline.
 
 Local source and isolated artifact/install proof is complete within the executed
 profiles. Hosted checks, validation of the eventual merged SHA, application-graph
-refresh and global/team artifact adoption remain pending; earlier hosted evidence
+refresh and team artifact release remain pending; earlier hosted evidence
 does not validate this new revision.
+
+### Policy-25 per-user tool adoption
+
+The per-user tool is installed offline from the reviewed policy-25 wheel identified
+above. All 322 installed package files match source `84f5eef7` and the unchanged
+production tree in published head `e46d2184`. The 66 runtime distributions and
+`qml`, `watch`, `mcp`, `sql` extras remain unchanged; five test tools are loaded
+separately rather than added to the installed runtime.
+
+Executed local commands:
+
+```powershell
+$taskToolPython = Join-Path $env:APPDATA 'uv/tools/graphifyy/Scripts/python.exe'
+& $taskToolPython -I -B .venv/parser-repair/rc-release/global_tool_smoke.py test
+uv pip check --python $taskToolPython --offline
+```
+
+The verification helper and its `local-tool-adoption/` receipts remain beneath
+the ignored `.venv/parser-repair/rc-release/` evidence directory.
+
+The actual installed interpreter passes **342 regressions, zero failures/errors/
+skips**, 28 warnings, in 57.95 seconds. Collected test identities exactly match the
+isolated 342-case profile, and every imported Graphify module is verified beneath
+the actual installed package location. Post-test payload/dependency identity is
+unchanged, offline dependency checking reports all 66 packages compatible, and
+the actual `graphify.exe --help` launcher exits zero. Root coverage evidence is
+preserved. Machine-specific installation and version receipts remain private.
+
+This completes per-user tool adoption; it does not change the earlier checkpoints
+where the global tool remained untouched. No application source or metadata is
+read and no application graph is regenerated in this adoption step. Team artifact
+publication, application-graph refresh and hosted/merged-SHA proof remain pending.
+PR #8 remains open without passing hosted checks while Actions is disabled; local
+installation does not establish a merge or CI success.

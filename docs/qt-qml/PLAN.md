@@ -2836,7 +2836,7 @@ head receives normal PR validation and does not inherit a fictitious tested SHA.
 ## INC-QML-53 — Bounded parser recovery and literal CMake additions
 
 Status: **Policy-25 local source and isolated artifact/install profiles verified;
-hosted proof and global/team adoption pending**.
+per-user installation verified; hosted proof and team adoption pending**.
 Dependencies: INC-QML-49–52 combined source/identity/publication boundaries.
 Owners: C++ compatibility maintainer; literal CMake maintainer; integration owner
 for policy, installed package and guarded application refresh. This correction
@@ -2876,7 +2876,8 @@ that three-module rerun is not a new complete-suite result. Earlier policy-24
 compatibility and isolated-install evidence remain historical for the RC change.
 Current policy-25 focused/broad Qt source and isolated artifact/install cases pass,
 with 35 explicit platform skips in the broad selection. Complete all-language
-and hosted validation and global/team adoption remain pending. The guarded
+and hosted validation and team adoption remain pending. Per-user installation
+and its actual installed-runtime regression selection pass. The guarded
 application refresh is separately owned and pending; upstream delivery remains separate from
 this fork-integration repair.
 
@@ -2962,3 +2963,10 @@ the isolated installed wheel passes 342 cases with no skips. Artifact identity,
 source retention, AST-only graph refresh and remaining delivery boundaries belong
 to [traceability](../../tests/TRACEABILITY.md#committed-policy-25-local-checkpoint--84f5eef7).
 This source selection is not the complete all-language suite or hosted evidence.
+
+The per-user tool now uses the reviewed policy-25 wheel. All 322 installed files
+and 66 runtime distributions retain the frozen identity; the actual installed
+runtime passes the same 342 cases with no skips. Team artifact release, application
+graph refresh and hosted/merged-SHA validation remain pending. The
+[local-adoption checkpoint](../../tests/TRACEABILITY.md#policy-25-per-user-tool-adoption)
+records this separately from the earlier isolated installation.
