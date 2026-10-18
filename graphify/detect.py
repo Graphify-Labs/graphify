@@ -557,10 +557,18 @@ def classify_file(path: Path) -> FileType | None:
 # Missing-pypdf is a process-global condition, not per-file, so warn at most
 # once per run — a corpus of many PDFs must not print the same hint N times.
 _pypdf_missing_warned = False
+# Unreadable PDFs are per-file, so warn once per path: detect() counts words and
+# the semantic pass reads the text again, and the same file must not warn twice.
+_pdf_failed_warned: set[str] = set()
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract plain text from a PDF file using pypdf."""
+    """Extract plain text from a PDF file using pypdf.
+
+    Returns ``""`` when the file cannot be read (malformed, encrypted, ...), the
+    same as for a PDF with no text, but warns on stderr naming the file and the
+    error first (#4527), so a failed read is not mistaken for an empty document.
+    """
     if not _file_within_size_cap(path):
         return ""
     try:
@@ -583,7 +591,16 @@ def extract_pdf_text(path: Path) -> str:
             if text:
                 pages.append(text)
         return "\n".join(pages)
-    except Exception:
+    except Exception as exc:
+        key = str(path)
+        if key not in _pdf_failed_warned:
+            _pdf_failed_warned.add(key)
+            print(
+                f"[graphify] WARNING: could not extract text from {path} "
+                f"({type(exc).__name__}: {exc}); it contributes no content to "
+                "the graph.",
+                file=sys.stderr,
+            )
         return ""
 
 
