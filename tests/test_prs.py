@@ -355,6 +355,17 @@ class TestDetectDefaultBranch:
         ):
             assert _detect_default_branch() == "develop"
 
+    def test_git_default_branch_with_slash_is_kept_whole(self):
+        """A default branch named release/2.x must not be cut down to 2.x, or every
+        PR targeting it is classified as targeting the wrong base."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "refs/remotes/origin/release/2.x\n"
+        with patch("graphify.prs._gh", return_value=None), patch(
+            "graphify.prs.subprocess.run", return_value=mock_result
+        ):
+            assert _detect_default_branch() == "release/2.x"
+
     def test_both_fail_returns_main(self):
         mock_result = MagicMock()
         mock_result.returncode = 1

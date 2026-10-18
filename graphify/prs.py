@@ -174,9 +174,11 @@ def _detect_default_branch(repo: str | None = None) -> str:
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
             )
             if result.returncode == 0:
-                # refs/remotes/origin/main → main
+                # refs/remotes/origin/main → main. Strip the prefix rather than
+                # keep the last segment, so a default branch with a slash in its
+                # name (release/2.x) survives whole.
                 ref = result.stdout.strip()
-                return ref.split("/")[-1] if ref else "main"
+                return ref.removeprefix("refs/remotes/origin/") or "main"
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
     return "main"
