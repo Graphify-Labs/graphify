@@ -243,7 +243,11 @@ def test_extract_passes_cached_node_ids_to_fresh_provenance_resolution(
             "label": "Cached Entity",
             "source_file": "CACHED.md",
             "file_type": "document",
-        }],
+        }, *[
+            {"id": invalid_id, "label": "Invalid ID", "source_file": "CACHED.md",
+             "file_type": "document"}
+            for invalid_id in (0, "")
+        ]],
         [], [], root=corpus, cache_root=out_dir,
         prompt=_extraction_system(),
     )
@@ -341,6 +345,11 @@ def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
     for node in initial_graph["nodes"]:
         if node["id"] == "b":
             node["source_file"] = source_name
+    initial_graph["nodes"].extend(
+        {"id": invalid_id, "label": "Invalid ID", "source_file": source_name,
+         "file_type": "document"}
+        for invalid_id in (0, "")
+    )
     graph_path.write_text(json.dumps(initial_graph), encoding="utf-8")
     changed.write_text("# A\nChanged content that references B.\n")
 
@@ -375,7 +384,7 @@ def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
     _run_extract()
 
     assert calls == [1, 1]
-    assert "b" in captured["known_node_ids"]
+    assert captured["known_node_ids"] == {"b"}
     assert [node["id"] for node in captured["result"]["nodes"]] == ["a"]
     assert [(edge["source"], edge["target"]) for edge in captured["result"]["edges"]] == [
         ("a", "b"),
@@ -385,7 +394,8 @@ def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
     ]
     assert str(changed) in captured["result"]["_partial_files"]
     final_graph = json.loads(graph_path.read_text(encoding="utf-8"))
-    assert {node["id"] for node in final_graph["nodes"]} == {"a", "b"}
+    # Invalid existing IDs remain ordinary retained data, never resolution authority.
+    assert {node["id"] for node in final_graph["nodes"]} == {"a", "b", 0, ""}
     assert [(edge["source"], edge["target"]) for edge in final_graph["edges"]] == [("a", "b")]
     assert [(edge["id"], edge["nodes"]) for edge in final_graph["hyperedges"]] == [
         ("a_b", ["a", "b"]),

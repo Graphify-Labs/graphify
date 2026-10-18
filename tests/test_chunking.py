@@ -490,6 +490,103 @@ def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
     assert result["uncovered_files"] == []
 
 
+def test_edge_between_kept_nodes_survives_when_source_file_was_not_dispatched(tmp_path):
+    """#2276: a references edge between two re-extracted pages is kept when the
+    model stamps it with a real file this run did not dispatch, and a node
+    attributed to another undispatched file is still dropped."""
+    from graphify.build import build, build_merge
+    from graphify.cache import scope_semantic_result
+    from graphify.export import to_json
+    from graphify.llm import extract_corpus_parallel
+
+    page_a = tmp_path / "page_a.md"
+    page_b = tmp_path / "page_b.md"
+    log = tmp_path / "log.md"
+    other = tmp_path / "other.md"
+    for path in (page_a, page_b, log, other):
+        path.write_text("# page\n", encoding="utf-8")
+
+    def _node(nid: str, source_file: str) -> dict:
+        return {
+            "id": nid,
+            "label": nid,
+            "file_type": "document",
+            "source_file": source_file,
+            "source_location": None,
+            "_origin": "semantic",
+        }
+
+    def _edge(source: str, target: str, source_file: str) -> dict:
+        return {
+            "source": source,
+            "target": target,
+            "relation": "references",
+            "source_location": None,
+            "_origin": "semantic",
+            "confidence": "INFERRED",
+            "weight": 1.0,
+            "source_file": source_file,
+            "file_type": "document",
+        }
+
+    prior = {
+        "nodes": [
+            _node("page_a", "page_a.md"),
+            _node("page_b", "page_b.md"),
+            _node("log", "log.md"),
+            _node("leaf", "log.md"),
+        ],
+        "edges": [
+            _edge("log", "leaf", "log.md"),
+            _edge("page_a", "page_b", "page_a.md"),
+        ],
+        "hyperedges": [],
+    }
+    graph_path = tmp_path / "graph.json"
+    to_json(build([prior], root=tmp_path), {}, str(graph_path))
+
+    def fresh(chunk, **kwargs):
+        return {
+            "nodes": [
+                _node("page_a", "page_a.md"),
+                _node("page_b", "page_b.md"),
+                _node("stray", "other.md"),
+            ],
+            "edges": [
+                _edge("page_a", "page_b", "log.md"),
+                _edge("page_a", "stray", "page_a.md"),
+            ],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fresh):
+        result = extract_corpus_parallel(
+            [page_a, page_b], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=2, max_concurrency=1,
+        )
+
+    assert any(
+        e.get("source") == "page_a" and e.get("target") == "page_b"
+        for e in result["edges"]
+    ), f"page_a→page_b missing after extract: {result['edges']}"
+    assert all(n.get("id") != "stray" for n in result["nodes"])
+
+    scope_semantic_result(result, tmp_path, [page_a, page_b])
+    assert any(
+        e.get("source") == "page_a" and e.get("target") == "page_b"
+        for e in result["edges"]
+    ), f"page_a→page_b missing after scope: {result['edges']}"
+
+    G = build_merge([result], graph_path, root=tmp_path)
+    assert G.has_edge("page_a", "page_b")
+    assert G.has_edge("log", "leaf")
+    assert "stray" not in G
+    assert not G.has_edge("page_a", "stray")
+    assert "page_a" in G and "page_b" in G
+
+
 def test_out_of_scope_drop_count_is_zero_when_all_in_scope(tmp_path, capsys):
     """Counter-test: a clean run records out_of_scope_dropped == 0 and no warning."""
     from graphify.llm import extract_corpus_parallel
@@ -649,6 +746,157 @@ def _provenance_result(source_file: str, node_id: str = "item") -> dict:
         "output_tokens": 1,
         "finish_reason": "stop",
     }
+
+
+@pytest.mark.parametrize("max_depth", [0, 3])
+@pytest.mark.parametrize("authority", ["fresh", "known"])
+def test_foreign_binary_edge_with_authoritative_endpoints_does_not_retry(
+    tmp_path, max_depth, authority,
+):
+    from graphify.cache import load_cached
+    from graphify.llm import _extraction_system, extract_corpus_parallel
+
+    first, second, log = [tmp_path / name for name in ("A.md", "B.md", "log.md")]
+    for path in (first, second, log):
+        path.write_text("document")
+    response = _provenance_result("A.md", "a")
+    dispatched = [first]
+    known = {"b"} if authority == "known" else None
+    if authority == "fresh":
+        response["nodes"].extend(_provenance_result("B.md", "b")["nodes"])
+        dispatched.append(second)
+    response["edges"] = [{"source": "a", "target": "b", "source_file": "log.md"}]
+
+    with patch("graphify.llm.extract_files_direct", return_value=response) as direct:
+        result = extract_corpus_parallel(
+            dispatched, backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=2, max_concurrency=1,
+            max_retry_depth=max_depth, known_node_ids=known,
+        )
+
+    assert direct.call_count == 1
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == [("a", "b")]
+    assert not result.get("_partial_files")
+    assert not any(edge.get("_partial") for edge in result["edges"])
+    assert load_cached(first, tmp_path, kind="semantic", prompt=_extraction_system()) is not None
+    assert load_cached(log, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+    if authority == "known":
+        assert load_cached(second, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+
+
+@pytest.mark.parametrize("endpoint", ["missing", "empty", "unhashable", "dropped_only"])
+def test_foreign_binary_edge_requires_actual_endpoint_definitions(tmp_path, endpoint):
+    from graphify.llm import extract_corpus_parallel
+
+    first, second, log = [tmp_path / name for name in ("A.md", "B.md", "log.md")]
+    for path in (first, second, log):
+        path.write_text("document")
+    response = _provenance_result("A.md", "a")
+    target = [] if endpoint == "unhashable" else ("" if endpoint == "empty" else "b")
+    if endpoint == "empty":
+        response["nodes"].extend(_provenance_result("A.md", "")["nodes"])
+    elif endpoint == "dropped_only":
+        response["nodes"].extend(_provenance_result("B.md", "b")["nodes"])
+    response["edges"] = [{"source": "a", "target": target, "source_file": "log.md"}]
+
+    with patch("graphify.llm.extract_files_direct", return_value=response) as direct:
+        result = extract_corpus_parallel(
+            [first], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            max_retry_depth=0,
+        )
+
+    assert direct.call_count == 1
+    assert result["edges"] == []
+    assert bool(result.get("_partial_files")) == (endpoint == "dropped_only")
+
+
+def test_foreign_hyperedge_does_not_get_the_binary_edge_exception(tmp_path):
+    from graphify.llm import extract_corpus_parallel
+
+    first, log = tmp_path / "A.md", tmp_path / "log.md"
+    first.write_text("document")
+    log.write_text("document")
+    response = _provenance_result("A.md", "a")
+    response["nodes"].extend(_provenance_result("A.md", "b")["nodes"])
+    response["hyperedges"] = [{"id": "group", "nodes": ["a", "b"], "source_file": "log.md"}]
+    with patch("graphify.llm.extract_files_direct", return_value=response) as direct:
+        result = extract_corpus_parallel(
+            [first], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+    assert direct.call_count == 2
+    assert result["hyperedges"] == []
+    assert result["_partial_files"] == [str(first)]
+
+
+@pytest.mark.parametrize("edge_source", ["B.md", "log.md"])
+def test_provisional_foreign_edge_preserves_later_authority_and_warm_cache(
+    tmp_path, edge_source,
+):
+    from graphify.cache import check_semantic_cache, load_cached, save_semantic_cache
+    from graphify.llm import _extraction_system, extract_corpus_parallel
+
+    first, second, log = [tmp_path / name for name in ("A.md", "B.md", "log.md")]
+    for path in (first, second, log):
+        path.write_text("document")
+    calls = []
+    checkpoints = []
+
+    def mixed(chunk, **_kwargs):
+        name = chunk[0].name
+        calls.append(name)
+        result = _provenance_result(name, "a" if name == "A.md" else "b")
+        if name == "A.md":
+            result["nodes"].extend(_provenance_result("B.md", "b")["nodes"])
+            result["edges"] = [{"source": "a", "target": "b", "source_file": edge_source}]
+        return result
+
+    def checkpoint(index, _total, _result):
+        if index == 0:
+            checkpoints.append(load_cached(
+                second, tmp_path, kind="semantic", prompt=_extraction_system(),
+            ))
+
+    with patch("graphify.llm.extract_files_direct", side_effect=mixed):
+        result = extract_corpus_parallel(
+            [first, second], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            max_retry_depth=3, on_chunk_done=checkpoint,
+        )
+
+    assert calls == ["A.md", "A.md", "B.md"]
+    assert checkpoints == [None]
+    assert [(node["id"], node["source_file"]) for node in result["nodes"]] == [
+        ("a", "A.md"), ("b", "B.md"),
+    ]
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == [("a", "b")]
+    assert not result["edges"][0].get("_partial")
+    assert result["_partial_files"] == [str(first)]
+    save_semantic_cache(
+        result["nodes"], result["edges"], result["hyperedges"], root=tmp_path,
+        allowed_source_files=[first, second], partial_source_files=result["_partial_files"],
+        prompt=_extraction_system(),
+    )
+    cached_nodes, _edges, _hyperedges, uncached = check_semantic_cache(
+        [first, second], tmp_path, prompt=_extraction_system(),
+    )
+    assert uncached == [first]
+    assert [node["id"] for node in cached_nodes] == ["b"]
+    assert Path(cached_nodes[0]["source_file"]).resolve() == second.resolve()
+    assert load_cached(log, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+
+    fresh = _provenance_result("A.md", "a")
+    fresh["edges"] = [{"source": "a", "target": "b", "source_file": edge_source}]
+    with patch("graphify.llm.extract_files_direct", return_value=fresh) as direct:
+        warm = extract_corpus_parallel(
+            [Path(path) for path in uncached], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            known_node_ids={node["id"] for node in cached_nodes},
+        )
+    assert direct.call_count == 1
+    assert [(edge["source"], edge["target"]) for edge in warm["edges"]] == [("a", "b")]
+    assert not warm.get("_partial_files")
 
 
 def test_adaptive_retry_recovers_out_of_chunk_provenance_once(tmp_path, capsys):

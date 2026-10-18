@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_source_bytes
 from graphify.security import (
     _CONTROL_CHAR_RE,
     _METADATA_MAX_ATTRIBUTES,
@@ -197,7 +197,7 @@ def extract_terraform(path: Path) -> dict:
     try:
         language = Language(tshcl.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
