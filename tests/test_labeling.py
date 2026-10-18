@@ -558,6 +558,8 @@ def test_label_force_controls_graph_growth_after_load(
     if graph_byte_cap is not None:
         cap = graph_path.stat().st_size + 1 if graph_byte_cap == "crossed" else graph_byte_cap
         monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", str(cap))
+    else:
+        monkeypatch.delenv("GRAPHIFY_MAX_GRAPH_BYTES", raising=False)
     backup_calls = []
     monkeypatch.setattr("graphify.export.backup_if_protected", lambda _out: backup_calls.append(_out))
     report_path = out / "GRAPH_REPORT.md"
