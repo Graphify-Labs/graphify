@@ -1624,7 +1624,9 @@ def save_semantic_cache(
         return [node_file[x] for x in ends if isinstance(x, str) and x in node_file]
 
     def _hyperedge_files(h: dict) -> list:
-        members = h.get("nodes") if isinstance(h.get("nodes"), list) else []
+        members = h.get("nodes")
+        if not isinstance(members, list):
+            return []
         files = {node_file[m] for m in members if isinstance(m, str) and m in node_file}
         return list(files) if len(files) == 1 else []
 
