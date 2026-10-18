@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
+import math
+import os
 import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+from graphify.paths import write_json_atomic
 from graphify.serve import _query_terms, _read_graph, _score_query
 
 
@@ -95,3 +102,157 @@ def load_case(path: Path, case_id: str, graph_node_ids: set[str], project: str) 
         raise ValueError("invalid relevant pair")
     case["observations"] = resolved
     return case
+
+
+def _answers_valid(
+    candidates: list[dict], observations: list[dict], answers: dict,
+    eligible_node_ids: set[str],
+) -> bool:
+    expected = {(item["node_id"], obs["id"]) for item in candidates
+                if item["node_id"] in eligible_node_ids for obs in observations}
+    return set(answers) == expected and all(
+        isinstance(answer, dict)
+        and answer.get("choice") in {"relevant", "unrelated", "insufficient_evidence"}
+        and not isinstance(answer.get("probability"), bool)
+        and isinstance(answer.get("probability"), (int, float))
+        and math.isfinite(answer["probability"])
+        and 0 <= answer["probability"] <= 1
+        for answer in answers.values()
+    )
+
+
+def apply_decisions(
+    candidates: list[dict], observations: list[dict],
+    answers: dict[tuple[str, str], dict], *, eligible_node_ids: set[str], threshold: float,
+) -> tuple[list[dict], list[dict]]:
+    """Promote only complete, valid, above-threshold relevant decisions."""
+    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("threshold must be between zero and one")
+    if not answers or not _answers_valid(candidates, observations, answers, eligible_node_ids):
+        return candidates, []
+    weight = {item["node_id"]: 0.0 for item in candidates}
+    suggestions = []
+    for candidate in candidates:
+        node_id = candidate["node_id"]
+        for obs in observations:
+            answer = answers.get((node_id, obs["id"]))
+            if not answer or answer["choice"] != "relevant":
+                continue
+            probability = float(answer["probability"])
+            if probability < threshold:
+                continue
+            weight[node_id] = max(weight[node_id], probability)
+            suggestions.append({"node_id": node_id, "observation_id": obs["id"],
+                                "probability": probability, "status": "suggestion"})
+    ordered = sorted(candidates, key=lambda item: (-weight[item["node_id"]], item["baseline_rank"]))
+    return ordered, suggestions
+
+
+def read_sidecar(path: Path, graph_path: Path, head: str) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    digest = hashlib.sha256(graph_path.read_bytes()).hexdigest()
+    if (not isinstance(data, dict) or data.get("schema_version") != 1
+            or data.get("head") != head or data.get("graph_sha256") != digest):
+        raise ValueError("stale Jev memory sidecar")
+    return data
+
+
+def load_decisions(path: Path) -> dict[tuple[str, str], dict]:
+    """Read synthetic/offline decisions; the runner validates the full pair set."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("decisions"), list):
+        raise ValueError("offline decisions must be a list")
+    answers = {}
+    for item in data["decisions"]:
+        if not isinstance(item, dict) or not all(
+            isinstance(item.get(field), str) and item[field]
+            for field in ("node_id", "observation_id", "choice")
+        ):
+            raise ValueError("invalid offline decision")
+        key = (item["node_id"], item["observation_id"])
+        if key in answers:
+            raise ValueError("duplicate offline decision")
+        answers[key] = {"choice": item["choice"], "probability": item.get("probability")}
+    return answers
+
+
+def query_with_decisions(
+    graph_path: Path, repo: Path, case: dict, candidates: list[dict],
+    answers: dict[tuple[str, str], dict], *, eligible_node_ids: set[str], threshold: float,
+    model_id: str | None = None,
+) -> str:
+    """Call the original Graphify query, with seeds only when its top three change."""
+    observations = case["observations"]
+    valid = bool(answers) and _answers_valid(candidates, observations, answers, eligible_node_ids)
+    if not answers:
+        print("Jev unavailable; using unseeded Graphify query", file=sys.stderr)
+    elif not valid:
+        print("Invalid or incomplete decisions; using unseeded Graphify query", file=sys.stderr)
+    normalized = answers if valid else {}
+    ordered, suggestions = apply_decisions(
+        candidates, observations, normalized, eligible_node_ids=eligible_node_ids,
+        threshold=threshold,
+    )
+    assisted = [item["node_id"] for item in ordered[:3]] != [item["node_id"] for item in candidates[:3]]
+    selected = [item["node_id"] for item in ordered[:3]] if assisted else []
+    args = [sys.executable, "-m", "graphify", "query", case["question"],
+            "--graph", str(graph_path)]
+    if assisted:
+        args.extend(part for node_id in selected for part in ("--seed", node_id))
+    env = {**os.environ, "GRAPHIFY_QUERY_LOG_DISABLE": "1"}
+    answer_text = subprocess.run(args, check=True, capture_output=True, text=True, env=env).stdout
+    by_node = {item["node_id"]: item for item in candidates}
+    by_obs = {item["id"]: item for item in observations}
+    for suggestion in suggestions:
+        node = by_node[suggestion["node_id"]]
+        obs = by_obs[suggestion["observation_id"]]
+        answer_text += (
+            f'Suggested memory link: {node["node_id"]} '
+            f'({node["source_file"]}:{node["source_location"]}) '
+            f'↔ {obs["id"]} [{obs["source_ref"]}] (model-ranked)\n'
+        )
+    metadata = {
+        "schema_version": 1,
+        "graph_sha256": hashlib.sha256(graph_path.read_bytes()).hexdigest(),
+        "head": _head(repo),
+        "model": model_id if valid else None,
+        "query_id": case["id"],
+        "query_sha256": hashlib.sha256(case["question"].encode()).hexdigest(),
+        "candidate_ids": [item["node_id"] for item in candidates],
+        "selected_nodes": selected,
+        "observation_ids": [item["id"] for item in observations],
+        "decisions": [
+            {"node_id": node_id, "observation_id": obs_id,
+             "choice": answer["choice"], "probability": answer["probability"]}
+            for (node_id, obs_id), answer in sorted(normalized.items())
+        ],
+        "redaction_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    write_json_atomic(graph_path.parent / "jev-memory-decisions.json", metadata, indent=2)
+    return answer_text
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Offline Graphify memory pilot")
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--graph", type=Path, required=True)
+    parser.add_argument("--corpus", type=Path, required=True)
+    parser.add_argument("--case-id", required=True)
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--threshold", type=float, default=0.8)
+    parser.add_argument("--decisions", type=Path, help="Local offline decision JSON")
+    args = parser.parse_args(argv)
+    graph = _read_graph(str(args.graph))
+    case = load_case(args.corpus, args.case_id, set(graph.nodes), args.project)
+    candidates = candidate_pool(args.graph, args.repo, case["question"])
+    answers = load_decisions(args.decisions) if args.decisions else {}
+    eligible_node_ids = {item["node_id"] for item in candidates if item["source_file"]}
+    print(query_with_decisions(args.graph, args.repo, case, candidates, answers,
+                               eligible_node_ids=eligible_node_ids,
+                               threshold=args.threshold), end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
