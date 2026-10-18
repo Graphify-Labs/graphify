@@ -131,6 +131,10 @@ def extract_fortran(path: Path) -> dict:
     # procedure. Resolved after the whole tree is walked, once the module's
     # internal procedures have their nodes.
     type_bound_procs: list[tuple[str, str, int]] = []
+    # (generic_nid, specific_procedure_name, line) for each procedure grouped
+    # under a named generic interface. Resolved after the walk, like the
+    # type-bound procedures above.
+    generic_procs: list[tuple[str, str, int]] = []
 
     def _fortran_name(stmt_node) -> str | None:
         """Extract name from a *_statement node. Fortran is case-insensitive; lowercase."""
@@ -345,6 +349,42 @@ def extract_fortran(path: Path) -> dict:
                     walk(child, nid)
             return
 
+        if t == "interface":
+            stmt = next((c for c in node.children
+                         if c.type == "interface_statement"), None)
+            name_node = next((c for c in stmt.children if c.type == "name"),
+                             None) if stmt is not None else None
+            if name_node is not None:
+                # Named generic interface (`interface area; module procedure
+                # area_circle, area_square; end interface`): `area` is a callable
+                # generic name that dispatches to its specific procedures by
+                # argument type. It was never a node, so every `area(...)` call
+                # dangled — a function call_expression only resolves to an
+                # in-file node. Emit the generic node and link it to the
+                # procedures it groups, so calls resolve and the dispatch set is
+                # visible.
+                gen_name = _read_text(name_node, source).lower()
+                gen_nid = _make_id(stem, gen_name)
+                line = node.start_point[0] + 1
+                add_node(gen_nid, f"{gen_name}()", line)
+                add_edge(scope_nid, gen_nid, "defines", line)
+                for proc_stmt in node.children:
+                    if proc_stmt.type != "procedure_statement":
+                        continue
+                    for mn in proc_stmt.children:
+                        if mn.type == "method_name":
+                            generic_procs.append((
+                                gen_nid,
+                                _read_text(mn, source).lower(),
+                                proc_stmt.start_point[0] + 1,
+                            ))
+                return
+            # Unnamed abstract/explicit interface: recurse so the procedure
+            # declarations it holds still get nodes (unchanged behaviour).
+            for child in node.children:
+                walk(child, scope_nid)
+            return
+
         if t == "use_statement":
             line = node.start_point[0] + 1
             # tree-sitter-fortran uses module_name node for the used module
@@ -369,6 +409,15 @@ def extract_fortran(path: Path) -> dict:
         tgt = ensure_named_node(impl_name, line)
         if tgt != type_nid:
             add_edge(type_nid, tgt, "method", line, context="type_bound_procedure")
+
+    # Link each generic interface to the specific procedures it groups. A
+    # procedure imported from another module resolves to a sourceless stub the
+    # corpus rewire can collapse (same treatment as type-bound procedures).
+    for gen_nid, impl_name, line in generic_procs:
+        tgt = ensure_named_node(impl_name, line)
+        if tgt != gen_nid:
+            add_edge(gen_nid, tgt, "dispatches_to", line,
+                     context="generic_interface")
 
     _stmt_headers = {
         "subroutine_statement", "function_statement",

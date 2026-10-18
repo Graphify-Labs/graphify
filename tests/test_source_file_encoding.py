@@ -22,6 +22,7 @@ These tests write bytes directly, so they pin the behaviour on every platform.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -206,9 +207,15 @@ def test_utf16_python_import_resolves_across_files(tmp_path):
 
 
 @pytest.mark.parametrize("name, text, want", [
-    ("schema.sql",
-     "CREATE TABLE Orders (id INT);\nCREATE VIEW RecentOrders AS SELECT id FROM Orders;\n",
-     {"Orders", "RecentOrders"}),
+    pytest.param(
+        "schema.sql",
+        "CREATE TABLE Orders (id INT);\nCREATE VIEW RecentOrders AS SELECT id FROM Orders;\n",
+        {"Orders", "RecentOrders"},
+        marks=pytest.mark.skipif(
+            importlib.util.find_spec("tree_sitter_sql") is None,
+            reason="tree-sitter-sql not installed (optional [sql] extra)",
+        ),
+    ),
     ("Deploy.ps1",
      "function Invoke-Deploy {\n    Get-Config\n}\nfunction Get-Config {\n    return 1\n}\n",
      {"Invoke-Deploy()", "Get-Config()"}),

@@ -80,7 +80,6 @@ If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal 
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from networkx.readwrite import json_graph
-import networkx as nx
 from pathlib import Path
 
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
@@ -105,7 +104,6 @@ if not start_nodes:
     sys.exit(0)
 
 subgraph_nodes = set()
-subgraph_edges = []
 
 if mode == 'dfs':
     # DFS: follow one path as deep as possible before backtracking.
@@ -121,7 +119,6 @@ if mode == 'dfs':
         for neighbor in G.neighbors(node):
             if neighbor not in visited:
                 stack.append((neighbor, depth + 1))
-                subgraph_edges.append((node, neighbor))
 else:
     # BFS: explore all neighbors layer by layer up to depth 3.
     frontier = set(start_nodes)
@@ -132,9 +129,19 @@ else:
             for neighbor in G.neighbors(n):
                 if neighbor not in subgraph_nodes:
                     next_frontier.add(neighbor)
-                    subgraph_edges.append((n, neighbor))
         subgraph_nodes.update(next_frontier)
         frontier = next_frontier
+
+# Traversal chooses the nodes; collect relationships separately so seed edges,
+# cycles, and cross-links are not lost just because both endpoints were visited.
+# Taking the induced subgraph also keeps edges to nodes beyond the depth limit
+# out of the result. data=True retains each edge's own attributes, including
+# distinct parallel relationships in a MultiGraph.
+subgraph_edges = [
+    (u, v, edge_data)
+    for u, v, edge_data in G.subgraph(subgraph_nodes).edges(data=True)
+    if u != v
+]
 
 # Token-budget aware output: rank by relevance, cut at budget (~4 chars/token)
 token_budget = BUDGET  # default 2000
@@ -151,10 +158,9 @@ lines = [f'Traversal: {mode.upper()} | Start: {[G.nodes[n].get(\"label\",n) for 
 for nid in ranked_nodes:
     d = G.nodes[nid]
     lines.append(f'  NODE {d.get(\"label\", nid)} [src={d.get(\"source_file\",\"\")} loc={d.get(\"source_location\",\"\")}]')
-for u, v in subgraph_edges:
+for u, v, edge_data in subgraph_edges:
     if u in subgraph_nodes and v in subgraph_nodes:
-        _raw = G[u][v]; d = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-        lines.append(f'  EDGE {G.nodes[u].get(\"label\",u)} --{d.get(\"relation\",\"\")} [{d.get(\"confidence\",\"\")}]--> {G.nodes[v].get(\"label\",v)}')
+        lines.append(f'  EDGE {G.nodes[u].get(\"label\",u)} --{edge_data.get(\"relation\",\"\")} [{edge_data.get(\"confidence\",\"\")}]--> {G.nodes[v].get(\"label\",v)}')
 
 output = '\n'.join(lines)
 if len(output) > char_budget:
