@@ -28,30 +28,30 @@
 </p>
 
 <p align="center">
-  <b>Bawasan ng 80% ang gastos sa token ng iyong mga agent.</b> Ang Graphify Cloud ay laging-bukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinatutunayan ang kawastuhan sa pamamagitan ng formal verification. <a href="https://app.graphify.com/login"><b>Magsimula ng libreng 14-araw na trial &rarr;</b></a>
+  <b>Bawasan ang paggastos ng token ng agent nang 80%.</b> Ang Graphify Cloud ay laging-nakabukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinapatunayan ang pagiging tama gamit ang formal verification. <a href="https://app.graphify.com/login"><b>Magsimula ng libreng 14-araw na pagsubok &rarr;</b></a>
 </p>
 
-I-type ang `/graphify` sa iyong AI coding assistant at mamamapa nito ang buong proyekto mo (code, docs, PDF, mga larawan, mga video) sa isang **knowledge graph** na maaari mong **i-query sa halip na mag-grep** sa mga file.
+I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong proyekto mo (code, docs, PDF, mga larawan, video) sa isang **knowledge graph** na maaari mong **i-query sa halip na mag-grep** sa mga file.
 
-- **Libre ang pagmamapa ng code, buong-buo sa makina mo.** Ang code ay pini-parse gamit ang tree-sitter AST: deterministiko, walang LLM, walang umaalis sa makina mo. (Ang docs, PDF, mga larawan, at video ay gumagamit ng model ng iyong assistant, o ng naka-configure na API key, para sa isang semantic pass.)
-- **Ipinapaliwanag ang bawat edge.** Ang bawat koneksyon ay tinatatakan ng `EXTRACTED` (tahasan sa pinagmulan) o `INFERRED` (nireresolba ng graphify), para malaman mo kung ano ang direktang binasa laban sa kung ano ang hininuha.
-- **Hindi ito vector index.** Walang embeddings, walang vector store: isang tunay na graph na nilalakbay mo. Magtanong, subaybayan ang landas sa pagitan ng dalawang bagay, o ipaliwanag ang isang konsepto.
+- **Libreng pag-mapa ng code, ganap na lokal.** Ang code ay pini-parse gamit ang tree-sitter AST: deterministiko, walang LLM, walang umaalis sa iyong makina. (Ang docs, PDF, mga larawan at video ay gumagamit ng modelo ng iyong assistant, o ng naka-configure na API key, para sa semantikong pass.)
+- **Bawat edge ay may paliwanag.** Bawat koneksyon ay tinatatakan na `EXTRACTED` (tahasan sa pinagmulan) o `INFERRED` (nireresolba ng graphify), kaya masasabi mo kung ano ang direktang nabasa kumpara sa kung ano ang nahinuha.
+- **Hindi isang vector index.** Walang embeddings, walang vector store: isang tunay na graph na tinatahak mo. Magtanong, subaybayan ang landas sa pagitan ng dalawang bagay, o ipaliwanag ang isang konsepto.
 
 > [!NOTE]
-> **Gusto mo bang laging bukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/login) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye na tanaw sa iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa para ang mga insidente at ticket ay nasa iisang graph kasama ng code mo. **[Magsimula ng libreng 14-araw na trial sa app.graphify.com](https://app.graphify.com/login)**.
+> **Gusto mo bang laging-nakabukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/login) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye view ng iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa upang ang mga insidente at ticket ay nasa iisang graph kasama ng iyong code. **[Magsimula ng libreng 14-araw na pagsubok sa app.graphify.com](https://app.graphify.com/login)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
 </p>
 <p align="center">
-  <em>Ang FastAPI codebase na minapa ng graphify. Ang bawat node ay isang konsepto, ang mga kulay ay mga natukoy na komunidad, at ang kabuuan ay naki-click sa graph.html.</em>
+  <em>Ang FastAPI codebase na inimapa ng graphify. Bawat node ay isang konsepto, ang mga kulay ay mga natukoy na community, at ang buong bagay ay naki-click sa graph.html.</em>
 </p>
 
-**Magsimula** (30 segundo):
+**Magsimula** (30 segundo). Kailangan ng Python 3.10+ at uv (o pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Pagkatapos, sa iyong AI assistant:
@@ -60,7 +60,7 @@ Pagkatapos, sa iyong AI assistant:
 /graphify .
 ```
 
-Ayan na. Makukuha mo ang **tatlong file**:
+Ayan na. Makakakuha ka ng **tatlong file**:
 
 ```
 graphify-out/
@@ -69,35 +69,21 @@ graphify-out/
 └── graph.json       the full graph: query it anytime without re-reading your files
 ```
 
-Kasama sa na-persist na graph ang `graph.schema_version` para matukoy ng mga
-integration ang mga hindi tugmang pagbabago sa format, kasama ang
-`graph.graphify_version` na tumutukoy sa release ng Graphify na gumawa nito.
+Ang napanatiling graph ay may kasamang `graph.schema_version` upang matukoy ng mga integrasyon ang
+hindi-tugmang mga pagbabago sa format, kasama ang `graph.graphify_version` na kumikilala sa
+release ng Graphify na gumawa nito.
 
-**Gumagana sa** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, at 15+ pa: [piliin ang iyong platform](#install).
-
----
-
-## Dokumentasyon
-
-Ang buong mga gabay at reference ay nasa **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Quickstart](https://docs.graphify.com/quickstart)**: buuin ang iyong unang graph
-- **[CLI reference](https://docs.graphify.com/reference/overview)**: bawat command at flag
-- **[Magtanong ng mas mahusay na mga tanong sa graph](https://docs.graphify.com/guides/querying)**: mga pattern ng pag-query
-- **[Configuration](https://docs.graphify.com/reference/configuration)**: mga environment variable at pagtutune
-- **[Mga sinusuportahang input](https://docs.graphify.com/concepts/supported-inputs)**: mga wika at uri ng file
-- **[Mga workflow ng team](https://docs.graphify.com/guides/team-workflows)** at **[PR review](https://docs.graphify.com/guides/pull-requests)**
-- **[Pag-troubleshoot](https://docs.graphify.com/troubleshooting)** at **[Paano ito gumagana](https://docs.graphify.com/concepts/architecture)**
+**Isang install, kahit anong assistant, kahit anong OS.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, at 20+ pa, sa macOS, Linux, at Windows: [piliin ang iyong platform](#install).
 
 ---
 
-## Makita ito sa aksyon
+## Tingnan ito sa aksyon
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/demo-path.svg" alt="graphify path query: a terminal asks for the shortest path between FastAPI and ModelField, and the answer lights up hop by hop across the knowledge graph" width="900">
 </p>
 
-Kapag nabuo na ang graph, ini-query mo ito sa halip na magbasa ng mga file. Totoong output, graphify na pinatakbo sa FastAPI codebase na ipinakita sa itaas:
+Kapag naitayo na ang graph ay ini-query mo ito sa halip na magbasa ng mga file. Tunay na output, graphify na pinatakbo sa FastAPI codebase na ipinakita sa itaas:
 
 ```text
 $ graphify explain "APIRouter"
@@ -118,57 +104,71 @@ Shortest path (3 hops):
   FastAPI --uses--> DefaultPlaceholder <--references-- get_request_handler() --references--> ModelField
 ```
 
-Ang bawat edge ay may dalang **confidence tag** (`EXTRACTED` = tahasan sa pinagmulan, `INFERRED` = hinango sa pamamagitan ng resolution), para malaman mo kung ano ang direktang binasa laban sa kung ano ang hininuha. Ang `graphify query "<question>"` ay nagbabalik ng isang scoped subgraph para sa isang tanong sa karaniwang wika, at sinusubaybayan ng `graphify path A B` kung paano nagkokonekta ang alinmang dalawang bagay.
+Bawat edge ay may dalang **confidence tag** (`EXTRACTED` = tahasan sa pinagmulan, `INFERRED` = hinango sa resolution), kaya masasabi mo kung ano ang direktang nabasa kumpara sa kung ano ang nahinuha. Ang `graphify query "<question>"` ay nagbabalik ng naka-scope na subgraph para sa isang simpleng-wika na tanong, at ang `graphify path A B` ay sinusubaybayan kung paano nag-uugnay ang dalawang bagay.
 
 ---
 
 ## Ano ang ginagawa nito
 
-Kung ano ang makukuha mo nang out of the box:
+Ang makukuha mo nang out of the box:
 
-| Kakayahan | Kung ano ang makukuha mo |
+| Kakayahan | Ano ang makukuha mo |
 |---|---|
-| **God nodes** | Ang pinaka-konektadong mga konsepto, para makita mo kung saan dumadaloy ang lahat |
-| **Mga komunidad** | Ang graph na hinati sa mga subsystem (Leiden), na may mga label na walang LLM |
-| **Mga cross-file link** | `calls` / `imports` / `inherits` / `mixes_in` na niresolba sa ~40 wika sa pamamagitan ng tree-sitter AST |
+| **God nodes** | Ang pinaka-nakakonektang mga konsepto, para makita mo kung saan dumadaloy ang lahat |
+| **Communities** | Ang graph na hinati sa mga subsystem (Leiden), na may mga label na walang LLM |
+| **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` na nireresolba sa ~40 na wika sa pamamagitan ng tree-sitter AST |
 | **Query, path, explain** | Magtanong, subaybayan ang landas sa pagitan ng dalawang bagay, o ipaliwanag ang isang konsepto, lahat laban sa `graph.json` |
-| **Rationale + doc refs** | Ang mga komentong `# NOTE:` / `# WHY:` at mga sipi ng ADR/RFC ay nagiging first-class na mga node na naka-link sa code |
-| **Lampas sa code** | Ang docs, PDF, mga larawan, at video/audio ay lahat nagmamapa sa iisang graph |
-| **Local-first** | Ang code ay pini-parse nang lokal gamit ang tree-sitter (walang LLM, walang umaalis sa makina mo); ang semantic pass lang sa docs/media ang tumatawag ng backend, at iyon lang kung mag-configure ka ng isa |
+| **Rationale + doc refs** | Ang mga komentong `# NOTE:` / `# WHY:` at mga sitas na ADR/RFC ay nagiging first-class na node na naka-link sa code |
+| **Lampas sa code** | Ang docs, PDF, mga larawan, at video/audio ay lahat nag-mamapa sa iisang graph |
+| **Local-first** | Ang code ay pini-parse nang lokal gamit ang tree-sitter (walang LLM, walang umaalis sa iyong makina); tanging ang semantikong pass sa docs/media ang tumatawag ng backend, at tanging kung mag-configure ka ng isa |
 
 > [!TIP]
-> Pinapatakbo ito sa maraming repo o sa isang monorepo? Ginagawa ito ng [Graphify Cloud](https://app.graphify.com/login) nang tuloy-tuloy at binabawasan ang gastos sa token ng mga agent ng 80%, na may mga cross-repo na link, code review sa buong SDLC, formal verification, at mga connector para sa Sentry/Jira. [Magsimula ng libreng 14-araw na trial &rarr;](https://app.graphify.com/login)
+> Pinapatakbo ito sa maraming repo o isang monorepo? Ginagawa ito ng [Graphify Cloud](https://app.graphify.com/login) nang tuloy-tuloy at binabawasan ang paggastos ng token ng agent nang 80%, na may mga cross-repo na link, code review na saklaw ng buong SDLC, formal verification, at mga connector ng Sentry/Jira. [Magsimula ng libreng 14-araw na pagsubok &rarr;](https://app.graphify.com/login)
 
 ---
 
-## Mga Benchmark
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |
 |---|---|---|---|
 | LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
 | LOCOMO (n=300) | QA accuracy | 45.3% | supermemory 49.7%, mem0 27.3% |
-| LongMemEval-S (n=50) | QA accuracy | **76%** | kapantay ng dense RAG |
+| LongMemEval-S (n=50) | QA accuracy | **76%** | tied with dense RAG |
 | ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
-| Graph build | LLM credits | **0** | per-token para sa karamihan ng mga system |
+| Graph build | LLM credits | **0** | per-token for most systems |
 
-Ang bawat system ay pinatakbo sa iisang harness na may iisang model at mga budget, na iniskor ng isang hukom na blind-validated laban sa pangalawang hukom (90.6% na pagkakasundo, Cohen's kappa 0.81). Ang buong mga talaan per-system, ang resulta ng code-intelligence, at mga command ng reproduksyon: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+Bawat sistema ay tumakbo sa parehong harness na may parehong modelo at badyet, iniskor ng isang hukom na blind-validated laban sa pangalawang hukom (90.6% na pagkakasundo, Cohen's kappa 0.81). Buong mga talahanayan kada-sistema, ang resulta ng code-intelligence, at mga utos ng reproduksyon: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
 
 ---
 
-## Mga Kinakailangan
+## Dokumentasyon
 
-| Kinakailangan | Minimum | Tseke | I-install |
+Ang buong gabay at reference ay nasa **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Quickstart](https://docs.graphify.com/quickstart)**: itayo ang iyong unang graph
+- **[CLI reference](https://docs.graphify.com/reference/overview)**: bawat utos at flag
+- **[Magtanong ng mas mahusay na mga tanong sa graph](https://docs.graphify.com/guides/querying)**: mga pattern ng pag-query
+- **[Configuration](https://docs.graphify.com/reference/configuration)**: mga environment variable at tuning
+- **[Mga suportadong input](https://docs.graphify.com/concepts/supported-inputs)**: mga wika at uri ng file
+- **[Mga workflow ng team](https://docs.graphify.com/guides/team-workflows)** at **[PR review](https://docs.graphify.com/guides/pull-requests)**
+- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** at **[Paano ito gumagana](https://docs.graphify.com/concepts/architecture)**
+
+---
+
+## Mga kinakailangan
+
+| Kinakailangan | Minimum | Suriin | Install |
 |---|---|---|---|
 | Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(inirerekomenda)* | kahit ano | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatibo)* | kahit ano | `pipx --version` | `pip install pipx` |
 
-**Mabilis na pag-install sa macOS (Homebrew):**
+**macOS mabilis na install (Homebrew):**
 ```bash
 brew install python@3.12 uv
 ```
 
-**Mabilis na pag-install sa Windows:**
+**Windows mabilis na install:**
 ```powershell
 winget install astral-sh.uv
 ```
@@ -185,54 +185,47 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## Install
 
 > [!IMPORTANT]
-> **Opisyal na package:** Ang PyPI package ay `graphifyy` (dobleng-y). Ang iba pang mga `graphify*` package sa PyPI ay walang kaugnayan. Ang CLI command ay `graphify` pa rin.
+> **Opisyal na package:** Ang PyPI package ay `graphifyy` (dobleng-y). Ang iba pang mga `graphify*` package sa PyPI ay hindi kaanib. Ang CLI command ay `graphify` pa rin.
 
 Ang opisyal na source repository ay [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Hakbang 1: i-install ang package:**
+Ang dalawang-utos na quickstart ay nasa itaas ng README na ito. Ang seksyong ito ay sumasaklaw sa mga paraan ng pag-install, mga naka-scope sa proyekto na install, at bawat suportadong platform.
+
+**Mga paraan ng pag-install** (pumili ng isa):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**Hakbang 2: i-register ang skill sa iyong AI assistant:**
+Pagkatapos ay patakbuhin ang `graphify install` nang isang beses. Natutukoy nito kung aling assistant ang iyong pinapatakbo at nirerehistro ang skill, kaya walang per-assistant na setup. Buksan ang iyong AI assistant at i-type ang `/graphify .`
 
-```bash
-graphify install
-```
-
-Ayan na. Buksan ang iyong AI assistant at i-type ang `/graphify .`
-
-Para i-install ang assistant skill sa kasalukuyang repository sa halip na sa iyong
-user profile, idagdag ang `--project`:
+Upang i-install ang assistant skill sa kasalukuyang repository sa halip na sa iyong user
+profile, idagdag ang `--project`:
 
 ```bash
 graphify install --project
 graphify install --project --platform codex
 ```
 
-Ang mga project-scoped na pag-install ay sumusulat sa ilalim ng kasalukuyang direktoryo, halimbawa
-`.claude/skills/graphify/SKILL.md` o `.agents/skills/graphify/SKILL.md` (kasama ang
-isang `references/` sidecar na kinakarga ng skill kapag kailangan), at
+Ang mga naka-scope sa proyekto na install ay nagsusulat sa ilalim ng kasalukuyang direktoryo, halimbawa
+`.claude/skills/graphify/SKILL.md` o `.agents/skills/graphify/SKILL.md` (kasama ang isang
+`references/` sidecar na nilo-load ng skill kapag kailangan), at
 nagpi-print ng isang `git add` na pahiwatig para sa mga file na maaaring i-commit.
-Ang mga per-platform na command na sumusuporta sa project-scoped na pag-install ay tumatanggap ng parehong flag,
+Ang mga per-platform na utos na sumusuporta sa mga naka-scope sa proyekto na install ay tumatanggap ng parehong flag,
 halimbawa `graphify claude install --project` o `graphify codex install --project`.
 
 > [!TIP]
-> Nakakaranas ng `command not found`, isang problemang `pip`-sa-Mac/Windows, PowerShell quoting, paggamit ng `uvx`, mga kakaiba sa PATH ng git-hook, o strict mode? Tingnan ang **[Pag-install](https://docs.graphify.com/installation)** at **[Pag-troubleshoot](https://docs.graphify.com/troubleshooting)**.
+> Nauumpog sa `command not found`, isang isyu ng `pip`-sa-Mac/Windows, PowerShell quoting, `uvx` na paggamit, mga quirk ng git-hook PATH, o strict mode? Tingnan ang **[Installation](https://docs.graphify.com/installation)** at **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
 <details>
-<summary><b>Piliin ang iyong platform</b> (20+ assistant, i-click para palawakin)</summary>
+<summary><b>Piliin ang iyong platform</b> (20+ assistants, i-click upang palawakin)</summary>
 
-| Platform | Command ng pag-install |
+| Platform | Install command |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install` (awtomatikong natutukoy) o `graphify install --platform windows` |
+| Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -250,49 +243,51 @@ halimbawa `graphify claude install --project` o `graphify codex install --projec
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-Kailangan din ng mga user ng Codex ng `multi_agent = true` sa ilalim ng `[features]` sa `~/.codex/config.toml` para sa parallel na extraction. Ginagamit ng CodeBuddy ang parehong Agent tool at PreToolUse hook na mekanismo tulad ng Claude Code. Ginagamit ng Factory Droid ang `Task` tool para sa parallel na subagent dispatch. Ang OpenClaw at Aider ay gumagamit ng sequential na extraction (maaga pa ang suporta sa parallel na agent sa mga platform na iyon). Ginagamit ng Trae ang Agent tool para sa parallel na subagent dispatch at **hindi** sumusuporta sa mga `PreToolUse` hook, kaya ang AGENTS.md ang laging-bukas na mekanismo.
+Kailangan din ng mga user ng Codex ng `multi_agent = true` sa ilalim ng `[features]` sa `~/.codex/config.toml` para sa parallel na extraction. Ang CodeBuddy ay gumagamit ng parehong Agent tool at PreToolUse hook mechanism gaya ng Claude Code. Ang Factory Droid ay gumagamit ng `Task` tool para sa parallel na pagpapadala ng subagent. Ang OpenClaw at Aider ay gumagamit ng sequential na extraction (ang parallel agent support ay maaga pa sa mga platform na iyon). Ang Trae ay gumagamit ng Agent tool para sa parallel na pagpapadala ng subagent at **hindi** sumusuporta sa mga `PreToolUse` hook, kaya ang AGENTS.md ang laging-nakabukas na mekanismo.
 
-Ang `--platform agents` (alias `--platform skills`) ay nagta-target sa pangkalahatang cross-framework na mga lokasyon ng [Agent-Skills](https://github.com/anthropics/skills): ang user-global na `~/.agents/skills/` ng spec (binabasa ng `npx skills` at mga framework na sumusunod sa spec) para sa isang global na pag-install, at ang `./.agents/skills/` para sa isang project (`--project`) na pag-install. Ang pangunahing `graphify install` ay nananatiling single-platform (Claude Code) by design: gamitin ang pinangalanang `agents` platform kapag gusto mong matuklasan ang skill ng anumang framework na nagbabasa ng `.agents/skills`.
+Ang `--platform agents` (alias `--platform skills`) ay tumutukoy sa generic na cross-framework na [Agent-Skills](https://github.com/anthropics/skills) na mga lokasyon: ang user-global na `~/.agents/skills/` ng spec (binabasa ng `npx skills` at mga spec-compliant na framework) para sa isang global na install, at ang `./.agents/skills/` para sa isang proyekto (`--project`) na install. Ang hubad na `graphify install` ay nananatiling single-platform (Claude Code) sa disenyo: gamitin ang pinangalanang `agents` na platform kapag gusto mong matuklasan ang skill ng anumang framework na nagbabasa ng `.agents/skills`.
 
-> Ginagamit ng Codex ang `$graphify` sa halip na `/graphify`.
+Ang Pi ay walang `PreToolUse` hook, kaya ang `graphify pi guard install` ay nagrerehistro ng isang native na Pi extension (sa pamamagitan ng sariling `pi install <package directory>` ng Pi) na nagpapatakbo ng naka-install na `graphify hook-guard` bago ang mga `read`, `grep`, `find` at search-style na `bash` na tawag ng Pi. Ang mga desisyon sa sariwa/luma na graph at ang `GRAPHIFY_HOOK_STRICT=1` na minsan-kada-sesyon na pagtanggi sa indexed-read ay nagmumula sa parehong policy na iyon, kaya tumutugma ang Pi sa hook behavior ng Claude Code; ang gabay ay dumarating bilang isang `<system-reminder source="graphify">` na steering message. Kailangan nito ng Pi 0.58.4 o mas bago: ang mga naunang bersyon ay hinahayaan ang isang steering message na laktawan ang natitirang bahagi ng isang parallel tool-call batch. Ang package ay naka-ship sa loob ng Graphify installation, kaya i-install ang Graphify nang permanente (`uv tool install graphifyy` o `pipx install graphifyy`, hindi `uvx`), i-restart ang Pi pagkatapos mag-install o mag-upgrade, at alisin ito gamit ang `graphify pi guard uninstall`. Tanging ang mga lokal na file target ang sinusuri; kailangan ng hook ng `graphify` sa isang absolute na `PATH` entry sa labas ng proyekto, nakatakda sa isang dalawang-segundo, 256 KiB-in/64 KiB-out na tawag, at fails open. Ang parehong package ay naglo-load din sa [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. Ang nakarehistrong path ay naglalaman ng bersyon ng Python at venv, kaya muling patakbuhin ang `graphify pi guard install` pagkatapos baguhin ang alinman, at alisin ang lumang entry gamit ang `pi remove <old path>`.
+
+> Ang Codex ay gumagamit ng `$graphify` sa halip na `/graphify`.
 
 </details>
 
 <details>
-<summary><b>Mga opsyonal na extra</b> (i-install lang ang kailangan mo)</summary>
+<summary><b>Mga opsyonal na extra</b> (i-install lamang ang kailangan mo)</summary>
 
-| Extra | Kung ano ang idinadagdag nito | I-install |
+| Extra | Ano ang idinadagdag nito | Install |
 |---|---|---|
-| `pdf` | Extraction ng PDF | `uv tool install "graphifyy[pdf]"` |
-| `office` | Suporta sa `.docx` at `.xlsx` | `uv tool install "graphifyy[office]"` |
-| `google` | Pag-render ng Google Sheets | `uv tool install "graphifyy[google]"` |
-| `video` | Transkripsyon ng video/audio (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
+| `pdf` | PDF extraction | `uv tool install "graphifyy[pdf]"` |
+| `office` | `.docx` and `.xlsx` support | `uv tool install "graphifyy[office]"` |
+| `google` | Google Sheets rendering | `uv tool install "graphifyy[google]"` |
+| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
 | `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
-| `neo4j` | Suporta sa Neo4j push | `uv tool install "graphifyy[neo4j]"` |
-| `falkordb` | Suporta sa FalkorDB push | `uv tool install "graphifyy[falkordb]"` |
+| `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
+| `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (graspologic sa Python < 3.13; native backend sa 3.13+) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
-| `openai` | Mga OpenAI / OpenAI-compatible na API | `uv tool install "graphifyy[openai]"` |
+| `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
-| `anthropic` | Anthropic Claude API (`--backend claude`, gumagamit ng `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
-| `bedrock` | AWS Bedrock (gumagamit ng IAM, walang API key) | `uv tool install "graphifyy[bedrock]"` |
-| `azure` | Azure OpenAI Service (`--backend azure`, gumagamit ng `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
-| `sql` | Extraction ng SQL schema | `uv tool install "graphifyy[sql]"` |
-| `postgres` | Live na PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
-| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (maaaring mangailangan ng C compiler + `python3-dev` kung walang wheel na tumutugma sa iyong platform) | `uv tool install "graphifyy[dm]"` |
+| `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
+| `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
+| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
+| `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
 | `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
-| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (mas tumpak na `calls`/`inherits` na mga edge; bumabalik sa regex extractor kapag wala) | `uv tool install "graphifyy[pascal]"` |
+| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
 | `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
-| `robot` | Robot Framework `.robot`/`.resource` extraction (mga suite, test case, keyword, mga edge ng keyword-call at resource/library import) | `uv tool install "graphifyy[robot]"` |
+| `robot` | Robot Framework `.robot`/`.resource` extraction (suites, test cases, keywords, keyword-call and resource/library import edges) | `uv tool install "graphifyy[robot]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
-| `all` | Lahat ng nasa itaas | `uv tool install "graphifyy[all]"` |
+| `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
 </details>
 
@@ -300,42 +295,49 @@ Ang `--platform agents` (alias `--platform skills`) ay nagta-target sa pangkalah
 
 ## Gawing laging gamitin ng iyong assistant ang graph
 
-Patakbuhin ito nang isang beses sa iyong proyekto pagkatapos bumuo ng isang graph:
+Patakbuhin ito nang isang beses sa iyong proyekto pagkatapos itayo ang isang graph:
 
 Patakbuhin ang `graphify <platform> install` nang isang beses sa iyong proyekto, halimbawa `graphify claude install` o `graphify codex install` (o `graphify install --platform <name>`).
 
-Nagsusulat ito ng maliit na config file na nagsasabi sa iyong assistant na sumangguni sa knowledge graph para sa mga tanong tungkol sa codebase, na mas pinipili ang mga scoped na query tulad ng `graphify query "<question>"` kaysa sa pagbabasa ng buong report o pag-grep sa mga hilaw na file.
+Nagsusulat ito ng maliit na config file na nagsasabi sa iyong assistant na kumonsulta sa knowledge graph para sa mga tanong tungkol sa codebase, na mas pinipili ang mga naka-scope na query gaya ng `graphify query "<question>"` kaysa sa pagbabasa ng buong ulat o pag-grep ng mga hilaw na file.
 
-- **Mga platform na may hook** (Claude Code, Gemini CLI): isang hook ang awtomatikong nagpuputok bago ang mga tawag sa tool na parang paghahanap (at, sa Claude Code, bago basahin ang mga source file nang isa-isa sa pamamagitan ng mga Read/Glob tool) at itinutulak ang iyong assistant patungo sa landas ng graph.
-- **Mga platform na may instruction-file** (Codex, OpenCode, Cursor, atbp.): ang mga permanenteng instruction file (`AGENTS.md`, `.cursor/rules/`, atbp.) ay nagbibigay ng parehong gabay na "query-first".
+- **Mga hook platform** (Claude Code, Gemini CLI): isang hook ang awtomatikong pumuputok bago ang mga search-style na tawag ng tool (at, sa Claude Code, bago basahin ang mga source file isa-isa sa pamamagitan ng Read/Glob na mga tool) at itinutulak ang iyong assistant patungo sa landas ng graph.
+- **Mga instruction-file platform** (Codex, OpenCode, Cursor, atbp.): ang mga paulit-ulit na instruction file (`AGENTS.md`, `.cursor/rules/`, atbp.) ay nagbibigay ng parehong query-first na gabay.
 
-Ang `GRAPH_REPORT.md` ay available pa rin para sa malawak na pagsusuri ng arkitektura.
+Ang `GRAPH_REPORT.md` ay magagamit pa rin para sa malawak na pagsusuri ng arkitektura.
 
-Ang **CodeBuddy** ay gumagawa ng parehong dalawang bagay tulad ng Claude Code: nagsusulat ng isang seksyon ng `CODEBUDDY.md` na nagsasabi sa CodeBuddy na basahin ang `graphify-out/GRAPH_REPORT.md` bago sumagot sa mga tanong tungkol sa arkitektura, at nag-i-install ng mga `PreToolUse` hook (`.codebuddy/settings.json`) na nagpuputok bago ang mga Bash na search command at pagbabasa ng file, na itinutulak papunta sa `graphify query` sa halip.
+Kung aling mga file ang isinusulat ng bawat platform (ang `CODEBUDDY.md` + `PreToolUse` hook ng CodeBuddy, ang `AGENTS.md` ng Codex, ang native na `.kilo` plugin ng Kilo, ang `alwaysApply` na panuntunan ng Cursor, at iba pa) ay saklaw sa **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
 
-Ang **Codex** ay nagsusulat sa `AGENTS.md`, na siyang talagang nagdadala ng laging-bukas na gabay sa graph sa platform na ito. Ang `graphify codex install` ay nagre-register din ng isang `PreToolUse` hook sa `.codex/hooks.json` (`graphify hook-check`), ngunit ang entry na iyon ay sinadya na maging isang **no-op**: tinatanggihan ng Codex Desktop ang `hookSpecificOutput.additionalContext` sa `PreToolUse`, kaya ang pag-emit ng isang nudge doon ay masisira ang mga tawag sa Bash tool. Hindi tulad ng Claude Code, kung saan ang hook (`graphify hook-guard`) ang gumagawa ng nudging, sa Codex ang hook ay nagpuputok at sinasadyang walang ginagawa, at ang `AGENTS.md` ang laging-bukas na mekanismo.
+Upang alisin ang graphify sa lahat ng platform nang sabay-sabay: `graphify uninstall` (idagdag ang `--purge` upang tanggalin din ang `graphify-out/`). O gamitin ang per-platform na utos (hal. `graphify claude uninstall`).
 
-Ang **Kilo Code** ay nag-i-install ng Graphify skill sa `~/.config/kilo/skills/graphify/SKILL.md` at isang native na `/graphify` command sa `~/.config/kilo/command/graphify.md`. Ang `graphify kilo install` ay nagsusulat din ng `AGENTS.md` kasama ang isang native na `tool.execute.before` plugin (`.kilo/plugins/graphify.js` + rehistrasyon ng `.kilo/kilo.json` o `.kilo/kilo.jsonc`) para makuha ng Kilo ang parehong laging-bukas na pag-uugali ng paalala ng graph sa pamamagitan ng native na `.kilo` na config.
+### CLI skills o MCP instructions?
 
-Ang **Cursor** ay nagsusulat ng `.cursor/rules/graphify.mdc` na may `alwaysApply: true`, kaya isinasama ito ng Cursor sa bawat usapan nang awtomatiko, walang kailangang hook.
+Ang mga instruksyong ini-install ng `graphify install` at ang mga ibinibigay sa isang Graphify MCP connection ay naglalarawan ng magkakaibang paraan ng pag-query ng isang graph:
 
-Para alisin ang graphify sa lahat ng platform nang sabay-sabay: `graphify uninstall` (idagdag ang `--purge` para burahin din ang `graphify-out/`). O gamitin ang per-platform na command (hal. `graphify claude uninstall`).
+| Setup | Gabay na gagamitin | Query access |
+|---|---|---|
+| Lokal na CLI at naka-install na assistant skill | Ang mga instruksyon ng platform na isinulat ng `graphify install` | Patakbuhin ang `graphify query`, `graphify path`, at `graphify explain` laban sa lokal na graph (`graphify-out/` bilang default). |
+| Nakakonektang Graphify MCP server | Ang mga instruksyon ng koneksyon at ang mga tool na nakalista ng server na iyon | Tawagin ang mga nakalistang MCP tool laban sa graph na inihahain ng koneksyong iyon. Ang mga pangalan at paglalarawan ng tool ay nagmumula sa server. |
 
----
+Parehong naghihikayat ng mga naka-scope na graph query bago ang malawak na source search. Piliin ang mga instruksyong tumutugma sa mga tool na talagang maa-access ng iyong assistant; walang bloke sa dalawa ang nagtatakda ng unibersal na panuntunan ng pagkakasunod para sa mga instruction file ng iyong assistant. Kung gumagamit ka ng parehong integrasyon, tukuyin kung aling graph ang ini-query ng bawat isa at pumili ng pangunahing landas ng query sa halip na kumopya ng dalawang hindi-kondisyonal na instruction block sa `AGENTS.md`.
 
-## Ano ang nasa report
-
-Ibinubuod ng `GRAPH_REPORT.md` ang mga god node, komunidad, at pangunahing landas para sa malawak na pagsusuri ng arkitektura. Kung paano binubuo ang graph at kung ano ang nilalaman nito: **[Paano gumagana ang graphify](https://docs.graphify.com/concepts/architecture)**.
-
----
-
-## Anong mga file ang hinahawakan nito
-
-Ang graphify ay nagpa-parse ng ~40 programming language nang lokal gamit ang tree-sitter AST, at minamapa ang docs, PDF, mga larawan, at audio/video sa pamamagitan ng isang opsyonal na semantic pass. Buong listahan: **[Mga sinusuportahang input](https://docs.graphify.com/concepts/supported-inputs)**.
+Ini-install ng `graphify install` ang lokal na assistant integration; hindi ito nagtatatag ng MCP connection. Ang isang MCP client ay hindi kailangang magpatakbo ng mga lokal na CLI query upang gamitin ang nakakonektang server nito. Ang isang lokal na naka-host na server ay kailangan pa rin ng sarili nitong Graphify installation at graph, samantalang ang isang naka-host na koneksyon ay maaaring maghain ng isang graph na wala sa working directory ng client. Kung nawawala ang mga inaasahang tool, suriin ang kaugnay na CLI installation o MCP connection sa halip na ituring na mapagpapalit ang mga instruksyon ng kabilang setup.
 
 ---
 
-## Mga karaniwang command
+## Ano ang nasa ulat
+
+Binubuod ng `GRAPH_REPORT.md` ang mga god node, community, at pangunahing landas para sa malawak na pagsusuri ng arkitektura. Kung paano itinatayo ang graph at kung ano ang nilalaman nito: **[Paano gumagana ang graphify](https://docs.graphify.com/concepts/architecture)**.
+
+---
+
+## Anong mga file ang hinahawakan nito: ~40 languages
+
+Pini-parse ng graphify ang ~40 na programming language nang lokal gamit ang tree-sitter AST, at imimapa ang docs, PDF, mga larawan, at audio/video sa pamamagitan ng isang opsyonal na semantikong pass. Buong listahan: **[Mga suportadong input](https://docs.graphify.com/concepts/supported-inputs)**.
+
+---
+
+## Mga karaniwang utos
 
 ```bash
 /graphify .                        # build graph for current folder
@@ -367,87 +369,106 @@ Tingnan ang [buong command reference](#full-command-reference) sa ibaba.
 
 ---
 
-## Pag-iwas sa mga file
+## Pagpapabaya sa mga file
 
-Iginagalang ng graphify ang `.gitignore` at sumusuporta sa mga `--exclude` na pattern at sa isang project na `.graphifyignore`. Mga detalye: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+Iginagalang ng graphify ang `.gitignore` at sumusuporta sa mga pattern na `--exclude` at isang proyektong `.graphifyignore`. Mga detalye: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
+
+## Configuration ng proyekto
+
+Gumawa ng isang `.graphifyrc` sa scan root para sa mga setting na pag-aari ng proyekto sa halip na ng isang run. Isang `key=value` kada linya; ang mga linyang nagsisimula sa `#` ay mga komento.
+
+**Mga malabong extension.** May ilang extension na nangangahulugan ng magkakaibang wika sa magkakaibang proyekto: ang `.inc` ay PHP sa pfSense, Pascal sa isang Delphi tree, SQL o assembly sa iba; ang `.h` ay C o C++; ang `.m` ay Objective-C o MATLAB. Kailangang pumili ang graphify ng isang global na default, at kapag maling napili nito ay hindi nabibigo ang file: pini-parse ito bilang maling wika at nagbubunga ng ilang paimbabaw na node, kaya mukhang populado ang graph habang nawawala ang mga tunay na simbolo. Ideklara kung ano ang ibig sabihin ng extension sa iyong repo:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Ang deklarasyon ay dumadaloy sa klasipikasyon, pagpili ng extractor, grammar at resolution, imports, `graphify watch`, at ang AST cache (ang isang file na muling pini-parse sa ilalim ng ibang wika ay hindi kailanman muling gumagamit ng lumang entry), at ang parehong `.graphifyrc` ay binabasa ng `extract`, `update`, ang mga hook, ang MCP server, at ang `/graphify` na skill. Ang isang typo ay iniuulat nang isang beses sa stderr at ang scan ay nagpapatuloy gamit ang mga default. Kung paano nakikipag-ugnayan ang mga deklarasyon sa caching, incremental na rebuild, at import resolution: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
-## Pag-set up ng team
+## Setup ng team
 
-I-commit o ibahagi ang graph para ang buong team mo ay mag-query ng parehong konteksto, at suriin ang mga pull request na may konteksto ng graph. Tingnan ang **[Ibahagi ang konteksto sa iyong team](https://docs.graphify.com/guides/team-workflows)** at **[Suriin ang mga pull request](https://docs.graphify.com/guides/pull-requests)**.
+I-commit o ibahagi ang graph upang ang buong team mo ay nag-query ng parehong konteksto, at suriin ang mga pull request na may konteksto ng graph. Tingnan ang **[Ibahagi ang konteksto sa iyong team](https://docs.graphify.com/guides/team-workflows)** at **[Suriin ang mga pull request](https://docs.graphify.com/guides/pull-requests)**.
 
 ---
 
 ## Paggamit ng graph nang direkta
 
-Bukod sa iyong AI assistant, i-query ang `graph.json` nang direkta mula sa CLI gamit ang `graphify query`, `graphify path`, at `graphify explain`. Tingnan ang **[Magtanong ng mas mahusay na mga tanong sa graph](https://docs.graphify.com/guides/querying)** at ang **[query reference](https://docs.graphify.com/reference/query)**.
+Lampas sa iyong AI assistant, i-query ang `graph.json` nang diretso mula sa CLI gamit ang `graphify query`, `graphify path`, at `graphify explain`. Ang isang pangalan na tumutugma sa ilang node ay tinatanggihan kasama ang nakalistang mga kandidato sa halip na hulaan. Mababasa ng mga script ang resulta mula sa exit code: `0` isang sagot, `3` isang malabong pangalan, `4` walang tumutugmang node. Tingnan ang **[Magtanong ng mas mahusay na mga tanong sa graph](https://docs.graphify.com/guides/querying)** at ang **[query reference](https://docs.graphify.com/reference/query)**.
 
 ---
 
 ## Mga environment variable
 
-Ang mga backend, API key, pag-uugali ng hook, at pagtutune ay kinokontrol ng mga environment variable. Buong talaan: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+Ang mga backend, API key, hook behavior, at tuning ay kontrolado ng mga environment variable. Buong talahanayan: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
 ## Privacy
 
-- **Mga code file**: pinoproseso nang lokal sa pamamagitan ng tree-sitter. Walang umaalis sa makina mo. Ang isang corpus na puro code ay hindi nangangailangan ng API key: ang `graphify extract` ay tumatakbo nang buong offline. Sa isang pinaghalong repo, idagdag ang `--code-only` para i-index lang ang code at laktawan ang docs/PDF/mga larawan na kailangan sana ng LLM.
-- **Video / audio**: tina-transcribe nang lokal gamit ang faster-whisper. Walang umaalis sa makina mo.
-- **Docs, PDF, mga larawan**: ipinapadala sa iyong AI assistant para sa semantic extraction (sa pamamagitan ng `/graphify` skill, gamit ang anumang model na pinapatakbo ng iyong IDE session). Ang headless na `graphify extract` ay nangangailangan ng `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), isang tumatakbong Ollama instance (`OLLAMA_BASE_URL`), mga AWS credential sa pamamagitan ng standard provider chain (Bedrock - walang kailangang API key, gumagamit ng IAM), o ang `claude` CLI binary (Claude Code - walang kailangang API key, gumagamit ng iyong Claude subscription). Ang `--dedup-llm` na flag ay gumagamit ng parehong key.
-- **Data residency**: awtomatikong tinutukoy ng `graphify extract` kung aling provider ang gagamitin batay sa kung aling API key ang naka-set (priyoridad: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Para sa code na may mga kinakailangan sa data residency, gamitin ang `--backend ollama` (buong lokal) o magpasa ng tahasang `--backend` na flag. Ang Kimi (`MOONSHOT_API_KEY`) ay dumaraan sa mga server ng Moonshot AI sa China.
-- **Walang telemetry**, walang pagsubaybay sa paggamit, walang analytics.
-- **Pag-log ng query**: ang bawat tawag na `graphify query`, `graphify path`, `graphify explain`, at MCP `query_graph` ay nila-log sa `~/.cache/graphify-queries.log` sa format na JSON Lines (timestamp, tanong, corpus, mga node na ibinalik, tagal). Ang buong mga subgraph na tugon ay **hindi** iniimbak bilang default. Itakda ang `GRAPHIFY_QUERY_LOG_DISABLE=1` para mag-opt out, o `GRAPHIFY_QUERY_LOG=/dev/null` para patahimikin nang hindi dina-disable ang code path.
+- **Mga code file**: pinoproseso nang lokal sa pamamagitan ng tree-sitter. Walang umaalis sa iyong makina. Ang isang code-only na corpus ay hindi nangangailangan ng API key: ang `graphify extract` ay tumatakbo nang ganap na offline. Sa isang pinaghalong repo, idagdag ang `--code-only` upang i-index lamang ang code at laktawan ang docs/PDF/mga larawan na kung hindi ay mangangailangan ng LLM.
+- **Video / audio**: nasa-transcribe nang lokal gamit ang faster-whisper. Walang umaalis sa iyong makina.
+- **Docs, PDF, mga larawan**: ipinapadala sa iyong AI assistant para sa semantikong extraction (sa pamamagitan ng `/graphify` na skill, gamit ang kahit anong modelo na pinapatakbo ng iyong IDE session). Ang headless na `graphify extract` ay nangangailangan ng `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), isang tumatakbong Ollama instance (`OLLAMA_BASE_URL`), AWS credentials sa pamamagitan ng standard provider chain (Bedrock - walang kailangang API key, gumagamit ng IAM), o ang `claude` CLI binary (Claude Code - walang kailangang API key, gumagamit ng iyong Claude subscription). Ang `--dedup-llm` na flag ay gumagamit ng parehong key.
+- **Data residency**: ang `graphify extract` ay awtomatikong tumutukoy kung aling provider ang gagamitin batay sa kung aling API key ang nakatakda (priyoridad: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Para sa code na may mga kinakailangan sa data-residency, gamitin ang `--backend ollama` (ganap na lokal) o magpasa ng isang tahasang `--backend` na flag. Ang Kimi (`MOONSHOT_API_KEY`) ay nagruruta sa mga server ng Moonshot AI sa China.
+- **Walang telemetry**, walang usage tracking, walang analytics.
+- **Query logging**: bawat tawag na `graphify query`, `graphify path`, `graphify explain`, at MCP `query_graph` ay nilo-log sa `~/.cache/graphify-queries.log` sa format na JSON Lines (timestamp, tanong, corpus, mga node na ibinalik, tagal). Ang buong subgraph na mga tugon ay **hindi** iniimbak bilang default. Itakda ang `GRAPHIFY_QUERY_LOG_DISABLE=1` upang mag-opt out, o `GRAPHIFY_QUERY_LOG=/dev/null` upang patahimikin nang hindi dini-disable ang code path.
 
 ---
 
-## Pag-troubleshoot
+## Troubleshooting
 
-Mga karaniwang isyu sa pag-install at extraction at ang kanilang mga solusyon: **[Pag-troubleshoot](https://docs.graphify.com/troubleshooting)**.
+Mga karaniwang isyu sa install at extraction at ang kanilang mga ayos: **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
 ---
 
 ## Buong command reference
 
-Bawat command at flag, na may mga halimbawa: **[CLI reference](https://docs.graphify.com/reference/overview)**.
+Bawat utos at flag, na may mga halimbawa: **[CLI reference](https://docs.graphify.com/reference/overview)**.
 
 ---
 
 ## Matuto pa
 
-- [docs.graphify.com](https://docs.graphify.com): buong dokumentasyon: mga gabay, command reference, at mga integration
-- [Paano ito gumagana](../how-it-works.md): ang extraction pipeline, community detection, confidence scoring, mga benchmark
+- [docs.graphify.com](https://docs.graphify.com): buong dokumentasyon: mga gabay, command reference, at mga integrasyon
+- [Paano ito gumagana](../how-it-works.md): ang extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](../../ARCHITECTURE.md): paghahati-hati ng module, kung paano magdagdag ng wika
-- [Mga opsyonal na integration](../docker-mcp-sqlite.md): Docker MCP Toolkit + SQLite
-- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): ang libro tungkol sa mga ideya sa likod ng graphify, ang arkitektura mula simula hanggang dulo
+- [Mga opsyonal na integrasyon](../docker-mcp-sqlite.md): Docker MCP Toolkit + SQLite
+- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): ang aklat tungkol sa mga ideya sa likod ng graphify, ang arkitektura mula simula hanggang dulo
 
 ---
 
 ## Graphify Cloud
 
-Ang [**Graphify Cloud**](https://app.graphify.com/login) ay ang laging-bukas na layer na nakabuo sa ibabaw ng graphify. Sa halip na isang graph na muli mong binubuo kapag kailangan per folder, pinapanatili nito ang iisang buhay na graph sa buong software development lifecycle mo:
+Ang [**Graphify Cloud**](https://app.graphify.com/login) ay ang laging-nakabukas na layer na itinayo sa ibabaw ng graphify. Sa halip na isang graph na muli mong itinatayo kapag kailangan kada folder, pinapanatili nito ang isang buhay na graph sa buong software development lifecycle mo:
 
-- **80% na mas kaunting token**: ang laging-bukas na memory ay nangangahulugang hindi na muling binabasa at ipinapaliwanag ng iyong mga agent ang codebase sa bawat session.
-- **Monorepo at cross-repo**: iisang konektadong graph sa bawat serbisyo at repository, hindi graph per folder.
+- **80% mas kaunting token**: ang laging-nakabukas na memory ay nangangahulugang hihinto ang iyong mga agent sa muling-pagbabasa at muling-pagpapaliwanag ng codebase bawat sesyon.
+- **Monorepo at cross-repo**: isang konektadong graph sa bawat serbisyo at repository, hindi isang graph kada folder.
 - **Formal verification**: suriin ang mga architectural at dependency invariant laban sa buhay na graph.
-- **Code review na may bird's-eye na tanaw sa iyong SDLC**: makita kung paano kumakalat ang isang pagbabago sa buong system bago ka mag-merge.
-- **Mga SDLC connector**: hilahin ang Sentry, Jira, at iba pa, para ang mga insidente, ticket, at code ay nasa iisang graph.
-- **Laging-bukas**: tuloy-tuloy na nag-a-update sa background sa code, docs, at mga meeting.
+- **Code review na may bird's-eye view ng iyong SDLC**: tingnan kung paano kumakalat ang isang pagbabago sa buong sistema bago ka mag-merge.
+- **Mga SDLC connector**: hilahin ang Sentry, Jira, at iba pa, upang ang mga insidente, ticket, at code ay nasa iisang graph.
+- **Laging-nakabukas**: nag-a-update nang tuloy-tuloy sa background sa code, docs, at mga pulong.
 
-**[Magsimula ng libreng 14-araw na trial sa app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Magsimula ng libreng 14-araw na pagsubok sa app.graphify.com &rarr;](https://app.graphify.com/login)**
 
 ---
 
 ## Pag-aambag
 
-Malugod na tinatanggap ang mga ambag. Tingnan ang **[CONTRIBUTING.md](../../CONTRIBUTING.md)** para sa development setup, ang mga command ng test at CI-parity, ang git workflow, at kung ano ang bumubuo ng malakas na ambag (ang mga worked example at extraction bug report ang pinaka-kapaki-pakinabang). Arkitektura at kung paano magdagdag ng wika: [ARCHITECTURE.md](../../ARCHITECTURE.md).
+Malugod na tinatanggap ang mga kontribusyon. Tingnan ang **[CONTRIBUTING.md](../../CONTRIBUTING.md)** para sa development setup, ang mga utos para sa test at CI-parity, ang git workflow, at kung ano ang bumubuo ng isang matibay na kontribusyon (ang mga worked example at extraction bug report ang pinaka-kapaki-pakinabang). Arkitektura at kung paano magdagdag ng wika: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
 Bago rito? Kumusta sa [Discord](https://discord.gg/XDnKVpzdXB) o sa [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
-## Mga Contributor
+## Mga nag-ambag
 
 <a href="https://github.com/Graphify-Labs/graphify/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
@@ -457,15 +478,15 @@ Ginawa gamit ang [contrib.rocks](https://contrib.rocks).
 
 ---
 
-## Mga Pagsasalin
+## Mga pagsasalin
 
-Ang README ay available sa 32 wika. Gamitin ang language switcher sa itaas ng file na ito para basahin ito sa iyong wika, o mag-browse sa [`docs/translations/`](./). Para pagbutihin ang isang pagsasalin o magdagdag ng bago, magbukas ng pull request laban sa katugmang file doon.
+Ang README ay magagamit sa 32 na wika. Gamitin ang language switcher sa itaas ng file na ito upang basahin ito sa iyong wika, o mag-browse sa [`docs/translations/`](./). Upang pahusayin ang isang pagsasalin o magdagdag ng bago, magbukas ng pull request laban sa katugmang file doon.
 
 ---
 
-## Pagbuo sa ibabaw ng graphify
+## Pagtatayo sa ibabaw ng graphify
 
-May binubuo ka ba sa ecosystem ng graphify? Hinihikayat iyon. Kung ang proyekto mo ay gumagamit ng "graphify" sa pangalan nito (halimbawa `graphify-dashboard` o `graphify-action`), pakidagdag ng maikling tala sa iyong README na nagpapaliwanag na ito ay gawa ng komunidad at walang kaugnayan sa o hindi inendorso ng Graphify Labs. Ang "graphify" at ang graphify logo ay mga marka ng Graphify Labs; mangyaring huwag gamitin ang mga ito sa paraang nagpapahiwatig ng opisyal na katayuan.
+May ginagawa ka ba sa ekosistema ng graphify? Iyon ay hinihikayat. Kung ang proyekto mo ay gumagamit ng "graphify" sa pangalan nito (halimbawa `graphify-dashboard` o `graphify-action`), mangyaring magdagdag ng isang maikling tala sa iyong README na nililinaw na ito ay itinayo ng komunidad at hindi kaanib ng o inendorso ng Graphify Labs. Ang "graphify" at ang graphify logo ay mga marka ng Graphify Labs; mangyaring huwag gamitin ang mga ito sa paraang nagpapahiwatig ng opisyal na katayuan.
 
 ---
 

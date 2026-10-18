@@ -592,6 +592,38 @@ def _exports_candidates(
         candidates.extend(_platform_variants(candidate, platform))
     return candidates
 
+_BUILD_OUTPUT_SUFFIXES = (".d.ts", ".d.mts", ".d.cts", ".js", ".mjs", ".cjs")
+
+def _with_source_twins(
+    package_dir: Path, candidates: list[Path], *, root_entry: bool = False
+) -> list[Path]:
+    """Follow `exports` that point only into build output back to the source.
+
+    `"exports": {".": {"import": "./dist/index.js"}}` never names `src/`, and
+    `dist/` is usually ignored and outside the corpus, so the import either
+    became an external stub or did not resolve at all (#4485). Append each
+    build-output target's source twin (`dist/sub.js` -> `src/sub`) and, for the
+    root entry, `src/index` / `index` as the `main` path already does (#3834).
+    They go last: _resolve_workspace_import prefers a file outside build output,
+    so the source wins when it exists and the build file stays the fallback."""
+    extra: list[Path] = []
+    for candidate in candidates:
+        try:
+            rel = candidate.relative_to(package_dir)
+        except ValueError:
+            continue
+        if len(rel.parts) < 2 or rel.parts[0] not in _BUILD_OUTPUT_DIRS:
+            continue
+        name = rel.name
+        for suffix in _BUILD_OUTPUT_SUFFIXES:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        extra.append(package_dir / "src" / Path(*rel.parts[1:-1]) / name)
+    if root_entry:
+        extra += [package_dir / "src/index", package_dir / "index"]
+    return candidates + [path for path in dict.fromkeys(extra) if path not in candidates]
+
 def _package_entry_candidates(
     package_dir: Path,
     subpath: str,
@@ -619,7 +651,7 @@ def _package_entry_candidates(
             if targets:
                 candidates = _exports_candidates(package_dir, targets, platform)
                 if candidates:
-                    return candidates
+                    return _with_source_twins(package_dir, candidates)
             else:
                 for pattern, pattern_value in exports.items():
                     if "*" in pattern and pattern.count("*") == 1:
@@ -637,16 +669,20 @@ def _package_entry_candidates(
                                     package_dir, wildcard_targets, platform
                                 )
                                 if candidates:
-                                    return candidates
+                                    return _with_source_twins(package_dir, candidates)
         return [package_dir / subpath]
 
     exports = manifest_data.get("exports")
     if isinstance(exports, str):
-        return [package_dir / exports]
+        return _with_source_twins(package_dir, [package_dir / exports], root_entry=True)
     if isinstance(exports, dict):
         dot_targets = _resolve_export_targets(exports.get("."), platform)
         if dot_targets:
-            return _exports_candidates(package_dir, dot_targets, platform)
+            return _with_source_twins(
+                package_dir,
+                _exports_candidates(package_dir, dot_targets, platform),
+                root_entry=True,
+            )
 
     candidates: list[Path] = []
     for key in ("svelte", "module", "main", "types"):
@@ -1583,6 +1619,44 @@ def _apply_symbol_resolution_facts(
             import_fact.line,
             import_fact.file_path,
         )
+
+    # The structural extractor names the imported symbol on the immediate barrel,
+    # which defines nothing, so its edge dangles and build mints an external stub
+    # beside the edge the loop above added to the defining symbol (#4486). Drop
+    # it once that import resolved through the barrel to a node the corpus owns.
+    # A chain that ends outside the corpus keeps its edge, as before.
+    import_sites: dict[tuple[Path, str, Path], list[_SymbolImportFact]] = {}
+    for import_fact in facts.imports:
+        site = (
+            _resolve_cached(import_fact.file_path),
+            f"L{import_fact.line}",
+            _resolve_cached(import_fact.target_path),
+        )
+        import_sites.setdefault(site, []).append(import_fact)
+    superseded: set[int] = set()
+    for edge in edges:
+        if edge.get("relation") != "imports" or edge.get("target") in owned_ids:
+            continue
+        target_file = edge.get("target_file")
+        source_path = _js_source_path(str(edge.get("source_file", "")), root)
+        if not target_file or source_path is None:
+            continue
+        target_path = Path(target_file)
+        site = (source_path, str(edge.get("source_location", "")), _resolve_cached(target_path))
+        for import_fact in import_sites.get(site, []):
+            if edge.get("target") != _make_id(_file_stem(target_path), import_fact.imported_name):
+                continue
+            # Only a single candidate: a barrel exporting one name from two modules
+            # leaves the edge on the barrel rather than guess (#2034).
+            barrel_key = (_resolve_cached(import_fact.target_path), import_fact.imported_name)
+            candidates, _ = exported_candidates(barrel_key, frozenset())
+            if len(candidates) == 1:
+                origin = next(iter(candidates))
+                if origin != barrel_key and symbol_nodes.get(origin) in owned_ids:
+                    superseded.add(id(edge))
+            break
+    if superseded:
+        edges[:] = [edge for edge in edges if id(edge) not in superseded]
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
     # #3777: retract provisional `imports_from` AST edges whose package ID coincided

@@ -47,11 +47,11 @@ Skriv `/graphify` i din AI-kodeassistent, og den kortlægger hele dit projekt (k
   <em>FastAPI-kodebasen kortlagt af graphify. Hver knude er et begreb, farver er detekterede fællesskaber, og det hele er klikbart i graph.html.</em>
 </p>
 
-**Kom godt i gang** (30 sekunder):
+**Kom godt i gang** (30 sekunder). Kræver Python 3.10+ og uv (eller pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Derefter, i din AI-assistent:
@@ -73,21 +73,7 @@ Den gemte graf inkluderer `graph.schema_version`, så integrationer kan registre
 inkompatible formatændringer, plus `graph.graphify_version`, der identificerer den
 Graphify-udgivelse, der frembragte den.
 
-**Fungerer i** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot og 15+ flere: [vælg din platform](#install).
-
----
-
-## Dokumentation
-
-Fulde vejledninger og reference findes på **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Hurtig start](https://docs.graphify.com/quickstart)**: byg din første graf
-- **[CLI-reference](https://docs.graphify.com/reference/overview)**: hver kommando og hvert flag
-- **[Stil bedre grafspørgsmål](https://docs.graphify.com/guides/querying)**: forespørgselsmønstre
-- **[Konfiguration](https://docs.graphify.com/reference/configuration)**: miljøvariabler og tuning
-- **[Understøttede input](https://docs.graphify.com/concepts/supported-inputs)**: sprog og filtyper
-- **[Teamworkflows](https://docs.graphify.com/guides/team-workflows)** og **[PR-gennemgang](https://docs.graphify.com/guides/pull-requests)**
-- **[Fejlfinding](https://docs.graphify.com/troubleshooting)** og **[Sådan virker det](https://docs.graphify.com/concepts/architecture)**
+**Én installation, enhver assistent, ethvert OS.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot og 20+ flere, på macOS, Linux og Windows: [vælg din platform](#install).
 
 ---
 
@@ -141,7 +127,7 @@ Hvad du får ud af kassen:
 
 ---
 
-## Benchmarks
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Mål | graphify | Feltet |
 |---|---|---|---|
@@ -152,6 +138,20 @@ Hvad du får ud af kassen:
 | Grafbygning | LLM-kreditter | **0** | pr. token for de fleste systemer |
 
 Hvert system kørte på den samme harness med samme model og budgetter, bedømt af en dommer blindvalideret mod en anden dommer (90.6% enighed, Cohens kappa 0.81). Fulde tabeller pr. system, resultatet for kodeintelligens og reproduktionskommandoer: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Dokumentation
+
+Fulde vejledninger og reference findes på **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Hurtig start](https://docs.graphify.com/quickstart)**: byg din første graf
+- **[CLI-reference](https://docs.graphify.com/reference/overview)**: hver kommando og hvert flag
+- **[Stil bedre grafspørgsmål](https://docs.graphify.com/guides/querying)**: forespørgselsmønstre
+- **[Konfiguration](https://docs.graphify.com/reference/configuration)**: miljøvariabler og tuning
+- **[Understøttede input](https://docs.graphify.com/concepts/supported-inputs)**: sprog og filtyper
+- **[Teamworkflows](https://docs.graphify.com/guides/team-workflows)** og **[PR-gennemgang](https://docs.graphify.com/guides/pull-requests)**
+- **[Fejlfinding](https://docs.graphify.com/troubleshooting)** og **[Sådan virker det](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -189,24 +189,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Det officielle kildekoderepository er [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Trin 1: installér pakken:**
+Hurtigstarten med to kommandoer er øverst i denne README. Denne sektion dækker installationsmetoderne, projektafgrænsede installationer og alle understøttede platforme.
+
+**Installationsmetoder** (vælg én):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**Trin 2: registrér skillet hos din AI-assistent:**
-
-```bash
-graphify install
-```
-
-Det er det. Åbn din AI-assistent, og skriv `/graphify .`
+Kør derefter `graphify install` én gang. Den registrerer, hvilken assistent du kører, og registrerer skillet, så der ikke er nogen opsætning pr. assistent. Åbn din AI-assistent, og skriv `/graphify .`
 
 For at installere assistent-skillet i det aktuelle repository i stedet for din
 brugerprofil skal du tilføje `--project`:
@@ -250,7 +243,7 @@ for eksempel `graphify claude install --project` eller `graphify codex install -
 | Amp | `graphify amp install` |
 | Agent Skills (på tværs af frameworks) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for den indbyggede guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +251,8 @@ for eksempel `graphify claude install --project` eller `graphify codex install -
 Codex-brugere skal også have `multi_agent = true` under `[features]` i `~/.codex/config.toml` for parallel ekstraktion. CodeBuddy bruger samme Agent-værktøj og PreToolUse-hookmekanisme som Claude Code. Factory Droid bruger `Task`-værktøjet til parallel afsendelse af subagenter. OpenClaw og Aider bruger sekventiel ekstraktion (understøttelse af parallelle agenter er stadig tidlig på disse platforme). Trae bruger Agent-værktøjet til parallel afsendelse af subagenter og understøtter **ikke** `PreToolUse`-hooks, så AGENTS.md er den altid aktive mekanisme.
 
 `--platform agents` (alias `--platform skills`) retter sig mod de generiske placeringer for [Agent-Skills](https://github.com/anthropics/skills) på tværs af frameworks: specifikationens brugerglobale `~/.agents/skills/` (læses af `npx skills` og specifikationskonforme frameworks) for en global installation, og `./.agents/skills/` for en projektinstallation (`--project`). Det blotte `graphify install` forbliver enkeltplatform (Claude Code) med vilje: brug den navngivne `agents`-platform, når du ønsker, at skillet skal kunne opdages af ethvert framework, der læser `.agents/skills`.
+
+Pi har ingen `PreToolUse`-hook, så `graphify pi guard install` registrerer en indbygget Pi-udvidelse (via Pis egen `pi install <package directory>`), der kører den installerede `graphify hook-guard` før Pis `read`-, `grep`-, `find`- og søgeagtige `bash`-kald. Beslutninger om frisk/forældet graf og `GRAPHIFY_HOOK_STRICT=1`-afvisningen af indekseret læsning én gang pr. session kommer fra samme politik, så Pi matcher Claude Codes hook-adfærd; vejledning ankommer som en `<system-reminder source="graphify">`-styringsbesked. Den kræver Pi 0.58.4 eller nyere: tidligere versioner lader en styringsbesked springe resten af en parallel værktøjskaldsbatch over. Pakken leveres inde i Graphify-installationen, så installér Graphify vedvarende (`uv tool install graphifyy` eller `pipx install graphifyy`, ikke `uvx`), genstart Pi efter installation eller opgradering, og fjern den med `graphify pi guard uninstall`. Kun lokale filmål inspiceres; hooken kræver `graphify` på en absolut `PATH`-post uden for projektet, er afgrænset til et to-sekunders kald på 256 KiB-ind/64 KiB-ud og fejler åbent. Den samme pakke indlæses også i [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. Den registrerede sti indeholder Python-versionen og venv'et, så kør `graphify pi guard install` igen efter at have ændret en af dem, og fjern den gamle post med `pi remove <old path>`.
 
 > Codex bruger `$graphify` i stedet for `/graphify`.
 
@@ -311,15 +306,22 @@ Dette skriver en lille konfigurationsfil, der fortæller din assistent, at den s
 
 `GRAPH_REPORT.md` er stadig tilgængelig til bred arkitekturgennemgang.
 
-**CodeBuddy** gør de samme to ting som Claude Code: skriver en `CODEBUDDY.md`-sektion, der fortæller CodeBuddy at læse `graphify-out/GRAPH_REPORT.md` før besvarelse af arkitekturspørgsmål, og installerer `PreToolUse`-hooks (`.codebuddy/settings.json`), der udløses før Bash-søgekommandoer og fillæsninger og skubber mod `graphify query` i stedet.
-
-**Codex** skriver til `AGENTS.md`, hvilket er det, der faktisk bærer den altid aktive grafvejledning på denne platform. `graphify codex install` registrerer også en `PreToolUse`-hook i `.codex/hooks.json` (`graphify hook-check`), men den post er bevidst en **no-op**: Codex Desktop afviser `hookSpecificOutput.additionalContext` på `PreToolUse`, så at udsende et skub dér ville ødelægge Bash-værktøjskald. I modsætning til Claude Code, hvor hooken (`graphify hook-guard`) udfører skubbet, udløses hooken på Codex og gør bevidst ingenting, og `AGENTS.md` er den altid aktive mekanisme.
-
-**Kilo Code** installerer Graphify-skillet til `~/.config/kilo/skills/graphify/SKILL.md` og en indbygget `/graphify`-kommando til `~/.config/kilo/command/graphify.md`. `graphify kilo install` skriver også `AGENTS.md` plus et indbygget `tool.execute.before`-plugin (`.kilo/plugins/graphify.js` + registrering i `.kilo/kilo.json` eller `.kilo/kilo.jsonc`), så Kilo får den samme altid aktive grafpåmindelsesadfærd gennem indbygget `.kilo`-konfiguration.
-
-**Cursor** skriver `.cursor/rules/graphify.mdc` med `alwaysApply: true`, så Cursor automatisk inkluderer den i hver samtale, ingen hook nødvendig.
+Præcis hvilke filer hver platform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos indbyggede `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dækket i **[Altid aktiv-opsætning](https://docs.graphify.com/guides/always-on)**.
 
 For at fjerne graphify fra alle platforme på én gang: `graphify uninstall` (tilføj `--purge` for også at slette `graphify-out/`). Eller brug kommandoen pr. platform (f.eks. `graphify claude uninstall`).
+
+### CLI-skills eller MCP-instruktioner?
+
+Instruktionerne, der installeres af `graphify install`, og dem, der følger med en Graphify MCP-forbindelse, beskriver forskellige måder at forespørge en graf på:
+
+| Opsætning | Vejledning, der skal bruges | Forespørgselsadgang |
+|---|---|---|
+| Lokal CLI og installeret assistent-skill | Platformsinstruktionerne skrevet af `graphify install` | Kør `graphify query`, `graphify path` og `graphify explain` mod den lokale graf (`graphify-out/` som standard). |
+| Forbundet Graphify MCP-server | Forbindelsens instruktioner og de værktøjer, som den server angiver | Kald de angivne MCP-værktøjer mod den graf, som den forbindelse serverer. Værktøjsnavne og -beskrivelser kommer fra serveren. |
+
+Begge opfordrer til afgrænsede grafforespørgsler før brede kildesøgninger. Vælg de instruktioner, der matcher de værktøjer, din assistent faktisk kan tilgå; ingen af blokkene etablerer en universel forrangsregel for din assistents instruktionsfiler. Hvis du bruger begge integrationer, så identificér hvilken graf hver forespørger, og vælg en primær forespørgselssti i stedet for at kopiere to ubetingede instruktionsblokke ind i `AGENTS.md`.
+
+`graphify install` installerer den lokale assistent-integration; den etablerer ikke en MCP-forbindelse. En MCP-klient behøver ikke at køre lokale CLI-forespørgsler for at bruge sin forbundne server. En lokalt hostet server har stadig brug for sin egen Graphify-installation og graf, mens en hostet forbindelse kan servere en graf, der ikke findes i klientens arbejdsmappe. Hvis de forventede værktøjer mangler, så tjek den relevante CLI-installation eller MCP-forbindelse i stedet for at behandle den anden opsætnings instruktioner som udskiftelige.
 
 ---
 
@@ -329,7 +331,7 @@ For at fjerne graphify fra alle platforme på én gang: `graphify uninstall` (ti
 
 ---
 
-## Hvilke filer den håndterer
+## Hvilke filer den håndterer: ~40 sprog
 
 graphify parser ~40 programmeringssprog lokalt med tree-sitter AST og kortlægger dokumenter, PDF-filer, billeder og lyd/video gennem en valgfri semantisk gennemgang. Fuld liste: **[Understøttede input](https://docs.graphify.com/concepts/supported-inputs)**.
 
@@ -363,13 +365,32 @@ graphify prs --triage              # AI ranks your review queue (uses whatever b
 graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
 ```
 
-Se den [fulde kommandoreference](#full-command-reference) nedenfor.
+Se den [fulde kommandoreference](#fuld-kommandoreference) nedenfor.
 
 ---
 
 ## Ignorering af filer
 
 graphify respekterer `.gitignore` og understøtter `--exclude`-mønstre og en projekt-`.graphifyignore`. Detaljer: **[Konfiguration](https://docs.graphify.com/reference/configuration)**.
+
+
+## Projektkonfiguration
+
+Opret en `.graphifyrc` i scan-roden til indstillinger, der hører til projektet frem for til en enkelt kørsel. Ét `key=value` pr. linje; linjer, der begynder med `#`, er kommentarer.
+
+**Tvetydige filendelser.** Nogle filendelser betyder forskellige sprog i forskellige projekter: `.inc` er PHP på pfSense, Pascal i et Delphi-træ, SQL eller assembly andre steder; `.h` er C eller C++; `.m` er Objective-C eller MATLAB. graphify er nødt til at vælge én global standard, og når den vælger forkert, fejler filen ikke: den parses som det forkerte sprog og giver en håndfuld tilfældige knuder, så grafen ser befolket ud, mens de rigtige symboler mangler. Erklær, hvad filendelsen betyder i dit repo:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Erklæringen flyder gennem klassificering, valg af ekstraktor, grammatik og resolution, imports, `graphify watch` og AST-cachen (en fil, der genparses under et andet sprog, genbruger aldrig den gamle post), og den samme `.graphifyrc` læses af `extract`, `update`, hooksene, MCP-serveren og `/graphify`-skillet. En tastefejl rapporteres én gang på stderr, og scanningen fortsætter med standarderne. Hvordan erklæringer interagerer med caching, inkrementelle genopbygninger og import-resolution: **[Konfiguration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
@@ -381,7 +402,7 @@ Commit eller del grafen, så hele dit team forespørger mod den samme kontekst, 
 
 ## Brug af grafen direkte
 
-Ud over din AI-assistent kan du forespørge `graph.json` direkte fra CLI'en med `graphify query`, `graphify path` og `graphify explain`. Se **[Stil bedre grafspørgsmål](https://docs.graphify.com/guides/querying)** og **[forespørgselsreferencen](https://docs.graphify.com/reference/query)**.
+Ud over din AI-assistent kan du forespørge `graph.json` direkte fra CLI'en med `graphify query`, `graphify path` og `graphify explain`. Et navn, der matcher flere knuder, afvises med kandidaterne angivet frem for gættet. Scripts kan læse resultatet fra exit-koden: `0` et svar, `3` et tvetydigt navn, `4` ingen matchende knude. Se **[Stil bedre grafspørgsmål](https://docs.graphify.com/guides/querying)** og **[forespørgselsreferencen](https://docs.graphify.com/reference/query)**.
 
 ---
 
@@ -395,7 +416,7 @@ Backends, API-nøgler, hook-adfærd og tuning styres af miljøvariabler. Fuld ta
 
 - **Kodefiler**: behandles lokalt via tree-sitter. Intet forlader din maskine. Et korpus med kun kode kræver ingen API-nøgle: `graphify extract` kører fuldt offline. På et blandet repo skal du tilføje `--code-only` for kun at indeksere koden og springe de dokumenter/PDF-filer/billeder over, der ellers ville kræve en LLM.
 - **Video / lyd**: transskriberes lokalt med faster-whisper. Intet forlader din maskine.
-- **Dokumenter, PDF-filer, billeder**: sendes til din AI-assistent til semantisk ekstraktion (via `/graphify`-skillet, med den model, din IDE-session kører). Headless `graphify extract` kræver `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), en kørende Ollama-instans (`OLLAMA_BASE_URL`), AWS-legitimationsoplysninger via den standardmæssige provider-kæde (Bedrock – ingen API-nøgle nødvendig, bruger IAM), eller `claude`-CLI-binæren (Claude Code – ingen API-nøgle nødvendig, bruger dit Claude-abonnement). Flaget `--dedup-llm` bruger den samme nøgle.
+- **Dokumenter, PDF-filer, billeder**: sendes til din AI-assistent til semantisk ekstraktion (via `/graphify`-skillet, med den model, din IDE-session kører). Headless `graphify extract` kræver `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), en kørende Ollama-instans (`OLLAMA_BASE_URL`), AWS-legitimationsoplysninger via den standardmæssige provider-kæde (Bedrock, ingen API-nøgle nødvendig, bruger IAM), eller `claude`-CLI-binæren (Claude Code, ingen API-nøgle nødvendig, bruger dit Claude-abonnement). Flaget `--dedup-llm` bruger den samme nøgle.
 - **Dataophold**: `graphify extract` registrerer automatisk, hvilken provider der skal bruges, baseret på hvilken API-nøgle der er sat (prioritet: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Til kode med krav om dataophold skal du bruge `--backend ollama` (fuldt lokal) eller angive et eksplicit `--backend`-flag. Kimi (`MOONSHOT_API_KEY`) ruter til Moonshot AI-servere i Kina.
 - **Ingen telemetri**, ingen brugssporing, ingen analyse.
 - **Forespørgselslogning**: hvert `graphify query`-, `graphify path`-, `graphify explain`- og MCP `query_graph`-kald logges til `~/.cache/graphify-queries.log` i JSON Lines-format (tidsstempel, spørgsmål, korpus, returnerede knuder, varighed). Fulde delgraf-svar gemmes **ikke** som standard. Sæt `GRAPHIFY_QUERY_LOG_DISABLE=1` for at fravælge, eller `GRAPHIFY_QUERY_LOG=/dev/null` for at dæmpe uden at deaktivere kodestien.

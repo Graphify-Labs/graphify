@@ -47,11 +47,11 @@ Yapay zeka destekli kodlama asistanınıza `/graphify` yazın; tüm projenizi (k
   <em>graphify tarafından eşlenen FastAPI kod tabanı. Her düğüm bir kavram, renkler tespit edilen topluluklar ve bütün yapı graph.html içinde tıklanabilir.</em>
 </p>
 
-**Başlayın** (30 saniye):
+**Başlayın** (30 saniye). Python 3.10+ ve uv (ya da pipx) gerektirir:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Ardından, yapay zeka asistanınızda:
@@ -73,21 +73,7 @@ Kalıcı grafik, entegrasyonların uyumsuz biçim değişikliklerini
 algılayabilmesi için `graph.schema_version` değerini ve ayrıca onu üreten
 Graphify sürümünü tanımlayan `graph.graphify_version` değerini içerir.
 
-**Şu ortamlarda çalışır:** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot ve 15'ten fazlası: [platformunuzu seçin](#install).
-
----
-
-## Belgeler
-
-Tam kılavuzlar ve başvuru kaynakları **[docs.graphify.com](https://docs.graphify.com)** adresinde:
-
-- **[Hızlı başlangıç](https://docs.graphify.com/quickstart)**: ilk grafiğinizi oluşturun
-- **[CLI başvurusu](https://docs.graphify.com/reference/overview)**: her komut ve bayrak
-- **[Daha iyi grafik soruları sorun](https://docs.graphify.com/guides/querying)**: sorgulama kalıpları
-- **[Yapılandırma](https://docs.graphify.com/reference/configuration)**: ortam değişkenleri ve ince ayar
-- **[Desteklenen girdiler](https://docs.graphify.com/concepts/supported-inputs)**: diller ve dosya türleri
-- **[Ekip iş akışları](https://docs.graphify.com/guides/team-workflows)** ve **[PR incelemesi](https://docs.graphify.com/guides/pull-requests)**
-- **[Sorun giderme](https://docs.graphify.com/troubleshooting)** ve **[Nasıl çalışır](https://docs.graphify.com/concepts/architecture)**
+**Tek kurulum, her asistan, her işletim sistemi.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot ve 20'den fazlası; macOS, Linux ve Windows'ta: [platformunuzu seçin](#install).
 
 ---
 
@@ -141,7 +127,7 @@ Kutudan çıktığı haliyle elde ettikleriniz:
 
 ---
 
-## Karşılaştırmalı değerlendirmeler
+## Karşılaştırmalı değerlendirmeler: 0.497 recall@10, 0 LLM credits
 
 | Karşılaştırma | Metrik | graphify | Alan |
 |---|---|---|---|
@@ -152,6 +138,20 @@ Kutudan çıktığı haliyle elde ettikleriniz:
 | Grafik oluşturma | LLM kredileri | **0** | çoğu sistemde token başına |
 
 Her sistem aynı koşum takımında, aynı model ve bütçelerle çalıştırıldı; ikinci bir yargıca karşı körlemesine doğrulanmış bir yargıç tarafından puanlandı (%90.6 uyum, Cohen kappa 0.81). Tüm sistem bazında tablolar, kod zekası sonucu ve yeniden üretme komutları: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Belgeler
+
+Tam kılavuzlar ve başvuru kaynakları **[docs.graphify.com](https://docs.graphify.com)** adresinde:
+
+- **[Hızlı başlangıç](https://docs.graphify.com/quickstart)**: ilk grafiğinizi oluşturun
+- **[CLI başvurusu](https://docs.graphify.com/reference/overview)**: her komut ve bayrak
+- **[Daha iyi grafik soruları sorun](https://docs.graphify.com/guides/querying)**: sorgulama kalıpları
+- **[Yapılandırma](https://docs.graphify.com/reference/configuration)**: ortam değişkenleri ve ince ayar
+- **[Desteklenen girdiler](https://docs.graphify.com/concepts/supported-inputs)**: diller ve dosya türleri
+- **[Ekip iş akışları](https://docs.graphify.com/guides/team-workflows)** ve **[PR incelemesi](https://docs.graphify.com/guides/pull-requests)**
+- **[Sorun giderme](https://docs.graphify.com/troubleshooting)** ve **[Nasıl çalışır](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -189,24 +189,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Resmi kaynak deposu [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) adresindedir.
 
-**1. Adım: paketi kurun:**
+Bu README'nin en üstünde iki komutluk hızlı başlangıç yer alır. Bu bölüm kurulum yöntemlerini, proje kapsamlı kurulumları ve desteklenen her platformu kapsar.
+
+**Kurulum yöntemleri** (birini seçin):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**2. Adım: beceriyi yapay zeka asistanınıza kaydedin:**
-
-```bash
-graphify install
-```
-
-Hepsi bu kadar. Yapay zeka asistanınızı açın ve `/graphify .` yazın
+Ardından bir kez `graphify install` çalıştırın. Hangi asistanı çalıştırdığınızı algılar ve beceriyi kaydeder, böylece asistan başına kurulum gerekmez. Yapay zeka asistanınızı açın ve `/graphify .` yazın
 
 Beceriyi kullanıcı profiliniz yerine mevcut depoya kurmak için
 `--project` ekleyin:
@@ -250,7 +243,7 @@ Proje kapsamlı kurulumları destekleyen platform bazlı komutlar aynı bayrağ�
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +251,8 @@ Proje kapsamlı kurulumları destekleyen platform bazlı komutlar aynı bayrağ�
 Codex kullanıcılarının paralel çıkarım için `~/.codex/config.toml` içinde `[features]` altında `multi_agent = true` ayarına da ihtiyacı vardır. CodeBuddy, Claude Code ile aynı Agent aracını ve PreToolUse hook mekanizmasını kullanır. Factory Droid, paralel alt ajan gönderimi için `Task` aracını kullanır. OpenClaw ve Aider sıralı çıkarım kullanır (paralel ajan desteği bu platformlarda hâlâ erken aşamadadır). Trae, paralel alt ajan gönderimi için Agent aracını kullanır ve `PreToolUse` hook'larını **desteklemez**, bu nedenle AGENTS.md daima açık mekanizmadır.
 
 `--platform agents` (takma ad `--platform skills`), genel çerçeveler arası [Agent-Skills](https://github.com/anthropics/skills) konumlarını hedefler: küresel bir kurulum için spesifikasyonun kullanıcı genelindeki `~/.agents/skills/` (`npx skills` ve spesifikasyona uyumlu çerçeveler tarafından okunur) ve bir proje (`--project`) kurulumu için `./.agents/skills/`. Çıplak `graphify install`, tasarım gereği tek platformlu (Claude Code) kalır: becerinin `.agents/skills` okuyan herhangi bir çerçeve tarafından keşfedilebilir olmasını istediğinizde adlandırılmış `agents` platformunu kullanın.
+
+Pi'nin `PreToolUse` hook'u yoktur, bu nedenle `graphify pi guard install`, Pi'nin `read`, `grep`, `find` ve arama tarzı `bash` çağrılarından önce kurulu `graphify hook-guard`'ı çalıştıran yerel bir Pi uzantısını (Pi'nin kendi `pi install <package directory>` komutuyla) kaydeder. Taze/bayat grafik kararları ve `GRAPHIFY_HOOK_STRICT=1` oturum başına bir kez dizinlenmiş-okuma reddi aynı politikadan gelir, böylece Pi, Claude Code'un hook davranışıyla eşleşir; rehberlik bir `<system-reminder source="graphify">` yönlendirme mesajı olarak gelir. Pi 0.58.4 veya daha yenisini gerektirir: daha eski sürümler, bir yönlendirme mesajının paralel bir araç-çağrısı yığınının geri kalanını atlamasına izin verir. Paket, Graphify kurulumunun içinde gelir, bu nedenle Graphify'ı kalıcı olarak kurun (`uv tool install graphifyy` veya `pipx install graphifyy`, `uvx` değil), kurulumdan veya yükseltmeden sonra Pi'yi yeniden başlatın ve `graphify pi guard uninstall` ile kaldırın. Yalnızca yerel dosya hedefleri incelenir; hook, proje dışındaki mutlak bir `PATH` girişinde `graphify` gerektirir, iki saniyelik, 256 KiB giriş/64 KiB çıkış bir çağrıyla sınırlıdır ve açık kalır (fails open). Aynı paket [Oh My Pi](https://github.com/can1357/oh-my-pi) içinde de yüklenir: `omp plugin install "$(graphify pi guard path)"`. Kayıtlı yol, Python sürümünü ve venv'i içerir, bu nedenle her ikisini de değiştirdikten sonra `graphify pi guard install`'ı yeniden çalıştırın ve eski girişi `pi remove <old path>` ile kaldırın.
 
 > Codex, `/graphify` yerine `$graphify` kullanır.
 
@@ -311,15 +306,22 @@ Bu, asistanınıza kod tabanı soruları için bilgi grafiğine başvurmasını 
 
 `GRAPH_REPORT.md` geniş mimari inceleme için hâlâ kullanılabilir.
 
-**CodeBuddy**, Claude Code ile aynı iki şeyi yapar: CodeBuddy'ye mimari soruları yanıtlamadan önce `graphify-out/GRAPH_REPORT.md` dosyasını okumasını söyleyen bir `CODEBUDDY.md` bölümü yazar ve Bash arama komutlarından ve dosya okumalarından önce tetiklenerek bunun yerine `graphify query` kullanmaya yönlendiren `PreToolUse` hook'ları (`.codebuddy/settings.json`) kurar.
-
-**Codex**, bu platformda daima açık grafik rehberliğini asıl taşıyan `AGENTS.md`'ye yazar. `graphify codex install` ayrıca `.codex/hooks.json` içinde bir `PreToolUse` hook'u (`graphify hook-check`) kaydeder, ancak bu giriş bilerek bir **no-op**'tur: Codex Desktop, `PreToolUse` üzerinde `hookSpecificOutput.additionalContext` değerini reddeder, dolayısıyla orada bir yönlendirme yayınlamak Bash araç çağrılarını bozardı. Hook'un (`graphify hook-guard`) yönlendirmeyi yaptığı Claude Code'un aksine, Codex'te hook tetiklenir ve bilerek hiçbir şey yapmaz, `AGENTS.md` ise daima açık mekanizmadır.
-
-**Kilo Code**, Graphify becerisini `~/.config/kilo/skills/graphify/SKILL.md` konumuna ve yerel bir `/graphify` komutunu `~/.config/kilo/command/graphify.md` konumuna kurar. `graphify kilo install` ayrıca `AGENTS.md` ile birlikte yerel bir `tool.execute.before` eklentisi (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` veya `.kilo/kilo.jsonc` kaydı) yazar; böylece Kilo, yerel `.kilo` yapılandırması aracılığıyla aynı daima açık grafik hatırlatma davranışını alır.
-
-**Cursor**, `alwaysApply: true` ile `.cursor/rules/graphify.mdc` yazar; böylece Cursor bunu otomatik olarak her konuşmaya dahil eder, hook'a gerek kalmaz.
+Her platformun tam olarak hangi dosyaları yazdığı (CodeBuddy'nin `CODEBUDDY.md` + `PreToolUse` hook'ları, Codex'in `AGENTS.md`'si, Kilo'nun yerel `.kilo` eklentisi, Cursor'un `alwaysApply` kuralı vb.) şurada ele alınır: **[Daima açık kurulum](https://docs.graphify.com/guides/always-on)**.
 
 graphify'ı tüm platformlardan aynı anda kaldırmak için: `graphify uninstall` (`graphify-out/` dizinini de silmek için `--purge` ekleyin). Veya platform bazlı komutu kullanın (ör. `graphify claude uninstall`).
+
+### CLI becerileri mi yoksa MCP talimatları mı?
+
+`graphify install` tarafından kurulan talimatlar ve bir Graphify MCP bağlantısıyla sağlananlar, bir grafiği sorgulamanın farklı yollarını açıklar:
+
+| Kurulum | Kullanılacak rehberlik | Sorgu erişimi |
+|---|---|---|
+| Yerel CLI ve kurulu asistan becerisi | `graphify install` tarafından yazılan platform talimatları | Yerel grafiğe (varsayılan olarak `graphify-out/`) karşı `graphify query`, `graphify path` ve `graphify explain` çalıştırın. |
+| Bağlı Graphify MCP sunucusu | Bağlantının talimatları ve o sunucunun listelediği araçlar | O bağlantının sunduğu grafiğe karşı listelenen MCP araçlarını çağırın. Araç adları ve açıklamaları sunucudan gelir. |
+
+Her ikisi de geniş kaynak aramalarından önce kapsamlı grafik sorgularını teşvik eder. Asistanınızın gerçekten erişebildiği araçlara uyan talimatları seçin; hiçbir blok, asistanınızın talimat dosyaları için evrensel bir öncelik kuralı belirlemez. Her iki entegrasyonu da kullanıyorsanız, her birinin hangi grafiği sorguladığını belirleyin ve `AGENTS.md` içine iki koşulsuz talimat bloğu kopyalamak yerine bir birincil sorgu yolu seçin.
+
+`graphify install`, yerel asistan entegrasyonunu kurar; bir MCP bağlantısı kurmaz. Bir MCP istemcisinin, bağlı sunucusunu kullanmak için yerel CLI sorguları çalıştırmasına gerek yoktur. Yerel olarak barındırılan bir sunucunun hâlâ kendi Graphify kurulumuna ve grafiğine ihtiyacı vardır; barındırılan bir bağlantı ise istemcinin çalışma dizininde bulunmayan bir grafiği sunabilir. Beklenen araçlar eksikse, diğer kurulumun talimatlarını birbirinin yerine kullanılabilir gibi değerlendirmek yerine ilgili CLI kurulumunu veya MCP bağlantısını kontrol edin.
 
 ---
 
@@ -329,7 +331,7 @@ graphify'ı tüm platformlardan aynı anda kaldırmak için: `graphify uninstall
 
 ---
 
-## Hangi dosyaları işler
+## Hangi dosyaları işler: ~40 languages
 
 graphify, ~40 programlama dilini yerel olarak tree-sitter AST ile ayrıştırır ve belgeleri, PDF'leri, görselleri ve ses/videoyu isteğe bağlı bir anlamsal geçiş aracılığıyla eşler. Tam liste: **[Desteklenen girdiler](https://docs.graphify.com/concepts/supported-inputs)**.
 
@@ -371,6 +373,25 @@ Aşağıdaki [tam komut başvurusuna](#full-command-reference) bakın.
 
 graphify, `.gitignore` dosyasına uyar ve `--exclude` kalıplarını ve proje `.graphifyignore` dosyasını destekler. Ayrıntılar: **[Yapılandırma](https://docs.graphify.com/reference/configuration)**.
 
+
+## Proje yapılandırması
+
+Bir çalıştırmaya değil projeye ait olan ayarlar için tarama kökünde bir `.graphifyrc` oluşturun. Satır başına bir `key=value`; `#` ile başlayan satırlar yorumdur.
+
+**Belirsiz uzantılar.** Bazı uzantılar farklı projelerde farklı diller anlamına gelir: `.inc`, pfSense'de PHP, bir Delphi ağacında Pascal, başka yerlerde SQL veya assembly'dir; `.h`, C veya C++'tır; `.m`, Objective-C veya MATLAB'dır. graphify'ın tek bir küresel varsayılan seçmesi gerekir ve yanlış seçtiğinde dosya başarısız olmaz: yanlış dil olarak ayrıştırılır ve bir avuç tesadüfi düğüm üretir, böylece gerçek semboller eksikken grafik dolu görünür. Uzantının reponuzda ne anlama geldiğini bildirin:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Bildirim; sınıflandırma, çıkarıcı seçimi, dilbilgisi ve çözümleme, içe aktarmalar, `graphify watch` ve AST önbelleği boyunca akar (farklı bir dil altında yeniden ayrıştırılan bir dosya asla eski girişi yeniden kullanmaz) ve aynı `.graphifyrc`, `extract`, `update`, hook'lar, MCP sunucusu ve `/graphify` becerisi tarafından okunur. Bir yazım hatası stderr'de bir kez bildirilir ve tarama varsayılanlarla devam eder. Bildirimlerin önbellekleme, artımlı yeniden oluşturmalar ve içe aktarma çözümlemesiyle nasıl etkileştiği: **[Yapılandırma](https://docs.graphify.com/reference/configuration)**.
+
 ---
 
 ## Ekip kurulumu
@@ -381,7 +402,7 @@ Tüm ekibinizin aynı bağlamı sorgulaması için grafiği işleyin veya payla�
 
 ## Grafiği doğrudan kullanma
 
-Yapay zeka asistanınızın ötesinde, `graph.json` dosyasını CLI'den doğrudan `graphify query`, `graphify path` ve `graphify explain` ile sorgulayın. Bkz. **[Daha iyi grafik soruları sorun](https://docs.graphify.com/guides/querying)** ve **[sorgu başvurusu](https://docs.graphify.com/reference/query)**.
+Yapay zeka asistanınızın ötesinde, `graph.json` dosyasını CLI'den doğrudan `graphify query`, `graphify path` ve `graphify explain` ile sorgulayın. Birden fazla düğümle eşleşen bir ad, tahmin edilmek yerine adaylar listelenerek reddedilir. Komut dosyaları sonucu çıkış kodundan okuyabilir: `0` bir yanıt, `3` belirsiz bir ad, `4` eşleşen düğüm yok. Bkz. **[Daha iyi grafik soruları sorun](https://docs.graphify.com/guides/querying)** ve **[sorgu başvurusu](https://docs.graphify.com/reference/query)**.
 
 ---
 

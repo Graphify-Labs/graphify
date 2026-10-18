@@ -102,11 +102,12 @@ def test_each_binding_gets_the_plain_use_target(tmp_path: Path):
     edges = sorted((e["relation"], e["target"], e["source_location"]) for e in result["edges"]
                    if e.get("context") == "import")
     assert edges == sorted([
-        ("imports_from", "util", "L1"), ("imports_from", "parse", "L1"), ("imports_from", "render_as_draw", "L1"),
+        # `parse` and `render` are declared once in the corpus, so they land there (#4439)
+        ("imports_from", "util", "L1"), ("imports_from", "src_util_parse", "L1"), ("imports_from", "src_util_render", "L1"),
         ("imports_from", "deep", "L1"), ("imports_from", "nested", "L1"), ("imports_from", "b", "L2"),
         ("imports_from", "c", "L2"),
         # plain declarations, exactly as v8 emits them
-        ("imports_from", "parse", "L3"), ("imports_from", "read", "L4"), ("imports_from", "bar_as_baz", "L5"),
+        ("imports_from", "src_util_parse", "L3"), ("imports_from", "read", "L4"), ("imports_from", "bar_as_baz", "L5"),
         ("imports_from", "util", "L6"), ("imports_from", "fmt", "L7")])
     sources = {e["source"] for e in result["edges"] if e.get("context") == "import"}
     file_node = next(n["id"] for n in result["nodes"] if n.get("label") == "user.rs")
@@ -120,7 +121,7 @@ def test_a_file_whose_only_use_is_a_root_group_gets_edges_from_its_file_node(tmp
     result = _extract(tmp_path, {**_FILES, "src/user.rs": "use {crate::util::parse, std::io};\n"})
     file_node = next(n["id"] for n in result["nodes"] if n.get("label") == "user.rs")
     assert sorted((e["source"], e["target"]) for e in result["edges"] if e.get("context") == "import") == [
-        (file_node, "io"), (file_node, "parse")]
+        (file_node, "io"), (file_node, "src_util_parse")]
 
 
 # Files at the scan root, so file node ids are bare stems: the binding `util`
@@ -206,4 +207,39 @@ def test_a_cache_entry_from_before_the_bindings_is_not_served(tmp_path: Path, mo
     result = extract(sorted(tmp_path / name for name in files), root=tmp_path, cache_root=tmp_path / "graphify-out",
                      parallel=False)
     assert sorted(e["target"] for e in result["edges"]
-                  if e.get("context") == "import" and e["source_file"].endswith("user.rs")) == ["parse", "render"]
+                  if e.get("context") == "import" and e["source_file"].endswith("user.rs")) == ["src_util_parse", "src_util_render"]
+
+
+def _imports(result: dict, name: str) -> list[str]:
+    return sorted(e["target"] for e in result["edges"]
+                  if e.get("context") == "import" and e["source_file"].endswith(name))
+
+
+def test_a_use_lands_on_the_declaration_without_an_annotation(tmp_path: Path):
+    """#4439: the import reached `Invoice` only when a type annotation left a
+    sourceless node for the rewire. Constructing the type left the edge on a
+    bare `invoice`, which build then minted as an external stub tied with it."""
+    result = _extract(tmp_path, {
+        "src/lib.rs": "pub mod billing;\npub mod model;\n", "src/model.rs": "pub struct Invoice(pub u64);\n",
+        "src/billing.rs": "use crate::model::Invoice;\nuse std::fmt;\n\npub fn make() -> u64 {\n    Invoice(1).0\n}\n"})
+    invoice = next(n["id"] for n in result["nodes"] if n["label"] == "Invoice")
+    # `fmt` has no declaration here: it stays a dangling target, with no node left behind.
+    assert _imports(result, "billing.rs") == sorted(["fmt", invoice])
+    assert [n["label"] for n in result["nodes"] if not n.get("source_file")] == []
+    assert not any(k.startswith("_rust_use") for n in result["nodes"] for k in n)
+
+
+def test_a_use_of_a_name_declared_twice_stays_unresolved(tmp_path: Path):
+    result = _extract(tmp_path, {
+        "src/lib.rs": "pub mod a;\npub mod b;\npub mod user;\n", "src/a.rs": "pub struct Thing;\n",
+        "src/b.rs": "pub struct Thing;\n", "src/user.rs": "use crate::a::Thing;\n"})
+    assert _imports(result, "user.rs") == ["thing"]
+
+
+def test_a_use_from_another_crate_does_not_land_on_a_same_named_declaration(tmp_path: Path):
+    """Only a path rooted at `crate`, `self` or `super` names this crate's own item."""
+    result = _extract(tmp_path, {
+        "src/lib.rs": "pub mod a;\npub mod user;\n",
+        "src/a.rs": "pub struct File;\npub struct Command;\npub struct Serialize;\n",
+        "src/user.rs": "use std::fs::File;\nuse std::{process::Command, io};\nuse serde::Serialize;\n"})
+    assert _imports(result, "user.rs") == ["command", "file", "io", "serialize"]

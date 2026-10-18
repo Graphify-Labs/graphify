@@ -28,39 +28,39 @@
 </p>
 
 <p align="center">
-  <b>Csökkentsd az ügynökök token-költését 80%-kal.</b> A Graphify Cloud mindig bekapcsolt memória, amely irányítja az ügynökeidet, magasan tartja a kódminőséget, és formális verifikációval bizonyítja a helyességet. <a href="https://app.graphify.com/login"><b>Indíts ingyenes 14 napos próbaidőszakot &rarr;</b></a>
+  <b>Csökkentse az ügynökök tokenköltségét 80%-kal.</b> A Graphify Cloud mindig aktív memória, amely irányítja az ügynökeit, magasan tartja a kódminőséget, és formális verifikációval bizonyítja a helyességet. <a href="https://app.graphify.com/login"><b>Indítson ingyenes 14 napos próbaidőszakot &rarr;</b></a>
 </p>
 
-Írd be, hogy `/graphify` az AI-kódolóasszisztensedbe, és az feltérképezi a teljes projektedet (kód, dokumentáció, PDF-ek, képek, videók) egy **tudásgráfba**, amelyet **lekérdezhetsz ahelyett, hogy grepelnél** a fájlokban.
+Írja be a `/graphify` parancsot az AI-kódolási asszisztensébe, és az a teljes projektjét (kód, dokumentumok, PDF-ek, képek, videók) **tudásgráffá** alakítja, amelyet **lekérdezhet ahelyett, hogy grep-pel** keresgélne a fájlok között.
 
-- **Kódtérképezés ingyen, teljesen helyben.** A kódot a tree-sitter AST elemzi: determinisztikusan, LLM nélkül, semmi sem hagyja el a géped. (A dokumentáció, PDF-ek, képek és videó az asszisztensed modelljét vagy egy beállított API-kulcsot használ a szemantikai feldolgozáshoz.)
-- **Minden él magyarázattal van ellátva.** Minden kapcsolat `EXTRACTED` (a forrásban kifejezetten szereplő) vagy `INFERRED` (a graphify által feloldott) címkét kap, így meg tudod különböztetni, mit olvastak ki közvetlenül, és mit következtettek ki.
-- **Nem vektorindex.** Nincsenek beágyazások, nincs vektortár: egy valódi gráf, amelyet bejársz. Tegyél fel egy kérdést, kövesd az útvonalat két dolog között, vagy magyaráztass el egy fogalmat.
+- **A kód feltérképezése ingyenes, teljesen lokális.** A kódot a tree-sitter AST elemzi: determinisztikus, nincs LLM, semmi sem hagyja el a gépét. (A dokumentumok, PDF-ek, képek és videók az asszisztense modelljét vagy egy beállított API-kulcsot használnak egy szemantikai futtatáshoz.)
+- **Minden él magyarázattal rendelkezik.** Minden kapcsolat `EXTRACTED` (a forrásban explicit) vagy `INFERRED` (a graphify által feloldott) címkét kap, így meg tudja különböztetni a közvetlenül kiolvasott dolgokat a kikövetkeztetettektől.
+- **Nem vektorindex.** Nincsenek beágyazások, nincs vektortár: egy valódi gráf, amelyet bejár. Tegyen fel egy kérdést, kövesse nyomon a két dolog közötti utat, vagy magyaráztasson el egy fogalmat.
 
 > [!NOTE]
-> **Szeretnéd mindig bekapcsolva?** A [Graphify Cloud](https://app.graphify.com/login) a teljes SDLC-den át élőben tartja a gráfot: monorepo- és repók közötti támogatás, formális verifikáció, valamint kódellenőrzés az SDLC madártávlati nézetével, továbbá konnektorok a Sentryhez, Jirához és másokhoz, hogy az incidensek és a jegyek ugyanabban a gráfban legyenek, mint a kódod. **[Indíts ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon](https://app.graphify.com/login)**.
+> **Szeretné ezt mindig aktívan?** A [Graphify Cloud](https://app.graphify.com/login) a teljes SDLC-jén át élőben tartja a gráfot: monorepo- és repository-közi támogatás, formális verifikáció, valamint kódellenőrzés madártávlatból az SDLC-jéről, továbbá konnektorok a Sentryhez, Jirához és másokhoz, hogy az incidensek és jegyek ugyanabban a gráfban legyenek, mint a kódja. **[Indítson ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon](https://app.graphify.com/login)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
 </p>
 <p align="center">
-  <em>A FastAPI kódbázisa a graphify által feltérképezve. Minden csomópont egy fogalom, a színek az észlelt közösségek, és az egész kattintható a graph.html-ben.</em>
+  <em>A graphify által feltérképezett FastAPI-kódbázis. Minden csomópont egy fogalom, a színek az észlelt közösségek, és az egész kattintható a graph.html fájlban.</em>
 </p>
 
-**Kezdés** (30 másodperc):
+**Kezdés** (30 másodperc). Python 3.10+ és uv (vagy pipx) szükséges:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
-Majd az AI-asszisztensedben:
+Majd az AI-asszisztensében:
 
 ```
 /graphify .
 ```
 
-Ennyi. **Három fájlt** kapsz:
+Ennyi az egész. **Három fájlt** kap:
 
 ```
 graphify-out/
@@ -69,35 +69,21 @@ graphify-out/
 └── graph.json       the full graph: query it anytime without re-reading your files
 ```
 
-A megőrzött gráf tartalmazza a `graph.schema_version` mezőt, hogy az
-integrációk észlelni tudják a nem kompatibilis formátumváltozásokat, valamint a
-`graph.graphify_version` mezőt, amely azonosítja az azt előállító Graphify kiadást.
+A megőrzött gráf tartalmazza a `graph.schema_version` mezőt, hogy az integrációk
+észlelhessék a nem kompatibilis formátumváltozásokat, valamint a `graph.graphify_version`
+mezőt, amely azonosítja az azt előállító Graphify-kiadást.
 
-**Működik ezekben:** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot és még 15+ másban: [válaszd ki a platformodat](#install).
-
----
-
-## Dokumentáció
-
-A teljes útmutatók és referencia itt élnek: **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Gyors kezdés](https://docs.graphify.com/quickstart)**: építsd meg az első gráfodat
-- **[CLI-referencia](https://docs.graphify.com/reference/overview)**: minden parancs és kapcsoló
-- **[Tegyél fel jobb gráf-kérdéseket](https://docs.graphify.com/guides/querying)**: lekérdezési minták
-- **[Konfiguráció](https://docs.graphify.com/reference/configuration)**: környezeti változók és hangolás
-- **[Támogatott bemenetek](https://docs.graphify.com/concepts/supported-inputs)**: nyelvek és fájltípusok
-- **[Csapatmunkafolyamatok](https://docs.graphify.com/guides/team-workflows)** és **[PR-ellenőrzés](https://docs.graphify.com/guides/pull-requests)**
-- **[Hibaelhárítás](https://docs.graphify.com/troubleshooting)** és **[Hogyan működik](https://docs.graphify.com/concepts/architecture)**
+**Egy telepítés, bármely asszisztens, bármely operációs rendszer.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot és több mint 20 további, macOS, Linux és Windows rendszeren: [válassza ki a platformját](#install).
 
 ---
 
-## Nézd meg működés közben
+## See it in action
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/demo-path.svg" alt="graphify path query: a terminal asks for the shortest path between FastAPI and ModelField, and the answer lights up hop by hop across the knowledge graph" width="900">
 </p>
 
-Miután a gráf felépült, lekérdezed, ahelyett hogy fájlokat olvasnál. Valódi kimenet, a graphify a fent látható FastAPI kódbázison futtatva:
+Miután a gráf elkészült, azt lekérdezi ahelyett, hogy fájlokat olvasna. Valódi kimenet, a graphify a fent látható FastAPI-kódbázison futtatva:
 
 ```text
 $ graphify explain "APIRouter"
@@ -118,50 +104,64 @@ Shortest path (3 hops):
   FastAPI --uses--> DefaultPlaceholder <--references-- get_request_handler() --references--> ModelField
 ```
 
-Minden él hordoz egy **megbízhatósági címkét** (`EXTRACTED` = kifejezetten a forrásban, `INFERRED` = feloldással levezetve), így meg tudod különböztetni, mit olvastak ki közvetlenül, és mit következtettek ki. A `graphify query "<question>"` egy hatókörbe zárt részgráfot ad vissza egy köznyelvi kérdésre, a `graphify path A B` pedig nyomon követi, hogyan kapcsolódik össze bármely két dolog.
+Minden él **megbízhatósági címkét** hordoz (`EXTRACTED` = a forrásban explicit, `INFERRED` = feloldással származtatott), így meg tudja különböztetni a közvetlenül kiolvasott dolgokat a kikövetkeztetettektől. A `graphify query "<question>"` egy természetes nyelvű kérdéshez tartozó szűkített részgráfot ad vissza, a `graphify path A B` pedig nyomon követi, hogyan kapcsolódik össze bármely két dolog.
 
 ---
 
-## Mit csinál
+## What it does
 
-Amit azonnal, dobozból megkapsz:
+Amit alapból kap:
 
-| Képesség | Amit kapsz |
+| Képesség | Amit kap |
 |---|---|
-| **Istencsomópontok (god nodes)** | A legtöbb kapcsolattal rendelkező fogalmak, így látod, min folyik át minden |
-| **Közösségek** | A gráf alrendszerekre osztva (Leiden), LLM nélküli címkékkel |
-| **Fájlok közötti kapcsolatok** | `calls` / `imports` / `inherits` / `mixes_in` feloldva ~40 nyelven át tree-sitter AST segítségével |
-| **Lekérdezés, útvonal, magyarázat** | Tegyél fel kérdést, kövesd az útvonalat két dolog között, vagy magyaráztass el egy fogalmat, mindezt a `graph.json`-nal szemben |
-| **Indoklás + dokumentumhivatkozások** | A `# NOTE:` / `# WHY:` megjegyzések és az ADR/RFC-hivatkozások első osztályú, a kódhoz kapcsolt csomópontokká válnak |
-| **A kódon túl** | A dokumentáció, PDF-ek, képek és videó/audió mind ugyanabba a gráfba térképeződik |
-| **Helyben először** | A kódot helyben elemzi a tree-sitter (LLM nélkül, semmi sem hagyja el a géped); csak a dokumentumokon/médián végzett szemantikai feldolgozás hív backendet, és csak ha beállítasz egyet |
+| **God nodes** | A legtöbb kapcsolattal rendelkező fogalmak, így látja, hogy min folyik keresztül minden |
+| **Communities** | A gráf alrendszerekre bontva (Leiden), LLM-mentes címkékkel |
+| **Fájlközi hivatkozások** | `calls` / `imports` / `inherits` / `mixes_in` feloldva ~40 nyelven át a tree-sitter AST segítségével |
+| **Query, path, explain** | Tegyen fel egy kérdést, kövesse nyomon a két dolog közötti utat, vagy magyaráztasson el egy fogalmat, mindezt a `graph.json` ellenében |
+| **Indoklás + dokumentumhivatkozások** | A `# NOTE:` / `# WHY:` megjegyzések és az ADR/RFC-hivatkozások elsőrangú csomópontokká válnak, amelyek a kódhoz kapcsolódnak |
+| **A kódon túl** | A dokumentumok, PDF-ek, képek és videó/hang mind ugyanabba a gráfba képeződnek le |
+| **Local-first** | A kódot lokálisan elemzi a tree-sitter (nincs LLM, semmi sem hagyja el a gépét); csak a dokumentumokon/médián végzett szemantikai futtatás hív meg egy backendet, és csak akkor, ha beállít egyet |
 
 > [!TIP]
-> Sok repón vagy egy monorepón futtatod? A [Graphify Cloud](https://app.graphify.com/login) folyamatosan végzi, és 80%-kal csökkenti az ügynökök token-költését, repók közötti kapcsolatokkal, az egész SDLC-re kiterjedő kódellenőrzéssel, formális verifikációval és Sentry/Jira konnektorokkal. [Indíts ingyenes 14 napos próbaidőszakot &rarr;](https://app.graphify.com/login)
+> Sok repón vagy egy monorepón át futtatja ezt? A [Graphify Cloud](https://app.graphify.com/login) folyamatosan végzi, és 80%-kal csökkenti az ügynökök tokenköltségét, repository-közi hivatkozásokkal, SDLC-szintű kódellenőrzéssel, formális verifikációval és Sentry/Jira konnektorokkal. [Indítson ingyenes 14 napos próbaidőszakot &rarr;](https://app.graphify.com/login)
 
 ---
 
-## Benchmarkok
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
-| Benchmark | Metrika | graphify | Mezőny |
+| Benchmark | Metrika | graphify | Mező |
 |---|---|---|---|
 | LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
 | LOCOMO (n=300) | QA accuracy | 45.3% | supermemory 49.7%, mem0 27.3% |
-| LongMemEval-S (n=50) | QA accuracy | **76%** | holtversenyben a dense RAG-gal |
-| ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read alapérték 70.8% |
-| Graph build | LLM credits | **0** | tokenenként a legtöbb rendszernél |
+| LongMemEval-S (n=50) | QA accuracy | **76%** | holtverseny a dense RAG-gal |
+| ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
+| Graph build | LLM credits | **0** | a legtöbb rendszernél tokenenként |
 
-Minden rendszer ugyanazon a harness-en futott, ugyanazzal a modellel és költségkeretekkel, egy bíró által pontozva, akit vakon validáltak egy második bíróval szemben (90.6%-os egyezés, Cohen-féle kappa 0.81). A teljes, rendszerenkénti táblázatok, a kódintelligencia-eredmény és a reprodukciós parancsok: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+Minden rendszer ugyanazon a harness-en futott, ugyanazzal a modellel és költségkeretekkel, egy olyan bíró által pontozva, amelyet egy második bíróval szemben vakon validáltak (90.6% egyezés, Cohen-féle kappa 0.81). Teljes rendszerenkénti táblázatok, a kód-intelligencia eredmény és a reprodukciós parancsok: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
 
 ---
 
-## Előfeltételek
+## Documentation
+
+A teljes útmutatók és a referencia itt található: **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Quickstart](https://docs.graphify.com/quickstart)**: építse fel az első gráfját
+- **[CLI reference](https://docs.graphify.com/reference/overview)**: minden parancs és flag
+- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: lekérdezési minták
+- **[Configuration](https://docs.graphify.com/reference/configuration)**: környezeti változók és finomhangolás
+- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: nyelvek és fájltípusok
+- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** és **[PR review](https://docs.graphify.com/guides/pull-requests)**
+- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** és **[How it works](https://docs.graphify.com/concepts/architecture)**
+
+---
+
+## Prerequisites
 
 | Követelmény | Minimum | Ellenőrzés | Telepítés |
 |---|---|---|---|
 | Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
-| uv *(ajánlott)* | bármi | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| pipx *(alternatíva)* | bármi | `pipx --version` | `pip install pipx` |
+| uv *(ajánlott)* | bármely | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| pipx *(alternatíva)* | bármely | `pipx --version` | `pip install pipx` |
 
 **macOS gyors telepítés (Homebrew):**
 ```bash
@@ -185,54 +185,47 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## Install
 
 > [!IMPORTANT]
-> **Hivatalos csomag:** A PyPI-csomag a `graphifyy` (dupla y). A PyPI-n lévő többi `graphify*` csomag nem kapcsolódik hozzá. A CLI-parancs továbbra is `graphify`.
+> **Hivatalos csomag:** A PyPI-csomag a `graphifyy` (dupla y). A PyPI egyéb `graphify*` csomagjai nem kapcsolódnak hozzá. A CLI-parancs továbbra is `graphify`.
 
-A hivatalos forrás-repó a [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
+A hivatalos forrás-repository a [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**1. lépés: telepítsd a csomagot:**
+A kétparancsos gyorsindító e README tetején található. Ez a szakasz a telepítési módszereket, a projekt-hatókörű telepítéseket és minden támogatott platformot ismertet.
 
-```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
-```
-
-**2. lépés: regisztráld a skillt az AI-asszisztensednél:**
+**Telepítési módszerek** (válasszon egyet):
 
 ```bash
-graphify install
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-Ennyi. Nyisd meg az AI-asszisztensedet, és írd be: `/graphify .`
+Majd futtassa egyszer a `graphify install` parancsot. Felismeri, melyik asszisztenst használja, és regisztrálja a skillt, így nincs asszisztensenkénti beállítás. Nyissa meg az AI-asszisztensét, és írja be: `/graphify .`
 
-Ha az asszisztens-skillt az aktuális repóba szeretnéd telepíteni a felhasználói
-profilod helyett, add hozzá a `--project` kapcsolót:
+Ha az asszisztens-skillt a felhasználói profilja helyett az aktuális
+repository-ba szeretné telepíteni, adja hozzá a `--project` kapcsolót:
 
 ```bash
 graphify install --project
 graphify install --project --platform codex
 ```
 
-A projekt hatókörű telepítések az aktuális könyvtárba írnak, például
-`.claude/skills/graphify/SKILL.md` vagy `.agents/skills/graphify/SKILL.md` (plusz
-egy `references/` sidecar, amelyet a skill igény szerint tölt be), és
-kiírnak egy `git add` tippet a commitolható fájlokhoz.
-A projekt hatókörű telepítést támogató platformspecifikus parancsok ugyanezt a kapcsolót fogadják el,
+A projekt-hatókörű telepítések az aktuális könyvtárba írnak, például
+`.claude/skills/graphify/SKILL.md` vagy `.agents/skills/graphify/SKILL.md` (plusz egy
+`references/` kiegészítő, amelyet a skill igény szerint tölt be), és
+`git add` tippet írnak ki a commitolható fájlokhoz.
+A projekt-hatókörű telepítéseket támogató platformspecifikus parancsok ugyanazt a kapcsolót fogadják el,
 például `graphify claude install --project` vagy `graphify codex install --project`.
 
 > [!TIP]
-> `command not found` hibába, Mac/Windows-os `pip`-problémába, PowerShell-idézőjelezésbe, `uvx`-használatba, git-hook PATH-furcsaságokba vagy strict módba ütközöl? Lásd: **[Telepítés](https://docs.graphify.com/installation)** és **[Hibaelhárítás](https://docs.graphify.com/troubleshooting)**.
+> `command not found` hibába, egy Mac/Windows-on jelentkező `pip`-problémába, PowerShell-idézőjelezésbe, `uvx`-használatba, git-hook PATH-furcsaságokba vagy strict módba ütközik? Lásd: **[Installation](https://docs.graphify.com/installation)** és **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
 <details>
-<summary><b>Válaszd ki a platformodat</b> (20+ asszisztens, kattints a kibontáshoz)</summary>
+<summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
 
 | Platform | Telepítési parancs |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install` (automatikusan észlelve) vagy `graphify install --platform windows` |
+| Claude Code (Windows) | `graphify install` (automatikusan felismerve) vagy `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -248,94 +241,103 @@ például `graphify claude install --project` vagy `graphify codex install --pro
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
-| Agent Skills (keretrendszerek közötti) | `graphify install --platform agents` (alias `--platform skills`) |
+| Agent Skills (keretrendszer-független) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plusz `graphify pi guard install` a natív guardhoz |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-A Codex-felhasználóknak a párhuzamos kinyeréshez a `~/.codex/config.toml` fájlban a `[features]` alatt `multi_agent = true` is kell. A CodeBuddy ugyanazt az Agent eszköz- és PreToolUse hook-mechanizmust használja, mint a Claude Code. A Factory Droid a `Task` eszközt használja a párhuzamos subagent-kiosztáshoz. Az OpenClaw és az Aider szekvenciális kinyerést használ (a párhuzamos ügynöktámogatás ezeken a platformokon még korai fázisban van). A Trae az Agent eszközt használja a párhuzamos subagent-kiosztáshoz, és **nem** támogatja a `PreToolUse` hookokat, így az AGENTS.md a mindig bekapcsolt mechanizmus.
+A Codex-felhasználóknak a párhuzamos kinyeréshez `multi_agent = true` is szükséges a `~/.codex/config.toml` fájl `[features]` szakaszában. A CodeBuddy ugyanazt az Agent eszközt és PreToolUse hook mechanizmust használja, mint a Claude Code. A Factory Droid a `Task` eszközt használja a párhuzamos szubügynök-küldéshez. Az OpenClaw és az Aider szekvenciális kinyerést használ (a párhuzamos ügynöktámogatás ezeken a platformokon még korai stádiumban van). A Trae az Agent eszközt használja a párhuzamos szubügynök-küldéshez, és **nem** támogatja a `PreToolUse` hookokat, ezért az AGENTS.md a mindig aktív mechanizmus.
 
-A `--platform agents` (alias `--platform skills`) az általános, keretrendszerek közötti [Agent-Skills](https://github.com/anthropics/skills) helyeket célozza: a specifikáció felhasználó-globális `~/.agents/skills/` helyét (amelyet az `npx skills` és a specifikációnak megfelelő keretrendszerek olvasnak) globális telepítéshez, és a `./.agents/skills/` helyet projekt (`--project`) telepítéshez. A puszta `graphify install` szándékosan egyplatformos marad (Claude Code): használd a nevesített `agents` platformot, ha azt szeretnéd, hogy a skillt bármely keretrendszer felfedezze, amely a `.agents/skills`-t olvassa.
+A `--platform agents` (alias `--platform skills`) az általános, keretrendszer-független [Agent-Skills](https://github.com/anthropics/skills) helyeket célozza: a specifikáció felhasználó-globális `~/.agents/skills/` helyét (amelyet az `npx skills` és a specifikációnak megfelelő keretrendszerek olvasnak) a globális telepítéshez, és a `./.agents/skills/` helyet a projekt- (`--project`) telepítéshez. A puszta `graphify install` szándékosan egyplatformos marad (Claude Code): használja a megnevezett `agents` platformot, ha azt szeretné, hogy a skillt bármely keretrendszer felfedezze, amely a `.agents/skills` helyet olvassa.
+
+Pinek nincs `PreToolUse` hookja, ezért a `graphify pi guard install` egy natív Pi-bővítményt regisztrál (a Pi saját `pi install <package directory>` parancsán keresztül), amely a telepített `graphify hook-guard`-ot futtatja a Pi `read`, `grep`, `find` és keresés jellegű `bash` hívásai előtt. A friss/elavult gráfdöntések és a `GRAPHIFY_HOOK_STRICT=1` munkamenetenként egyszeri indexelt-olvasás elutasítása ugyanabból a házirendből származik, így a Pi megfelel a Claude Code hook-viselkedésének; az útmutatás egy `<system-reminder source="graphify">` irányító üzenetként érkezik. Pi 0.58.4 vagy újabb szükséges hozzá: a korábbi verziók megengedték, hogy egy irányító üzenet kihagyja egy párhuzamos eszközhívás-köteg hátralévő részét. A csomag a Graphify-telepítésen belül érkezik, ezért telepítse a Graphify-t tartósan (`uv tool install graphifyy` vagy `pipx install graphifyy`, nem `uvx`), indítsa újra a Pit telepítés vagy frissítés után, és távolítsa el a `graphify pi guard uninstall` paranccsal. Csak a lokális fájlcélokat vizsgálja; a hooknak a `graphify`-ra van szüksége egy abszolút, projekten kívüli `PATH`-bejegyzésben, két másodpercre és 256 KiB bemenetre/64 KiB kimenetre korlátozott hívás, és hiba esetén nyitva marad (fail open). Ugyanez a csomag betöltődik az [Oh My Pi](https://github.com/can1357/oh-my-pi) rendszerben is: `omp plugin install "$(graphify pi guard path)"`. A regisztrált útvonal tartalmazza a Python verzióját és a venv-et, ezért futtassa újra a `graphify pi guard install` parancsot bármelyik megváltoztatása után, és távolítsa el a régi bejegyzést a `pi remove <old path>` paranccsal.
 
 > A Codex a `$graphify` parancsot használja a `/graphify` helyett.
 
 </details>
 
 <details>
-<summary><b>Opcionális kiegészítők</b> (csak azt telepítsd, amire szükséged van)</summary>
+<summary><b>Optional extras</b> (install only what you need)</summary>
 
-| Kiegészítő | Mit ad hozzá | Telepítés |
+| Extra | Mit ad hozzá | Telepítés |
 |---|---|---|
 | `pdf` | PDF-kinyerés | `uv tool install "graphifyy[pdf]"` |
 | `office` | `.docx` és `.xlsx` támogatás | `uv tool install "graphifyy[office]"` |
 | `google` | Google Sheets megjelenítés | `uv tool install "graphifyy[google]"` |
-| `video` | Videó/audió átírás (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
-| `mcp` | MCP stdio szerver | `uv tool install "graphifyy[mcp]"` |
-| `neo4j` | Neo4j push támogatás | `uv tool install "graphifyy[neo4j]"` |
-| `falkordb` | FalkorDB push támogatás | `uv tool install "graphifyy[falkordb]"` |
-| `svg` | SVG gráf-export | `uv tool install "graphifyy[svg]"` |
+| `video` | Videó-/hangátirat (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
+| `mcp` | MCP stdio-kiszolgáló | `uv tool install "graphifyy[mcp]"` |
+| `neo4j` | Neo4j push-támogatás | `uv tool install "graphifyy[neo4j]"` |
+| `falkordb` | FalkorDB push-támogatás | `uv tool install "graphifyy[falkordb]"` |
+| `svg` | SVG-gráfexport | `uv tool install "graphifyy[svg]"` |
 | `leiden` | Leiden közösségészlelés (graspologic Python < 3.13 esetén; natív backend 3.13+ esetén) | `uv tool install "graphifyy[leiden]"` |
-| `ollama` | Ollama helyi következtetés | `uv tool install "graphifyy[ollama]"` |
+| `ollama` | Ollama helyi inferencia | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-kompatibilis API-k | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, az `ANTHROPIC_API_KEY`-t használja) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (IAM-et használ, nincs API-kulcs) | `uv tool install "graphifyy[bedrock]"` |
-| `azure` | Azure OpenAI Service (`--backend azure`, az `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`-ot használja) | `uv tool install "graphifyy[openai]"` |
-| `sql` | SQL-séma kinyerése | `uv tool install "graphifyy[sql]"` |
+| `azure` | Azure OpenAI Service (`--backend azure`, az `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` értékeket használja) | `uv tool install "graphifyy[openai]"` |
+| `sql` | SQL-sémakinyerés | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Élő PostgreSQL-introspekció (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
-| `dm` | BYOND DreamMaker `.dm`/`.dme` AST-kinyerés (C-fordítót + `python3-dev`-et igényelhet, ha nincs a platformodhoz illő wheel) | `uv tool install "graphifyy[dm]"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST-kinyerés (szükség lehet C-fordítóra + `python3-dev`-re, ha egyetlen wheel sem illik a platformjához) | `uv tool install "graphifyy[dm]"` |
 | `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST-kinyerés | `uv tool install "graphifyy[terraform]"` |
-| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST-kinyerés (pontosabb `calls`/`inherits` élek; hiánya esetén regex-kinyerőre vált vissza) | `uv tool install "graphifyy[pascal]"` |
+| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST-kinyerés (pontosabb `calls`/`inherits` élek; hiányában egy regex-alapú kinyerőre vált) | `uv tool install "graphifyy[pascal]"` |
 | `ocaml` | OCaml `.ml`/`.mli` AST-kinyerés | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST-kinyerés | `uv tool install "graphifyy[commonlisp]"` |
-| `robot` | Robot Framework `.robot`/`.resource` kinyerés (suite-ok, tesztesetek, kulcsszavak, kulcsszóhívási és resource/library import élek) | `uv tool install "graphifyy[robot]"` |
+| `robot` | Robot Framework `.robot`/`.resource` kinyerés (suite-ok, tesztesetek, kulcsszavak, kulcsszóhívási és resource-/library-import élek) | `uv tool install "graphifyy[robot]"` |
 | `chinese` | Kínai lekérdezés-szegmentálás (jieba) | `uv tool install "graphifyy[chinese]"` |
-| `all` | Minden fenti | `uv tool install "graphifyy[all]"` |
+| `all` | Mindent a fentiekből | `uv tool install "graphifyy[all]"` |
 
 </details>
 
 ---
 
-## Vedd rá az asszisztensed, hogy mindig a gráfot használja
+## Make your assistant always use the graph
 
-Futtasd ezt egyszer a projektedben a gráf felépítése után:
+Futtassa ezt egyszer a projektjében, miután felépített egy gráfot:
 
-Futtasd egyszer a projektedben a `graphify <platform> install` parancsot, például `graphify claude install` vagy `graphify codex install` (vagy `graphify install --platform <name>`).
+Futtassa egyszer a `graphify <platform> install` parancsot a projektjében, például `graphify claude install` vagy `graphify codex install` (vagy `graphify install --platform <name>`).
 
-Ez egy kis konfigurációs fájlt ír ki, amely azt mondja az asszisztensednek, hogy a kódbázissal kapcsolatos kérdésekhez konzultáljon a tudásgráffal, és részesítse előnyben a hatókörbe zárt lekérdezéseket, mint a `graphify query "<question>"`, a teljes jelentés olvasása vagy a nyers fájlok grepelése helyett.
+Ez egy kis konfigurációs fájlt ír ki, amely arra utasítja az asszisztensét, hogy a kódbázissal kapcsolatos kérdésekhez a tudásgráfot konzultálja, a szűkített lekérdezéseket, mint a `graphify query "<question>"`, előnyben részesítve a teljes jelentés olvasásával vagy a nyers fájlok grep-elésével szemben.
 
-- **Hook-platformok** (Claude Code, Gemini CLI): egy hook automatikusan elsül a keresésszerű eszközhívások előtt (és a Claude Code-on a forrásfájlok egyenkénti olvasása előtt a Read/Glob eszközökkel), és a gráf-útvonal felé tereli az asszisztensed.
-- **Utasításfájl-platformok** (Codex, OpenCode, Cursor stb.): a tartós utasításfájlok (`AGENTS.md`, `.cursor/rules/` stb.) ugyanazt a „lekérdezés először” iránymutatást adják.
+- **Hook-platformok** (Claude Code, Gemini CLI): egy hook automatikusan elindul a keresés jellegű eszközhívások előtt (és Claude Code esetén, mielőtt a forrásfájlokat egyenként beolvasná a Read/Glob eszközökkel), és az asszisztensét a gráf felé tereli.
+- **Utasításfájl-platformok** (Codex, OpenCode, Cursor stb.): a perzisztens utasításfájlok (`AGENTS.md`, `.cursor/rules/` stb.) ugyanazt a lekérdezés-első útmutatást nyújtják.
 
 A `GRAPH_REPORT.md` továbbra is elérhető a széles körű architektúra-áttekintéshez.
 
-**A CodeBuddy** ugyanazt a két dolgot teszi, mint a Claude Code: egy `CODEBUDDY.md` szakaszt ír ki, amely azt mondja a CodeBuddynak, hogy az architektúra-kérdések megválaszolása előtt olvassa el a `graphify-out/GRAPH_REPORT.md`-t, és telepít `PreToolUse` hookokat (`.codebuddy/settings.json`), amelyek a Bash keresőparancsok és fájlolvasások előtt sülnek el, és a `graphify query` felé terelnek.
+Hogy pontosan mely fájlokat írja ki az egyes platformok (a CodeBuddy `CODEBUDDY.md` + `PreToolUse` hookjai, a Codex `AGENTS.md`-je, a Kilo natív `.kilo` beépülője, a Cursor `alwaysApply` szabálya és így tovább), azt a **[Always-on setup](https://docs.graphify.com/guides/always-on)** ismerteti.
 
-**A Codex** az `AGENTS.md`-be ír, ami ezen a platformon ténylegesen hordozza a mindig bekapcsolt gráf-iránymutatást. A `graphify codex install` regisztrál egy `PreToolUse` hookot is a `.codex/hooks.json`-ban (`graphify hook-check`), de ez a bejegyzés szándékosan **no-op**: a Codex Desktop elutasítja a `hookSpecificOutput.additionalContext`-et a `PreToolUse`-on, így egy ott kibocsátott terelés megtörné a Bash eszközhívásokat. A Claude Code-dal ellentétben, ahol a hook (`graphify hook-guard`) végzi a terelést, a Codexen a hook elsül, és szándékosan nem csinál semmit, az `AGENTS.md` pedig a mindig bekapcsolt mechanizmus.
+A graphify egyszerre minden platformról való eltávolításához: `graphify uninstall` (adja hozzá a `--purge` kapcsolót a `graphify-out/` törléséhez is). Vagy használja a platformspecifikus parancsot (pl. `graphify claude uninstall`).
 
-**A Kilo Code** a Graphify skillt a `~/.config/kilo/skills/graphify/SKILL.md`-be telepíti, egy natív `/graphify` parancsot pedig a `~/.config/kilo/command/graphify.md`-be. A `graphify kilo install` kiír egy `AGENTS.md`-t is, valamint egy natív `tool.execute.before` plugint (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` vagy `.kilo/kilo.jsonc` regisztráció), így a Kilo ugyanazt a mindig bekapcsolt gráf-emlékeztető viselkedést kapja a natív `.kilo` konfiguráción keresztül.
+### CLI skills or MCP instructions?
 
-**A Cursor** a `.cursor/rules/graphify.mdc`-t írja ki `alwaysApply: true` beállítással, így a Cursor automatikusan minden beszélgetésbe beilleszti, hook nélkül.
+A `graphify install` által telepített utasítások és a Graphify MCP-kapcsolattal biztosított utasítások a gráf lekérdezésének különböző módjait írják le:
 
-A graphify eltávolításához egyszerre az összes platformról: `graphify uninstall` (add hozzá a `--purge`-öt a `graphify-out/` törléséhez is). Vagy használd a platformspecifikus parancsot (pl. `graphify claude uninstall`).
+| Beállítás | Használandó útmutatás | Lekérdezési hozzáférés |
+|---|---|---|
+| Helyi CLI és telepített asszisztens-skill | A `graphify install` által kiírt platformutasítások | Futtassa a `graphify query`, `graphify path` és `graphify explain` parancsokat a helyi gráf ellenében (alapértelmezés szerint `graphify-out/`). |
+| Csatlakoztatott Graphify MCP-kiszolgáló | A kapcsolat utasításai és az adott kiszolgáló által felsorolt eszközök | Hívja meg a felsorolt MCP-eszközöket az adott kapcsolat által kiszolgált gráf ellenében. Az eszköznevek és -leírások a kiszolgálóból származnak. |
 
----
+Mindkettő a szűkített gráflekérdezéseket ösztönzi a széles körű forráskeresések előtt. Válassza azokat az utasításokat, amelyek megfelelnek az asszisztense által ténylegesen elérhető eszközöknek; egyik blokk sem állapít meg univerzális elsőbbségi szabályt az asszisztense utasításfájljaira. Ha mindkét integrációt használja, állapítsa meg, melyik melyik gráfot kérdezi le, és válasszon egy elsődleges lekérdezési útvonalat ahelyett, hogy két feltétel nélküli utasításblokkot másolna az `AGENTS.md` fájlba.
 
-## Mi van a jelentésben
-
-A `GRAPH_REPORT.md` összefoglalja az istencsomópontokat, közösségeket és kulcsútvonalakat a széles körű architektúra-áttekintéshez. Hogyan épül fel a gráf, és mit tartalmaz: **[Hogyan működik a graphify](https://docs.graphify.com/concepts/architecture)**.
-
----
-
-## Milyen fájlokat kezel
-
-A graphify ~40 programozási nyelvet elemez helyben a tree-sitter AST-vel, és egy opcionális szemantikai feldolgozáson át térképezi a dokumentációt, PDF-eket, képeket és audiót/videót. Teljes lista: **[Támogatott bemenetek](https://docs.graphify.com/concepts/supported-inputs)**.
+A `graphify install` a helyi asszisztens-integrációt telepíti; nem hoz létre MCP-kapcsolatot. Egy MCP-kliensnek nem kell helyi CLI-lekérdezéseket futtatnia ahhoz, hogy a csatlakoztatott kiszolgálóját használja. Egy helyben üzemeltetett kiszolgálónak továbbra is szüksége van saját Graphify-telepítésre és gráfra, míg egy üzemeltetett kapcsolat olyan gráfot is kiszolgálhat, amely nincs jelen a kliens munkakönyvtárában. Ha a várt eszközök hiányoznak, ellenőrizze a megfelelő CLI-telepítést vagy MCP-kapcsolatot, ahelyett hogy a másik beállítás utasításait felcserélhetőnek tekintené.
 
 ---
 
-## Gyakori parancsok
+## What's in the report
+
+A `GRAPH_REPORT.md` összefoglalja a god node-okat, közösségeket és kulcsfontosságú utakat a széles körű architektúra-áttekintéshez. Hogyan épül fel a gráf, és mit tartalmaz: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+
+---
+
+## What files it handles: ~40 languages
+
+A graphify ~40 programozási nyelvet elemez lokálisan a tree-sitter AST segítségével, és a dokumentumokat, PDF-eket, képeket és hang-/videóanyagokat egy opcionális szemantikai futtatáson át képezi le. Teljes lista: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
+
+---
+
+## Common commands
 
 ```bash
 /graphify .                        # build graph for current folder
@@ -363,91 +365,110 @@ graphify prs --triage              # AI ranks your review queue (uses whatever b
 graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
 ```
 
-Lásd az alábbi [teljes parancsreferenciát](#full-command-reference).
+Lásd lentebb a [teljes parancsreferenciát](#full-command-reference).
 
 ---
 
-## Fájlok kihagyása
+## Ignoring files
 
-A graphify tiszteletben tartja a `.gitignore`-t, és támogatja a `--exclude` mintákat, valamint egy projektszintű `.graphifyignore`-t. Részletek: **[Konfiguráció](https://docs.graphify.com/reference/configuration)**.
+A graphify tiszteletben tartja a `.gitignore` fájlt, és támogatja a `--exclude` mintákat, valamint egy projekt `.graphifyignore` fájlt. Részletek: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
+
+## Project configuration
+
+Hozzon létre egy `.graphifyrc` fájlt a szkennelési gyökérben azokhoz a beállításokhoz, amelyek a projekthez tartoznak, nem pedig egyetlen futtatáshoz. Soronként egy `key=value`; a `#` karakterrel kezdődő sorok megjegyzések.
+
+**Nem egyértelmű kiterjesztések.** Egyes kiterjesztések különböző projektekben különböző nyelveket jelentenek: a `.inc` a pfSense-en PHP, egy Delphi-fában Pascal, máshol SQL vagy assembly; a `.h` C vagy C++; a `.m` Objective-C vagy MATLAB. A graphify-nak egyetlen globális alapértelmezést kell választania, és amikor rosszul választ, a fájl nem bukik el: rossz nyelvként elemzi, és egy maréknyi véletlenszerű csomópontot eredményez, így a gráf népesnek tűnik, miközben a valódi szimbólumok hiányoznak. Deklarálja, hogy a kiterjesztés mit jelent a repójában:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+A deklaráció végigfut az osztályozáson, a kinyerő kiválasztásán, a nyelvtanon és feloldáson, az importokon, a `graphify watch`-on és az AST-gyorsítótáron (egy más nyelven újraelemzett fájl soha nem használja fel újra a régi bejegyzést), és ugyanazt a `.graphifyrc` fájlt olvassa az `extract`, az `update`, a hookok, az MCP-kiszolgáló és a `/graphify` skill. Az elgépelést egyszer jelenti a stderr-en, és a szkennelés az alapértelmezésekkel folytatódik. Hogyan hatnak egymásra a deklarációk a gyorsítótárazással, az inkrementális újraépítésekkel és az import-feloldással: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
-## Csapatbeállítás
+## Team setup
 
-Commitold vagy oszd meg a gráfot, hogy az egész csapatod ugyanazt a kontextust kérdezze le, és ellenőrizd a pull requesteket gráf-kontextussal. Lásd: **[Oszd meg a kontextust a csapatoddal](https://docs.graphify.com/guides/team-workflows)** és **[Pull requestek ellenőrzése](https://docs.graphify.com/guides/pull-requests)**.
-
----
-
-## A gráf közvetlen használata
-
-Az AI-asszisztenseden túl kérdezd le a `graph.json`-t közvetlenül a CLI-ből a `graphify query`, `graphify path` és `graphify explain` parancsokkal. Lásd: **[Tegyél fel jobb gráf-kérdéseket](https://docs.graphify.com/guides/querying)** és a **[lekérdezés-referenciát](https://docs.graphify.com/reference/query)**.
+Commitolja vagy ossza meg a gráfot, hogy az egész csapata ugyanazt a kontextust kérdezze le, és ellenőrizze a pull requesteket gráfkontextussal. Lásd: **[Share context with your team](https://docs.graphify.com/guides/team-workflows)** és **[Review pull requests](https://docs.graphify.com/guides/pull-requests)**.
 
 ---
 
-## Környezeti változók
+## Using the graph directly
 
-A backendeket, API-kulcsokat, hook-viselkedést és hangolást környezeti változók vezérlik. Teljes táblázat: **[Konfiguráció](https://docs.graphify.com/reference/configuration)**.
+Az AI-asszisztensén túl a `graph.json` fájlt közvetlenül a CLI-ből is lekérdezheti a `graphify query`, `graphify path` és `graphify explain` parancsokkal. A több csomópontra illeszkedő nevet elutasítja, és a jelölteket felsorolja ahelyett, hogy találgatna. A szkriptek a kilépési kódból olvashatják ki az eredményt: `0` egy válasz, `3` egy nem egyértelmű név, `4` nincs illeszkedő csomópont. Lásd: **[Ask better graph questions](https://docs.graphify.com/guides/querying)** és a **[query reference](https://docs.graphify.com/reference/query)**.
 
 ---
 
-## Adatvédelem
+## Environment variables
 
-- **Kódfájlok**: helyben feldolgozva a tree-sitter segítségével. Semmi sem hagyja el a géped. Egy csak kódot tartalmazó korpusz nem igényel API-kulcsot: a `graphify extract` teljesen offline fut. Vegyes repón add hozzá a `--code-only`-t, hogy csak a kódot indexeld, és kihagyd a dokumentációt/PDF-eket/képeket, amelyekhez egyébként LLM kellene.
-- **Videó / audió**: helyben átírva a faster-whisper segítségével. Semmi sem hagyja el a géped.
-- **Dokumentáció, PDF-ek, képek**: az AI-asszisztensednek elküldve szemantikai kinyerésre (a `/graphify` skillen keresztül, azt a modellt használva, amelyen az IDE-munkameneted fut). A fej nélküli `graphify extract` ezek valamelyikét igényli: `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), egy futó Ollama-példány (`OLLAMA_BASE_URL`), AWS-hitelesítő adatok a szabványos szolgáltatóláncon át (Bedrock – nem kell API-kulcs, IAM-et használ), vagy a `claude` CLI-bináris (Claude Code – nem kell API-kulcs, a Claude-előfizetésedet használja). A `--dedup-llm` kapcsoló ugyanazt a kulcsot használja.
-- **Adatrezidencia**: a `graphify extract` automatikusan észleli, melyik szolgáltatót használja az alapján, hogy melyik API-kulcs van beállítva (prioritás: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Adatrezidencia-követelményekkel bíró kódhoz használd a `--backend ollama`-t (teljesen helyben), vagy adj át egy explicit `--backend` kapcsolót. A Kimi (`MOONSHOT_API_KEY`) a kínai Moonshot AI szerverekre irányít.
+A backendeket, API-kulcsokat, hook-viselkedést és finomhangolást környezeti változók vezérlik. Teljes táblázat: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
+---
+
+## Privacy
+
+- **Kódfájlok**: lokálisan feldolgozva a tree-sitter segítségével. Semmi sem hagyja el a gépét. Egy csak kódot tartalmazó korpuszhoz nincs szükség API-kulcsra: a `graphify extract` teljesen offline fut. Vegyes repo esetén adja hozzá a `--code-only` kapcsolót, hogy csak a kódot indexelje, és kihagyja a dokumentumokat/PDF-eket/képeket, amelyekhez egyébként LLM kellene.
+- **Videó / hang**: lokálisan átírva a faster-whisper segítségével. Semmi sem hagyja el a gépét.
+- **Dokumentumok, PDF-ek, képek**: szemantikai kinyerésre elküldve az AI-asszisztensének (a `/graphify` skillen keresztül, azzal a modellel, amelyet az IDE-munkamenete futtat). A fej nélküli `graphify extract` a következők egyikét igényli: `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), egy futó Ollama-példány (`OLLAMA_BASE_URL`), AWS-hitelesítő adatok a standard provider-láncon keresztül (Bedrock - nincs szükség API-kulcsra, IAM-et használ), vagy a `claude` CLI-bináris (Claude Code - nincs szükség API-kulcsra, az Ön Claude-előfizetését használja). A `--dedup-llm` kapcsoló ugyanazt a kulcsot használja.
+- **Adatrezidencia**: a `graphify extract` automatikusan felismeri, melyik providert használja, annak alapján, hogy melyik API-kulcs van beállítva (prioritás: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Adatrezidencia-követelményekkel rendelkező kód esetén használja a `--backend ollama` (teljesen lokális) beállítást, vagy adjon meg egy explicit `--backend` kapcsolót. A Kimi (`MOONSHOT_API_KEY`) a kínai Moonshot AI-kiszolgálókra irányít.
 - **Nincs telemetria**, nincs használatkövetés, nincs analitika.
-- **Lekérdezés-naplózás**: minden `graphify query`, `graphify path`, `graphify explain` és MCP `query_graph` hívás a `~/.cache/graphify-queries.log`-ba naplózódik JSON Lines formátumban (időbélyeg, kérdés, korpusz, visszaadott csomópontok, időtartam). A teljes részgráf-válaszok alapértelmezés szerint **nem** tárolódnak. Állítsd be a `GRAPHIFY_QUERY_LOG_DISABLE=1`-et a kikapcsoláshoz, vagy a `GRAPHIFY_QUERY_LOG=/dev/null`-t az elnémításhoz a kódút letiltása nélkül.
+- **Lekérdezés-naplózás**: minden `graphify query`, `graphify path`, `graphify explain` és MCP `query_graph` hívás a `~/.cache/graphify-queries.log` fájlba naplózódik JSON Lines formátumban (időbélyeg, kérdés, korpusz, visszaadott csomópontok, időtartam). A teljes részgráf-válaszok alapértelmezés szerint **nem** tárolódnak. Állítsa be a `GRAPHIFY_QUERY_LOG_DISABLE=1` értéket a kikapcsoláshoz, vagy a `GRAPHIFY_QUERY_LOG=/dev/null` értéket a kódút letiltása nélküli elnémításhoz.
 
 ---
 
-## Hibaelhárítás
+## Troubleshooting
 
-Gyakori telepítési és kinyerési problémák és azok megoldásai: **[Hibaelhárítás](https://docs.graphify.com/troubleshooting)**.
-
----
-
-## Teljes parancsreferencia
-
-Minden parancs és kapcsoló, példákkal: **[CLI-referencia](https://docs.graphify.com/reference/overview)**.
+Gyakori telepítési és kinyerési problémák és azok megoldásai: **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
 ---
 
-## Tudj meg többet
+## Full command reference
+
+Minden parancs és flag, példákkal: **[CLI reference](https://docs.graphify.com/reference/overview)**.
+
+---
+
+## Learn more
 
 - [docs.graphify.com](https://docs.graphify.com): teljes dokumentáció: útmutatók, parancsreferencia és integrációk
-- [Hogyan működik](../how-it-works.md): a kinyerési pipeline, közösségészlelés, megbízhatósági pontozás, benchmarkok
-- [ARCHITECTURE.md](../../ARCHITECTURE.md): modulbontás, hogyan adj hozzá egy nyelvet
-- [Opcionális integrációk](../docker-mcp-sqlite.md): Docker MCP Toolkit + SQLite
-- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): a könyv a graphify mögötti ötletekről, az architektúra elejétől a végéig
+- [How it works](../how-it-works.md): a kinyerési folyamat, közösségészlelés, megbízhatósági pontozás, benchmarkok
+- [ARCHITECTURE.md](../../ARCHITECTURE.md): modulbontás, hogyan adjunk hozzá egy nyelvet
+- [Optional integrations](../docker-mcp-sqlite.md): Docker MCP Toolkit + SQLite
+- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): a könyv a graphify mögötti ötletekről, az architektúráról elejétől a végéig
 
 ---
 
 ## Graphify Cloud
 
-A [**Graphify Cloud**](https://app.graphify.com/login) a graphify tetejére épített, mindig bekapcsolt réteg. Ahelyett, hogy mappánként igény szerint újraépítenél egy gráfot, egyetlen élő gráfot tart fenn a teljes szoftverfejlesztési életciklusodon át:
+A [**Graphify Cloud**](https://app.graphify.com/login) a graphify tetejére épülő, mindig aktív réteg. Ahelyett, hogy mappánként igény szerint újraépítene egy gráfot, egyetlen élő gráfot tart fenn a teljes szoftverfejlesztési életciklusán át:
 
-- **80%-kal kevesebb token**: a mindig bekapcsolt memória azt jelenti, hogy az ügynökeid nem olvassák és nem magyarázzák el újra a kódbázist minden munkamenetben.
-- **Monorepo és repók közötti**: egyetlen összekapcsolt gráf minden szolgáltatáson és repón át, nem mappánkénti gráf.
-- **Formális verifikáció**: ellenőrizd az architekturális és függőségi invariánsokat az élő gráffal szemben.
-- **Kódellenőrzés az SDLC madártávlati nézetével**: lásd, hogyan terjed tovább egy változás az egész rendszeren, mielőtt mergelsz.
-- **SDLC-konnektorok**: húzd be a Sentryt, Jirát és másokat, hogy az incidensek, jegyek és a kód egyetlen gráfban éljen.
-- **Mindig bekapcsolt**: folyamatosan frissül a háttérben a kódon, dokumentáción és megbeszéléseken át.
+- **80%-kal kevesebb token**: a mindig aktív memória azt jelenti, hogy az ügynökei minden munkamenetben abbahagyják a kódbázis újraolvasását és újramagyarázását.
+- **Monorepo és repository-közi**: egyetlen összekapcsolt gráf minden szolgáltatáson és repository-n át, nem mappánkénti gráf.
+- **Formális verifikáció**: architekturális és függőségi invariánsok ellenőrzése az élő gráf ellenében.
+- **Kódellenőrzés az SDLC madártávlati nézetével**: lássa, hogyan gyűrűzik végig egy változás az egész rendszeren, mielőtt mergelne.
+- **SDLC-konnektorok**: húzza be a Sentryt, Jirát és másokat, hogy az incidensek, jegyek és a kód egyetlen gráfban éljenek.
+- **Mindig aktív**: folyamatosan frissül a háttérben a kódon, dokumentumokon és megbeszéléseken át.
 
-**[Indíts ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon &rarr;](https://app.graphify.com/login)**
-
----
-
-## Hozzájárulás
-
-A hozzájárulásokat szívesen fogadjuk. Lásd a **[CONTRIBUTING.md](../../CONTRIBUTING.md)**-t a fejlesztői beállításhoz, a teszt- és CI-paritás parancsokhoz, a git-munkafolyamathoz, és ahhoz, ami erős hozzájárulást tesz (a kidolgozott példák és a kinyerési hibajelentések a leghasznosabbak). Architektúra és hogyan adj hozzá egy nyelvet: [ARCHITECTURE.md](../../ARCHITECTURE.md).
-
-Új vagy itt? Köszönj be a [Discordon](https://discord.gg/XDnKVpzdXB) vagy a [GitHub Discussionsön](https://github.com/Graphify-Labs/graphify/discussions).
+**[Indítson ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon &rarr;](https://app.graphify.com/login)**
 
 ---
 
-## Közreműködők
+## Contributing
+
+A hozzájárulásokat szívesen fogadjuk. A fejlesztési beállításért, a teszt- és CI-paritási parancsokért, a git-munkafolyamatért és azért, hogy mi tesz egy hozzájárulást erőssé (a kidolgozott példák és a kinyerési hibajelentések a leghasznosabbak), lásd: **[CONTRIBUTING.md](../../CONTRIBUTING.md)**. Architektúra és hogyan adjunk hozzá egy nyelvet: [ARCHITECTURE.md](../../ARCHITECTURE.md).
+
+Új itt? Köszönjön be a [Discordon](https://discord.gg/XDnKVpzdXB) vagy a [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions) felületen.
+
+---
+
+## Contributors
 
 <a href="https://github.com/Graphify-Labs/graphify/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
@@ -457,19 +478,19 @@ Készült a [contrib.rocks](https://contrib.rocks) segítségével.
 
 ---
 
-## Fordítások
+## Translations
 
-A README 32 nyelven érhető el. Használd a fájl tetején lévő nyelvváltót, hogy a sajátodon olvasd, vagy böngéssz a [`docs/translations/`](./) között. Egy fordítás javításához vagy új hozzáadásához nyiss egy pull requestet az ott lévő megfelelő fájl ellen.
-
----
-
-## Építés a graphify-ra
-
-Építesz valamit a graphify ökoszisztémájában? Ezt bátorítjuk. Ha a projekted a „graphify”-t használja a nevében (például `graphify-dashboard` vagy `graphify-action`), kérjük, adj hozzá egy rövid megjegyzést a README-dhez, amely tisztázza, hogy közösség által épített, és nem áll kapcsolatban a Graphify Labs-szal, illetve az nem támogatja. A „graphify” és a graphify logó a Graphify Labs védjegyei; kérjük, ne használd őket olyan módon, amely hivatalos státuszt sugall.
+A README 32 nyelven érhető el. Használja a fájl tetején lévő nyelvváltót, hogy a sajátján olvassa, vagy böngésszen a [`docs/translations/`](./) között. Egy fordítás javításához vagy új hozzáadásához nyisson egy pull requestet az ottani megfelelő fájl ellen.
 
 ---
 
-## Közösség és linkek
+## Building on graphify
+
+Épít valamit a graphify ökoszisztémában? Ezt bátorítjuk. Ha a projektje a nevében a „graphify” szót használja (például `graphify-dashboard` vagy `graphify-action`), kérjük, adjon egy rövid megjegyzést a README-jéhez, amely tisztázza, hogy közösségi fejlesztésű, és nem áll kapcsolatban a Graphify Labs-szel, és nem is támogatja azt. A „graphify” és a graphify logó a Graphify Labs védjegyei; kérjük, ne használja őket olyan módon, amely hivatalos státuszt sugall.
+
+---
+
+## Community and links
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>

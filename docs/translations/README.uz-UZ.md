@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
-  <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
   <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
@@ -28,39 +28,39 @@
 </p>
 
 <p align="center">
-  <b>Agent token xarajatini 80% ga kamaytiring.</b> Graphify Cloud: bu agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va rasmiy verifikatsiya orqali toʻgʻriligini isbotlaydigan doimo yoqilgan xotira. <a href="https://app.graphify.com/login"><b>14 kunlik bepul sinov muddatini boshlang &rarr;</b></a>
+  <b>Agent token sarfini 80% ga qisqartiring.</b> Graphify Cloud sizning agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va to'g'rilikni rasmiy verifikatsiya bilan isbotlaydigan doimiy yoniq xotiradir. <a href="https://app.graphify.com/login"><b>Bepul 14 kunlik sinovni boshlang &rarr;</b></a>
 </p>
 
-Sunʼiy intellektli kodlash yordamchingizda `/graphify` deb yozing, u butun loyihangizni (kod, hujjatlar, PDF-lar, rasmlar, videolar) fayllar boʻylab **grep qilish oʻrniga soʻrov yuborishingiz mumkin** boʻlgan **bilimlar grafigiga** moslashtiradi.
+AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujjatlar, PDF-lar, rasmlar, videolar) **bilim grafiga** aylantiradi, uni fayllarni grep qilish o'rniga **so'rov qilishingiz mumkin**.
 
-- **Kod xaritalari bepul, toʻliq mahalliy.** Kod tree-sitter AST bilan tahlil qilinadi: deterministik, LLM yoʻq, hech narsa mashinangizdan chiqmaydi. (Hujjatlar, PDF-lar, rasmlar va video semantik oʻtish uchun yordamchingizning modelidan yoki sozlangan API kalitidan foydalanadi.)
-- **Har bir qirra tushuntiriladi.** Har bir bogʻlanish `EXTRACTED` (manbada aniq koʻrsatilgan) yoki `INFERRED` (graphify tomonidan aniqlangan) deb belgilanadi, shuning uchun toʻgʻridan-toʻgʻri oʻqilganni xulosa qilinganidan ajrata olasiz.
-- **Bu vektor indeksi emas.** Hech qanday embedding yoʻq, vektor xotira yoʻq: siz kezib chiqadigan haqiqiy graf. Savol bering, ikki narsa oʻrtasidagi yoʻlni kuzating yoki bitta tushunchani tushuntiring.
+- **Kod bepul va to'liq lokal tarzda xaritalanadi.** Kod tree-sitter AST bilan tahlil qilinadi: deterministik, LLM yo'q, hech narsa qurilmangizdan chiqmaydi. (Hujjatlar, PDF-lar, rasmlar va video semantik o'tish uchun yordamchingizning modelidan yoki sozlangan API kalitidan foydalanadi.)
+- **Har bir qirra tushuntiriladi.** Har bir bog'lanish `EXTRACTED` (manbada aniq ko'rsatilgan) yoki `INFERRED` (graphify tomonidan aniqlangan) deb belgilanadi, shunday qilib to'g'ridan-to'g'ri o'qilgan narsani xulosa qilingan narsadan ajrata olasiz.
+- **Vektor indeksi emas.** Embedding yo'q, vektor ombori yo'q: siz kezib chiqadigan haqiqiy graf. Savol bering, ikki narsa o'rtasidagi yo'lni kuzating yoki bitta tushunchani tushuntiring.
 
 > [!NOTE]
-> **Buni doimo yoqilgan holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/login) grafikni butun SDLC davomida jonli saqlaydi: monorepo va repolar aro qoʻllab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ingizga qushqocha nigoh bilan kod koʻrigi, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafikda joylashadi. **[app.graphify.com da 14 kunlik bepul sinov muddatini boshlang](https://app.graphify.com/login)**.
+> **Buni doimiy yoniq holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/login) grafni butun SDLC bo'ylab jonli saqlaydi: monorepo va repolararo qo'llab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ga qush nigohi bilan kod ko'rib chiqish, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafda joylashadi. **[app.graphify.com da bepul 14 kunlik sinovni boshlang](https://app.graphify.com/login)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
 </p>
 <p align="center">
-  <em>graphify tomonidan moslashtirilgan FastAPI kod bazasi. Har bir tugun: tushuncha, ranglar: aniqlangan jamoalar va butun narsa graph.html da bosiladigan holatda.</em>
+  <em>graphify tomonidan xaritalangan FastAPI kod bazasi. Har bir tugun tushunchadir, ranglar aniqlangan jamoalardir, butun narsa esa graph.html da bosiladi.</em>
 </p>
 
-**Ishni boshlash** (30 soniya):
+**Ishni boshlang** (30 soniya). Python 3.10+ va uv (yoki pipx) talab qilinadi:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
-Keyin, sunʼiy intellektli yordamchingizda:
+Keyin, AI yordamchingizda:
 
 ```
 /graphify .
 ```
 
-Hammasi shu. Siz **uchta fayl** olasiz:
+Tamom. Siz **uchta fayl** olasiz:
 
 ```
 graphify-out/
@@ -69,35 +69,21 @@ graphify-out/
 └── graph.json       the full graph: query it anytime without re-reading your files
 ```
 
-Saqlangan graf integratsiyalar nomutanosib format oʻzgarishlarini aniqlay olishi
-uchun `graph.schema_version` ni, shuningdek uni yaratgan Graphify nashrini
-aniqlaydigan `graph.graphify_version` ni oʻz ichiga oladi.
+Saqlangan graf `graph.schema_version` ni o'z ichiga oladi, shunday qilib integratsiyalar
+mos kelmaydigan format o'zgarishlarini aniqlay oladi, hamda uni ishlab chiqargan
+Graphify relizini belgilaydigan `graph.graphify_version` ni.
 
-**Quyidagilarda ishlaydi:** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot va yana 15+: [platformangizni tanlang](#install).
-
----
-
-## Hujjatlar
-
-Toʻliq qoʻllanmalar va maʼlumotnoma **[docs.graphify.com](https://docs.graphify.com)** da joylashgan:
-
-- **[Tezkor boshlash](https://docs.graphify.com/quickstart)**: birinchi grafigingizni quring
-- **[CLI maʼlumotnomasi](https://docs.graphify.com/reference/overview)**: har bir buyruq va bayroq
-- **[Grafikka yaxshiroq savollar bering](https://docs.graphify.com/guides/querying)**: soʻrov andozalari
-- **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**: muhit oʻzgaruvchilari va sozlash
-- **[Qoʻllab-quvvatlanadigan kirishlar](https://docs.graphify.com/concepts/supported-inputs)**: tillar va fayl turlari
-- **[Jamoaviy ish jarayonlari](https://docs.graphify.com/guides/team-workflows)** va **[PR koʻrigi](https://docs.graphify.com/guides/pull-requests)**
-- **[Nosozliklarni bartaraf etish](https://docs.graphify.com/troubleshooting)** va **[Qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**
+**Bitta o'rnatish, istalgan yordamchi, istalgan OS.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot va yana 20+ tasi, macOS, Linux va Windows da: [platformangizni tanlang](#install).
 
 ---
 
-## Amalda koʻring
+## Amalda ko'ring
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/demo-path.svg" alt="graphify path query: a terminal asks for the shortest path between FastAPI and ModelField, and the answer lights up hop by hop across the knowledge graph" width="900">
 </p>
 
-Graf qurilgach, fayllarni oʻqish oʻrniga unga soʻrov yuborasiz. Haqiqiy chiqish, graphify yuqorida koʻrsatilgan FastAPI kod bazasida ishga tushirilgan:
+Graf qurilgach, uni fayllarni o'qish o'rniga so'rov qilasiz. Haqiqiy natija, yuqorida ko'rsatilgan FastAPI kod bazasida ishga tushirilgan graphify:
 
 ```text
 $ graphify explain "APIRouter"
@@ -118,57 +104,71 @@ Shortest path (3 hops):
   FastAPI --uses--> DefaultPlaceholder <--references-- get_request_handler() --references--> ModelField
 ```
 
-Har bir qirra **ishonch belgisini** oʻz ichiga oladi (`EXTRACTED` = manbada aniq koʻrsatilgan, `INFERRED` = rezolyutsiya orqali olingan), shuning uchun toʻgʻridan-toʻgʻri oʻqilganni xulosa qilinganidan ajrata olasiz. `graphify query "<question>"` oddiy tildagi savol uchun chegaralangan subgrafni qaytaradi, `graphify path A B` esa istalgan ikki narsaning qanday bogʻlanganini kuzatadi.
+Har bir qirra **ishonch yorlig'ini** olib yuradi (`EXTRACTED` = manbada aniq, `INFERRED` = aniqlash orqali kelib chiqqan), shunday qilib to'g'ridan-to'g'ri o'qilgan narsani xulosa qilingan narsadan ajrata olasiz. `graphify query "<question>"` oddiy tildagi savol uchun chegaralangan subgrafni qaytaradi, `graphify path A B` esa istalgan ikki narsaning qanday bog'lanishini kuzatadi.
 
 ---
 
 ## U nima qiladi
 
-Quticha ochilishi bilan oladigan narsalaringiz:
+Qutidan chiqib nima olasiz:
 
-| Imkoniyat | Nimaga ega boʻlasiz |
+| Imkoniyat | Nima olasiz |
 |---|---|
-| **Xudo tugunlari** | Eng koʻp bogʻlangan tushunchalar, shunda hamma narsa nima orqali oqishini koʻrasiz |
-| **Jamoalar** | Grafik quyi tizimlarga boʻlingan holda (Leiden), LLM-siz yorliqlar bilan |
-| **Fayllararo havolalar** | `calls` / `imports` / `inherits` / `mixes_in` tree-sitter AST orqali ~40 tilda aniqlanadi |
-| **Soʻrov, yoʻl, tushuntirish** | Savol bering, ikki narsa oʻrtasidagi yoʻlni kuzating yoki bitta tushunchani tushuntiring: hammasi `graph.json` asosida |
-| **Asos + hujjat havolalari** | `# NOTE:` / `# WHY:` izohlari va ADR/RFC iqtiboslari kodga bogʻlangan birinchi darajali tugunlarga aylanadi |
-| **Koddan tashqari** | Hujjatlar, PDF-lar, rasmlar va video/audio hammasi bir xil grafikga moslashtiriladi |
-| **Avvalo mahalliy** | Kod mahalliy ravishda tree-sitter bilan tahlil qilinadi (LLM yoʻq, hech narsa mashinangizdan chiqmaydi); faqat hujjatlar/media boʻyicha semantik oʻtish bekendga murojaat qiladi, va faqat siz uni sozlasangiz |
+| **Xudo tugunlar** | Eng ko'p bog'langan tushunchalar, shunday qilib hamma narsa nima orqali oqishini ko'rasiz |
+| **Jamoalar** | Graf quyi tizimlarga bo'lingan (Leiden), LLM-siz yorliqlar bilan |
+| **Fayllararo bog'lanishlar** | `calls` / `imports` / `inherits` / `mixes_in` ~40 tilda tree-sitter AST orqali aniqlanadi |
+| **Query, path, explain** | Savol bering, ikki narsa o'rtasidagi yo'lni kuzating yoki bitta tushunchani tushuntiring, barchasi `graph.json` ga nisbatan |
+| **Asos + hujjat havolalari** | `# NOTE:` / `# WHY:` izohlari va ADR/RFC iqtiboslari kodga bog'langan birinchi darajali tugunlarga aylanadi |
+| **Koddan tashqari** | Hujjatlar, PDF-lar, rasmlar va video/audio, barchasi bir xil grafga xaritalanadi |
+| **Avval lokal** | Kod lokal tarzda tree-sitter bilan tahlil qilinadi (LLM yo'q, hech narsa qurilmangizdan chiqmaydi); faqat hujjatlar/media ustidagi semantik o'tish backendga murojaat qiladi, va faqat siz uni sozlasangiz |
 
 > [!TIP]
-> Buni koʻplab repolarda yoki monorepoda ishga tushiryapsizmi? [Graphify Cloud](https://app.graphify.com/login) buni uzluksiz bajaradi va agent token xarajatini 80% ga kamaytiradi, repolar aro havolalar, SDLC boʻylab kod koʻrigi, rasmiy verifikatsiya va Sentry/Jira konnektorlari bilan. [14 kunlik bepul sinov muddatini boshlang &rarr;](https://app.graphify.com/login)
+> Buni ko'plab repolar yoki monorepo bo'ylab ishga tushiryapsizmi? [Graphify Cloud](https://app.graphify.com/login) buni uzluksiz bajaradi va agent token sarfini 80% ga qisqartiradi, repolararo bog'lanishlar, SDLC bo'ylab kod ko'rib chiqish, rasmiy verifikatsiya va Sentry/Jira konnektorlari bilan. [Bepul 14 kunlik sinovni boshlang &rarr;](https://app.graphify.com/login)
 
 ---
 
-## Benchmarklar
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
-| Benchmark | Metrika | graphify | Sohada |
+| Benchmark | Metrika | graphify | Soha |
 |---|---|---|---|
 | LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
 | LOCOMO (n=300) | QA aniqligi | 45.3% | supermemory 49.7%, mem0 27.3% |
 | LongMemEval-S (n=50) | QA aniqligi | **76%** | zich RAG bilan teng |
-| ERPNext vositalararo (n=6) | kalit-fakt qamrovi | **82.0%** | grep/read bazaviy koʻrsatkichi 70.8% |
-| Graf qurish | LLM kreditlari | **0** | koʻpchilik tizimlarda token boshiga |
+| ERPNext cross-tool (n=6) | asosiy-fakt qamrovi | **82.0%** | grep/read bazaviy ko'rsatkichi 70.8% |
+| Graf qurish | LLM kreditlari | **0** | ko'pchilik tizimlar uchun token asosida |
 
-Har bir tizim bir xil model va byudjetlar bilan bir xil harnesda ishladi, ikkinchi hakamga nisbatan koʻr-koʻrona tasdiqlangan hakam tomonidan baholandi (90.6% muvofiqlik, Koen kappasi 0.81). Toʻliq tizim boʻyicha jadvallar, kod-aql natijasi va qayta ishlab chiqarish buyruqlari: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+Har bir tizim bir xil model va byudjetlar bilan bir xil stendda ishladi, ikkinchi hakamga nisbatan ko'r-ko'rona tasdiqlangan hakam tomonidan baholandi (90.6% kelishuv, Cohen kappasi 0.81). To'liq har bir tizim bo'yicha jadvallar, kod-intellekti natijasi va takrorlash buyruqlari: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Hujjatlar
+
+To'liq qo'llanmalar va ma'lumotnoma **[docs.graphify.com](https://docs.graphify.com)** da joylashgan:
+
+- **[Tez boshlash](https://docs.graphify.com/quickstart)**: birinchi grafingizni quring
+- **[CLI ma'lumotnomasi](https://docs.graphify.com/reference/overview)**: har bir buyruq va bayroq
+- **[Yaxshiroq graf savollari bering](https://docs.graphify.com/guides/querying)**: so'rov namunalari
+- **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**: muhit o'zgaruvchilari va sozlash
+- **[Qo'llab-quvvatlanadigan kirishlar](https://docs.graphify.com/concepts/supported-inputs)**: tillar va fayl turlari
+- **[Jamoa ish oqimlari](https://docs.graphify.com/guides/team-workflows)** va **[PR ko'rib chiqish](https://docs.graphify.com/guides/pull-requests)**
+- **[Muammolarni bartaraf etish](https://docs.graphify.com/troubleshooting)** va **[Qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
 ## Dastlabki talablar
 
-| Talab | Minimum | Tekshirish | Oʻrnatish |
+| Talab | Minimum | Tekshirish | O'rnatish |
 |---|---|---|---|
 | Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(tavsiya etiladi)* | istalgan | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(muqobil)* | istalgan | `pipx --version` | `pip install pipx` |
 
-**macOS tezkor oʻrnatish (Homebrew):**
+**macOS tezkor o'rnatish (Homebrew):**
 ```bash
 brew install python@3.12 uv
 ```
 
-**Windows tezkor oʻrnatish:**
+**Windows tezkor o'rnatish:**
 ```powershell
 winget install astral-sh.uv
 ```
@@ -185,54 +185,47 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## Install
 
 > [!IMPORTANT]
-> **Rasmiy paket:** PyPI paketi `graphifyy` (ikkita y). PyPI dagi boshqa `graphify*` paketlar bogʻliq emas. CLI buyrugʻi hamon `graphify`.
+> **Rasmiy paket:** PyPI paketi `graphifyy` (ikki-y). PyPI dagi boshqa `graphify*` paketlari aloqador emas. CLI buyrug'i hamon `graphify`.
 
 Rasmiy manba repozitoriysi: [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**1-qadam: paketni oʻrnating:**
+Ikki buyruqli tez boshlash ushbu README ning yuqori qismida. Ushbu bo'lim o'rnatish usullari, loyiha doirasidagi o'rnatishlar va har bir qo'llab-quvvatlanadigan platformani qamrab oladi.
+
+**O'rnatish usullari** (birini tanlang):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**2-qadam: koʻnikmani sunʼiy intellektli yordamchingizda roʻyxatdan oʻtkazing:**
+Keyin `graphify install` ni bir marta ishga tushiring. U qaysi yordamchini ishlatishingizni aniqlaydi va mahoratni ro'yxatdan o'tkazadi, shunday qilib har bir yordamchi uchun alohida sozlash kerak emas. AI yordamchingizni oching va `/graphify .` deb yozing.
 
-```bash
-graphify install
-```
-
-Hammasi shu. Sunʼiy intellektli yordamchingizni oching va `/graphify .` deb yozing
-
-Yordamchi koʻnikmasini foydalanuvchi profilingiz oʻrniga joriy repozitoriyga
-oʻrnatish uchun `--project` qoʻshing:
+Yordamchi mahoratini foydalanuvchi profilingiz o'rniga joriy repozitoriyga
+o'rnatish uchun `--project` ni qo'shing:
 
 ```bash
 graphify install --project
 graphify install --project --platform codex
 ```
 
-Loyiha doirasidagi oʻrnatishlar joriy katalog ostiga yozadi, masalan
+Loyiha doirasidagi o'rnatishlar joriy katalog ostiga yoziladi, masalan
 `.claude/skills/graphify/SKILL.md` yoki `.agents/skills/graphify/SKILL.md` (shuningdek
-koʻnikma talab boʻyicha yuklaydigan `references/` yondosh fayli) va
-komit qilish mumkin boʻlgan fayllar uchun `git add` maslahatini chop etadi.
-Loyiha doirasidagi oʻrnatishlarni qoʻllab-quvvatlaydigan platformaga xos buyruqlar bir xil bayroqni qabul qiladi,
+mahorat talab bo'yicha yuklaydigan `references/` yon fayli), va
+kommit qilinishi mumkin bo'lgan fayllar uchun `git add` maslahatini chop etadi.
+Loyiha doirasidagi o'rnatishlarni qo'llab-quvvatlaydigan har bir platforma buyruqlari xuddi shu bayroqni qabul qiladi,
 masalan `graphify claude install --project` yoki `graphify codex install --project`.
 
 > [!TIP]
-> `command not found`, Mac/Windows dagi `pip` muammosi, PowerShell qoʻshtirnoqlari, `uvx` dan foydalanish, git-hook PATH gʻalizliklari yoki qatʼiy rejimga duch keldingizmi? Qarang: **[Oʻrnatish](https://docs.graphify.com/installation)** va **[Nosozliklarni bartaraf etish](https://docs.graphify.com/troubleshooting)**.
+> `command not found`, Mac/Windows dagi `pip` muammosi, PowerShell tirnoqlari, `uvx` ishlatilishi, git-hook PATH g'alatiliklari yoki qat'iy rejimga duch keldingizmi? **[O'rnatish](https://docs.graphify.com/installation)** va **[Muammolarni bartaraf etish](https://docs.graphify.com/troubleshooting)** ga qarang.
 
 <details>
 <summary><b>Platformangizni tanlang</b> (20+ yordamchi, kengaytirish uchun bosing)</summary>
 
-| Platforma | Oʻrnatish buyrugʻi |
+| Platforma | O'rnatish buyrug'i |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
+| Claude Code (Windows) | `graphify install` (avtomatik aniqlanadi) yoki `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -248,90 +241,99 @@ masalan `graphify claude install --project` yoki `graphify codex install --proje
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
-| Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
+| Agent Skills (freymvorklararo) | `graphify install --platform agents` (taxallus `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi kod agenti | `graphify install --platform pi`, shuningdek mahalliy himoyachi uchun `graphify pi guard install` |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-Codex foydalanuvchilariga parallel ajratib olish uchun `~/.codex/config.toml` dagi `[features]` ostida `multi_agent = true` ham kerak. CodeBuddy Claude Code bilan bir xil Agent vositasi va PreToolUse hook mexanizmidan foydalanadi. Factory Droid parallel subagent joʻnatish uchun `Task` vositasidan foydalanadi. OpenClaw va Aider ketma-ket ajratib olishdan foydalanadi (bu platformalarda parallel agent qoʻllab-quvvatlashi hali ilk bosqichda). Trae parallel subagent joʻnatish uchun Agent vositasidan foydalanadi va `PreToolUse` hooklarini **qoʻllab-quvvatlamaydi**, shuning uchun AGENTS.md doimo yoqilgan mexanizmdir.
+Codex foydalanuvchilariga parallel ekstraktsiya uchun `~/.codex/config.toml` dagi `[features]` ostida `multi_agent = true` ham kerak. CodeBuddy Claude Code bilan bir xil Agent vositasi va PreToolUse hook mexanizmidan foydalanadi. Factory Droid parallel subagent jo'natish uchun `Task` vositasidan foydalanadi. OpenClaw va Aider ketma-ket ekstraktsiyadan foydalanadi (parallel agent qo'llab-quvvatlashi ushbu platformalarda hali boshlang'ich bosqichda). Trae parallel subagent jo'natish uchun Agent vositasidan foydalanadi va `PreToolUse` hooklarini qo'llab-quvvatla**maydi**, shuning uchun AGENTS.md doimiy yoniq mexanizmdir.
 
-`--platform agents` (taxallus `--platform skills`) umumiy freymvorklararo [Agent-Skills](https://github.com/anthropics/skills) manzillarini nishonga oladi: global oʻrnatish uchun spetsifikatsiyaning foydalanuvchi uchun global `~/.agents/skills/` (`npx skills` va spetsifikatsiyaga mos freymvorklar tomonidan oʻqiladi), loyiha (`--project`) oʻrnatishi uchun esa `./.agents/skills/`. Yalangʻoch `graphify install` dizayn boʻyicha bitta platformali (Claude Code) boʻlib qoladi: koʻnikmaning `.agents/skills` ni oʻqiydigan har qanday freymvork tomonidan topilishini istasangiz, nomlangan `agents` platformasidan foydalaning.
+`--platform agents` (taxallus `--platform skills`) umumiy freymvorklararo [Agent-Skills](https://github.com/anthropics/skills) joylashuvlariga mo'ljallangan: global o'rnatish uchun spetsifikatsiyaning foydalanuvchi-global `~/.agents/skills/` (uni `npx skills` va spetsifikatsiyaga mos freymvorklar o'qiydi), va loyiha (`--project`) o'rnatishi uchun `./.agents/skills/`. Yalang'och `graphify install` dizayn bo'yicha bitta platformali (Claude Code) bo'lib qoladi: mahoratning `.agents/skills` ni o'qiydigan istalgan freymvork tomonidan topilishini xohlasangiz, nomlangan `agents` platformasidan foydalaning.
 
-> Codex `/graphify` oʻrniga `$graphify` dan foydalanadi.
+Pi da `PreToolUse` hook yo'q, shuning uchun `graphify pi guard install` mahalliy Pi kengaytmasini ro'yxatdan o'tkazadi (Pi ning o'z `pi install <package directory>` orqali), u Pi ning `read`, `grep`, `find` va qidiruv uslubidagi `bash` chaqiruvlaridan oldin o'rnatilgan `graphify hook-guard` ni ishga tushiradi. Yangi/eskirgan graf qarorlari va `GRAPHIFY_HOOK_STRICT=1` ning har sessiyada bir marta indekslangan-o'qishni rad etishi xuddi shu siyosatdan kelib chiqadi, shuning uchun Pi Claude Code ning hook xatti-harakatiga mos keladi; ko'rsatma `<system-reminder source="graphify">` boshqaruvchi xabari sifatida keladi. Unga Pi 0.58.4 yoki undan yangiroq kerak: oldingi versiyalar boshqaruvchi xabarga parallel vosita-chaqiruv to'plamining qolgan qismini o'tkazib yuborishga ruxsat beradi. Paket Graphify o'rnatmasi ichida yetkaziladi, shuning uchun Graphify ni doimiy o'rnating (`uv tool install graphifyy` yoki `pipx install graphifyy`, `uvx` emas), o'rnatgandan yoki yangilagandan keyin Pi ni qayta ishga tushiring va uni `graphify pi guard uninstall` bilan olib tashlang. Faqat mahalliy fayl maqsadlari tekshiriladi; hookga loyihadan tashqaridagi mutlaq `PATH` yozuvida `graphify` kerak, u ikki soniyalik, 256 KiB-kirish/64 KiB-chiqish chaqiruvi bilan chegaralangan va ochiq holda ishdan chiqadi. Xuddi shu paket [Oh My Pi](https://github.com/can1357/oh-my-pi) da ham yuklanadi: `omp plugin install "$(graphify pi guard path)"`. Ro'yxatdan o'tgan yo'l Python versiyasi va venv ni o'z ichiga oladi, shuning uchun ularning birortasini o'zgartirgandan keyin `graphify pi guard install` ni qayta ishga tushiring va eski yozuvni `pi remove <old path>` bilan olib tashlang.
+
+> Codex `/graphify` o'rniga `$graphify` dan foydalanadi.
 
 </details>
 
 <details>
-<summary><b>Ixtiyoriy qoʻshimchalar</b> (faqat kerakli narsalarni oʻrnating)</summary>
+<summary><b>Ixtiyoriy qo'shimchalar</b> (faqat kerakligini o'rnating)</summary>
 
-| Qoʻshimcha | Nima qoʻshadi | Oʻrnatish |
+| Qo'shimcha | Nima qo'shadi | O'rnatish |
 |---|---|---|
-| `pdf` | PDF ajratib olish | `uv tool install "graphifyy[pdf]"` |
-| `office` | `.docx` va `.xlsx` qoʻllab-quvvatlashi | `uv tool install "graphifyy[office]"` |
+| `pdf` | PDF ekstraktsiyasi | `uv tool install "graphifyy[pdf]"` |
+| `office` | `.docx` va `.xlsx` qo'llab-quvvatlash | `uv tool install "graphifyy[office]"` |
 | `google` | Google Sheets renderlash | `uv tool install "graphifyy[google]"` |
 | `video` | Video/audio transkripsiyasi (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
 | `mcp` | MCP stdio serveri | `uv tool install "graphifyy[mcp]"` |
-| `neo4j` | Neo4j push qoʻllab-quvvatlashi | `uv tool install "graphifyy[neo4j]"` |
-| `falkordb` | FalkorDB push qoʻllab-quvvatlashi | `uv tool install "graphifyy[falkordb]"` |
+| `neo4j` | Neo4j push qo'llab-quvvatlash | `uv tool install "graphifyy[neo4j]"` |
+| `falkordb` | FalkorDB push qo'llab-quvvatlash | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graf eksporti | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden jamoalarni aniqlash (Python < 3.13 da graspologic; 3.13+ da nativ bekend) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden jamoa aniqlash (Python < 3.13 da graspologic; 3.13+ da mahalliy backend) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama mahalliy inferens | `uv tool install "graphifyy[ollama]"` |
-| `openai` | OpenAI / OpenAI-mos APIlar | `uv tool install "graphifyy[openai]"` |
+| `openai` | OpenAI / OpenAI-mos API-lar | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, `ANTHROPIC_API_KEY` dan foydalanadi) | `uv tool install "graphifyy[anthropic]"` |
-| `bedrock` | AWS Bedrock (IAM dan foydalanadi, API kaliti yoʻq) | `uv tool install "graphifyy[bedrock]"` |
+| `bedrock` | AWS Bedrock (IAM dan foydalanadi, API kaliti yo'q) | `uv tool install "graphifyy[bedrock]"` |
 | `azure` | Azure OpenAI Service (`--backend azure`, `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` dan foydalanadi) | `uv tool install "graphifyy[openai]"` |
-| `sql` | SQL sxema ajratib olish | `uv tool install "graphifyy[sql]"` |
-| `postgres` | Jonli PostgreSQL introspektsiyasi (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
-| `dm` | BYOND DreamMaker `.dm`/`.dme` AST ajratib olish (platformangizga mos wheel boʻlmasa, C kompilyatori + `python3-dev` kerak boʻlishi mumkin) | `uv tool install "graphifyy[dm]"` |
-| `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST ajratib olish | `uv tool install "graphifyy[terraform]"` |
-| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST ajratib olish (aniqroq `calls`/`inherits` qirralari; boʻlmasa regex ekstraktoriga qaytadi) | `uv tool install "graphifyy[pascal]"` |
-| `ocaml` | OCaml `.ml`/`.mli` AST ajratib olish | `uv tool install "graphifyy[ocaml]"` |
-| `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST ajratib olish | `uv tool install "graphifyy[commonlisp]"` |
-| `robot` | Robot Framework `.robot`/`.resource` ajratib olish (suitelar, test kaslar, kalit soʻzlar, kalit-soʻz chaqiruvi va resource/library import qirralari) | `uv tool install "graphifyy[robot]"` |
-| `chinese` | Xitoycha soʻrov segmentatsiyasi (jieba) | `uv tool install "graphifyy[chinese]"` |
-| `all` | Yuqoridagilarning hammasi | `uv tool install "graphifyy[all]"` |
+| `sql` | SQL sxema ekstraktsiyasi | `uv tool install "graphifyy[sql]"` |
+| `postgres` | Jonli PostgreSQL introspeksiyasi (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST ekstraktsiyasi (platformangizga mos wheel bo'lmasa C kompilyatori + `python3-dev` kerak bo'lishi mumkin) | `uv tool install "graphifyy[dm]"` |
+| `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST ekstraktsiyasi | `uv tool install "graphifyy[terraform]"` |
+| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST ekstraktsiyasi (aniqroq `calls`/`inherits` qirralari; mavjud bo'lmasa regex ekstraktoriga qaytadi) | `uv tool install "graphifyy[pascal]"` |
+| `ocaml` | OCaml `.ml`/`.mli` AST ekstraktsiyasi | `uv tool install "graphifyy[ocaml]"` |
+| `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST ekstraktsiyasi | `uv tool install "graphifyy[commonlisp]"` |
+| `robot` | Robot Framework `.robot`/`.resource` ekstraktsiyasi (to'plamlar, test holatlari, kalit so'zlar, kalit-so'z chaqiruvi va resource/library import qirralari) | `uv tool install "graphifyy[robot]"` |
+| `chinese` | Xitoycha so'rov segmentatsiyasi (jieba) | `uv tool install "graphifyy[chinese]"` |
+| `all` | Yuqoridagilarning barchasi | `uv tool install "graphifyy[all]"` |
 
 </details>
 
 ---
 
-## Yordamchingizni grafikdan doimo foydalanishga majbur qiling
+## Yordamchingiz grafdan doimo foydalanishini ta'minlang
 
-Graf qurgandan soʻng buni loyihangizda bir marta ishga tushiring:
+Graf qurgandan keyin loyihangizda buni bir marta ishga tushiring:
 
-Loyihangizda bir marta `graphify <platform> install` ishga tushiring, masalan `graphify claude install` yoki `graphify codex install` (yoki `graphify install --platform <name>`).
+Loyihangizda `graphify <platform> install` ni bir marta ishga tushiring, masalan `graphify claude install` yoki `graphify codex install` (yoki `graphify install --platform <name>`).
 
-Bu yordamchingizga kod bazasi savollari uchun bilimlar grafigiga murojaat qilishni, toʻliq hisobotni oʻqish yoki xom fayllarni grep qilish oʻrniga `graphify query "<question>"` kabi chegaralangan soʻrovlarni afzal koʻrishni aytadigan kichik konfiguratsiya faylini yozadi.
+Bu yordamchingizga kod bazasi savollari uchun bilim grafiga murojaat qilishni aytadigan kichik konfiguratsiya faylini yozadi, to'liq hisobotni o'qish yoki xom fayllarni grep qilishdan ko'ra `graphify query "<question>"` kabi chegaralangan so'rovlarni afzal ko'radi.
 
-- **Hookli platformalar** (Claude Code, Gemini CLI): hook qidiruv uslubidagi vosita chaqiruvlaridan oldin (va Claude Code da, manba fayllarni Read/Glob vositalari orqali birma-bir oʻqishdan oldin) avtomatik ishga tushadi va yordamchingizni grafik yoʻliga undaydi.
-- **Koʻrsatma-faylli platformalar** (Codex, OpenCode, Cursor va boshqalar): doimiy koʻrsatma fayllari (`AGENTS.md`, `.cursor/rules/` va boshqalar) xuddi shu avvalo-soʻrov koʻrsatmasini beradi.
+- **Hook platformalari** (Claude Code, Gemini CLI): hook qidiruv uslubidagi vosita chaqiruvlaridan oldin (va Claude Code da, Read/Glob vositalari orqali manba fayllarni birma-bir o'qishdan oldin) avtomatik ishga tushadi va yordamchingizni graf yo'liga undaydi.
+- **Ko'rsatma-fayl platformalari** (Codex, OpenCode, Cursor va boshqalar): doimiy ko'rsatma fayllari (`AGENTS.md`, `.cursor/rules/` va boshqalar) xuddi shu avval-so'rov ko'rsatmasini beradi.
 
-`GRAPH_REPORT.md` keng arxitektura koʻrigi uchun hamon mavjud.
+`GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun hamon mavjud.
 
-**CodeBuddy** Claude Code bilan bir xil ikki narsani bajaradi: CodeBuddy ga arxitektura savollariga javob berishdan oldin `graphify-out/GRAPH_REPORT.md` ni oʻqishni aytadigan `CODEBUDDY.md` boʻlimini yozadi va Bash qidiruv buyruqlari hamda fayl oʻqishlaridan oldin ishga tushib, oʻrniga `graphify query` ga undaydigan `PreToolUse` hooklarini (`.codebuddy/settings.json`) oʻrnatadi.
+Har bir platforma aynan qaysi fayllarni yozishi (CodeBuddy ning `CODEBUDDY.md` + `PreToolUse` hooklari, Codex ning `AGENTS.md`, Kilo ning mahalliy `.kilo` plagini, Cursor ning `alwaysApply` qoidasi va hokazo) **[Doimiy yoniq sozlash](https://docs.graphify.com/guides/always-on)** da yoritilgan.
 
-**Codex** bu platformada doimo yoqilgan grafik koʻrsatmasini aslida olib boradigan `AGENTS.md` ga yozadi. `graphify codex install` shuningdek `.codex/hooks.json` da `PreToolUse` hookini (`graphify hook-check`) roʻyxatdan oʻtkazadi, lekin bu yozuv ataylab **no-op**: Codex Desktop `PreToolUse` da `hookSpecificOutput.additionalContext` ni rad etadi, shuning uchun u yerda undama chiqarish Bash vosita chaqiruvlarini buzardi. Hook (`graphify hook-guard`) undashni bajaradigan Claude Code dan farqli oʻlaroq, Codex da hook ishga tushadi va ataylab hech narsa qilmaydi, `AGENTS.md` esa doimo yoqilgan mexanizmdir.
+graphify ni barcha platformalardan bir vaqtning o'zida olib tashlash uchun: `graphify uninstall` (`graphify-out/` ni ham o'chirish uchun `--purge` qo'shing). Yoki har bir platforma buyrug'idan foydalaning (masalan `graphify claude uninstall`).
 
-**Kilo Code** Graphify koʻnikmasini `~/.config/kilo/skills/graphify/SKILL.md` ga va nativ `/graphify` buyrugʻini `~/.config/kilo/command/graphify.md` ga oʻrnatadi. `graphify kilo install` shuningdek `AGENTS.md` ni va nativ `tool.execute.before` plaginini (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` yoki `.kilo/kilo.jsonc` roʻyxatdan oʻtkazish) yozadi, shunda Kilo nativ `.kilo` konfiguratsiyasi orqali xuddi shu doimo yoqilgan grafik eslatma xatti-harakatini oladi.
+### CLI mahoratlari yoki MCP ko'rsatmalari?
 
-**Cursor** `alwaysApply: true` bilan `.cursor/rules/graphify.mdc` ni yozadi, shunda Cursor uni har bir suhbatga avtomatik kiritadi, hook kerak emas.
+`graphify install` tomonidan o'rnatilgan ko'rsatmalar va Graphify MCP ulanishi bilan taqdim etilganlar grafni so'rov qilishning turli usullarini tasvirlaydi:
 
-graphify ni barcha platformalardan bir vaqtning oʻzida olib tashlash uchun: `graphify uninstall` (`graphify-out/` ni ham oʻchirish uchun `--purge` qoʻshing). Yoki platformaga xos buyruqdan foydalaning (masalan, `graphify claude uninstall`).
+| Sozlash | Foydalanish ko'rsatmasi | So'rov kirishi |
+|---|---|---|
+| Mahalliy CLI va o'rnatilgan yordamchi mahorati | `graphify install` tomonidan yozilgan platforma ko'rsatmalari | Mahalliy grafga (sukut bo'yicha `graphify-out/`) nisbatan `graphify query`, `graphify path` va `graphify explain` ni ishga tushiring. |
+| Ulangan Graphify MCP serveri | Ulanishning ko'rsatmalari va o'sha server sanab o'tgan vositalar | O'sha ulanish xizmat qiladigan grafga nisbatan sanab o'tilgan MCP vositalarini chaqiring. Vosita nomlari va tavsiflari serverdan keladi. |
+
+Ikkalasi ham keng manba qidiruvlaridan oldin chegaralangan graf so'rovlarini rag'batlantiradi. Yordamchingiz haqiqatan ham kira oladigan vositalarga mos keladigan ko'rsatmalarni tanlang; birorta blok ham yordamchingizning ko'rsatma fayllari uchun universal ustunlik qoidasini o'rnatmaydi. Agar ikkala integratsiyadan foydalansangiz, har biri qaysi grafni so'rov qilishini aniqlang va `AGENTS.md` ga ikkita shartsiz ko'rsatma blokini nusxalash o'rniga asosiy so'rov yo'lini tanlang.
+
+`graphify install` mahalliy yordamchi integratsiyasini o'rnatadi; u MCP ulanishini o'rnatmaydi. MCP mijozi ulangan serveridan foydalanish uchun mahalliy CLI so'rovlarini ishga tushirishi shart emas. Mahalliy joylashtirilgan server hamon o'z Graphify o'rnatmasi va grafiga muhtoj, holbuki joylashtirilgan ulanish mijozning ish katalogida mavjud bo'lmagan grafga xizmat qilishi mumkin. Kutilgan vositalar yo'q bo'lsa, boshqa sozlashning ko'rsatmalarini o'zaro almashtiriladigan deb hisoblash o'rniga tegishli CLI o'rnatmasi yoki MCP ulanishini tekshiring.
 
 ---
 
 ## Hisobotda nima bor
 
-`GRAPH_REPORT.md` keng arxitektura koʻrigi uchun xudo tugunlari, jamoalar va kalit yoʻllarni umumlashtiradi. Graf qanday qurilishi va nimani oʻz ichiga olishi: **[graphify qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun xudo tugunlar, jamoalar va asosiy yo'llarni jamlaydi. Graf qanday quriladi va u nimani o'z ichiga oladi: **[graphify qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
-## U qanday fayllarni ishlaydi
+## U qanday fayllarni ishlaydi: ~40 languages
 
-graphify ~40 dasturlash tilini mahalliy ravishda tree-sitter AST bilan tahlil qiladi va hujjatlar, PDF-lar, rasmlar hamda audio/videoni ixtiyoriy semantik oʻtish orqali moslashtiradi. Toʻliq roʻyxat: **[Qoʻllab-quvvatlanadigan kirishlar](https://docs.graphify.com/concepts/supported-inputs)**.
+graphify ~40 dasturlash tilini tree-sitter AST bilan lokal tarzda tahlil qiladi va hujjatlar, PDF-lar, rasmlar hamda audio/video ni ixtiyoriy semantik o'tish orqali xaritalaydi. To'liq ro'yxat: **[Qo'llab-quvvatlanadigan kirishlar](https://docs.graphify.com/concepts/supported-inputs)**.
 
 ---
 
@@ -363,91 +365,110 @@ graphify prs --triage              # AI ranks your review queue (uses whatever b
 graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
 ```
 
-Quyidagi [toʻliq buyruqlar maʼlumotnomasiga](#full-command-reference) qarang.
+Quyida [to'liq buyruqlar ma'lumotnomasi](#full-command-reference) ga qarang.
 
 ---
 
-## Fayllarni eʼtiborsiz qoldirish
+## Fayllarni e'tiborsiz qoldirish
 
-graphify `.gitignore` ni hurmat qiladi hamda `--exclude` andozalari va loyiha `.graphifyignore` faylini qoʻllab-quvvatlaydi. Tafsilotlar: **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**.
+graphify `.gitignore` ni hurmat qiladi va `--exclude` namunalari hamda loyiha `.graphifyignore` ni qo'llab-quvvatlaydi. Tafsilotlar: **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**.
+
+
+## Loyiha konfiguratsiyasi
+
+Bitta ishga emas, balki loyihaga tegishli sozlamalar uchun skanerlash ildizida `.graphifyrc` yarating. Har bir qatorda bitta `key=value`; `#` bilan boshlanadigan qatorlar izohlardir.
+
+**Noaniq kengaytmalar.** Ba'zi kengaytmalar turli loyihalarda turli tillarni anglatadi: `.inc` pfSense da PHP, Delphi daraxtida Pascal, boshqa joylarda SQL yoki assembly; `.h` C yoki C++; `.m` Objective-C yoki MATLAB. graphify bitta global sukut tanlashi kerak, va u noto'g'ri tanlasa fayl muvaffaqiyatsizlikka uchramaydi: u noto'g'ri til sifatida tahlil qilinadi va bir hovuch tasodifiy tugunlar beradi, shunday qilib graf to'ldirilgandek ko'rinadi, holbuki haqiqiy belgilar yo'q. Kengaytma repongizda nimani anglatishini e'lon qiling:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+E'lon tasniflash, ekstraktor tanlash, grammatika va aniqlash, importlar, `graphify watch` va AST keshi orqali oqadi (boshqa til ostida qayta tahlil qilingan fayl eski yozuvni hech qachon qayta ishlatmaydi), va xuddi shu `.graphifyrc` ni `extract`, `update`, hooklar, MCP serveri va `/graphify` mahorati o'qiydi. Terish xatosi stderr da bir marta xabar qilinadi va skanerlash sukutlar bilan davom etadi. E'lonlar keshlash, inkremental qayta qurishlar va import aniqlash bilan qanday o'zaro ta'sir qilishi: **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
-## Jamoa sozlamasi
+## Jamoa sozlash
 
-Butun jamoangiz bir xil kontekstni soʻrashi uchun grafikni komit qiling yoki ulashing va pull-soʻrovlarni grafik konteksti bilan koʻrib chiqing. Qarang: **[Jamoangiz bilan kontekstni ulashing](https://docs.graphify.com/guides/team-workflows)** va **[Pull-soʻrovlarni koʻrib chiqing](https://docs.graphify.com/guides/pull-requests)**.
-
----
-
-## Grafikdan bevosita foydalanish
-
-Sunʼiy intellektli yordamchingizdan tashqari, `graph.json` ni CLI dan toʻgʻridan-toʻgʻri `graphify query`, `graphify path` va `graphify explain` bilan soʻrang. Qarang: **[Grafikka yaxshiroq savollar bering](https://docs.graphify.com/guides/querying)** va **[soʻrov maʼlumotnomasi](https://docs.graphify.com/reference/query)**.
+Grafni kommit qiling yoki ulashing, shunda butun jamoangiz bir xil kontekstni so'rov qiladi, va pull requestlarni graf konteksti bilan ko'rib chiqing. **[Jamoangiz bilan kontekstni ulashing](https://docs.graphify.com/guides/team-workflows)** va **[Pull requestlarni ko'rib chiqing](https://docs.graphify.com/guides/pull-requests)** ga qarang.
 
 ---
 
-## Muhit oʻzgaruvchilari
+## Grafdan to'g'ridan-to'g'ri foydalanish
 
-Bekendlar, API kalitlari, hook xatti-harakati va sozlash muhit oʻzgaruvchilari bilan boshqariladi. Toʻliq jadval: **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**.
+AI yordamchingizdan tashqari, `graph.json` ni CLI dan to'g'ridan-to'g'ri `graphify query`, `graphify path` va `graphify explain` bilan so'rov qiling. Bir nechta tugunga mos keladigan nom taxmin qilinmasdan nomzodlar ro'yxati bilan rad etiladi. Skriptlar natijani chiqish kodidan o'qiy oladi: `0` javob, `3` noaniq nom, `4` mos keladigan tugun yo'q. **[Yaxshiroq graf savollari bering](https://docs.graphify.com/guides/querying)** va **[so'rov ma'lumotnomasi](https://docs.graphify.com/reference/query)** ga qarang.
+
+---
+
+## Muhit o'zgaruvchilari
+
+Backendlar, API kalitlari, hook xatti-harakati va sozlash muhit o'zgaruvchilari bilan boshqariladi. To'liq jadval: **[Konfiguratsiya](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
 ## Maxfiylik
 
-- **Kod fayllari**: tree-sitter orqali mahalliy ravishda qayta ishlanadi. Hech narsa mashinangizdan chiqmaydi. Faqat koddan iborat korpus API kalitini talab qilmaydi: `graphify extract` toʻliq oflayn ishlaydi. Aralash repoda, faqat kodni indekslash va aks holda LLM talab qiladigan hujjatlar/PDF-lar/rasmlarni oʻtkazib yuborish uchun `--code-only` qoʻshing.
-- **Video / audio**: faster-whisper bilan mahalliy ravishda transkripsiya qilinadi. Hech narsa mashinangizdan chiqmaydi.
-- **Hujjatlar, PDF-lar, rasmlar**: semantik ajratib olish uchun sunʼiy intellektli yordamchingizga yuboriladi (`/graphify` koʻnikmasi orqali, IDE sessiyangiz ishlatadigan modeldan foydalanib). Boshsiz `graphify extract` `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), ishlab turgan Ollama namunasi (`OLLAMA_BASE_URL`), standart provayder zanjiri orqali AWS hisob maʼlumotlari (Bedrock: API kaliti kerak emas, IAM dan foydalanadi) yoki `claude` CLI binarini (Claude Code: API kaliti kerak emas, Claude obunangizdan foydalanadi) talab qiladi. `--dedup-llm` bayrogʻi xuddi shu kalitdan foydalanadi.
-- **Maʼlumotlar joylashuvi**: `graphify extract` qaysi API kaliti oʻrnatilganiga qarab qaysi provayderdan foydalanishni avtomatik aniqlaydi (ustuvorlik: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Maʼlumotlar joylashuvi talablariga ega kod uchun `--backend ollama` (toʻliq mahalliy) dan foydalaning yoki aniq `--backend` bayrogʻini uzating. Kimi (`MOONSHOT_API_KEY`) Xitoydagi Moonshot AI serverlariga yoʻnaltiradi.
-- **Telemetriya yoʻq**, foydalanishni kuzatish yoʻq, analitika yoʻq.
-- **Soʻrovlarni jurnalga yozish**: har bir `graphify query`, `graphify path`, `graphify explain` va MCP `query_graph` chaqiruvi JSON Lines formatida `~/.cache/graphify-queries.log` ga yoziladi (vaqt belgisi, savol, korpus, qaytarilgan tugunlar, davomiylik). Toʻliq subgraf javoblari sukut boʻyicha **saqlanmaydi**. Voz kechish uchun `GRAPHIFY_QUERY_LOG_DISABLE=1` ni oʻrnating yoki kod yoʻlini oʻchirmasdan jim qilish uchun `GRAPHIFY_QUERY_LOG=/dev/null` ni oʻrnating.
+- **Kod fayllari**: tree-sitter orqali lokal tarzda ishlanadi. Hech narsa qurilmangizdan chiqmaydi. Faqat kodli korpus API kalitini talab qilmaydi: `graphify extract` to'liq oflayn ishlaydi. Aralash repoda, faqat kodni indekslash va aks holda LLM talab qiladigan hujjatlar/PDF-lar/rasmlarni o'tkazib yuborish uchun `--code-only` qo'shing.
+- **Video / audio**: faster-whisper bilan lokal tarzda transkripsiya qilinadi. Hech narsa qurilmangizdan chiqmaydi.
+- **Hujjatlar, PDF-lar, rasmlar**: semantik ekstraktsiya uchun AI yordamchingizga yuboriladi (`/graphify` mahorati orqali, IDE sessiyangiz ishlatadigan har qanday modeldan foydalanib). Headless `graphify extract` `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), ishlab turgan Ollama namunasi (`OLLAMA_BASE_URL`), standart provayder zanjiri orqali AWS hisob ma'lumotlari (Bedrock - API kaliti kerak emas, IAM dan foydalanadi) yoki `claude` CLI ikkilik faylini (Claude Code - API kaliti kerak emas, Claude obunangizdan foydalanadi) talab qiladi. `--dedup-llm` bayrog'i xuddi shu kalitdan foydalanadi.
+- **Ma'lumotlar rezidentligi**: `graphify extract` qaysi API kaliti o'rnatilganiga qarab qaysi provayderdan foydalanishni avtomatik aniqlaydi (ustuvorlik: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Ma'lumotlar rezidentligi talablari bo'lgan kod uchun `--backend ollama` (to'liq lokal) dan foydalaning yoki aniq `--backend` bayrog'ini uzating. Kimi (`MOONSHOT_API_KEY`) Xitoydagi Moonshot AI serverlariga yo'naltiradi.
+- **Telemetriya yo'q**, foydalanishni kuzatish yo'q, analitika yo'q.
+- **So'rovni jurnalga yozish**: har bir `graphify query`, `graphify path`, `graphify explain` va MCP `query_graph` chaqiruvi `~/.cache/graphify-queries.log` ga JSON Lines formatida yoziladi (vaqt belgisi, savol, korpus, qaytarilgan tugunlar, davomiyligi). To'liq subgraf javoblari sukut bo'yicha saqlan**maydi**. Voz kechish uchun `GRAPHIFY_QUERY_LOG_DISABLE=1` ni o'rnating yoki kod yo'lini o'chirmasdan jim qilish uchun `GRAPHIFY_QUERY_LOG=/dev/null`.
 
 ---
 
-## Nosozliklarni bartaraf etish
+## Muammolarni bartaraf etish
 
-Keng tarqalgan oʻrnatish va ajratib olish muammolari hamda ularning yechimlari: **[Nosozliklarni bartaraf etish](https://docs.graphify.com/troubleshooting)**.
-
----
-
-## Toʻliq buyruqlar maʼlumotnomasi
-
-Misollar bilan har bir buyruq va bayroq: **[CLI maʼlumotnomasi](https://docs.graphify.com/reference/overview)**.
+Keng tarqalgan o'rnatish va ekstraktsiya muammolari hamda ularning yechimlari: **[Muammolarni bartaraf etish](https://docs.graphify.com/troubleshooting)**.
 
 ---
 
-## Koʻproq bilib oling
+## To'liq buyruqlar ma'lumotnomasi
 
-- [docs.graphify.com](https://docs.graphify.com): toʻliq hujjatlar: qoʻllanmalar, buyruqlar maʼlumotnomasi va integratsiyalar
-- [Qanday ishlaydi](../how-it-works.md): ajratib olish quvuri, jamoalarni aniqlash, ishonchni baholash, benchmarklar
-- [ARCHITECTURE.md](../../ARCHITECTURE.md): modullar taqsimoti, til qanday qoʻshiladi
+Har bir buyruq va bayroq, misollar bilan: **[CLI ma'lumotnomasi](https://docs.graphify.com/reference/overview)**.
+
+---
+
+## Ko'proq bilib oling
+
+- [docs.graphify.com](https://docs.graphify.com): to'liq hujjatlar: qo'llanmalar, buyruqlar ma'lumotnomasi va integratsiyalar
+- [Qanday ishlaydi](../how-it-works.md): ekstraktsiya quvuri, jamoa aniqlash, ishonch baholash, benchmarklar
+- [ARCHITECTURE.md](../../ARCHITECTURE.md): modul tahlili, til qanday qo'shiladi
 - [Ixtiyoriy integratsiyalar](../docker-mcp-sqlite.md): Docker MCP Toolkit + SQLite
-- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): graphify ortidagi gʻoyalar va boshdan-oyoq arxitektura haqidagi kitob
+- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): graphify ortidagi g'oyalar va arxitektura boshidan oxirigacha haqidagi kitob
 
 ---
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login): bu graphify ustiga qurilgan doimo yoqilgan qatlam. Har bir papka uchun talab boʻyicha qayta quriladigan graf oʻrniga, u butun dasturiy taʼminot ishlab chiqish hayotiy sikli boʻylab bitta jonli grafikni saqlaydi:
+[**Graphify Cloud**](https://app.graphify.com/login) bu graphify ustiga qurilgan doimiy yoniq qatlam. Har bir papka uchun talab bo'yicha qayta quriladigan graf o'rniga, u butun dasturiy ta'minot ishlab chiqish hayotiy sikli bo'ylab bitta jonli grafni saqlaydi:
 
-- **80% kamroq token**: doimo yoqilgan xotira agentlaringiz kod bazasini har sessiyada qayta oʻqishni va qayta tushuntirishni toʻxtatishini anglatadi.
-- **Monorepo va repolar aro**: har bir xizmat va repozitoriy boʻylab bitta bogʻlangan graf, papka boshiga graf emas.
-- **Rasmiy verifikatsiya**: arxitektura va bogʻliqlik invariantlarini jonli grafikka nisbatan tekshiring.
-- **SDLC-ingizga qushqocha nigoh bilan kod koʻrigi**: oʻzgarish birlashtirishdan oldin butun tizim boʻylab qanday tarqalishini koʻring.
-- **SDLC konnektorlari**: Sentry, Jira va boshqalarni tortib oling, shunda hodisalar, chiptalar va kod bitta grafikda yashaydi.
-- **Doimo yoqilgan**: kod, hujjatlar va uchrashuvlar boʻylab fonda uzluksiz yangilanadi.
+- **80% kamroq token**: doimiy yoniq xotira sizning agentlaringiz har sessiyada kod bazasini qayta o'qish va qayta tushuntirishni to'xtatishini anglatadi.
+- **Monorepo va repolararo**: har bir xizmat va repozitoriy bo'ylab bitta bog'langan graf, papka uchun graf emas.
+- **Rasmiy verifikatsiya**: arxitektura va bog'liqlik invariantlarini jonli grafga nisbatan tekshiring.
+- **SDLC-ga qush nigohi bilan kod ko'rib chiqish**: merge qilishdan oldin o'zgarish butun tizim bo'ylab qanday tarqalishini ko'ring.
+- **SDLC konnektorlari**: Sentry, Jira va boshqalarni jalb qiling, shunday qilib hodisalar, chiptalar va kod bitta grafda yashaydi.
+- **Doimiy yoniq**: kod, hujjatlar va uchrashuvlar bo'ylab fon rejimida uzluksiz yangilanadi.
 
-**[app.graphify.com da 14 kunlik bepul sinov muddatini boshlang &rarr;](https://app.graphify.com/login)**
+**[app.graphify.com da bepul 14 kunlik sinovni boshlang &rarr;](https://app.graphify.com/login)**
 
 ---
 
-## Hissa qoʻshish
+## Hissa qo'shish
 
-Hissalar mamnuniyat bilan qabul qilinadi. Ishlab chiqish sozlamasi, test va CI-parity buyruqlari, git ish jarayoni va kuchli hissani nima tashkil etishi (ishlangan misollar va ajratib olish xato hisobotlari eng foydali) uchun **[CONTRIBUTING.md](../../CONTRIBUTING.md)** ga qarang. Arxitektura va til qanday qoʻshiladi: [ARCHITECTURE.md](../../ARCHITECTURE.md).
+Hissalar olqishlanadi. Ishlab chiqish sozlash, test va CI-parity buyruqlari, git ish oqimi va kuchli hissani nima tashkil qilishi (ishlab chiqilgan misollar va ekstraktsiya xato hisobotlari eng foydali) uchun **[CONTRIBUTING.md](../../CONTRIBUTING.md)** ga qarang. Arxitektura va til qanday qo'shiladi: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
 Bu yerda yangimisiz? [Discord](https://discord.gg/XDnKVpzdXB) da yoki [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions) da salom ayting.
 
 ---
 
-## Hissa qoʻshuvchilar
+## Hissa qo'shuvchilar
 
 <a href="https://github.com/Graphify-Labs/graphify/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
@@ -459,13 +480,13 @@ Bu yerda yangimisiz? [Discord](https://discord.gg/XDnKVpzdXB) da yoki [GitHub Di
 
 ## Tarjimalar
 
-README 32 tilda mavjud. Uni oʻz tilingizda oʻqish uchun ushbu faylning yuqorisidagi til almashtirgichdan foydalaning yoki [`docs/translations/`](./) ni koʻrib chiqing. Tarjimani yaxshilash yoki yangisini qoʻshish uchun u yerdagi tegishli faylga qarshi pull-soʻrov oching.
+README 32 tilda mavjud. O'z tilingizda o'qish uchun ushbu faylning yuqori qismidagi til almashtirgichidan foydalaning yoki [`docs/translations/`](./) ni ko'rib chiqing. Tarjimani yaxshilash yoki yangisini qo'shish uchun u yerdagi mos faylga qarshi pull request oching.
 
 ---
 
-## graphify ustiga qurish
+## graphify asosida qurish
 
-graphify ekotizimida biror narsa quryapsizmi? Bu ragʻbatlantiriladi. Agar loyihangiz nomida "graphify" dan foydalansa (masalan `graphify-dashboard` yoki `graphify-action`), iltimos, README-ingizga uning jamoa tomonidan qurilganini va Graphify Labs bilan bogʻliq emasligini yoki u tomonidan maʼqullanmaganini tushuntiradigan qisqa izoh qoʻshing. "graphify" va graphify logotipi Graphify Labs belgilaridir; iltimos, ularni rasmiy maqomni anglatadigan tarzda ishlatmang.
+graphify ekotizimida biror narsa quryapsizmi? Bu rag'batlantiriladi. Agar loyihangiz nomida "graphify" dan foydalansa (masalan `graphify-dashboard` yoki `graphify-action`), iltimos README ingizga uning jamoa tomonidan qurilgani va Graphify Labs bilan aloqador yoki u tomonidan ma'qullanmaganini aniqlashtiradigan qisqa izoh qo'shing. "graphify" va graphify logotipi Graphify Labs ning belgilari; iltimos ularni rasmiy maqomni anglatadigan tarzda ishlatmang.
 
 ---
 

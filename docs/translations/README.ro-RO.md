@@ -47,11 +47,11 @@ Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează î
   <em>Baza de cod FastAPI mapată de graphify. Fiecare nod este un concept, culorile sunt comunitățile detectate, iar totul este clicabil în graph.html.</em>
 </p>
 
-**Începeți** (30 de secunde):
+**Începeți** (30 de secunde). Necesită Python 3.10+ și uv (sau pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Apoi, în asistentul vostru AI:
@@ -73,21 +73,7 @@ Graful persistat include `graph.schema_version` astfel încât integrările să 
 modificările de format incompatibile, plus `graph.graphify_version` care identifică
 versiunea Graphify care l-a produs.
 
-**Funcționează în** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot și încă 15+: [alegeți-vă platforma](#install).
-
----
-
-## Documentație
-
-Ghidurile complete și referința se află la **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Ghid de pornire rapidă](https://docs.graphify.com/quickstart)**: construiți primul vostru graf
-- **[Referința CLI](https://docs.graphify.com/reference/overview)**: fiecare comandă și opțiune
-- **[Puneți întrebări mai bune despre graf](https://docs.graphify.com/guides/querying)**: tipare de interogare
-- **[Configurare](https://docs.graphify.com/reference/configuration)**: variabile de mediu și reglaje
-- **[Intrări acceptate](https://docs.graphify.com/concepts/supported-inputs)**: limbaje și tipuri de fișiere
-- **[Fluxuri de lucru în echipă](https://docs.graphify.com/guides/team-workflows)** și **[revizuire PR](https://docs.graphify.com/guides/pull-requests)**
-- **[Depanare](https://docs.graphify.com/troubleshooting)** și **[Cum funcționează](https://docs.graphify.com/concepts/architecture)**
+**O singură instalare, orice asistent, orice sistem de operare.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot și încă 20+, pe macOS, Linux și Windows: [alegeți-vă platforma](#install).
 
 ---
 
@@ -141,7 +127,7 @@ Ce obțineți direct din cutie:
 
 ---
 
-## Benchmark-uri
+## Benchmark-uri: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrică | graphify | Domeniu |
 |---|---|---|---|
@@ -152,6 +138,20 @@ Ce obțineți direct din cutie:
 | Graph build | LLM credits | **0** | per token la majoritatea sistemelor |
 
 Fiecare sistem a rulat pe același harness cu același model și aceleași bugete, punctat de un evaluator validat orb față de un al doilea evaluator (90.6% acord, kappa Cohen 0.81). Tabelele complete per sistem, rezultatul de inteligență a codului și comenzile de reproducere: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Documentație
+
+Ghidurile complete și referința se află la **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Ghid de pornire rapidă](https://docs.graphify.com/quickstart)**: construiți primul vostru graf
+- **[Referința CLI](https://docs.graphify.com/reference/overview)**: fiecare comandă și opțiune
+- **[Puneți întrebări mai bune despre graf](https://docs.graphify.com/guides/querying)**: tipare de interogare
+- **[Configurare](https://docs.graphify.com/reference/configuration)**: variabile de mediu și reglaje
+- **[Intrări acceptate](https://docs.graphify.com/concepts/supported-inputs)**: limbaje și tipuri de fișiere
+- **[Fluxuri de lucru în echipă](https://docs.graphify.com/guides/team-workflows)** și **[revizuire PR](https://docs.graphify.com/guides/pull-requests)**
+- **[Depanare](https://docs.graphify.com/troubleshooting)** și **[Cum funcționează](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -189,24 +189,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Depozitul sursă oficial este [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Pasul 1: instalați pachetul:**
+Ghidul rapid în două comenzi se află în partea de sus a acestui README. Această secțiune acoperă metodele de instalare, instalările la nivel de proiect și fiecare platformă acceptată.
+
+**Metode de instalare** (alegeți una):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**Pasul 2: înregistrați skill-ul la asistentul vostru AI:**
-
-```bash
-graphify install
-```
-
-Asta e tot. Deschideți asistentul AI și tastați `/graphify .`
+Apoi rulați `graphify install` o dată. Detectează ce asistent rulați și înregistrează skill-ul, așa că nu există configurare per asistent. Deschideți asistentul AI și tastați `/graphify .`
 
 Pentru a instala skill-ul asistentului în depozitul curent în loc de profilul
 vostru de utilizator, adăugați `--project`:
@@ -250,7 +243,7 @@ de exemplu `graphify claude install --project` sau `graphify codex install --pro
 | Amp | `graphify amp install` |
 | Agent Skills (între framework-uri) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` pentru guard-ul nativ |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +251,8 @@ de exemplu `graphify claude install --project` sau `graphify codex install --pro
 Utilizatorii Codex au nevoie și de `multi_agent = true` sub `[features]` în `~/.codex/config.toml` pentru extracția paralelă. CodeBuddy folosește același mecanism de unealtă Agent și hook PreToolUse ca și Claude Code. Factory Droid folosește unealta `Task` pentru dispecerizarea paralelă a subagenților. OpenClaw și Aider folosesc extracție secvențială (suportul pentru agenți paraleli este încă la început pe aceste platforme). Trae folosește unealta Agent pentru dispecerizarea paralelă a subagenților și **nu** acceptă hook-uri `PreToolUse`, așa că AGENTS.md este mecanismul mereu activ.
 
 `--platform agents` (alias `--platform skills`) vizează locațiile generice, între framework-uri, [Agent-Skills](https://github.com/anthropics/skills): `~/.agents/skills/` la nivel de utilizator din specificație (citit de `npx skills` și de framework-urile conforme cu specificația) pentru o instalare globală, și `./.agents/skills/` pentru o instalare la nivel de proiect (`--project`). Simplul `graphify install` rămâne, prin design, pe o singură platformă (Claude Code): folosiți platforma numită `agents` când vreți ca skill-ul să fie descoperit de orice framework care citește `.agents/skills`.
+
+Pi nu are hook `PreToolUse`, așa că `graphify pi guard install` înregistrează o extensie Pi nativă (prin propriul `pi install <package directory>` al Pi) care rulează `graphify hook-guard` instalat înaintea apelurilor `read`, `grep`, `find` și a celor de tip căutare `bash` ale Pi. Deciziile de graf proaspăt/învechit și refuzul de citire indexată o dată pe sesiune cu `GRAPHIFY_HOOK_STRICT=1` provin din aceeași politică, așa că Pi se potrivește cu comportamentul hook-urilor din Claude Code; îndrumarea sosește ca un mesaj de ghidare `<system-reminder source="graphify">`. Necesită Pi 0.58.4 sau mai nou: versiunile anterioare lăsau un mesaj de ghidare să sară peste restul unui lot paralel de apeluri de unelte. Pachetul este livrat în interiorul instalării Graphify, așa că instalați Graphify persistent (`uv tool install graphifyy` sau `pipx install graphifyy`, nu `uvx`), reporniți Pi după instalare sau actualizare și eliminați-l cu `graphify pi guard uninstall`. Sunt inspectate doar țintele de fișiere locale; hook-ul are nevoie de `graphify` pe o intrare `PATH` absolută din afara proiectului, este limitat la un apel de două secunde, 256 KiB-intrare/64 KiB-ieșire, și eșuează deschis. Același pachet se încarcă și în [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. Calea înregistrată conține versiunea Python și venv-ul, așa că rerulați `graphify pi guard install` după schimbarea oricăreia și eliminați intrarea veche cu `pi remove <old path>`.
 
 > Codex folosește `$graphify` în loc de `/graphify`.
 
@@ -311,15 +306,22 @@ Asta scrie un mic fișier de configurare care îi spune asistentului vostru să 
 
 `GRAPH_REPORT.md` este în continuare disponibil pentru revizuirea amplă a arhitecturii.
 
-**CodeBuddy** face aceleași două lucruri ca și Claude Code: scrie o secțiune `CODEBUDDY.md` care îi spune CodeBuddy să citească `graphify-out/GRAPH_REPORT.md` înainte de a răspunde la întrebări despre arhitectură, și instalează hook-uri `PreToolUse` (`.codebuddy/settings.json`) care se declanșează înaintea comenzilor de căutare Bash și a citirilor de fișiere, împingând în schimb către `graphify query`.
-
-**Codex** scrie în `AGENTS.md`, care este ceea ce poartă efectiv îndrumarea mereu activă a grafului pe această platformă. `graphify codex install` înregistrează și un hook `PreToolUse` în `.codex/hooks.json` (`graphify hook-check`), dar acea intrare este în mod deliberat un **no-op**: Codex Desktop respinge `hookSpecificOutput.additionalContext` pe `PreToolUse`, așa că emiterea unei împingeri acolo ar strica apelurile uneltei Bash. Spre deosebire de Claude Code, unde hook-ul (`graphify hook-guard`) face împingerea, pe Codex hook-ul se declanșează și nu face nimic în mod intenționat, iar `AGENTS.md` este mecanismul mereu activ.
-
-**Kilo Code** instalează skill-ul Graphify în `~/.config/kilo/skills/graphify/SKILL.md` și o comandă nativă `/graphify` în `~/.config/kilo/command/graphify.md`. `graphify kilo install` scrie și `AGENTS.md`, plus un plugin nativ `tool.execute.before` (`.kilo/plugins/graphify.js` + înregistrarea `.kilo/kilo.json` sau `.kilo/kilo.jsonc`), astfel încât Kilo primește același comportament de reamintire mereu activă a grafului prin configurarea nativă `.kilo`.
-
-**Cursor** scrie `.cursor/rules/graphify.mdc` cu `alwaysApply: true`, astfel încât Cursor îl include automat în fiecare conversație, fără hook necesar.
+Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/guides/always-on)**.
 
 Pentru a elimina graphify de pe toate platformele deodată: `graphify uninstall` (adăugați `--purge` pentru a șterge și `graphify-out/`). Sau folosiți comanda per platformă (de ex. `graphify claude uninstall`).
+
+### Skill-uri CLI sau instrucțiuni MCP?
+
+Instrucțiunile instalate de `graphify install` și cele furnizate cu o conexiune Graphify MCP descriu moduri diferite de a interoga un graf:
+
+| Configurare | Îndrumare de folosit | Acces la interogare |
+|---|---|---|
+| CLI local și skill de asistent instalat | Instrucțiunile de platformă scrise de `graphify install` | Rulați `graphify query`, `graphify path` și `graphify explain` pe graful local (`graphify-out/` în mod implicit). |
+| Server Graphify MCP conectat | Instrucțiunile conexiunii și uneltele listate de acel server | Apelați uneltele MCP listate pe graful servit de acea conexiune. Numele și descrierile uneltelor provin de la server. |
+
+Ambele încurajează interogări delimitate ale grafului înaintea căutărilor ample în sursă. Alegeți instrucțiunile care se potrivesc cu uneltele la care asistentul vostru are efectiv acces; niciunul dintre blocuri nu stabilește o regulă universală de precedență pentru fișierele de instrucțiuni ale asistentului vostru. Dacă folosiți ambele integrări, identificați ce graf interoghează fiecare și alegeți o cale principală de interogare în loc să copiați două blocuri de instrucțiuni necondiționate în `AGENTS.md`.
+
+`graphify install` instalează integrarea locală a asistentului; nu stabilește o conexiune MCP. Un client MCP nu are nevoie să ruleze interogări CLI locale pentru a-și folosi serverul conectat. Un server găzduit local are totuși nevoie de propria instalare Graphify și de propriul graf, în timp ce o conexiune găzduită poate servi un graf care nu este prezent în directorul de lucru al clientului. Dacă uneltele așteptate lipsesc, verificați instalarea CLI relevantă sau conexiunea MCP în loc să tratați instrucțiunile celeilalte configurări ca interschimbabile.
 
 ---
 
@@ -329,7 +331,7 @@ Pentru a elimina graphify de pe toate platformele deodată: `graphify uninstall`
 
 ---
 
-## Ce fișiere gestionează
+## Ce fișiere gestionează: ~40 de limbaje
 
 graphify analizează ~40 de limbaje de programare local cu tree-sitter AST și mapează documentația, PDF-urile, imaginile și audio/video printr-o trecere semantică opțională. Lista completă: **[Intrări acceptate](https://docs.graphify.com/concepts/supported-inputs)**.
 
@@ -371,6 +373,25 @@ Vedeți [referința completă a comenzilor](#full-command-reference) mai jos.
 
 graphify respectă `.gitignore` și acceptă tipare `--exclude` și un `.graphifyignore` la nivel de proiect. Detalii: **[Configurare](https://docs.graphify.com/reference/configuration)**.
 
+
+## Configurarea proiectului
+
+Creați un `.graphifyrc` în rădăcina de scanare pentru setări care aparțin proiectului, nu unei singure rulări. Câte un `key=value` pe linie; liniile care încep cu `#` sunt comentarii.
+
+**Extensii ambigue.** Unele extensii înseamnă limbaje diferite în proiecte diferite: `.inc` este PHP pe pfSense, Pascal într-un arbore Delphi, SQL sau assembly în altă parte; `.h` este C sau C++; `.m` este Objective-C sau MATLAB. graphify trebuie să aleagă o singură valoare implicită globală, iar când alege greșit fișierul nu eșuează: se analizează ca limbajul greșit și produce o mână de noduri incidentale, așa că graful pare populat în timp ce simbolurile reale lipsesc. Declarați ce înseamnă extensia în repo-ul vostru:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Declarația curge prin clasificare, selecția extractorului, gramatică și rezolvare, importuri, `graphify watch` și cache-ul AST (un fișier re-analizat sub un limbaj diferit nu reutilizează niciodată intrarea veche), iar același `.graphifyrc` este citit de `extract`, `update`, hook-uri, serverul MCP și skill-ul `/graphify`. O greșeală de tastare este raportată o dată pe stderr, iar scanarea continuă cu valorile implicite. Cum interacționează declarațiile cu cache-ul, reconstruirile incrementale și rezolvarea importurilor: **[Configurare](https://docs.graphify.com/reference/configuration)**.
+
 ---
 
 ## Configurarea echipei
@@ -381,7 +402,7 @@ Comiteți sau partajați graful pentru ca întreaga echipă să interogheze acel
 
 ## Folosirea directă a grafului
 
-Dincolo de asistentul vostru AI, interogați `graph.json` direct din CLI cu `graphify query`, `graphify path` și `graphify explain`. Vedeți **[Puneți întrebări mai bune despre graf](https://docs.graphify.com/guides/querying)** și **[referința de interogare](https://docs.graphify.com/reference/query)**.
+Dincolo de asistentul vostru AI, interogați `graph.json` direct din CLI cu `graphify query`, `graphify path` și `graphify explain`. Un nume care se potrivește cu mai multe noduri este refuzat, cu candidații listați în loc de ghicit. Scripturile pot citi rezultatul din codul de ieșire: `0` un răspuns, `3` un nume ambiguu, `4` niciun nod care se potrivește. Vedeți **[Puneți întrebări mai bune despre graf](https://docs.graphify.com/guides/querying)** și **[referința de interogare](https://docs.graphify.com/reference/query)**.
 
 ---
 
@@ -395,7 +416,7 @@ Backend-urile, cheile API, comportamentul hook-urilor și reglajele sunt control
 
 - **Fișiere de cod**: procesate local prin tree-sitter. Nimic nu părăsește mașina voastră. Un corpus format doar din cod nu necesită cheie API: `graphify extract` rulează complet offline. Pe un repo mixt, adăugați `--code-only` pentru a indexa doar codul și a sări peste documentele/PDF-urile/imaginile care altfel ar avea nevoie de un LLM.
 - **Video / audio**: transcrise local cu faster-whisper. Nimic nu părăsește mașina voastră.
-- **Documente, PDF-uri, imagini**: trimise asistentului vostru AI pentru extracție semantică (prin skill-ul `/graphify`, folosind orice model rulează sesiunea voastră IDE). `graphify extract` în mod headless necesită `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), o instanță Ollama în funcțiune (`OLLAMA_BASE_URL`), credențiale AWS prin lanțul standard de furnizori (Bedrock – nu e nevoie de cheie API, folosește IAM), sau binarul CLI `claude` (Claude Code – nu e nevoie de cheie API, folosește abonamentul vostru Claude). Opțiunea `--dedup-llm` folosește aceeași cheie.
+- **Documente, PDF-uri, imagini**: trimise asistentului vostru AI pentru extracție semantică (prin skill-ul `/graphify`, folosind orice model rulează sesiunea voastră IDE). `graphify extract` în mod headless necesită `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), o instanță Ollama în funcțiune (`OLLAMA_BASE_URL`), credențiale AWS prin lanțul standard de furnizori (Bedrock - nu e nevoie de cheie API, folosește IAM), sau binarul CLI `claude` (Claude Code - nu e nevoie de cheie API, folosește abonamentul vostru Claude). Opțiunea `--dedup-llm` folosește aceeași cheie.
 - **Rezidența datelor**: `graphify extract` detectează automat ce furnizor să folosească pe baza cheii API setate (prioritate: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Pentru cod cu cerințe de rezidență a datelor, folosiți `--backend ollama` (complet local) sau transmiteți o opțiune `--backend` explicită. Kimi (`MOONSHOT_API_KEY`) rutează către serverele Moonshot AI din China.
 - **Fără telemetrie**, fără urmărirea utilizării, fără analitică.
 - **Jurnalizarea interogărilor**: fiecare apel `graphify query`, `graphify path`, `graphify explain` și MCP `query_graph` este jurnalizat în `~/.cache/graphify-queries.log` în format JSON Lines (marcaj de timp, întrebare, corpus, noduri returnate, durată). Răspunsurile complete de subgraf **nu** sunt stocate în mod implicit. Setați `GRAPHIFY_QUERY_LOG_DISABLE=1` pentru a renunța, sau `GRAPHIFY_QUERY_LOG=/dev/null` pentru a reduce la tăcere fără a dezactiva calea de cod.

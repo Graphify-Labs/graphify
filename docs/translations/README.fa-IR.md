@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>هزینه توکن عامل‌ها را ۸۰٪ کاهش دهید.</b> Graphify Cloud یک حافظهٔ همیشه‌روشن است که عامل‌های شما را مدیریت می‌کند، کیفیت کد را بالا نگه می‌دارد و درستی را با وارسی صوری اثبات می‌کند. <a href="https://app.graphify.com/login"><b>یک دورهٔ آزمایشی رایگان ۱۴ روزه را آغاز کنید &rarr;</b></a>
+  <b>هزینه توکن عامل‌ها را 80% کاهش دهید.</b> Graphify Cloud یک حافظهٔ همیشه‌روشن است که عامل‌های شما را مدیریت می‌کند، کیفیت کد را بالا نگه می‌دارد و درستی را با وارسی صوری اثبات می‌کند. <a href="https://app.graphify.com/login"><b>یک دورهٔ آزمایشی رایگان 14 روزه را آغاز کنید &rarr;</b></a>
 </p>
 
 در دستیار کدنویسی هوش مصنوعی خود `/graphify` را تایپ کنید تا کل پروژهٔ شما (کد، مستندات، فایل‌های PDF، تصاویر، ویدیوها) را به یک **گراف دانش** نگاشت کند که می‌توانید به‌جای grep کردن در فایل‌ها **از آن پرس‌وجو کنید**.
@@ -38,7 +38,7 @@
 - **یک نمایهٔ برداری نیست.** بدون تعبیه‌ها، بدون انبار برداری: یک گراف واقعی که آن را پیمایش می‌کنید. سؤالی بپرسید، مسیر میان دو چیز را ردیابی کنید، یا یک مفهوم را توضیح دهید.
 
 > [!NOTE]
-> **این را همیشه‌روشن می‌خواهید؟** [Graphify Cloud](https://app.graphify.com/login) گراف را در سراسر چرخهٔ عمر توسعهٔ نرم‌افزار شما زنده نگه می‌دارد: پشتیبانی از مونوریپو و چند-مخزنی، وارسی صوری، و بازبینی کد با نگاهی از بالا به کل SDLC شما، به‌علاوهٔ اتصال‌دهنده‌هایی برای Sentry و Jira و موارد دیگر، تا رخدادها و تیکت‌ها در همان گرافی قرار گیرند که کد شما در آن است. **[یک دورهٔ آزمایشی رایگان ۱۴ روزه را در app.graphify.com آغاز کنید](https://app.graphify.com/login)**.
+> **این را همیشه‌روشن می‌خواهید؟** [Graphify Cloud](https://app.graphify.com/login) گراف را در سراسر چرخهٔ عمر توسعهٔ نرم‌افزار شما زنده نگه می‌دارد: پشتیبانی از مونوریپو و چند-مخزنی، وارسی صوری، و بازبینی کد با نگاهی از بالا به کل SDLC شما، به‌علاوهٔ اتصال‌دهنده‌هایی برای Sentry و Jira و موارد دیگر، تا رخدادها و تیکت‌ها در همان گرافی قرار گیرند که کد شما در آن است. **[یک دورهٔ آزمایشی رایگان 14 روزه را در app.graphify.com آغاز کنید](https://app.graphify.com/login)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,11 +47,11 @@
   <em>کدبیس FastAPI که توسط graphify نگاشت شده است. هر گره یک مفهوم است، رنگ‌ها جامعه‌های شناسایی‌شده هستند، و همهٔ آن در graph.html قابل کلیک است.</em>
 </p>
 
-**شروع کنید** (۳۰ ثانیه):
+**شروع کنید** (30 ثانیه). به Python 3.10+ و uv (یا pipx) نیاز دارد:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 سپس، در دستیار هوش مصنوعی خود:
@@ -73,21 +73,7 @@ graphify-out/
 تغییرات ناسازگار قالب را تشخیص دهند، به‌علاوهٔ `graph.graphify_version` که
 نسخهٔ Graphify تولیدکنندهٔ آن را مشخص می‌کند.
 
-**کار می‌کند در** Claude Code، Cursor، Codex، Gemini CLI، GitHub Copilot و ۱۵+ مورد دیگر: [پلتفرم خود را انتخاب کنید](#install).
-
----
-
-## Documentation
-
-راهنماها و مرجع کامل در **[docs.graphify.com](https://docs.graphify.com)** قرار دارند:
-
-- **[Quickstart](https://docs.graphify.com/quickstart)**: نخستین گراف خود را بسازید
-- **[CLI reference](https://docs.graphify.com/reference/overview)**: هر فرمان و هر پرچم
-- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: الگوهای پرس‌وجو
-- **[Configuration](https://docs.graphify.com/reference/configuration)**: متغیرهای محیطی و تنظیم
-- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: زبان‌ها و انواع فایل
-- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** و **[PR review](https://docs.graphify.com/guides/pull-requests)**
-- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** و **[How it works](https://docs.graphify.com/concepts/architecture)**
+**یک نصب، هر دستیاری، هر سیستم‌عاملی.** Claude Code، Cursor، Codex، Gemini CLI، GitHub Copilot و 20+ مورد دیگر، روی macOS، Linux و Windows: [پلتفرم خود را انتخاب کنید](#install).
 
 ---
 
@@ -130,18 +116,18 @@ Shortest path (3 hops):
 |---|---|
 | **گره‌های خدا** | پرارتباط‌ترین مفاهیم، تا ببینید همه‌چیز از میان چه چیزی جریان می‌یابد |
 | **جامعه‌ها** | گراف تقسیم‌شده به زیرسیستم‌ها (Leiden)، با برچسب‌های بدون مدل زبانی |
-| **پیوندهای میان‌فایلی** | `calls` / `imports` / `inherits` / `mixes_in` برطرف‌شده در حدود ۴۰ زبان از طریق AST tree-sitter |
+| **پیوندهای میان‌فایلی** | `calls` / `imports` / `inherits` / `mixes_in` برطرف‌شده در حدود 40 زبان از طریق AST tree-sitter |
 | **پرس‌وجو، مسیر، توضیح** | سؤالی بپرسید، مسیر میان دو چیز را ردیابی کنید، یا یک مفهوم را توضیح دهید، همه در برابر `graph.json` |
 | **منطق + ارجاع‌های مستند** | توضیحات `# NOTE:` / `# WHY:` و استنادهای ADR/RFC به گره‌های درجه‌یک پیوندخورده به کد تبدیل می‌شوند |
 | **فراتر از کد** | مستندات، فایل‌های PDF، تصاویر و ویدیو/صوت همگی در همان گراف نگاشت می‌شوند |
 | **محلی‌محور** | کد به‌صورت محلی با tree-sitter تجزیه می‌شود (بدون مدل زبانی، هیچ‌چیز از دستگاه شما خارج نمی‌شود)؛ تنها گذر معنایی روی مستندات/رسانه یک بک‌اند را فرا می‌خواند، و فقط اگر شما یکی را پیکربندی کنید |
 
 > [!TIP]
-> این را در مخازن بسیار یا یک مونوریپو اجرا می‌کنید؟ [Graphify Cloud](https://app.graphify.com/login) این کار را به‌طور پیوسته انجام می‌دهد و هزینهٔ توکن عامل را ۸۰٪ کاهش می‌دهد، با پیوندهای چند-مخزنی، بازبینی کد در گسترهٔ SDLC، وارسی صوری، و اتصال‌دهنده‌های Sentry/Jira. [یک دورهٔ آزمایشی رایگان ۱۴ روزه را آغاز کنید &rarr;](https://app.graphify.com/login)
+> این را در مخازن بسیار یا یک مونوریپو اجرا می‌کنید؟ [Graphify Cloud](https://app.graphify.com/login) این کار را به‌طور پیوسته انجام می‌دهد و هزینهٔ توکن عامل را 80% کاهش می‌دهد، با پیوندهای چند-مخزنی، بازبینی کد در گسترهٔ SDLC، وارسی صوری، و اتصال‌دهنده‌های Sentry/Jira. [یک دورهٔ آزمایشی رایگان 14 روزه را آغاز کنید &rarr;](https://app.graphify.com/login)
 
 ---
 
-## Benchmarks
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |
 |---|---|---|---|
@@ -151,7 +137,21 @@ Shortest path (3 hops):
 | ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
 | Graph build | LLM credits | **0** | per-token for most systems |
 
-هر سیستم روی همان بستر با همان مدل و همان بودجه‌ها اجرا شد، و توسط یک داور که به‌صورت کور در برابر یک داور دوم اعتبارسنجی شده بود امتیازدهی شد (توافق ۹۰٫۶٪، کاپای کوهن ۰٫۸۱). جداول کامل هر سیستم، نتیجهٔ هوش کد، و فرمان‌های بازتولید: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+هر سیستم روی همان بستر با همان مدل و همان بودجه‌ها اجرا شد، و توسط یک داور که به‌صورت کور در برابر یک داور دوم اعتبارسنجی شده بود امتیازدهی شد (توافق 90.6%، کاپای کوهن 0.81). جداول کامل هر سیستم، نتیجهٔ هوش کد، و فرمان‌های بازتولید: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Documentation
+
+راهنماها و مرجع کامل در **[docs.graphify.com](https://docs.graphify.com)** قرار دارند:
+
+- **[Quickstart](https://docs.graphify.com/quickstart)**: نخستین گراف خود را بسازید
+- **[CLI reference](https://docs.graphify.com/reference/overview)**: هر فرمان و هر پرچم
+- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: الگوهای پرس‌وجو
+- **[Configuration](https://docs.graphify.com/reference/configuration)**: متغیرهای محیطی و تنظیم
+- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: زبان‌ها و انواع فایل
+- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** و **[PR review](https://docs.graphify.com/guides/pull-requests)**
+- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** و **[How it works](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -189,24 +189,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 مخزن منبع رسمی [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) است.
 
-**گام ۱: بسته را نصب کنید:**
+راه‌اندازی سریع دو-فرمانی در بالای این فایل راهنما قرار دارد. این بخش روش‌های نصب، نصب‌های محدودشده به پروژه، و هر پلتفرم پشتیبانی‌شده را پوشش می‌دهد.
+
+**روش‌های نصب** (یکی را انتخاب کنید):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**گام ۲: مهارت را در دستیار هوش مصنوعی خود ثبت کنید:**
-
-```bash
-graphify install
-```
-
-همین. دستیار هوش مصنوعی خود را باز کنید و `/graphify .` را تایپ کنید
+سپس یک بار `graphify install` را اجرا کنید. این تشخیص می‌دهد کدام دستیار را اجرا می‌کنید و مهارت را ثبت می‌کند، بنابراین هیچ راه‌اندازی جداگانه‌ای برای هر دستیار لازم نیست. دستیار هوش مصنوعی خود را باز کنید و `/graphify .` را تایپ کنید
 
 برای نصب مهارت دستیار در مخزن کنونی به‌جای نمایهٔ کاربری
 خود، `--project` را اضافه کنید:
@@ -250,7 +243,7 @@ graphify install --project --platform codex
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +251,8 @@ graphify install --project --platform codex
 کاربران Codex برای استخراج موازی به `multi_agent = true` زیر `[features]` در `~/.codex/config.toml` نیز نیاز دارند. CodeBuddy از همان سازوکار ابزار Agent و قلاب PreToolUse مانند Claude Code استفاده می‌کند. Factory Droid از ابزار `Task` برای اعزام موازی زیرعامل استفاده می‌کند. OpenClaw و Aider از استخراج ترتیبی استفاده می‌کنند (پشتیبانی از عامل موازی روی آن پلتفرم‌ها هنوز در مراحل اولیه است). Trae از ابزار Agent برای اعزام موازی زیرعامل استفاده می‌کند و از قلاب‌های `PreToolUse` پشتیبانی **نمی‌کند**، بنابراین AGENTS.md سازوکار همیشه‌روشن است.
 
 `--platform agents` (نام مستعار `--platform skills`) مکان‌های عمومی و بین‌چارچوبی [Agent-Skills](https://github.com/anthropics/skills) را هدف می‌گیرد: مسیر کاربر-سراسری مشخصات `~/.agents/skills/` (که توسط `npx skills` و چارچوب‌های سازگار با مشخصات خوانده می‌شود) برای نصب سراسری، و `./.agents/skills/` برای نصب پروژه (`--project`). `graphify install` ساده به‌طور طراحی‌شده تک‌پلتفرمی (Claude Code) باقی می‌ماند: هنگامی که می‌خواهید مهارت توسط هر چارچوبی که `.agents/skills` را می‌خواند قابل کشف باشد، از پلتفرم نام‌گذاری‌شدهٔ `agents` استفاده کنید.
+
+Pi هیچ قلاب `PreToolUse` ندارد، بنابراین `graphify pi guard install` یک افزونهٔ بومی Pi را ثبت می‌کند (از طریق `pi install <package directory>` خودِ Pi) که `graphify hook-guard` نصب‌شده را پیش از فراخوان‌های `read`، `grep`، `find` و `bash` سبک-جست‌وجوی Pi اجرا می‌کند. تصمیم‌های گراف تازه/کهنه و ردِ خواندنِ نمایه‌شدهٔ یک‌بار-در-هر-نشست با `GRAPHIFY_HOOK_STRICT=1` از همان سیاست می‌آیند، بنابراین Pi با رفتار قلاب Claude Code مطابقت می‌کند؛ راهنمایی به‌صورت یک پیام هدایتی `<system-reminder source="graphify">` می‌رسد. این به Pi 0.58.4 یا جدیدتر نیاز دارد: نسخه‌های پیشین اجازه می‌دادند یک پیام هدایتی از بقیهٔ یک دستهٔ فراخوان ابزار موازی صرف‌نظر کند. این بسته درون نصب Graphify عرضه می‌شود، بنابراین Graphify را به‌صورت پایدار نصب کنید (`uv tool install graphifyy` یا `pipx install graphifyy`، نه `uvx`)، Pi را پس از نصب یا ارتقا دوباره راه‌اندازی کنید، و آن را با `graphify pi guard uninstall` حذف کنید. تنها هدف‌های فایل محلی بازرسی می‌شوند؛ قلاب به `graphify` روی یک ورودی `PATH` مطلق خارج از پروژه نیاز دارد، به یک فراخوان دو-ثانیه‌ای و 256 KiB-ورودی/64 KiB-خروجی محدود است، و به‌صورت باز شکست می‌خورد (fail open). همین بسته در [Oh My Pi](https://github.com/can1357/oh-my-pi) نیز بارگذاری می‌شود: `omp plugin install "$(graphify pi guard path)"`. مسیر ثبت‌شده شامل نسخهٔ Python و venv است، بنابراین پس از تغییر هر یک `graphify pi guard install` را دوباره اجرا کنید، و ورودی قدیمی را با `pi remove <old path>` حذف کنید.
 
 > Codex به‌جای `/graphify` از `$graphify` استفاده می‌کند.
 
@@ -311,15 +306,22 @@ graphify install --project --platform codex
 
 `GRAPH_REPORT.md` همچنان برای بازبینی گستردهٔ معماری در دسترس است.
 
-**CodeBuddy** همان دو کاری را که Claude Code انجام می‌دهد انجام می‌دهد: یک بخش `CODEBUDDY.md` می‌نویسد که به CodeBuddy می‌گوید پیش از پاسخ به پرسش‌های معماری `graphify-out/GRAPH_REPORT.md` را بخواند، و قلاب‌های `PreToolUse` (`.codebuddy/settings.json`) را نصب می‌کند که پیش از فرمان‌های جست‌وجوی Bash و خواندن فایل‌ها فعال می‌شوند و به‌جای آن به‌سوی `graphify query` هدایت می‌کنند.
-
-**Codex** در `AGENTS.md` می‌نویسد، که همان چیزی است که در عمل راهنمایی همیشه‌روشن گراف را روی این پلتفرم حمل می‌کند. `graphify codex install` همچنین یک قلاب `PreToolUse` را در `.codex/hooks.json` (`graphify hook-check`) ثبت می‌کند، اما آن ورودی عامدانه یک **عمل بی‌اثر** است: Codex Desktop `hookSpecificOutput.additionalContext` را روی `PreToolUse` رد می‌کند، بنابراین انتشار یک هدایت در آنجا فراخوان‌های ابزار Bash را خراب می‌کند. برخلاف Claude Code، که در آن قلاب (`graphify hook-guard`) هدایت را انجام می‌دهد، در Codex قلاب فعال می‌شود و عمداً کاری انجام نمی‌دهد، و `AGENTS.md` سازوکار همیشه‌روشن است.
-
-**Kilo Code** مهارت Graphify را در `~/.config/kilo/skills/graphify/SKILL.md` و یک فرمان بومی `/graphify` را در `~/.config/kilo/command/graphify.md` نصب می‌کند. `graphify kilo install` همچنین `AGENTS.md` را به‌علاوهٔ یک افزونهٔ بومی `tool.execute.before` (`.kilo/plugins/graphify.js` + ثبت `.kilo/kilo.json` یا `.kilo/kilo.jsonc`) می‌نویسد تا Kilo از طریق پیکربندی بومی `.kilo` همان رفتار یادآوری همیشه‌روشن گراف را دریافت کند.
-
-**Cursor** فایل `.cursor/rules/graphify.mdc` را با `alwaysApply: true` می‌نویسد، بنابراین Cursor آن را به‌طور خودکار در هر گفت‌وگو می‌گنجاند، بدون نیاز به قلاب.
+اینکه دقیقاً هر پلتفرم چه فایل‌هایی می‌نویسد (`CODEBUDDY.md` + قلاب‌های `PreToolUse` برای CodeBuddy، `AGENTS.md` برای Codex، افزونهٔ بومی `.kilo` برای Kilo، قاعدهٔ `alwaysApply` برای Cursor، و غیره) در **[Always-on setup](https://docs.graphify.com/guides/always-on)** پوشش داده شده است.
 
 برای حذف graphify از همهٔ پلتفرم‌ها به‌یک‌باره: `graphify uninstall` (برای حذف `graphify-out/` نیز `--purge` را اضافه کنید). یا از فرمان هر پلتفرم استفاده کنید (برای مثال `graphify claude uninstall`).
+
+### CLI skills or MCP instructions?
+
+دستورالعمل‌های نصب‌شده توسط `graphify install` و آن‌هایی که با یک اتصال Graphify MCP عرضه می‌شوند، راه‌های متفاوتی برای پرس‌وجوی یک گراف را توصیف می‌کنند:
+
+| Setup | Guidance to use | Query access |
+|---|---|---|
+| CLI محلی و مهارت دستیار نصب‌شده | دستورالعمل‌های پلتفرم که توسط `graphify install` نوشته می‌شوند | `graphify query`، `graphify path` و `graphify explain` را در برابر گراف محلی (`graphify-out/` به‌طور پیش‌فرض) اجرا کنید. |
+| سرور Graphify MCP متصل | دستورالعمل‌های اتصال و ابزارهایی که آن سرور فهرست می‌کند | ابزارهای MCP فهرست‌شده را در برابر گرافی که آن اتصال سرو می‌کند فراخوانی کنید. نام‌ها و توضیحات ابزار از سرور می‌آیند. |
+
+هر دو، پرس‌وجوهای محدودشدهٔ گراف را پیش از جست‌وجوهای گستردهٔ منبع تشویق می‌کنند. دستورالعمل‌هایی را انتخاب کنید که با ابزارهایی که دستیار شما واقعاً می‌تواند به آن‌ها دسترسی داشته باشد مطابقت دارند؛ هیچ‌کدام از این بلوک‌ها یک قاعدهٔ تقدم جهانی برای فایل‌های دستورالعمل دستیار شما برقرار نمی‌کند. اگر از هر دو یکپارچه‌سازی استفاده می‌کنید، مشخص کنید هر کدام کدام گراف را پرس‌وجو می‌کند و یک مسیر پرس‌وجوی اصلی انتخاب کنید به‌جای کپی کردن دو بلوک دستورالعمل بی‌قیدوشرط در `AGENTS.md`.
+
+`graphify install` یکپارچه‌سازی دستیار محلی را نصب می‌کند؛ یک اتصال MCP برقرار نمی‌کند. یک کلاینت MCP برای استفاده از سرور متصل خود نیازی به اجرای پرس‌وجوهای CLI محلی ندارد. یک سرور میزبانی‌شده به‌صورت محلی همچنان به نصب و گراف Graphify خودش نیاز دارد، در حالی که یک اتصال میزبانی‌شده ممکن است گرافی را سرو کند که در دایرکتوری کاری کلاینت حضور ندارد. اگر ابزارهای مورد انتظار غایب هستند، به‌جای آنکه دستورالعمل‌های راه‌اندازی دیگر را قابل‌تعویض بدانید، نصب CLI مربوطه یا اتصال MCP را بررسی کنید.
 
 ---
 
@@ -329,9 +331,9 @@ graphify install --project --platform codex
 
 ---
 
-## What files it handles
+## What files it handles: ~40 languages
 
-graphify حدود ۴۰ زبان برنامه‌نویسی را به‌صورت محلی با AST tree-sitter تجزیه می‌کند، و مستندات، فایل‌های PDF، تصاویر و صوت/ویدیو را از طریق یک گذر معنایی اختیاری نگاشت می‌کند. فهرست کامل: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
+graphify حدود 40 زبان برنامه‌نویسی را به‌صورت محلی با AST tree-sitter تجزیه می‌کند، و مستندات، فایل‌های PDF، تصاویر و صوت/ویدیو را از طریق یک گذر معنایی اختیاری نگاشت می‌کند. فهرست کامل: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
 
 ---
 
@@ -371,6 +373,25 @@ graphify prs --conflicts           # PRs sharing graph communities: merge-order 
 
 graphify به `.gitignore` احترام می‌گذارد و از الگوهای `--exclude` و یک `.graphifyignore` پروژه پشتیبانی می‌کند. جزئیات: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+
+## Project configuration
+
+یک `.graphifyrc` در ریشهٔ اسکن برای تنظیماتی ایجاد کنید که به پروژه تعلق دارند نه به یک اجرا. هر خط یک `key=value`؛ خطوطی که با `#` آغاز می‌شوند توضیح هستند.
+
+**پسوندهای مبهم.** برخی پسوندها در پروژه‌های مختلف به زبان‌های متفاوتی اشاره دارند: `.inc` در pfSense به PHP، در یک درخت Delphi به Pascal، و در جای دیگر به SQL یا اسمبلی اشاره دارد؛ `.h` به C یا C++؛ `.m` به Objective-C یا MATLAB. graphify باید یک پیش‌فرض سراسری واحد را انتخاب کند، و وقتی اشتباه انتخاب می‌کند فایل شکست نمی‌خورد: به‌عنوان زبان نادرست تجزیه می‌شود و تعداد اندکی گره اتفاقی تولید می‌کند، بنابراین گراف پرجمعیت به‌نظر می‌رسد در حالی که نمادهای واقعی غایب‌اند. اعلام کنید پسوند در مخزن شما چه معنایی دارد:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+این اعلان از میان دسته‌بندی، انتخاب استخراج‌کننده، گرامر و برطرف‌سازی، واردات، `graphify watch`، و حافظهٔ نهان AST جریان می‌یابد (فایلی که تحت زبان متفاوتی دوباره تجزیه شود هرگز از ورودی قدیمی دوباره استفاده نمی‌کند)، و همان `.graphifyrc` توسط `extract`، `update`، قلاب‌ها، سرور MCP و مهارت `/graphify` خوانده می‌شود. یک غلط تایپی یک بار روی stderr گزارش می‌شود و اسکن با پیش‌فرض‌ها ادامه می‌یابد. اینکه اعلان‌ها چگونه با حافظهٔ نهان، بازسازی‌های افزایشی و برطرف‌سازی واردات تعامل می‌کنند: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
 ---
 
 ## Team setup
@@ -381,7 +402,7 @@ graphify به `.gitignore` احترام می‌گذارد و از الگوهای
 
 ## Using the graph directly
 
-فراتر از دستیار هوش مصنوعی خود، `graph.json` را مستقیماً از CLI با `graphify query`، `graphify path` و `graphify explain` پرس‌وجو کنید. **[Ask better graph questions](https://docs.graphify.com/guides/querying)** و **[query reference](https://docs.graphify.com/reference/query)** را ببینید.
+فراتر از دستیار هوش مصنوعی خود، `graph.json` را مستقیماً از CLI با `graphify query`، `graphify path` و `graphify explain` پرس‌وجو کنید. نامی که با چند گره مطابقت دارد به‌جای حدس زدن، با فهرست کردن نامزدها رد می‌شود. اسکریپت‌ها می‌توانند نتیجه را از کد خروج بخوانند: `0` یک پاسخ، `3` یک نام مبهم، `4` هیچ گره مطابق. **[Ask better graph questions](https://docs.graphify.com/guides/querying)** و **[query reference](https://docs.graphify.com/reference/query)** را ببینید.
 
 ---
 
@@ -428,14 +449,14 @@ graphify به `.gitignore` احترام می‌گذارد و از الگوهای
 
 [**Graphify Cloud**](https://app.graphify.com/login) لایهٔ همیشه‌روشنی است که بر فراز graphify ساخته شده است. به‌جای گرافی که بنا به تقاضا برای هر پوشه بازسازی می‌کنید، یک گراف زندهٔ واحد را در سراسر چرخهٔ عمر توسعهٔ نرم‌افزار شما نگه می‌دارد:
 
-- **۸۰٪ توکن کمتر**: حافظهٔ همیشه‌روشن یعنی عامل‌های شما در هر نشست از بازخواندن و بازتوضیح کدبیس دست می‌کشند.
+- **80% توکن کمتر**: حافظهٔ همیشه‌روشن یعنی عامل‌های شما در هر نشست از بازخواندن و بازتوضیح کدبیس دست می‌کشند.
 - **مونوریپو و چند-مخزنی**: یک گراف متصل واحد در سراسر هر سرویس و مخزن، نه یک گراف برای هر پوشه.
 - **وارسی صوری**: ناوردایی‌های معماری و وابستگی را در برابر گراف زنده بررسی کنید.
 - **بازبینی کد با نگاهی از بالا به SDLC شما**: ببینید چگونه یک تغییر در کل سیستم موج می‌اندازد پیش از آنکه ادغام کنید.
 - **اتصال‌دهنده‌های SDLC**: Sentry، Jira و موارد دیگر را وارد کنید، تا رخدادها، تیکت‌ها و کد در یک گراف زندگی کنند.
 - **همیشه‌روشن**: به‌طور پیوسته در پس‌زمینه در سراسر کد، مستندات و جلسات به‌روزرسانی می‌شود.
 
-**[یک دورهٔ آزمایشی رایگان ۱۴ روزه را در app.graphify.com آغاز کنید &rarr;](https://app.graphify.com/login)**
+**[یک دورهٔ آزمایشی رایگان 14 روزه را در app.graphify.com آغاز کنید &rarr;](https://app.graphify.com/login)**
 
 ---
 
@@ -459,7 +480,7 @@ graphify به `.gitignore` احترام می‌گذارد و از الگوهای
 
 ## Translations
 
-این فایل راهنما به ۳۲ زبان در دسترس است. از تعویض‌کنندهٔ زبان در بالای این فایل استفاده کنید تا آن را به زبان خود بخوانید، یا [`docs/translations/`](./) را مرور کنید. برای بهبود یک ترجمه یا افزودن یک ترجمهٔ جدید، یک درخواست کشش در برابر فایل متناظر آنجا باز کنید.
+این فایل راهنما به 32 زبان در دسترس است. از تعویض‌کنندهٔ زبان در بالای این فایل استفاده کنید تا آن را به زبان خود بخوانید، یا [`docs/translations/`](./) را مرور کنید. برای بهبود یک ترجمه یا افزودن یک ترجمهٔ جدید، یک درخواست کشش در برابر فایل متناظر آنجا باز کنید.
 
 ---
 

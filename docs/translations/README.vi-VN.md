@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
-  <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
   <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
@@ -28,30 +28,30 @@
 </p>
 
 <p align="center">
-  <b>Giảm 80% chi phí token của agent.</b> Graphify Cloud là bộ nhớ luôn bật, giúp điều phối các agent của bạn, giữ chất lượng mã ở mức cao và chứng minh tính đúng đắn bằng kiểm chứng hình thức. <a href="https://app.graphify.com/login"><b>Bắt đầu dùng thử miễn phí 14 ngày &rarr;</b></a>
+  <b>Cắt giảm chi phí token của agent đi 80%.</b> Graphify Cloud là bộ nhớ luôn bật, giúp quản trị các agent của bạn, giữ chất lượng code ở mức cao, và chứng minh tính đúng đắn bằng kiểm chứng hình thức. <a href="https://app.graphify.com/login"><b>Bắt đầu dùng thử miễn phí 14 ngày &rarr;</b></a>
 </p>
 
-Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó sẽ ánh xạ toàn bộ dự án của bạn (mã, tài liệu, PDF, hình ảnh, video) thành một **đồ thị tri thức (knowledge graph)** mà bạn có thể **truy vấn thay vì grep** qua các tệp.
+Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó ánh xạ toàn bộ dự án của bạn (code, tài liệu, PDF, hình ảnh, video) thành một **đồ thị tri thức** mà bạn có thể **truy vấn thay vì grep** xuyên qua các tệp.
 
-- **Ánh xạ mã miễn phí, hoàn toàn cục bộ.** Mã được phân tích bằng tree-sitter AST: xác định, không dùng LLM, không có gì rời khỏi máy của bạn. (Tài liệu, PDF, hình ảnh và video dùng mô hình của trợ lý, hoặc một API key đã cấu hình, cho bước xử lý ngữ nghĩa.)
-- **Mọi cạnh (edge) đều được giải thích.** Mỗi kết nối được gắn nhãn `EXTRACTED` (được nêu rõ trong nguồn) hoặc `INFERRED` (được graphify suy ra), để bạn phân biệt được điều gì đọc trực tiếp với điều gì được suy luận.
-- **Không phải chỉ mục vector.** Không embeddings, không kho vector: một đồ thị thực sự mà bạn duyệt qua. Đặt một câu hỏi, lần theo đường đi giữa hai thứ, hoặc giải thích một khái niệm.
+- **Ánh xạ code miễn phí, hoàn toàn cục bộ.** Code được phân tích bằng tree-sitter AST: xác định, không dùng LLM, không gì rời khỏi máy của bạn. (Tài liệu, PDF, hình ảnh và video dùng mô hình của trợ lý của bạn, hoặc một API key đã cấu hình, cho một lượt xử lý ngữ nghĩa.)
+- **Mọi cạnh đều được giải thích.** Mỗi kết nối được gắn thẻ `EXTRACTED` (hiện diện rõ ràng trong nguồn) hoặc `INFERRED` (được graphify giải quyết), nên bạn có thể phân biệt điều gì được đọc trực tiếp với điều gì được suy luận.
+- **Không phải chỉ mục vector.** Không embedding, không kho vector: một đồ thị thực sự mà bạn duyệt qua. Hỏi một câu hỏi, lần theo đường đi giữa hai thứ, hoặc giải thích một khái niệm.
 
 > [!NOTE]
-> **Muốn thứ này luôn bật?** [Graphify Cloud](https://app.graphify.com/login) giữ đồ thị luôn sống động trong toàn bộ SDLC của bạn: hỗ trợ monorepo và cross-repo, kiểm chứng hình thức, và review mã với góc nhìn toàn cảnh về SDLC, cùng với các connector cho Sentry, Jira và nhiều hơn nữa để sự cố và ticket nằm trong cùng đồ thị với mã của bạn. **[Bắt đầu dùng thử miễn phí 14 ngày tại app.graphify.com](https://app.graphify.com/login)**.
+> **Muốn cái này luôn bật?** [Graphify Cloud](https://app.graphify.com/login) giữ đồ thị luôn sống xuyên suốt toàn bộ SDLC của bạn: hỗ trợ monorepo và liên repo, kiểm chứng hình thức, và rà soát code với góc nhìn bao quát toàn cảnh SDLC của bạn, cùng các trình kết nối cho Sentry, Jira và nhiều hơn nữa để sự cố và ticket nằm trong cùng đồ thị với code của bạn. **[Bắt đầu dùng thử miễn phí 14 ngày tại app.graphify.com](https://app.graphify.com/login)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html tương tác của graphify hiển thị mã nguồn FastAPI dưới dạng đồ thị tri thức bố trí theo lực, kèm chú giải các cộng đồng được phát hiện" width="900">
 </p>
 <p align="center">
-  <em>Codebase FastAPI được ánh xạ bởi graphify. Mỗi node là một khái niệm, màu sắc là các cộng đồng được phát hiện, và toàn bộ có thể nhấp được trong graph.html.</em>
+  <em>Mã nguồn FastAPI được graphify ánh xạ. Mỗi nút là một khái niệm, màu sắc là các cộng đồng được phát hiện, và toàn bộ có thể nhấp được trong graph.html.</em>
 </p>
 
-**Bắt đầu** (30 giây):
+**Bắt đầu** (30 seconds). Cần Python 3.10+ và uv (hoặc pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Sau đó, trong trợ lý AI của bạn:
@@ -69,35 +69,19 @@ graphify-out/
 └── graph.json       the full graph: query it anytime without re-reading your files
 ```
 
-Đồ thị được lưu bao gồm `graph.schema_version` để các tích hợp có thể phát hiện
-những thay đổi định dạng không tương thích, cùng với `graph.graphify_version` xác định
-bản phát hành Graphify đã tạo ra nó.
+Đồ thị được lưu bao gồm `graph.schema_version` để các tích hợp có thể phát hiện các thay đổi định dạng không tương thích, cùng với `graph.graphify_version` xác định bản phát hành Graphify đã tạo ra nó.
 
-**Hoạt động trong** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot và hơn 15 nền tảng khác: [chọn nền tảng của bạn](#install).
-
----
-
-## Tài liệu
-
-Toàn bộ hướng dẫn và tài liệu tham khảo có tại **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Quickstart](https://docs.graphify.com/quickstart)**: xây đồ thị đầu tiên của bạn
-- **[CLI reference](https://docs.graphify.com/reference/overview)**: mọi lệnh và cờ
-- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: các mẫu truy vấn
-- **[Configuration](https://docs.graphify.com/reference/configuration)**: biến môi trường và tinh chỉnh
-- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: ngôn ngữ và loại tệp
-- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** và **[PR review](https://docs.graphify.com/guides/pull-requests)**
-- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** và **[How it works](https://docs.graphify.com/concepts/architecture)**
+**Một lần cài đặt, mọi trợ lý, mọi hệ điều hành.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, và 20+ trợ lý khác, trên macOS, Linux và Windows: [chọn nền tảng của bạn](#install).
 
 ---
 
 ## Xem nó hoạt động
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/demo-path.svg" alt="graphify path query: a terminal asks for the shortest path between FastAPI and ModelField, and the answer lights up hop by hop across the knowledge graph" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/demo-path.svg" alt="truy vấn đường đi của graphify: một terminal hỏi đường đi ngắn nhất giữa FastAPI và ModelField, và câu trả lời sáng lên từng chặng xuyên qua đồ thị tri thức" width="900">
 </p>
 
-Khi đồ thị đã được xây dựng, bạn truy vấn nó thay vì đọc tệp. Đầu ra thực tế, graphify chạy trên codebase FastAPI hiển thị ở trên:
+Khi đồ thị đã được dựng, bạn truy vấn nó thay vì đọc các tệp. Đây là kết quả thực, graphify chạy trên mã nguồn FastAPI được hiển thị ở trên:
 
 ```text
 $ graphify explain "APIRouter"
@@ -118,30 +102,30 @@ Shortest path (3 hops):
   FastAPI --uses--> DefaultPlaceholder <--references-- get_request_handler() --references--> ModelField
 ```
 
-Mỗi cạnh mang một **confidence tag** (`EXTRACTED` = được nêu rõ trong nguồn, `INFERRED` = suy ra qua phân giải), để bạn phân biệt được điều gì đọc trực tiếp với điều gì được suy luận. `graphify query "<question>"` trả về một subgraph được giới hạn phạm vi cho câu hỏi bằng ngôn ngữ tự nhiên, và `graphify path A B` lần theo cách hai thứ bất kỳ kết nối với nhau.
+Mọi cạnh đều mang một **thẻ độ tin cậy** (`EXTRACTED` = hiện diện rõ ràng trong nguồn, `INFERRED` = suy ra từ việc giải quyết), nên bạn có thể phân biệt điều gì được đọc trực tiếp với điều gì được suy luận. `graphify query "<question>"` trả về một đồ thị con giới hạn phạm vi cho một câu hỏi bằng ngôn ngữ thông thường, và `graphify path A B` lần theo cách hai thứ bất kỳ kết nối với nhau.
 
 ---
 
-## Nó làm được gì
+## Nó làm gì
 
-Những gì bạn có ngay khi dùng:
+Những gì bạn nhận được ngay từ đầu:
 
 | Khả năng | Bạn nhận được gì |
 |---|---|
 | **God nodes** | Các khái niệm được kết nối nhiều nhất, để bạn thấy mọi thứ chảy qua đâu |
-| **Communities** | Đồ thị được chia thành các hệ thống con (Leiden), với nhãn không dùng LLM |
-| **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` được phân giải xuyên tệp trên ~40 ngôn ngữ thông qua tree-sitter AST |
-| **Query, path, explain** | Đặt câu hỏi, lần theo đường đi giữa hai thứ, hoặc giải thích một khái niệm, tất cả đều dựa trên `graph.json` |
-| **Rationale + doc refs** | Các bình luận `# NOTE:` / `# WHY:` và trích dẫn ADR/RFC trở thành node hạng nhất liên kết với mã |
+| **Communities** | Đồ thị được chia thành các hệ thống con (Leiden), với nhãn không cần LLM |
+| **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` được giải quyết xuyên qua ~40 languages thông qua tree-sitter AST |
+| **Query, path, explain** | Hỏi một câu hỏi, lần theo đường đi giữa hai thứ, hoặc giải thích một khái niệm, tất cả đều dựa trên `graph.json` |
+| **Rationale + doc refs** | Các chú thích `# NOTE:` / `# WHY:` và trích dẫn ADR/RFC trở thành các nút hạng nhất được liên kết với code |
 | **Beyond code** | Tài liệu, PDF, hình ảnh, và video/âm thanh đều ánh xạ vào cùng một đồ thị |
-| **Local-first** | Mã được phân tích cục bộ bằng tree-sitter (không LLM, không có gì rời khỏi máy của bạn); chỉ bước xử lý ngữ nghĩa trên tài liệu/media mới gọi backend, và chỉ khi bạn cấu hình một cái |
+| **Local-first** | Code được phân tích cục bộ bằng tree-sitter (không LLM, không gì rời khỏi máy của bạn); chỉ lượt xử lý ngữ nghĩa trên tài liệu/media mới gọi tới backend, và chỉ khi bạn cấu hình một backend |
 
 > [!TIP]
-> Đang chạy cái này trên nhiều repo hoặc một monorepo? [Graphify Cloud](https://app.graphify.com/login) làm việc đó liên tục và cắt giảm 80% chi phí token của agent, với các liên kết cross-repo, review mã trên toàn SDLC, kiểm chứng hình thức, và các connector Sentry/Jira. [Bắt đầu dùng thử miễn phí 14 ngày &rarr;](https://app.graphify.com/login)
+> Đang chạy cái này trên nhiều repo hay một monorepo? [Graphify Cloud](https://app.graphify.com/login) làm điều đó liên tục và cắt giảm chi phí token của agent đi 80%, với liên kết liên repo, rà soát code trên toàn bộ SDLC, kiểm chứng hình thức, và các trình kết nối Sentry/Jira. [Bắt đầu dùng thử miễn phí 14 ngày &rarr;](https://app.graphify.com/login)
 
 ---
 
-## Benchmarks
+## Benchmark: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |
 |---|---|---|---|
@@ -151,7 +135,21 @@ Những gì bạn có ngay khi dùng:
 | ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
 | Graph build | LLM credits | **0** | per-token for most systems |
 
-Mọi hệ thống đều chạy trên cùng một harness với cùng mô hình và ngân sách, được chấm điểm bởi một giám khảo được kiểm chứng mù đối chiếu với một giám khảo thứ hai (đồng thuận 90,6%, Cohen's kappa 0,81). Bảng đầy đủ theo từng hệ thống, kết quả code-intelligence, và các lệnh tái lập: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+Mọi hệ thống đều chạy trên cùng một harness với cùng mô hình và ngân sách, được chấm điểm bởi một giám khảo đã được kiểm chứng mù đối chiếu với một giám khảo thứ hai (90.6% agreement, Cohen's kappa 0.81). Bảng đầy đủ theo từng hệ thống, kết quả hiểu code, và các lệnh tái lập: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Tài liệu
+
+Hướng dẫn và tài liệu tham khảo đầy đủ nằm tại **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Quickstart](https://docs.graphify.com/quickstart)**: dựng đồ thị đầu tiên của bạn
+- **[CLI reference](https://docs.graphify.com/reference/overview)**: mọi lệnh và cờ
+- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: các mẫu truy vấn
+- **[Configuration](https://docs.graphify.com/reference/configuration)**: biến môi trường và tinh chỉnh
+- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: ngôn ngữ và loại tệp
+- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** và **[PR review](https://docs.graphify.com/guides/pull-requests)**
+- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** và **[How it works](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -160,15 +158,15 @@ Mọi hệ thống đều chạy trên cùng một harness với cùng mô hình
 | Yêu cầu | Tối thiểu | Kiểm tra | Cài đặt |
 |---|---|---|---|
 | Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
-| uv *(khuyến nghị)* | bất kỳ | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| pipx *(thay thế)* | bất kỳ | `pipx --version` | `pip install pipx` |
+| uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
-**Cài nhanh trên macOS (Homebrew):**
+**Cài đặt nhanh trên macOS (Homebrew):**
 ```bash
 brew install python@3.12 uv
 ```
 
-**Cài nhanh trên Windows:**
+**Cài đặt nhanh trên Windows:**
 ```powershell
 winget install astral-sh.uv
 ```
@@ -185,49 +183,36 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## Install
 
 > [!IMPORTANT]
-> **Gói chính thức:** Gói trên PyPI là `graphifyy` (hai chữ y). Các gói `graphify*` khác trên PyPI không liên kết. Lệnh CLI vẫn là `graphify`.
+> **Gói chính thức:** Gói PyPI là `graphifyy` (hai chữ y). Các gói `graphify*` khác trên PyPI không có liên kết. Lệnh CLI vẫn là `graphify`.
 
-Kho mã nguồn chính thức là [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
+Kho nguồn chính thức là [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Bước 1: cài gói:**
+Phần bắt đầu nhanh hai lệnh nằm ở đầu README này. Phần này đề cập các phương thức cài đặt, cài đặt theo phạm vi dự án, và mọi nền tảng được hỗ trợ.
 
-```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
-```
-
-**Bước 2: đăng ký skill với trợ lý AI của bạn:**
+**Các phương thức cài đặt** (chọn một):
 
 ```bash
-graphify install
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-Vậy là xong. Mở trợ lý AI của bạn và gõ `/graphify .`
+Sau đó chạy `graphify install` một lần. Nó phát hiện bạn chạy trợ lý nào và đăng ký kỹ năng, nên không cần thiết lập riêng cho từng trợ lý. Mở trợ lý AI của bạn và gõ `/graphify .`
 
-Để cài skill trợ lý vào kho hiện tại thay vì hồ sơ người dùng của bạn,
-thêm `--project`:
+Để cài kỹ năng trợ lý vào kho hiện tại thay vì hồ sơ người dùng của bạn, thêm `--project`:
 
 ```bash
 graphify install --project
 graphify install --project --platform codex
 ```
 
-Các bản cài giới hạn phạm vi dự án ghi vào thư mục hiện tại, ví dụ
-`.claude/skills/graphify/SKILL.md` hoặc `.agents/skills/graphify/SKILL.md` (cùng với một
-sidecar `references/` mà skill tải khi cần), và
-in ra gợi ý `git add` cho các tệp có thể commit.
-Các lệnh theo từng nền tảng hỗ trợ cài giới hạn phạm vi dự án đều nhận cùng cờ đó,
-ví dụ `graphify claude install --project` hoặc `graphify codex install --project`.
+Cài đặt theo phạm vi dự án ghi vào bên dưới thư mục hiện tại, ví dụ `.claude/skills/graphify/SKILL.md` hoặc `.agents/skills/graphify/SKILL.md` (cùng một sidecar `references/` mà kỹ năng tải khi cần), và in một gợi ý `git add` cho các tệp có thể commit. Các lệnh theo từng nền tảng hỗ trợ cài đặt theo phạm vi dự án chấp nhận cùng cờ đó, ví dụ `graphify claude install --project` hoặc `graphify codex install --project`.
 
 > [!TIP]
-> Gặp `command not found`, một vấn đề `pip`-trên-Mac/Windows, việc trích dẫn trong PowerShell, cách dùng `uvx`, các trục trặc PATH của git-hook, hay strict mode? Xem **[Installation](https://docs.graphify.com/installation)** và **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
+> Gặp `command not found`, một vấn đề `pip` trên Mac/Windows, việc đặt dấu nháy trong PowerShell, cách dùng `uvx`, các đặc tính PATH của git-hook, hay chế độ strict? Xem **[Installation](https://docs.graphify.com/installation)** và **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
 <details>
-<summary><b>Chọn nền tảng của bạn</b> (hơn 20 trợ lý, nhấp để mở rộng)</summary>
+<summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
 
 | Platform | Install command |
 |----------|----------------|
@@ -250,49 +235,51 @@ ví dụ `graphify claude install --project` hoặc `graphify codex install --pr
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-Người dùng Codex cũng cần `multi_agent = true` dưới `[features]` trong `~/.codex/config.toml` để trích xuất song song. CodeBuddy dùng cùng cơ chế Agent tool và PreToolUse hook như Claude Code. Factory Droid dùng công cụ `Task` để điều phối subagent song song. OpenClaw và Aider dùng trích xuất tuần tự (hỗ trợ agent song song vẫn còn sơ khai trên các nền tảng đó). Trae dùng Agent tool để điều phối subagent song song và **không** hỗ trợ `PreToolUse` hooks, vì vậy AGENTS.md là cơ chế luôn bật.
+Người dùng Codex cũng cần `multi_agent = true` dưới `[features]` trong `~/.codex/config.toml` để trích xuất song song. CodeBuddy dùng cùng cơ chế Agent tool và PreToolUse hook như Claude Code. Factory Droid dùng `Task` tool để điều phối sub-agent song song. OpenClaw và Aider dùng trích xuất tuần tự (hỗ trợ agent song song vẫn còn ở giai đoạn đầu trên các nền tảng đó). Trae dùng Agent tool để điều phối sub-agent song song và **không** hỗ trợ `PreToolUse` hook, nên AGENTS.md là cơ chế luôn bật.
 
-`--platform agents` (alias `--platform skills`) nhắm đến các vị trí [Agent-Skills](https://github.com/anthropics/skills) cross-framework tổng quát: vị trí user-global `~/.agents/skills/` theo đặc tả (được đọc bởi `npx skills` và các framework tuân thủ đặc tả) cho bản cài global, và `./.agents/skills/` cho bản cài dự án (`--project`). Lệnh `graphify install` trần vẫn là đơn-nền-tảng (Claude Code) theo thiết kế: hãy dùng nền tảng có tên `agents` khi bạn muốn skill có thể được khám phá bởi bất kỳ framework nào đọc `.agents/skills`.
+`--platform agents` (bí danh `--platform skills`) nhắm tới các vị trí [Agent-Skills](https://github.com/anthropics/skills) chung, liên khung: `~/.agents/skills/` theo đặc tả ở mức toàn người dùng (được đọc bởi `npx skills` và các khung tuân thủ đặc tả) cho cài đặt toàn cục, và `./.agents/skills/` cho cài đặt dự án (`--project`). Lệnh `graphify install` trần vẫn là đơn nền tảng (Claude Code) theo thiết kế: dùng nền tảng có tên `agents` khi bạn muốn kỹ năng có thể được phát hiện bởi bất kỳ khung nào đọc `.agents/skills`.
+
+Pi không có `PreToolUse` hook, nên `graphify pi guard install` đăng ký một tiện ích mở rộng Pi gốc (thông qua `pi install <package directory>` của chính Pi) chạy `graphify hook-guard` đã cài trước các lệnh `read`, `grep`, `find` và các lệnh `bash` kiểu tìm kiếm của Pi. Các quyết định đồ thị mới/cũ và việc từ chối đọc đã lập chỉ mục một lần mỗi phiên với `GRAPHIFY_HOOK_STRICT=1` đến từ cùng một chính sách, nên Pi khớp với hành vi hook của Claude Code; hướng dẫn đến dưới dạng một tin nhắn định hướng `<system-reminder source="graphify">`. Nó cần Pi 0.58.4 trở lên: các phiên bản trước để một tin nhắn định hướng bỏ qua phần còn lại của một lô gọi công cụ song song. Gói này đi kèm bên trong bản cài đặt Graphify, nên hãy cài Graphify một cách bền vững (`uv tool install graphifyy` hoặc `pipx install graphifyy`, không phải `uvx`), khởi động lại Pi sau khi cài hoặc nâng cấp, và gỡ bằng `graphify pi guard uninstall`. Chỉ các mục tiêu tệp cục bộ được kiểm tra; hook cần `graphify` nằm trên một mục `PATH` tuyệt đối bên ngoài dự án, bị giới hạn ở lệnh gọi hai giây, 256 KiB vào/64 KiB ra, và fail open. Cùng gói đó cũng tải trong [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. Đường dẫn được đăng ký chứa phiên bản Python và venv, nên hãy chạy lại `graphify pi guard install` sau khi thay đổi một trong hai, và gỡ mục cũ bằng `pi remove <old path>`.
 
 > Codex dùng `$graphify` thay vì `/graphify`.
 
 </details>
 
 <details>
-<summary><b>Các tiện ích tùy chọn</b> (chỉ cài những gì bạn cần)</summary>
+<summary><b>Optional extras</b> (install only what you need)</summary>
 
-| Extra | Nó thêm gì | Install |
+| Extra | What it adds | Install |
 |---|---|---|
-| `pdf` | Trích xuất PDF | `uv tool install "graphifyy[pdf]"` |
-| `office` | Hỗ trợ `.docx` và `.xlsx` | `uv tool install "graphifyy[office]"` |
-| `google` | Kết xuất Google Sheets | `uv tool install "graphifyy[google]"` |
-| `video` | Phiên âm video/âm thanh (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
-| `mcp` | Máy chủ MCP stdio | `uv tool install "graphifyy[mcp]"` |
-| `neo4j` | Hỗ trợ push Neo4j | `uv tool install "graphifyy[neo4j]"` |
-| `falkordb` | Hỗ trợ push FalkorDB | `uv tool install "graphifyy[falkordb]"` |
-| `svg` | Xuất đồ thị SVG | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Phát hiện cộng đồng Leiden (graspologic trên Python < 3.13; backend native trên 3.13+) | `uv tool install "graphifyy[leiden]"` |
-| `ollama` | Suy luận cục bộ Ollama | `uv tool install "graphifyy[ollama]"` |
-| `openai` | OpenAI / các API tương thích OpenAI | `uv tool install "graphifyy[openai]"` |
+| `pdf` | PDF extraction | `uv tool install "graphifyy[pdf]"` |
+| `office` | `.docx` and `.xlsx` support | `uv tool install "graphifyy[office]"` |
+| `google` | Google Sheets rendering | `uv tool install "graphifyy[google]"` |
+| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
+| `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
+| `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
+| `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
+| `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
+| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
+| `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
+| `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
-| `anthropic` | Anthropic Claude API (`--backend claude`, dùng `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
-| `bedrock` | AWS Bedrock (dùng IAM, không cần API key) | `uv tool install "graphifyy[bedrock]"` |
-| `azure` | Azure OpenAI Service (`--backend azure`, dùng `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
-| `sql` | Trích xuất schema SQL | `uv tool install "graphifyy[sql]"` |
-| `postgres` | Nội soi PostgreSQL trực tiếp (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
-| `dm` | Trích xuất AST BYOND DreamMaker `.dm`/`.dme` (có thể cần trình biên dịch C + `python3-dev` nếu không có wheel nào khớp nền tảng của bạn) | `uv tool install "graphifyy[dm]"` |
-| `terraform` | Trích xuất AST Terraform / HCL `.tf`/`.tfvars`/`.hcl` | `uv tool install "graphifyy[terraform]"` |
-| `pascal` | Trích xuất AST Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` (cạnh `calls`/`inherits` chính xác hơn; quay về trình trích xuất regex khi không có) | `uv tool install "graphifyy[pascal]"` |
-| `ocaml` | Trích xuất AST OCaml `.ml`/`.mli` | `uv tool install "graphifyy[ocaml]"` |
-| `commonlisp` | Trích xuất AST Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` | `uv tool install "graphifyy[commonlisp]"` |
-| `robot` | Trích xuất Robot Framework `.robot`/`.resource` (suites, test cases, keywords, cạnh keyword-call và resource/library import) | `uv tool install "graphifyy[robot]"` |
-| `chinese` | Phân đoạn truy vấn tiếng Trung (jieba) | `uv tool install "graphifyy[chinese]"` |
-| `all` | Tất cả những thứ trên | `uv tool install "graphifyy[all]"` |
+| `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
+| `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
+| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
+| `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
+| `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
+| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
+| `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
+| `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
+| `robot` | Robot Framework `.robot`/`.resource` extraction (suites, test cases, keywords, keyword-call and resource/library import edges) | `uv tool install "graphifyy[robot]"` |
+| `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
+| `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
 </details>
 
@@ -300,42 +287,49 @@ Người dùng Codex cũng cần `multi_agent = true` dưới `[features]` trong
 
 ## Khiến trợ lý của bạn luôn dùng đồ thị
 
-Chạy lệnh này một lần trong dự án của bạn sau khi xây đồ thị:
+Chạy cái này một lần trong dự án của bạn sau khi dựng một đồ thị:
 
 Chạy `graphify <platform> install` một lần trong dự án của bạn, ví dụ `graphify claude install` hoặc `graphify codex install` (hoặc `graphify install --platform <name>`).
 
-Lệnh này ghi một tệp cấu hình nhỏ bảo trợ lý của bạn tham khảo đồ thị tri thức cho các câu hỏi về codebase, ưu tiên các truy vấn giới hạn phạm vi như `graphify query "<question>"` hơn là đọc toàn bộ báo cáo hoặc grep các tệp thô.
+Việc này ghi một tệp cấu hình nhỏ bảo trợ lý của bạn tham khảo đồ thị tri thức cho các câu hỏi về mã nguồn, ưu tiên các truy vấn giới hạn phạm vi như `graphify query "<question>"` hơn là đọc toàn bộ báo cáo hoặc grep các tệp thô.
 
-- **Nền tảng dùng Hook** (Claude Code, Gemini CLI): một hook tự động kích hoạt trước các lệnh gọi công cụ kiểu tìm kiếm (và, trên Claude Code, trước khi đọc từng tệp nguồn một qua các công cụ Read/Glob) và hướng trợ lý của bạn về phía đường đi của đồ thị.
-- **Nền tảng dùng tệp hướng dẫn** (Codex, OpenCode, Cursor, v.v.): các tệp hướng dẫn thường trực (`AGENTS.md`, `.cursor/rules/`, v.v.) cung cấp cùng chỉ dẫn truy-vấn-trước.
+- **Nền tảng kiểu Hook** (Claude Code, Gemini CLI): một hook kích hoạt tự động trước các lệnh gọi công cụ kiểu tìm kiếm (và, trên Claude Code, trước khi đọc từng tệp nguồn một qua các công cụ Read/Glob) và đẩy trợ lý của bạn về phía đường đi đồ thị.
+- **Nền tảng kiểu tệp hướng dẫn** (Codex, OpenCode, Cursor, v.v.): các tệp hướng dẫn bền vững (`AGENTS.md`, `.cursor/rules/`, v.v.) cung cấp cùng hướng dẫn ưu tiên truy vấn.
 
-`GRAPH_REPORT.md` vẫn có sẵn cho việc review kiến trúc trên diện rộng.
+`GRAPH_REPORT.md` vẫn có sẵn cho việc rà soát kiến trúc trên diện rộng.
 
-**CodeBuddy** làm hai việc giống như Claude Code: ghi một mục `CODEBUDDY.md` bảo CodeBuddy đọc `graphify-out/GRAPH_REPORT.md` trước khi trả lời các câu hỏi về kiến trúc, và cài đặt các `PreToolUse` hooks (`.codebuddy/settings.json`) kích hoạt trước các lệnh tìm kiếm Bash và đọc tệp, hướng về phía `graphify query` thay thế.
+Chính xác tệp nào mỗi nền tảng ghi ra (`CODEBUDDY.md` + `PreToolUse` hooks của CodeBuddy, `AGENTS.md` của Codex, plugin `.kilo` gốc của Kilo, quy tắc `alwaysApply` của Cursor, v.v.) được đề cập trong **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
 
-**Codex** ghi vào `AGENTS.md`, đây chính là thứ thực sự mang chỉ dẫn đồ thị luôn bật trên nền tảng này. `graphify codex install` cũng đăng ký một `PreToolUse` hook trong `.codex/hooks.json` (`graphify hook-check`), nhưng mục đó cố ý là một **no-op**: Codex Desktop từ chối `hookSpecificOutput.additionalContext` trên `PreToolUse`, nên việc phát ra một nhắc nhở ở đó sẽ làm hỏng các lệnh gọi công cụ Bash. Khác với Claude Code, nơi hook (`graphify hook-guard`) thực hiện việc nhắc nhở, trên Codex hook kích hoạt và cố ý không làm gì, và `AGENTS.md` là cơ chế luôn bật.
+Để gỡ graphify khỏi mọi nền tảng cùng lúc: `graphify uninstall` (thêm `--purge` để cũng xóa `graphify-out/`). Hoặc dùng lệnh theo từng nền tảng (ví dụ `graphify claude uninstall`).
 
-**Kilo Code** cài skill Graphify vào `~/.config/kilo/skills/graphify/SKILL.md` và một lệnh native `/graphify` vào `~/.config/kilo/command/graphify.md`. `graphify kilo install` cũng ghi `AGENTS.md` cùng với một plugin native `tool.execute.before` (`.kilo/plugins/graphify.js` + đăng ký `.kilo/kilo.json` hoặc `.kilo/kilo.jsonc`) để Kilo có được cùng hành vi nhắc nhở đồ thị luôn bật thông qua cấu hình `.kilo` native.
+### Skill CLI hay hướng dẫn MCP?
 
-**Cursor** ghi `.cursor/rules/graphify.mdc` với `alwaysApply: true`, nên Cursor tự động đưa nó vào mọi cuộc trò chuyện, không cần hook.
+Các hướng dẫn được cài bởi `graphify install` và các hướng dẫn đi kèm với một kết nối Graphify MCP mô tả những cách khác nhau để truy vấn một đồ thị:
 
-Để gỡ graphify khỏi tất cả nền tảng cùng lúc: `graphify uninstall` (thêm `--purge` để đồng thời xóa `graphify-out/`). Hoặc dùng lệnh theo từng nền tảng (ví dụ `graphify claude uninstall`).
+| Setup | Guidance to use | Query access |
+|---|---|---|
+| CLI cục bộ và kỹ năng trợ lý đã cài | Các hướng dẫn nền tảng được `graphify install` ghi ra | Chạy `graphify query`, `graphify path`, và `graphify explain` trên đồ thị cục bộ (`graphify-out/` theo mặc định). |
+| Máy chủ Graphify MCP đã kết nối | Các hướng dẫn của kết nối đó và các công cụ mà máy chủ đó liệt kê | Gọi các công cụ MCP được liệt kê trên đồ thị mà kết nối đó phục vụ. Tên và mô tả công cụ đến từ máy chủ. |
+
+Cả hai đều khuyến khích các truy vấn đồ thị giới hạn phạm vi trước các tìm kiếm nguồn trên diện rộng. Hãy chọn các hướng dẫn khớp với các công cụ mà trợ lý của bạn thực sự có thể truy cập; không khối nào thiết lập một quy tắc ưu tiên phổ quát cho các tệp hướng dẫn của trợ lý của bạn. Nếu bạn dùng cả hai tích hợp, hãy xác định mỗi cái truy vấn đồ thị nào và chọn một đường truy vấn chính thay vì sao chép hai khối hướng dẫn vô điều kiện vào `AGENTS.md`.
+
+`graphify install` cài đặt tích hợp trợ lý cục bộ; nó không thiết lập một kết nối MCP. Một client MCP không cần chạy các truy vấn CLI cục bộ để dùng máy chủ đã kết nối của nó. Một máy chủ được host cục bộ vẫn cần bản cài đặt Graphify và đồ thị của riêng nó, trong khi một kết nối được host có thể phục vụ một đồ thị không hiện diện trong thư mục làm việc của client. Nếu các công cụ mong đợi bị thiếu, hãy kiểm tra bản cài đặt CLI hoặc kết nối MCP liên quan thay vì coi các hướng dẫn của thiết lập kia là có thể thay thế cho nhau.
 
 ---
 
 ## Có gì trong báo cáo
 
-`GRAPH_REPORT.md` tóm tắt các god nodes, cộng đồng, và các đường đi chính cho việc review kiến trúc trên diện rộng. Cách đồ thị được xây dựng và nó chứa những gì: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` tóm tắt các god nodes, cộng đồng, và các đường đi chính cho việc rà soát kiến trúc trên diện rộng. Cách đồ thị được dựng và nó chứa gì: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
-## Nó xử lý những tệp nào
+## Nó xử lý những tệp nào: ~40 languages
 
-graphify phân tích ~40 ngôn ngữ lập trình cục bộ bằng tree-sitter AST, và ánh xạ tài liệu, PDF, hình ảnh, và âm thanh/video qua một bước xử lý ngữ nghĩa tùy chọn. Danh sách đầy đủ: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
+graphify phân tích ~40 programming languages một cách cục bộ bằng tree-sitter AST, và ánh xạ tài liệu, PDF, hình ảnh, và âm thanh/video qua một lượt xử lý ngữ nghĩa tùy chọn. Danh sách đầy đủ: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
 
 ---
 
-## Các lệnh thông dụng
+## Các lệnh thường dùng
 
 ```bash
 /graphify .                        # build graph for current folder
@@ -363,52 +357,71 @@ graphify prs --triage              # AI ranks your review queue (uses whatever b
 graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
 ```
 
-Xem [tài liệu tham khảo lệnh đầy đủ](#full-command-reference) bên dưới.
+Xem [tham khảo lệnh đầy đủ](#full-command-reference) bên dưới.
 
 ---
 
 ## Bỏ qua tệp
 
-graphify tôn trọng `.gitignore` và hỗ trợ các mẫu `--exclude` cũng như một tệp `.graphifyignore` của dự án. Chi tiết: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+graphify tôn trọng `.gitignore` và hỗ trợ các mẫu `--exclude` cùng một `.graphifyignore` cấp dự án. Chi tiết: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
+
+## Cấu hình dự án
+
+Tạo một `.graphifyrc` ở gốc quét cho các thiết lập thuộc về dự án chứ không thuộc về một lần chạy. Mỗi dòng một `key=value`; các dòng bắt đầu bằng `#` là chú thích.
+
+**Các phần mở rộng mơ hồ.** Một số phần mở rộng mang ý nghĩa ngôn ngữ khác nhau trong các dự án khác nhau: `.inc` là PHP trên pfSense, là Pascal trong một cây Delphi, là SQL hoặc assembly ở nơi khác; `.h` là C hoặc C++; `.m` là Objective-C hoặc MATLAB. graphify phải chọn một mặc định toàn cục, và khi nó chọn sai thì tệp không thất bại: nó được phân tích dưới dạng ngôn ngữ sai và tạo ra một nhúm nút ngẫu nhiên, nên đồ thị trông như có dữ liệu trong khi các ký hiệu thực lại bị thiếu. Hãy khai báo phần mở rộng đó có nghĩa gì trong repo của bạn:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Khai báo này chảy qua phân loại, chọn trình trích xuất, ngữ pháp và giải quyết, import, `graphify watch`, và bộ nhớ đệm AST (một tệp được phân tích lại dưới một ngôn ngữ khác sẽ không bao giờ tái dùng mục cũ), và cùng một `.graphifyrc` được đọc bởi `extract`, `update`, các hook, máy chủ MCP, và kỹ năng `/graphify`. Một lỗi gõ được báo một lần trên stderr và việc quét tiếp tục với các mặc định. Cách các khai báo tương tác với bộ nhớ đệm, dựng lại tăng dần, và giải quyết import: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
-## Thiết lập cho nhóm
+## Thiết lập nhóm
 
-Commit hoặc chia sẻ đồ thị để cả nhóm của bạn truy vấn cùng một ngữ cảnh, và review pull request với ngữ cảnh đồ thị. Xem **[Share context with your team](https://docs.graphify.com/guides/team-workflows)** và **[Review pull requests](https://docs.graphify.com/guides/pull-requests)**.
+Commit hoặc chia sẻ đồ thị để cả nhóm của bạn truy vấn cùng một ngữ cảnh, và rà soát các pull request với ngữ cảnh đồ thị. Xem **[Share context with your team](https://docs.graphify.com/guides/team-workflows)** và **[Review pull requests](https://docs.graphify.com/guides/pull-requests)**.
 
 ---
 
 ## Dùng đồ thị trực tiếp
 
-Ngoài trợ lý AI của bạn, hãy truy vấn `graph.json` thẳng từ CLI với `graphify query`, `graphify path`, và `graphify explain`. Xem **[Ask better graph questions](https://docs.graphify.com/guides/querying)** và **[query reference](https://docs.graphify.com/reference/query)**.
+Ngoài trợ lý AI của bạn, hãy truy vấn `graph.json` trực tiếp từ CLI với `graphify query`, `graphify path`, và `graphify explain`. Một tên khớp với nhiều nút sẽ bị từ chối với các ứng viên được liệt kê thay vì đoán. Các script có thể đọc kết quả từ mã thoát: `0` một câu trả lời, `3` một tên mơ hồ, `4` không có nút khớp. Xem **[Ask better graph questions](https://docs.graphify.com/guides/querying)** và **[query reference](https://docs.graphify.com/reference/query)**.
 
 ---
 
 ## Biến môi trường
 
-Backend, API key, hành vi hook, và tinh chỉnh được điều khiển bởi các biến môi trường. Bảng đầy đủ: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+Các backend, API key, hành vi hook, và tinh chỉnh được điều khiển bởi các biến môi trường. Bảng đầy đủ: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
 ## Quyền riêng tư
 
-- **Tệp mã**: được xử lý cục bộ qua tree-sitter. Không có gì rời khỏi máy của bạn. Một corpus chỉ-có-mã không cần API key: `graphify extract` chạy hoàn toàn ngoại tuyến. Trên một repo hỗn hợp, thêm `--code-only` để chỉ lập chỉ mục mã và bỏ qua các tài liệu/PDF/hình ảnh mà nếu không sẽ cần đến LLM.
-- **Video / âm thanh**: được phiên âm cục bộ bằng faster-whisper. Không có gì rời khỏi máy của bạn.
-- **Tài liệu, PDF, hình ảnh**: được gửi đến trợ lý AI của bạn để trích xuất ngữ nghĩa (qua skill `/graphify`, dùng bất kỳ mô hình nào mà phiên IDE của bạn đang chạy). `graphify extract` ở chế độ headless cần `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), một instance Ollama đang chạy (`OLLAMA_BASE_URL`), thông tin xác thực AWS qua provider chain tiêu chuẩn (Bedrock - không cần API key, dùng IAM), hoặc binary CLI `claude` (Claude Code - không cần API key, dùng gói đăng ký Claude của bạn). Cờ `--dedup-llm` dùng cùng key đó.
-- **Data residency**: `graphify extract` tự động phát hiện provider nào sẽ dùng dựa trên API key nào được đặt (ưu tiên: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Đối với mã có yêu cầu về data-residency, dùng `--backend ollama` (hoàn toàn cục bộ) hoặc truyền một cờ `--backend` tường minh. Kimi (`MOONSHOT_API_KEY`) định tuyến đến các máy chủ Moonshot AI ở Trung Quốc.
-- **Không telemetry**, không theo dõi sử dụng, không analytics.
-- **Ghi log truy vấn**: mỗi lệnh gọi `graphify query`, `graphify path`, `graphify explain`, và MCP `query_graph` được ghi log vào `~/.cache/graphify-queries.log` theo định dạng JSON Lines (timestamp, câu hỏi, corpus, số node trả về, thời lượng). Các phản hồi subgraph đầy đủ **không** được lưu theo mặc định. Đặt `GRAPHIFY_QUERY_LOG_DISABLE=1` để chọn không tham gia, hoặc `GRAPHIFY_QUERY_LOG=/dev/null` để im lặng mà không vô hiệu hóa đường dẫn mã.
+- **Tệp code**: được xử lý cục bộ qua tree-sitter. Không gì rời khỏi máy của bạn. Một kho chỉ có code không cần API key: `graphify extract` chạy hoàn toàn ngoại tuyến. Trên một repo hỗn hợp, thêm `--code-only` để chỉ lập chỉ mục code và bỏ qua các tài liệu/PDF/hình ảnh mà lẽ ra sẽ cần một LLM.
+- **Video / âm thanh**: được chép lời cục bộ với faster-whisper. Không gì rời khỏi máy của bạn.
+- **Tài liệu, PDF, hình ảnh**: được gửi tới trợ lý AI của bạn để trích xuất ngữ nghĩa (qua kỹ năng `/graphify`, dùng bất kỳ mô hình nào phiên IDE của bạn đang chạy). `graphify extract` không giao diện cần `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), một instance Ollama đang chạy (`OLLAMA_BASE_URL`), thông tin xác thực AWS qua chuỗi provider chuẩn (Bedrock - không cần API key, dùng IAM), hoặc tệp nhị phân CLI `claude` (Claude Code - không cần API key, dùng gói đăng ký Claude của bạn). Cờ `--dedup-llm` dùng cùng key.
+- **Lưu trú dữ liệu**: `graphify extract` tự động phát hiện dùng provider nào dựa trên API key nào được đặt (ưu tiên: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Với code có yêu cầu lưu trú dữ liệu, dùng `--backend ollama` (hoàn toàn cục bộ) hoặc truyền một cờ `--backend` rõ ràng. Kimi (`MOONSHOT_API_KEY`) định tuyến tới các máy chủ Moonshot AI ở Trung Quốc.
+- **Không telemetry**, không theo dõi sử dụng, không phân tích.
+- **Ghi log truy vấn**: mọi lệnh gọi `graphify query`, `graphify path`, `graphify explain`, và MCP `query_graph` được ghi vào `~/.cache/graphify-queries.log` ở định dạng JSON Lines (dấu thời gian, câu hỏi, kho, các nút trả về, thời lượng). Các phản hồi đồ thị con đầy đủ theo mặc định **không** được lưu. Đặt `GRAPHIFY_QUERY_LOG_DISABLE=1` để từ chối, hoặc `GRAPHIFY_QUERY_LOG=/dev/null` để làm im lặng mà không vô hiệu hóa đường code.
 
 ---
 
-## Troubleshooting
+## Khắc phục sự cố
 
 Các vấn đề cài đặt và trích xuất thường gặp cùng cách khắc phục: **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
 ---
 
-## Tài liệu tham khảo lệnh đầy đủ
+## Tham khảo lệnh đầy đủ
 
 Mọi lệnh và cờ, kèm ví dụ: **[CLI reference](https://docs.graphify.com/reference/overview)**.
 
@@ -416,9 +429,9 @@ Mọi lệnh và cờ, kèm ví dụ: **[CLI reference](https://docs.graphify.co
 
 ## Tìm hiểu thêm
 
-- [docs.graphify.com](https://docs.graphify.com): tài liệu đầy đủ: hướng dẫn, tham khảo lệnh, và các tích hợp
-- [How it works](../how-it-works.md): pipeline trích xuất, phát hiện cộng đồng, chấm điểm confidence, benchmark
-- [ARCHITECTURE.md](../../ARCHITECTURE.md): phân tích module, cách thêm một ngôn ngữ
+- [docs.graphify.com](https://docs.graphify.com): tài liệu đầy đủ: hướng dẫn, tham khảo lệnh, và tích hợp
+- [How it works](../how-it-works.md): pipeline trích xuất, phát hiện cộng đồng, chấm điểm độ tin cậy, benchmark
+- [ARCHITECTURE.md](../../ARCHITECTURE.md): phân tách module, cách thêm một ngôn ngữ
 - [Optional integrations](../docker-mcp-sqlite.md): Docker MCP Toolkit + SQLite
 - [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo): cuốn sách về các ý tưởng đằng sau graphify, kiến trúc từ đầu đến cuối
 
@@ -426,14 +439,14 @@ Mọi lệnh và cờ, kèm ví dụ: **[CLI reference](https://docs.graphify.co
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) là lớp luôn bật được xây dựng trên nền graphify. Thay vì một đồ thị bạn xây lại theo yêu cầu cho từng thư mục, nó giữ một đồ thị sống động duy nhất xuyên suốt toàn bộ vòng đời phát triển phần mềm của bạn:
+[**Graphify Cloud**](https://app.graphify.com/login) là lớp luôn bật được xây dựng trên nền graphify. Thay vì một đồ thị bạn dựng lại theo nhu cầu cho từng thư mục, nó giữ một đồ thị sống duy nhất xuyên suốt toàn bộ vòng đời phát triển phần mềm của bạn:
 
-- **Giảm 80% token**: bộ nhớ luôn bật nghĩa là các agent của bạn ngừng đọc lại và giải thích lại codebase mỗi phiên.
-- **Monorepo và cross-repo**: một đồ thị kết nối xuyên suốt mọi dịch vụ và kho, không phải một đồ thị cho mỗi thư mục.
-- **Kiểm chứng hình thức**: kiểm tra các bất biến về kiến trúc và phụ thuộc đối chiếu với đồ thị sống động.
-- **Review mã với góc nhìn toàn cảnh về SDLC**: thấy một thay đổi lan tỏa khắp toàn hệ thống như thế nào trước khi bạn merge.
-- **SDLC connectors**: kéo Sentry, Jira, và nhiều hơn nữa vào, để sự cố, ticket, và mã nằm trong một đồ thị.
-- **Luôn bật**: cập nhật liên tục ở chế độ nền xuyên suốt mã, tài liệu, và các cuộc họp.
+- **Ít hơn 80% token**: bộ nhớ luôn bật nghĩa là các agent của bạn ngừng đọc lại và giải thích lại mã nguồn trong mỗi phiên.
+- **Monorepo và liên repo**: một đồ thị kết nối duy nhất xuyên qua mọi dịch vụ và kho, chứ không phải một đồ thị cho mỗi thư mục.
+- **Kiểm chứng hình thức**: kiểm tra các bất biến về kiến trúc và phụ thuộc đối với đồ thị sống.
+- **Rà soát code với góc nhìn bao quát toàn cảnh SDLC của bạn**: thấy một thay đổi lan tỏa khắp cả hệ thống như thế nào trước khi bạn merge.
+- **Trình kết nối SDLC**: kéo vào Sentry, Jira và nhiều hơn nữa, để sự cố, ticket, và code sống trong một đồ thị.
+- **Luôn bật**: cập nhật liên tục ở nền xuyên qua code, tài liệu, và các cuộc họp.
 
 **[Bắt đầu dùng thử miễn phí 14 ngày tại app.graphify.com &rarr;](https://app.graphify.com/login)**
 
@@ -441,9 +454,9 @@ Mọi lệnh và cờ, kèm ví dụ: **[CLI reference](https://docs.graphify.co
 
 ## Đóng góp
 
-Hoan nghênh các đóng góp. Xem **[CONTRIBUTING.md](../../CONTRIBUTING.md)** để biết cách thiết lập môi trường phát triển, các lệnh test và CI-parity, quy trình git, và điều gì làm nên một đóng góp tốt (worked examples và báo cáo lỗi trích xuất là hữu ích nhất). Kiến trúc và cách thêm một ngôn ngữ: [ARCHITECTURE.md](../../ARCHITECTURE.md).
+Hoan nghênh đóng góp. Xem **[CONTRIBUTING.md](../../CONTRIBUTING.md)** để biết thiết lập môi trường phát triển, các lệnh kiểm thử và CI-parity, quy trình git, và điều gì làm nên một đóng góp mạnh (các ví dụ thực tế và báo cáo lỗi trích xuất là hữu ích nhất). Kiến trúc và cách thêm một ngôn ngữ: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Mới đến đây? Chào một tiếng trên [Discord](https://discord.gg/XDnKVpzdXB) hoặc trong [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Mới đến? Chào một tiếng trên [Discord](https://discord.gg/XDnKVpzdXB) hoặc trong [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -453,19 +466,19 @@ Mới đến đây? Chào một tiếng trên [Discord](https://discord.gg/XDnKV
   <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
 </a>
 
-Thực hiện với [contrib.rocks](https://contrib.rocks).
+Made with [contrib.rocks](https://contrib.rocks).
 
 ---
 
 ## Bản dịch
 
-README có sẵn trong 32 ngôn ngữ. Dùng bộ chuyển ngôn ngữ ở đầu tệp này để đọc bằng ngôn ngữ của bạn, hoặc duyệt [`docs/translations/`](./). Để cải thiện một bản dịch hoặc thêm một bản mới, hãy mở một pull request đối với tệp tương ứng ở đó.
+README có sẵn trong 32 ngôn ngữ. Dùng trình chuyển ngôn ngữ ở đầu tệp này để đọc bằng ngôn ngữ của bạn, hoặc duyệt [`docs/translations/`](./). Để cải thiện một bản dịch hoặc thêm một bản mới, hãy mở một pull request đối với tệp tương ứng ở đó.
 
 ---
 
 ## Xây dựng trên graphify
 
-Đang xây dựng thứ gì đó trong hệ sinh thái graphify? Điều đó được khuyến khích. Nếu dự án của bạn dùng "graphify" trong tên (ví dụ `graphify-dashboard` hoặc `graphify-action`), vui lòng thêm một ghi chú ngắn vào README của bạn làm rõ rằng nó được cộng đồng xây dựng và không liên kết với hay được chứng thực bởi Graphify Labs. "graphify" và logo graphify là các nhãn hiệu của Graphify Labs; vui lòng đừng dùng chúng theo cách ngụ ý tư cách chính thức.
+Đang xây dựng thứ gì đó trong hệ sinh thái graphify? Điều đó được khuyến khích. Nếu dự án của bạn dùng "graphify" trong tên (ví dụ `graphify-dashboard` hoặc `graphify-action`), vui lòng thêm một ghi chú ngắn vào README của bạn làm rõ rằng nó do cộng đồng xây dựng và không liên kết với hay được chứng thực bởi Graphify Labs. "graphify" và logo graphify là các nhãn hiệu của Graphify Labs; vui lòng đừng dùng chúng theo cách ngụ ý tư cách chính thức.
 
 ---
 

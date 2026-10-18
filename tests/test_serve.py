@@ -34,6 +34,7 @@ from graphify.serve import (
     _subgraph_to_text,
     _cut_lines_to_budget,
     _load_graph,
+    _neighbor_lines,
     _community_header,
     _search_tokens,
     _shortest_path_text,
@@ -1905,3 +1906,88 @@ def test_dotted_python_symbol_same_file_tie_is_refused_by_path_endpoint():
     G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
     nid, _, err = _resolve_path_endpoint(G, "pkg.mod.run")
     assert nid is None and err.startswith("Ambiguous")
+# --- parallel-edge preservation (#4500) ---
+
+def _parallel_edge_graph_json(tmp_path):
+    """A graph.json like the #4500 reporter's: parallel links stored while the
+    serialized flag says multigraph:false."""
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "src_app_app", "label": "App()"},
+            {"id": "src_app_app_applyseed", "label": "applySeed()"},
+        ],
+        "links": [
+            {"source": "src_app_app", "target": "src_app_app_applyseed",
+             "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "80"},
+            {"source": "src_app_app", "target": "src_app_app_applyseed",
+             "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "163"},
+        ],
+    }))
+    return str(p)
+
+
+def test_load_graph_repairs_multigraph_false_with_parallel_links(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    assert G.is_multigraph()
+    # graph_stats reports G.number_of_edges(): the reporter's 134 stored links
+    # became 131 loaded edges; here both must survive.
+    assert G.number_of_edges() == 2
+    got = sorted(
+        d.get("relation")
+        for u, v, d in G.edges(data=True)
+        if (u, v) == ("src_app_app", "src_app_app_applyseed")
+    )
+    assert got == ["calls", "contains"], got
+
+
+def test_load_graph_keeps_simple_graph_simple(tmp_path):
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}],
+        "links": [{"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"}],
+    }))
+    G = _load_graph(str(p))
+    assert not G.is_multigraph()
+    assert G.number_of_edges() == 1
+
+
+def test_neighbor_lines_shows_every_parallel_relationship(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    lines = _neighbor_lines(G, "src_app_app")
+    assert len(lines) == 2, lines
+    assert any("[contains]" in l and "App.tsx:80" in l for l in lines), lines
+    assert any("[calls]" in l and "App.tsx:163" in l for l in lines), lines
+    # each relationship keeps its own metadata: no combined/merged edge
+    assert len({l for l in lines}) == 2
+
+
+def test_neighbor_lines_relation_filter_applies_per_edge(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    lines = _neighbor_lines(G, "src_app_app", rel_filter="calls")
+    assert len(lines) == 1, lines
+    assert "[calls]" in lines[0]
+
+
+def test_subgraph_to_text_renders_every_parallel_edge(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    text = _subgraph_to_text(
+        G,
+        {"src_app_app", "src_app_app_applyseed"},
+        [("src_app_app", "src_app_app_applyseed")],
+    )
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(edge_lines) == 2, edge_lines
+    assert any("--contains " in l and "App.tsx:80" in l for l in edge_lines), edge_lines
+    assert any("--calls " in l and "App.tsx:163" in l for l in edge_lines), edge_lines
+
+
+def test_query_graph_text_surfaces_parallel_relationships(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    text = _query_graph_text(G, "applySeed", token_budget=2000)
+    assert "--contains " in text, text
+    assert "--calls " in text, text

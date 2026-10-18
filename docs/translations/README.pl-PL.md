@@ -47,11 +47,11 @@ Wpisz `/graphify` w swoim asystencie kodowania AI, a zmapuje on cały Twój proj
   <em>Baza kodu FastAPI zmapowana przez graphify. Każdy węzeł to koncepcja, kolory to wykryte społeczności, a całość jest klikalna w graph.html.</em>
 </p>
 
-**Pierwsze kroki** (30 sekund):
+**Pierwsze kroki** (30 sekund). Wymaga Python 3.10+ oraz uv (lub pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Następnie, w swoim asystencie AI:
@@ -73,21 +73,7 @@ Utrwalony graf zawiera `graph.schema_version`, aby integracje mogły wykrywać
 niezgodne zmiany formatu, a także `graph.graphify_version` identyfikujące
 wydanie Graphify, które go wygenerowało.
 
-**Działa w** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot i ponad 15 innych: [wybierz swoją platformę](#install).
-
----
-
-## Documentation
-
-Pełne przewodniki i dokumentacja referencyjna znajdują się pod adresem **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Quickstart](https://docs.graphify.com/quickstart)**: zbuduj swój pierwszy graf
-- **[CLI reference](https://docs.graphify.com/reference/overview)**: każde polecenie i flaga
-- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: wzorce odpytywania
-- **[Configuration](https://docs.graphify.com/reference/configuration)**: zmienne środowiskowe i strojenie
-- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: języki i typy plików
-- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** i **[PR review](https://docs.graphify.com/guides/pull-requests)**
-- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** i **[How it works](https://docs.graphify.com/concepts/architecture)**
+**Jedna instalacja, dowolny asystent, dowolny system.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot i ponad 20 innych, na macOS, Linux i Windows: [wybierz swoją platformę](#install).
 
 ---
 
@@ -141,7 +127,7 @@ Co otrzymujesz od razu po instalacji:
 
 ---
 
-## Benchmarks
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |
 |---|---|---|---|
@@ -152,6 +138,20 @@ Co otrzymujesz od razu po instalacji:
 | Graph build | LLM credits | **0** | per-token for most systems |
 
 Każdy system działał na tej samej infrastrukturze testowej z tym samym modelem i budżetami, oceniany przez sędziego zwalidowanego na ślepo względem drugiego sędziego (90,6% zgodności, kappa Cohena 0,81). Pełne tabele dla poszczególnych systemów, wynik dotyczący inteligencji kodu oraz polecenia do odtworzenia: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Documentation
+
+Pełne przewodniki i dokumentacja referencyjna znajdują się pod adresem **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Quickstart](https://docs.graphify.com/quickstart)**: zbuduj swój pierwszy graf
+- **[CLI reference](https://docs.graphify.com/reference/overview)**: każde polecenie i flaga
+- **[Ask better graph questions](https://docs.graphify.com/guides/querying)**: wzorce odpytywania
+- **[Configuration](https://docs.graphify.com/reference/configuration)**: zmienne środowiskowe i strojenie
+- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**: języki i typy plików
+- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** i **[PR review](https://docs.graphify.com/guides/pull-requests)**
+- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** i **[How it works](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -189,24 +189,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Oficjalne repozytorium źródłowe to [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Krok 1: zainstaluj pakiet:**
+Dwukomendowy szybki start znajduje się na górze tego README. Ta sekcja opisuje metody instalacji, instalacje w zakresie projektu oraz każdą obsługiwaną platformę.
+
+**Metody instalacji** (wybierz jedną):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**Krok 2: zarejestruj umiejętność w swoim asystencie AI:**
-
-```bash
-graphify install
-```
-
-To wszystko. Otwórz swojego asystenta AI i wpisz `/graphify .`
+Następnie uruchom `graphify install` raz. Wykrywa, którego asystenta używasz, i rejestruje umiejętność, więc nie ma konfiguracji dla każdego asystenta z osobna. Otwórz swojego asystenta AI i wpisz `/graphify .`
 
 Aby zainstalować umiejętność asystenta w bieżącym repozytorium zamiast w profilu
 użytkownika, dodaj `--project`:
@@ -250,7 +243,7 @@ na przykład `graphify claude install --project` lub `graphify codex install --p
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` dla natywnego guarda |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +251,8 @@ na przykład `graphify claude install --project` lub `graphify codex install --p
 Użytkownicy Codex potrzebują również `multi_agent = true` w sekcji `[features]` w pliku `~/.codex/config.toml`, aby włączyć równoległą ekstrakcję. CodeBuddy korzysta z tego samego mechanizmu narzędzia Agent i hooka PreToolUse co Claude Code. Factory Droid używa narzędzia `Task` do równoległego uruchamiania podagentów. OpenClaw i Aider korzystają z ekstrakcji sekwencyjnej (obsługa równoległych agentów jest na tych platformach wciąż we wczesnej fazie). Trae używa narzędzia Agent do równoległego uruchamiania podagentów i **nie** obsługuje hooków `PreToolUse`, więc AGENTS.md jest mechanizmem zawsze aktywnym.
 
 `--platform agents` (alias `--platform skills`) celuje w generyczne, międzyframeworkowe lokalizacje [Agent-Skills](https://github.com/anthropics/skills): zdefiniowany w specyfikacji katalog globalny użytkownika `~/.agents/skills/` (odczytywany przez `npx skills` i frameworki zgodne ze specyfikacją) dla instalacji globalnej oraz `./.agents/skills/` dla instalacji w zakresie projektu (`--project`). Samo `graphify install` z założenia pozostaje jednoplatformowe (Claude Code): użyj nazwanej platformy `agents`, gdy chcesz, aby umiejętność była wykrywalna przez dowolny framework odczytujący `.agents/skills`.
+
+Pi nie ma hooka `PreToolUse`, więc `graphify pi guard install` rejestruje natywne rozszerzenie Pi (poprzez własne `pi install <package directory>` Pi), które uruchamia zainstalowane `graphify hook-guard` przed wywołaniami `read`, `grep`, `find` oraz `bash` w stylu wyszukiwania w Pi. Decyzje o świeżości/nieaktualności grafu oraz jednorazowa na sesję odmowa odczytu zindeksowanych plików przy `GRAPHIFY_HOOK_STRICT=1` pochodzą z tej samej polityki, więc Pi odpowiada zachowaniu hooków Claude Code; wskazówki docierają jako komunikat sterujący `<system-reminder source="graphify">`. Wymaga Pi 0.58.4 lub nowszego: wcześniejsze wersje pozwalały, aby komunikat sterujący pominął resztę równoległej partii wywołań narzędzi. Pakiet jest dostarczany wewnątrz instalacji Graphify, więc zainstaluj Graphify trwale (`uv tool install graphifyy` lub `pipx install graphifyy`, nie `uvx`), zrestartuj Pi po instalacji lub aktualizacji i usuń go za pomocą `graphify pi guard uninstall`. Sprawdzane są wyłącznie lokalne cele plikowe; hook potrzebuje `graphify` w bezwzględnym wpisie `PATH` poza projektem, jest ograniczony do dwusekundowego wywołania 256 KiB na wejściu / 64 KiB na wyjściu i zawodzi w sposób otwarty (fail open). Ten sam pakiet ładuje się również w [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. Zarejestrowana ścieżka zawiera wersję Pythona i venv, więc uruchom ponownie `graphify pi guard install` po zmianie którejkolwiek z nich i usuń stary wpis za pomocą `pi remove <old path>`.
 
 > Codex używa `$graphify` zamiast `/graphify`.
 
@@ -311,15 +306,22 @@ To zapisuje mały plik konfiguracyjny, który mówi Twojemu asystentowi, aby prz
 
 `GRAPH_REPORT.md` jest nadal dostępny do szerokiego przeglądu architektury.
 
-**CodeBuddy** robi te same dwie rzeczy co Claude Code: zapisuje sekcję w `CODEBUDDY.md`, która mówi CodeBuddy, aby czytał `graphify-out/GRAPH_REPORT.md` przed odpowiadaniem na pytania o architekturę, oraz instaluje hooki `PreToolUse` (`.codebuddy/settings.json`), które uruchamiają się przed poleceniami wyszukiwania Bash i odczytami plików, kierując zamiast tego w stronę `graphify query`.
-
-**Codex** zapisuje do `AGENTS.md`, co na tej platformie faktycznie niesie zawsze aktywne wskazówki dotyczące grafu. `graphify codex install` rejestruje również hook `PreToolUse` w `.codex/hooks.json` (`graphify hook-check`), ale ten wpis jest celowo **pusty** (no-op): Codex Desktop odrzuca `hookSpecificOutput.additionalContext` w `PreToolUse`, więc emitowanie tam podpowiedzi zepsułoby wywołania narzędzia Bash. W przeciwieństwie do Claude Code, gdzie to hook (`graphify hook-guard`) wykonuje nakierowywanie, w Codex hook uruchamia się i celowo nic nie robi, a `AGENTS.md` jest mechanizmem zawsze aktywnym.
-
-**Kilo Code** instaluje umiejętność Graphify do `~/.config/kilo/skills/graphify/SKILL.md` oraz natywne polecenie `/graphify` do `~/.config/kilo/command/graphify.md`. `graphify kilo install` zapisuje również `AGENTS.md` oraz natywny plugin `tool.execute.before` (`.kilo/plugins/graphify.js` + rejestracja w `.kilo/kilo.json` lub `.kilo/kilo.jsonc`), dzięki czemu Kilo otrzymuje to samo zawsze aktywne przypominanie o grafie poprzez natywną konfigurację `.kilo`.
-
-**Cursor** zapisuje `.cursor/rules/graphify.mdc` z `alwaysApply: true`, więc Cursor dołącza ją automatycznie do każdej rozmowy, bez potrzeby hooka.
+Dokładnie to, które pliki zapisuje każda platforma (`CODEBUDDY.md` + hooki `PreToolUse` w CodeBuddy, `AGENTS.md` w Codex, natywny plugin `.kilo` w Kilo, reguła `alwaysApply` w Cursorze itd.), jest opisane w **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
 
 Aby usunąć graphify ze wszystkich platform naraz: `graphify uninstall` (dodaj `--purge`, aby usunąć również `graphify-out/`). Albo użyj polecenia dla konkretnej platformy (np. `graphify claude uninstall`).
+
+### CLI skills or MCP instructions?
+
+Instrukcje instalowane przez `graphify install` oraz te dostarczane wraz z połączeniem Graphify MCP opisują różne sposoby odpytywania grafu:
+
+| Setup | Guidance to use | Query access |
+|---|---|---|
+| Lokalne CLI i zainstalowana umiejętność asystenta | Instrukcje platformy zapisane przez `graphify install` | Uruchamiaj `graphify query`, `graphify path` i `graphify explain` względem lokalnego grafu (domyślnie `graphify-out/`). |
+| Połączony serwer Graphify MCP | Instrukcje połączenia i narzędzia wymienione przez ten serwer | Wywołuj wymienione narzędzia MCP względem grafu obsługiwanego przez to połączenie. Nazwy i opisy narzędzi pochodzą z serwera. |
+
+Oba podejścia zachęcają do zawężonych zapytań do grafu przed szerokim przeszukiwaniem źródeł. Wybierz instrukcje pasujące do narzędzi, do których Twój asystent faktycznie ma dostęp; żaden z tych bloków nie ustanawia uniwersalnej reguły pierwszeństwa dla plików instrukcji Twojego asystenta. Jeśli używasz obu integracji, ustal, który graf odpytuje każda z nich, i wybierz główną ścieżkę zapytań zamiast kopiować dwa bezwarunkowe bloki instrukcji do `AGENTS.md`.
+
+`graphify install` instaluje lokalną integrację asystenta; nie ustanawia połączenia MCP. Klient MCP nie musi uruchamiać lokalnych zapytań CLI, aby korzystać z połączonego serwera. Serwer hostowany lokalnie nadal potrzebuje własnej instalacji Graphify i grafu, podczas gdy hostowane połączenie może obsługiwać graf, którego nie ma w katalogu roboczym klienta. Jeśli brakuje oczekiwanych narzędzi, sprawdź odpowiednią instalację CLI lub połączenie MCP, zamiast traktować instrukcje drugiej konfiguracji jako wymienne.
 
 ---
 
@@ -329,7 +331,7 @@ Aby usunąć graphify ze wszystkich platform naraz: `graphify uninstall` (dodaj 
 
 ---
 
-## What files it handles
+## What files it handles: ~40 languages
 
 graphify parsuje około 40 języków programowania lokalnie za pomocą drzewa AST tree-sitter oraz mapuje dokumentację, pliki PDF, obrazy i audio/wideo poprzez opcjonalny przebieg semantyczny. Pełna lista: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
 
@@ -371,6 +373,25 @@ Zobacz [pełną dokumentację poleceń](#full-command-reference) poniżej.
 
 graphify respektuje `.gitignore` oraz obsługuje wzorce `--exclude` i projektowy `.graphifyignore`. Szczegóły: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+
+## Project configuration
+
+Utwórz plik `.graphifyrc` w katalogu głównym skanowania dla ustawień, które należą do projektu, a nie do pojedynczego uruchomienia. Jeden `key=value` w wierszu; wiersze zaczynające się od `#` są komentarzami.
+
+**Niejednoznaczne rozszerzenia.** Niektóre rozszerzenia oznaczają różne języki w różnych projektach: `.inc` to PHP w pfSense, Pascal w drzewie Delphi, SQL lub asembler gdzie indziej; `.h` to C lub C++; `.m` to Objective-C lub MATLAB. graphify musi wybrać jedno globalne ustawienie domyślne, a gdy wybierze źle, plik nie kończy się błędem: jest parsowany jako niewłaściwy język i daje garść przypadkowych węzłów, więc graf wygląda na wypełniony, podczas gdy brakuje prawdziwych symboli. Zadeklaruj, co dane rozszerzenie oznacza w Twoim repozytorium:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Deklaracja przepływa przez klasyfikację, wybór ekstraktora, gramatykę i rozpoznawanie, importy, `graphify watch` oraz pamięć podręczną AST (plik ponownie sparsowany pod innym językiem nigdy nie używa ponownie starego wpisu), a ten sam `.graphifyrc` jest odczytywany przez `extract`, `update`, hooki, serwer MCP oraz umiejętność `/graphify`. Literówka jest raz zgłaszana na stderr, a skanowanie jest kontynuowane z ustawieniami domyślnymi. Jak deklaracje współdziałają z buforowaniem, przyrostowymi przebudowami i rozpoznawaniem importów: **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
 ---
 
 ## Team setup
@@ -381,7 +402,7 @@ Zatwierdź lub udostępnij graf, aby cały Twój zespół odpytywał ten sam kon
 
 ## Using the graph directly
 
-Poza Twoim asystentem AI możesz odpytywać `graph.json` bezpośrednio z CLI za pomocą `graphify query`, `graphify path` i `graphify explain`. Zobacz **[Ask better graph questions](https://docs.graphify.com/guides/querying)** oraz **[query reference](https://docs.graphify.com/reference/query)**.
+Poza Twoim asystentem AI możesz odpytywać `graph.json` bezpośrednio z CLI za pomocą `graphify query`, `graphify path` i `graphify explain`. Nazwa pasująca do kilku węzłów jest odrzucana z wypisaniem kandydatów, zamiast być zgadywana. Skrypty mogą odczytać wynik z kodu wyjścia: `0` odpowiedź, `3` niejednoznaczna nazwa, `4` brak pasującego węzła. Zobacz **[Ask better graph questions](https://docs.graphify.com/guides/querying)** oraz **[query reference](https://docs.graphify.com/reference/query)**.
 
 ---
 

@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import os
+import posixpath
 import re
 import sys
 import textwrap
@@ -43,6 +44,8 @@ from graphify.extractors.base import (  # noqa: F401
     _read_source_bytes,
     _read_source_text,
     _read_text,
+    active_scan_root,
+    set_active_scan_root,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
@@ -74,6 +77,7 @@ from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.solidity import (  # noqa: F401
     extract_solidity,
+    resolve_solidity_inherited_calls,
     resolve_solidity_type_references,
 )
 from graphify.extractors.sql import extract_sql  # noqa: F401
@@ -177,7 +181,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 
 from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
 
-from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
@@ -4683,6 +4687,33 @@ def _resolve_swift_member_calls(
         })
 
 
+def _stamp_python_fixture_paths(per_file: "list[dict | None]", root: Path) -> None:
+    """Repo-relative locations for the pytest-fixture arm of
+    _resolve_python_member_calls. A re-extracted file carries absolute paths while
+    an unchanged file's context node (changed-files rebuild) is repo-relative; the
+    arm walks directories, so it gets one form. In memory only: results were cached
+    before resolution."""
+    def rel(source_file: str) -> str:
+        path = Path(source_file)
+        if not path.is_absolute():
+            return path.as_posix()
+        try:
+            return path.resolve().relative_to(root).as_posix()
+        except (OSError, ValueError):
+            return path.as_posix()
+
+    for result in per_file:
+        if not result:
+            continue
+        for rc in result.get("raw_calls", []):
+            if rc.get("_python_fixture_param") and rc.get("source_file"):
+                rc["_python_test_file"] = rel(str(rc["source_file"]))
+        located = {n["id"]: rel(str(n["source_file"])) for n in result.get("nodes", [])
+                   if n.get("_py_fixture") and n.get("source_file")}
+        if located:
+            result["_python_fixture_files"] = located
+
+
 def _resolve_python_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4790,6 +4821,40 @@ def _resolve_python_member_calls(
         src, tgt = e.get("source"), e.get("target")
         if e.get("relation") == "method" and isinstance(src, str) and isinstance(tgt, str):
             method_class[tgt] = src
+
+    # pytest fixture nodes by name, for the fixture arm, with their repo-relative
+    # file: stamped on re-extracted files (_stamp_python_fixture_paths), already
+    # relative on an unchanged file's context node.
+    fixture_locations: dict[str, str] = {}
+    for result in per_file:
+        fixture_locations.update(result.get("_python_fixture_files") or {})
+    fixtures_by_name: dict[str, list[tuple[str, dict]]] = {}
+    for n in all_nodes:
+        if n.get("_py_fixture") and n.get("source_file"):
+            where = fixture_locations.get(n["id"]) or str(n["source_file"]).replace("\\", "/")
+            name = str(n.get("label", "")).strip().lstrip(".").removesuffix("()")
+            fixtures_by_name.setdefault(name, []).append((where, n))
+
+    def _nearest_fixture(test_file: str, name: str) -> dict | None:
+        # pytest's order: the module itself, then the conftest.py of its
+        # directory and of each directory above it; the nearest one wins.
+        candidates = fixtures_by_name.get(name, [])
+        if not test_file or not candidates:
+            return None
+        here = [n for where, n in candidates if where == test_file]
+        directory = test_file
+        while not here:
+            parent = posixpath.dirname(directory)
+            if parent == directory:
+                return None
+            directory = parent
+            conftest = posixpath.join(directory, "conftest.py") if directory else "conftest.py"
+            here = [n for where, n in candidates if where == conftest]
+            if not directory:
+                break
+        if here:
+            return here[0] if len(here) == 1 else None
+        return None
 
     def _file_node(nid: str) -> "str | None":
         # Climb `contains` / `method` parents to the top, which is the file: a
@@ -4930,6 +4995,25 @@ def _resolve_python_member_calls(
                 continue
             if targets:
                 continue
+        if rc.get("_python_fixture_param"):
+            # Fixture arm: `runner.invoke()` in a test whose parameter `runner` is a
+            # pytest fixture. pytest's lookup: the caller's own module, then the
+            # conftest.py of its directory and of each directory above it; the
+            # nearest definition wins, a typed or not. Its returned class goes
+            # through the typed-receiver gate below, judged from the FIXTURE's
+            # file, which is the one importing the class.
+            fixture = _nearest_fixture(str(rc.get("_python_test_file") or ""), receiver)
+            fixture_type = fixture.get("_py_fixture") if fixture is not None else None
+            if fixture is not None and fixture_type and fixture_type != PYTEST_FIXTURE_UNTYPED:
+                class_nids = class_def_nids.get(_key(fixture_type), [])
+                fixture_file = _file_node(fixture["id"])
+                if len(class_nids) == 1 and fixture_file is not None:
+                    cls = class_nids[0]
+                    imported = imported_by_filenode.get(fixture_file, set())
+                    cls_file = _file_node(cls)
+                    if cls_file == fixture_file or cls in imported or (cls_file is not None and cls_file in imported):
+                        _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+            continue
         receiver_type = rc.get("receiver_type")
         if receiver_type and not receiver[:1].isupper():
             # Typed-receiver arm: `request.read()` where the extractor typed the
@@ -5011,16 +5095,24 @@ def _resolve_typescript_member_calls(
     for a merged graph to finish (#3152); the gate above never sees it, since it only
     vets a name that did match locally.
     """
+    def _key(label: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
+
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         tt = result.get("ts_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
-    if not type_table_by_file:
+    # Class fields live on class nodes (`_ts_fields`). One id can carry several
+    # nodes (`class UsecaseVisitor` and `const usecaseVisitor` fold together), so
+    # gather the fields of every node with that id.
+    ts_fields_by_id: dict[tuple[str, bool], dict[str, str]] = {}
+    for n in all_nodes:
+        for static, attr in ((False, "_ts_fields"), (True, "_ts_static_fields")):
+            for fname, ftype in (n.get(attr) or {}).items():
+                ts_fields_by_id.setdefault((str(n.get("id")), static), {}).setdefault(fname, ftype)
+    if not type_table_by_file and not ts_fields_by_id:
         return
-
-    def _key(label: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
@@ -5036,13 +5128,26 @@ def _resolve_typescript_member_calls(
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
+    # Exact member name -> node. `_key` drops `_`/`$`/`#`, and since #4475
+    # `updateHash` / `_updateHash` are two nodes of one class, so the exact
+    # name is tried first and `_key` stays the fallback.
+    method_exact: dict[tuple[str, str], str] = {}
+    # Keys more than one member normalizes to: the fallback can't tell them apart.
+    method_key_ambiguous: set[tuple[str, str]] = set()
+    class_of_method: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            key = (src, _key(tnode.get("label", "")))
+            if method_index.get(key, tgt) != tgt:
+                method_key_ambiguous.add(key)
+            method_index[key] = tgt
+            method_exact[(src, str(tnode.get("label", "")).removesuffix("()").removeprefix("."))] = tgt
+        if isinstance(src, str) and isinstance(tgt, str):
+            class_of_method[tgt] = src
 
     # Origin maps (#2553), built like the Python resolver's module arm: key on
     # stable NODE ids, not source_file strings (raw_calls keep their original
@@ -5067,6 +5172,35 @@ def _resolve_typescript_member_calls(
         if e.get("relation") in ("imports", "imports_from"):
             imported_by_filenode.setdefault(e.get("source"), set()).add(e.get("target"))
 
+    # `class B extends A`: a field A declares is B's too. Bases are matched by
+    # their node, else by a unique class of that label carrying fields.
+    bases: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") == "inherits":
+            bases.setdefault(str(e.get("source")), []).append(str(e.get("target")))
+    field_classes_by_key: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if ((n.get("_ts_fields") or n.get("_ts_static_fields"))
+                and n["id"] not in field_classes_by_key.get(_key(n.get("label", "")), [])):
+            field_classes_by_key.setdefault(_key(n.get("label", "")), []).append(n["id"])
+
+    def _field_type(class_nid: str, field: str, static: bool, depth: int = 0) -> tuple[str, str] | None:
+        # (field type, the class that declares the field)
+        found = ts_fields_by_id.get((class_nid, static), {}).get(field)
+        if found:
+            return found, class_nid
+        if depth >= 8:
+            return None
+        for base in bases.get(class_nid, []):
+            base_nid = base if (base, static) in ts_fields_by_id else None
+            if base_nid is None:
+                same = field_classes_by_key.get(_key(node_by_id.get(base, {}).get("label", "")), [])
+                base_nid = same[0] if len(same) == 1 else None
+            hit = _field_type(base_nid, field, static, depth + 1) if base_nid else None
+            if hit:
+                return hit
+        return None
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -5080,12 +5214,23 @@ def _resolve_typescript_member_calls(
         caller = rc.get("caller_nid")
         if not receiver or not callee or not caller:
             continue
+        declaring_nid: str | None = None
         if receiver[:1].isupper():
             type_name = receiver
             type_qualified = True  # the receiver names the type in source
         else:
             type_qualified = False
-            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+            type_name = None
+            owner_nid = class_of_method.get(caller) if rc.get("ts_this_field") else None
+            if owner_nid is not None:
+                # `this.x` in a method of a known class reads that class's fields
+                # (declared, parameter properties, constructor assignments), then
+                # its base classes': the file table would hand it another class's
+                # field or a local that merely shares the name.
+                hit = _field_type(owner_nid, str(receiver), bool(rc.get("ts_static_this")))
+                type_name, declaring_nid = hit if hit else (None, None)
+            else:
+                type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name:
             continue
         # A builtin global receiver type (Date, Promise, Map, ...) must not resolve
@@ -5113,7 +5258,9 @@ def _resolve_typescript_member_calls(
         # a class in one file and an interface in two others, and the caller's
         # import says which one its `c: Context` means. Exactly one visible
         # definition is required; none or several still emit nothing.
-        caller_file = file_of_node.get(caller)
+        # An inherited field's type is judged from the file declaring the field:
+        # `class Child extends Base` need not import what `Base` holds.
+        caller_file = file_of_node.get(declaring_nid or caller)
         imported = imported_by_filenode.get(caller_file, set())
 
         def _visible(nid: str) -> bool:
@@ -5128,7 +5275,10 @@ def _resolve_typescript_member_calls(
         if len(visible) != 1:
             continue
         type_nid = visible[0]
-        method_nid = method_index.get((type_nid, _key(callee)))
+        method_nid = method_exact.get((type_nid, str(callee)))
+        exact = method_nid is not None
+        if not exact and (type_nid, _key(callee)) not in method_key_ambiguous:
+            method_nid = method_index.get((type_nid, _key(callee)))
         if not method_nid:
             # Receiver typed, but the type has no such method. The old fallback
             # (a `references` edge to the type node) was another fabrication
@@ -5139,7 +5289,7 @@ def _resolve_typescript_member_calls(
         # declares a public `foo` (the node is marked); otherwise its `foo` comes
         # from elsewhere and the private method is not the target.
         method_node = node_by_id.get(method_nid, {})
-        if (str(method_node.get("label", "")).lstrip(".").startswith("#")
+        if (not exact and str(method_node.get("label", "")).lstrip(".").startswith("#")
                 and not str(callee).startswith("#")
                 and not method_node.get("_ts_public_twin")):
             continue
@@ -7279,6 +7429,12 @@ register_language_resolver(
         "solidity_type_references", frozenset({".sol"}), resolve_solidity_type_references
     )
 )
+# Runs after the type pass: it walks the `inherits` edges that pass binds.
+register_language_resolver(
+    LanguageResolver(
+        "solidity_inherited_calls", frozenset({".sol"}), resolve_solidity_inherited_calls
+    )
+)
 register_language_resolver(
     LanguageResolver(
         "erlang_remote_calls",
@@ -7980,9 +8136,10 @@ def _xaml_project_root(path: Path) -> Path:
                 break
         except OSError:
             continue
-    if _XAML_ACTIVE_EXTRACT_ROOT is None:
+    active_root = active_scan_root()
+    if active_root is None:
         return root
-    boundary = _XAML_ACTIVE_EXTRACT_ROOT.resolve()
+    boundary = active_root.resolve()
     try:
         root.resolve().relative_to(boundary)
         return root
@@ -7993,7 +8150,7 @@ def _xaml_project_root(path: Path) -> Path:
 def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     root = _xaml_project_root(path)
-    cache_key = str(root.resolve()) if _XAML_ACTIVE_EXTRACT_ROOT is not None else None
+    cache_key = str(root.resolve()) if active_scan_root() is not None else None
     if cache_key and cache_key in _XAML_CSHARP_CLASS_CACHE:
         return _XAML_CSHARP_CLASS_CACHE[cache_key]
     classes: dict[str, list[dict]] = {}
@@ -8051,7 +8208,6 @@ def _xaml_pascal_name(name: str) -> str | None:
 
 _XAML_TOOLKIT_FIELD_RE = re.compile(r"\b(?P<name>_?m?_?[A-Za-z_]\w*)\s*(?:=.*)?;")
 _XAML_TOOLKIT_METHOD_RE = re.compile(r"\b(?P<name>[A-Za-z_]\w*)\s*\(")
-_XAML_ACTIVE_EXTRACT_ROOT: Path | None = None
 _XAML_CSHARP_CLASS_CACHE: dict[str, dict[str, list[dict]]] = {}
 
 
@@ -8685,13 +8841,15 @@ def _get_extractor(path: Path) -> Any | None:
 
 
 def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
-    global _XAML_ACTIVE_EXTRACT_ROOT
-    previous_root = _XAML_ACTIVE_EXTRACT_ROOT
-    _XAML_ACTIVE_EXTRACT_ROOT = root.resolve()
+    # Publish the in-flight scan root on extractors.base (the correct import
+    # direction) so root-dependent extractors — Markdown link resolution, the
+    # XAML C# project clamp — can read it without reaching back into this module
+    # (#3666). Despite the XAML-era name this wraps every extractor.
+    previous_root = set_active_scan_root(root.resolve())
     try:
         return _safe_extract(extractor, path, scan_root=root)
     finally:
-        _XAML_ACTIVE_EXTRACT_ROOT = previous_root
+        set_active_scan_root(previous_root)
 
 
 def _worker_init(language_overrides: dict[str, str]) -> None:
@@ -9530,6 +9688,10 @@ def extract(
     # subagents generate (#1033). Resolve before relativizing so paths passed in
     # relative form still anchor to the (resolved) root.
     id_remap: dict[str, str] = {}
+    # Input files that minted each old file-level id key (resolved paths) (#4449). A key
+    # names its owner's file node; a symbol of ANOTHER file that merely spells the same
+    # string (``const sql`` in x.mjs next to x.sql) must not follow it.
+    id_owner: dict[str, set[Path]] = {}
     # A target OUTSIDE the scan root (an out-of-root ProjectReference/.sln/bash
     # `source`/#include/relative import) can't be made relative to root; leaving
     # it absolute leaked the scan path including the OS username into a
@@ -9686,6 +9848,7 @@ def extract(
         new_id = _file_node_id(rel)
         if old_id != new_id:
             id_remap[old_id] = new_id
+            id_owner.setdefault(old_id, set()).add(_resolved(path))
         # Also register the absolute-resolved form of the file-level id so
         # alias/workspace import targets (resolved via .resolve()) remap to
         # canonical instead of orphaning (#1529).
@@ -9693,6 +9856,7 @@ def extract(
         old_id_abs = _make_id(str(path_abs))
         if old_id_abs != new_id:
             id_remap[old_id_abs] = new_id
+            id_owner.setdefault(old_id_abs, set()).add(path_abs)
         old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
         if old_pref != new_id:
@@ -9722,15 +9886,50 @@ def extract(
         stem_forms[path_abs] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
+    # A key is contested when a node of a different file carries it as one of that
+    # file's OWN symbol ids (id starts with a stem prefix of its file). ``held`` lists
+    # the files that carry such a node. Every other key renames exactly as before
+    # (#1529, #2169, #2243) (#4449).
+    contested: set[str] = set()
+    held: dict[str, set[Path]] = {}
+    for _n in all_nodes:
+        _k, _sf = _n.get("id"), _n.get("source_file")
+        if _k in id_remap and _k in id_owner and _sf and _resolved(_sf) not in id_owner[_k]:
+            _forms = stem_forms.get(_resolved(_sf))
+            if _forms and any(_k.startswith(_f + "_") for _f in _forms[1]):
+                contested.add(_k)
+                held.setdefault(_k, set()).add(_resolved(_sf))
+
+    def _remapped(nid, owner_sf):
+        """id_remap[nid], or None to keep nid. A contested key stays on an item whose
+        file holds its own node with that id and did not mint the key; everything else
+        (the owner's file, or a file that only REFERS to the owner) renames as before."""
+        new = id_remap.get(nid)
+        if new is None or nid not in contested:
+            return new
+        try:
+            if not owner_sf:
+                return new
+            f = _resolved(owner_sf)
+            if f in id_owner[nid]:
+                return new
+            return None if f in held[nid] else new
+        except (OSError, RuntimeError):
+            return new
+
     if id_remap:
         for n in all_nodes:
-            if n.get("id") in id_remap:
-                n["id"] = id_remap[n["id"]]
+            _new = _remapped(n.get("id"), n.get("source_file"))
+            if _new is not None:
+                n["id"] = _new
         for e in all_edges:
-            if e.get("source") in id_remap:
-                e["source"] = id_remap[e["source"]]
-            if e.get("target") in id_remap:
-                e["target"] = id_remap[e["target"]]
+            _sf = e.get("source_file")
+            _new = _remapped(e.get("source"), _sf)
+            if _new is not None:
+                e["source"] = _new
+            _new = _remapped(e.get("target"), e.get("target_file") or _sf)
+            if _new is not None:
+                e["target"] = _new
         # raw_calls carry caller_nid, consumed by the cross-file call pass far
         # below (after this remap). A module-TOP-LEVEL indirect_call/callback
         # records the FILE-level id as its caller — the id minted from the
@@ -9740,23 +9939,29 @@ def extract(
         # source and matches no node in the graph (#2231). Mirrors the
         # sym_remap raw_calls rewrite in the prefix pass below.
         for rc in all_raw_calls:
-            cn = rc.get("caller_nid")
-            if cn in id_remap:
-                rc["caller_nid"] = id_remap[cn]
+            _new = _remapped(rc.get("caller_nid"), rc.get("source_file"))
+            if _new is not None:
+                rc["caller_nid"] = _new
         # swift_extensions[].nid is the same kind of id carrier as caller_nid
         # above (cache.py remaps both), consumed by _merge_swift_extensions far
         # below. Left stale it matches no node, so whether the extension merge
         # runs at all depends on the FORM of the paths handed to extract() —
         # relative input already yields the post-remap slug, absolute input does
         # not (#2538). Remap it here so both agree.
-        for result in per_file:
+        for _path, result in zip(paths, per_file):
             for ext in result.get("swift_extensions", []) or []:
-                en = ext.get("nid")
-                if en in id_remap:
-                    ext["nid"] = id_remap[en]
+                _new = _remapped(ext.get("nid"), _path)
+                if _new is not None:
+                    ext["nid"] = _new
         # objc_field_types["tables"] is keyed BY class node id - the one bucket
         # the #1529 rewrites missed (#3150).
-        _remap_objc_field_tables(per_file, id_remap)
+        if contested:
+            for _path, result in zip(paths, per_file):
+                _remap_objc_field_tables(
+                    [result], {k: v for k, v in id_remap.items()
+                               if k not in contested or _remapped(k, _path) is not None})
+        else:
+            _remap_objc_field_tables(per_file, id_remap)
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         edge_alias_candidates: dict[str, set[str]] = {}
@@ -10021,7 +10226,22 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
-    _rewire_unique_stub_nodes(all_nodes, all_edges)
+    # An incremental build re-extracts only the changed files, so the rewire also
+    # needs the unchanged ones as candidates, or it resolves less than a full build.
+    _fresh_ids = {n.get("id") for n in all_nodes}
+    # #4439: a Rust `use` reached its declaration only when a type annotation had left
+    # a sourceless node under the same id. Lend the rewire one for each imported name
+    # that has none; they are not kept, so an unresolved import dangles as before.
+    _use_stubs = {
+        e["target"]: {"id": e["target"], "label": e["_rust_use_name"], "file_type": "code", "source_file": ""}
+        for e in all_edges
+        if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _fresh_ids
+    }
+    _rewire_view = all_nodes + list(_use_stubs.values()) + [
+        n for n in resolution_context_nodes or [] if n.get("id") not in _fresh_ids]
+    _rewire_unique_stub_nodes(_rewire_view, all_edges)
+    _kept = {id(n) for n in _rewire_view} - {id(n) for n in _use_stubs.values()}
+    all_nodes[:] = [n for n in all_nodes if id(n) in _kept]
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if effective_suffix(p) == ".java"]
@@ -10297,6 +10517,11 @@ def extract(
         # cited file as evidence; a global name match here would mint a `calls`
         # edge from a heading to whatever shares the name.
         if rc.get("language") == "markdown":
+            continue
+        # A Solidity name is visible only through the caller contract's own
+        # bases; resolve_solidity_inherited_calls binds those. A corpus-wide
+        # name match would link `_transfer()` to any contract's `_transfer`.
+        if rc.get("solidity_call"):
             continue
         # A Go predeclared function is never a cross-file call: the extractor
         # already drops bare `append(s, x)` (extractors/go.py), so this is the
@@ -10635,6 +10860,7 @@ def extract(
     # results: raw_calls come solely from `paths`, so nothing sourced by an
     # unchanged file is ever emitted, and the ambiguity guards count the same
     # candidates a full build would (the context is the whole unchanged corpus).
+    _stamp_python_fixture_paths(per_file, root)
     if resolution_context_nodes or resolution_context_edges:
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
@@ -10649,6 +10875,7 @@ def extract(
     all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
     for e in all_edges:
         e.pop("_rust_use_binding", None)
+        e.pop("_rust_use_name", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a

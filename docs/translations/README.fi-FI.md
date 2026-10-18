@@ -47,11 +47,11 @@ Kirjoita `/graphify` AI-koodausavustajaasi, niin se kartoittaa koko projektisi (
   <em>FastAPI-koodikanta graphifyn kartoittamana. Jokainen solmu on käsite, värit ovat havaittuja yhteisöjä, ja koko juttu on klikattavissa tiedostossa graph.html.</em>
 </p>
 
-**Pääse alkuun** (30 sekuntia):
+**Pääse alkuun** (30 sekuntia). Tarvitsee Python 3.10+ ja uv:n (tai pipx:n):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # detects your assistant and registers the skill
 ```
 
 Sitten AI-avustajassasi:
@@ -73,21 +73,7 @@ Tallennettu graafi sisältää `graph.schema_version`-tiedon, jotta integraatiot
 yhteensopimattomat formaattimuutokset, sekä `graph.graphify_version`-tiedon, joka yksilöi sen
 Graphify-julkaisun, joka sen tuotti.
 
-**Toimii työkaluissa** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot ja 15+ muuta: [valitse alustasi](#install).
-
----
-
-## Dokumentaatio
-
-Täydelliset oppaat ja viite löytyvät osoitteesta **[docs.graphify.com](https://docs.graphify.com)**:
-
-- **[Pikaopas](https://docs.graphify.com/quickstart)**: rakenna ensimmäinen graafisi
-- **[CLI-viite](https://docs.graphify.com/reference/overview)**: jokainen komento ja lippu
-- **[Esitä parempia graafikysymyksiä](https://docs.graphify.com/guides/querying)**: kyselymallit
-- **[Konfiguraatio](https://docs.graphify.com/reference/configuration)**: ympäristömuuttujat ja viritys
-- **[Tuetut syötteet](https://docs.graphify.com/concepts/supported-inputs)**: kielet ja tiedostotyypit
-- **[Tiimin työnkulut](https://docs.graphify.com/guides/team-workflows)** ja **[PR-katselmointi](https://docs.graphify.com/guides/pull-requests)**
-- **[Vianetsintä](https://docs.graphify.com/troubleshooting)** ja **[Miten se toimii](https://docs.graphify.com/concepts/architecture)**
+**Yksi asennus, mikä tahansa avustaja, mikä tahansa käyttöjärjestelmä.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot ja 20+ muuta, macOS:llä, Linuxilla ja Windowsilla: [valitse alustasi](#install).
 
 ---
 
@@ -141,7 +127,7 @@ Mitä saat suoraan laatikosta:
 
 ---
 
-## Benchmarks
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Mittari | graphify | Vertailukenttä |
 |---|---|---|---|
@@ -152,6 +138,20 @@ Mitä saat suoraan laatikosta:
 | Graafin rakennus | LLM-krediitit | **0** | per token useimmille järjestelmille |
 
 Jokainen järjestelmä ajettiin samassa testialustassa samalla mallilla ja budjeteilla, ja sen arvioi tuomari, joka oli sokkovalidoitu toista tuomaria vasten (90.6% yksimielisyys, Cohenin kappa 0.81). Täydelliset järjestelmäkohtaiset taulukot, koodiälykkyyden tulos ja toistokomennot: **[BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+---
+
+## Dokumentaatio
+
+Täydelliset oppaat ja viite löytyvät osoitteesta **[docs.graphify.com](https://docs.graphify.com)**:
+
+- **[Pikaopas](https://docs.graphify.com/quickstart)**: rakenna ensimmäinen graafisi
+- **[CLI-viite](https://docs.graphify.com/reference/overview)**: jokainen komento ja lippu
+- **[Esitä parempia graafikysymyksiä](https://docs.graphify.com/guides/querying)**: kyselymallit
+- **[Konfiguraatio](https://docs.graphify.com/reference/configuration)**: ympäristömuuttujat ja viritys
+- **[Tuetut syötteet](https://docs.graphify.com/concepts/supported-inputs)**: kielet ja tiedostotyypit
+- **[Tiimin työnkulut](https://docs.graphify.com/guides/team-workflows)** ja **[PR-katselmointi](https://docs.graphify.com/guides/pull-requests)**
+- **[Vianetsintä](https://docs.graphify.com/troubleshooting)** ja **[Miten se toimii](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -189,24 +189,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Virallinen lähdekoodirepositorio on [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Vaihe 1: asenna paketti:**
+Kahden komennon pikaopas on tämän READMEn yläreunassa. Tämä osio kattaa asennusmenetelmät, projektikohtaiset asennukset ja jokaisen tuetun alustan.
+
+**Asennusmenetelmät** (valitse yksi):
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup: see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**Vaihe 2: rekisteröi taito AI-avustajallesi:**
-
-```bash
-graphify install
-```
-
-Siinä kaikki. Avaa AI-avustajasi ja kirjoita `/graphify .`
+Aja sitten `graphify install` kerran. Se tunnistaa, mitä avustajaa ajat, ja rekisteröi taidon, joten avustajakohtaista asetusta ei tarvita. Avaa AI-avustajasi ja kirjoita `/graphify .`
 
 Asentaaksesi avustajataidon nykyiseen repositorioon käyttäjäprofiilisi sijaan,
 lisää `--project`:
@@ -250,7 +243,7 @@ esimerkiksi `graphify claude install --project` tai `graphify codex install --pr
 | Amp | `graphify amp install` |
 | Agent Skills (kehysten välinen) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, sekä `graphify pi guard install` natiivia vartijaa varten |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -258,6 +251,8 @@ esimerkiksi `graphify claude install --project` tai `graphify codex install --pr
 Codex-käyttäjät tarvitsevat myös `multi_agent = true` kohdan `[features]` alle tiedostossa `~/.codex/config.toml` rinnakkaista ekstraktiota varten. CodeBuddy käyttää samaa Agent-työkalua ja PreToolUse-hookmekanismia kuin Claude Code. Factory Droid käyttää `Task`-työkalua rinnakkaiseen aliagenttien lähetykseen. OpenClaw ja Aider käyttävät peräkkäistä ekstraktiota (rinnakkaisten agenttien tuki on vielä varhaisessa vaiheessa näillä alustoilla). Trae käyttää Agent-työkalua rinnakkaiseen aliagenttien lähetykseen eikä tue `PreToolUse`-hookeja, joten AGENTS.md on aina päällä oleva mekanismi.
 
 `--platform agents` (alias `--platform skills`) kohdistuu geneerisiin kehysten välisiin [Agent-Skills](https://github.com/anthropics/skills)-sijainteihin: spesifikaation käyttäjäglobaali `~/.agents/skills/` (jonka lukevat `npx skills` ja spesifikaation mukaiset kehykset) globaaliin asennukseen, ja `./.agents/skills/` projektiasennukseen (`--project`). Pelkkä `graphify install` pysyy yksialustaisena (Claude Code) tarkoituksella: käytä nimettyä `agents`-alustaa, kun haluat taidon olevan minkä tahansa `.agents/skills`-polun lukevan kehyksen löydettävissä.
+
+Pillä ei ole `PreToolUse`-hookia, joten `graphify pi guard install` rekisteröi natiivin Pi-laajennuksen (Pin oman `pi install <package directory>` -komennon kautta), joka ajaa asennetun `graphify hook-guard` -komennon ennen Pin `read`-, `grep`-, `find`- ja hakutyylisiä `bash`-kutsuja. Tuore/vanhentunut graafipäätös ja `GRAPHIFY_HOOK_STRICT=1`-asetuksen kerran per istunto tapahtuva indeksoidun luvun esto tulevat samasta käytännöstä, joten Pi vastaa Claude Coden hook-käyttäytymistä; ohjaus saapuu `<system-reminder source="graphify">`-ohjausviestinä. Se tarvitsee Pi 0.58.4:n tai uudemman: aiemmat versiot antavat ohjausviestin ohittaa loput rinnakkaisesta työkalukutsuerästä. Paketti toimitetaan Graphify-asennuksen sisällä, joten asenna Graphify pysyvästi (`uv tool install graphifyy` tai `pipx install graphifyy`, ei `uvx`), käynnistä Pi uudelleen asennuksen tai päivityksen jälkeen, ja poista se komennolla `graphify pi guard uninstall`. Vain paikalliset tiedostokohteet tarkastetaan; hook tarvitsee `graphify`-komennon absoluuttisessa `PATH`-merkinnässä projektin ulkopuolella, on rajattu kahden sekunnin, 256 KiB sisään / 64 KiB ulos -kutsuun, ja epäonnistuu avoimesti. Sama paketti latautuu myös [Oh My Pi](https://github.com/can1357/oh-my-pi)-ympäristössä: `omp plugin install "$(graphify pi guard path)"`. Rekisteröity polku sisältää Python-version ja venvin, joten aja `graphify pi guard install` uudelleen jommankumman muuttamisen jälkeen, ja poista vanha merkintä komennolla `pi remove <old path>`.
 
 > Codex käyttää `$graphify` komennon `/graphify` sijaan.
 
@@ -311,15 +306,22 @@ Tämä kirjoittaa pienen konfiguraatiotiedoston, joka kehottaa avustajaasi konsu
 
 `GRAPH_REPORT.md` on edelleen käytettävissä laajaan arkkitehtuurikatselmointiin.
 
-**CodeBuddy** tekee samat kaksi asiaa kuin Claude Code: kirjoittaa `CODEBUDDY.md`-osion, joka kehottaa CodeBuddyä lukemaan `graphify-out/GRAPH_REPORT.md` ennen arkkitehtuurikysymyksiin vastaamista, ja asentaa `PreToolUse`-hookit (`.codebuddy/settings.json`), jotka laukeavat ennen Bash-hakukomentoja ja tiedostojen lukuja ja ohjaavat sen sijaan kohti `graphify query`-komentoa.
-
-**Codex** kirjoittaa tiedostoon `AGENTS.md`, joka on se, mikä tällä alustalla itse asiassa kantaa aina päällä olevan graafiohjauksen. `graphify codex install` rekisteröi myös `PreToolUse`-hookin tiedostoon `.codex/hooks.json` (`graphify hook-check`), mutta tämä merkintä on tarkoituksella **no-op**: Codex Desktop hylkää `hookSpecificOutput.additionalContext`-arvon kohdassa `PreToolUse`, joten ohjauksen lähettäminen siellä rikkoisi Bash-työkalukutsut. Toisin kuin Claude Codessa, jossa hook (`graphify hook-guard`) tekee ohjauksen, Codexissa hook laukeaa ja ei tarkoituksella tee mitään, ja `AGENTS.md` on aina päällä oleva mekanismi.
-
-**Kilo Code** asentaa Graphify-taidon polkuun `~/.config/kilo/skills/graphify/SKILL.md` ja natiivin `/graphify`-komennon polkuun `~/.config/kilo/command/graphify.md`. `graphify kilo install` kirjoittaa myös `AGENTS.md`-tiedoston sekä natiivin `tool.execute.before`-liitännäisen (`.kilo/plugins/graphify.js` + rekisteröinti tiedostoon `.kilo/kilo.json` tai `.kilo/kilo.jsonc`), niin että Kilo saa saman aina päällä olevan graafimuistutuskäyttäytymisen natiivin `.kilo`-konfiguraation kautta.
-
-**Cursor** kirjoittaa tiedoston `.cursor/rules/graphify.mdc` asetuksella `alwaysApply: true`, joten Cursor sisällyttää sen jokaiseen keskusteluun automaattisesti, hookia ei tarvita.
+Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/guides/always-on)**.
 
 Poistaaksesi graphifyn kaikilta alustoilta kerralla: `graphify uninstall` (lisää `--purge` poistaaksesi myös `graphify-out/`). Tai käytä alustakohtaista komentoa (esim. `graphify claude uninstall`).
+
+### CLI-taidot vai MCP-ohjeet?
+
+`graphify install` -komennon asentamat ohjeet ja ne, jotka tulevat Graphify MCP -yhteyden mukana, kuvaavat eri tapoja kysellä graafia:
+
+| Asetus | Käytettävä ohjaus | Kyselyn käyttöoikeus |
+|---|---|---|
+| Paikallinen CLI ja asennettu avustajataito | `graphify install` -komennon kirjoittamat alustaohjeet | Aja `graphify query`, `graphify path` ja `graphify explain` paikallista graafia vasten (`graphify-out/` oletuksena). |
+| Yhdistetty Graphify MCP -palvelin | Yhteyden ohjeet ja kyseisen palvelimen listaamat työkalut | Kutsu listattuja MCP-työkaluja kyseisen yhteyden tarjoamaa graafia vasten. Työkalujen nimet ja kuvaukset tulevat palvelimelta. |
+
+Molemmat kannustavat rajattuihin graafikyselyihin ennen laajoja lähdehakuja. Valitse ohjeet, jotka vastaavat työkaluja, joihin avustajasi todella pääsee käsiksi; kumpikaan lohko ei luo universaalia etusijasääntöä avustajasi ohjetiedostoille. Jos käytät molempia integraatioita, tunnista, mitä graafia kumpikin kyselee, ja valitse ensisijainen kyselypolku sen sijaan, että kopioisit kaksi ehdotonta ohjelohkoa tiedostoon `AGENTS.md`.
+
+`graphify install` asentaa paikallisen avustajaintegraation; se ei luo MCP-yhteyttä. MCP-asiakkaan ei tarvitse ajaa paikallisia CLI-kyselyitä käyttääkseen yhdistettyä palvelintaan. Paikallisesti isännöity palvelin tarvitsee edelleen oman Graphify-asennuksensa ja graafinsa, kun taas isännöity yhteys voi tarjota graafin, jota ei ole asiakkaan työhakemistossa. Jos odotetut työkalut puuttuvat, tarkista asianmukainen CLI-asennus tai MCP-yhteys sen sijaan, että kohtelisit toisen asetuksen ohjeita keskenään vaihdettavina.
 
 ---
 
@@ -329,7 +331,7 @@ Poistaaksesi graphifyn kaikilta alustoilta kerralla: `graphify uninstall` (lisä
 
 ---
 
-## Mitä tiedostoja se käsittelee
+## Mitä tiedostoja se käsittelee: ~40 kieltä
 
 graphify jäsentää ~40 ohjelmointikieltä paikallisesti tree-sitter AST:llä, ja kartoittaa dokumentit, PDF-tiedostot, kuvat sekä äänen/videon valinnaisen semanttisen käsittelyn kautta. Täysi lista: **[Tuetut syötteet](https://docs.graphify.com/concepts/supported-inputs)**.
 
@@ -371,6 +373,25 @@ Katso [täydellinen komentoviite](#full-command-reference) alta.
 
 graphify kunnioittaa `.gitignore`-tiedostoa ja tukee `--exclude`-malleja sekä projektikohtaista `.graphifyignore`-tiedostoa. Lisätietoja: **[Konfiguraatio](https://docs.graphify.com/reference/configuration)**.
 
+
+## Projektikonfiguraatio
+
+Luo `.graphifyrc` skannausjuureen asetuksille, jotka kuuluvat projektille eivätkä yksittäiselle ajolle. Yksi `key=value` per rivi; `#`-merkillä alkavat rivit ovat kommentteja.
+
+**Monitulkintaiset tiedostopäätteet.** Jotkin päätteet tarkoittavat eri kieliä eri projekteissa: `.inc` on PHP pfSensessä, Pascal Delphi-puussa, SQL tai assembly muualla; `.h` on C tai C++; `.m` on Objective-C tai MATLAB. graphifyn on valittava yksi globaali oletus, ja kun se valitsee väärin, tiedosto ei epäonnistu: se jäsentyy väärällä kielellä ja tuottaa kourallisen satunnaisia solmuja, joten graafi näyttää täyttyneeltä, vaikka todelliset symbolit puuttuvat. Ilmoita, mitä pääte tarkoittaa reposi kohdalla:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+Ilmoitus virtaa luokittelun, ekstraktorin valinnan, kieliopin ja resoluution, tuontien, `graphify watch`-komennon ja AST-välimuistin läpi (tiedosto, joka jäsennetään uudelleen eri kielellä, ei koskaan käytä uudelleen vanhaa merkintää), ja saman `.graphifyrc`-tiedoston lukevat `extract`, `update`, hookit, MCP-palvelin ja `/graphify`-taito. Kirjoitusvirhe raportoidaan kerran stderriin ja skannaus jatkuu oletuksilla. Miten ilmoitukset vuorovaikuttavat välimuistin, inkrementaalisten uudelleenrakennusten ja tuontien resoluution kanssa: **[Konfiguraatio](https://docs.graphify.com/reference/configuration)**.
+
 ---
 
 ## Tiimin asetukset
@@ -381,7 +402,7 @@ Committaa tai jaa graafi, niin koko tiimisi kyselee samaa kontekstia, ja katselm
 
 ## Graafin käyttö suoraan
 
-AI-avustajasi lisäksi voit kysellä `graph.json`-tiedostoa suoraan CLI:stä komennoilla `graphify query`, `graphify path` ja `graphify explain`. Katso **[Esitä parempia graafikysymyksiä](https://docs.graphify.com/guides/querying)** ja **[kyselyviite](https://docs.graphify.com/reference/query)**.
+AI-avustajasi lisäksi voit kysellä `graph.json`-tiedostoa suoraan CLI:stä komennoilla `graphify query`, `graphify path` ja `graphify explain`. Nimi, joka vastaa useita solmuja, hylätään listaamalla ehdokkaat sen sijaan, että arvattaisiin. Skriptit voivat lukea lopputuloksen paluukoodista: `0` vastaus, `3` monitulkintainen nimi, `4` ei vastaavaa solmua. Katso **[Esitä parempia graafikysymyksiä](https://docs.graphify.com/guides/querying)** ja **[kyselyviite](https://docs.graphify.com/reference/query)**.
 
 ---
 
@@ -393,9 +414,9 @@ Taustajärjestelmiä, API-avaimia, hook-käyttäytymistä ja viritystä ohjataan
 
 ## Yksityisyys
 
-- **Koodtiedostot**: käsitellään paikallisesti tree-sitterin kautta. Mikään ei poistu koneeltasi. Pelkkää koodia sisältävä korpus ei vaadi API-avainta: `graphify extract` toimii täysin offline-tilassa. Sekarepossa lisää `--code-only` indeksoidaksesi vain koodin ja ohittaaksesi dokumentit/PDF-tiedostot/kuvat, jotka muuten tarvitsisivat LLM:ää.
+- **Kooditiedostot**: käsitellään paikallisesti tree-sitterin kautta. Mikään ei poistu koneeltasi. Pelkkää koodia sisältävä korpus ei vaadi API-avainta: `graphify extract` toimii täysin offline-tilassa. Sekarepossa lisää `--code-only` indeksoidaksesi vain koodin ja ohittaaksesi dokumentit/PDF-tiedostot/kuvat, jotka muuten tarvitsisivat LLM:ää.
 - **Video / ääni**: litteroidaan paikallisesti faster-whisperillä. Mikään ei poistu koneeltasi.
-- **Dokumentit, PDF-tiedostot, kuvat**: lähetetään AI-avustajallesi semanttiseen ekstraktioon (`/graphify`-taidon kautta, käyttäen mallia, jota IDE-istuntosi ajaa). Headless `graphify extract` vaatii `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), käynnissä olevan Ollama-instanssin (`OLLAMA_BASE_URL`), AWS-tunnistetiedot vakiomuotoisen tarjoajaketjun kautta (Bedrock – ei API-avainta tarvita, käyttää IAM:ia), tai `claude`-CLI-binäärin (Claude Code – ei API-avainta tarvita, käyttää Claude-tilaustasi). `--dedup-llm`-lippu käyttää samaa avainta.
+- **Dokumentit, PDF-tiedostot, kuvat**: lähetetään AI-avustajallesi semanttiseen ekstraktioon (`/graphify`-taidon kautta, käyttäen mallia, jota IDE-istuntosi ajaa). Headless `graphify extract` vaatii `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), käynnissä olevan Ollama-instanssin (`OLLAMA_BASE_URL`), AWS-tunnistetiedot vakiomuotoisen tarjoajaketjun kautta (Bedrock - ei API-avainta tarvita, käyttää IAM:ia), tai `claude`-CLI-binäärin (Claude Code - ei API-avainta tarvita, käyttää Claude-tilaustasi). `--dedup-llm`-lippu käyttää samaa avainta.
 - **Datan sijainti**: `graphify extract` tunnistaa automaattisesti, mitä tarjoajaa käyttää sen perusteella, mikä API-avain on asetettu (prioriteetti: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Koodille, jolla on datan sijaintivaatimuksia, käytä `--backend ollama` (täysin paikallinen) tai anna eksplisiittinen `--backend`-lippu. Kimi (`MOONSHOT_API_KEY`) reitittää Moonshot AI:n palvelimille Kiinassa.
 - **Ei telemetriaa**, ei käytön seurantaa, ei analytiikkaa.
 - **Kyselyjen lokitus**: jokainen `graphify query`-, `graphify path`-, `graphify explain`- ja MCP `query_graph`-kutsu lokitetaan tiedostoon `~/.cache/graphify-queries.log` JSON Lines -muodossa (aikaleima, kysymys, korpus, palautetut solmut, kesto). Täydellisiä aligraafivastauksia **ei** tallenneta oletuksena. Aseta `GRAPHIFY_QUERY_LOG_DISABLE=1` kieltäytyäksesi, tai `GRAPHIFY_QUERY_LOG=/dev/null` vaimentaaksesi poistamatta koodipolkua käytöstä.

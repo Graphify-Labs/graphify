@@ -2,6 +2,45 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.92 (2026-10-16)
+
+Twenty-three community pull requests: call-resolution and id-collision fixes across JS/TS, Python, Go, Rust and Solidity; graph round-trip, dedup and confidence-folding fixes; skill code-only-update and dispatch fixes; and LLM/Ollama and detection fixes. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Fix: **JS/TS** class members that differ only by `_`, `$` or `#` are kept as separate nodes instead of collapsing one onto another (#4475, #4479, thanks @Mpasha17).
+- Fix: **TypeScript** a `this.field` receiver is typed from an assignment in any method (including `static` and accessors), not just the constructor (#4473, #4482, thanks @FolatheDuckofDuckingburg).
+- Fix: **JS** a workspace package whose `exports` map points only into `dist/` now falls back to the `src/` source, so app-to-package edges resolve on a clean checkout (#4485, #4489, thanks @bercedev).
+- Fix: **JS** a dangling barrel-named import edge is dropped once the import resolves through the barrel to its real definition (#4486, #4488, thanks @bercedev).
+- Fix: **Python** module-level class ids that collide with a function or another class are salted apart, so neither declaration is dropped (#2810, #4467, thanks @hementhu).
+- Feature: **Python** a member call on a pytest fixture parameter is typed from the fixture's returned class (#4332, #4333, thanks @rohit-jsfreaky).
+- Fix: **Go / Rust** same-file declarations whose names differ only by case are kept as separate nodes, with a forward reference resolving to the real type (#4468, thanks @abdulsamie10).
+- Feature: **Solidity** inherited calls, `super` calls and modifiers from base contracts now resolve through the contract's C3 linearization (#4379, #4384, thanks @rohit-jsfreaky).
+- Fix: **MCP** parallel edges (two relations between the same pair) are preserved through the graph.json round-trip and surfaced in query output, instead of collapsing to one (#4500, #4503, thanks @rtmalikian).
+- Fix: **dedup** a node with a source_file beats a sourceless namesake in collision rank, so the located node survives (#4492, #4496, thanks @ayushcodes10).
+- Fix: **build** model-drifted string confidences (`"high"`, `"confirmed"`) fold to a valid value before validation and dedup, clearing the permanent "invalid confidence" warning (#4495, #4501, thanks @ayushcodes10).
+- Fix: **extractors** the in-flight scan root is shared via the extractors base module instead of importing back into `graphify.extract`, restoring the one-way import direction (#3666, #3758, thanks @abhay-codes07).
+- Fix: **detect** only a valid `.git` (a real repository or a `gitdir:` worktree/submodule file) is treated as a VCS root, so a stray `.git` in a home directory no longer leaks its `.gitignore` into unrelated scans (#4444, #4464, thanks @Mpasha17).
+- Fix: **hooks** the post-merge hook now rebuilds after a real merge commit, and a new post-rewrite hook rebuilds after cherry-pick, rebase and `pull --rebase` (#4463, #4476; #4490, #4491, thanks @Deepjyoti-Sarmah).
+- Fix: **skill** the code-only `--update` path now materializes the extraction (empty semantic + Part C) before the merge across all hosts, so the merge no longer fails or silently drops the fresh AST (#4447, #4313, thanks @vibhanshu-mishra; aider/devin: #4456, thanks @Deepjyoti-Sarmah).
+- Fix: **skill** stray backticks inside a double-quoted `-c` block no longer let bash run a command (`graphify update`) mid-step (#4461, #4462, thanks @Deepjyoti-Sarmah).
+- Fix: **skill** Pi dispatches its semantic subagents to the native `delegate` agent instead of the non-existent `general-purpose` agent (#4494, #4502, thanks @bercedev).
+- Fix: **skill** the agent is told to push to the exact Neo4j/FalkorDB URI the user supplied rather than a localhost example (#4349, thanks @vibhanshu-mishra).
+- Fix: **llm** the extraction prompt pins `source_file` to the dispatched file, so a document's entities are no longer attributed to a file it merely references (#3377, #2270, #4487, thanks @cornwe19).
+- Feature: **llm** opt-in backend selection via `GRAPHIFY_BACKEND`, a disable switch, and an auto-detect that names the env var it chose (#4361, #4376, thanks @nothariharan).
+- Fix: **deps** cap `tree-sitter-dm <0.26` so a fresh install cannot pull the ABI-incompatible 0.26 grammar (#4044, thanks @safishamsi).
+
+## 0.9.91 (2026-10-14)
+
+Eight community pull requests: a Windows MCP-stdio hang fix, Rust/JS/TS/extract call-resolution and id-collision fixes, an Ollama context-size fix, and a clustering label-retention fix. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Fix: **MCP** `graph_stats` no longer hangs under a stdio host on Windows (and no longer silently drops its built-at-commit staleness line): `_git_head` closes the git child's stdin so git does not block on the JSON-RPC pipe (#4440, #4441, thanks @bercedev).
+- Fix: **Rust** a `use crate::…::Name` edge now lands on the declaration it imports rather than a bare name-folded target, so `explain`/`affected` resolve the type even when it is only constructed; a cross-crate `use std::…`/`use serde::…` still does not hijack a same-named local declaration (#4439, #4443, thanks @bercedev).
+- Fix: **JS/TS** a file-scope callback's own parameters are now shadowed, so a bare parameter passed on as a call argument no longer mints phantom cross-bundle `indirect_call` edges to same-named functions elsewhere in the corpus (#4448, #4457, thanks @bercedev).
+- Fix: **extract** a module symbol whose id spells a sibling file's id (a `const sql` beside `x.sql`) is kept on its own node instead of being merged onto the sibling's file node and dropped; the file stays findable by label (#4449, #4452, thanks @Deepjyoti-Sarmah).
+- Fix: **TypeScript** a class field's receiver type is now scoped to its own class and bases, so `this.field.method()` resolves to the right class when two classes share a field name; a same-named local or parameter no longer borrows a field's type (#4294, #4297, thanks @rohit-jsfreaky).
+- Fix: **Ollama** extraction and labeling requests now go to Ollama's native `/api/chat`, so the derived `num_ctx` actually reaches the server and large prompts are no longer silently truncated; a server without `/api/chat` (LM Studio, llama.cpp) falls back to the OpenAI-compatible endpoint (#4413, #4414, thanks @smngvlkz).
+- Fix: **cluster** a community keeps its curated or LLM label across a rebuild when its membership still overlaps the previous community by a strict majority, instead of discarding the name on a single-node change or a community-count change (#2298, #4451, thanks @SrijanSriv).
+- Test: **ingest** the skip-existing symlink test now compares the link target against what `readlink` returned, fixing a false failure on Windows where `readlink` returns an extended-length path (#4435, #4442, thanks @bercedev).
+
 ## 0.9.90 (2026-10-13)
 
 Fourteen community pull requests: C# call-resolution and id-collision fixes, Python/Go/dedup correctness, a hub-label sidecar, a post-merge heal hook, and query/build fixes. The AST cache schema is bumped, so the first build after upgrading re-extracts.
