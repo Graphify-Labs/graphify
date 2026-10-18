@@ -4,7 +4,7 @@ The output directory is ``graphify-out`` by default and overridable with the
 ``GRAPHIFY_OUT`` env var (worktrees or shared-output setups, #686). It accepts a
 relative name (``"graphify-out-feature"``) or an absolute path
 (``"/shared/graphify-out"``). Setting ``GRAPHIFY_HOME`` instead stores each
-repository\'s graph and cache outside the worktree (#4063).
+repository's graph and cache outside the worktree (#4063).
 
 This used to be duplicated as an identical ``_GRAPHIFY_OUT`` constant in
 ``__main__``, ``cache``, and ``watch``, while ``security`` and ``callflow_html``

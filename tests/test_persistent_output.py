@@ -88,7 +88,8 @@ def test_home_inside_repo_is_rejected(tmp_path, monkeypatch, capsys):
     assert "outside the repository" in capsys.readouterr().err
 
 
-def test_external_graph_uses_persisted_source_root(tmp_path):
+def test_external_graph_uses_persisted_source_root(tmp_path, monkeypatch):
+    from graphify import cli
     from graphify.cli import _graph_root_for
 
     repo = _git_repo(tmp_path / "repo")
@@ -96,6 +97,7 @@ def test_external_graph_uses_persisted_source_root(tmp_path):
     out.mkdir(parents=True)
     graph = out / "graph.json"
     graph.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli, "_GRAPHIFY_OUT", str(out))
     (out / ".graphify_root").write_text(str(repo), encoding="utf-8")
 
     assert _graph_root_for(graph) == repo.resolve()
@@ -103,3 +105,36 @@ def test_external_graph_uses_persisted_source_root(tmp_path):
     assert _graph_root_for(graph) == out.parent
     (out / ".graphify_root").unlink()
     assert _graph_root_for(graph) == out.parent
+
+def test_local_graph_ignores_stale_absolute_marker(tmp_path, monkeypatch):
+    from graphify import cli
+    from graphify.cli import _graph_root_for
+
+    repo = _git_repo(tmp_path / "repo")
+    old_repo = _git_repo(tmp_path / "old-location")
+    out = repo / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(old_repo), encoding="utf-8")
+    monkeypatch.setattr(cli, "_GRAPHIFY_OUT", "graphify-out")
+
+    assert _graph_root_for(out / "graph.json") == repo
+
+
+def test_imported_default_output_is_external(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+
+    repo = _git_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    env = dict(os.environ)
+    env.pop("GRAPHIFY_OUT", None)
+    env["GRAPHIFY_HOME"] = str(tmp_path / "store")
+    code_root = Path(__file__).resolve().parents[1]
+    env["PYTHONPATH"] = str(code_root) + os.pathsep + env.get("PYTHONPATH", "")
+    run = subprocess.run(
+        [sys.executable, "-c", "from graphify.paths import GRAPHIFY_OUT; print(GRAPHIFY_OUT)"],
+        cwd=repo, env=env, text=True, capture_output=True, check=True,
+    )
+
+    assert Path(run.stdout.strip()) == Path(paths._out_from_env())

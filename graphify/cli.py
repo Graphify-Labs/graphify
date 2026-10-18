@@ -148,7 +148,14 @@ def _graph_root_for(gp: Path) -> Path:
     """Resolve the source root, including graphs stored outside the repository."""
     from graphify.paths import GRAPHIFY_OUT_NAME
 
-    if gp.parent.name == GRAPHIFY_OUT_NAME:
+    configured = Path(_GRAPHIFY_OUT)
+    # Keep the usual in-repo root derivation unchanged. Only follow the marker
+    # for the external output selected by this Graphify process.
+    if (
+        configured.is_absolute()
+        and gp.parent.name == GRAPHIFY_OUT_NAME
+        and gp.parent.resolve() == configured.resolve()
+    ):
         marker = gp.parent / ".graphify_root"
         try:
             # This marker is written by extract/update. Don't read arbitrarily
@@ -159,8 +166,7 @@ def _graph_root_for(gp: Path) -> Path:
                     return root.resolve()
         except (OSError, UnicodeError, ValueError):
             pass
-        return gp.parent.parent
-    return gp.parent
+    return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
 
 
 def _default_graph_path() -> str:
