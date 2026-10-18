@@ -675,4 +675,5 @@ list and compile-only property-name set before exempting opaque values from
 runtime metadata interpretation. Selector rejection stays before the exemption;
 native source membership remains under its existing producer/index owners.
 `qt_incremental` advances the policy to 25; schema 13 and persistence owners
-stay unchanged. Current local source cases pass; new artifact/hosted evidence is pending.
+stay unchanged. Current local source and isolated artifact/install cases pass;
+hosted evidence is pending. The exact committed checkpoint belongs to traceability.

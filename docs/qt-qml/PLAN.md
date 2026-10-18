@@ -2835,8 +2835,8 @@ head receives normal PR validation and does not inherit a fictitious tested SHA.
 
 ## INC-QML-53 — Bounded parser recovery and literal CMake additions
 
-Status: **Policy-25 local source cases verified; new artifact/install, hosted
-proof and global/team adoption pending**.
+Status: **Policy-25 local source and isolated artifact/install profiles verified;
+hosted proof and global/team adoption pending**.
 Dependencies: INC-QML-49–52 combined source/identity/publication boundaries.
 Owners: C++ compatibility maintainer; literal CMake maintainer; integration owner
 for policy, installed package and guarded application refresh. This correction
@@ -2874,10 +2874,10 @@ source. The initial full local run completed with 45 shell-environment failures;
 all 45 individually pass after the bounded process-local shell correction, but
 that three-module rerun is not a new complete-suite result. Earlier policy-24
 compatibility and isolated-install evidence remain historical for the RC change.
-Current policy-25 focused source and adjacent compatibility cases pass; new
-artifact/install, complete corrected-source and hosted evidence and global/
-team adoption remain pending. The guarded application
-refresh is separately owned and pending; upstream delivery remains separate from
+Current policy-25 focused/broad Qt source and isolated artifact/install cases pass,
+with 35 explicit platform skips in the broad selection. Complete all-language
+and hosted validation and global/team adoption remain pending. The guarded
+application refresh is separately owned and pending; upstream delivery remains separate from
 this fork-integration repair.
 
 ### Pre-publication review corrections — 2026-10-18
@@ -2932,8 +2932,8 @@ installation proof.
 
 ### RC compilation-prerequisite correction — preimplementation matrix
 
-Status: **Implemented; policy-25 local source cases verified; new artifact/install
-and hosted proof pending**.
+Status: **Implemented; policy-25 local source and isolated artifact/install
+profiles verified; hosted proof pending**.
 This remains the cohesive literal-metadata correction in INC-QML-53 under the
 existing requirement and acceptance identities. The policy-24 `7e29b34a` wheel
 is a historical checkpoint for this changed boundary, not proof of the proposed
@@ -2955,3 +2955,10 @@ evaluate CMake variables, read prerequisite files, execute build hooks, or expan
 the accepted corpus. Public synthetic tests must cover each matrix row before
 claiming verification. Source, frozen-wheel/isolated-install, hosted and separately
 owned application-adoption evidence remain distinct.
+
+The current committed local checkpoint is `84f5eef7`: all 148 tracked QML/Qt/
+upstream-Qt test modules execute with 2,709 passes and 35 explicit platform skips;
+the isolated installed wheel passes 342 cases with no skips. Artifact identity,
+source retention, AST-only graph refresh and remaining delivery boundaries belong
+to [traceability](../../tests/TRACEABILITY.md#committed-policy-25-local-checkpoint--84f5eef7).
+This source selection is not the complete all-language suite or hosted evidence.

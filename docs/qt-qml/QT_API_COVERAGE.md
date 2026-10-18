@@ -49,7 +49,8 @@ for the build-only exemption. Include/prerequisite values remain uninterpreted,
 including conditions/computed values; source selectors, mixed/runtime/unknown
 properties and malformed syntax still reject. It adds no QML/C++ provider,
 runtime QRC URL or out-of-corpus admission. The earlier policy-24 table/profile
-does not verify this changed boundary; new artifact/hosted evidence is pending.
+does not verify this changed boundary. Current policy-25 source and isolated
+artifact/install cases pass; hosted evidence remains pending.
 
 ## Named macro accountability
 

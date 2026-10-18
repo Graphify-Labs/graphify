@@ -28,7 +28,7 @@ records current source, native and isolated-install profiles.
 
 INC-QML-53 repairs additional bounded C++ parameter and literal CMake forms under
 the existing criteria. The corrected repair uses Qt policy 25 and AST schema 13;
-its current local source evidence and historical artifact/adoption evidence are
+its current local source/package evidence and earlier adoption checkpoints are
 recorded [separately](../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
 The earlier policy-22 hosted checkpoint does not verify this changed source.
 
@@ -248,11 +248,11 @@ runtime resource URL or additional analyzed source. Property scope selectors rej
 before this exemption. Mixed non-RC inputs, runtime-affecting or unknown properties,
 dynamic source paths and malformed property syntax remain unsupported. This
 bounded refinement belongs to REQ-QML-009-AC01/AC04; its policy-25 local source
-cases are verified, with new artifact/hosted evidence pending. It does not alter native `HEADER_FILE_ONLY` membership
+cases and isolated artifact/install profile are verified; hosted proof remains pending. It does not alter native `HEADER_FILE_ONLY` membership
 or authorize out-of-root declarations.
 
-Status: **Policy-25 local source cases verified; current artifact/install and
-hosted proof pending**. Earlier policy-24 artifact evidence is historical;
+Status: **Policy-25 local source cases and isolated artifact/install profile
+verified; hosted proof pending**. Earlier policy-24 artifact evidence is historical;
 global/team adoption remains separate.
 The extension admits source properties before metadata use and explicit
 `qt_add_resources`/`qt6_add_resources` target/name/PREFIX/FILES mappings. Bare QML
@@ -514,7 +514,7 @@ project code.
 
 Status: **Implemented; canonical/membership and followed-metadata profiles retain
 revision-bound evidence. The policy-25 RC refinement has local source evidence;
-new artifact and hosted proof remain pending**.
+isolated artifact/install cases pass, while hosted proof remains pending**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
 evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
 The initial two source/lifecycle suites contribute 37 passing cases to their
@@ -740,8 +740,9 @@ metadata/native syntax diagnostics and cannot replace accepted products, includi
 under force. Focused source tests and before-fix regressions pass where assigned
 in traceability. Policy-23/24 wheel/install checkpoints remain historical and do
 not verify the new RC prerequisite admission. Corrected policy-25 source and
-adjacent compatibility cases pass within their declared local profiles. New
-artifact/install, complete corrected-source and hosted evidence, and the separately owned
+adjacent compatibility cases and the fresh isolated artifact/install profile pass
+within their declared local profiles. The broad Qt source selection retains 35
+explicit platform skips. Complete all-language and hosted evidence, and the separately owned
 application-corpus refresh remain pending. No new requirement or acceptance identifier is
 allocated; REQ-QML-022 remains unallocated.
 
@@ -756,5 +757,6 @@ remain mandatory; selectors cannot borrow this exemption to affect another scope
 Existing native source membership and unavailable out-of-root targets remain
 unchanged, with no corpus expansion. Policy 25 retires prior policy-23/24
 analysis; schema 13 and persistence owners remain unchanged. This correction has
-**verified local source cases; new artifact/hosted proof pending**. The `7e29b34a` source/wheel checkpoint verifies the
+**verified local source cases and isolated artifact/install profile; hosted proof pending**.
+The `7e29b34a` source/wheel checkpoint verifies the
 earlier profile and does not verify this new admission behavior.

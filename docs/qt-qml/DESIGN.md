@@ -23,7 +23,7 @@ does not establish a native endpoint.
 INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
 the recorded local source/artifact profiles. Current integrated analysis uses
 policy 25 and AST schema 13 for the corrected INC-QML-53 repair. Its focused local
-source cases pass; new wheel/hosted proof remains pending and policy-22/23/24
+source and isolated-wheel cases pass; hosted proof remains pending and policy-22/23/24
 evidence remains revision-bound. Expanded
 REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
@@ -1454,5 +1454,5 @@ authoring sources from this analysis.
 Policy 25 invalidates earlier policy-23/24 analysis at unchanged input/package
 identity, while schema 13, semantic-cache and transactional publication ownership
 remain unchanged. The assigned local source/retention cases pass; earlier wheel
-proof does not verify this changed behavior. A new frozen artifact/install and
-hosted validation remain pending.
+proof does not verify this changed behavior. The current frozen artifact/install
+profile passes; hosted validation remains pending.

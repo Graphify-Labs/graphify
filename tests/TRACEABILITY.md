@@ -1625,8 +1625,8 @@ original coverage artifact remain preserved; no upstream PR or merge is performe
 
 ## Bounded parser repair — INC-QML-53
 
-Status: **Policy-25 local source cases verified; new artifact/install, hosted
-proof and guarded application refresh pending**.
+Status: **Policy-25 local source and isolated artifact/install profiles verified;
+hosted proof and guarded application refresh pending**.
 This profile extends the
 bounded forms under existing criteria; twenty-one requirements/eighty-five
 acceptance IDs remain unchanged. Historical policy-22 hosted acceptance remains
@@ -1958,15 +1958,15 @@ The new RC-only OBJECT_DEPENDS exemption is part of INC-QML-53, under the existi
 acceptance identities and the preimplementation matrix in
 [the plan](../docs/qt-qml/PLAN.md#rc-compilation-prerequisite-correction--preimplementation-matrix).
 The `7e29b34a`/policy-24 source and installed checkpoint above remains historical
-for this changed boundary. Current policy-25 source cases pass; new wheel, hosted
-and application verification remain pending.
+for this changed boundary. Current policy-25 source and isolated-wheel cases pass;
+hosted and application verification remain pending.
 
 | Acceptance IDs | Required production evidence / status |
 | --- | --- |
 | REQ-QML-009-AC01/AC04; REQ-QML-010-AC02/AC04 | `tests/test_qt_cmake_rc_dependencies.py::test_req_qml009_ac04_rc_compile_properties_remain_opaque_with_original_spans`: literal RC lists, INCLUDE_DIRECTORIES/OBJECT_DEPENDS individually, both orders and repeated allowed names; scoped commands, opaque computed values, BOM/CRLF/Unicode and original neighboring declaration spans. No RC property/runtime provider/resource fact is created. Pass in the frozen 277-case local source selection; zero skips. |
 | REQ-QML-009-AC04; REQ-QML-012-AC01/AC04; REQ-QML-020-AC02 | `test_req_qml012_ac01_rc_exemption_rejects_unproven_source_scope_or_property` in that module protects selector-first rejection, dynamic/list source paths, mixed non-RC/runtime/unknown properties and malformed pairs. `test_req_qml009_ac04_rc_dependencies_and_authoring_targets_never_expand_accepted_corpus` guards real outside-file reads while retaining the in-corpus native HEADER_FILE_ONLY provider and explicit unavailable outside membership. Pass in the frozen 277-case local source selection; zero skips. |
 | REQ-QML-011-AC01/AC02/AC04; REQ-QML-012-AC02; REQ-QML-018-AC06 | `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac02_rc_dependency_only_changes_match_full_and_repeat` and `test_req_qml012_ac02_rc_rejection_preserves_products_and_recovers`: property/prerequisite-only parity, stable analysis state, forced/non-forced repeated rejection retaining graph/manifest/report/policy bytes, repair and clean/repeated rebuild. Pass in the frozen 277-case local source selection; zero skips. |
-| REQ-QML-011-AC03/AC04; REQ-QML-018-AC02/AC06 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers earlier policy checkpoints. `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits25` proves actual policy-23/24 accepted products survive rejected forced refresh, then repaired retry/repeat commits policy 25 and matches a clean rebuild. Schema 13 remains unchanged. Local source execution passes; new frozen-wheel/install and hosted outcomes remain separate pending profiles. |
+| REQ-QML-011-AC03/AC04; REQ-QML-018-AC02/AC06 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers earlier policy checkpoints. `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits25` proves actual policy-23/24 accepted products survive rejected forced refresh, then repaired retry/repeat commits policy 25 and matches a clean rebuild. Schema 13 remains unchanged. Local source and frozen-wheel/install execution pass; hosted outcomes remain separately pending. |
 
 Public fixtures must contain only synthetic project data. This refinement neither
 reads external prerequisite/source contents nor changes corpus admission, native
@@ -2034,8 +2034,59 @@ lines; policy coverage misses only its unchanged legacy lines. The accepted
 metadata parser smoke has zero diagnostics/failures and leaves its input bytes
 unchanged; no application source, path or content hash is retained here.
 
-These results verify the declared local policy-25 source cases. A newly committed
-raw-blob wheel and isolated installation, current hosted/full-source validation,
-application graph refresh and team artifact adoption remain pending. Policy-24
+These results verify the declared local policy-25 source cases. At this source
+checkpoint the new raw-blob wheel/install, hosted/full-source validation,
+application graph refresh and team adoption were pending; the committed local
+package and broad Qt source proof follows below. Policy-24
 wheel/install proof and the earlier complete-source result are historical and
 cannot establish those remaining outcomes.
+
+### Committed policy-25 local checkpoint — 84f5eef7
+
+Source `84f5eef71c3ecd23bf9c29e2091f0399f47afad3`, production tree
+`aa1aec0012d7ddea61b890fade07e11dbdbd9882`, retains the verified Codex co-author
+trailer. The raw-Git-blob wheel's 322 shipped files match the committed source;
+31 extras, 105 dependency declarations and the existing developer-document
+exclusion remain unchanged. Wheel SHA256:
+`94222d69bd2ad6d410b11fa32ac3428a652e324abc93b39050853e728bbf2950`.
+
+The isolated offline installation passes **342 tests, zero failures/errors/skips**,
+28 warnings, in 40.22 seconds. Policy 25/schema 13, exact payload bytes, collected
+case identities, 66 locked runtime distributions and five separate test tools
+are verified. The installed metadata probe has zero diagnostics/failures and
+unchanged input bytes; no private input identity, path or content hash is retained
+here. The global tool and application graph are unchanged. Artifact/stage receipts
+remain under `.venv/parser-repair/rc-release/` outside version control.
+
+The broad source command executes all **148 tracked root test modules** whose
+names begin `test_qml_`, `test_qt_` or `test_upstream_qt_`, selected from the exact
+committed Git tree. Result: **2,709 passed, zero failures/errors, 35 skips** across
+2,744 cases, 1,464 warnings, in 798.60 seconds. The reviewed wheel is supplied
+through `GRAPHIFY_QML_TEST_WHEEL`, with process-local Git Bash and an isolated
+coverage destination:
+
+```powershell
+.venv/Scripts/python.exe -I .venv/parser-repair/rc-release/run_native_source.py
+```
+
+`native-source-receipt.json` and `native-source-tests.{xml,log}` retain the expanded
+command, module/case identities and unchanged tested HEAD; tracked source/test/tool
+inputs remain clean. Skips are two host-denied symlink cases, seventeen cases
+requiring Windows symlink privileges/Developer Mode, and sixteen POSIX physical
+link/parent-traversal cases. They do not establish those profile acceptances. This
+is the QML/Qt/upstream-Qt selection, not a fresh complete all-language suite or a
+hosted run. Its cases overlap the focused and installed selections and are not
+added into a combined total.
+
+AST-only `graphify update . --no-cluster` completes with exit zero and persists
+**23,416 nodes / 54,424 edges**. The known malformed Luau fixture warning, 25 files
+without modeled symbols and eighteen unclassified inputs remain explicit. No model
+API or clustering runs. Full Ruff and all 134 generated artifacts pass; full
+Pyright's 605 diagnostics exactly match the prior frozen baseline, with zero
+added/removed diagnostics. The five changed modules separately have zero errors/
+warnings. This remains a disclosed full-repository typing baseline.
+
+Local source and isolated artifact/install proof is complete within the executed
+profiles. Hosted checks, validation of the eventual merged SHA, application-graph
+refresh and global/team artifact adoption remain pending; earlier hosted evidence
+does not validate this new revision.

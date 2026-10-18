@@ -527,4 +527,5 @@ source kinds, unknown/runtime properties, malformed pairs and scope selectors
 retain the existing unsupported/syntax outcomes and guarded publication behavior.
 Out-of-root native declarations retain explicit unavailable membership and no
 new read; the exemption is not a root-admission bypass. Policy-25 local source
-and retention/recovery cases pass; new artifact/hosted proof remains pending.
+and retention/recovery cases pass in source and the isolated installed profile;
+hosted proof remains pending.

@@ -829,8 +829,8 @@ Qt effects or upstream released-package delivery.
 
 ## D28 — Bounded syntax recovery keeps semantic and publication authority
 
-Status: **Accepted for INC-QML-53; policy-25 local source cases verified;
-new artifact/install and hosted proof pending**.
+Status: **Accepted for INC-QML-53; policy-25 local source and isolated
+artifact/install profiles verified; hosted proof pending**.
 A grammar misclassification of valid empty template-parameter defaults is repaired
 through an AST-validated byte-preserving view. The compatibility adapter may
 remove only the candidate default; the recovered declaration's named parameter
@@ -874,4 +874,4 @@ selectors still reject before the exemption, and native/out-of-root source
 membership rules remain unchanged. The design owns the exact name/syntax proof
 and CMake references; traceability owns the new execution evidence. Prior
 policy-24 artifact/source acceptance does not verify this changed extension;
-current source cases pass, while new artifact/hosted proof remains pending.
+current source and isolated artifact/install cases pass, while hosted proof remains pending.
