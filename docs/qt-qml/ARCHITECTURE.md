@@ -829,8 +829,8 @@ Qt effects or upstream released-package delivery.
 
 ## D28 — Bounded syntax recovery keeps semantic and publication authority
 
-Status: **Accepted for INC-QML-53; policy-24 focused local source cases verified;
-current artifact and hosted proof pending**.
+Status: **Accepted for INC-QML-53; policy-24 local source and isolated-wheel
+profiles verified; hosted proof pending**.
 A grammar misclassification of valid empty template-parameter defaults is repaired
 through an AST-validated byte-preserving view. The compatibility adapter may
 remove only the candidate default; the recovered declaration's named parameter

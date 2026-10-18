@@ -1625,8 +1625,8 @@ original coverage artifact remain preserved; no upstream PR or merge is performe
 
 ## Bounded parser repair — INC-QML-53
 
-Status: **Repair implemented; policy-24 focused local source cases verified;
-current artifact/hosted proof and guarded application refresh pending**.
+Status: **Repair implemented; policy-24 local source and isolated-wheel profiles
+verified; hosted proof and guarded application refresh pending**.
 This profile extends the
 bounded forms under existing criteria; twenty-one requirements/eighty-five
 acceptance IDs remain unchanged. Historical policy-22 hosted acceptance remains
@@ -1773,7 +1773,7 @@ The initial complete source command
 completed with **9,411 passed, 45 failed, 122 skipped**. Output was redirected to
 the matching `.log`; `COVERAGE_FILE` pointed to a separate `full.coverage` path as
 a precaution, without requesting coverage. Its retained JUnit contains
-9,578 cases and zero collection/runtime errors. Failures are confined to
+9,578 cases and zero JUnit errors. Failures are confined to
 `tests/test_hooks.py` (13), `tests/test_shell_portability_helpers.py` (6), and
 `tests/test_skillgen_input_path_injection.py` (26). Forty failures select an
 unusable WindowsApps Bash alias; five cannot find `sh`. These are shell admission
@@ -1828,8 +1828,8 @@ introduce no new persistence owner or runtime execution.
 | REQ-QML-010-AC01; REQ-QML-011-AC03/AC04; REQ-QML-018-AC02 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers both prior policies 22 and 23, requires policy 24, preserves input bytes, refreshes once and retains the accepted checkpoint on unchanged repeat. Pass in the 164-case frozen-source selection; zero skips. |
 
 These assignments describe production boundaries rather than aggregate test
-counts. Their focused current results appear below; complete corrected-source execution, fresh wheel/
-isolated-install proof and exact-head hosted validation remain open. The private
+counts. Their focused source and frozen installed results appear below; complete
+corrected-source execution and exact-head hosted validation remain open. The private
 application graph refresh and any team artifact release are independently owned;
 neither is inferred from a local parser smoke test or the historical wheel.
 
@@ -1900,6 +1900,54 @@ executed profiles; the initial complete-source result and its shell repair remai
 separate. The current production policy is 24/schema 13, but the installed runtime
 and historical wheel still identify `d13eebe7`/policy 23. A new committed raw-blob
 wheel, isolated installation, exact-head hosted checks and separately owned
-application refresh remain pending. The initial missing Codex trailer is retained
+application refresh remained pending at this pre-packaging checkpoint; the
+completed local package proof follows below. The initial missing Codex trailer is retained
 as a disclosed history gap; the corrective commit must carry and verify its own
 `Co-authored-by: Codex <noreply@openai.com>` trailer.
+
+### Committed local package checkpoint — 7e29b34a
+
+Source commit `7e29b34a16570a3cc0739abbbb82782da6a71c7e`, production tree
+`b563d8d2ef01f4dd309ed200d1aed4788f3c5fcb`, carries the required Codex co-author
+trailer. The initial `d13eebe7` attribution omission remains disclosed without
+rewriting history.
+
+The final eighteen-module compatibility rerun against this source reports
+**297 passed, seven Windows alias-profile skips, zero failures/errors**, 93
+existing warnings, in 57.30 seconds. It repeats the eighteen module paths listed
+in the preceding compatibility command with `-X utf8 -m pytest`, followed by
+`-q --tb=short --junitxml=.venv/parser-repair/release/compatibility-tests.xml`.
+Output is redirected to the matching `.log`; `COVERAGE_FILE` is isolated at
+`.venv/parser-repair/release/compatibility.coverage`. This closes the earlier
+pre-narrowing source checkpoint. All seven skips remain the unavailable Windows
+symlink setup in `test_qt_project_membership_aliases`, not passing alias acceptance.
+
+The fresh wheel is built from raw committed Git blobs, with all **322 shipped
+package files byte-identical** to the reviewed source. The existing developer-only
+`extractors/MIGRATION.md` exclusion, 31 extras and 105 dependency declarations
+remain unchanged. Its SHA256 is
+`90c6053353f3c26d23d8afecddc585ec2ed6fd7194b8d1e1f80865f39961a4ac`.
+The isolated offline installation passes **191 tests, zero failures/errors/skips**,
+13 existing warnings, in 25.72 seconds. Its receipt verifies policy 24/schema 13,
+all installed payload bytes, 66 locked runtime distributions, five separate test
+tools, and the exact collected case identities. Native recovery, corrected CMake/
+resource/header behavior, real mixed C# namespace compatibility, update/retention,
+policy invalidation and optional-parser absence execute from the installed wheel.
+The installed stage and receipt are owned by
+`.venv/parser-repair/release/stage_smoke.py` and `stage-receipt.json`; the artifact
+identity is retained in `artifact.json`. These machine-specific receipts stay
+outside version control. The global tool is unchanged and still identifies the
+earlier policy-23 installation; this isolated proof is not a team artifact release.
+
+`.venv/Scripts/python.exe -X utf8 -m graphify update . --no-cluster` completes with
+exit zero and persists **23,390 nodes / 54,327 edges**. Its retained log reports the
+known malformed Luau fixture, 25 files without modeled symbols and eighteen
+unclassified inputs. This is AST-only analysis with no model API or clustering.
+The pre-existing root coverage digest is retained; later checks use separate
+coverage destinations.
+
+Ruff and all 134 generated artifacts pass. Full Pyright retains its disclosed
+605-error baseline, with no diagnostics in the ten explicitly checked changed
+modules. None of these overlapping runs is a fresh complete-source success or
+hosted validation. Required PR/exact merged-SHA checks, the separately owned
+application graph refresh and any team registry release remain pending.

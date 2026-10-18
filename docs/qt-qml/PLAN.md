@@ -2835,8 +2835,8 @@ head receives normal PR validation and does not inherit a fictitious tested SHA.
 
 ## INC-QML-53 — Bounded parser recovery and literal CMake additions
 
-Status: **Repair implemented; policy-24 focused local source cases verified;
-current artifact and hosted proof pending**.
+Status: **Repair implemented; policy-24 local source and isolated artifact/install
+profiles verified; hosted and global/team adoption pending**.
 Dependencies: INC-QML-49–52 combined source/identity/publication boundaries.
 Owners: C++ compatibility maintainer; literal CMake maintainer; integration owner
 for policy, installed package and guarded application refresh. This correction
@@ -2873,8 +2873,9 @@ policy-23 wheel/install checkpoint is historical and cannot verify the corrected
 source. The initial full local run completed with 45 shell-environment failures;
 all 45 individually pass after the bounded process-local shell correction, but
 that three-module rerun is not a new complete-suite result. Current corrected
-focused source cases and adjacent compatibility checks pass; complete corrected-
-source, current artifact and hosted evidence remain pending. The guarded application
+focused source cases, the final compatibility rerun and fresh isolated artifact/
+install profile pass. Complete corrected-source and hosted evidence, global/team
+adoption and the guarded application
 refresh is separately owned and pending; upstream delivery remains separate from
 this fork-integration repair.
 
@@ -2919,3 +2920,11 @@ synthetic PR checkout is separate evidence from the actual merge SHA. Where that
 identity differs, one deliberate existing CI dispatch is bound to and read back
 against the resulting merged SHA; no additional workflow or duplicate full
 feature-branch run is introduced.
+
+The committed local checkpoint is `7e29b34a`: final compatibility reports 297
+passes with seven unavailable Windows alias profiles, and the fresh isolated
+wheel reports 191 passes with no skips. Source and installed profiles, artifact
+digest, AST-only graph refresh and remaining delivery gaps are recorded in
+[traceability](../../tests/TRACEABILITY.md#committed-local-package-checkpoint--7e29b34a).
+The global tool and team artifact release remain separate from this isolated
+installation proof.

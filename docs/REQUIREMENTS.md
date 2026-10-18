@@ -239,8 +239,8 @@ Supported literal CMake, qmake, `qmldir`, `.qmltypes`, and `.qrc` declarations d
 
 4 - CMake/qmake conditions or expressions outside the literal subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
 
-Status: **Bounded repair implemented; policy-24 focused local source cases verified**.
-Current artifact/install and hosted acceptance remain pending.
+Status: **Bounded repair implemented; policy-24 local source and isolated
+artifact/install profiles verified**. Hosted and global/team adoption remain pending.
 The extension admits source properties before metadata use and explicit
 `qt_add_resources`/`qt6_add_resources` target/name/PREFIX/FILES mappings. Bare QML
 `target_sources`, unknown/duplicate/not-yet-declared module targets, public or
@@ -725,8 +725,8 @@ metadata/native syntax diagnostics and cannot replace accepted products, includi
 under force. Focused source tests and before-fix regressions pass where assigned
 in traceability. The original policy-23 wheel/install checkpoint is historical;
 it does not verify the corrected resource ambiguity, scoped property, empty-resource
-or native-header contracts. The corrected focused source cases and adjacent
-compatibility checks pass within their declared local profiles; current artifact,
-complete corrected-source and hosted evidence, and the separately owned
+or native-header contracts. The corrected focused source cases, adjacent
+compatibility checks and fresh isolated artifact/install profile pass within their declared local
+profiles. Complete corrected-source and hosted evidence, and the separately owned
 application-corpus refresh remain pending. No new requirement or acceptance identifier is
 allocated; REQ-QML-022 remains unallocated.
