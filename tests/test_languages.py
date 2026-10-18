@@ -3723,6 +3723,35 @@ def test_markdown_wikilink_fallback_path_qualified(tmp_path):
                for e in refs), f"path-qualified vault link lost: {refs}"
 
 
+def test_markdown_wikilink_vault_relative_to_a_scan_root_below_the_vault(tmp_path):
+    """Obsidian writes vault-relative paths, so scanning a folder below the
+    vault meets links that start with that folder's own path (#4559)."""
+    corp = tmp_path / "Vault" / "Projects" / "Corp"
+    (corp / "wiki").mkdir(parents=True)
+    for name in ("Charlie", "Delta", "Fox"):
+        (corp / "wiki" / f"{name}.md").write_text(f"# {name}\n")
+    (corp / "Alpha.md").write_text(
+        "[[wiki/Charlie]] [[Corp/wiki/Delta|alias]] [[Projects/Corp/wiki/Fox]]\n")
+    pages = [corp / "Alpha.md", *(corp / "wiki").iterdir()]
+    _, refs, page_id = _vault_extract(corp, pages)
+    alpha = page_id(corp / "Alpha.md")
+    assert {e["target"] for e in refs if e["source"] == alpha} == {
+        page_id(corp / "wiki" / f"{name}.md") for name in ("Charlie", "Delta", "Fox")}
+
+
+def test_markdown_wikilink_scan_root_prefix_still_needs_the_exact_path(tmp_path):
+    """Once the scan root's folder is dropped the rest is a path from the
+    root, not a suffix: [[Corp/Fox]] does not reach Corp/wiki/Fox.md."""
+    corp = tmp_path / "Corp"
+    (corp / "wiki").mkdir(parents=True)
+    (corp / "wiki" / "Fox.md").write_text("# Fox\n")
+    (corp / "Alpha.md").write_text("[[Corp/Fox]]\n")
+    _, refs, page_id = _vault_extract(corp, [corp / "Alpha.md", corp / "wiki" / "Fox.md"])
+    alpha = page_id(corp / "Alpha.md")
+    fox = page_id(corp / "wiki" / "Fox.md")
+    assert fox not in {e["target"] for e in refs if e["source"] == alpha}
+
+
 def test_markdown_wikilink_fallback_root_wins(tmp_path):
     """On a bare-name collision the shallowest match wins — Obsidian resolves
     a bare wikilink to the root-level file over a same-named subfolder file."""
