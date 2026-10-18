@@ -335,6 +335,8 @@ Both encourage scoped graph queries before broad source searches. Choose the ins
 
 graphify parses ~40 programming languages locally with tree-sitter AST, and maps docs, PDFs, images, and audio/video through an optional semantic pass. Full list: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
 
+Shell extraction also supports `.zsh` files through the Bash grammar. SAS `.sas` files use the optional `graphifyy[sas]` extra.
+
 ---
 
 ## Common commands

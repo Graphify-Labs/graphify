@@ -9,6 +9,12 @@ from typing import Any
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
+# Shell-script suffixes the bash extractor resolves as source/invocation
+# targets. `.zsh` is included so zsh files route through the same source-edge
+# pass (#2825); `.ksh` is accepted for symmetry with the shebang dispatcher.
+_SHELL_SUFFIXES = (".sh", ".bash", ".zsh", ".ksh")
+
+
 # Leading `${VAR}` / `$VAR` expansion segment(s) of a `source` path argument. The
 # canonical `BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` idiom makes
 # such a variable resolve to the script's own directory, so the literal suffix that
@@ -481,8 +487,8 @@ def extract_bash(path: Path) -> dict:
                                     add_edge(file_nid, tgt_nid, "imports", line,
                                              context="import")
                 elif cmd not in defined_functions:
-                    raw = cmd if (cmd and cmd.endswith(".sh")) else None
-                    if cmd and cmd in _BASH_SCRIPT_RUNNERS and args:
+                    raw = cmd if (cmd and cmd.endswith(_SHELL_SUFFIXES)) else None
+                    if cmd in _BASH_SCRIPT_RUNNERS and args:
                         raw = literal(args[0])
                     if raw is None:
                         # The command name is itself an expansion, e.g.
@@ -497,9 +503,9 @@ def extract_bash(path: Path) -> dict:
                         # a `..` segment, and the `resolved.is_file()` gate
                         # below means a wrong script-dir guess emits nothing.
                         cand = _read_text(cmd_name_node, source).strip().strip("'\"")
-                        if cand.endswith(".sh") and "$" in cand:
+                        if cand.endswith(_SHELL_SUFFIXES) and "$" in cand:
                             raw = _bash_source_suffix(cand) or None
-                    if raw and raw.endswith(".sh"):
+                    if raw and raw.endswith(_SHELL_SUFFIXES):
                         resolved = (path.parent / raw).resolve()
                         if resolved.is_file():
                             target_path = resolved

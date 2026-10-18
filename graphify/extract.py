@@ -74,6 +74,7 @@ from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F4
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.sas import extract_sas  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.solidity import (  # noqa: F401
     extract_solidity,
@@ -3803,7 +3804,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
-    ".sh": "shell", ".bash": "shell",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 
@@ -8631,6 +8632,7 @@ _DISPATCH: dict[str, Any] = {
     ".lpk": extract_lazarus_package,
     ".sh": extract_bash,
     ".bash": extract_bash,
+    ".zsh": extract_bash,
     ".json": extract_json,
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
@@ -8652,6 +8654,7 @@ _DISPATCH: dict[str, Any] = {
     ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".sas": extract_sas,
 }
 
 
@@ -8678,6 +8681,7 @@ _EXTRA_FOR_EXTENSION = {
     ".cl": "commonlisp",
     ".lsp": "commonlisp",
     ".asd": "commonlisp",
+    ".sas": "sas",
     ".robot": "robot",
     ".resource": "robot",
 }
@@ -10215,7 +10219,7 @@ def extract(
 
     sh_pairs = [
         (r, p) for r, p in zip(per_file, paths)
-        if p.suffix in (".sh", ".bash") or _looks_like_bash(r)
+        if p.suffix in (".sh", ".bash", ".zsh") or _looks_like_bash(r)
     ]
     if sh_pairs:
         sh_results = [r for r, _ in sh_pairs]
