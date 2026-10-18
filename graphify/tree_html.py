@@ -81,13 +81,81 @@ def build_tree(
     Raises ``ValueError`` when an explicit ``root`` matches none of the
     graph's ``source_file`` paths — every file would silently attach flat
     to the root and the hierarchy would be lost (#2534).
+
+    Nodes tagged with a ``repo`` (merge-graphs / global graphs) are grouped
+    under one root per repo tag, each built from that repo's own relative
+    paths, so ``src/x.py`` in two repos stays two files (#4524).
     """
     nodes: List[Dict[str, Any]] = list(graph.get("nodes", []))
     file_nodes = [n for n in nodes if n.get("source_file")]
     if not file_nodes:
+        if nodes:
+            # A non-empty graph with no source_file anywhere would render a blank
+            # viewer with no hint why; fail loudly like an unmatched --root (#4522).
+            raise ValueError(
+                f"none of the graph's {len(nodes)} nodes has a source_file, "
+                "so there is no file hierarchy to draw"
+            )
         return {"name": "(empty graph)", "total_count": 0, "children": []}
 
-    explicit_root = root is not None
+    by_repo: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for n in file_nodes:
+        by_repo[str(n.get("repo") or "")].append(n)
+    if list(by_repo) == [""]:
+        tree, matched, files = _build_repo_tree(
+            file_nodes, root=root, max_children=max_children,
+            project_label=project_label)
+    else:
+        tree = {"name": project_label or f"{len(by_repo)} repos",
+                "total_count": 0, "children": []}
+        matched, files = 0, []
+        for tag in sorted(by_repo):
+            sub, sub_matched, sub_files = _build_repo_tree(
+                by_repo[tag], root=root, max_children=max_children,
+                project_label=tag or "(no repo)")
+            tree["children"].append(sub)
+            matched += sub_matched
+            files += sub_files
+
+    # An explicit --root that matches NOTHING would silently flatten the whole
+    # hierarchy (every file attaches to the root); the common case is passing an
+    # absolute checkout path while source_file is stored repo-relative (#2534).
+    # A PARTIAL match stays fine — files outside the root legitimately attach flat.
+    if root is not None and matched == 0:
+        sample = min(files)
+        raise ValueError(
+            f"--root {root} matched 0 of {len(files)} source files "
+            f"(source_file paths are stored repo-relative, e.g. {sample!r})"
+        )
+
+    _finalise(tree)
+    return tree
+
+
+def _finalise(d: Dict[str, Any]) -> int:
+    """Sort each dir's children and propagate total_count up."""
+    kids = d.get("children") or []
+    kids.sort(key=lambda c: (
+        0 if (c.get("children") and len(c["children"]) > 0) else 1,
+        c["name"].lower(),
+    ))
+    if not kids:
+        return d.get("total_count") or 1
+    n = 0
+    for c in kids:
+        n += _finalise(c)
+    d["total_count"] = n or 1
+    return d["total_count"]
+
+
+def _build_repo_tree(
+    file_nodes: List[Dict[str, Any]],
+    *,
+    root: Optional[str],
+    max_children: int,
+    project_label: Optional[str],
+) -> "tuple[Dict[str, Any], int, List[str]]":
+    """Build one repo's dir → file → symbol tree; return (tree, matched files, files)."""
     if root is None:
         root = _common_root([n["source_file"] for n in file_nodes])
     root_path = Path(root)
@@ -160,34 +228,7 @@ def build_tree(
         }
         parent_dir["children"].append(file_node)
 
-    # An explicit --root that matches NOTHING would silently flatten the whole
-    # hierarchy (every file attaches to the root); the common case is passing an
-    # absolute checkout path while source_file is stored repo-relative (#2534).
-    # A PARTIAL match stays fine — files outside the root legitimately attach flat.
-    if explicit_root and matched_files == 0:
-        sample = min(by_file)
-        raise ValueError(
-            f"--root {root} matched 0 of {len(by_file)} source files "
-            f"(source_file paths are stored repo-relative, e.g. {sample!r})"
-        )
-
-    # Sort each dir's children + propagate total_count up.
-    def _finalise(d: Dict[str, Any]) -> int:
-        kids = d.get("children") or []
-        kids.sort(key=lambda c: (
-            0 if (c.get("children") and len(c["children"]) > 0) else 1,
-            c["name"].lower(),
-        ))
-        if not kids:
-            return d.get("total_count") or 1
-        n = 0
-        for c in kids:
-            n += _finalise(c)
-        d["total_count"] = n or 1
-        return d["total_count"]
-
-    _finalise(root_node)
-    return root_node
+    return root_node, matched_files, list(by_file)
 
 
 # ── HTML emitter (single-data-blob substitution) ──────────────────

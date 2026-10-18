@@ -111,3 +111,99 @@ def test_tree_cli_partial_match_root_succeeds(tmp_path):
     r = _run(["tree", "--root", "pkg"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "graphify-out" / "GRAPH_TREE.html").exists()
+
+
+# ── merged graphs (#4522, #4524) ──────────────────────────────────────────────
+
+
+def _repo_graph(repo: str, files: dict[str, list[str]]) -> dict:
+    """Per-repo graph shaped like merge-graphs output: prefixed id + repo tag."""
+    nodes = [
+        {"id": f"{repo}::{src}::{label}", "label": label, "source_file": src, "repo": repo}
+        for src, labels in sorted(files.items())
+        for label in labels
+    ]
+    return {"directed": False, "nodes": nodes, "links": []}
+
+
+def _merged(*graphs: dict) -> dict:
+    return {"directed": False, "nodes": [n for g in graphs for n in g["nodes"]], "links": []}
+
+
+def _child(node: dict, name: str) -> dict:
+    matches = [c for c in node["children"] if c["name"] == name]
+    assert len(matches) == 1, [c["name"] for c in node["children"]]
+    return matches[0]
+
+
+def test_build_tree_merged_graph_has_one_root_per_repo():
+    """Same relative path in two repos stays two files, each under its repo (#4524)."""
+    graph = _merged(
+        _repo_graph("repo-a", {"src/engine.py": ["ClsA", "fn_a"]}),
+        _repo_graph("repo-b", {"src/engine.py": ["ClsB", "fn_b"]}),
+    )
+    tree = build_tree(graph)
+    assert [c["name"] for c in tree["children"]] == ["repo-a", "repo-b"]
+    assert tree["total_count"] == 4
+    a = _child(_child(_child(tree, "repo-a"), "src"), "engine.py")
+    b = _child(_child(_child(tree, "repo-b"), "src"), "engine.py")
+    assert sorted(c["name"] for c in a["children"]) == ["ClsA", "fn_a"]
+    assert sorted(c["name"] for c in b["children"]) == ["ClsB", "fn_b"]
+
+
+def test_build_tree_merged_graph_root_label():
+    graph = _merged(_repo_graph("a", {"x.py": ["f"]}), _repo_graph("b", {"y.py": ["g"]}))
+    assert build_tree(graph)["name"] == "2 repos"
+    assert build_tree(graph, project_label="world")["name"] == "world"
+
+
+def test_build_tree_merged_graph_root_matching_nothing_raises():
+    graph = _merged(_repo_graph("a", {"src/x.py": ["f"]}), _repo_graph("b", {"src/y.py": ["g"]}))
+    with pytest.raises(ValueError, match=r"matched 0 of 2 source files"):
+        build_tree(graph, root="/abs/nonmatch")
+    # a repo-relative root applies inside every repo
+    assert build_tree(graph, root="src")["total_count"] == 2
+
+
+def test_build_tree_nodes_without_source_file_raise():
+    """A non-empty graph with no source_file used to render a blank viewer (#4522)."""
+    graph = {"nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}], "links": []}
+    with pytest.raises(ValueError, match=r"none of the graph's 2 nodes has a source_file"):
+        build_tree(graph)
+    assert build_tree({"nodes": [], "links": []})["name"] == "(empty graph)"
+
+
+def test_tree_cli_on_merge_graphs_output_keeps_repo_hierarchy(tmp_path):
+    """End to end: merge-graphs keeps source_file and tree draws per-repo roots (#4522, #4524)."""
+    paths = []
+    for repo, label in (("repo-a", "ClsA"), ("repo-b", "ClsB")):
+        out = tmp_path / repo / "graphify-out"
+        out.mkdir(parents=True)
+        g = {
+            "directed": False,
+            "nodes": [{"id": "src_engine_cls", "label": label, "file_type": "code",
+                       "source_file": "src/engine.py"}],
+            "links": [],
+        }
+        (out / "graph.json").write_text(json.dumps(g), encoding="utf-8")
+        paths.append(str(out / "graph.json"))
+    merged = tmp_path / "world" / "graphify-out" / "graph.json"
+    r = _run(["merge-graphs", *paths, "--out", str(merged)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    nodes = json.loads(merged.read_text(encoding="utf-8"))["nodes"]
+    assert all(n.get("source_file") == "src/engine.py" for n in nodes), nodes
+
+    html_out = tmp_path / "TREE.html"
+    r = _run(["tree", "--graph", str(merged), "--output", str(html_out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    html = html_out.read_text(encoding="utf-8")
+    assert '"name":"repo-a"' in html and '"name":"repo-b"' in html
+    assert "(empty graph)" not in html
+
+
+def test_tree_cli_nodes_without_source_file_exits_1(tmp_path):
+    _write_graph(tmp_path, {"directed": False, "nodes": [{"id": "a", "label": "A"}], "links": []})
+    r = _run(["tree"], tmp_path)
+    assert r.returncode == 1, r.stdout
+    assert "error:" in r.stderr and "source_file" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
