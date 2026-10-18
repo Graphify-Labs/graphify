@@ -7,6 +7,8 @@ unchanged and covered elsewhere.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -361,3 +363,176 @@ def test_cli_api_key_from_env(monkeypatch):
     monkeypatch.setattr(serve_mod, "serve_http", lambda gp, **k: captured.update(**k))
     serve_mod._main(["g.json", "--transport", "http"])
     assert captured["api_key"] == "from-env"
+
+
+def test_pr_tool_failure_sets_iserror(tmp_path, monkeypatch):
+    """ADR-0001 finding 4: a PR tool that fails because gh is missing / not
+    authenticated must return isError:true, not a successful text result."""
+    import graphify.prs as prs_mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
+
+    monkeypatch.setattr(prs_mod, "fetch_prs", _boom)
+
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        resp = client.post("/mcp", headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_prs", "arguments": {}},
+        })
+        assert resp.status_code == 200
+        result = resp.json()["result"]
+        assert result.get("isError") is True, result
+        assert "gh" in result["content"][0]["text"].lower()
+
+
+def test_normal_tool_result_is_not_iserror(tmp_path):
+    """A successful tool result must not be marked isError."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        resp = client.post("/mcp", headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "graph_stats", "arguments": {}},
+        })
+        assert resp.status_code == 200
+        assert not resp.json()["result"].get("isError")
+def _ambiguous_graph_file(tmp_path: Path) -> str:
+    """A graph where the label 'extract' matches two nodes in different files."""
+    graph = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "extract", "community": 0, "source_file": "a/x.py"},
+            {"id": "b", "label": "extract", "community": 0, "source_file": "b/y.py"},
+            {"id": "u", "label": "unique_helper", "community": 0, "source_file": "c/z.py"},
+        ],
+        "edges": [
+            {"source": "a", "target": "u", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph), encoding="utf-8")
+    return str(p)
+
+
+def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
+    """ADR-0001 finding 1: get_node must not silently return a G.nodes()
+    iteration-order match for a hub name while get_neighbors reports the same
+    lookup as ambiguous. Both now route through the shared resolver."""
+    app = serve_mod._build_http_app(_ambiguous_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        node = _call_tool(client, headers, "get_node", {"label": "extract"}, rid=2)
+        neighbors = _call_tool(client, headers, "get_neighbors", {"label": "extract"}, rid=3)
+        assert node.startswith("Ambiguous:"), node
+        assert neighbors.startswith("Ambiguous:"), neighbors
+        # A unique label still resolves cleanly on get_node.
+        unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
+        assert "Node: unique_helper" in unique, unique
+
+
+# --- graph_stats build commit (#3354) ----------------------------------------
+
+_STATS_NO_COMMIT = (
+    "Nodes: 2\n"
+    "Edges: 1\n"
+    "Communities: 1\n"
+    "EXTRACTED: 100%\n"
+    "INFERRED: 0%\n"
+    "AMBIGUOUS: 0%\n"
+)
+
+
+def _graph_stats_for(graph_path: str, arguments: dict | None = None) -> str:
+    app = serve_mod._build_http_app(graph_path, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        return _call_tool(client, headers, "graph_stats", arguments or {}, rid=2)
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _repo_with_graph(tmp_path: Path) -> tuple[Path, str]:
+    """A git repo whose graphify-out/graph.json was built at its current HEAD."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("def a():\n    pass\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "one")
+    sha = _git(repo, "rev-parse", "HEAD")
+    (repo / "graphify-out").mkdir()
+    (repo / "graphify-out" / "graph.json").write_text(
+        json.dumps({**SAMPLE_GRAPH, "built_at_commit": sha}), encoding="utf-8")
+    return repo, sha
+
+
+def test_graph_stats_unchanged_without_built_at_commit(tmp_path):
+    """A graph with no commit (older build, or built outside git) renders the
+    same six lines as before, with no placeholder row."""
+    assert _graph_stats_for(_graph_file(tmp_path)) == _STATS_NO_COMMIT
+
+
+@pytest.mark.parametrize("junk", [None, 0, "", "   ", ["x"], {"a": 1}])
+def test_graph_stats_ignores_non_string_built_at_commit(tmp_path, junk):
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({**SAMPLE_GRAPH, "built_at_commit": junk}), encoding="utf-8")
+    assert _graph_stats_for(str(p)) == _STATS_NO_COMMIT
+
+
+def test_graph_stats_reports_built_at_commit_without_git(tmp_path, monkeypatch):
+    """The commit survives _load_graph and is shown in full; when HEAD cannot
+    be read there is no comparison line and no crash."""
+    monkeypatch.setattr("graphify.export._git_head", lambda cwd=None: None)
+    sha = "d787419075b674426a0cb3017c2416d4950232c2"
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({**SAMPLE_GRAPH, "built_at_commit": sha}), encoding="utf-8")
+    assert _graph_stats_for(str(p)) == _STATS_NO_COMMIT + f"Built at commit: {sha}\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_graph_stats_without_git_binary_still_shows_commit(tmp_path, monkeypatch):
+    repo, sha = _repo_with_graph(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))
+    out = _graph_stats_for(str(repo / "graphify-out" / "graph.json"))
+    assert out == _STATS_NO_COMMIT + f"Built at commit: {sha}\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_graph_stats_flags_graph_behind_head(tmp_path):
+    """HEAD is read at query time from the graph's own repo (not the server's
+    cwd), so a commit made after the build shows up without a rebuild."""
+    repo, sha = _repo_with_graph(tmp_path)
+    graph = str(repo / "graphify-out" / "graph.json")
+    assert _graph_stats_for(graph) == (
+        _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n")
+
+    (repo / "b.py").write_text("def b():\n    pass\n", encoding="utf-8")
+    _git(repo, "add", "b.py")
+    _git(repo, "commit", "-q", "-m", "two")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert _graph_stats_for(graph) == (
+        _STATS_NO_COMMIT
+        + f"Built at commit: {sha}\n"
+        + f"HEAD is {head[:7]}, graph built at {sha[:7]}: graph may be stale\n"
+    )
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_graph_stats_commit_follows_project_path(tmp_path):
+    """The commit belongs to the graph the call selected, not the default one."""
+    repo, sha = _repo_with_graph(tmp_path)
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        scoped = _call_tool(client, headers, "graph_stats", {"project_path": str(repo)}, rid=2)
+        default = _call_tool(client, headers, "graph_stats", {}, rid=3)
+    assert scoped == _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n"
+    assert default == _STATS_NO_COMMIT

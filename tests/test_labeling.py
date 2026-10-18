@@ -6,6 +6,7 @@ malformed replies, and the no-backend fallback.
 import json
 import re
 import sys
+from pathlib import Path
 
 import networkx as nx
 import pytest
@@ -202,6 +203,9 @@ def test_generate_community_labels_degrades_on_error(monkeypatch):
 def test_generate_community_labels_no_backend(monkeypatch):
     G, communities = _graph()
     monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    # Keep hermetic: the claude-cli labelling fallback (#3475) probes PATH, so a
+    # machine with `claude` installed would otherwise take the CLI path here.
+    monkeypatch.setattr("graphify.llm._claude_cli_available", lambda: False)
     labels, source = generate_community_labels(G, communities, backend=None, quiet=True)
     assert source == "placeholder"
     assert labels == {0: "Community 0", 1: "Community 1"}
@@ -214,6 +218,20 @@ def test_generate_community_labels_success(monkeypatch):
     labels, source = generate_community_labels(G, communities, backend="gemini", quiet=True)
     assert source == "llm"
     assert labels == {0: "Orders", 1: "Payments"}
+
+
+def test_generate_community_labels_warns_on_partial_success(monkeypatch, capsys):
+    G, communities = _graph()
+    monkeypatch.setattr(
+        "graphify.llm.label_communities",
+        lambda *args, **kwargs: {0: "Orders", 1: "Community 1"},
+    )
+
+    labels, source = generate_community_labels(G, communities, backend="gemini")
+
+    assert source == "llm"
+    assert labels == {0: "Orders", 1: "Community 1"}
+    assert "labeled 1 of 2 communities" in capsys.readouterr().err
 
 
 def test_gods_as_dicts_do_not_crash(monkeypatch):
@@ -274,7 +292,11 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
         return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
-    labels = label_communities(G, communities, backend="gemini", batch_size=100)
+    # max_concurrency=1 keeps the batches sequential so `calls` records them in a
+    # deterministic order; the default concurrent path can complete them out of
+    # order (the ordering is asserted separately in
+    # test_label_communities_parallel_matches_sequential).
+    labels = label_communities(G, communities, backend="gemini", batch_size=100, max_concurrency=1)
 
     # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
     assert calls == [100, 100, 50]
@@ -444,8 +466,12 @@ def test_label_communities_accumulates_token_usage(monkeypatch):
             usage_out["input"] = usage_out.get("input", 0) + 100
             usage_out["output"] = usage_out.get("output", 0) + 10
         # one name per community id present in this batch
-        cids = [int(line.split()[1].rstrip(":")) for line in prompt.splitlines()
-                if line.startswith("Community ")]
+        cids = []
+        for line in prompt.splitlines():
+            if line.startswith("Community "):
+                cids.append(int(line.split()[1].rstrip(":")))
+            elif re.match(r"^\d+: ", line):
+                cids.append(int(line.split(":", 1)[0]))
         return json.dumps({str(c): f"Name {c}" for c in cids})
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
@@ -500,6 +526,262 @@ def _two_community_graph(out):
         ],
     }
     (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+
+@pytest.mark.parametrize("command", ["cluster-only", "label"])
+def test_cluster_commands_render_aggregated_html_above_viz_limit(
+    tmp_path, monkeypatch, capsys, command,
+):
+    """#2853: relabeling a large graph must keep a current aggregated HTML."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        "graphify.llm.generate_community_labels",
+        lambda G, comms, **kwargs: (
+            {cid: f"Fresh community {cid}" for cid in comms},
+            "test",
+        ),
+    )
+
+    argv = ["graphify", command, str(tmp_path)]
+    if command == "cluster-only":
+        argv.append("--no-label")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert html.exists()
+    assert not (out / ".graph.html.stale").exists()
+    rendered = html.read_text(encoding="utf-8")
+    assert "stale visualization" not in rendered
+    if command == "label":
+        assert "Fresh community" in rendered
+    assert "aggregated" in output
+    assert "graph.html updated" in output
+
+
+def test_cluster_only_preserves_but_does_not_claim_unusable_aggregate(
+    tmp_path, monkeypatch, capsys,
+):
+    """A skipped aggregate must not race with or falsely claim an HTML write."""
+    import importlib
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        importlib.import_module("graphify.cluster"),
+        "cluster",
+        lambda G, **kwargs: {0: list(G.nodes())},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert html.read_text(encoding="utf-8") == "stale visualization"
+    assert (out / ".graph.html.stale").exists()
+    assert "Skipped graph.html" in output
+    assert "existing graph.html left unchanged" in output
+    assert "graph.html updated" not in output
+
+
+def test_cluster_only_restores_html_after_unexpected_render_failure(
+    tmp_path, monkeypatch,
+):
+    """A failed render must not destroy the previous HTML file."""
+    import importlib
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("previous visualization", encoding="utf-8")
+
+    def fail_render(*args, **kwargs):
+        raise OSError("simulated render failure")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        importlib.import_module("graphify.export"),
+        "to_html",
+        fail_render,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(OSError, match="simulated render failure"):
+        cli.main()
+
+    assert html.read_text(encoding="utf-8") == "previous visualization"
+    assert (out / ".graph.html.stale").exists()
+    assert not list(out.glob(".graph.html.*.previous"))
+
+
+def test_cluster_only_marks_html_stale_before_report_generation(
+    tmp_path, monkeypatch,
+):
+    """An interruption after graph.json advances must remain repairable."""
+    import graphify.__main__ as cli
+    from graphify.watch import _reconcile_graph_html
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("previous visualization", encoding="utf-8")
+
+    def interrupt_report(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.report.generate", interrupt_report)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.main()
+
+    marker = out / ".graph.html.stale"
+    assert html.read_text(encoding="utf-8") == "previous visualization"
+    assert marker.exists()
+
+    persisted = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert _reconcile_graph_html(out, persisted) == "rendered"
+    assert html.read_text(encoding="utf-8") != "previous visualization"
+    assert not marker.exists()
+
+
+def test_cluster_only_refused_graph_write_preserves_existing_stale_marker(
+    tmp_path, monkeypatch,
+):
+    """A refused write must not erase retry state owned by an earlier run."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("known stale visualization", encoding="utf-8")
+    marker = out / ".graph.html.stale"
+    marker.touch()
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_json", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+
+    assert stopped.value.code == 1
+    assert html.read_text(encoding="utf-8") == "known stale visualization"
+    assert marker.exists()
+
+
+def test_cluster_only_succeeds_when_stale_marker_cleanup_fails(
+    tmp_path, monkeypatch, capsys,
+):
+    """A completed HTML replacement must remain a successful command."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+    marker = out / ".graph.html.stale"
+    marker.touch()
+    original_unlink = Path.unlink
+
+    def reject_marker_unlink(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("simulated marker cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(Path, "unlink", reject_marker_unlink)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert html.read_text(encoding="utf-8") != "stale visualization"
+    assert marker.exists()
+    assert "graph.html updated" in captured.out
+    assert "stale marker could not be cleared" in captured.err
+
+
+def test_cluster_only_does_not_erase_concurrent_html_after_failure(
+    tmp_path, monkeypatch,
+):
+    """A failing renderer must not roll back a concurrent successful writer."""
+    import importlib
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("previous visualization", encoding="utf-8")
+
+    def concurrent_then_fail(*args, **kwargs):
+        html.write_text("newer concurrent visualization", encoding="utf-8")
+        raise OSError("simulated render failure")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        importlib.import_module("graphify.export"),
+        "to_html",
+        concurrent_then_fail,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(OSError, match="simulated render failure"):
+        cli.main()
+
+    assert html.read_text(encoding="utf-8") == "newer concurrent visualization"
 
 
 def test_cluster_only_no_label_does_not_persist_placeholders(tmp_path, monkeypatch):
@@ -557,6 +839,150 @@ def test_cluster_only_heals_persisted_placeholder_but_reuses_genuine(tmp_path, m
     saved = json.loads(labels_path.read_text(encoding="utf-8"))
     assert saved["0"] != "Community 0", "stuck placeholder was not healed (#2073)"
     assert saved["1"] == "Payment Flow", "genuine label was not reused"
+
+
+def _auth_billing_graph(out: Path) -> None:
+    """Two saved communities plus one unclustered node (#2298)."""
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "a1", "label": "auth_hub", "community": 0},
+            {"id": "a2", "label": "auth_a", "community": 0},
+            {"id": "a3", "label": "auth_b", "community": 0},
+            {"id": "a4", "label": "auth_c", "community": 0},
+            {"id": "b1", "label": "bill_hub", "community": 1},
+            {"id": "b2", "label": "bill_a", "community": 1},
+            {"id": "b3", "label": "bill_b", "community": 1},
+            {"id": "b4", "label": "bill_c", "community": 1},
+            {"id": "a_new", "label": "auth_new"},
+        ],
+        "links": [
+            {"source": "a1", "target": "a2", "relation": "calls"},
+            {"source": "a1", "target": "a3", "relation": "calls"},
+            {"source": "a1", "target": "a4", "relation": "calls"},
+            {"source": "b1", "target": "b2", "relation": "calls"},
+            {"source": "b1", "target": "b3", "relation": "calls"},
+            {"source": "b1", "target": "b4", "relation": "calls"},
+        ],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+
+def _patch_cluster_only_reuse(monkeypatch):
+    # `graphify.cluster` is a lazy function on the package until the submodule
+    # is imported. cluster-only does `from graphify.cluster import cluster`.
+    import graphify.cluster  # noqa: F401
+    import graphify.__main__ as cli
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
+
+    def _fail_generate(*a, **k):
+        raise AssertionError("generate_community_labels must not be called on the reuse path")
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", _fail_generate)
+    return cli
+
+
+def test_cluster_only_keeps_label_on_majority_membership_overlap(tmp_path, monkeypatch):
+    """#2298: one added node must not replace a saved name when the shared
+    members are a strict majority of both the saved set and the current set.
+    A one-node fragment of a large community must not keep that name."""
+    from graphify.cluster import community_member_sigs
+
+    cli = _patch_cluster_only_reuse(monkeypatch)
+
+    root = tmp_path / "add-one"
+    out = root / "graphify-out"
+    out.mkdir(parents=True)
+    _auth_billing_graph(out)
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(
+        json.dumps({"0": "Auth Engine", "1": "Billing Desk"}), encoding="utf-8"
+    )
+    old_members = {
+        0: ["a1", "a2", "a3", "a4"],
+        1: ["b1", "b2", "b3", "b4"],
+    }
+    (out / ".graphify_labels.json.sig").write_text(
+        json.dumps({str(k): v for k, v in community_member_sigs(old_members).items()}),
+        encoding="utf-8",
+    )
+
+    def _cluster_with_new(G, *args, **kwargs):
+        return {
+            0: ["a1", "a2", "a3", "a4", "a_new"],
+            1: ["b1", "b2", "b3", "b4"],
+        }
+
+    monkeypatch.setattr("graphify.cluster.cluster", _cluster_with_new)
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(root), "--no-viz"])
+    cli.main()
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels["0"] == "Auth Engine"
+    assert labels["1"] == "Billing Desk"
+
+    fragment = tmp_path / "fragment"
+    fragment_out = fragment / "graphify-out"
+    fragment_out.mkdir(parents=True)
+    member_ids = [f"n{i:03d}" for i in range(200)]
+    fragment_graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": nid, "label": nid, "community": 0}
+            for nid in member_ids
+        ],
+        "links": [],
+    }
+    (fragment_out / "graph.json").write_text(json.dumps(fragment_graph), encoding="utf-8")
+    (fragment_out / ".graphify_labels.json").write_text(
+        json.dumps({"0": "Big Service"}), encoding="utf-8"
+    )
+    (fragment_out / ".graphify_labels.json.sig").write_text(
+        json.dumps({str(k): v for k, v in community_member_sigs({0: member_ids}).items()}),
+        encoding="utf-8",
+    )
+
+    def _cluster_singletons(G, *args, **kwargs):
+        return {i: [f"n{i:03d}"] for i in range(200)}
+
+    monkeypatch.setattr("graphify.cluster.cluster", _cluster_singletons)
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(fragment), "--no-viz"])
+    cli.main()
+    fragment_labels = json.loads(
+        (fragment_out / ".graphify_labels.json").read_text(encoding="utf-8")
+    )
+    assert "Big Service" not in fragment_labels.values()
+
+
+def test_cluster_only_keeps_unchanged_label_when_count_changes(tmp_path, monkeypatch):
+    """#2298: with no signature file, a new singleton community must not hub-rename
+    communities whose membership did not shrink."""
+    cli = _patch_cluster_only_reuse(monkeypatch)
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _auth_billing_graph(out)
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(
+        json.dumps({"0": "Auth Engine", "1": "Billing Desk"}), encoding="utf-8"
+    )
+
+    def _cluster_plus_singleton(G, *args, **kwargs):
+        return {
+            0: ["a1", "a2", "a3", "a4"],
+            1: ["b1", "b2", "b3", "b4"],
+            2: ["a_new"],
+        }
+
+    monkeypatch.setattr("graphify.cluster.cluster", _cluster_plus_singleton)
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
+    cli.main()
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels["0"] == "Auth Engine"
+    assert labels["1"] == "Billing Desk"
 
 
 # ── #2534 case 2: prompt key must not collide with the placeholder sentinel ──

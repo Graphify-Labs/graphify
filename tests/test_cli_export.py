@@ -8,12 +8,26 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 PYTHON = sys.executable
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _rename(src: Path, dst: Path) -> None:
+    """Rename a directory, retrying briefly: on Windows a virus scanner or indexer
+    can hold a just-written file open and fail the rename with PermissionError."""
+    for attempt in range(20):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
 
 
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -68,6 +82,34 @@ def test_export_html_creates_file(tmp_path):
     html = tmp_path / "graphify-out" / "graph.html"
     assert html.exists()
     assert html.stat().st_size > 0
+
+
+def test_export_html_prefers_top_level_hyperedges(tmp_path):
+    out = _make_graph(tmp_path)
+    graph_path = out / "graph.json"
+    data = json.loads(graph_path.read_text())
+    data["hyperedges"] = [
+        {
+            "id": "top-level",
+            "label": "top-level edit",
+            "nodes": ["n_transformer", "n_attention", "n_layernorm"],
+        }
+    ]
+    data["graph"]["hyperedges"] = [
+        {
+            "id": "nested",
+            "label": "stale nested copy",
+            "nodes": ["n_attention", "n_layernorm", "n_concept_attn"],
+        }
+    ]
+    graph_path.write_text(json.dumps(data))
+
+    r = _run(["export", "html"], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    html = (out / "graph.html").read_text()
+    assert "top-level edit" in html
+    assert "stale nested copy" not in html
 
 
 def test_export_html_no_viz_removes_file(tmp_path):
@@ -167,24 +209,195 @@ def test_export_falkordb_creates_cypher(tmp_path):
     assert "MERGE" in content or "CREATE" in content
 
 
+def _dispatch_graphdb_push(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    subcmd: str,
+    uri: str,
+    password_env: str | None = None,
+    user: str | None = None,
+) -> tuple[dict[str, object], str]:
+    """Run CLI dispatch with the database exporter replaced by a recorder."""
+    project = tmp_path / "project with spaces"
+    project.mkdir()
+    out = _make_graph(project)
+    monkeypatch.chdir(project)
+
+    import graphify.export as export_module
+    from graphify.cli import dispatch_command
+
+    calls: dict[str, object] = {}
+
+    def fake_push(G, *, uri, user, password, communities):
+        calls.update(uri=uri, user=user, password=password, communities=communities)
+        return {"nodes": G.number_of_nodes(), "edges": G.number_of_edges()}
+
+    monkeypatch.setattr(export_module, f"push_to_{subcmd}", fake_push)
+    secret_env = "FALKORDB_PASSWORD" if subcmd == "falkordb" else "NEO4J_PASSWORD"
+    monkeypatch.delenv(secret_env, raising=False)
+    if password_env is not None:
+        monkeypatch.setenv(secret_env, password_env)
+
+    args = ["graphify", "export", subcmd, "--graph", str(out / "graph.json"), "--push", uri]
+    if user is not None:
+        args.extend(["--user", user])
+    monkeypatch.setattr(sys, "argv", args)
+    dispatch_command("export")
+    return calls, uri
+
+
+@pytest.mark.parametrize(
+    ("subcmd", "uri", "user", "password_env", "expected_password"),
+    [
+        (
+            "neo4j",
+            "neo4j+s://db.example:8765/tenant/prod?mode=read%20write&tag=a%26b",
+            "graph-writer",
+            "neo4j-secret-not-for-output",
+            "neo4j-secret-not-for-output",
+        ),
+        (
+            "falkordb",
+            "falkordb://db.example:6391/graphs/team%20alpha?tls=true&tag=a%3Bb",
+            None,
+            None,
+            None,
+        ),
+        (
+            "falkordb",
+            "redis://db.example:6392/graphs/main?user=writer%40example.com",
+            "redis-writer",
+            "falkordb-secret-not-for-output",
+            "falkordb-secret-not-for-output",
+        ),
+    ],
+)
+def test_graphdb_push_forwards_uri_and_credentials_without_a_database_connection(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    subcmd: str,
+    uri: str,
+    user: str | None,
+    password_env: str | None,
+    expected_password: str | None,
+) -> None:
+    calls, expected_uri = _dispatch_graphdb_push(
+        monkeypatch,
+        tmp_path,
+        subcmd=subcmd,
+        uri=uri,
+        user=user,
+        password_env=password_env,
+    )
+
+    assert calls["uri"] == expected_uri
+    assert calls["user"] == (user if user is not None else "neo4j")
+    assert calls["password"] == expected_password
+    output = capsys.readouterr().out
+    assert "db.example" not in output
+    assert "secret-not-for-output" not in output
+
+
+@pytest.mark.parametrize("subcmd", ["neo4j", "falkordb"])
+def test_graphdb_export_without_push_never_calls_database(
+    monkeypatch, tmp_path: Path, subcmd: str
+) -> None:
+    project = tmp_path / "project with spaces"
+    project.mkdir()
+    out = _make_graph(project)
+    monkeypatch.chdir(project)
+
+    import graphify.export as export_module
+    from graphify.cli import dispatch_command
+
+    def fail_if_pushed(*args, **kwargs):
+        pytest.fail("export-only mode must not push to a database")
+
+    monkeypatch.setattr(export_module, f"push_to_{subcmd}", fail_if_pushed)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "export", subcmd, "--graph", str(out / "graph.json")],
+    )
+
+    dispatch_command("export")
+
+    cypher = out / "cypher.txt"
+    assert cypher.is_file()
+    assert "MERGE" in cypher.read_text(encoding="utf-8")
+
+
+def test_export_reference_preserves_supplied_push_uris_safely() -> None:
+    fragment = (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "references"
+        / "shared"
+        / "exports.md"
+    ).read_text(encoding="utf-8")
+    neo4j = fragment[fragment.index("### Step 7 - Neo4j export") : fragment.index("### Step 7a - FalkorDB")]
+    falkordb = fragment[fragment.index("### Step 7a - FalkorDB export") : fragment.index("### Step 7b - SVG export")]
+
+    for section, push_heading, scheme_host, local_default in (
+        (
+            neo4j,
+            "If `--neo4j-push",
+            "bolt://remote-host:7687",
+            "bolt://localhost:7687",
+        ),
+        (
+            falkordb,
+            "If `--falkordb-push",
+            "falkordb://remote-host:6379",
+            "falkordb://localhost:6379",
+        ),
+    ):
+        push_instructions = section[section.index(push_heading) :]
+        code_start = push_instructions.index("```bash\n") + len("```bash\n")
+        code_end = push_instructions.index("\n```", code_start)
+        push_example = push_instructions[code_start:code_end]
+
+        assert "exact URI from the original `/graphify` command" in section
+        assert "quote the URI for the shell that will execute the command" in section
+        assert "`shlex.quote` for POSIX shells" in section
+        assert "Never replace a supplied URI with localhost" in section
+        assert "explicitly requested a push but supplied no URI" in section
+        assert "Only push when this flag was explicitly given" in section
+        assert "Do not print the URI or credentials" in section
+        assert scheme_host in section
+        assert scheme_host in push_example
+        assert local_default not in push_example
+
+    assert "Default URI is `bolt://localhost:7687`" in neo4j
+    assert "Default URI is `falkordb://localhost:6379`" in falkordb
+    assert "NEO4J_PASSWORD" in neo4j
+    assert "FALKORDB_PASSWORD" in falkordb
+    assert "--neo4j-push" in neo4j
+    assert "--falkordb-push" in falkordb
+
+
 # ── graphify query ───────────────────────────────────────────────────────────
 
 def test_query_returns_output(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["query", "test"], tmp_path)
+    r = _run(["query", "Transformer"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert len(r.stdout) > 0
 
 
 def test_query_dfs_flag(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["query", "test", "--dfs"], tmp_path)
+    r = _run(["query", "Transformer", "--dfs"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
 def test_query_budget_flag(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["query", "test", "--budget", "500"], tmp_path)
+    r = _run(["query", "Transformer", "--budget", "500"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
@@ -196,11 +409,11 @@ def test_query_missing_graph_fails(tmp_path):
 def test_query_uses_graphify_out_env(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
-    out.rename(custom_out)
+    _rename(out, custom_out)
     env = os.environ.copy()
     env["GRAPHIFY_OUT"] = custom_out.name
 
-    r = _run(["query", "test"], tmp_path, env=env)
+    r = _run(["query", "Transformer"], tmp_path, env=env)
 
     assert r.returncode == 0, r.stderr
     assert len(r.stdout) > 0
@@ -243,7 +456,7 @@ def test_path_missing_graph_fails(tmp_path):
 def test_path_uses_graphify_out_env(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
-    out.rename(custom_out)
+    _rename(out, custom_out)
     env = os.environ.copy()
     env["GRAPHIFY_OUT"] = custom_out.name
 
@@ -365,7 +578,7 @@ def test_path_flags_mutually_exclusive(tmp_path):
 
 def test_explain_runs_without_error(tmp_path):
     _make_graph(tmp_path)
-    r = _run(["explain", "test"], tmp_path)
+    r = _run(["explain", "Transformer"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
@@ -377,11 +590,11 @@ def test_explain_missing_graph_fails(tmp_path):
 def test_explain_uses_graphify_out_env(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
-    out.rename(custom_out)
+    _rename(out, custom_out)
     env = os.environ.copy()
     env["GRAPHIFY_OUT"] = custom_out.name
 
-    r = _run(["explain", "test"], tmp_path, env=env)
+    r = _run(["explain", "Transformer"], tmp_path, env=env)
 
     assert r.returncode == 0, r.stderr
 
@@ -631,6 +844,80 @@ def test_export_html_no_community_data_at_all_still_succeeds(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+# ── #2386: sidecar exists but is STALE, not just absent ──────────────────────
+# update/watch advance graph.json's per-node community attribute but never
+# regenerate .graphify_analysis.json, so it can describe an earlier
+# clustering pass while still being present. That looked identical to a
+# fresh sidecar from the outside and kept winning over the correct data
+# sitting in graph.json.
+
+def test_export_html_prefers_fresh_data_when_sidecar_is_stale(tmp_path):
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    # Simulate staleness the way the issue describes: the sidecar's node id
+    # set no longer matches graph.json's (a node the sidecar never saw, or
+    # one it references that graph.json no longer has).
+    analysis["communities"] = {"0": ["a_ghost_node_id_not_in_the_graph"]}
+    analysis_path.write_text(json.dumps(analysis))
+
+    r = _run(["export", "html"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" in r.stderr
+    assert (out / "graph.html").exists()
+
+
+def test_export_wiki_recomputes_cohesion_when_sidecar_is_stale(tmp_path):
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis["communities"] = {"0": ["a_ghost_node_id_not_in_the_graph"]}
+    # A cohesion value that could never be a real score (score_all returns
+    # values in a bounded range), so if it survives into the wiki output
+    # unchanged, the stale sidecar won instead of being recomputed.
+    analysis["cohesion"] = {"0": 999999.0}
+    analysis_path.write_text(json.dumps(analysis))
+
+    r = _run(["export", "wiki"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" in r.stderr
+    wiki_dir = out / "wiki"
+    assert wiki_dir.exists()
+    combined = "\n".join(p.read_text(encoding="utf-8") for p in wiki_dir.glob("*.md"))
+    assert "999999" not in combined, "stale cohesion value leaked into the wiki export"
+
+
+def test_export_html_uses_sidecar_when_it_still_matches(tmp_path):
+    """Negative control: an up to date sidecar must not trigger the stale
+    path or its warning."""
+    out = _make_graph(tmp_path)
+
+    r = _run(["export", "html"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" not in r.stderr
+    assert (out / "graph.html").exists()
+
+
+def test_export_html_detects_stale_sidecar_with_same_nodes_different_partition(tmp_path):
+    """A merge, a split, or a node moving from one community to another can
+    leave the overall node id set unchanged while still describing a
+    different partition -- comparing only the flat node-id set missed this
+    exact shape of staleness."""
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    communities = analysis["communities"]
+    assert len(communities) >= 2, "fixture must have at least two communities to prove this"
+    all_nodes = [n for nodes in communities.values() for n in nodes]
+    analysis["communities"] = {"0": all_nodes}
+    analysis_path.write_text(json.dumps(analysis))
+
+    r = _run(["export", "html"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" in r.stderr
+    assert (out / "graph.html").exists()
+
+
 def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     """#1789: the committed graph.json's node ids must be relative to the scan
     root — not embed the absolute path — so the same repo yields identical ids
@@ -689,6 +976,67 @@ def test_cluster_only_happy_path_exits_zero(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "Done -" in r.stdout, r.stdout
     assert "communities" in r.stdout
+
+
+def test_cluster_only_preserves_parallel_edges(tmp_path):
+    """#3999: cluster-only reloads graph.json into a simple Graph (one edge per
+    node pair) to re-cluster, then used to write THAT back out, silently
+    dropping a second edge (e.g. imports + calls) between a pair that stayed
+    connected by the other. Community is a node attribute; re-clustering must
+    never change the edge set."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "b", "file_type": "code", "source_file": "a.py"},
+            {"id": "c", "label": "c", "file_type": "code", "source_file": "a.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "imports", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "b", "target": "c", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }))
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    data = json.loads((out / "graph.json").read_text())
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    assert pairs == [("a", "b", "calls"), ("a", "b", "imports"), ("b", "c", "calls")], pairs
+
+
+def test_to_json_original_links_drops_only_a_dangling_endpoint(tmp_path):
+    """#3999: original_links writes back every original link verbatim,
+    except one whose endpoint no longer exists in G."""
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+
+    extraction = {
+        "directed": False,
+        "nodes": [
+            {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "b", "file_type": "code", "source_file": "a.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "imports", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    G = build_from_json(extraction)
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    original_links = list(extraction["links"]) + [
+        {"source": "a", "target": "gone", "relation": "calls", "confidence": "EXTRACTED"},
+    ]
+    assert to_json(G, communities, str(out), original_links=original_links)
+
+    data = json.loads(out.read_text())
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    assert pairs == [("a", "b", "calls"), ("a", "b", "imports")], pairs
 
 
 def test_cluster_only_warns_when_labeling_flags_are_ignored(tmp_path):
@@ -775,3 +1123,134 @@ def test_cluster_only_preserves_built_at_commit_from_non_repo_cwd(tmp_path):
     assert r.returncode == 0, r.stderr
     final = json.loads(graph_json.read_text(encoding="utf-8"))
     assert final.get("built_at_commit") == commit_x
+
+
+# ── graphify query names its graph (#2789) ───────────────────────────────────
+
+def test_query_command_header_names_the_graph(tmp_path):
+    """End-to-end: the CLI `query` command must actually wire the resolved graph
+    path into the header. The header logic is unit-tested in
+    test_query_names_its_graph.py, but only a real subprocess run proves the CLI
+    call site passes graph_path through (the wiring that was the point of #2789)."""
+    _make_graph(tmp_path)
+    r = _run(["query", "Transformer"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    first_line = r.stdout.splitlines()[0]
+    assert first_line.startswith("Graph: graphify-out/graph.json ("), first_line
+    assert "nodes)" in first_line
+    assert "Traversal:" in first_line
+
+
+def test_query_command_names_a_graph_outside_the_cwd(tmp_path):
+    """The #2789 scenario: querying an explicit graph that sits outside the CWD
+    must show it in full so the operator can tell the answer came from elsewhere."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = _make_graph(elsewhere)
+    here = tmp_path / "here"
+    here.mkdir()
+    r = _run(["query", "Transformer", "--graph", str(out / "graph.json")], here)
+    assert r.returncode == 0, r.stderr
+    first_line = r.stdout.splitlines()[0]
+    assert first_line.startswith("Graph: "), first_line
+    assert "elsewhere" in first_line, first_line
+
+
+def test_cluster_only_preserves_parallel_edges_across_an_id_remap(tmp_path):
+    """#3999 completion: cluster-only reloads graph.json through build_from_json,
+    which rewrites a legacy/pre-migration node id to its canonical stem
+    (_semantic_id_remap). The preserved original_links must track the remapped
+    id and still carry BOTH parallel edges — not be silently dropped because
+    their endpoints no longer match the post-remap node set. build_from_json
+    rewrites the shared link endpoints in place before to_json reads them;
+    this test guards that invariant against a future refactor."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    # `claude_alpha` + source_file `.claude/CLAUDE.md` remaps to
+    # `claude_claude_alpha` (parent-dir == stem case, #1917).
+    (out / "graph.json").write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "claude_alpha", "label": "alpha", "file_type": "concept",
+             "source_file": ".claude/CLAUDE.md", "_origin": "semantic"},
+            {"id": "beta", "label": "beta", "file_type": "code",
+             "source_file": "pkg/beta.py", "_origin": "semantic"},
+        ],
+        "links": [
+            {"source": "claude_alpha", "target": "beta", "relation": "references", "confidence": "EXTRACTED"},
+            {"source": "claude_alpha", "target": "beta", "relation": "mentions", "confidence": "EXTRACTED"},
+        ],
+    }))
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    data = json.loads((out / "graph.json").read_text())
+    node_ids = {n["id"] for n in data["nodes"]}
+    # both endpoints remap: claude_alpha -> claude_claude_alpha, beta -> pkg_beta
+    assert "claude_claude_alpha" in node_ids, node_ids  # remap fired
+    assert "claude_alpha" not in node_ids
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    # both parallel edges survive AND track the remapped endpoint ids
+    assert pairs == [
+        ("claude_claude_alpha", "pkg_beta", "mentions"),
+        ("claude_claude_alpha", "pkg_beta", "references"),
+    ], pairs
+
+
+def test_to_json_declares_multigraph_when_original_links_have_parallel_edges(tmp_path):
+    """#4500: to_json restored original_links (which may hold parallel edges,
+    #3999) while node_link_data derived "multigraph": false from the simple
+    in-memory graph. The flag must match the links actually written."""
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+
+    extraction = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "App()", "file_type": "code", "source_file": "src/App.tsx"},
+            {"id": "b", "label": "applySeed()", "file_type": "code", "source_file": "src/App.tsx"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "80"},
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "163"},
+        ],
+    }
+    G = build_from_json(extraction, directed=True)
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    assert to_json(G, communities, str(out), original_links=extraction["links"])
+
+    data = json.loads(out.read_text())
+    assert data["multigraph"] is True
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    assert pairs == [("a", "b", "calls"), ("a", "b", "contains")], pairs
+
+
+def test_to_json_keeps_multigraph_false_without_parallel_edges(tmp_path):
+    """#4500: the flag repair must not flip graphs that have no parallel edges."""
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+
+    extraction = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "b", "file_type": "code", "source_file": "a.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    G = build_from_json(extraction, directed=True)
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    assert to_json(G, communities, str(out), original_links=extraction["links"])
+
+    data = json.loads(out.read_text())
+    assert data["multigraph"] is False
+    assert len(data["links"]) == 1

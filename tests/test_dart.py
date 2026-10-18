@@ -588,9 +588,11 @@ class TestDart(unittest.TestCase):
         nodes = result["nodes"]
         edges = result["edges"]
 
-        # A. Bug D redirect: No child file node should be created in nodes
+        # A. Bug D redirect: the part keeps its own file node (so it can be looked
+        # up by name), but its symbols are redirected to the parent library below.
         child_node = next((n for n in nodes if n["label"] == "child_part.dart"), None)
-        self.assertIsNone(child_node)
+        self.assertIsNotNone(child_node)
+        self.assertEqual(child_node["id"], _make_id(str(child_file)))
 
         # B. Check that defines edge source is parent file ID
         parent_fid = _make_id(str(parent_file.resolve()))
@@ -622,6 +624,7 @@ class TestDart(unittest.TestCase):
         # E. Bug E object destructuring variables: myVar, myAge
         self.assertIsNotNone(next((n for n in nodes if n["label"] == "myVar"), None))
         self.assertIsNotNone(next((n for n in nodes if n["label"] == "myAge"), None))
+
         # Ensure "name: myVar" or ":myVar" are NOT registered as variables!
         self.assertIsNone(
             next((n for n in nodes if "name" in n["label"] or "age" in n["label"]), None)
@@ -635,6 +638,145 @@ class TestDart(unittest.TestCase):
         self.assertIsNotNone(nav_edge)
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
 
+    def test_source_location_matches_declaration_line(self):
+        """#3365: every declared node must carry its real line, not None."""
+        code = textwrap.dedent("""\
+        class Greeter {
+          final String name;
+          Greeter(this.name);
+
+          String greet() {
+            return 'hello $name';
+          }
+        }
+
+        int add(int a, int b) => a + b;
+        """)
+        path = self.temp_path / "sample.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        loc_by_label = {n["label"]: n["source_location"] for n in result["nodes"]}
+        self.assertEqual(loc_by_label["Greeter"], "L1")
+        self.assertEqual(loc_by_label["greet"], "L5")
+        self.assertEqual(loc_by_label["add"], "L10")
+        # The file node itself has no single line, unlike every other extractor.
+        self.assertIsNone(loc_by_label["sample.dart"])
+
+    def test_source_location_survives_a_leading_multiline_comment(self):
+        """#3365 trap: blanking a comment must preserve its newline count, or
+        every line number after it is undercounted by the comment's height."""
+        code = textwrap.dedent("""\
+        /*
+         * A multi-line header comment.
+         * It spans several lines.
+         */
+        class AfterComment {
+          void method() {}
+        }
+        """)
+        path = self.temp_path / "commented.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        loc_by_label = {n["label"]: n["source_location"] for n in result["nodes"]}
+        self.assertEqual(loc_by_label["AfterComment"], "L5")
+        self.assertEqual(loc_by_label["method"], "L6")
+
+    def test_source_location_on_edges_not_just_nodes(self):
+        """#3365 follow-up: edges attributed to a declaration must also carry a
+        line, not just the nodes at either end."""
+        code = textwrap.dedent("""\
+        class Base {}
+
+        class Child extends Base {
+          void run() {}
+        }
+        """)
+        path = self.temp_path / "inherit.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        inherits = next(e for e in result["edges"] if e["relation"] == "inherits")
+        self.assertEqual(inherits["source_location"], "L3")
+
+
+    def test_part_file_keeps_its_own_node(self):
+        """A `part of` file is a real source file: it must be findable by name and
+        linked to its library and its declarations, while those declarations keep
+        the library's id namespace (Bug D redirect)."""
+        lib_file = self.temp_path / "settlement.dart"
+        lib_file.write_text("part 'derive.dart';\n\nclass Settlement {}\n", encoding="utf-8")
+        part_file = self.temp_path / "derive.dart"
+        part_file.write_text(textwrap.dedent("""\
+            part of 'settlement.dart';
+
+            class DeriveHelper {}
+
+            void deriveAll() {}
+            """), encoding="utf-8")
+
+        result = extract_dart(part_file)
+        lib_nid = _make_id(str(lib_file.resolve()))
+        part_nid = _make_id(str(part_file))
+
+        part_node = next(n for n in result["nodes"] if n["id"] == part_nid)
+        self.assertEqual(part_node["label"], "derive.dart")
+        self.assertEqual(part_node["source_file"], str(part_file))
+
+        includes = [e for e in result["edges"] if e["relation"] == "includes"]
+        self.assertEqual([(e["source"], e["target"]) for e in includes], [(lib_nid, part_nid)])
+        self.assertEqual(includes[0]["source_location"], "L1")
+
+        defined = {e["target"] for e in result["edges"]
+                   if e["source"] == lib_nid and e["relation"] == "defines"}
+        contained = {e["target"] for e in result["edges"]
+                     if e["source"] == part_nid and e["relation"] == "contains"}
+        labels = {n["id"]: n["label"] for n in result["nodes"]}
+        self.assertEqual({labels[t] for t in defined}, {"DeriveHelper", "deriveAll"})
+        self.assertEqual(contained, defined)
+        # Ids stay in the library's namespace: nothing is minted under the part's stem.
+        part_stem = _make_id(_file_stem(part_file))
+        for nid in defined:
+            self.assertFalse(nid.startswith(part_stem + "_"), nid)
+
+    def test_conditional_uris_emit_every_branch(self):
+        """A configurable export/import must link every platform branch, not only
+        the default URI; a string literal inside the condition is not a URI."""
+        code = textwrap.dedent("""\
+        import 'conn_stub.dart'
+            if (dart.library.io) 'conn_io.dart'
+            if (dart.library.js_interop) 'conn_web.dart';
+        import 'flags.dart' if (app.flavor == 'prod') 'flags_prod.dart';
+        export 'service_stub.dart' if (dart.library.io) "service_io.dart";
+        """)
+        path = self.temp_path / "facade.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        file_nid = _make_id(str(path))
+
+        def targets(relation, context):
+            return {
+                e["target"]
+                for e in result["edges"]
+                if e["source"] == file_nid
+                and e["relation"] == relation
+                and e.get("context") == context
+            }
+
+        self.assertEqual(targets("imports", None), {_make_id("conn_stub.dart"), _make_id("flags.dart")})
+        self.assertEqual(
+            targets("imports", "conditional_uri"),
+            {_make_id("conn_io.dart"), _make_id("conn_web.dart"), _make_id("flags_prod.dart")},
+        )
+        self.assertEqual(targets("exports", None), {_make_id("service_stub.dart")})
+        self.assertEqual(targets("exports", "conditional_uri"), {_make_id("service_io.dart")})
+        labels = {n["label"] for n in result["nodes"]}
+        self.assertNotIn("prod", labels)
+        loc = {
+            e["target"]: e["source_location"]
+            for e in result["edges"]
+            if e["relation"] in ("imports", "exports")
+        }
+        self.assertEqual(loc[_make_id("conn_web.dart")], "L3")
+        self.assertEqual(loc[_make_id("service_io.dart")], "L5")
 
 if __name__ == "__main__":
     unittest.main()

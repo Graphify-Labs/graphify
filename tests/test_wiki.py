@@ -1,6 +1,5 @@
 """Tests for graphify.wiki — Wikipedia-style article generation."""
 import re
-import urllib.parse
 import pytest
 from pathlib import Path
 import networkx as nx
@@ -10,14 +9,21 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def _inline_links(text):
-    """Yield (display, decoded_target) for each inline markdown link, skipping
-    external URLs. Targets are URL-decoded so they can be checked against the
-    on-disk filename. (Display text with an escaped `]` isn't matched, but the
-    generated labels used in link position never contain brackets.)"""
+    """Yield (display, target) for each inline markdown link, skipping external
+    URLs. The target is yielded VERBATIM.
+
+    This used to `urllib.parse.unquote` it, which is why
+    `test_wiki_links_resolve_to_real_files` passed all the way through #2597:
+    the emitted target was `_make_id%28%29.md` while the file on disk was
+    `_make_id().md`, and decoding in the helper papered over exactly the
+    mismatch the guard exists to catch. The link and the filename must be the
+    same string, so the check has to compare them as written.
+    (Display text with an escaped `]` isn't matched, but the generated labels
+    used in link position never contain brackets.)"""
     for display, target in _MD_LINK.findall(text):
         if "://" in target:
             continue
-        yield display, urllib.parse.unquote(target)
+        yield display, target
 
 
 def _make_graph():
@@ -96,11 +102,42 @@ def test_community_article_shows_cohesion(tmp_path):
 
 
 def test_community_article_has_audit_trail(tmp_path):
+    """Each incident edge is counted exactly ONCE (#2633).
+
+    The Parsing Layer (n1, n2) touches two edges: n1-n2 (EXTRACTED, both
+    endpoints inside) and n1-n3 (INFERRED, crossing out). Counting
+    ``nodes x G.neighbors`` visited the intra-community edge from both ends and
+    the crossing one from only one, reporting EXTRACTED 2 (67%) / INFERRED 1
+    (33%) — biased towards confidence, which understates the AMBIGUOUS review
+    burden the section exists to surface.
+    """
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
     parsing = (tmp_path / "Parsing_Layer.md").read_text()
-    assert "EXTRACTED" in parsing
-    assert "INFERRED" in parsing
+    audit = parsing[parsing.index("## Audit Trail"):]
+    assert "- EXTRACTED: 1 (50%)" in audit, audit
+    assert "- INFERRED: 1 (50%)" in audit, audit
+    assert "- AMBIGUOUS: 0 (0%)" in audit, audit
+
+
+def test_audit_trail_counts_parallel_edges_individually(tmp_path):
+    """On a MultiGraph each parallel edge is its own row in the split (#2633).
+
+    Collapsing them to the first (``edge_data``) hid an AMBIGUOUS edge behind an
+    EXTRACTED one running between the same pair — the same understatement as the
+    double-count above.
+    """
+    G = nx.MultiGraph()
+    G.add_node("n1", label="parse", file_type="code", source_file="parser.py")
+    G.add_node("n2", label="validate", file_type="code", source_file="parser.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n1", "n2", relation="references", confidence="AMBIGUOUS", weight=1.0)
+
+    to_wiki(G, {0: ["n1", "n2"]}, tmp_path, community_labels={0: "Parsing Layer"})
+    audit = (tmp_path / "Parsing_Layer.md").read_text()
+    audit = audit[audit.index("## Audit Trail"):]
+    assert "- EXTRACTED: 1 (50%)" in audit, audit
+    assert "- AMBIGUOUS: 1 (50%)" in audit, audit
 
 
 def test_god_node_article_has_connections(tmp_path):
@@ -272,6 +309,33 @@ def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
     assert len(set(lowered)) == len(lowered), [p.name for p in articles]
 
 
+def test_to_wiki_article_labelled_index_does_not_overwrite_index_md(tmp_path):
+    """index.md is the wiki's reserved entry point. A community whose label slugs
+    to "index" (the default hub labeler names a community after its hub node, so a
+    hub `index()` view or an `Index` class does this) or a god node labelled
+    `index()` must get its own file, not be written to index.md and then
+    overwritten by the catalog - which also made its catalog link point back at
+    the index itself."""
+    G = nx.Graph()
+    G.add_node("n1", label="index()", file_type="code", source_file="views.py")
+    G.add_node("n2", label="render", file_type="code", source_file="views.py")
+    G.add_node("n3", label="Index", file_type="code", source_file="search.py")
+    G.add_node("n4", label="query", file_type="code", source_file="search.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n3", "n4", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1", "n2"], 1: ["n3", "n4"]}
+    labels = {0: "index", 1: "Search"}
+    god_nodes = [{"id": "n3", "label": "Index", "degree": 1}]
+    n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    articles = [p for p in tmp_path.glob("*.md") if p.stem.lower() != "index"]
+    # every article survives as its own file next to the catalog
+    assert len(articles) == n == 3, sorted(p.name for p in tmp_path.glob("*.md"))
+    index_text = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert index_text.startswith("# Knowledge Graph Index")
+    # no catalog entry links back to the catalog itself
+    assert "(index.md)" not in index_text, index_text
+
+
 # Regression tests for portable wiki links - Obsidian [[wikilinks]] break in
 # every non-Obsidian renderer (VS Code preview, GitHub, GitLab, plain browsers).
 
@@ -314,10 +378,13 @@ def test_wiki_link_display_keeps_label_but_target_is_filename(tmp_path):
 
 
 def test_wiki_special_characters_in_label_resolve(tmp_path):
-    """Labels with spaces, &, #, and parentheses must still produce a link whose
-    URL-encoded target decodes back to the real (underscored) filename, so it
-    works in CommonMark renderers and Obsidian alike. # is the dangerous one —
-    left raw in a relative link it would be misread as a fragment."""
+    """Labels with spaces, &, #, and parentheses must produce a link whose target
+    IS the on-disk filename, with no encoding step in between (#2597).
+
+    `#` and `(` `)` are the dangerous ones: left raw in a relative link, `#`
+    would be misread as a fragment and `)` would terminate the destination
+    early. They are therefore kept out of the slug entirely rather than encoded
+    into a target that no longer names the file."""
     G = nx.Graph()
     G.add_node("n1", label="a", file_type="code", source_file="a.py", community=0)
     G.add_node("n2", label="b", file_type="code", source_file="b.py", community=1)
@@ -326,21 +393,20 @@ def test_wiki_special_characters_in_label_resolve(tmp_path):
     labels = {0: "C# & Auth (v2)", 1: "Other"}
     to_wiki(G, communities, tmp_path, community_labels=labels)
     article = (tmp_path / "Other.md").read_text()
-    # the cross-link to the special-char community resolves to its real file
     targets = [t for _, t in _inline_links(article)]
-    assert "C#_&_Auth_(v2).md" in targets
-    assert (tmp_path / "C#_&_Auth_(v2).md").exists()
-    # the raw target is fully percent-encoded — no bare ( ) that would terminate
-    # the link early, no bare # that would be misread as a fragment
-    assert "C%23_%26_Auth_%28v2%29.md" in article
+    assert "C__&_Auth_v2.md" in targets
+    assert (tmp_path / "C__&_Auth_v2.md").exists()
+    # no percent-escape in any target: it is the filename verbatim
+    assert not any("%" in t for t in targets), targets
+    # & survives — it is legal raw in a link destination and in a filename
+    assert any("&" in t for t in targets), targets
 
 
 def test_wiki_link_with_bracketed_label_resolves(tmp_path):
-    """A label containing `[` / `]` (e.g. a generic like `Array[T]`) still
-    produces a resolvable link: the brackets are escaped in the display text so
-    they don't break the markdown, and percent-encoded in the target so it
-    decodes back to the real file. (`_safe_filename` keeps brackets in the slug,
-    so they reach the link target.)"""
+    """A label containing `[` / `]` (e.g. a generic like `Array[T]`) produces a
+    resolvable link: the brackets are escaped in the display text so they don't
+    break the markdown, and kept verbatim in the target, which is legal in a
+    CommonMark link destination and matches the file on disk (#2597)."""
     G = nx.Graph()
     G.add_node("n1", label="a", file_type="code", source_file="a.py", community=0)
     G.add_node("n2", label="b", file_type="code", source_file="b.py", community=1)
@@ -349,7 +415,7 @@ def test_wiki_link_with_bracketed_label_resolves(tmp_path):
     labels = {0: "Array[T] Models", 1: "Other"}
     to_wiki(G, communities, tmp_path, community_labels=labels)
     article = (tmp_path / "Other.md").read_text()
-    assert r"[Array\[T\] Models](Array%5BT%5D_Models.md)" in article
+    assert r"[Array\[T\] Models](Array[T]_Models.md)" in article
     assert (tmp_path / "Array[T]_Models.md").exists()
 
 
@@ -389,3 +455,76 @@ def test_wiki_links_use_collision_suffixed_slug(tmp_path):
     assert "parser_2.md" in index_targets  # link points at the suffixed file...
     for t in index_targets:
         assert (tmp_path / t).exists(), t  # ...and every target is a real file
+
+
+# Regression tests for #3032 / #3033 - two articles whose labels are *identical*
+# (not merely case-variant, as above) each get their own file, so the index has
+# to link each row to the file that row's article was actually written to.
+
+
+def test_index_links_same_labelled_communities_to_own_articles(tmp_path):
+    """Two communities may carry the same label. Each is written to its own file
+    (`Core.md`, `Core_2.md`), so the index rows must target one each. Resolving
+    the target from the label instead points both rows at whichever community
+    was slugged first, orphaning the second article (#3032)."""
+    G = nx.Graph()
+    G.add_node("n1", label="a", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="b", file_type="code", source_file="b.py", community=0)
+    G.add_node("n3", label="c", file_type="code", source_file="c.py", community=1)
+    G.add_node("n4", label="d", file_type="code", source_file="d.py", community=1)
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n3", "n4", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n1", "n3", relation="references", confidence="INFERRED", weight=1.0)
+    communities = {0: ["n1", "n2"], 1: ["n3", "n4"]}
+    labels = {0: "Core", 1: "Core"}  # identical, not just case-variant
+    to_wiki(G, communities, tmp_path, community_labels=labels)
+    index_targets = [t for _, t in _inline_links((tmp_path / "index.md").read_text())]
+    assert sorted(index_targets) == ["Core.md", "Core_2.md"], index_targets
+    for t in index_targets:
+        assert (tmp_path / t).exists(), t
+
+
+def test_index_links_same_labelled_god_nodes_to_own_articles(tmp_path):
+    """Same for god nodes: two nodes sharing a label get one article each, and
+    the index must link each row to its own. Resolving by label sends both rows
+    to the first article and leaves `GameState_2.md` unreachable (#3033)."""
+    G = nx.Graph()
+    G.add_node("n1", label="GameState", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="GameState", file_type="code", source_file="b.py", community=0)
+    G.add_node("n3", label="helper", file_type="code", source_file="c.py", community=0)
+    G.add_edge("n1", "n3", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n2", "n3", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1", "n2", "n3"]}
+    labels = {0: "Only Community"}
+    god_nodes = [
+        {"id": "n1", "label": "GameState", "degree": 1},
+        {"id": "n2", "label": "GameState", "degree": 1},
+    ]
+    to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    index_targets = [t for _, t in _inline_links((tmp_path / "index.md").read_text())]
+    god_targets = [t for t in index_targets if t.startswith("GameState")]
+    assert sorted(god_targets) == ["GameState.md", "GameState_2.md"], index_targets
+    for t in index_targets:
+        assert (tmp_path / t).exists(), t
+
+
+def test_index_links_every_article_written(tmp_path):
+    """Every article `to_wiki` writes must be reachable from the index. This is
+    the general form of #3032/#3033: any row that resolves its target by label
+    rather than by the slug the article was written under leaves a real file
+    with no way in."""
+    G = nx.Graph()
+    G.add_node("n1", label="GameState", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="GameState", file_type="code", source_file="b.py", community=1)
+    G.add_edge("n1", "n2", relation="references", confidence="INFERRED", weight=1.0)
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: "Core", 1: "Core"}
+    god_nodes = [
+        {"id": "n1", "label": "GameState", "degree": 1},
+        {"id": "n2", "label": "GameState", "degree": 1},
+    ]
+    n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    articles = {p.name for p in tmp_path.glob("*.md")} - {"index.md"}
+    assert len(articles) == n == 4, sorted(articles)
+    linked = {t for _, t in _inline_links((tmp_path / "index.md").read_text())}
+    assert articles <= linked, sorted(articles - linked)  # no orphaned article

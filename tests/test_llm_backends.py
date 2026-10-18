@@ -8,6 +8,12 @@ import pytest
 from graphify import llm
 
 
+@pytest.fixture(autouse=True)
+def _clear_ollama_seed_env(monkeypatch):
+    """Keep a developer's ambient seed from changing request-shape tests."""
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+
+
 def _clear_backend_env(monkeypatch):
     for env_key in (
         "GEMINI_API_KEY",
@@ -325,6 +331,151 @@ def test_adaptive_retry_re_raises_unrelated_errors(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Adaptive retry: timeout recovery (#2866)
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_timeout_matches_concrete_classes():
+    import subprocess
+    from unittest.mock import MagicMock
+
+    assert llm._looks_like_timeout(subprocess.TimeoutExpired(["cmd"], 30))
+
+    try:
+        import openai
+        assert llm._looks_like_timeout(openai.APITimeoutError(request=MagicMock()))
+    except ImportError:
+        pass
+
+    try:
+        import anthropic
+        assert llm._looks_like_timeout(anthropic.APITimeoutError(request=MagicMock()))
+    except ImportError:
+        pass
+
+    try:
+        import botocore.exceptions
+        assert llm._looks_like_timeout(botocore.exceptions.ReadTimeoutError(endpoint_url="http://test"))
+        assert llm._looks_like_timeout(botocore.exceptions.ConnectTimeoutError(endpoint_url="http://test"))
+    except ImportError:
+        pass
+
+
+def test_looks_like_timeout_ignores_unrelated_errors():
+    for exc in [
+        TimeoutError("timed out"),
+        RuntimeError("timeout"),
+        ValueError("timed out"),
+        RuntimeError("rate limit hit"),
+        Exception("connection refused"),
+        KeyError("missing key"),
+    ]:
+        assert not llm._looks_like_timeout(exc), exc
+
+
+def test_adaptive_retry_splits_on_subprocess_timeout(tmp_path, capsys):
+    import subprocess
+
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        if len(chunk) == 4:
+            raise subprocess.TimeoutExpired(["claude", "-p"], 600)
+        return _ok(nodes=[{"id": f.stem} for f in chunk])
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="claude-cli", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert len(result["nodes"]) == 4
+    assert calls["n"] == 3  # 1 timeout on initial chunk + 2 successful halves
+    err = capsys.readouterr().err
+    assert "timed out at depth 0" in err
+    assert "exceeded context" not in err
+
+
+def test_adaptive_retry_gives_up_on_single_file_timeout(tmp_path, capsys):
+    import subprocess
+
+    f = tmp_path / "huge.md"
+    f.write_text("x")
+
+    def fake_extract(*_, **__):
+        raise subprocess.TimeoutExpired(["claude", "-p"], 600)
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            [f], backend="claude-cli", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    # Single-file timeout gives up and returns empty result without infinite recursion
+    assert result["nodes"] == []
+    assert result["edges"] == []
+    assert result["finish_reason"] == "stop"
+    err = capsys.readouterr().err
+    assert "single-file chunk" in err and "timed out and cannot be split further" in err
+    assert "exceeds model context" not in err
+
+
+def test_adaptive_retry_splits_single_slice_on_timeout(tmp_path, capsys):
+    import subprocess
+    from graphify.file_slice import FileSlice
+
+    f = tmp_path / "doc.md"
+    f.write_text("line 1\nline 2\nline 3\nline 4\nline 5\n")
+    fs = FileSlice(path=f, start=0, end=len(f.read_text()), index=0, total=1)
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise subprocess.TimeoutExpired(["claude", "-p"], 600)
+        return _ok(nodes=[{"id": f"node_{calls['n']}"}])
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            [fs], backend="claude-cli", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert len(result["nodes"]) == 2
+    assert calls["n"] == 3  # 1 timeout + 2 bisected slice halves
+    err = capsys.readouterr().err
+    assert "slice of" in err and "timed out at depth 0" in err
+    assert "exceeded context" not in err
+
+
+def test_adaptive_retry_timeout_caps_at_max_depth(tmp_path, capsys):
+    import subprocess
+
+    files = [tmp_path / f"f{i}.md" for i in range(8)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def always_timeout(chunk, *_, **__):
+        calls["n"] += 1
+        raise subprocess.TimeoutExpired(["claude", "-p"], 600)
+
+    with patch("graphify.llm.extract_files_direct", side_effect=always_timeout):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="claude-cli", api_key=None, model=None, root=tmp_path, max_depth=1
+        )
+
+    assert result["nodes"] == []
+    err = capsys.readouterr().err
+    assert "still times out at recursion depth" in err
+    assert "overflows context" not in err
+
+
+# ---------------------------------------------------------------------------
 # Hollow-response detection: empty / null / unparseable content from a
 # successful HTTP call must route into the same bisection path as a true
 # `finish_reason="length"` truncation, not be silently dropped.
@@ -394,17 +545,38 @@ def _install_fake_openai(monkeypatch, fake_resp):
             self.completions = self
         def create(self, **__):
             return fake_resp
+        def post(self, *_, **__):
+            # The ollama backend talks to Ollama's native /api/chat (#4413).
+            return _native_ollama_reply(fake_resp)
 
     fake_module = types.ModuleType("openai")
     fake_module.OpenAI = _FakeOpenAI
+    fake_module.APIStatusError = _FakeAPIStatusError
     monkeypatch.setitem(sys.modules, "openai", fake_module)
 
 
-def test_call_openai_compat_relabels_empty_content_as_length(monkeypatch):
+class _FakeAPIStatusError(Exception):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _native_ollama_reply(fake_resp):
+    """Re-shape a fake ChatCompletion as Ollama's /api/chat reply."""
+    choice = fake_resp.choices[0]
+    return {
+        "message": {"role": "assistant", "content": choice.message.content},
+        "done_reason": choice.finish_reason,
+        "prompt_eval_count": fake_resp.usage.prompt_tokens,
+        "eval_count": fake_resp.usage.completion_tokens,
+    }
+
+
+def test_call_openai_compat_labels_empty_content_hollow(monkeypatch):
     # Simulates an overwhelmed Ollama: HTTP 200, empty content, finish_reason
-    # "stop", zero completion tokens. Pre-fix this would silently return an
-    # empty fragment and the chunk would be dropped. Post-fix `finish_reason`
-    # is rewritten to "length" so the adaptive retry layer bisects.
+    # "stop", zero completion tokens. The chunk must not be dropped silently,
+    # but it must not be labelled "length" either: bisecting a hollow response
+    # cannot converge and costs 2**max_retry_depth billed calls (#2880).
     fake_resp = _fake_openai_response("", finish_reason="stop", completion_tokens=0)
     _install_fake_openai(monkeypatch, fake_resp)
 
@@ -412,13 +584,13 @@ def test_call_openai_compat_relabels_empty_content_as_length(monkeypatch):
         "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
         "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
-    assert result["finish_reason"] == "length", (
-        "empty content from a 'successful' call must be re-labelled so the "
-        "adaptive retry layer treats it as a truncation and bisects the chunk"
+    assert result["finish_reason"] == "hollow", (
+        "empty content from a 'successful' call must be labelled hollow so the "
+        "adaptive retry layer retries the same chunk instead of bisecting it"
     )
 
 
-def test_call_openai_compat_relabels_none_content_as_length(monkeypatch):
+def test_call_openai_compat_labels_none_content_hollow(monkeypatch):
     fake_resp = _fake_openai_response(None, finish_reason="stop")
     _install_fake_openai(monkeypatch, fake_resp)
 
@@ -426,19 +598,32 @@ def test_call_openai_compat_relabels_none_content_as_length(monkeypatch):
         "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
-    assert result["finish_reason"] == "length"
+    assert result["finish_reason"] == "hollow"
 
 
-def test_call_openai_compat_relabels_unparseable_json_as_length(monkeypatch):
+def test_call_openai_compat_labels_unparseable_json_hollow(monkeypatch):
     # A half-generated response: `{"nodes": [{"id":` parses to {} (empty
     # fragment) via _parse_llm_json's JSONDecodeError fallback. That is also
-    # hollow and must trigger bisection.
+    # hollow.
     fake_resp = _fake_openai_response('{"nodes": [{"id":', finish_reason="stop", completion_tokens=20)
     _install_fake_openai(monkeypatch, fake_resp)
 
     result = llm._call_openai_compat(
         "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
+    )
+    assert result["finish_reason"] == "hollow"
+
+
+def test_call_openai_compat_keeps_real_truncation_as_length(monkeypatch):
+    # A genuine truncation stays "length" — that one IS a size problem and the
+    # bisection path is the right recovery.
+    fake_resp = _fake_openai_response('{"nodes": [{"id":', finish_reason="length", completion_tokens=8192)
+    _install_fake_openai(monkeypatch, fake_resp)
+
+    result = llm._call_openai_compat(
+        "http://localhost:11434/v1", "k", "m",
+        "u", temperature=0, max_completion_tokens=8192, backend="kimi",
     )
     assert result["finish_reason"] == "length"
 
@@ -486,10 +671,195 @@ def _install_capturing_openai(monkeypatch):
                 completion_tokens=100,
             )
 
+        def post(self, path, *, body, **__):
+            # Ollama's native /api/chat request (#4413), kept apart from the
+            # /v1 kwargs so tests can tell which endpoint was used.
+            captured["native_url"] = path
+            captured["native"] = body
+            return _native_ollama_reply(_fake_openai_response(
+                '{"nodes":[{"id":"x"}],"edges":[],"hyperedges":[]}',
+                finish_reason="stop",
+                completion_tokens=100,
+            ))
+
     fake_module = types.ModuleType("openai")
     fake_module.OpenAI = _FakeOpenAI
+    fake_module.APIStatusError = _FakeAPIStatusError
     monkeypatch.setitem(sys.modules, "openai", fake_module)
     return captured
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("0", 0),
+        ("  00042  ", 42),
+        ("9223372036854775807", 9223372036854775807),
+    ],
+)
+def test_resolve_ollama_seed(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    assert llm._resolve_ollama_seed() == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "-1",
+        "+1",
+        "1.0",
+        "1e3",
+        "0x10",
+        "1 2",
+        "١",
+        "9223372036854775808",
+    ],
+)
+def test_invalid_ollama_seed_fails_before_client_construction(monkeypatch, raw):
+    import sys
+    import types
+
+    constructor_calls = []
+
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            constructor_calls.append((args, kwargs))
+
+    fake_module = types.ModuleType("openai")
+    setattr(fake_module, "OpenAI", _FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    with pytest.raises(
+        ValueError,
+        match=r"GRAPHIFY_OLLAMA_SEED.*0\.\.9223372036854775807",
+    ):
+        llm._call_openai_compat(
+            "http://localhost:11434/v1",
+            "ollama",
+            "qwen2.5-coder:7b",
+            "user msg",
+            backend="ollama",
+        )
+
+    assert constructor_calls == []
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("0", 0),
+        ("  00042  ", 42),
+        ("9223372036854775807", 9223372036854775807),
+    ],
+)
+def test_ollama_seed_is_top_level_and_preserves_extra_body(monkeypatch, raw, expected):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_NUM_CTX", "65536")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+    native = captured["native"]
+    assert native["options"]["seed"] == expected
+    assert native["options"]["num_ctx"] == 65536
+    assert native["keep_alive"] == "30m"
+    assert native["think"] is False
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_ollama_seed_disabled_omits_request_key(monkeypatch, raw):
+    captured = _install_capturing_openai(monkeypatch)
+    if raw is not None:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+    assert "seed" not in captured["native"]["options"]
+
+
+def test_call_llm_ollama_forwards_seed(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "ollama")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "7")
+
+    llm._call_llm("label this", backend="ollama")
+
+    assert captured["native"]["options"]["seed"] == 7
+
+
+def test_call_llm_invalid_ollama_seed_fails_before_api_key_lookup(monkeypatch):
+    api_key_calls = []
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "-1")
+    monkeypatch.setattr(
+        llm,
+        "_get_backend_api_key",
+        lambda backend: api_key_calls.append(backend),
+    )
+
+    with pytest.raises(ValueError, match="GRAPHIFY_OLLAMA_SEED"):
+        llm._call_llm("label this", backend="ollama")
+
+    assert api_key_calls == []
+
+
+def test_non_ollama_backend_ignores_invalid_ollama_seed(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "invalid")
+
+    llm._call_openai_compat(
+        "https://api.openai.com/v1",
+        "sk-test",
+        "gpt-4.1-mini",
+        "user msg",
+        backend="openai",
+    )
+
+    assert "seed" not in captured
+
+
+def test_custom_ollama_url_provider_ignores_seed_and_preserves_extra_body(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "invalid")
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "custom-key")
+    monkeypatch.setitem(
+        llm.BACKENDS,
+        "local-custom",
+        {
+            "base_url": "http://localhost:11434/v1",
+            "default_model": "custom-model",
+            "env_key": "CUSTOM_API_KEY",
+            "pricing": {"input": 0.0, "output": 0.0},
+            "temperature": 0,
+            "extra_body": {"options": {"num_ctx": 4096}},
+        },
+    )
+
+    llm._call_llm("label this", backend="local-custom")
+
+    assert "seed" not in captured
+    assert captured["extra_body"] == {"options": {"num_ctx": 4096}}
 
 
 def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
@@ -502,12 +872,12 @@ def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
         "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
-    assert "extra_body" in captured, "extra_body must be sent to Ollama"
-    eb = captured["extra_body"]
+    assert "native" in captured, "options must be sent to Ollama's /api/chat"
+    native = captured["native"]
     # num_ctx is now dynamic: derived from message size, not hardcoded 131072
-    assert "num_ctx" in eb.get("options", {}), "num_ctx must be present"
-    assert eb["options"]["num_ctx"] >= 8192, "num_ctx must be at least the floor value"
-    assert eb.get("keep_alive") == "30m", "default keep_alive must be 30m"
+    assert "num_ctx" in native["options"], "num_ctx must be present"
+    assert native["options"]["num_ctx"] >= 8192, "num_ctx must be at least the floor value"
+    assert native.get("keep_alive") == "30m", "default keep_alive must be 30m"
 
 
 def test_ollama_num_ctx_scales_with_small_token_budget(monkeypatch):
@@ -526,7 +896,7 @@ def test_ollama_num_ctx_scales_with_small_token_budget(monkeypatch):
         small_chunk_msg, temperature=0, max_completion_tokens=16384, backend="ollama",
     )
 
-    num_ctx = captured["extra_body"]["options"]["num_ctx"]
+    num_ctx = captured["native"]["options"]["num_ctx"]
     # Should be far less than 131072 for an 8k input — VRAM-friendly
     assert num_ctx < 131072, (
         f"num_ctx={num_ctx} is too large for a small chunk; "
@@ -546,7 +916,7 @@ def test_ollama_num_ctx_env_override(monkeypatch):
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
-    assert captured["extra_body"]["options"]["num_ctx"] == 65536
+    assert captured["native"]["options"]["num_ctx"] == 65536
 
 
 def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
@@ -653,6 +1023,25 @@ def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
+def test_ollama_thinking_disabled_via_env_survives_num_ctx(monkeypatch):
+    # The ollama num_ctx/keep_alive defaults must be merged into extra_body, not
+    # assigned over it, or the env toggle is silently dropped on ollama (#3988).
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_NUM_CTX", "65536")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "u", temperature=0, max_completion_tokens=8192, backend="ollama",
+    )
+
+    native = captured["native"]
+    assert native["think"] is False
+    assert native["options"]["num_ctx"] == 65536
+    assert native["keep_alive"] == "30m"
+
+
 def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeypatch):
     # An explicit extra_body means "I own this request shape" — Ollama's
     # num_ctx auto-derive (a default) must step aside or we'd clobber it.
@@ -723,12 +1112,10 @@ def test_extract_corpus_parallel_ollama_parallel_env_restores_concurrency(tmp_pa
     mock_pool.assert_called()
 
 
-def test_adaptive_retry_bisects_on_hollow_ollama_response(tmp_path):
-    # End-to-end: an overwhelmed Ollama returns hollow on the full 4-file
-    # chunk; halves succeed. The bug being fixed is that pre-fix this
-    # produces zero nodes (chunk silently dropped). Post-fix the hollow
-    # response is relabelled `finish_reason="length"` and the existing
-    # bisection path recovers the full 4 nodes.
+def test_adaptive_retry_bisects_on_truncated_response(tmp_path):
+    # End-to-end: the full 4-file chunk truncates at max_completion_tokens;
+    # halves fit. A truncation IS a size problem, so bisection is the right
+    # recovery and must keep working (contrast: hollow, below).
     files = [tmp_path / f"f{i}.md" for i in range(4)]
     for f in files:
         f.write_text("hello")
@@ -738,8 +1125,7 @@ def test_adaptive_retry_bisects_on_hollow_ollama_response(tmp_path):
     def fake_extract(chunk, *_, **__):
         calls["n"] += 1
         if len(chunk) == 4:
-            # Hollow response: looks successful, finish_reason already
-            # rewritten to "length" by _call_openai_compat.
+            # Truncated: the model ran out of output budget mid-JSON.
             return {
                 "nodes": [], "edges": [], "hyperedges": [],
                 "input_tokens": 100, "output_tokens": 0,
@@ -962,6 +1348,52 @@ def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
     assert shared in llm._EXTRACTION_SYSTEM, "native prompt drifted from the skill hyperedge wording"
 
 
+def test_native_extraction_prompt_requests_rationale():
+    """Verify that _EXTRACTION_SYSTEM requests rationale and includes it in the schema."""
+    for deep in (False, True):
+        prompt = llm._extraction_system(deep=deep)
+        assert "rationale" in prompt.lower()
+        # Assert distinctive phrases from the instruction
+        assert "store as a `rationale` attribute on the relevant node" in prompt
+        assert "Do NOT create separate rationale nodes" in prompt
+        assert "If the source does not explicitly provide a reason, omit this attribute" in prompt
+        # Verify the node schema example includes rationale: null
+        assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
+
+
+def test_native_extraction_prompt_pins_source_file_to_the_dispatched_file():
+    """The native-backend prompt must say what source_file means. Without it the
+    model attributes a document's entities to the files the document cites or
+    links, and the out-of-scope filter (#1895) drops them on incremental runs
+    (#2297, #3377), or a doc-described API lands on the code file (#2270), or a
+    path reconstructed from a mention reaches the graph (#2217).
+    """
+    for deep in (False, True):
+        # Collapse whitespace so reflowing the prompt doesn't break the asserts.
+        prompt = " ".join(llm._extraction_system(deep=deep).split())
+        assert "the `path` attribute of its enclosing <untrusted_source> block" in prompt, deep
+        assert "is a reference, not the source" in prompt, deep
+        assert "never use its path as source_file" in prompt, deep
+        assert "never omit source_file" in prompt, deep
+
+
+def test_native_extraction_prompt_shares_skill_spec_source_file_rule_heading():
+    """Both extraction paths open their source_file rule with the same heading.
+    Only the heading is pinned: the rule bodies differ (the skill's covers
+    copying the FILE_LIST path verbatim, the native one adds the reference
+    clause), so this catches either side dropping or renaming the rule, not
+    drift in its wording."""
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    native = llm._EXTRACTION_SYSTEM
+    spec, native = (" ".join(text.split()) for text in (spec, native))
+    shared = "source_file RULE (every node, edge, and hyperedge)"
+    assert shared in spec, "skill extraction-spec changed its source_file rule heading"
+    assert shared in native, "native prompt lacks the skill's source_file rule heading"
+
+
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
 # BACKENDS reads the env at import time, so each case runs in a fresh interpreter
 # (subprocess) to avoid reload contamination of the test session.
@@ -1162,3 +1594,226 @@ def test_call_llm_openai_compat_client_built_with_timeout_and_retries(monkeypatc
     llm._call_llm("hi", backend="kimi")
     assert ctor_kwargs.get("timeout") == 1.0, ctor_kwargs
     assert ctor_kwargs.get("max_retries", 0) >= 5, ctor_kwargs
+
+
+def test_adaptive_retry_does_not_bisect_a_hollow_response(tmp_path, monkeypatch):
+    """#2880: a hollow response is retried as-is, never bisected.
+
+    Bisecting cannot converge — both halves go to the same misbehaving backend
+    — so it burned up to 2**max_depth billed calls per chunk. The retry must be
+    on the SAME chunk, and the sub-call count must stay bounded.
+    """
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    seen: list[int] = []
+
+    def fake_extract(chunk, *_, **__):
+        seen.append(len(chunk))
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    # Every call saw the whole chunk: no halving happened.
+    assert seen == [4, 4, 4], f"hollow must not bisect, got chunk sizes {seen}"
+    # ...and the files are marked for re-extraction rather than cached as done.
+    assert sorted(Path(p).name for p in result["_partial_files"]) == [
+        "f0.md", "f1.md", "f2.md", "f3.md",
+    ]
+    assert result["finish_reason"] == "stop"
+
+
+def test_adaptive_retry_recovers_a_transient_hollow_response(tmp_path, monkeypatch):
+    """A hollow response that clears on retry costs 2 calls, not 15."""
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "nodes": [], "edges": [], "hyperedges": [],
+                "input_tokens": 100, "output_tokens": 0,
+                "model": "m", "finish_reason": "hollow",
+            }
+        return _ok(nodes=[{"id": f.stem} for f in chunk])
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    assert calls["n"] == 2
+    assert len(result["nodes"]) == 4
+    assert not result.get("_partial_files")
+
+
+def test_max_retry_depth_zero_disables_hollow_retries_too(tmp_path, monkeypatch):
+    """#2880 review catch: `0` means no retries of ANY kind.
+
+    Bounding only the bisection depth still let a misbehaving backend triple
+    the call count of a run whose operator had explicitly asked for no retries,
+    which is the opposite of what the knob is set for.
+    """
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=0,
+        )
+
+    assert calls["n"] == 1, "max_depth=0 must cost exactly one call per chunk"
+    # The chunk still fails loudly and its files are still re-dispatched next run.
+    assert sorted(Path(p).name for p in result["_partial_files"]) == [
+        "f0.md", "f1.md", "f2.md", "f3.md",
+    ]
+    assert result["finish_reason"] == "stop"
+
+
+def test_hollow_retries_still_run_at_the_default_depth(tmp_path, monkeypatch):
+    """Guard the other side: the cap must not silently disable the retry path."""
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    assert calls["n"] == 3
+
+
+def test_max_retry_depth_reads_the_env_var(monkeypatch):
+    """#2880: max_retry_depth was a Python-API kwarg only, so a `graphify
+    extract` operator had no way to lower it as a mitigation."""
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRY_DEPTH", raising=False)
+    assert llm._resolve_max_retry_depth() == 3
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "0")
+    assert llm._resolve_max_retry_depth() == 0
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "1")
+    assert llm._resolve_max_retry_depth() == 1
+    # garbage and negatives fall back to the default
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "banana")
+    assert llm._resolve_max_retry_depth() == 3
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "-2")
+    assert llm._resolve_max_retry_depth() == 3
+
+
+import shutil  # patched by the claude-cli detection tests below
+
+
+def _clear_every_backend_signal(monkeypatch):
+    """Empty the environment of every signal detect_backend() looks at."""
+    _clear_backend_env(monkeypatch)
+    for env_key in (
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_HOST",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
+
+def test_labelling_falls_back_to_the_claude_cli_instead_of_placeholders(monkeypatch):
+    """The one backend with no API key must not cost you your community names.
+
+    `detect_backend` is key-based, so claude-cli can never be found there. On a
+    machine with the Claude Code CLI and no key, labelling therefore announced "no
+    LLM backend configured", replaced every real name with a `Community N`
+    placeholder, and exited 0 — overwriting a good graph with a worse one while
+    reporting success.
+
+    Detection itself is deliberately NOT widened: extraction refuses to run without
+    a configured backend and points at --code-only, and that contract stays.
+    """
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+    seen = {}
+
+    def _fake_label(G, communities, *, backend, **kwargs):
+        seen["backend"] = backend
+        return {int(c): f"Named {c}" for c in communities}
+
+    monkeypatch.setattr(llm, "label_communities", _fake_label)
+
+    labels, source = llm.generate_community_labels(None, [0, 1], quiet=True)
+
+    assert seen["backend"] == "claude-cli"
+    assert source == "llm"
+    assert labels == {0: "Named 0", 1: "Named 1"}
+
+
+def test_labelling_still_placeholders_when_no_cli_and_no_key(monkeypatch):
+    """Without a key AND without the CLI there is genuinely nothing to call."""
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    labels, source = llm.generate_community_labels(None, [0, 1], quiet=True)
+
+    assert source == "placeholder"
+    assert labels == {0: "Community 0", 1: "Community 1"}
+
+
+def test_detection_is_not_widened_by_the_labelling_fallback(monkeypatch):
+    """Extraction's contract must be untouched: no key still means no backend.
+
+    Widening `detect_backend` itself would make `graphify extract` start shelling
+    out to the CLI on any machine that happens to have it, instead of erroring and
+    pointing at --code-only.
+    """
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+
+    assert llm.detect_backend() is None
+
+
+def test_claude_cli_never_shadows_a_configured_api_key(monkeypatch):
+    """An incidental CLI on PATH must not outrank a key the user configured."""
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+
+    assert llm.detect_backend() == "gemini"
