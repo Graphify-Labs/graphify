@@ -156,3 +156,13 @@ def test_undirected_graph_json_keeps_dependency_direction(monkeypatch, capsys, t
     with pytest.raises(SystemExit) as exc:
         mainmod.main()
     assert exc.value.code == 0  # view -> repo is not repo -> view
+
+
+def test_in_memory_undirected_graph_uses_true_edge_direction():
+    G = nx.Graph()  # build()'s default; edge order follows node insertion, not direction
+    G.add_node("repo", source_file="src/db/repo.py")  # inserted first, so stored as (repo, view)
+    G.add_node("view", source_file="src/ui/view.py")
+    G.add_edge("view", "repo", relation="calls", confidence="EXTRACTED", _src="view", _tgt="repo")
+    assert list(G.edges()) == [("repo", "view")]
+    assert len(check_rules(G, {"forbid": [{"from": "src/ui/*", "to": "src/db/*"}]})) == 1
+    assert check_rules(G, {"forbid": [{"from": "src/db/*", "to": "src/ui/*"}]}) == []  # not reversed

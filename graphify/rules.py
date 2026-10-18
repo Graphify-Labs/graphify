@@ -85,6 +85,9 @@ def check_rules(G: nx.Graph, rules: dict) -> list[dict]:
     for rule in rules.get("forbid", []):
         rels = set(rule.get("relations", DEFAULT_FORBID_RELATIONS))
         for u, v, data in G.edges(data=True):
+            # An undirected graph stores each edge in arbitrary order; _src/_tgt keep the
+            # true direction (same idiom as export.py), so ui -> db is not missed or reversed.
+            u, v = data.get("_src", u), data.get("_tgt", v)
             if data.get("relation") not in rels or data.get("confidence", "EXTRACTED") not in allowed:
                 continue
             if G.nodes[u].get("file_type", "code") != "code" or G.nodes[v].get("file_type", "code") != "code":
