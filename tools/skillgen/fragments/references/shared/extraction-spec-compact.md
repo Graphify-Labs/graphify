@@ -9,6 +9,8 @@ Output ONLY valid JSON matching the schema below - no explanation, no markdown f
 Files (chunk CHUNK_NUM of TOTAL_CHUNKS):
 FILE_LIST
 
+Read every file to its last line before extracting from it: a file-reading tool can return only the first part of a long file without saying so, so check each file's length and page through it until you reach the end. If you cannot read a file to the end, emit nothing for it — a partial extraction replaces the file's existing nodes and is recorded as done, while a file left out is re-queued on the next run. Write the JSON compact (no indentation).
+
 Rules:
 - EXTRACTED: relationship explicit in source (import, call, citation)
 - INFERRED: reasonable inference (shared structure, implied dependency)

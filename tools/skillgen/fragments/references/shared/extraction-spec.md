@@ -9,6 +9,10 @@ Output ONLY valid JSON matching the schema below - no explanation, no markdown f
 Files (chunk CHUNK_NUM of TOTAL_CHUNKS):
 FILE_LIST
 
+Read every file to its last line before extracting from it. The Read tool returns at most 2000 lines per call and does not say when it stopped early, so check each file's length and page through it with offset/limit until you reach the end. Give every file in the list the same care; a file near the end of the list is not less important. If you cannot read a file to the end, emit nothing for it: its existing graph nodes are replaced by whatever you emit and the run records the file as done, so a partial extraction deletes the unread part for good, while a file you leave out is re-queued on the next run.
+
+Write the JSON compact (no indentation or line breaks inside it) so the output limit is spent on content, not whitespace.
+
 Rules:
 - EXTRACTED: relationship explicit in source (import, call, citation, "see §3.2")
 - INFERRED: reasonable inference (shared data structure, implied dependency)

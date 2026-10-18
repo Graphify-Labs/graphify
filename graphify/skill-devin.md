@@ -246,7 +246,7 @@ Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'
 
 Before dispatching subagents, print a timing estimate:
 - Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25)
+- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (at most 20-25 files per chunk; Step B1's line budget can add more)
 - Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
 - Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
 
@@ -285,7 +285,7 @@ Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt
 
 **Step B1 - Split into chunks**
 
-Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
+Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks bounded by BOTH limits: at most 20-25 files AND at most ~6000 total lines per chunk (~3000 with `--mode deep`; count lines with `wc -l`). Any text file over 2000 lines gets a chunk of its own. A chunk sized by file count alone mixes dense documents with short ones: the subagent skims the dense ones and stops reading them early (#2225), or its single JSON write overruns the output-token limit and the chunk file is never written (#1758). Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
 
 **Step B2 - Dispatch subagents**
 
@@ -304,6 +304,8 @@ For each chunk, dispatch a subagent with this exact prompt (fill in FILE_LIST):
 ```
 You are a graphify extraction subagent. Read the files listed and extract a knowledge graph fragment.
 Output ONLY valid JSON with no commentary: {"nodes": [...], "edges": [...], "hyperedges": [...], "input_tokens": 0, "output_tokens": 0}
+
+Read every file to its last line before extracting from it: a read can return only the first part of a long file without saying so, so check each file's length and page through it until you reach the end. If you cannot read a file to the end, emit nothing for it — a partial extraction replaces the file's existing nodes and is recorded as done, while a file left out is re-queued on the next run. Write the JSON compact (no indentation).
 
 Extraction rules:
 - EXTRACTED: relationship explicit in source (import, call, citation)
@@ -349,7 +351,7 @@ FILE_LIST
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_N.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, there are two causes. If the subagent's result reports exceeding the output token maximum, or it says it finished reading and was about to write, the chunk was too large (#1758): split that chunk's files into thirds, dispatch each third as a new chunk, and keep splitting any part that fails the same way (never resend a chunk unchanged). Otherwise the subagent was likely dispatched as read-only — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
 If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
