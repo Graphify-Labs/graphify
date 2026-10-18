@@ -826,3 +826,30 @@ The [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integr
 binds D26/D27 source, native and installed evidence to the tested revision.
 Static source proof does not establish physical UI/device interaction, runtime
 Qt effects or upstream released-package delivery.
+
+## D28 — Bounded syntax recovery keeps semantic and publication authority
+
+Status: **Accepted for INC-QML-53; focused local verification, broader proof pending**.
+A grammar misclassification of valid empty template-parameter defaults is repaired
+through an AST-validated byte-preserving view. The compatibility adapter may
+remove only the candidate default; the recovered declaration's named parameter
+ownership must be independently established before canonical/native extraction.
+Expression/storage contexts, callback ambiguity and malformed input cannot
+borrow that proof. Source bytes and public extractor interfaces stay unchanged.
+
+The literal CMake reader similarly extends its admitted subset through focused
+property/source/resource helpers, retaining original source order and ownership.
+Implementation source additions join a unique preceding local module; explicit
+header-only tooling stays outside runtime membership. Literal resource aliases
+replace physical resource spelling rather than adding a fabricated runtime URL.
+Unsupported or ambiguous mutations keep the closed coverage guard. Native RC-only
+metadata can be excluded from this analysis only when it demonstrably cannot
+change QML/C++ membership or resource identity.
+
+This is source analysis, not general C++ recovery, CMake evaluation or a Qt runtime
+model. It introduces no dependency, SDK execution, second corpus interpretation,
+diagnostic catalogue identity or persistence writer. Qt policy 23 forces the
+existing derived-product refresh; combined AST schema 13 and semantic-cache
+ownership remain unchanged. Historical policy-22 source/installed/hosted proof
+does not validate this repair; new evidence belongs to the INC-QML-53 traceability
+profile and its explicit pending boundaries.

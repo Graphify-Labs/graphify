@@ -26,6 +26,12 @@ uses AST cache schema 13 and Qt policy 22; its
 [revision-bound hosted proof](../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
 records current source, native and isolated-install profiles.
 
+INC-QML-53 repairs additional bounded C++ parameter and literal CMake forms under
+the existing criteria. Current repair source uses Qt policy 23 and AST schema 13;
+its focused local evidence and pending full/artifact/adoption verification are
+recorded [separately](../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
+The earlier policy-22 hosted checkpoint does not verify this changed source.
+
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
 not Verified across the full declared platform matrix. The earlier adoption
@@ -225,13 +231,23 @@ Supported literal CMake, qmake, `qmldir`, `.qmltypes`, and `.qrc` declarations d
 
 **Acceptance Criteria**
 
-1 - Qt 6 CMake and qmake fixtures yield the expected literal module URI/version, sources, imports and resources; macro-based C++ exposure gets its module context from this evidence. (`REQ-QML-009-AC01`)
+1 - Qt 6 CMake and qmake fixtures yield the expected literal module URI/version, sources, imports and resources; macro-based C++ exposure gets its module context from this evidence. A flat literal private C/C++ source addition may join exactly one preceding source-local QML module target. Explicit header-only tooling inputs retain separate facts and cannot establish runtime module membership or a native provider. (`REQ-QML-009-AC01`)
 
 2 - Supported `qmldir` and `.qmltypes` fixtures retain exports, flags, members and provenance; conflicting source/generated declarations retain both origins and a conflict diagnostic. (`REQ-QML-009-AC02`)
 
-3 - `.qrc` prefixes/aliases resolve supported resource URLs to accepted source files; traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
+3 - `.qrc` and supported literal target-form CMake resource prefixes/aliases resolve resource URLs to accepted source files. A source-property alias replaces the physical resource spelling rather than creating a second runtime URL; malformed or conflicting evidence cannot restore that fallback. Traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
 
 4 - CMake/qmake conditions or expressions outside the literal subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
+
+Status: **Implemented for the bounded profile; INC-QML-53 focused local verification**.
+The extension admits source properties before metadata use and explicit
+`qt_add_resources`/`qt6_add_resources` target/name/PREFIX/FILES mappings. Bare QML
+`target_sources`, unknown/duplicate/not-yet-declared module targets, public or
+interface additions, computed inputs, relevant conditions, late property changes,
+generated inputs and unsupported resource options remain excluded. A literal
+native `.rc` addition and its `INCLUDE_DIRECTORIES` property may be ignored only
+because they cannot change analyzed QML/C++ membership or QRC URL identity.
+Existing metadata bounds and publication guards remain mandatory.
 
 <a name="qml-010--deterministic-graph-and-provenance"></a>
 
@@ -688,3 +704,23 @@ so oversized bytes reach and fail the intended metadata-size boundary. The
 scope-limit and size-limit rejection assertions remain unchanged. All 35 metadata
 boundary cases pass on native Python 3.10/3.12/3.13/3.14 after the correction;
 exact corrected hosted evidence is recorded in the integrated checkpoint above.
+
+## Bounded parser repair profile — INC-QML-53
+
+Valid empty template-parameter defaults must retain their function and neighboring
+native-member declarations with original byte spans. Removing a candidate default
+in a same-length parse view is accepted only when the reparsed AST proves a named
+template parameter of a function declaration/definition. Ordinary initializers,
+calls, macro text, nested callback ambiguity and malformed defaults cannot borrow
+that authority. This refines REQ-QML-001-AC04, REQ-QML-008-AC02/AC04 and
+REQ-QML-018-AC02; it does not promise general C++ grammar recovery.
+
+The literal metadata additions above refine REQ-QML-009-AC01/AC03/AC04 and the
+existing provenance, membership and incremental criteria. Qt policy 23 requires
+refresh at unchanged package/source identity; AST schema 13 and semantic-cache
+ownership are unchanged. Unsupported input still reaches the normal incomplete
+metadata/native syntax diagnostics and cannot replace accepted products, including
+under force. Focused source tests and before-fix regressions pass where assigned
+in traceability; complete source, artifact/install and application-corpus evidence
+remain pending for this repair. No new requirement or acceptance identifier is
+allocated; REQ-QML-022 remains unallocated.

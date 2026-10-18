@@ -22,7 +22,9 @@ cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
 INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
 the recorded local source/artifact profiles. Current integrated analysis uses
-policy 22 and AST schema 13. Expanded REQ-QML-020 alias contracts retain their separately
+policy 23 and AST schema 13 for the INC-QML-53 repair. Broader repair verification
+is pending; policy-22 integration evidence remains revision-bound. Expanded
+REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
 
 ## Ownership and dependency direction
@@ -1352,3 +1354,43 @@ native admission failures retain SOURCE_INPUT_IDENTITY_FAILED through typed
 QML/metadata results with safe context and retry guidance, rather than becoming
 QML_ROOT or a successful empty result. No native backend body or target authority
 is copied into public facts.
+
+## Bounded C++ and CMake admission — INC-QML-53
+
+`qt_cpp_compat` proposes a same-length parse view for an empty template-parameter
+default only after lexical masking excludes comments, strings and directives.
+The reparsed AST must prove a named template parameter owned by an actual
+function declaration or definition. Rejected candidate spans are restored.
+Original source bytes, CR/LF positions, canonical callable IDs and native-member
+provenance remain the authority; a clean parse without a declaration is not
+success. Ordinary calls/initializers, nested callback defaults and malformed
+syntax do not acquire declarations. Unnamed template defaults and bare user-type
+callback ambiguity remain outside this recovery profile.
+
+`qml_cmake` retains source-local command order. `qml_cmake_properties` records
+literal source properties and attaches flat private C/C++ additions to a unique
+preceding QML module. Header-only inputs use `qt_tooling_source`, distinct from
+runtime `qt_source` membership; IDE descriptors and generator scripts cannot
+become provider evidence. `QT_QML_SINGLETON_TYPE` is preserved as source metadata,
+not a claim that a runtime singleton instance exists.
+
+`qml_cmake_resources` projects only the explicit target/name/PREFIX/FILES form
+to the existing `resource_alias` contract. It applies the literal alias in effect
+at that declaration and never executes the build or admits another file. The
+project index uses a source `resource_alias` override instead of its physical
+resource spelling, including defensive rejection of malformed transported
+overrides. Ordinary corpus membership, duplicate-alias ambiguity and source/root
+boundaries remain authoritative for the endpoint.
+
+Dynamic/relevant conditional mutations, unsupported flags, duplicate/unknown or
+not-yet-declared module targets and late property changes produce incomplete
+metadata. Native `.rc` target sources and RC-only include-directory properties
+are ignored only after their literal filenames/property names prove that they
+cannot affect this analyzed membership/resource contract. A property expansion
+in any supported runtime metadata remains unsupported.
+
+Policy 23 invalidates prior derived analysis at unchanged input/package identity;
+schema 13, semantic caches and the existing transactional publication owner are
+unchanged. [Traceability](../../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53)
+records focused old/new tests, alias replacement and real metadata-only
+retarget/removal parity; broader artifact/install/adoption proof is separate.

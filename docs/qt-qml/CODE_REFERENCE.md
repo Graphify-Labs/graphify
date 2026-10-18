@@ -637,3 +637,25 @@ when reporting a smaller pre-read size, so its existing rejection assertions
 exercise the read boundary rather than unsupported native identity. Exact
 before/after and hosted outcomes belong to the
 [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2).
+
+## Bounded parser repair seams — INC-QML-53
+
+`extractors/qt_cpp_compat.py` owns same-length empty-default recovery and the
+reparsed named template-parameter/declaration proof. `qt_cpp_syntax` retains final
+syntax admission and original source bytes; mapping and native producers retain
+canonical identity/span ownership. The focused template-default regression module
+exercises all three boundaries, not merely parser error flags.
+
+`extractors/qml_cmake.py` owns module declarations and ordered command dispatch.
+`qml_cmake_properties.py` owns source properties, private target-source additions,
+the literal RC-only irrelevance proof and separate `qt_tooling_source` facts.
+`qml_cmake_resources.py` owns explicit PREFIX/FILES target-form resource aliases.
+They reuse `ProjectFacts` bounds/original-byte spans and existing resource-path
+validation. The project index applies `qt_source.resource_alias` to its explicit
+module-prefix fallback; malformed overrides cannot reactivate physical spelling.
+
+`qt_incremental` owns policy 23 invalidation; schema 13, semantic-cache and
+publication modules retain their existing responsibilities. New focused metadata
+tests cover provenance, tooling separation, accepted/rejected mutations and
+actual cold/warm/incremental producer output. Exact executed and pending profiles
+are recorded in [traceability](../../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).

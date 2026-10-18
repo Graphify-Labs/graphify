@@ -2810,8 +2810,8 @@ boundary cases with zero failures or skips after the actual native 3.14 failure
 is retained. Original scope/read-size assertions remain unchanged; actual
 non-size stat and same-file witnesses prove native admission reaches that boundary.
 The changed fixture is 99 lines, below the 300-line ceiling. No runtime or
-dependency change is required. Review subsequent failures; INC-QML-53 remains
-unallocated.
+dependency change is required. At that recorded checkpoint INC-QML-53 remained
+unallocated; the subsequent bounded repair is specified below.
 
 ### Integrated exit review — INC-QML-49–52 / INC-CORE-10
 
@@ -2826,8 +2826,45 @@ required disposable-service cleanup are verified.
 
 The failed dbc4859 checkpoint remains visible. Corrections preserve source
 authority, retention, original assertions and all declared lane assignments.
-The plan review finds no additional reproduced integration defect; INC-QML-53
-and REQ-QML-022 remain unallocated. Baseline full typing, advisory security,
+That checkpoint's plan review found no additional reproduced integration defect;
+INC-QML-53 was then unallocated. The subsequent repair below allocates that
+increment; REQ-QML-022 remains unallocated. Baseline full typing, advisory security,
 physical browser/device/application procedures and upstream publication remain
 separate gaps. This evidence completion changes documentation only; its later
 head receives normal PR validation and does not inherit a fictitious tested SHA.
+
+## INC-QML-53 — Bounded parser recovery and literal CMake additions
+
+Status: **Implemented; focused local source verification, broader validation pending**.
+Dependencies: INC-QML-49–52 combined source/identity/publication boundaries.
+Owners: C++ compatibility maintainer; literal CMake maintainer; integration owner
+for policy, installed package and guarded application refresh. This correction
+uses existing requirement IDs and public synthetic fixtures only.
+
+| Acceptance IDs | Scenario and required observable result |
+| --- | --- |
+| REQ-QML-001-AC04; REQ-QML-008-AC02/AC04; REQ-QML-018-AC02 | Empty template defaults retain exact callable/native-member identity and byte/newline spans; AST-validated declaration ownership rejects expression/storage/callback ambiguity and malformed neighboring syntax |
+| REQ-QML-009-AC01/AC04; REQ-QML-020-AC01/AC02 | Flat private literal C/C++ additions attach to one preceding local module; header-only tooling remains separately source-owned; native RC-only inputs cannot become QML providers |
+| REQ-QML-009-AC03; REQ-QML-010-AC02/AC04 | Source-property aliases and literal target-form PREFIX/FILES resources retain original provenance and bounded paths; alias overrides replace physical resource URLs; malformed/conflicting targets remain unresolved |
+| REQ-QML-010-AC01/AC03; REQ-QML-011-AC01–AC04 | Source cold/warm identities and metadata-only retarget/removal equal a clean accepted-corpus rebuild; policy 23 refreshes prior policy-22 products at unchanged package/source identity |
+| REQ-QML-012-AC01/AC02/AC04; REQ-QML-018-AC06 | Dynamic/scoped/late or malformed mutations retain explicit diagnostics and the prior published graph/manifest/report; force does not bypass the incomplete-extraction guard |
+
+Boundaries: no CMake execution, arbitrary variable expansion, unknown module-target
+guess, bare QML target-source registration, generated runtime admission or Qt SDK
+execution. Source properties must precede metadata use. Resource support is the
+literal target/name/PREFIX/FILES form; BASE, inferred prefixes, output-variable
+forms and extra options remain unsupported. The only scoped exemption is
+provably irrelevant native `.rc` membership/RC include directories. Existing
+metadata size/token/fact/depth limits remain in force.
+
+Compatibility: Qt policy 23 changes analysis invalidation only; schema 13,
+packaging dependencies, semantic cache lifetime and persistence owners stay
+unchanged. Existing diagnostic codes remain authoritative. Successful source
+admission is not a new log outcome or runtime Qt availability claim.
+
+Exit: require focused old/new regression proof, the complete local suite and
+scoped lint/type evidence; build and validate the actual wheel, install the tested
+artifact and complete a bounded guarded corpus refresh without omitted inputs or
+force bypass. Record source/artifact/install/corpus evidence separately; until
+executed, those latter boundaries remain pending. Hosted and upstream delivery
+remain separate from this local repair.

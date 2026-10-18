@@ -119,8 +119,9 @@ class QtProjectIndex:
         return existing
 
     def resolve_url(self, literal_url: str, base_url: str | None = None) -> Resolution:
-        # CMake-generated aliases exist only when the prefix is explicit; policy
-        # defaults and source-property aliases are never guessed.
+        # CMake-generated URLs need an explicit prefix and source-owned literal
+        # alias. An alias replaces the physical spelling; retaining both would
+        # invent a second endpoint that the Qt resource system does not expose.
         result = self.resource_index.resolve_url(literal_url, base_url)
         if result.reason != "resource_alias_unavailable":
             return result
@@ -139,7 +140,8 @@ class QtProjectIndex:
                     prefix += "/" + md["uri"].replace(".", "/")
                 for path, sid in self.qml_files.get(key, []):
                     smd = qml_metadata(self.nodes[sid])
-                    if resource_url(prefix, smd.get("value", "")) == logical:
+                    alias = smd.get("resource_alias", smd.get("value", ""))
+                    if isinstance(alias, str) and resource_url(prefix, alias) == logical:
                         matches.extend(self.module_index.components.get(path, []))
                         evidence.extend((mid, sid))
         return answer(matches, reason="resource_alias_unavailable", evidence=evidence)

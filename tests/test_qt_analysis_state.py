@@ -107,6 +107,31 @@ def test_package_fact_policy_and_ignore_configuration_invalidate_unchanged_qml(t
     assert inspect_qt_analysis(tmp_path, out, [path], excludes=["generated/"]).changed
 
 
+def test_req_qml018_ac02_literal_parser_upgrade_retires_policy22_and_repeats(tmp_path, monkeypatch):
+    # INC-QML-53 changes parser facts without changing package versions or source
+    # bytes. A prior accepted policy-22 checkpoint must refresh once, then settle.
+    import graphify.qt_incremental as policy
+
+    path = tmp_path / "CMakeLists.txt"
+    raw = b"qt_add_qml_module(demo URI Public.Tools QML_FILES Main.qml)\n"
+    path.write_bytes(raw)
+    out = tmp_path / "out"
+    monkeypatch.setattr("graphify.qt_analysis_state._package_versions", lambda: "same-installed-packages")
+    with monkeypatch.context() as historical:
+        historical.setattr(policy, "QT_POLICY_VERSION", 22)
+        old = inspect_qt_analysis(tmp_path, out, [path])
+        commit_qt_analysis(out, old)
+        assert not inspect_qt_analysis(tmp_path, out, [path]).changed
+    current = inspect_qt_analysis(tmp_path, out, [path])
+    assert current.changed and current.fingerprint != old.fingerprint
+    assert path.read_bytes() == raw
+    commit_qt_analysis(out, current)
+    checkpoint = (out / QT_STATE_FILE).read_bytes()
+    repeated = inspect_qt_analysis(tmp_path, out, [path])
+    assert not repeated.changed and repeated.fingerprint == current.fingerprint
+    assert (out / QT_STATE_FILE).read_bytes() == checkpoint and path.read_bytes() == raw
+
+
 @pytest.mark.parametrize("raw", ["invalid", "{}", "[1]", '["../outside"]', '["/outside"]',
                                  '["C:/outside"]', '[""]', '["a/../../outside"]',
                                  "[" + ",".join('"a"' for _ in range(257)) + "]", "x" * 65537],

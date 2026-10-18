@@ -1613,11 +1613,111 @@ classified. A clean security or typing contribution gate is not established.
 Physical browser/device/application interaction, Qt runtime effects, released
 upstream delivery and merging remain outside this hosted source profile.
 
-The final plan review finds no additional reproduced integration defect;
-INC-QML-53 and REQ-QML-022 remain unallocated. AST-only refresh after the source
+That checkpoint's final plan review found no additional reproduced integration
+defect; INC-QML-53 was then unallocated. The subsequent parser repair below uses
+that increment; REQ-QML-022 remains unallocated. AST-only refresh after the source
 corrections completes with 23,247 nodes/53,843 edges and the known malformed Luau
 fixture warning. No graph commit stamp is inferred from that update command.
 This evidence completion changes documentation only. The later documentation
 head receives its own normal PR validation; this immutable checkpoint does not
 claim its unknown future head already passed. AI commit attribution and the
 original coverage artifact remain preserved; no upstream PR or merge is performed.
+
+## Bounded parser repair — INC-QML-53
+
+Status: **Implemented; focused local source profiles verified, full/artifact/install
+and guarded application-corpus profiles pending**. This profile extends the
+bounded forms under existing criteria; twenty-one requirements/eighty-five
+acceptance IDs remain unchanged. Historical policy-22 hosted acceptance remains
+bound to its recorded revision and is not evidence for this repair. Current
+repair source uses Qt policy 23, AST schema 13 and the existing semantic-cache and
+transactional publication owners. Public synthetic fixtures contain no private
+application source, project identity or machine path.
+
+| Acceptance IDs / changed boundary | Exact automated assignment and observable result |
+| --- | --- |
+| REQ-QML-018-AC02; native compatibility parse view | `tests/test_qt_cpp_template_defaults.py::test_req_qml018_ac02_template_default_retains_callable_and_original_spans`: named nested/qualified/template pointer/reference parameters, declarations/definitions, multiple defaults, comments and unchanged nonempty defaults retain actual callable identity and original spans |
+| REQ-QML-008-AC02; REQ-QML-010-AC01/AC02; canonical/native producer | `test_req_qml008_ac02_template_recovery_retains_native_member_and_cold_warm_identity` in that module: BOM/Unicode LF/CRLF original bytes, neighboring invokable native member, canonical target/type/role/span and cold/warm IDs remain correct |
+| REQ-QML-001-AC04; REQ-QML-012-AC01/AC02; recovery rejection | `test_req_qml001_ac04_empty_defaults_do_not_reclassify_nonparameter_contexts`, `test_req_qml012_ac02_malformed_template_defaults_remain_unmodified_and_rejected`, `test_req_qml018_ac02_bare_callback_ambiguity_is_not_synthetic_declaration`, `test_req_qml001_ac04_unnamed_template_default_keeps_conservative_rejection` in that module: expressions, storage, macros, strings/comments, callback ambiguity and malformed/unnamed unsupported forms cannot gain declaration authority |
+| REQ-QML-009-AC01; REQ-QML-010-AC01/AC02; literal module source additions | `tests/test_qt_cmake_mutations.py::test_REQ_QML_009_literal_private_sources_keep_module_and_original_byte_provenance`: actual source ownership, private C/C++ file kind, BOM/CRLF/Unicode byte span, JSON sanitation and comment-stable IDs |
+| REQ-QML-009-AC01/AC04; tooling/native separation | `test_REQ_QML_009_source_properties_and_explicit_resources_preserve_alias_time_and_tooling_role`, `test_REQ_QML_009_explicit_header_only_property_never_creates_runtime_provider`, `test_REQ_QML_009_conditional_native_resource_properties_are_provably_irrelevant` in that module: header-only descriptors/scripts remain non-runtime facts; all six admitted literal Boolean spellings honor the actual flag; native RC/include paths cannot become QML/provider/resource membership |
+| REQ-QML-009-AC03; explicit resource mapping | The source-property/resource test above verifies literal target-form aliases and exact corpus-relative targets. `tests/test_qt_cmake_alias_resolution.py::test_req_qml009_ac03_cmake_source_alias_replaces_only_its_resource_url` covers actual producer/index lookup, explicit target-path option, nested Unicode aliases, relative runtime URL lookup and absence of the replaced physical URL; `test_req_qml009_ac03_invalid_source_alias_cannot_restore_physical_fallback` protects transported malformed overrides |
+| REQ-QML-009-AC04; REQ-QML-012-AC01/AC04; closed metadata guard | `test_REQ_QML_009_unsupported_mutations_preserve_closed_coverage_guard`, `test_REQ_QML_009_ordering_duplicate_targets_and_late_properties_are_rejected` in `test_qt_cmake_mutations.py`: public/interface/computed/conditional/bare-QML/unknown-target additions, malformed/repeated properties, unsupported options, escaping resources, duplicate/not-yet-declared targets and late mutations retain explicit incomplete error reasons |
+| REQ-QML-009-AC01/AC03; REQ-QML-010-AC01; production joins | `tests/test_qt_cmake_mutation_updates.py::test_REQ_QML_009_private_source_and_resource_additions_reach_real_producer_and_warm_cache`: a private native header exposes the actual QML type/property and resource membership resolves to the accepted component through normal collection/build/reload; repeated/warm output equals a clean rebuild |
+| REQ-QML-011-AC01/AC02/AC04; metadata-only lifecycle | `test_REQ_QML_011_metadata_only_retarget_and_source_removal_replace_stale_joins` in that module: changing CMake alone retargets the resource endpoint, removes the deleted native provider binding from unchanged consumers and equals a full accepted-corpus rebuild |
+| REQ-QML-012-AC02; publication retention | `test_REQ_QML_011_rejected_addition_preserves_prior_published_graph_manifest_and_report` in that module: a later dynamic addition rejects a forced update while preserving the actual graph/manifest and an existing separately owned report byte for byte |
+| REQ-QML-011-AC03/AC04; policy invalidation | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_policy22_and_repeats`: prior policy-22 acceptance changes once without package/source changes, current policy commits, unchanged repeat is stable. Complete integration execution is pending at this evidence checkpoint |
+
+### Regression evidence and commands
+
+The final native focused command is
+`.venv/Scripts/python.exe -m pytest tests/test_qt_cpp_template_defaults.py tests/test_qt_cpp_adoption_syntax.py tests/test_qt_cpp_syntax.py tests/test_qt_cpp_exposure.py -q --cov=graphify.extractors.qt_cpp_compat --cov-report=term-missing --cov-report=json:test-results/cpp-defaults-final-coverage.json`,
+with a separate `COVERAGE_FILE`: **107 passed**, one pre-existing Hypothesis
+collection warning, 10.86 seconds. The new module contributes 44 cases. Disabling
+only the new helper in an isolated in-memory before-fix run gives **14 failed /
+30 passed**: twelve formerly lost/rejected declarations and two neighboring
+native-member LF/CRLF cases fail. `qt_cpp_compat` focused line coverage is
+144/152 (94.74%); four new defensive invalid-AST/unsupported-ancestry return paths
+and four legacy lines remain uncovered by this valid-corpus suite. Their presence
+is recorded, not hidden behind the aggregate. Ruff reports no scoped errors.
+
+`.venv/Scripts/python.exe -X utf8 -m pytest tests/test_qt_cmake_mutations.py tests/test_qt_project_metadata.py tests/test_qt_metadata_boundaries.py -q`,
+with isolated `COVERAGE_FILE`, reports **100 passed**, one pre-existing Hypothesis
+warning, 1.81 seconds. The former unsupported-case tuple containing a valid
+literal `target_sources` header is deliberately replaced by a computed-header
+rejection; the new positive test proves ownership/provenance rather than merely
+removing its diagnostic. An isolated subprocess loads the original HEAD parser:
+that exact positive regression fails, and the exact real-producer regression
+rejects publication with `QML_GRAPH_PRESERVED` before the repair.
+
+`.venv/Scripts/python.exe -X utf8 -m pytest tests/test_qt_cmake_mutation_updates.py tests/test_qt_metadata_incremental.py tests/test_qt_project_membership.py tests/test_qt_resource_resolution.py -q`
+reports **63 passed**, 13.10 seconds. Warnings are the existing Hypothesis
+collection notice and per-root stat-index fast-path notices from exercising
+multiple isolated fixtures in one process. Ruff passes the touched CMake helpers
+and focused tests. These targeted results are separate runs, not a full-suite or
+installed-package claim. The complete suite and alias/policy integration results
+are assigned by the integration owner after source freeze.
+
+### Diagnostic, risk and remaining-boundary review
+
+| Outcome/risk | Required contract / evidence boundary |
+| --- | --- |
+| Supported extraction | Existing ordinary extraction/rebuild success; no new notification code or claim of runtime Qt availability |
+| Validation/rejection | Existing `QT_CPP_SYNTAX`, `QML_CMAKE_SYNTAX`, `QML_PROJECT_UNSUPPORTED`; all new unsupported metadata paths retain bounded source-owned reasons and never silently drop the command |
+| Recoverable input/read failure | Existing root/read/access codes and retry guidance remain unchanged; this increment introduces no additional read or write boundary |
+| Integrity/publication failure | Existing `QML_GRAPH_PRESERVED` and product transaction; the forced dynamic-update regression preserves accepted graph/manifest/report bytes |
+| Identity/ambiguity | Named declaration ownership and unique preceding module required; malformed aliases cannot restore a fabricated physical URL; existing duplicate provider/resource ambiguity remains authoritative |
+| Work bounds/security | Existing metadata byte/token/fact/scope limits and native syntax bounds remain; no CMake/Qt/QML execution, network request or corpus expansion occurs |
+| Cache/configuration | Policy 23 requires same-package/source refresh; schema 13 and semantic ownership unchanged; aggregate current-state test execution is pending |
+| Remaining gaps | Full local source suite, frozen artifact contents/install, native installed behavior and guarded application-corpus refresh are pending here. Hosted matrix, runtime Qt/UI, system/device and upstream publication are separate evidence profiles |
+
+The accepted subset requires source properties before their metadata use and
+flat private C/C++ additions after a unique local module declaration. Explicit
+header-only tooling never supplies runtime membership. Bare QML target additions,
+unnamed template defaults, ambiguous bare user-type callback declarations,
+arbitrary expansion, relevant conditions, late properties, generated runtime
+inputs, inferred resource prefixes, BASE/options and output-variable resource
+forms remain unsupported. The RC-only exemption must retain its explicit proof
+that those inputs cannot affect the analyzed membership/resource contracts.
+
+### Integrated local repair checkpoint
+
+After source review, the combined command
+`.venv/Scripts/python.exe -X utf8 -m pytest tests/test_qt_cmake_mutations.py tests/test_qt_cmake_mutation_updates.py tests/test_qt_cmake_alias_resolution.py tests/test_qt_cmake_tooling_order.py tests/test_qt_cpp_template_defaults.py tests/test_qt_analysis_state.py -q --tb=short`
+passes **125 cases**, zero failures, in 7.35 seconds. Three warnings retain the
+existing Hypothesis collection and cross-root stat-index notices. The actual
+old index fails five of seven alias tests; the two unchanged physical-path
+controls still pass. Policy-22 retirement and repeat stability execute here.
+
+Independent review exposed a mixed tooling/runtime ordering defect: marking one
+source header-only accidentally changed the source kind of following siblings.
+`tests/test_qt_cmake_tooling_order.py` exercises real extraction/build/export/reload
+and native bindings for first/middle/last tooling placement and true/false flags.
+Two of six cases fail before the per-token-kind correction; all six pass after.
+The correction retains each sibling's own kind and provider membership.
+
+Full-repository Ruff and all 134 generated skill artifacts pass. Pyright with
+the explicit source virtual-environment interpreter reports the documented
+605-error full-repository baseline and no diagnostics in the changed production
+or focused test modules at this checkpoint. The full local pytest run is still
+in progress; artifact/install and guarded application adoption remain pending.

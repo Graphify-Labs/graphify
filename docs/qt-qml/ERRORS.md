@@ -481,3 +481,25 @@ Physical resolution precedes lexical normalization for POSIX link/`..` spelling.
 Containment rejection still has its separate root/input contract. Neither lexical
 source names nor a matching physical target grant member/module/native endpoint
 authority. Exact native/POSIX failure and retry assignments belong to traceability.
+
+## Literal parser repair outcomes — INC-QML-53
+
+No new catalogue code is required. Successful supported-source recovery continues
+through ordinary extraction/rebuild reporting, with no synthetic warning or runtime
+success claim. Validation outcomes remain `QML_PROJECT_UNSUPPORTED` for unsupported
+CMake mutations, `QML_CMAKE_SYNTAX` for malformed command syntax and `QT_CPP_SYNTAX`
+for malformed or unsupported native syntax. New bounded metadata reasons include
+`unsupported_source_property_value`, `source_property_after_metadata_use`,
+`unsupported_target_source_kind`, `unsupported_literal_resources_arguments` and
+`resource_path_escape_or_invalid_alias`; the existing
+`source_mutation_outside_literal_subset` still covers other rejected mutations.
+
+Recoverable read/root/access failures keep their existing owner/code/retry advice;
+this repair adds no filesystem write boundary or new persistence outcome.
+Incomplete metadata/native extraction reaches `QML_GRAPH_PRESERVED` at publication,
+retaining the accepted graph and manifest under the existing forced-update guard.
+Duplicate resource providers remain unresolved coverage ambiguity, never an
+arbitrary alias choice. Public synthetic retention tests verify graph/manifest
+bytes and an existing report; installed/adoption proof remains separately assigned
+in traceability. Missing support is repaired by extending the tested literal/AST
+profile, never by dropping inputs or bypassing the guard.
