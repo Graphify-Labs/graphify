@@ -60,6 +60,8 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     if platform == "reasonix":
         monkeypatch.delenv("REASONIX_HOME", raising=False)
         monkeypatch.delenv("APPDATA", raising=False)
+    # hermes user scope lands under %LOCALAPPDATA% on Windows; keep it inside tmp
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
 
     with patch("graphify.__main__.Path.home", return_value=home):
         dst = mainmod._platform_skill_destination(
