@@ -2970,3 +2970,47 @@ runtime passes the same 342 cases with no skips. Team artifact release, applicat
 graph refresh and hosted/merged-SHA validation remain pending. The
 [local-adoption checkpoint](../../tests/TRACEABILITY.md#policy-25-per-user-tool-adoption)
 records this separately from the earlier isolated installation.
+
+## INC-QML-54 — Upstream 0.9.92 integration
+
+Status: **Planned; integrated source, package and hosted evidence pending**.
+Owner: upstream integration maintainer. Dependencies: INC-QML-49–53 and the
+existing shared compatibility gates. Integrate upstream `v8` at
+`86c57be8204673c2a1b9849a3292a7dd3ab373d8` into repair head `dd8cc3d0`, preserving
+the 322 incoming commits since `35adf432`. The package advances from 0.9.76 to
+0.9.92; its manifest and frozen lock must agree. Historical policy-25 source,
+isolated-install and per-user adoption receipts remain evidence for their
+recorded production tree, not for this integration.
+
+Scope decision: reconcile upstream extraction, graph direction, cache,
+incremental updates, assistant generation, packaging and CI with the accepted
+Qt/QML contracts. Preserve public engineering standards, parser extras, native
+signals/slots/connections and bidirectional bridge evidence. This increment does
+not install the new revision into the per-user tool, refresh an application
+graph, merge a pull request or publish an upstream contribution. Existing
+requirement and acceptance identities remain unchanged.
+
+### Preimplementation acceptance matrix
+
+| Acceptance IDs | Required integrated outcome and verification |
+| --- | --- |
+| REQ-QML-001-AC01–AC04; REQ-QML-014-AC01/AC02; REQ-QML-018-AC02/AC05 | The frozen manifest/lock resolves the upstream runtime floor and retained QML extra; fresh source and installed-wheel profiles exercise production parser entry points, optional-parser absence and offline/no-Qt-SDK behavior. Include upstream Pi package resources and its declared Bun guard; record unavailable platform/dependency cases explicitly. |
+| REQ-QML-002-AC01–AC04; REQ-QML-003-AC01–AC04; REQ-QML-009-AC01–AC04; REQ-QML-016-AC01–AC04; REQ-QML-017-AC01–AC04 | Incoming generic extraction and resolution retain accepted Qt discovery, original-byte spans, identity, literal metadata and native/bridge relationships. Same-name ambiguity, dynamic or malformed input and ignored/out-of-root inputs cannot acquire guessed endpoint or corpus authority. Run joint-boundary regressions and unrelated-language compatibility cases. |
+| REQ-QML-010-AC01–AC04; REQ-QML-013-AC01–AC04; REQ-QML-018-AC04 | Generic and Qt graph assembly, query and JSON/HTML reload preserve logical direction, provenance and distinct mechanisms, including parallel edges. Rejected direction/metadata transport cannot become successful publication. |
+| REQ-QML-011-AC01–AC04; REQ-QML-012-AC01–AC04; REQ-QML-018-AC06 | Cold/warm, full/manual/watch and repeated updates agree after QML-only, C++-only and metadata-only changes; stale edges disappear. Parser/resolver/real publication failures retain accepted graph, manifest, report and Qt state; recovery and repeat succeed. Combined AST schema 18 retires upstream 17 and published combined 13, retaining the grammar fingerprint and language overrides. Explicitly test override/native-bypass interaction; preserve policy-25 semantics and independent semantic-cache ownership. |
+| REQ-QML-014-AC01–AC04; REQ-QML-015-AC01–AC04 | Review every conflict; regenerate assistant artifacts from authoritative fragments and run their validators, applicable source suites, lint/types and fresh wheel/isolated-install checks. Retain Python/OS native profiles, existing full fork CI gates and the upstream Pi job. Record exact source/base/checkout, commands, failures, skips and baseline differences; old totals do not verify the merged inputs. |
+
+Diagnostic impact: successful integration adds no diagnostic success claim.
+Existing unsupported/ambiguous input rejection, parser-unavailable, resolution
+failure and retained-product recovery contracts remain mandatory. Any changed
+diagnostic or persistence behavior requires its requirement, error-catalog and
+regression update before implementation; no second writer or corpus evaluator is
+introduced. Upstream's metadata-only PR-management workflow must not check out or
+execute untrusted PR code with its write token.
+
+Exit: complete conflict review and source/package verification, refresh this
+repository's AST graph, and publish the explicit branch for normal PR validation.
+Hosted proof, any subsequent authorized integration merge and validation of its
+actual resulting SHA are separate gates. Preserve the installed policy-25 tool
+and existing application graph. Review the plan after verification; allocate a
+further increment only for a reproduced separate defect.
