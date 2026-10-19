@@ -129,11 +129,20 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
     done
 fi
 # Last resort: try python3 / python (works for system/venv installs on PATH).
+# Under Git for Windows `python3` is usually the Microsoft Store App Execution Alias
+# (python.org's installer ships no python3.exe): running it flashes a console window
+# for ~1s and exits 9009, on every commit, checkout and merge. Try `python` first
+# there (#4563).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    if command -v python3 >/dev/null 2>&1 && python3 -c "$_GFY_PROBE" 2>/dev/null; then
-        GRAPHIFY_PYTHON="python3"
-    elif command -v python >/dev/null 2>&1 && python -c "$_GFY_PROBE" 2>/dev/null; then
-        GRAPHIFY_PYTHON="python"
+    if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+        _GFY_FIRST="python"; _GFY_SECOND="python3"
+    else
+        _GFY_FIRST="python3"; _GFY_SECOND="python"
+    fi
+    if command -v "$_GFY_FIRST" >/dev/null 2>&1 && "$_GFY_FIRST" -c "$_GFY_PROBE" 2>/dev/null; then
+        GRAPHIFY_PYTHON="$_GFY_FIRST"
+    elif command -v "$_GFY_SECOND" >/dev/null 2>&1 && "$_GFY_SECOND" -c "$_GFY_PROBE" 2>/dev/null; then
+        GRAPHIFY_PYTHON="$_GFY_SECOND"
     else
         echo "[graphify hook] could not locate a Python with graphify installed. Add the graphify bin dir to PATH or re-run 'graphify hook install' from the env where graphify lives." >&2
         exit 0
