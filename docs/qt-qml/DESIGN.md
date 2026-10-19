@@ -28,7 +28,9 @@ evidence remains revision-bound. Expanded
 REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
 
-INC-QML-54's upstream 0.9.92 integration is **In progress; complete verification pending**.
+INC-QML-54's upstream 0.9.92 integration has **passing corrected source67 full-suite
+and isolated installed profiles; final native gate passes 76 cases with four
+platform skips/all 29 critical cases passing; new hosted gates pending**.
 Its accepted combined cache namespace is schema 18 with Qt policy 25. The
 schema-13 repair and installed-tool evidence above describes its recorded
 production tree; the new integration does not replace that installed tool.
@@ -1469,7 +1471,7 @@ profile passes; hosted validation remains pending.
 
 ## Upstream 0.9.92 integration — INC-QML-54
 
-Status: **90578033 full source failed; post-905 corrections have bounded source proof; next frozen full/artifact/hosted proof pending**.
+Status: **Corrected source67 complete local source and isolated installed profiles pass; final seven-module native gate passes 76 cases with four platform skips/all 29 critical cases passing; new hosted proof pending**.
 The shared extraction facade and engine retain upstream language dispatch,
 receiver/type evidence and language overrides. The Qt source producers, run-owned
 indexes and conservative joins retain native endpoint authority, original-byte
@@ -1498,15 +1500,54 @@ adding upstream's Pi job; normal PR validation owns the first hosted proof.
 The [plan matrix](PLAN.md#inc-qml-54--upstream-0992-integration) defines success,
 rejection, retention and compatibility obligations. The initial merge preserves
 the existing runtime, corpus evaluator and persistence writer. D33 separately
-records the new retained graph context and its planned diagnostic. Any discovered
+records the new retained graph context and its implemented diagnostic. Any discovered
 behavioral correction must update the
 affected acceptance contract, exact regressions and error documentation before
 claiming support. The prior installed tool and application graph remain intact;
 fresh source, artifact, hosted and later adoption receipts are separate.
 
+The [corrected committed checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+binds 11,776 source passes/173 skips and the 715-pass/one-skip installed profile
+to source `67bb2022`, tree `788fef0b` and its raw-blob wheel. The separate HCL
+profile passes six cases after exactly one locked grammar addition. All 56 old
+source905 failure/error identities pass; its failed result remains historical.
+Whole typing retains 651 diagnostics. These results leave hosted revision,
+platform, runtime/device and service assignments explicit.
+
+### Native CI selection and retained case evidence
+
+Status: **Implemented and locally verified under REQ-CORE-004-AC02/AC03;
+76 native passes/four platform skips, all 29 critical cases passing; hosted
+proof pending**. Keep the existing Windows job
+and extend its literal selection by the six modules recorded in the
+[preimplementation matrix](PLAN.md#native-ci-coverage-correction-acceptance-before-implementation).
+The existing workflow-tool test owns portable parsing of that actual assignment,
+required membership, uniqueness and admissible literal tokens. Comments cannot
+fake inclusion; omitted paths quoted on comment lines also reject in the same
+omission controls. Dynamic/malformed selections reject. Only the native fixture
+retains the Windows skip, allowing portable inventory controls on Ubuntu.
+A real PowerShell consumer evaluates the admitted unmodified assignment and
+compares exact ordered values; it is not a second test dispatcher. Keep its
+actual engine identity separate from the workflow's outer `pwsh` host.
+
+The existing integrity owner checks 29 required native case identities against
+actual JUnit outcomes, including the original raw owned-copy and guarded atomic
+read-only cases. Missing/duplicate/failed/skipped required evidence rejects.
+Write native-case and preservation reports before combined rejection, retaining
+failed pytest and useful failure artifacts. Actual PowerShell tail controls
+exercise that ordering. No new runtime diagnostic, dependency, job, trigger,
+permission or persistence owner is introduced. Local native evidence and normal
+PR head/base/checkout/upload evidence remain separate; source67 full-suite proof
+does not test this later workflow/test change.
+
+The final saved 287-line guard runs all 23 cases in the actual seven-module
+native gate, which passes 76 cases with four explicit platform skips. All 29
+critical identities and all four input-preservation checks pass. The bounded
+gate is not execution of all 40 workflow selections or new hosted evidence.
+
 ### Post-905 correction boundaries
 
-Status: **Implemented locally; bounded source results recorded, next frozen full/artifact/hosted proof pending**. These refinements
+Status: **Implemented; corrected source67 full-suite and isolated installed proof pass, with explicit skips and new hosted proof pending**. These refinements
 follow the exact failed boundaries in the complete `90578033` run; they do not
 extend that revision's bounded installed proof to a future corrected tree. The
 [acceptance matrix](PLAN.md#post-905-full-suite-findings-acceptance-before-correction)
@@ -1524,8 +1565,8 @@ treated the raw helper as an atomic-writer policy owner conflicts with upstream'
 owned-copy contract; correct only that expectation and add direct success and
 actual cleanup/mode-restoration protection.
 
-The direct GraphML exporter currently relies on the old helper rejection. Its
-owner must first add Windows `lstat` preflight for a regular read-only destination,
+The initial merged GraphML exporter relied on the old helper rejection. Its
+implemented owning Windows `lstat` preflight rejects a regular read-only destination,
 retaining `PermissionError`, original output/input graph and owned temporary
 cleanup. Directory rejection stays in force; a symlink is replaced as an entry
 without following it for chmod or changing its target bytes. Actual read-only,
@@ -1612,12 +1653,12 @@ on two incomplete profiles. The strengthened eight-case source selection passes
 without skips and the independent replay rejects three formerly accepted
 corruptions. The QML read explicitly remains ambiguous with `duplicate_provider`
 under the fixture's simultaneous CMake/qmake declarations; native signal
-resolution does not imply a resolved QML provider. Final full/artifact evidence
-remains pending.
+resolution does not imply a resolved QML provider. Corrected source67 full-suite
+and isolated installed evidence now pass; new hosted acceptance remains pending.
 
 ### Pending-label deletion shares product publication
 
-Status: **Implemented; fourteen focused source cases pass; wider verification pending**. `publication.ProductPublication`
+Status: **Implemented; corrected source67 full-suite and fourteen isolated installed cases pass; new hosted proof pending**. `publication.ProductPublication`
 remains the sole product writer. A bounded `delete(name)` request may select only
 one declared inventory member; it records intent during preparation and performs
 the deletion inside the cohort commit. An absent product and a repeated request
@@ -1639,7 +1680,7 @@ must exercise the production transaction and its watch consumer before acceptanc
 
 ### Override traversal and parallel query evidence
 
-Status: **Implemented; eleven focused source cases pass; wider verification pending**. Upstream override-aware
+Status: **Implemented; corrected source67 full-suite and eleven isolated installed cases pass; new hosted proof pending**. Upstream override-aware
 caller lookup may step through a valid owner, supertype and same-named inherited
 member, but every such edge must use the existing `logical_endpoints` validator.
 Partial, foreign or reversed Qt transport cannot acquire caller authority through
@@ -1653,7 +1694,7 @@ its original merged-helper selection records nine failures and one control.
 
 ### Effective language selection precedes Qt overlays
 
-Status: **Implemented; seven focused source cases pass; wider verification pending**.
+Status: **Implemented; corrected source67 full-suite and seven isolated installed cases pass; new hosted proof pending**.
 An explicit supported `.graphifyrc` language override of a physical native Qt
 extension away from C++ governs every native collector, context and index; the suffix alone
 cannot re-admit native syntax checks or Qt provider authority. The reproduced
@@ -1674,7 +1715,7 @@ or unverified. The new production cases belong to
 
 ### Serialized metadata belongs to the output
 
-Status: **Implemented; focused direction/source cases pass; complete integration verification pending**.
+Status: **Implemented; corrected source67 full-suite and assigned isolated installed cases pass; new hosted proof pending**.
 `export.to_json` may add upstream `schema_version` and `graphify_version` to the
 serialized graph metadata. Stamp a copied metadata dictionary rather than
 mutating `G.graph`; caller-owned metadata, nodes and edges remain unchanged after
@@ -1686,7 +1727,7 @@ behavior or acceptance assertion.
 
 ### Walked collision keys and explicit direction transport
 
-Status: **Implemented; frozen source and selected installed cases pass; complete integration verification pending**.
+Status: **Implemented; corrected source67 full-suite and assigned isolated installed cases pass; new hosted proof pending**.
 Contested-ID lookup must use the same admitted walked-source identity as its
 authoritative stem table. A real contained directory alias combining a variable
 in `.mjs` with a neighboring `.sql` file must not collapse file and declaration
@@ -1703,7 +1744,7 @@ no new direction policy or diagnostic identity is introduced.
 
 ### Automatic placeholder provenance — INC-QML-54
 
-Status: **Implemented; final 168-case source selection passes; wider verification pending**.
+Status: **Implemented; corrected source67 full-suite and isolated installed cases pass; new hosted proof pending**.
 Under [D30](ARCHITECTURE.md#d30--automatic-placeholder-tiers-preserve-authored-provenance),
 `build.py` retains upstream tierless import placeholders under one canonical
 minted/legacy shape predicate. Preserve metadata even when empty, source
@@ -1797,7 +1838,9 @@ Focused tests are `test_qt_import_retention.py` and
 needed. The final four-module retained-context/diagnostics selection passes 132
 cases without skips; broader 376-pass/seven-skip compatibility precedes the
 isolated legacy-absence refinement and is complemented by the final strict/
-fifteen-profile controls. Whole frozen-source/artifact proof remains pending.
+fifteen-profile controls. Corrected source67 full-suite and all 136 isolated
+installed retention/diagnostic cases now pass. Earlier 132- and four-case source
+receipts remain separate executions; new hosted proof remains pending.
 
 Prior-context validation must precede extraction and candidate cache writes.
 One build-owned capped raw graph reader supplies both `_load_existing_graph` and
@@ -1836,7 +1879,7 @@ equivalent rejection. Preserve the current cap/read/error policy and assertions.
 
 ### Bounded filename-cohort refresh — INC-QML-54
 
-Status: **Implemented; frozen source selection passes 31 cases with two platform skips; wider verification pending**.
+Status: **Implemented; corrected source67 full-suite and isolated installed/add-on cases pass with explicit platform skips; new hosted proof pending**.
 `filename_cohorts.expand_filename_cohorts(selected, accepted, *, root, retired=())` owns
 deterministic collision-target selection. Its inputs are the caller's selected
 targets, accepted code-file paths and explicit absolute admitted root; its output
@@ -1920,7 +1963,7 @@ boundary.
 
 ### Encoded Codex hook ownership during cleanup
 
-Status: **Implemented; 55 focused source cases pass; installed/hosted verification pending**.
+Status: **Implemented; corrected source67 full-suite and assigned isolated installed cases pass; new hosted proof pending**.
 `codex_hook_command.py` owns recognition of its generated Windows PowerShell
 hook representation; `install.py` retains entry-scoped reinstall/uninstall and
 configuration publication. Ownership requires the exact generated outer options,

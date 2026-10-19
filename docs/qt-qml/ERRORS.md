@@ -3,6 +3,15 @@
 Adapters own source diagnostics; the writer owns publication guards. Paths are
 relative/bounded; messages omit source content and dependency exception details.
 
+INC-QML-54's corrected source `67bb2022` passes the complete local suite with
+173 explicit skips; its source-matched isolated wheel passes 715 cases with one
+symlink skip, and the separate HCL add-on passes six cases. Exact identity and
+profile limits belong to the
+[committed checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022).
+The earlier source905 failure remains historical. The final native CI module
+gate passes 76 cases with four platform skips and all 29 critical cases passing.
+New hosted/platform proof remains outstanding.
+
 | Code | Severity | Trigger | Recovery |
 | --- | --- | --- | --- |
 | QML_PARSER_MISSING | error | Optional parser absent | Install graphifyy[qml] |
@@ -555,7 +564,8 @@ An explicit supported override of a physical native Qt extension away from C++
 must not emit `QT_CPP_SYNTAX` or other native-stage rejection solely because of
 the filename. The selected language retains its own parser/diagnostic owner and
 cannot acquire native providers. Seven focused override cold/warm and transition
-cases pass; wider integration, installed and hosted evidence remains pending.
+cases pass; corrected source67 full-suite and isolated installed cases now pass.
+New hosted evidence remains pending.
 Genuine selected-language failures keep their existing diagnostics.
 This correction adds no code identity, recovery writer or arbitrary-extension
 Qt/QML support claim. Its production regressions and current status belong to
@@ -570,8 +580,9 @@ supplied paths or backend bodies, silently continue with partial targets, read a
 recorded deleted seed or resurrect it as input. Correct the source/root condition
 and retry the ordinary guarded update; prior accepted products remain protected.
 This extends the existing owning stage without a new code or persistence writer.
-The frozen source selection passes 31 cases with two existing platform skips;
-complete source/package/hosted verification remains pending.
+The earlier 31-case source selection retains two platform skips. Corrected
+source67 full-suite and isolated installed/add-on proof now pass; new hosted
+verification remains pending.
 
 ### Encoded hook ownership recognition
 
@@ -582,13 +593,14 @@ installation transport validation and configuration-write failures retain their
 existing bounded rejection/recovery behavior. The recognizer adds no diagnostic
 identity or filesystem/configuration side effect. Its adversarial and actual
 reinstall/uninstall source selection passes 55 cases under REQ-CORE-001-AC05;
-installed/hosted proof remains pending. An otherwise
+corrected source67 full-suite and assigned isolated installed cases now pass,
+with new hosted proof pending. An otherwise
 exact generated token may have trailing ASCII space/tab under the established
 ownership contract; this is not general whitespace or shell normalization.
 
 ### Post-905 runbook and fixture failure boundaries
 
-Status: **90578033 full source failed; corrected bounded source cases pass; next frozen full/artifact proof pending**. Quoting the
+Status: **Corrected source67 complete local source and isolated installed cases pass; new native CI/hosted evidence remains separate**. Quoting the
 recorded interpreter changes executable transport, not runtime selection. Empty,
 missing or failing selection remains a nonzero command failure without trying
 PATH Python/Graphify or installing another runtime. Existing update/publication
@@ -605,8 +617,8 @@ acceptance by weakening the production gate. Supplying missing external DOM
 event surfaces is a test-harness correction with no new product diagnostic,
 persistence transition or native interaction claim.
 
-D33's graph-owned retained-cleanup context has the following **Implemented locally;
-bounded source verified** diagnostic:
+D33's graph-owned retained-cleanup context has the following **Implemented;
+corrected source67 full-suite and isolated installed verified** diagnostic:
 
 | Code | Severity and owner | Rejection and recovery |
 | --- | --- | --- |
@@ -632,7 +644,7 @@ absence under `(graph or {})`, not corrupt context. A present null/malformed
 reserved value and truthy unsupported scalar attrs still reject. No context
 authority or broader unsupported-input acceptance is introduced by this case.
 
-The planned reconciliation correction preserves current extraction diagnostics
+The implemented reconciliation correction preserves current extraction diagnostics
 and failure lists on warm merges, including explicit empty success keys. Prior
 graph diagnostics cannot be replayed as current success or failure evidence.
 Actual malformed-source and publication guards retain their existing codes and
@@ -644,3 +656,23 @@ mutations fail the dedicated test oracle rather than creating a new runtime
 diagnostic. Real CLI parsing/rejection/publication keeps its existing error and
 recovery policy. Aggregate source admission remains complete for valid fixtures;
 normalizing production bytes or hiding graph attributes is not recovery.
+
+### Native CI selection evidence
+
+Status: **Implemented and locally verified under REQ-CORE-004-AC02/AC03;
+76 native passes/four platform skips, all 29 critical cases passing; hosted
+proof pending**. Missing required native modules,
+duplicate/dynamic/malformed literal-array entries and comment-only inclusion
+produce bounded test/CI failure; this adds no runtime diagnostic. Actual native
+JUnit case evidence must reject missing, duplicated, failed or skipped critical
+case identities. Write the case and integrity reports before combined rejection
+so a failed gate retains useful evidence; preserve pytest failure and existing
+cleanup/upload rules. A local report does not prove hosted upload. The actual
+PowerShell array/tail controls exercise the owning consumer without executing
+the job setup or introducing a fallback dispatcher. Correct the selection or
+failed native behavior and rerun normal validation at the new revision; do not
+erase exclusions or relabel source67 proof as testing the changed workflow.
+
+The final same-case-count omission controls leave the omitted module token
+quoted on a comment line and still reject. All 23 guards pass in the final
+native gate; its four unrelated platform skips remain explicitly assigned.

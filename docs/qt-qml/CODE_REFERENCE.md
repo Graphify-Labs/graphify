@@ -5,10 +5,14 @@ The first table records baseline owners, with their current extension seams.
 implemented QML/Qt owners through INC-QML-06 and local INC-QML-07 consumer hooks.
 Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 
-INC-QML-54's incoming upstream 0.9.92 seams are recorded
-[below](#upstream-0992-integration-seams--inc-qml-54). Local merge `90578033` has
-reviewed-wheel identity and bounded isolated proof; its complete source gate
-failed, with corrections and hosted gates pending. Earlier schema-13/installed-tool checkpoints remain revision-bound.
+INC-QML-54's upstream 0.9.92 seams are recorded
+[below](#upstream-0992-integration-seams--inc-qml-54). Corrected source `67bb2022`
+passes its complete local source suite and source-matched isolated installed
+profiles, with explicit skips. The historical `90578033` full-source failure is
+preserved. Native CI coverage correction and fresh hosted gates remain separate;
+earlier schema-13/installed-tool checkpoints remain revision-bound. The
+[corrected checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+owns exact source/tree/wheel identities, commands and evidence limits.
 
 | Existing owner | Role and extension considerations |
 | --- | --- |
@@ -685,7 +689,7 @@ hosted evidence is pending. The exact committed checkpoint belongs to traceabili
 
 ## Upstream 0.9.92 integration seams — INC-QML-54
 
-Status: **Accepted ownership; integration verification pending**.
+Status: **Implemented; corrected source67 full-suite and isolated installed profiles pass; final native gate passes 76 cases with four platform skips/all 29 critical cases passing; new hosted proof pending**.
 
 | Owner | Integration obligation |
 | --- | --- |
@@ -703,17 +707,18 @@ Status: **Accepted ownership; integration verification pending**.
 | `test_graph_invariance.py`, admission guards and `test_native_newline_cli.py` | D34 keeps the owning QML fixture tree byte-identical in aggregate CRLF copies and converts every other text exactly, preserving membership/attributes/IDs. Eight strengthened real-CLI native LF/CRLF span/type-position/topology/oracle cases pass with mandatory each-profile facts and explicit duplicate-provider uncertainty; no generic ID remapper or production normalization. |
 | `publication.py::ProductPublication`, pending-label watch consumer | Bounded `delete(name)` participates in the same snapshot/commit/rollback as replacements; fourteen focused cases pass for absent/repeated/invalid deletion and whole-cohort restoration after deletion/later commit failure. |
 | `paths.py`, `export.py`, CLI and MCP consumers | Preserve directed source/target meaning through undirected graph storage, reload, projection and traversal, including accepted original parallel Qt edges. |
-| `paths.py::os_replace_with_fallback`, `_atomic_replace`, `publication.py::ProductPublication` | Post-905 planned D32 reconciliation: caller-owned installer/cache replacement permits read-only regular copies; generic atomic and accepted-product writers retain read-only rejection. Preserve directory guard, bytes/modes on real cleanup rollback and symlink-target permissions. |
-| `export.py::to_graphml` | D32 prerequisite: Windows `lstat` preflight rejects a regular read-only destination before low-level guard removal. Preserve prior output/input graph, owned-temp cleanup, directory rejection and symlink-entry replacement without target mutation; planned `tests/test_graphml_owned_replacement.py`. |
+| `paths.py::os_replace_with_fallback`, `_atomic_replace`, `publication.py::ProductPublication` | Implemented D32 reconciliation: caller-owned installer/cache replacement permits read-only regular copies; generic atomic and accepted-product writers retain read-only rejection. Preserve directory guard, bytes/modes on real cleanup rollback and symlink-target permissions. |
+| `export.py::to_graphml` | Implemented owning Windows `lstat` preflight rejects a regular read-only destination. `tests/test_graphml_owned_replacement.py` proves prior output/input graph, owned-temp cleanup, directory rejection and repaired retry. Actual symlink-entry replacement retains its separately skipped host-capability assignment. |
 | `affected.py`, CLI and MCP override callers | Owner/supertype/member stepping-stone validation reuses `logical_endpoints`; eleven focused cases preserve caller authority, parallel relations and original site metadata in stable semantic order. |
 | `pyproject.toml`, `uv.lock`, `graphify/pi/` | Reconcile package 0.9.92 and parser bounds/extras; include Pi resources and prove source-to-wheel identity in a fresh isolated install. |
 | `tools/skillgen/` | Merge authoritative fragments/generator changes and regenerate outputs; keep coverage, singleton and round-trip validators effective. |
 | Authoritative skill fragments, `gen.py` and round-trip validators | Implemented recorded-interpreter correction quotes the entire POSIX executable substitution for `-c`/`-m`, preserving literal args/cwd/order, explicit legacy conversion and strict quote-only normalization. Six real shipped-resource transport and ten source compatibility cases pass; wider source/platform/artifact gaps remain separate. |
 | `codex_hook_command.py`, `install.py` | Exact generated Windows encoded-hook recognition supports entry-scoped reinstall/uninstall; 55 focused cases pass. Pure bounded decode/static-wrapper/options/status matching allows trailing ASCII space/tab only, with no execution or configuration mutation. |
 | `.github/workflows/ci.yml`, `qml-wheel.yml`, `pr-management.yml` | Retain fork source/native/wheel proof while including the upstream Bun Pi guard. PR management remains metadata-only with no execution of untrusted PR code. |
+| Existing Windows `$selection`, `tests/test_ci_windows_tools.py` and integrity step | Implemented CORE-004-AC02/AC03 coverage correction adds exactly six native modules. Portable literal-array validation and actual PowerShell evaluation share the workflow assignment; omitted paths quoted on comment lines cannot fake inclusion. Native fixture owns OS skips. The integrity step requires 29 exact passing native case identities and writes case/integrity artifacts before combined rejection. Final native gate passes 76 cases/four platform skips, including all 23 guard cases and all 29 critical identities; hosted proof remains separate. No runtime/package, trigger, dependency or new dispatcher owner changes. |
 
-These are integration review boundaries, not completed verification or a new
-owner for domain behavior. [D29](ARCHITECTURE.md#d29--upstream-0992-compatibility-namespace)
+These remain the integration owners; local proof does not establish unexecuted
+platform/hosted acceptance or a new owner for domain behavior. [D29](ARCHITECTURE.md#d29--upstream-0992-compatibility-namespace)
 records the namespace decision; [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
 records applicable execution and gaps. Oversized touched legacy owners require
 measured integration ceilings and an explicit focused extraction path before
@@ -753,6 +758,7 @@ owned by the cache maintainer.
 | Install-fixture maintainer | `tests/test_install.py` | 1,836 / 1,836 |
 | Round-trip fixture maintainer | `tests/test_install_roundtrip.py` | 323 / 323 |
 | Host-guidance fixture maintainer | `tests/test_devin.py` | 309 / 309 |
+| CI delivery / INC-QML-54 maintainer | `.github/workflows/ci.yml` | 582 / 600; frozen baseline 508 |
 
 The post-905 build/watch allowances cover the shared capped raw reader,
 pre-extraction retained-context policy and same-product lifecycle propagation;
@@ -768,10 +774,20 @@ or renderer responsibility extraction under the same owners, not unrelated
 mechanical movement inside this integration. New owned-replacement, emitted
 interpreter and compatibility modules measure 125, 118 and 67 lines.
 The retained-context helper/Qt orphan cleanup measure 153/106 lines; retention,
-lifecycle, preflight and diagnostic tests measure 299/176/111/56, and the native
+lifecycle, preflight and diagnostic tests measure 299/174/111/56, and the native
 newline CLI module measures 225. All remain below 300 lines. Final handoff
 remeasures these bounded integration owners rather than permitting unrelated
 growth under the allowance.
+
+The workflow allowance is scoped to the existing Windows selection and its
+same-owner native-case/integrity audit, preserving current jobs, cleanup,
+concurrency and source/native evidence. It does not authorize unrelated job
+splitting or policy growth. The extraction exit is a separately characterized
+native-proof setup/audit helper when the next cohesive change needs growth.
+The final saved `test_ci_windows_tools.py` measures 287 physical lines and
+remains below 300. Its strengthened comment-decoy controls retain 23 cases,
+all passing in the final seven-module native gate. The earlier standalone
+23-case/286-line receipt remains historical; hosted execution is separate.
 
 The new native-override, filename-cohort and placeholder-role regression modules
 have 117, 266 and 124 physical lines; the pure filename helper has 56. All remain

@@ -400,7 +400,15 @@ jobs:
             Set-Content (Join-Path $proofDirectory 'shell-consumers.json') -Encoding utf8
           if ($LASTEXITCODE -ne 0) { throw 'The admitted native shell consumer cannot execute' }
           if ((& $proofNode --version) -ne 'v24.19.0') { throw 'The reviewed Node.js test interpreter was not selected' }
+          # These non-prefixed contracts are not admitted by the QML wheel
+          # selector; execute their native Windows boundaries explicitly.
           $selection = @(
+            'tests/test_atomic_writes.py',
+            'tests/test_atomic_replace_retention.py',
+            'tests/test_owned_readonly_replacement.py',
+            'tests/test_graphml_owned_replacement.py',
+            'tests/test_skillgen_interpreter_identity.py',
+            'tests/test_native_newline_cli.py',
             'tests/test_codex_hook_execution.py', 'tests/test_filesystem_profiles.py', 'tests/test_source_input_admission.py', 'tests/test_source_identity_remap_owners.py',
             'tests/test_install.py', 'tests/test_install_references.py', 'tests/test_install_roundtrip.py',
             'tests/test_skill_auto_refresh.py', 'tests/test_uninstall_scope.py', 'tests/test_settings_merge.py',
@@ -432,11 +440,76 @@ jobs:
             $headRetained = $currentHead -eq $identity.checkout_sha
             git diff --quiet HEAD -- graphify tests tools uv.lock pyproject.toml .github/workflows
             $inputsRetained = $LASTEXITCODE -eq 0
-            $integrity = [ordered]@{dependencies_unchanged=$dependencyRetained; checkout_unchanged=$headRetained; tracked_inputs_unchanged=$inputsRetained}
+            $nativeCaseProof = @'
+          import json, sys, xml.etree.ElementTree as ET
+          # Exact source-declared cases bind native acceptance; unrelated platform skips
+          # remain separate. Missing, duplicated or skipped critical cases cannot pass.
+          required = {
+              'tests.test_atomic_writes': [
+                  'test_os_replace_with_fallback_still_replaces_a_readonly_destination',
+                  'test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp'
+              ],
+              'tests.test_atomic_replace_retention': [
+                  'test_req_qml018_ac06_readonly_rejects_without_displacing_destination[json]',
+                  'test_req_qml018_ac06_readonly_rejects_without_displacing_destination[text]',
+                  'test_req_qml018_ac06_readonly_source_cleanup_rollback_retains_attributes',
+                  'test_req_qml018_ac06_readonly_source_is_consumed_on_successful_fallback'
+              ],
+              'tests.test_owned_readonly_replacement': [
+                  'test_req_core001_ac03_owned_readonly_destination_replaces_without_orphans[False]',
+                  'test_req_core001_ac03_owned_readonly_destination_replaces_without_orphans[True]',
+                  'test_req_qml018_ac06_cleanup_after_readonly_clear_restores_bytes_and_modes[backup]',
+                  'test_req_qml018_ac06_cleanup_after_readonly_clear_restores_bytes_and_modes[source]',
+                  'test_req_qml018_ac06_mode_restore_failure_retains_recovery_backup'
+              ],
+              'tests.test_graphml_owned_replacement': [
+                  'test_req_qml018_ac06_graphml_failed_write_preserves_product[replace]',
+                  'test_req_qml018_ac06_graphml_failed_write_preserves_product[serialize]',
+                  'test_req_qml018_ac06_graphml_never_replaces_a_directory',
+                  'test_req_qml018_ac06_graphml_rejects_readonly_output_and_recovers'
+              ],
+              'tests.test_skillgen_interpreter_identity': [
+                  'test_req_core001_ac01_actual_shipped_statements_use_spaced_selected_interpreter',
+                  'test_req_core001_ac01_every_shipped_head_quotes_the_recorded_identity',
+                  'test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[empty]',
+                  'test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[failure]',
+                  'test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[missing]',
+                  'test_req_core001_ac01_shell_harness_detects_unquoted_selection'
+              ],
+              'tests.test_native_newline_cli': [
+                  'test_req_qml003_ac04_native_newlines_keep_cli_roles_and_topology',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[binding_omission]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[consistent_span]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[edge_role]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[endpoint]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[relation]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[role]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[span]'
+              ]
+          }
+          try:
+              cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+          except (OSError, ET.ParseError):
+              cases = []
+          expected = {(module, name) for module, names in required.items() for name in names}
+          observed = {identity: [case for case in cases if (case.get('classname'), case.get('name')) == identity]
+                      for identity in expected}
+          passed = sum(len(matches) == 1 and not any(matches[0].find(tag) is not None
+                       for tag in ('failure', 'error', 'skipped')) for matches in observed.values())
+          proof = dict(required_native_cases=len(expected), passed_native_cases=passed,
+                       required_native_cases_passed=passed == len(expected))
+          print(json.dumps(proof))
+          raise SystemExit(0 if proof['required_native_cases_passed'] else 1)
+          '@
+            $nativeCaseEvidence = (& $proofPython -c $nativeCaseProof (Join-Path $proofDirectory 'tests.xml'))
+            $nativeCaseExit = $LASTEXITCODE
+            $nativeCaseEvidence | Set-Content (Join-Path $proofDirectory 'native-cases.json') -Encoding utf8
+            $nativeCasesPassed = $nativeCaseExit -eq 0
+            $integrity = [ordered]@{dependencies_unchanged=$dependencyRetained; checkout_unchanged=$headRetained; tracked_inputs_unchanged=$inputsRetained; required_native_cases_passed=$nativeCasesPassed}
             $integrity | ConvertTo-Json | Set-Content (Join-Path $proofDirectory 'integrity.json') -Encoding utf8
-            if (-not ($dependencyRetained -and $headRetained -and $inputsRetained)) { throw 'Proof inputs changed' }
+            if (-not ($dependencyRetained -and $headRetained -and $inputsRetained -and $nativeCasesPassed)) { throw 'Native acceptance or proof inputs failed' }
           } catch {
-            Write-Host 'Source/dependency preservation proof failed; review the retained integrity evidence.'
+            Write-Host 'Native acceptance or source/dependency preservation proof failed; review the retained evidence.'
             $auditExit = 1
           }
           if ($testExit -ne 0) { exit $testExit }
@@ -454,6 +527,7 @@ jobs:
             ${{ runner.temp }}/graphify-compat-results/tests.*
             ${{ runner.temp }}/graphify-compat-results/pytest-exit.txt
             ${{ runner.temp }}/graphify-compat-results/integrity.json
+            ${{ runner.temp }}/graphify-compat-results/native-cases.json
           retention-days: 14
           if-no-files-found: warn
 

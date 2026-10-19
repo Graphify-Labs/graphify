@@ -878,7 +878,7 @@ current source and isolated artifact/install cases pass, while hosted proof rema
 
 ## D29 — Upstream 0.9.92 compatibility namespace
 
-Status: **Implemented for INC-QML-54; namespace/grammar/override/native-cache source cases pass; wider verification pending**.
+Status: **Implemented for INC-QML-54; corrected source67 full-suite and isolated installed cases pass; new hosted/platform gaps remain**.
 Upstream `86c57be8` introduces AST schema 17 and a cache namespace fingerprint of
 installed tree-sitter distributions. The published combined Qt producer uses
 schema 13. Integration assigns schema 18 so neither published namespace can
@@ -901,7 +901,7 @@ remain bound to their original revisions.
 
 ## D30 — Automatic placeholder tiers preserve authored provenance
 
-Status: **Implemented; final 168-case source selection passes without skips; wider verification pending**.
+Status: **Implemented; corrected source67 full-suite and isolated installed cases pass; new hosted proof pending**.
 Upstream import placeholders are tierless; the prior Qt raw publisher stamps new
 placeholder records semantic. Integration retains tierless status for the
 canonical minted shape and an explicitly bounded legacy-shape compatibility
@@ -938,7 +938,7 @@ not complete acceptance of this newly exposed interaction.
 
 ## D31 — Refresh admitted filename-collision cohorts before context
 
-Status: **Implemented; frozen 31-case source selection passes with two platform skips; wider verification pending**.
+Status: **Implemented; corrected source67 full-suite and isolated installed/add-on cases pass with explicit platform gaps; new hosted proof pending**.
 Stored source anchoring shares the verified root domain. When a saved relative
 marker resolves to `watch_root`, accept its alias prefix and the contained
 `watch_root.relative_to(invocation_root)` prefix as project-relative. Preserve
@@ -985,17 +985,23 @@ shortcut. The [design](DESIGN.md#bounded-filename-cohort-refresh--inc-qml-54)
 owns interface/order and [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
 records cold/warm, real update/full, repeat, failure and unrelated-cache proof.
 
-The integrated source is committed locally at `90578033`. Its reviewed raw-source
-wheel and bounded isolated profiles pass under AST schema 18/Qt policy 25;
-its complete source gate failed, while corrections/hosted proof remain pending
-and full typing remains failed.
-The [committed checkpoint](../../tests/TRACEABILITY.md#committed-upstream-integration-checkpoint--90578033)
-owns exact artifact identity, profile counts and exclusions. This local commit
-does not establish an authorized PR merge or adoption by another codebase.
+The initial integrated `90578033` checkpoint failed its complete source gate;
+that result remains historical. Corrected `67bb2022` passes 11,776 complete-source
+cases with 173 explicit skips and all four preservation checks. Its raw-source
+wheel matches all 327 package files; the isolated profile passes 715 cases with
+one GraphML symlink skip, and a separate HCL add-on passes six cases. AST schema
+18/Qt policy 25 remains unchanged. Whole typing still fails with the same 651
+diagnostics as source905. The
+[corrected checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+owns exact identity, commands and exclusions. Native CI coverage is a separate
+workflow/test change: the final seven-module local gate passes 76 cases with
+four platform skips, all 23 strengthened guards and all 29 critical native
+cases passing. Hosted/review/merge/merged-SHA proof and
+adoption by another codebase are not established by these local results.
 
 ## D32 — Output policy stays with the owning writer
 
-Status: **Implemented locally; bounded replacement/GraphML cases pass with explicit platform gaps; final artifact/full proof pending**.
+Status: **Implemented; corrected source67 full-suite and isolated installed replacement/GraphML cases pass; real-symlink and new hosted gaps remain**.
 Upstream's installer/cache replacement contract permits consuming its owned
 read-only regular copies. The earlier raw-helper variant of
 `test_req_qml018_ac06_readonly_rejects_without_displacing_destination` instead
@@ -1030,7 +1036,7 @@ bound to their earlier source; this correction requires fresh verification.
 
 ## D33 — Retained cleanup context belongs to the accepted graph
 
-Status: **Implemented locally; final 132-case source selection passes without skips; frozen full/artifact proof pending**.
+Status: **Implemented; corrected source67 full-suite and all 136 isolated installed retention/diagnostic cases pass; new hosted proof pending**.
 A transient protected-ID set loses the distinction between a retained Qt
 placeholder with unproven prior import authority and an ordinary generic legacy
 orphan on a later update, especially after the last Qt source disappears. Both
@@ -1096,7 +1102,7 @@ selections do not establish acceptance of the corrected producer/consumer paths.
 
 ## D34 — Newline invariance respects original native source bytes
 
-Status: **Implemented; strengthened eight-case CLI/oracle and scoped aggregate source cases pass; final full/artifact proof pending**.
+Status: **Implemented; corrected source67 full-suite and eight isolated installed CLI/oracle cases pass; new hosted proof pending**.
 The imported aggregate LF/CRLF test assumes every graph attribute/ID is independent
 of source newline bytes. The accepted native contract deliberately preserves
 original-byte spans, source sizes and byte-derived source-site IDs. In the
@@ -1131,4 +1137,5 @@ This refines a test's byte-identity premise without production newline
 normalization, global attribute exclusion, source-ID rewriting or weaker
 unchanged-source equality. The [design](DESIGN.md#post-905-correction-boundaries)
 and [traceability](../../tests/TRACEABILITY.md#post-905-correction-matrix--inc-qml-54)
-record exact production/oracle cases and pending source/artifact/hosted evidence.
+record exact production/oracle cases, corrected source/artifact evidence and
+remaining hosted/platform gaps.

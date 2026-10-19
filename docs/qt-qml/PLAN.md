@@ -2973,7 +2973,7 @@ records this separately from the earlier isolated installation.
 
 ## INC-QML-54 — Upstream 0.9.92 integration
 
-Status: **90578033 committed with bounded installed proof; its complete source suite failed; corrections and hosted gates pending**.
+Status: **Corrected source67 complete local suite and isolated installed profiles pass; seven-module native gate passes 76 cases with four platform skips/all 29 critical cases passing; hosted/review/merge gates pending**.
 Owner: upstream integration maintainer. Dependencies: INC-QML-49–53 and the
 existing shared compatibility gates. Integrate upstream `v8` at
 `86c57be8204673c2a1b9849a3292a7dd3ab373d8` into repair head `dd8cc3d0`, preserving
@@ -2991,6 +2991,44 @@ signals/slots/connections and bidirectional bridge evidence. This increment does
 not install the new revision into the per-user tool, refresh an application
 graph, merge a pull request or publish an upstream contribution. Existing
 requirement and acceptance identities remain unchanged.
+
+### Native CI coverage correction: acceptance before implementation
+
+The complete corrected source run at `67bb2022` passes, with explicit platform
+skips and preservation evidence recorded in the
+[committed checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022).
+That run does not verify a later workflow/test change. Review of the existing
+Windows array found 34 unique literal entries but omitted six non-Qt-prefixed
+modules; the dynamic QML wheel lane selects only QML/Qt/upstream-Qt names.
+Existing Ubuntu source ownership cannot replace native Windows acceptance.
+
+Scope: add exactly `test_atomic_writes.py`, `test_atomic_replace_retention.py`,
+`test_owned_readonly_replacement.py`, `test_graphml_owned_replacement.py`,
+`test_skillgen_interpreter_identity.py` and `test_native_newline_cli.py` to the
+existing Windows selection. Reuse `test_ci_windows_tools.py` for portable
+inventory and actual-PowerShell guards. Preserve all current selections, jobs,
+dependencies, triggers, permissions, concurrency and runtime/package bytes.
+Source-only converter, Part A and all-host modules retain Ubuntu ownership;
+this change makes no new hosted-native claim for them. No new increment or
+acceptance identifier is allocated. The matrix was saved before implementation;
+status is now **Implemented and locally verified; the final seven-module gate
+passes 76 cases with four platform skips, including all 23 strengthened guard
+cases and all 29 critical native cases. Hosted gates remain pending**.
+
+| Acceptance IDs | Success, rejection, failure and evidence boundary |
+| --- | --- |
+| REQ-CORE-004-AC02/AC03; REQ-CORE-001-AC03; REQ-QML-012-AC02; REQ-QML-018-AC06 | Native raw owned-copy replacement, guarded atomic rejection, original read-only regression, bytes/modes, real cleanup failure and repaired retry must individually pass. Module collection or an off-platform skip cannot establish acceptance. |
+| REQ-CORE-004-AC02/AC03; REQ-QML-013-AC03; REQ-QML-018-AC06 | GraphML rejection/serialization/replacement/directory/retry retains prior output and input graph. The real-symlink capability case keeps a separate assignment; no skip is passing target-protection proof. |
+| REQ-CORE-001-AC01; REQ-CORE-004-AC02/AC03 | Six actual shipped-resource tests execute admitted Bash with a spaced selected interpreter, active split/PATH decoys and empty/missing/failing no-fallback cases. Source-only strict conversion retains its source profile. |
+| REQ-QML-003-AC02/AC04; REQ-QML-010-AC01; REQ-QML-013-AC03; REQ-QML-014-AC02/AC03/AC04 | Eight actual native LF/CRLF CLI/oracle cases retain original-byte spans, mandatory facts, duplicate-provider uncertainty and seven corruption controls. |
+| REQ-CORE-004-AC02/AC03 | A portable parser reads the actual unique Windows literal array; the real PowerShell result agrees in exact order. Missing/duplicate/dynamic/malformed tokens or comment decoys reject. Preserve existing native tool tests behind their native fixture while the portable guard runs on Ubuntu. |
+| REQ-CORE-004-AC03 | The integrity stage requires 29 exact critical native case identities to be present and pass. Write native-case and preservation reports before combined failure, retain pytest failure and explicit skip reasons, and exercise the actual PowerShell failure tail. Locally produced reports do not prove artifact upload. |
+| REQ-CORE-004-AC04; REQ-QML-015-AC01/AC03 | Normal PR validation owns the new workflow/test head. Record head/base/checkout/event/run; no duplicate full dispatch or new infrastructure. Runtime tree stays unchanged and source67 full-suite proof remains separately bound. |
+
+The bounded verification gate is the six added modules plus the existing guard
+module under admitted native tools, with individual JUnit outcomes, preserved
+source/dependencies and exact commands. Hosted Windows/source/service proof and
+eventual merged-SHA validation remain separate exit conditions.
 
 ### Preimplementation acceptance matrix
 
@@ -3015,7 +3053,7 @@ requirement and acceptance identities remain unchanged.
 
 ### Post-905 full-suite findings: acceptance before correction
 
-Status: **Implemented locally; bounded focused results recorded, next frozen full/artifact/hosted gates pending**. The frozen
+Status: **Implemented; corrected source67 full-suite and isolated installed profiles pass; new hosted gates pending**. The frozen
 `90578033` complete source run exposed the following integration boundaries.
 The run is now terminal and the approved production/test corrections are active;
 their final bounded source selections pass as recorded in traceability;
@@ -3067,7 +3105,8 @@ direction. Require byte-derived site-ID changes and oracle corruption controls
 for spans, endpoints, roles and relations. No generalized hash remapper,
 production normalization or global attribute exclusion; existing CRLF
 producer/export cases stay mandatory. **Implemented; strengthened eight-case
-CLI/oracle source selection passes; final full/artifact proof pending**.
+CLI/oracle selection, corrected source67 full-suite and isolated installed
+proof pass; new hosted proof pending**.
 Strengthening before final acceptance: each LF/CRLF profile must independently
 contain the `status` QML binding to `service.status`, native `status` property
 and `statusChanged` signal, with source-token ownership. Compare edge family and
@@ -3129,11 +3168,12 @@ build/raw merge, preserving prior bytes; removing one copy permits retry.
 Paired ordinary-Python duplicate controls retain upstream generic behavior.
 Four new boundary/profile cases exercise the already implemented rejection
 branch without a production change: four pass, 106 are deselected, in 1.43 seconds.
-This is separate from the 132-case execution, not a claimed aggregate 136-case
-run. The added test passes focused Ruff/Pyright; final full/artifact gates remain
-pending. The [bounded source release checkpoint](../../tests/TRACEABILITY.md#post-905-bounded-source-release-checkpoint)
-records final commands, gaps and unchanged whole-project type debt. All seven
-documentation files freeze with the source before the next committed run.
+That source receipt remains separate from the earlier 132-case execution.
+The corrected source67 complete suite and installed four-module 136-case subset
+now execute these controls successfully; they do not retroactively combine the
+earlier source receipts. The [corrected checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+records exact commands, artifact identity, skips and unchanged whole-project
+type debt. New hosted proof remains pending.
 
 Relative-root anchoring matrix refinement (REQ-QML-002-AC04,
 REQ-QML-003-AC04, REQ-QML-011-AC04, REQ-QML-012-AC02): when the saved relative
@@ -3142,8 +3182,9 @@ prefix and contained canonical root prefix as project-relative. Preserve
 invocation-directory root, external fallback, containment and untouched nodes;
 neighboring `real2` cannot match `real`. Real relative-root update/full/repeat
 parity and the direct negative-prefix control are required, without per-source
-resolution or label/ID inference. The frozen combined source selection passes
-31 cases with two existing platform skips; full/artifact/hosted gates remain pending.
+resolution or label/ID inference. The earlier combined 31-case source selection
+retains two platform skips. Corrected source67 full-suite and isolated installed/
+add-on proof now pass; new hosted gates remain pending.
 
 Diagnostic impact: successful integration adds no diagnostic success claim.
 Existing unsupported/ambiguous input rejection, parser-unavailable, resolution
@@ -3169,9 +3210,10 @@ generic PHP facts for valid `adapter.h`, then a suffix-only Qt overlay reports
 must govern all native overlays and provider collectors. Source review must
 establish each affected boundary; a classifier-only correction does not prove
 that no later index reclassifies the same bytes. Existing physical-extension
-support limits remain in force. The final seven focused source cases pass after
-five before-fix failures and two controls; wider source/package/hosted profiles
-remain pending in [traceability](../../tests/TRACEABILITY.md#native-override-regression-checkpoint).
+support limits remain in force. Seven focused source cases pass after five
+before-fix failures and two controls. Corrected source67 full-suite and all seven
+installed cases now pass; new hosted proof remains separate in
+[traceability](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022).
 
 Export finding: upstream JSON publication initially stamps graph metadata in
 place. Four existing Qt JSON direction variants and an original-parallel-links
@@ -3179,8 +3221,8 @@ integration case reject that side effect. Preserve the new serialized version
 fields on a copied metadata dictionary without changing the source graph. The
 emitted-viewer harness also needs the real `document.body` surface now used by an
 upstream sidebar tooltip; supplying that external DOM fixture cannot weaken the
-existing pan, filter or event assertions. Focused direction cases pass; complete
-source/artifact/hosted results remain pending.
+existing pan, filter or event assertions. Corrected source67 complete-source and
+assigned isolated installed cases pass; new hosted results remain pending.
 
 Installer finding: upstream entry-scoped cleanup initially cannot identify the
 generated encoded Windows Codex hook, leaving owned entries on reinstall or
@@ -3191,8 +3233,9 @@ is accepted, preserving the existing native regression. Unsupported/malformed en
 recognition. Successful install/uninstall retains existing diagnostic behavior;
 actual configuration-write failure retains its existing bounded failure/recovery
 contract. No script execution, filesystem lookup or new operational diagnostic
-is introduced by this recognition change. The final 55 source cases pass;
-installed/hosted evidence remains pending.
+is introduced by this recognition change. The earlier 55-case source selection
+passes; corrected source67 full-suite and assigned installed cases now pass,
+with new hosted evidence pending.
 
 Exit: complete conflict review and source/package verification, refresh this
 repository's AST graph, and publish the explicit branch for normal PR validation.
@@ -3201,7 +3244,7 @@ actual resulting SHA are separate gates. Preserve the installed policy-25 tool
 and existing application graph. Review the plan after verification; allocate a
 further increment only for a reproduced separate defect.
 
-The [committed integration checkpoint](../../tests/TRACEABILITY.md#committed-upstream-integration-checkpoint--90578033)
+The historical [committed integration checkpoint](../../tests/TRACEABILITY.md#committed-upstream-integration-checkpoint--90578033)
 binds source/tree/wheel identity, all 326 shipped package files and two separate
 offline installed profiles: 495 cases under the original 71-distribution stage,
 and six cases after adding only the locked HCL grammar. Both have zero failures/
@@ -3210,3 +3253,24 @@ clustering. The complete source run fails with 44 failures and twelve setup erro
 172 skips retain their individual profiles. Whole typing fails with 651 diagnostics. No complete
 suite, hosted pass, PR merge, per-user tool upgrade or application refresh is
 established by these local profiles.
+
+The corrected [67bb2022 checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+supersedes those source/artifact gaps for its recorded local profile: all 11,949
+source cases complete with 11,776 passes, 173 explicit skips and zero failures/
+errors; pytest and wrapper exit 0, with all four preservation checks true. All
+56 prior source905 failure/error identities pass. The reviewed 327-file wheel
+passes 715 installed cases with one GraphML symlink skip; a separate HCL-only
+add-on passes six cases. Whole typing retains the same 651 diagnostics. New
+Windows CI selection/guard execution now passes its bounded final gate: 76
+passes, four platform skips, all 29 critical cases and all four preservation
+checks passing. Hosted revision/artifact/service proof, review/merge and exact
+merged-SHA validation remain separate gates. The native
+CI follow-up changes workflow/tests/docs only and does not alter the production
+tree, active per-user tool or application graph.
+
+The final repository AST-only refresh succeeds with 27,243 nodes/63,884 edges,
+48 uncached inputs, one known partial Luau fixture and 26 no-symbol inputs
+(`graph-update-final-ci.log`). It uses no API/LLM work and refreshes neither the
+per-user tool nor an application graph. Whole Ruff passes with the final
+287-line guard. The remaining delivery gate is publication and applicable
+hosted/review/merge evidence, not another local full suite for this CI-only change.

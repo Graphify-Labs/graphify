@@ -34,9 +34,11 @@ skipped for setup. Later real Linux/service and native checks pass at the
 current applicable Windows profile. Full typing still fails on existing errors.
 
 The chronological records below preserve checkpoint evidence. Their older pending
-statements, epochs and test totals describe the recorded revisions. Current status
-and proof are in the [verified integrated checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2),
-with earlier adoption evidence retained in
+statements, epochs and test totals describe the recorded revisions. Current
+INC-QML-54 local source/artifact proof belongs to the
+[corrected committed checkpoint](#committed-corrected-integration-checkpoint--67bb2022).
+The [verified integrated hosted checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2)
+remains hosted evidence for its earlier revision, with adoption evidence retained in
 [validation](../docs/qt-qml/VALIDATION.md#final-adoption-delivery).
 See [implementation limits](../docs/qt-qml/IMPLEMENTATION.md#final-adoption-delivery),
 [export contracts](../docs/qt-qml/EXPORT_MATRIX.md) and
@@ -2127,13 +2129,16 @@ installation does not establish a merge or CI success.
 
 ## Upstream 0.9.92 integration — INC-QML-54
 
-Status: **90578033 committed with source-matched bounded installed proof; its full source suite failed; corrections and hosted gates pending**.
+Status: **Corrected source67 complete local source and isolated installed profiles pass; final native gate passes 76 cases with four platform skips/all 29 critical cases passing; new hosted gates pending**.
 The reviewed inputs are repair `dd8cc3d0` and upstream `86c57be8`, with merge base
 `35adf432`. The [preimplementation matrix](../docs/qt-qml/PLAN.md#inc-qml-54--upstream-0992-integration)
 assigns the existing acceptance identities before conflict resolution. Combined
 AST schema 18, upstream grammar fingerprints/overrides and retained Qt policy 25
-are implemented with the bounded source/installed evidence recorded below. They
-do not establish complete-suite, platform-wide or hosted acceptance.
+are implemented. The initial pre-final matrix below preserves its checkpoint
+states; its pending local entries are superseded by the
+[corrected source67 record](#committed-corrected-integration-checkpoint--67bb2022).
+That complete local source run does not establish platform-wide or new hosted
+acceptance.
 
 | Acceptance assignment | Required evidence and checkpoint state |
 | --- | --- |
@@ -3067,3 +3072,276 @@ by assertion, although this new control exercises the missing duplicate branch.
 All source, tests, tools and seven documentation files are now released for the
 next source commit. No further document edits occur during its frozen complete
 test run. New source/wheel/install/full/hosted proof remains pending.
+
+## Committed corrected integration checkpoint — 67bb2022
+
+Status: **Complete local source suite and isolated installed profiles pass, with
+explicit skips; the later final native gate also passes locally. New hosted/
+review/merge gates remain separate**. This checkpoint supersedes the local source/artifact gaps recorded
+above for its exact corrected inputs. It preserves the historical source905
+failure and does not extend older hosted acceptance to the new revision.
+
+| Identity | Recorded value |
+| --- | --- |
+| Source commit | `67bb20222bf4afe63b6fd799f8a2a6e2e982784e` |
+| Production tree | `788fef0be4cba271626db048c6ce6d49a504330c` |
+| Wheel SHA256 | `9221dc9679dd890c2413f310c395aa7fc5dd94833e94b9bb71cc4b285484cfb9` |
+| Package/cache policy | 0.9.92; AST schema 18; Qt policy 25 |
+| Raw-source package proof | All 327 shipped Graphify files match reviewed Git blobs; copied public test bytes are retained |
+
+### Complete corrected source run
+
+The actual Windows source run collects **11,949 cases: 11,776 passed, 173
+skipped, zero failures and zero errors**, with 3,879 warnings. Pytest completes
+in 1,913.68 seconds; the wrapper takes 1,917.58 seconds. Both exit 0. All four
+integrity flags are true: HEAD unchanged, tracked inputs unchanged, original
+coverage bytes unchanged and installed dependencies unchanged. All tracked
+source/test/tool/workflow/document inputs remain clean at terminal capture.
+
+Exact executed outer command:
+
+```powershell
+& .venv/Scripts/python.exe .venv/upstream-sync-0.9.92-final/run_full_source.py 67bb20222bf4afe63b6fd799f8a2a6e2e982784e *> .venv/upstream-sync-0.9.92-final/full-runner.log
+```
+
+The retained helper/receipt records the actual child invocation of
+`python -X utf8 -m pytest tests/ -q --tb=short -rs`, its JUnit output, reviewed
+wheel input, process-local admitted Git Bash tools, isolated coverage file and
+disabled automatic refresh/tips. No shell/dependency fallback or skip-to-pass
+conversion supplies acceptance. Safe receipt paths beneath
+`.venv/upstream-sync-0.9.92-final/` are `full-source-receipt.json`,
+`full-source.xml`, `full-source.log`, `full-runner.log` and
+`full-source-crosscheck.json`. These ignored local receipts are revision-bound
+evidence, not hosted artifacts.
+
+The crosscheck finds **all 56 prior source905 failure/error identities present
+and passing**; none is removed. All 172 old skipped identities remain skipped.
+The additional skip is the new GraphML real-symlink case whose creation requires
+unavailable host privilege. There are 175 new case identities. The sole removed
+old identity is the raw-helper `[replace]` variant of
+`test_req_qml018_ac06_readonly_rejects_without_displacing_destination`, explicitly
+superseded by D32's owning-output policy. Its text/JSON guarded variants remain,
+and the original upstream
+`test_os_replace_with_fallback_still_replaces_a_readonly_destination` passes.
+This is the documented contract reconciliation, not removal of one of the
+56 failing identities to obtain a passing result.
+
+| Remaining skip assignment | Cases |
+| --- | --- |
+| Windows symlink capability or POSIX physical-link traversal | 89 |
+| POSIX shell execution profile | 65 |
+| Optional native/compiler profile | 5 |
+| POSIX IPC profile | 3 |
+| Optional Redis integration | 2 |
+| Windows active-CWD restriction | 2 |
+| POSIX filesystem permissions | 2 |
+| POSIX lock race, POSIX device, Windows Git-specific, legacy bundle fallback and stdlib fallback | One each |
+
+Every exact case/reason is retained in the receipt/crosscheck. These assignments
+are not passing acceptance, and this Windows run does not establish fresh
+Linux/macOS, live-service, Qt runtime or native-device execution.
+
+### Source-matched isolated installed profiles
+
+The original isolated profile executes **716 cases in 32 modules: 715 passed,
+one skipped, zero failures/errors**, 119 warnings, 171.60 seconds. Its 71 runtime/
+test distributions remain unchanged and compatible; all 171 loaded Graphify
+module origins are the isolated installation. All 327 package bytes and copied
+public tests match before and after. The only skip is
+`test_graphml_owned_replacement.py::test_req_qml018_ac06_graphml_replaces_link_without_changing_target`;
+real symlink creation is unavailable. It does not verify target protection.
+
+```powershell
+.venv/upstream-sync-0.9.92-final/stage/Scripts/python.exe -I .venv/upstream-sync-0.9.92-final/run_stage.py
+```
+
+The installed run includes the earlier 21-module/495-case compatibility
+selection, plus 42 existing C++ role-update cases, all **136** retained-context/
+preflight/update/diagnostic cases, 15 atomic-retention cases, five owned-copy
+cases, five GraphML cases, six actual shipped-interpreter cases, four invariance
+admission cases and eight native LF/CRLF cases. This is an actually executed
+installed 136-case subset; the earlier source132 and source4 receipts remain
+separate historical executions. No new aggregation is inferred from them.
+
+An independent isolated probe uses a real OS-temporary working directory outside
+the checkout, verifies installed module origins and invokes actual
+`python -I -m graphify --help` successfully. `uv pip check` accepts all 71
+distributions. `stage-receipt.json`, `stage-tests.xml`/`.log`,
+`runtime-outside-probe.json` and `stage-uv-check.log` retain those outcomes.
+
+A **separate HCL add-on profile** installs only the locked
+`tree-sitter-hcl==1.2.0` offline with `--no-deps`. The exact dependency delta is
+71 to 72 distributions with no removals or changed versions; dependency checking
+passes. Its six `test_upstream_qt_refresh_order.py` cases pass without skips,
+failures or errors in 3.58 seconds, with seven warnings. All 159 loaded Graphify
+origins remain installed, package/test bytes remain identical and the original
+71-distribution receipt remains unchanged.
+
+```powershell
+.venv/upstream-sync-0.9.92-final/stage/Scripts/python.exe -I .venv/upstream-sync-0.9.92-final/run_stage_addon.py
+```
+
+The add-on install, dependency checks and run are retained as
+`stage-hcl-install.log`, `stage-addon-uv-check.log`, `stage-addon-tests.xml`/`.log`
+and `stage-addon-receipt.json`. The two environments are distinct; 715 plus six
+is not claimed as one executed aggregate. Neither profile changes the active
+per-user Graphify tool or an application graph.
+
+### Acceptance mapping and remaining delivery gates
+
+| Acceptance IDs | Actual corrected local evidence and explicit boundary |
+| --- | --- |
+| REQ-QML-001-AC01–AC04; REQ-QML-002-AC01–AC04; REQ-QML-003-AC01–AC04; REQ-QML-009-AC01–AC04; REQ-QML-016-AC01–AC04; REQ-QML-017-AC01–AC04 | Complete source discovery includes all applicable existing producer/span/scope/rejection regressions. The installed 21-module subset repeats its declared CMake/state/cache/cohort/override/query fixtures. Declared platform, SDK/runtime and unavailable-parser profiles retain their individual limits. |
+| REQ-QML-010-AC04; REQ-QML-011-AC04; REQ-QML-012-AC01/AC02/AC04; REQ-QML-013-AC03; REQ-QML-018-AC06 | `test_qt_cpp_file_role_updates.py` original prior-import proof rejection cases and `test_qt_import_retention.py`, `_updates.py`, `_preflight.py`, `test_qt_reconcile_diagnostics.py` all pass in complete source and assigned installed selections. Exact mappings/negative controls above remain authoritative; malformed context rejects before cache writes and real failure/repaired retry retain graph/context. |
+| REQ-CORE-001-AC03; REQ-QML-012-AC02; REQ-QML-018-AC06 | `test_owned_readonly_replacement.py`, `test_atomic_replace_retention.py` and original `test_atomic_writes.py::test_os_replace_with_fallback_still_replaces_a_readonly_destination` pass on source67. Guarded `test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp` also passes; raw caller ownership cannot override graph/product rejection policy. |
+| REQ-QML-013-AC03; REQ-QML-018-AC06 | `test_graphml_owned_replacement.py` read-only/repaired retry, failed write and directory controls pass on source67 and installed wheel. The actual symlink case remains explicitly skipped and separately assigned. |
+| REQ-CORE-001-AC01; REQ-QML-014-AC03/AC04 | All six `test_skillgen_interpreter_identity.py` shipped-resource cases pass on source67 and installed wheel; strict source conversion/Part A/all-host regressions pass where applicable in the complete source run. Source67 proof does not imply future native hosted selection. |
+| REQ-QML-003-AC02/AC04; REQ-QML-010-AC01; REQ-QML-013-AC03; REQ-QML-014-AC02/AC03/AC04 | All twelve original aggregate invariance cases and four admission controls pass in the complete source suite. Both source and installed `test_native_newline_cli.py` actual CLI case plus seven corruption controls pass, preserving duplicate-provider uncertainty and original-byte authority. |
+| REQ-QML-018-AC04; REQ-QML-013-AC01; REQ-QML-014-AC03/AC04 | `test_upstream_qt_path_integration.py::test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess` passes with the current typed ambiguity exit3; candidate identities, exact-ID route and graph nonmutation assertions remain intact. |
+| REQ-QML-014-AC01–AC04; REQ-QML-015-AC01–AC04; REQ-CORE-004-AC01–AC04 | Source67/full and isolated artifacts have exact local identities and retention checks. The later seven-module native CI gate passes 76 cases with four platform skips/all 29 critical cases passing. Hosted source/native/wheel/service/upload evidence, review/merge and actual merged-SHA proof remain pending. Historical hosted results retain their revision. |
+
+Whole Ruff, generator checks for all 134 artifacts and whitespace pass for the
+frozen source. Whole explicit-interpreter Pyright remains failed with **651
+diagnostics across 834 files**, all source905 anchors/messages retained, zero
+added/removed. That comparison precedes the final four-case test-only addition,
+whose targeted Ruff/Pyright checks pass separately. Neither total source passes
+nor scoped typing relabels the whole type gate as passing.
+
+### Native CI coverage correction: preimplementation evidence
+
+Status: **Implemented and locally verified; final native gate passes 76 cases
+with four platform skips/all 29 critical cases passing; hosted proof pending**,
+using existing REQ-CORE-004-AC02/AC03 and the
+[native coverage matrix](../docs/qt-qml/PLAN.md#native-ci-coverage-correction-acceptance-before-implementation).
+The frozen workflow's 34 unique literal Windows selections omit
+`test_atomic_writes.py`, `test_atomic_replace_retention.py`,
+`test_owned_readonly_replacement.py`, `test_graphml_owned_replacement.py`,
+`test_skillgen_interpreter_identity.py` and `test_native_newline_cli.py`.
+Private before evidence `windows-selection-before.json` confirms actual
+PowerShell5.1 and pwsh7 evaluate the same ordered inventory. That read-only
+observation demonstrates the omission, not hosted native acceptance.
+
+The existing `test_ci_windows_tools.py` owner covers portable exact-array
+inventory, invalid/comment/dynamic/duplicate/missing selection controls and
+actual PowerShell array agreement. Its native fixture keeps the five current
+tool tests native-only while the portable guard runs on Ubuntu. The existing
+integrity step requires 29 exact passing critical case identities, including
+original owned-copy/guarded writer cases, and write native-case/integrity reports
+before combined rejection. Actual failure-tail controls preserve evidence
+and failure exit. The final bounded native result is recorded below.
+
+No runtime/package source changes, new job/dependency/trigger/permission or new
+increment belong to this follow-up. The later CI/test/docs head needs its own
+native and hosted evidence. The passing source67 full run is not renamed as
+having executed the changed workflow or new guard; publication uses normal PR
+validation without a duplicate full dispatch.
+
+### Local CI guard result before combined native execution
+
+The acceptance matrix and REQ-CORE-004-AC02/AC03 refinement were saved before
+implementation. The actual inventory guard first fails against the original
+34-entry workflow, naming exactly the six missing modules: **one expected
+failure**, 1.04 seconds (`ci-guard-before.xml`). After the bounded workflow
+correction, the existing guard module passes **23 cases without skips,
+failures or errors** in 14.08 seconds (receipt wrapper 15.03 seconds):
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest tests/test_ci_windows_tools.py::test_req_core004_ac02_actual_windows_inventory_covers_native_regressions -q --tb=short -p no:cacheprovider --junitxml=.venv/upstream-sync-0.9.92-final/ci-guard-before.xml
+.venv/Scripts/python.exe -X utf8 -m pytest tests/test_ci_windows_tools.py -q --tb=short -p no:cacheprovider -rs --junitxml=.venv/upstream-sync-0.9.92-final/ci-guard-after.xml
+```
+
+| Acceptance ID | Exact guard and observable outcome |
+| --- | --- |
+| REQ-CORE-004-AC02 | `test_req_core004_ac02_actual_windows_inventory_covers_native_regressions` admits the actual 40-entry literal Windows array, preserving the original 34 entries in order and requiring all six additions. |
+| REQ-CORE-004-AC03 | Six `test_req_core004_ac03_selection_rejects_omissions_and_nonliteral_tokens` mutations reject omissions and duplicate/malformed/dynamic tokens. The final strengthened versions also reject quoted comment decoys, as recorded below. |
+| REQ-CORE-004-AC02 | `test_req_core004_ac02_native_array_execution_matches_portable_inventory` executes the actual admitted assignment in real PowerShell and compares exact ordered output. |
+| REQ-CORE-004-AC03 | Eight `test_req_core004_ac03_actual_junit_proof_requires_each_native_case` profiles execute the actual workflow Python audit against valid/missing/duplicate/failed/skipped evidence, requiring all 29 critical native identities. |
+| REQ-CORE-004-AC03 | Two `test_req_core004_ac03_native_audit_retains_integrity_when_case_proof_rejects` profiles execute the real PowerShell tail and retain native-case/integrity artifacts before failure. |
+
+All five existing actual application/tool cases remain collected and pass.
+Complete PowerShell step syntax parses under actual 5.1 and 7; the native test
+fixture's executed engine is distinguished from outer workflow `pwsh` execution.
+YAML parsing and structural comparison confirm other jobs and top-level policy
+unchanged. The workflow measures 582 lines under its documented 600-line
+cohesion ceiling; the existing test measures 286, below 300. Focused Ruff passes
+and explicit-interpreter Pyright reports zero errors. HEAD, both owned inputs,
+dependencies and original coverage remain unchanged during the 23-case run.
+`ci-guard-receipt.json`, `ci-guard-structure.json` and the before/after XML/log
+files retain exact input digests and outcomes.
+
+This is local proof of the saved two-file follow-up while HEAD is still
+`67bb2022`; the changed workflow/test are not part of the source67 full run.
+The final seven-module rerun below supplies combined native execution with the
+strengthened guard; the earlier standalone receipt remains historical. Normal
+hosted validation of the later committed head, artifact
+upload and eventual merged-SHA proof remain pending. No package rebuild or
+source-full rerun is implied solely by this workflow/test/docs correction.
+
+### Final strengthened native CI gate
+
+Status: **Locally verified for the bounded native profile; new hosted proof
+pending**. The final existing omission controls leave the exact omitted module
+token quoted on a comment line before the array closes. Both `omit` and
+`omit_guard` still reject; this strengthens comment-only false-inclusion
+coverage without adding cases, changing the workflow or changing product code.
+The final guard has 287 physical lines and all 23 cases pass in this combined
+run. The earlier standalone 23-case/286-line receipt remains historical.
+
+The actual six added product modules plus existing guard execute **80 cases:
+76 passed, four skipped, zero failures/errors**, with one warning. Pytest takes
+63.54 seconds; the wrapper takes 64.89 seconds and exits successfully. The
+native-case report confirms **all 29 exact critical identities present and
+passing**, with no required case skipped. HEAD, tracked working inputs, original
+coverage and dependencies remain unchanged during the run.
+
+Exact executed child command, with repository-relative paths:
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest tests/test_atomic_writes.py tests/test_atomic_replace_retention.py tests/test_owned_readonly_replacement.py tests/test_graphml_owned_replacement.py tests/test_skillgen_interpreter_identity.py tests/test_native_newline_cli.py tests/test_ci_windows_tools.py -q --tb=short -p no:cacheprovider -rs --junitxml=.venv/upstream-sync-0.9.92-final/ci-native-gate-nixumx7c/tests.xml
+```
+
+The owning helper selects these seven from the actual 40-entry workflow array,
+uses its admitted native tool profile and audits the individual JUnit outcomes.
+Node reports 24.19.0 and outer PowerShell reports 7.6.7; the actual-array test's
+Windows PowerShell fixture is separate evidence. This is not execution of the
+whole 40-entry job, all source tests or a hosted runner.
+
+| Exact noncritical skipped identity | Remaining assignment |
+| --- | --- |
+| `test_atomic_writes.py::test_write_text_atomic_preserves_existing_mode` | POSIX mode-bit equality is inapplicable to Windows read-only attributes. |
+| `test_atomic_writes.py::test_write_text_atomic_writes_through_symlink` | Actual host symlink-creation capability unavailable. |
+| `test_atomic_writes.py::test_os_replace_with_fallback_replaces_a_symlink_destination_in_place` | Existing fixture assigns different Windows symlink setup to its separate platform profile. |
+| `test_graphml_owned_replacement.py::test_req_qml018_ac06_graphml_replaces_link_without_changing_target` | Actual symlink creation unavailable for this platform/account. |
+
+None of these four exclusions is a passing native acceptance result. The 29
+required identities include both original raw owned-copy and guarded atomic
+read-only cases, four atomic-retention cases, five owned-copy cases, four
+GraphML rejection/failure/retry cases, six actual shipped-interpreter cases and
+eight native LF/CRLF cases. Exact identities and outcomes remain reviewable in
+`tests.xml`; `native-cases.json` records the aggregate verdict against the
+workflow's explicit required-case inventory. All earlier guard mappings above
+execute in the final run.
+Real PowerShell failure-tail controls retain native-case/integrity reports
+before rejection, and literal-comment controls cannot fake module inclusion.
+
+Final receipts beneath
+`.venv/upstream-sync-0.9.92-final/ci-native-gate-nixumx7c/` are `receipt.json`,
+`tests.xml`, `tests.log`, `native-cases.json`, `selection.json`,
+`shell-consumers.json` and `dependency-check.log`. The receipt records exact
+working-input digests. HEAD remains source67 and the production tree remains
+`788fef0b`; the intentional later workflow/test/docs diff is separate from the
+clean source67 full-suite inputs. Preservation here means those saved working
+inputs did not change during execution, not that the new guard belonged to the
+source67 commit. No runtime/package or active-tool/application change occurs.
+
+The workflow remains 582 lines under its 600-line cohesion allowance and the
+guard remains below 300. The final AST-only repository refresh succeeds with
+27,243 nodes and 63,884 edges, 48 uncached inputs, one known partial Luau fixture
+and 26 no-symbol inputs (`graph-update-final-ci.log`). No API/LLM work, per-user
+tool or application graph refresh occurs. Whole Ruff passes on the final guard;
+production source remains unchanged. Final documentation checks precede the
+owning follow-up commit and normal PR publication. Fresh hosted head/base/
+checkout/service/artifact-upload evidence, required reviews, authorized merge
+and exact merged-SHA validation remain outstanding. Whole Pyright retains its
+651-diagnostic baseline; these native passes do not close platform/service,
+runtime Qt, native-browser/device or application-adoption gaps.

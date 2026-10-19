@@ -35,19 +35,26 @@ The earlier policy-22 hosted checkpoint does not verify this changed source.
 INC-QML-54 integrates upstream 0.9.92 while preserving these behavioral criteria.
 Its accepted compatibility decision uses AST schema 18 with upstream grammar
 fingerprinting and language overrides, retaining Qt policy 25 and independent
-semantic-cache ownership. The committed `90578033` wheel has verified raw-source
-identity and bounded isolated-install proof: 495 cases pass, with a separate
-six-case HCL add-on profile. Its complete source run **Failed** with 44 test
-failures and twelve setup errors; corrections and hosted verification remain
-pending, and whole-project typing remains failed. Earlier source/artifact/
+semantic-cache ownership. Corrected source `67bb2022` passes the complete local
+source suite: 11,776 passed, 173 explicitly assigned skips, zero failures/errors;
+all four preservation checks pass. Its source-matched wheel verifies all 327
+shipped Graphify files and passes 715 installed cases with one explicit GraphML
+symlink-capability skip. A separate locked HCL add-on passes six cases. The
+historical `90578033` full source failure is recorded separately. Earlier
 adoption evidence does not verify the new inputs. The
 [integration matrix](qt-qml/PLAN.md#inc-qml-54--upstream-0992-integration)
 identifies the affected criteria before conflict resolution. The installed
 policy-25 tool remains the separately verified earlier production tree.
-The post-905 corrections are implemented with bounded source evidence recorded
-in traceability; the next frozen source run, rebuilt wheel/install and hosted
-proof remain pending. Whole typing still fails with the same 651 diagnostics as
-`90578033`, with no added or removed diagnostics under the verified profile.
+The [corrected committed checkpoint](../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+records source, installed and separate HCL profiles. The six added Windows
+modules plus the existing CI guard pass 76 cases with four explicit platform
+skips; all 29 critical native cases and all four preservation checks pass.
+This later CI/test/docs working-tree proof is separate from source67's complete
+suite. New hosted head/base/checkout, review/merge and exact merged-SHA proof
+remain pending.
+Whole typing still fails with the same 651 diagnostics as `90578033`, with no
+added or removed diagnostics under the verified profile. The active per-user
+tool and application graph are unchanged by this integration.
 
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
@@ -314,11 +321,11 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. In Qt-aware refresh, automatic retirement of an existing C++ import placeholder additionally requires exact accepted source-owned prior import evidence; canonical node shape alone or incomplete, foreign, conflicting or nonauthoritative prior transport cannot grant cleanup authority through any generic sweep. Bounded retained-cleanup context persists with the same accepted graph through raw/clustered output, reload, repeat and removal of the last Qt source. It restricts cleanup only, grants no provider or deletion authority, and clears when accepted new source proof or a legitimate node removal/role transition supersedes it. Malformed context rejects publication without replacing accepted products. Still-referenced external nodes and source-backed definitions remain intact. Consumed pending community-label products are removed only with successful publication of their corresponding product cohort; an already absent product and repeated consumption are safe no-ops. (`REQ-QML-011-AC04`)
 
 The INC-QML-54 pending-label consumption and transactional-deletion refinement is
-**Implemented; fourteen focused source cases pass; broader integration/package/
+**Implemented; corrected source67 full-suite and isolated installed cases pass;
 hosted verification pending**. Earlier incremental evidence remains bound to its
 recorded products and does not establish this new deletion boundary.
-The post-905 D30/prior-import interaction is **Implemented locally; 132 focused
-source cases pass without skips; frozen full/artifact/hosted proof pending**:
+The post-905 D30/prior-import interaction is **Implemented; corrected source67
+full-suite and all 136 installed retention/diagnostic cases pass; hosted proof pending**:
 the original prior-source-proof preservation assertions remain authoritative.
 Fresh accepted source reintroduction clears obsolete retention in that same
 successful update. Legacy reload/backfill cannot manufacture accepted fresh
@@ -344,11 +351,12 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. Transactional deletion accepts only a bounded product name from its declared inventory; unsafe or undeclared names reject before any product mutation. Retained-import context uses schema 1, exact keys/types and a sorted unique list of at most 100,000 existing canonical placeholder IDs, each at most 4,096 UTF-8 bytes. Unknown versions/keys, duplicates, foreign or noncanonical nodes and over-limit values reject without truncating or discarding restrictions to permit cleanup. (`REQ-QML-012-AC04`)
 
-Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles; INC-QML-54 transactional deletion has focused source proof, with broader verification pending**.
+Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles; INC-QML-54 source67 full-suite and isolated installed cases pass, with new hosted proof pending**.
 Post-905 reconciliation of lower-level owned-copy replacement with unchanged
 atomic/product read-only rejection is implemented in the bounded 35-pass source
-selection, with three explicit platform skips. New artifact/full/hosted proof is
-pending; earlier receipts do not verify the corrected shared helper.
+selection, with three explicit platform skips. Corrected source67 full-suite and
+source-matched installed proof now pass; platform skips and new hosted proof
+remain explicit gaps. Earlier receipts do not verify the corrected shared helper.
 Invalid prior retained-import context rejects before extraction or candidate AST
 cache writes, including forced manual/watch updates. Existing successful cache
 bytes and the accepted product cohort remain unchanged; corrected retry succeeds.
@@ -386,10 +394,10 @@ Query, explain, path, affected, JSON/HTML and other supported exports, and optio
 
 4 - With the MCP extra installed, production MCP queries agree with equivalent CLI fixtures; searchable Qt metadata is deliberately projected/indexed rather than assumed discoverable. (`REQ-QML-013-AC04`)
 
-INC-QML-54's post-905 GraphML owner preflight is **Implemented locally** with
-read-only/real-failure/retry source proof; its real-symlink case retains an
-explicit platform skip. Earlier installed-wheel results retain their recorded
-scope; corrected artifact/full/hosted proof is still required.
+INC-QML-54's post-905 GraphML owner preflight is **Implemented with corrected
+source67 full-suite and isolated installed proof** for read-only/real-failure/
+retry cases. Its real-symlink case retains an explicit platform skip; new hosted
+proof remains required. Earlier installed-wheel results retain their own scope.
 
 <a name="qml-014--platform-and-compatibility-evidence"></a>
 
@@ -652,7 +660,7 @@ and content contract of the selected operating-system profile.
 
 5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. For the generated encoded Windows form, ownership additionally requires exact outer PowerShell options, bounded valid base64/UTF-16 and the exact static hook-check wrapper, permitting only trailing ASCII spaces/tabs after the encoded token. Status alone or general shell/whitespace normalization cannot authorize removal. Leading whitespace, changed options/payload/script/marker, ordinary, foreign and malformed entries remain authored. Recognition executes no script, performs no filesystem lookup and changes no configuration. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
 
-Status: **Locally Verified for the recorded native Windows and destination profiles; INC-QML-54 encoded cleanup passes 55 source cases, with installed/hosted proof pending**.
+Status: **Locally Verified for the recorded native Windows and destination profiles; INC-QML-54 corrected source67 full-suite and isolated installed cases pass, with new hosted proof pending**.
 The post-905 caller-owned read-only correction is **Implemented locally** with
 35 focused passes and three platform skips. Recorded-interpreter source and
 freshly regenerated shipped-resource selections pass: six actual transport cases
@@ -711,9 +719,9 @@ dependencies, and reports failures and exclusions explicitly.
 
 1 - Ubuntu Python 3.10, 3.12, 3.13 and 3.14 jobs execute the full source suite with all frozen extras, a real C preprocessor, Bash/sh, Node and a reviewed wheel input. A disposable pinned FalkorDB service admits graph commands before its persistence/idempotency tests run. Missing tools or the wrong service fail readiness; they cannot establish passing acceptance through skips. Real POSIX object, permission and deleted-directory fixtures execute where applicable. (`REQ-CORE-004-AC01`)
 
-2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
+2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. The assigned profile includes owned read-only replacement/rollback, guarded atomic read-only rejection, GraphML rejection/failure/retry, actual shipped recorded-interpreter dispatch and native LF/CRLF byte/topology regressions. A portable guard validates the existing job's actual literal selection inventory; a real PowerShell consumer evaluates that exact assignment and agrees with the guarded inventory. Missing required modules, duplicate/malformed selection and comment-only false inclusion reject. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
 
-3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
+3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. Required native case identities and outcomes remain individually reviewable; absence, collection or a skipped case cannot establish passing acceptance. Native-case and integrity reports are written before a combined rejection, so failed evidence remains inspectable. The test's actual PowerShell engine and the outer workflow host remain distinct evidence when versions differ. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
 
 4 - The established push/PR/dispatch triggers and existing required/advisory gate policies remain intact. One PR event owns its validation; no equivalent full feature-push dispatch is added. Obsolete PR revisions can cancel their own workflow runs, while default-branch and explicit recovery runs retain distinct groups and cannot be cancelled by a later PR revision. Jobs use read-only repository permissions. (`REQ-CORE-004-AC04`)
 
@@ -725,6 +733,13 @@ tests and configuration checks do not establish hosted acceptance. The
 binds actual jobs, archives, individual required cases, integrity and cleanup to
 their tested source/base/checkout. Baseline typing, advisory security and separate
 application/device procedures are outside this runner-profile verification.
+
+INC-QML-54's expanded Windows selection and individual-case integrity guard are
+**Implemented and locally verified: the seven-module native gate passes 76
+cases with four platform skips; all 29 critical cases pass** under
+REQ-CORE-004-AC02/AC03. Its local source and installed
+profiles do not extend the earlier hosted checkpoint to the new workflow/head.
+Fresh hosted execution, upload and exact revision evidence remain required.
 
 ## Current-upstream integration profile
 
