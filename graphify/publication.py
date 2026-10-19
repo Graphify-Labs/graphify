@@ -107,6 +107,8 @@ class ProductPublication:
         """Seed prior bytes for existing serializers without touching accepted products."""
         if name not in self.targets:
             raise ValueError("GRAPH_PUBLICATION_FAILED: unknown product")
+        if name in self.stages and self.stages[name] is None:
+            raise ValueError("GRAPH_PUBLICATION_FAILED: conflicting product operations")
         if name not in self.stages:
             staged = self.staging / name
             original = self.originals[name]
@@ -117,6 +119,18 @@ class ProductPublication:
                 staged.chmod(staged.stat().st_mode | stat.S_IWRITE)
             self.stages[name] = staged
         return self.stages[name]
+
+    def delete(self, name: str) -> None:
+        """Schedule one inventoried removal within the existing commit/rollback order.
+
+        A missing product and a repeated deletion are no-ops. Its snapshot stays
+        owned by this transaction until every later replacement also succeeds.
+        """
+        if not isinstance(name, str) or name not in self.targets:
+            raise ValueError("GRAPH_PUBLICATION_FAILED: unknown product")
+        if name in self.stages and self.stages[name] is not None:
+            raise ValueError("GRAPH_PUBLICATION_FAILED: conflicting product operations")
+        self.stages[name] = None
 
     def commit(self) -> tuple[str, ...]:
         """Publish prepared changes, then mark one coherent cohort committed."""
@@ -131,6 +145,13 @@ class ProductPublication:
                 raise OSError("GRAPH_PUBLICATION_FAILED: destination appeared during preparation")
         for name, stage in self.stages.items():
             target, original = self.targets[name], self.originals[name]
+            if stage is None:
+                if original is None:
+                    continue
+                if os.name == "nt" and not target.stat().st_mode & stat.S_IWRITE:
+                    raise PermissionError("GRAPH_PUBLICATION_FAILED: read-only " + name)
+                changed.append(name)
+                continue
             if not stage.is_file():
                 raise OSError("GRAPH_PUBLICATION_FAILED: staged product is missing")
             if original is not None and _same(stage, original):
@@ -145,7 +166,10 @@ class ProductPublication:
             for name in changed:
                 self.targets[name].parent.mkdir(parents=True, exist_ok=True)
                 self.attempted.append(name)
-                self.replace(self.stages[name], self.targets[name])
+                if self.stages[name] is None:
+                    self.targets[name].unlink()
+                else:
+                    self.replace(self.stages[name], self.targets[name])
         except BaseException:
             self._rollback()
             raise

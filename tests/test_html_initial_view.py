@@ -78,6 +78,9 @@ const document = Object.assign(new EventTarget(), {
   createElement() { const element = new Element(); element.parent = this; return element; },
   querySelectorAll() { return []; }
 });
+// The upstream sidebar tooltip attaches to the browser body; no tooltip or
+// navigation behavior is reimplemented by this external DOM surface.
+document.body = new Element(); document.body.parent = document;
 class DataSet {
   constructor(items) { this.map = new Map(items.map(n => [n.id, n])); this.updates = 0; }
   get(id) { return this.map.get(id); }

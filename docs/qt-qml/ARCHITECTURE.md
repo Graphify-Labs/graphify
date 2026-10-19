@@ -875,3 +875,100 @@ membership rules remain unchanged. The design owns the exact name/syntax proof
 and CMake references; traceability owns the new execution evidence. Prior
 policy-24 artifact/source acceptance does not verify this changed extension;
 current source and isolated artifact/install cases pass, while hosted proof remains pending.
+
+## D29 — Upstream 0.9.92 compatibility namespace
+
+Status: **Implemented for INC-QML-54; namespace/grammar/override/native-cache source cases pass; wider verification pending**.
+Upstream `86c57be8` introduces AST schema 17 and a cache namespace fingerprint of
+installed tree-sitter distributions. The published combined Qt producer uses
+schema 13. Integration assigns schema 18 so neither published namespace can
+supply stale source facts under package 0.9.92. Retain upstream grammar-set
+fingerprinting and language-override ownership, together with Qt policy 25's
+explicit native-context cache bypass and derived-product refresh. Semantic
+content lifetime remains independently owned; this change cannot authorize
+semantic re-extraction or execute analyzed project code.
+
+Keeping 13 would reuse the Qt producer identity for changed upstream facts;
+adopting 17 would collide with upstream-only producer output at the same package
+version. A new combined namespace makes this boundary explicit without a second
+cache or persistence writer. Grammar changes, language overrides and native Qt
+contexts must be exercised together before accepting integration. Cold/warm and
+full/incremental parity, stale-edge removal, rejected-update retention and
+repaired retry remain required. The [design](DESIGN.md#upstream-0992-integration--inc-qml-54)
+owns integration seams; [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+owns executed and pending evidence. Earlier installed-tool and hosted results
+remain bound to their original revisions.
+
+## D30 — Automatic placeholder tiers preserve authored provenance
+
+Status: **Implemented; final 168-case source selection passes without skips; wider verification pending**.
+Upstream import placeholders are tierless; the prior Qt raw publisher stamps new
+placeholder records semantic. Integration retains tierless status for the
+canonical minted shape and an explicitly bounded legacy-shape compatibility
+convention. Preserve authored metadata, attributes and origins outside that
+convention; it is not a rewrite of arbitrary source or semantic facts. Keep existing source-backed preference,
+still-referenced placeholder retention, unreferenced removal, failure retention
+and unchanged-repeat contracts under their current build/publication owners.
+
+A legacy record whose entire shape matches an automatic placeholder has no
+reliable authored-versus-generated distinction from stored data. The accepted
+compatibility convention includes a historical semantic stamp, so an exact-shape
+authored legacy record may receive automatic treatment. This is an explicit
+exception, not provenance certainty. Metadata even when empty, source locations,
+unknown fields, other origins and noncanonical values remain protected. A shared
+bounded predicate owns the shape and validated presentation fields, including
+finite numeric coordinates. Prior-import cleanup additionally requires its
+existing prior-ID/source proof. Adding a second predicate or relabeling every
+sourceless node would conflict with tier/provenance ownership. The
+[design](DESIGN.md#automatic-placeholder-provenance--inc-qml-54) and
+[traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+record the exact admitted shapes, source/update/reload cases and remaining gaps.
+
+## D31 — Refresh admitted filename-collision cohorts before context
+
+Status: **Implemented; frozen 31-case source selection passes with two platform skips; wider verification pending**.
+Stored source anchoring shares the verified root domain. When a saved relative
+marker resolves to `watch_root`, accept its alias prefix and the contained
+`watch_root.relative_to(invocation_root)` prefix as project-relative. Preserve
+invocation-directory project root, external-root fallback and source containment;
+match components so a neighboring prefix grants no authority. No per-source
+resolution or label/ID inference is introduced.
+
+Prior graph context does not retain authoritative pre-salt file roles. Do not
+reconstruct those roles from display labels or existing IDs. The shared filename
+cohort helper receives the accepted code files, explicit admitted scan root and
+selected targets, reusing the existing base canonical file-ID policy. Discovery
+canonicalizes the scan parent into `watch_root`; accepted and retired paths already
+use that domain. Pass the same root, preserving walked child aliases rather than
+resolving individual sources or retaining an incompatible invocation-root alias.
+Optional retired seeds come only from the watch owner's already-recorded deleted
+source identities; they supply lexical collision keys without being read or
+returned as sources. Selected targets must remain a subset of current accepted
+inputs; only admitted surviving peers may be returned.
+It adds only accepted peers whose
+canonical file-node ID collides with a selected source, preserving distinct
+walked aliases and the prior physical co-owner expansion.
+
+The watch owner composes existing Terraform refresh, physical co-owner expansion
+and filename-cohort expansion to a bounded monotone closure before incremental context construction
+and extraction. Initialize admitted walked nonsemantic sources once; repeat
+until the selected set stops growing, retaining deterministic order. Each changed
+iteration adds an admitted source, so closure takes at most the admitted count
+plus one passes. This captures a deleted-seed peer whose physical co-owner joins
+on a later pass. A filename peer can introduce a Terraform source whose existing
+module fanout joins on the next pass, and Terraform fanout can introduce another
+filename collision. Unrelated unchanged files remain under their
+existing cache policy and are not parsed because of this refresh. Do not discover
+new files, read outside the accepted corpus or refresh the whole codebase. The
+helper preserves notification order and appends same-key peers in walked-relative
+path order. It performs no resolution, stat or source read and introduces no ambient root, source
+parser, cache or persistence writer. Failed selection cannot silently preserve
+stale accepted context; existing failure/retention and repaired-retry contracts
+remain applicable.
+
+Reconstructing lost source roles from labels guesses authority; refreshing every
+file discards the bounded incremental contract. Re-extracting only the accepted
+collision cohort restores the full-run disambiguation inputs without either
+shortcut. The [design](DESIGN.md#bounded-filename-cohort-refresh--inc-qml-54)
+owns interface/order and [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+records cold/warm, real update/full, repeat, failure and unrelated-cache proof.

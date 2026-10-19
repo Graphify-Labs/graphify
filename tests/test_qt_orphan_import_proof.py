@@ -13,7 +13,7 @@ from tests.test_qt_cpp_file_roles import cpp_fixture
 
 @pytest.fixture
 def prior(tmp_path):
-    """Actual C++ import and builder-created external role survive the normal origin-classifying reload."""
+    """Actual C++ import and canonical tierless external role survive the normal reload."""
     graph = build_from_json(cpp_fixture(tmp_path), root=tmp_path)
     path = tmp_path / "previous.json"
     assert to_json(graph, {}, str(path))
@@ -21,7 +21,7 @@ def prior(tmp_path):
     assert loaded is not None
     nodes, edges, hyperedges, directed = loaded
     payload = {"nodes": nodes, "links": edges, "hyperedges": hyperedges, "directed": directed}
-    assert next(node for node in nodes if node["id"] == "missing")["_origin"] == "semantic"
+    assert "_origin" not in next(node for node in nodes if node["id"] == "missing")
     return payload
 
 
@@ -113,7 +113,7 @@ def test_malformed_prior_groups_do_not_supply_proof(prior, field, value):
 
 
 @pytest.mark.parametrize("role", ["foreign_origin", "ast_origin", "metadata", "empty_metadata", "callable", "type",
-                                "source", "location", "label", "identity", "external_type"])
+                                "source", "location", "label", "identity", "external_type", "attribute"])
 def test_authoritative_or_noncanonical_external_role_is_preserved(prior, role):
     """A same-name source/user/unsupported role cannot be erased by a known import target."""
     node = copy.deepcopy(next(node for node in prior["nodes"] if node["id"] == "missing"))
@@ -121,8 +121,18 @@ def test_authoritative_or_noncanonical_external_role_is_preserved(prior, role):
                   "metadata": ("metadata", {"native_endpoint": "accepted"}), "empty_metadata": ("metadata", {}),
                   "callable": ("_callable", False), "type": ("type", "class"), "source": ("source_file", "kept.cpp"),
                   "location": ("source_location", "L2"), "label": ("label", "authored label"),
-                  "identity": ("id", "authored_missing"), "external_type": ("external", 1)}[role]
+                  "identity": ("id", "authored_missing"), "external_type": ("external", 1),
+                  "attribute": ("note", "Authored rationale")}[role]
     node[key] = value
+    assert removal(prior, node) == [node]
+
+
+def test_generic_ast_classification_cannot_bypass_external_role(prior):
+    """An explicit external record must satisfy D30 even beside generic AST code fields."""
+    node = copy.deepcopy(next(node for node in prior["nodes"] if node["id"] == "missing"))
+    node.pop("type")
+    node.update(file_type="code", _origin="ast")
+    assert node["external"] is True
     assert removal(prior, node) == [node]
 
 

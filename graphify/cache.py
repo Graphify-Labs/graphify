@@ -22,10 +22,11 @@ from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
 # content means extractor fixes shipped in a new release keep serving stale
-# pre-fix results. The AST cache is therefore namespaced by package version
-# and cache-key schema (cache/ast/v{version}-s{schema}/), with entries from
-# other versions or schemas removed on first
-# use. The semantic cache is deliberately NOT versioned — its entries are
+# pre-fix results. The AST cache is therefore namespaced by package version,
+# cache-key schema and tree-sitter grammar versions
+# (cache/ast/v{version}-s{schema}-g{grammars}/), with entries from other
+# versions, schemas, or grammar sets removed on first use. The semantic cache
+# is deliberately NOT versioned — its entries are
 # produced by the LLM from file contents, and invalidating them on every
 # release would re-bill extraction for unchanged files.
 try:
@@ -36,17 +37,57 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-# The integrated producer carries both Qt API/callback/reference-callable facts
-# and upstream Python receiver-shadow facts. Neither schema-12 Qt entries nor
-# schema-5 upstream entries establish that combined transport contract.
-_AST_CACHE_SCHEMA = 13
+# Schema 18 joins upstream grammar/override-sensitive facts with the Qt
+# original-byte, callable and nested-reference contracts. Neither upstream 17
+# nor the Qt fork's 13 cache proves this combined producer contract.
+_AST_CACHE_SCHEMA = 18
+
+
+# Per-process memo: distributions() scans site-packages metadata, which is
+# far too expensive to redo on every cache_dir() call during a run.
+_GRAMMAR_FINGERPRINT_CACHE: "str | None" = None
+
+
+def _grammar_fingerprint() -> str:
+    """Short stable fingerprint of the installed tree-sitter grammar set.
+
+    AST output depends on the grammar packages, not just graphify's own
+    version: upgrading ``tree-sitter-swift`` changes what the extractor
+    produces for the same file, so the cache namespace must change too,
+    otherwise stale pre-upgrade extractions are served indefinitely
+    (#4236). Covers the ``tree-sitter`` runtime, every ``tree-sitter-*``
+    distribution, and bundled packs like ``tree-sitter-language-pack``."""
+    global _GRAMMAR_FINGERPRINT_CACHE
+    if _GRAMMAR_FINGERPRINT_CACHE is not None:
+        return _GRAMMAR_FINGERPRINT_CACHE
+    parts: list[str] = []
+    try:
+        from importlib.metadata import distributions
+
+        for dist in distributions():
+            try:
+                name = (dist.metadata.get("Name") or "").lower()
+            except Exception:
+                continue
+            if name == "tree-sitter" or name.startswith("tree-sitter-") or name.startswith("tree_sitter"):
+                parts.append(f"{name}=={dist.version}")
+    except Exception:
+        _GRAMMAR_FINGERPRINT_CACHE = "unknown"
+        return _GRAMMAR_FINGERPRINT_CACHE
+    if not parts:
+        _GRAMMAR_FINGERPRINT_CACHE = "none"
+        return _GRAMMAR_FINGERPRINT_CACHE
+    digest = hashlib.sha256(";".join(sorted(parts)).encode("utf-8")).hexdigest()
+    _GRAMMAR_FINGERPRINT_CACHE = digest[:12]
+    return _GRAMMAR_FINGERPRINT_CACHE
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
 
 
 def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
-    """Remove AST cache entries left behind by other graphify versions.
+    """Remove AST cache entries left behind by other graphify versions or
+    grammar sets.
 
     Sweeps sibling ``v*/`` directories and unversioned ``*.json`` entries
     (the pre-versioning layout) under ``cache/ast/``. Best-effort: failures
@@ -982,8 +1023,8 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     "semantic-deep" (#1894). Separate subdirectories prevent semantic cache
     entries from overwriting AST cache entries for the same source_file (#582).
 
-    AST entries live in graphify-out/cache/ast/v{version}-s{schema}/, namespaced
-    by graphify version and cache-key schema because they depend on extractor
+    AST entries live in graphify-out/cache/ast/v{version}-s{schema}-g{grammars}/, namespaced
+    by graphify version, cache-key schema, and tree-sitter grammar set because they depend on extractor
     code and key semantics, not just file contents. Semantic entries are still
     NOT version-namespaced (re-extraction
     costs LLM calls, #1252): they live in graphify-out/cache/semantic/, with
@@ -998,7 +1039,7 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
     d = base / "cache" / kind
     if kind == "ast":
-        d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}"
+        d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}-g{_grammar_fingerprint()}"
         _cleanup_stale_ast_entries(d.parent, d)
     elif prompt_fp:
         d = d / f"p{prompt_fp}"
@@ -1006,11 +1047,19 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     return d
 
 
+def _salted_key(h: str, salt: str | None) -> str:
+    """Derive the on-disk key from a content hash plus optional salt."""
+    if not salt:
+        return h
+    return hashlib.sha256(f"{h}:{salt}".encode("utf-8")).hexdigest()
+
+
 def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
                 prompt_file: "str | Path | None" = None,
                 allow_legacy: bool = True,
-                allow_partial: bool = False) -> dict | None:
+                allow_partial: bool = False,
+                salt: str | None = None) -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
     Cache key: SHA256 of file contents.
@@ -1039,6 +1088,10 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     so :func:`check_semantic_cache` can report N to the user. Callers that must
     not mix vintages within one entry (see :func:`save_semantic_cache`'s
     ``merge_existing``) pass allow_legacy=False.
+    ``salt`` folds extra material into the key for an entry whose validity
+    depends on more than the file's bytes — a file the project remaps to
+    another language (#2961) parses to a different graph from the same
+    content, so it must not hit the entry produced under the old extractor.
     Returns None if no cache entry or file has changed.
     """
     global _legacy_semantic_hits, _corrupt_cache_entries
@@ -1047,6 +1100,7 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         h = file_hash(path, root, cache_root=cache_root)
     except OSError:
         return None
+    h = _salted_key(h, salt)
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
     entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
     legacy_hit = False
@@ -1108,14 +1162,57 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
             # id-remap cannot fix because they match none of its current-path
             # keys. Order is free — source_file never carries the marker.
             _absolutize_ids_in(result, path, root)
+            targets = result.pop(_CACHED_TARGETS_KEY, None)
+            if isinstance(targets, list) and not all(
+                _target_file_present(t, root) for t in targets if isinstance(t, str)
+            ):
+                return None
         return result
     return None
 
 
+# Cross-file edges (imports, re-exports, links) carry a ``target_file`` stamp
+# naming the file they resolved to. An AST entry is keyed by its own file's
+# content only, so a hit replays that resolution after the target is renamed or
+# deleted: the edge keeps the id minted from the target's absolute path, which
+# extract() maps to a portable id only for targets that exist, so the checkout
+# path reached graph.json and a warm build differed from a cold one. The entry
+# records the targets that existed when it was written; a hit whose recorded
+# target is gone is a miss and the file is extracted again.
+_CACHED_TARGETS_KEY = "_cached_target_files"
+
+
+def _target_file_present(target: str, root: Path) -> bool:
+    candidate = Path(target)
+    if not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _present_target_files(result: dict, root: Path) -> list[str]:
+    """The ``target_file`` stamps in ``result`` that name an existing file."""
+    present: set[str] = set()
+    for edge in result.get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        target = edge.get("target_file")
+        if isinstance(target, str) and target and target not in present:
+            if _target_file_present(target, root):
+                present.add(target)
+    return sorted(present)
+
+
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
-                prompt_file: "str | Path | None" = None) -> None:
+                prompt_file: "str | Path | None" = None,
+                salt: str | None = None) -> None:
     """Save extraction result for this file.
+
+    ``salt`` must match what the corresponding :func:`load_cached` passes
+    (see there); it namespaces the key, not the directory.
 
     Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
     result should be a dict with 'nodes' and 'edges' lists.
@@ -1158,12 +1255,16 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     if isinstance(result, dict):
         import copy as _copy
         on_disk = _copy.deepcopy(result)
+        if kind == "ast":
+            targets = _present_target_files(on_disk, root)
+            if targets:
+                on_disk[_CACHED_TARGETS_KEY] = targets
         _relativize_source_files_in(on_disk, root)
         # Then replace the absolute root inside the ids and remaining paths, so
         # the entry replays portably under any root (#2257). Strictly after the
         # source_file pass, which owns that field's bare-relative format.
         _relativize_ids_in(on_disk, p, root)
-    h = file_hash(p, root, cache_root=cache_root)
+    h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
     location = cache_root if cache_root is not None else root
     target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
     entry = target_dir / f"{h}.json"
@@ -1740,17 +1841,18 @@ def scope_semantic_result(
     still says unchanged, so no later incremental run re-dispatches it and the
     loss is permanent until a full rebuild.
 
-    Items whose ``source_file`` resolves outside ``allowed_source_files`` are
-    dropped from ``result``'s ``nodes`` / ``edges`` / ``hyperedges`` lists
-    (mutated in place); items without a ``source_file`` pass through. An edge
-    or hyperedge that survives the scope filter but references a dropped node
-    id is dropped too (#1916 mirror), unless that id is also defined by a kept
-    node (duplicate attribution must not be over-pruned).
+    Nodes and hyperedges whose ``source_file`` resolves outside
+    ``allowed_source_files`` are dropped from ``result`` (mutated in place);
+    items without a ``source_file`` pass through. An edge whose own
+    ``source_file`` is outside the allowlist is kept when both endpoint ids are
+    kept nodes (#2276). An edge or hyperedge that survives
+    the scope filter but references a dropped node id is dropped too (#1916
+    mirror), unless that id is also defined by a kept node (duplicate
+    attribution must not be over-pruned).
 
     Path matching shares :func:`_semantic_source_matcher` with
     :func:`save_semantic_cache` (relative against ``root``, walked-path
-    identity), so an item this function keeps can never still hit the save's
-    out-of-scope skip, and vice versa.
+    identity). That kept edge can still be skipped by the cache write.
 
     Returns ``(dropped_source_files, dropped_item_count)`` for logging;
     ``dropped_source_files`` holds the normalized ``source_file`` strings of
@@ -1787,6 +1889,20 @@ def scope_semantic_result(
         for item in result.get(bucket) or []:
             display, ident = _item_identity(item)
             if ident is not None and ident not in allowed_paths:
+                if bucket == "edges":
+                    src = item.get("source")
+                    tgt = item.get("target")
+                    # Nodes are processed first, so kept_ids is complete.
+                    # An edge to a dropped id that is not also kept still falls
+                    # through and is counted below (#2276).
+                    if (
+                        _hashable(src)
+                        and _hashable(tgt)
+                        and src in kept_ids
+                        and tgt in kept_ids
+                    ):
+                        kept.append(item)
+                        continue
                 dropped_files.add(display)
                 dropped_items += 1
                 if bucket == "nodes" and item.get("id") is not None:

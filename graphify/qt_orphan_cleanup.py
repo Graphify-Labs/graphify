@@ -6,6 +6,7 @@ only unreferenced placeholders omitted by the successful fresh extraction.
 """
 from __future__ import annotations
 
+from graphify.build import _is_external_stub
 from graphify.graph_direction import logical_endpoints
 
 
@@ -72,14 +73,12 @@ def prune_stale_ast_orphans(result: dict, *, fresh_ids: set[str], complete_refre
 
     def stale(node):
         generic_ast = (node.get("_origin") == "ast" and node.get("file_type") == "code"
-                       and not node.get("type"))
-        # The builder-created external shape acquires semantic origin on reload.
-        # Exact prior AST import identity supplies its omitted ownership proof;
-        # an arbitrary same-label semantic/user node cannot authorize removal.
+                       and not node.get("type") and not node.get("external"))
+        # Reuse D30's exact minted/legacy convention, including its bounded
+        # presentation fields, rather than interpreting external roles again.
+        # Prior source-owned AST import identity remains additional authority.
         generic_external = (node.get("id") in external_ids
-                            and node.get("file_type") == "concept" and node.get("type") == "external"
-                            and node.get("external") is True and node.get("label") == node.get("id")
-                            and node.get("_origin") in (None, "semantic") and "metadata" not in node)
+                            and _is_external_stub(node))
         return (node.get("id") not in fresh_ids and node.get("id") not in referenced
                 and (generic_ast or generic_external) and not node.get("source_file")
                 and not node.get("source_location") and not node.get("metadata")

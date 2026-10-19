@@ -289,8 +289,8 @@ resolution adds no warning; source corrections recover through normal update.
 
 | Code | Severity and owner | Outcome and recovery |
 | --- | --- | --- |
-| `GRAPH_PUBLICATION_FAILED` | Error; caller-owned product preparation/commit | Update returns failure and prior accepted products survive recoverable faults. Correct permissions/source/output conditions and retry the ordinary update. First-build failure accepts no product cohort. |
-| `GRAPH_PUBLICATION_RECOVERY` | Integrity error; publication rollback | A second restoration failure leaves recovery snapshots on disk. Stop accepting the mixed output, restore the complete prior cohort from the retained owned snapshot, correct the OS failure and rebuild. An automatic retry alone is not restoration proof. |
+| `GRAPH_PUBLICATION_FAILED` | Error; caller-owned product preparation/commit | Update returns failure and prior accepted products survive recoverable faults, including requested deletion or a later replacement failure. Invalid or undeclared deletion names reject before mutation. Correct permissions/source/output conditions and retry the ordinary update. First-build failure accepts no product cohort. |
+| `GRAPH_PUBLICATION_RECOVERY` | Integrity error; publication rollback | A restoration failure leaves recovery snapshots on disk, including originals of deleted products. Stop accepting the mixed output, restore the complete prior cohort from the retained owned snapshot, correct the OS failure and rebuild. An automatic retry alone is not restoration proof. |
 | `GRAPH_PUBLICATION_CLEANUP` | Warning after committed success; error after an uncommitted run; owned transaction cleanup | Accepted committed products remain coherent. Retained scratch files need cleanup after releasing locks/permissions; failed preparation preserves prior products. Cleanup failure never retroactively turns coherent committed success into false rollback evidence. |
 
 Diagnostics expose bounded stages/codes, not private filesystem paths or serializer
@@ -301,6 +301,15 @@ restored and read back; remove owned scratch only after that verification. A
 missing original product is restored to absence. Follow configured output symlink
 targets; never delete or move an unchecked computed path. Do not publish these
 local snapshots because their contents belong to the analyzed project.
+
+INC-QML-54 extends this existing contract to bounded pending-label deletion
+inside the product cohort; implementation and verification are pending. An
+already absent product and repeated deletion request are silent no-ops. A
+recoverable deletion or later commit failure restores all prior members, including
+deleted bytes. Successful retry commits consumption with its corresponding
+graph/state; there is no separate post-commit unlink. The same bounded codes,
+redaction and committed/uncommitted cleanup outcomes apply, with no new diagnostic
+identity. Earlier replacement-only proof does not establish deletion recovery.
 
 Individual writer restore failures likewise preserve a recovery backup when one
 exists, or explicitly report that no prior backup exists. Ordinary read-only
@@ -529,3 +538,40 @@ Out-of-root native declarations retain explicit unavailable membership and no
 new read; the exemption is not a root-admission bypass. Policy-25 local source
 and retention/recovery cases pass in source and the isolated installed profile;
 hosted proof remains pending.
+
+## Effective native-language selection — INC-QML-54
+
+An explicit supported override of a physical native Qt extension away from C++
+must not emit `QT_CPP_SYNTAX` or other native-stage rejection solely because of
+the filename. The selected language retains its own parser/diagnostic owner and
+cannot acquire native providers. Seven focused override cold/warm and transition
+cases pass; wider integration, installed and hosted evidence remains pending.
+Genuine selected-language failures keep their existing diagnostics.
+This correction adds no code identity, recovery writer or arbitrary-extension
+Qt/QML support claim. Its production regressions and current status belong to
+[traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54).
+
+### Bounded collision-target selection
+
+INC-QML-54's accepted filename-cohort selection uses the existing
+`WATCH_SOURCE_IDENTITY_FAILED` rejection with unavailable source context when its
+explicit admitted-input/root contract cannot be established. It cannot expose
+supplied paths or backend bodies, silently continue with partial targets, read a
+recorded deleted seed or resurrect it as input. Correct the source/root condition
+and retry the ordinary guarded update; prior accepted products remain protected.
+This extends the existing owning stage without a new code or persistence writer.
+The frozen source selection passes 31 cases with two existing platform skips;
+complete source/package/hosted verification remains pending.
+
+### Encoded hook ownership recognition
+
+INC-QML-54's generated Windows hook recognizer is a pure ownership check.
+Malformed, leading/other-whitespace, foreign or unmarked candidates remain authored;
+they do not become failed executable actions because no command runs. Real
+installation transport validation and configuration-write failures retain their
+existing bounded rejection/recovery behavior. The recognizer adds no diagnostic
+identity or filesystem/configuration side effect. Its adversarial and actual
+reinstall/uninstall source selection passes 55 cases under REQ-CORE-001-AC05;
+installed/hosted proof remains pending. An otherwise
+exact generated token may have trailing ASCII space/tab under the established
+ownership contract; this is not general whitespace or shell normalization.

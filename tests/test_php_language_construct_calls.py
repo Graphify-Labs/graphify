@@ -14,6 +14,8 @@ same shape as `_GO_PREDECLARED_FUNCS`. The boundary tests at the bottom are the
 reason: `$bag->empty()` is a genuine member call into that method and must still
 resolve, and the construct's arguments must still be walked for calls.
 """
+import pytest
+
 from graphify.extract import extract
 
 
@@ -256,3 +258,98 @@ def test_non_construct_function_call_still_resolves(tmp_path):
 
     resolved = _edges_between(result, caller_ids, target_ids)
     assert resolved, "a genuine cross-file function call must still resolve"
+
+
+@pytest.mark.parametrize("name, statement", [
+    ("die", "die($value);"),
+    ("eval", "eval($value);"),
+    ("array", "$result = array($value);"),
+    ("exit", "exit($value);"),
+    ("list", "list($value) = $values;"),
+    ("unset", "unset($value);"),
+])
+def test_construct_named_methods_keep_only_real_member_calls(tmp_path, name, statement):
+    """Keyword use must not bind, while the same-named member remains callable."""
+    (tmp_path / "Bag.php").write_text(
+        "<?php\nclass Bag {\n"
+        f" public function {name}($value) {{ return $value; }}\n"
+        f" public function constructUse($value, $values) {{ {statement} }}\n"
+        f" public function memberUse($value) {{ return $this->{name}($value); }}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "outside.php").write_text(
+        f"<?php\nfunction externalUse($value, $values) {{ {statement} }}\n",
+        encoding="utf-8",
+    )
+    result = _extract_php(tmp_path)
+    target = _ids(result, "Bag.php", name)
+    local = _ids(result, "Bag.php", "constructUse")
+    external = _ids(result, "outside.php", "externalUse")
+    member = _ids(result, "Bag.php", "memberUse")
+    assert target and local and external and member
+    assert not _edges_between(result, local | external, target)
+    assert _edges_between(result, member, target)
+
+
+def test_builtin_named_self_method_uses_its_own_class_and_php_case_rules(tmp_path):
+    source = tmp_path / "Bag.php"
+    source.write_text(
+        "<?php\nclass Bag { public function list() {}\n"
+        " public function useList() { $this->LIST(); } }\n"
+        "class Other { public function list() {} }\n",
+        encoding="utf-8",
+    )
+    result = _extract_php(tmp_path)
+    bag = next(n["id"] for n in result["nodes"] if n["label"] == "Bag")
+    other = next(n["id"] for n in result["nodes"] if n["label"] == "Other")
+    targets = _ids(result, "Bag.php", "list")
+    bag_targets = {e["target"] for e in result["edges"]
+                   if e["source"] == bag and e["relation"] == "method"} & targets
+    other_targets = {e["target"] for e in result["edges"]
+                     if e["source"] == other and e["relation"] == "method"} & targets
+    caller = _ids(result, "Bag.php", "useList")
+    assert bag_targets and other_targets and caller
+    assert _edges_between(result, caller, bag_targets)
+    assert not _edges_between(result, caller, other_targets)
+
+
+def test_builtin_named_self_call_does_not_bind_to_another_class(tmp_path):
+    (tmp_path / "Bag.php").write_text(
+        "<?php\nclass Bag { public function useList() { $this->list(); } }\n"
+        "class Other { public function list() {} }\n",
+        encoding="utf-8",
+    )
+    result = _extract_php(tmp_path)
+    caller = _ids(result, "Bag.php", "useList")
+    target = _ids(result, "Bag.php", "list")
+    assert caller and target
+    assert not _edges_between(result, caller, target)
+
+
+def test_builtin_named_self_call_does_not_bind_to_a_free_function(tmp_path):
+    (tmp_path / "Bag.php").write_text(
+        "<?php\nfunction open() {}\n"
+        "class Bag { public function useOpen() { $this->open(); } }\n",
+        encoding="utf-8",
+    )
+    result = _extract_php(tmp_path)
+    caller = _ids(result, "Bag.php", "useOpen")
+    target = _ids(result, "Bag.php", "open")
+    assert caller and target
+    assert not _edges_between(result, caller, target)
+
+
+def test_builtin_named_this_call_without_a_class_owner_stays_unresolved(tmp_path):
+    (tmp_path / "Bag.php").write_text(
+        "<?php\nfunction useList() { $this->list(); }\n"
+        "function makeListCallable() { return function() { $this->list(); }; }\n"
+        "class Other { public function list() {} }\n",
+        encoding="utf-8",
+    )
+    result = _extract_php(tmp_path)
+    target = _ids(result, "Bag.php", "list")
+    assert target and _ids(result, "Bag.php", "useList")
+    assert _ids(result, "Bag.php", "makeListCallable")
+    assert not any(e["relation"] == "calls" and e["target"] in target
+                   for e in result["edges"])

@@ -28,6 +28,11 @@ evidence remains revision-bound. Expanded
 REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
 
+INC-QML-54's upstream 0.9.92 integration is **In progress; complete verification pending**.
+Its accepted combined cache namespace is schema 18 with Qt policy 25. The
+schema-13 repair and installed-tool evidence above describes its recorded
+production tree; the new integration does not replace that installed tool.
+
 ## Ownership and dependency direction
 
 Detection owns corpus inclusion. The QML extractor consumes an already accepted
@@ -1142,6 +1147,11 @@ publication decisions D17/D19; no competing ownership or runtime is introduced.
 
 ## First raw external-stub publication (INC-QML-38)
 
+This section records the initial INC-QML-38 contract. INC-QML-54's
+[D30 refinement](#automatic-placeholder-provenance--inc-qml-54) supersedes its
+automatic-placeholder tier assignment while retaining authored-extra protection,
+publication ordering and unchanged-repeat obligations.
+
 The canonical builder mint remains append-only. The updater records the node-list
 length immediately before minting and stamps only its newly appended placeholders
 with the established semantic origin. Existing/source-backed/AST/manual/semantic
@@ -1456,3 +1466,270 @@ identity, while schema 13, semantic-cache and transactional publication ownershi
 remain unchanged. The assigned local source/retention cases pass; earlier wheel
 proof does not verify this changed behavior. The current frozen artifact/install
 profile passes; hosted validation remains pending.
+
+## Upstream 0.9.92 integration — INC-QML-54
+
+Status: **In progress; focused source cases pass; complete integration verification pending**.
+The shared extraction facade and engine retain upstream language dispatch,
+receiver/type evidence and language overrides. The Qt source producers, run-owned
+indexes and conservative joins retain native endpoint authority, original-byte
+locations and literal metadata boundaries. Conflict resolution must not replace
+one producer with the other or treat an override as permission to bypass Qt
+syntax, corpus or publication guards. New joint-boundary regressions must expose
+any incompatible combinations before their correction is accepted.
+
+Under [D29](ARCHITECTURE.md#d29--upstream-0992-compatibility-namespace), the existing
+cache owns combined schema 18 and upstream grammar fingerprinting. Prior schemas
+13/17 miss under the new namespace. Qt policy 25 and its native-context cache
+bypass remain authoritative; semantic-cache lifetime stays separate. QML-only,
+C++-only, metadata-only and override changes require full/incremental parity and
+unchanged-repeat evidence. Failed extraction, resolution or product replacement
+must retain accepted graph/cache/state products under their existing owners.
+
+The package manifest and lock must describe the same 0.9.92 project, retain the
+optional QML grammar contract and include upstream Pi's package files. Pi's Bun
+guard is a compatibility test of its optional host integration, not a dependency
+of ordinary Python/Qt source analysis. Generated assistant artifacts remain owned
+by `tools/skillgen/fragments/` and its generator, with round-trip validators.
+The metadata-only PR-management workflow may label/comment without checking out
+or executing PR code. Preserve the existing fork source/native/wheel checks when
+adding upstream's Pi job; normal PR validation owns the first hosted proof.
+
+The [plan matrix](PLAN.md#inc-qml-54--upstream-0992-integration) defines success,
+rejection, retention and compatibility obligations. No additional diagnostic,
+runtime, corpus evaluator, graph format or persistence writer is introduced by
+this integration decision. Any discovered behavioral correction must update the
+affected acceptance contract, exact regressions and error documentation before
+claiming support. The prior installed tool and application graph remain intact;
+fresh source, artifact, hosted and later adoption receipts are separate.
+
+### Pending-label deletion shares product publication
+
+Status: **Implemented; fourteen focused source cases pass; wider verification pending**. `publication.ProductPublication`
+remains the sole product writer. A bounded `delete(name)` request may select only
+one declared inventory member; it records intent during preparation and performs
+the deletion inside the cohort commit. An absent product and a repeated request
+are idempotent. Unsafe or undeclared names reject before mutation. The watch
+consumer must request removal of `.graphify_labels.pending.json` through this
+owner; a separate unlink after successful commit is not an accepted completion
+boundary.
+
+Actual deletion failure or later replacement/commit failure restores the whole
+previous cohort, including deleted pending-label bytes, using the existing
+snapshots. A repaired retry commits label consumption and graph/state together.
+Successful completion has no new warning; recoverable failure uses
+`GRAPH_PUBLICATION_FAILED`, incomplete restoration uses
+`GRAPH_PUBLICATION_RECOVERY` and retains owned recovery copies, and existing
+committed/uncommitted cleanup distinctions use `GRAPH_PUBLICATION_CLEANUP`.
+Exception recovery is promised; process/power-loss multi-file atomicity remains
+outside the contract. Exact absent/repeated/rejected/real-failure/recovery cases
+must exercise the production transaction and its watch consumer before acceptance.
+
+### Override traversal and parallel query evidence
+
+Status: **Implemented; eleven focused source cases pass; wider verification pending**. Upstream override-aware
+caller lookup may step through a valid owner, supertype and same-named inherited
+member, but every such edge must use the existing `logical_endpoints` validator.
+Partial, foreign or reversed Qt transport cannot acquire caller authority through
+an auxiliary traversal. Do not introduce a second orientation policy. CLI and
+MCP consumers must agree on those accepted dependencies. MCP rendering retains
+all accepted parallel relation mechanisms in stable semantic order, including
+their original direction and source-site metadata. Existing malformed-direction
+diagnostics and failure/retention contracts remain applicable. The joint
+production-boundary module `tests/test_upstream_qt_query_direction.py` passes;
+its original merged-helper selection records nine failures and one control.
+
+### Effective language selection precedes Qt overlays
+
+Status: **Implemented; seven focused source cases pass; wider verification pending**.
+An explicit supported `.graphifyrc` language override of a physical native Qt
+extension away from C++ governs every native collector, context and index; the suffix alone
+cannot re-admit native syntax checks or Qt provider authority. The reproduced
+`language.h=php` fixture must retain valid generic PHP extraction without
+`QT_CPP_SYNTAX` or a failed-source result from Qt reclassification. Cold/warm
+facade analysis and configuration-only transitions must remove stale native
+facts, preserve selected-language identity and equal clean rebuilds on retry and
+repeat. Unsupported/ambiguous targets remain conservative. This contract does
+not add aliases or claim complete Qt/QML analysis for arbitrary remapped file
+extensions; the accepted physical-extension profile still bounds Qt indexes.
+The integration seam is one effective-native-input filter in the extraction
+facade before `resolve_qt_qml`, which gates native collectors. A physical `.h`
+explicitly selected as C++ retains its established profile; an `.inc` remapped to
+C++ retains upstream generic parsing without native provider authority. Arbitrary
+extension Qt enrichment and remapped-QML end-to-end profiles remain unsupported
+or unverified. The new production cases belong to
+`tests/test_upstream_qt_language_overrides.py`.
+
+### Serialized metadata belongs to the output
+
+Status: **Accepted correction contract; implementation and verification pending**.
+`export.to_json` may add upstream `schema_version` and `graphify_version` to the
+serialized graph metadata. Stamp a copied metadata dictionary rather than
+mutating `G.graph`; caller-owned metadata, nodes and edges remain unchanged after
+both success and rejected direction transport. Existing original-parallel-link
+publication and JSON direction input-preservation assertions remain mandatory.
+The viewer harness may supply `document.body` for upstream's sidebar tooltip as
+an external browser surface; that fixture alignment changes no pan/filter/event
+behavior or acceptance assertion.
+
+### Walked collision keys and explicit direction transport
+
+Status: **Accepted correction contracts; implementation and verification pending**.
+Contested-ID lookup must use the same admitted walked-source identity as its
+authoritative stem table. A real contained directory alias combining a variable
+in `.mjs` with a neighboring `.sql` file must not collapse file and declaration
+records during final remapping. Reuse the shared walked-identity boundary rather
+than expanding the corpus or changing native semantic policy. Cold/warm and
+full/update equality must be demonstrated with the combined fixture; passing
+alias and collision suites separately does not establish the interaction.
+
+The shared graph loader may infer arc direction for an unmarked legacy graph and
+retain complete accepted markers. It must not overwrite partial or corrupt
+explicit markers with inferred endpoints. Malformed authority must reach the
+existing direction-rejection/publication guard with prior products retained;
+no new direction policy or diagnostic identity is introduced.
+
+### Automatic placeholder provenance — INC-QML-54
+
+Status: **Implemented; final 168-case source selection passes; wider verification pending**.
+Under [D30](ARCHITECTURE.md#d30--automatic-placeholder-tiers-preserve-authored-provenance),
+`build.py` retains upstream tierless import placeholders under one canonical
+minted/legacy shape predicate. Preserve metadata even when empty, source
+locations, unknown attributes, other origins and noncanonical records;
+source-backed facts and unrelated semantic content cannot be downgraded through
+an approximate placeholder match. Still-referenced external
+records remain, and existing stale-placeholder removal applies only after a
+complete accepted refresh. Raw publication and reload must retain removal,
+unchanged-repeat, failed-publication and repaired-retry behavior.
+
+The predicate requires a nonempty string ID, the same literal label, `file_type`
+`concept`, `type` `external`, `external` exactly true and `source_file` exactly
+empty. Only absent/historical-semantic origin and validated presentation values
+may accompany those base fields: integer-or-null community excluding booleans,
+string community name, canonical accent-stripped lowercase normalized label,
+and finite numeric `x`/`y` excluding booleans. Any metadata key, even empty,
+source location, unknown field, other origin or noncanonical value disqualifies
+the record from automatic treatment. `qt_orphan_cleanup` reuses this same
+predicate with its existing prior-ID/source-owned import proof.
+
+An exact-shape authored legacy record remains indistinguishable from an
+automatic record. D30 expressly adopts this shape compatibility convention,
+including a historical semantic stamp; such an authored record may receive
+automatic treatment. It is not proof of authorship or a promise of perfect
+historical attribution. Tests must protect all extra authored attributes and
+origins outside this exception, while exercising accepted legacy/coordinate
+shapes, deletion, repeat and failure recovery. No new persistence writer or broad
+tier rewrite is authorized.
+
+Any record declaring an external role must pass that same predicate before an
+automatic cleanup may remove it. A code classification or generic isolated-node
+prune cannot bypass authored-extra protection. Ordinary non-external source/code
+cleanup keeps its existing behavior. Real re-extraction and deletion controls
+must cover this branch as well as import-placeholder cleanup; the earlier
+119-case source checkpoint is narrower. The final 168-case source selection
+includes this guard; artifact and hosted validation remain separate.
+
+### Bounded filename-cohort refresh — INC-QML-54
+
+Status: **Implemented; frozen source selection passes 31 cases with two platform skips; wider verification pending**.
+`filename_cohorts.expand_filename_cohorts(selected, accepted, *, root, retired=())` owns
+deterministic collision-target selection. Its inputs are the caller's selected
+targets, accepted code-file paths and explicit absolute admitted root; its output
+is the bounded accepted target cohort. It reuses base
+`_make_id(_file_stem(relative_path))`, matching the facade's canonical file-ID
+policy without importing that facade or inferring prior graph roles.
+It does not discover or parse source, construct graph context, mutate caches or
+publish products. Preserve walked-source identity rather than substituting a
+physical path key. Only accepted peers sharing the selected source's canonical
+file-node identity may join this refresh. Preserve selected notification order;
+append matching peers sorted by walked relative path. The helper performs no
+resolve, stat or file read.
+
+`retired` is optional and receives only the watch owner's already-recorded
+`deleted_source_identities`. Derive their lexical keys without reading or
+returning the deleted paths; never resurrect a source. Selected inputs must be a
+subset of currently accepted sources, and appended outputs can contain only
+admitted surviving peers. Removal/restoration parity must exercise this seed
+boundary as well as edits; an arbitrary missing path cannot become new corpus
+authority.
+
+The watch owner initializes the admitted absolute nonsemantic source list once,
+preserving walked child aliases. Discovery canonicalizes the scan parent, and
+both accepted and retired source bookkeeping already use `watch_root`. Apply
+existing `refresh_terraform_paths(wanted, admitted, changed_paths)` first, then
+`expand_changed_coowners`, then `expand_filename_cohorts`. Both identity selectors
+use that same `watch_root` and the filename selector's recorded
+deletion seeds. Repeat this composition until the selected set is unchanged.
+Both selectors return admitted sources only, preserve selected order and append
+deterministically; every changed iteration strictly adds an admitted source.
+The explicit bound is `len(admitted) + 1` passes, with no whole-corpus fallback
+or additional discovery. A retired seed may select a walked collision peer on
+one pass and that peer's physical co-owner on the next.
+
+Closure precedes incremental context construction and extraction; the final
+conditional Qt full-refresh remains afterward. Terraform refresh participates
+in the closure so fanout-to-filename and filename-to-fanout both converge before
+context is accepted. An invocation through a scan-root junction must use that already established
+discovery/bookkeeping root, rather than the original invocation alias. This is
+not per-source resolution, filtering, remapping or wider admission; walked child
+aliases remain distinct. Exclude semantic-backed documents from the accepted cohort.
+Reconstructing pre-salt
+roles from old labels/IDs is forbidden because context lacks that authority.
+Unchanged unrelated files remain cached/unparsed due to this operation; existing
+independent cache policies are unchanged. No outside-corpus reads or whole-source
+refresh are introduced. Selection failure must reach existing guarded failure
+handling rather than accept a partial target set or stale context. Real
+publication/edit/remove/repair/repeat cases must match a clean full rebuild,
+including the combined contained-alias `.mjs`/`.sql` collision. Instrumented
+unrelated-file controls must prove bounded parsing, with existing durable-product
+retention and recovery still effective.
+Selection rejection reuses bounded `WATCH_SOURCE_IDENTITY_FAILED` with unavailable
+source context rather than exposing supplied paths or backend exception bodies.
+The combined regression must remove only `linked/x.sql`, invalidate its
+`linked/x.mjs` collision peer and that peer's current `real/x.mjs` physical owner,
+then prove clean-full, restoration and unchanged-repeat parity without reading
+the deleted path. Unrelated-target instrumentation remains mandatory.
+A real scan-root junction profile must additionally prove mutation, removal,
+restoration and full/repeat parity. The earlier lexical-invocation-root hook
+rejects valid canonical bookkeeping with `WATCH_SOURCE_IDENTITY_FAILED`; passing
+the existing `watch_root` corrects the domain mismatch without weakening the
+pure helper's admitted-input guard.
+The public `main.mjs`, `main.tf`, `other.tf` fixture must cover both directions:
+an `other.tf` event refreshes colliding `main.tf`/`main.mjs`, while a `main.mjs`
+event reaches existing Terraform fanout through its filename peer. Verify actual
+production targets, clean-full/repeat parity and an unrelated-source exclusion
+spy. No new Terraform discovery, parser semantics or full-corpus fallback is
+introduced. These cases belong to `tests/test_upstream_qt_refresh_order.py`.
+
+`watch.py::_StoredSourcePaths` keeps its existing invocation-directory
+`project_root` and external-root fallback. Only when the saved relative marker
+resolves to the authoritative `watch_root`, recognize both the saved alias prefix
+and the contained `watch_root.relative_to(invocation_root)` prefix as valid stored
+project-relative spelling. Otherwise canonical stored sources can be mistaken
+for legacy watch-relative inputs and unchanged unrelated nodes disappear. Match
+complete path components (`real2` cannot match `real`), retain containment and
+do not resolve individual sources, infer from labels/IDs or discover new inputs.
+The real relative scan-root regression must preserve untouched nodes and exact
+incremental/full parity; a neighboring-prefix control protects the rejection
+boundary.
+
+### Encoded Codex hook ownership during cleanup
+
+Status: **Implemented; 55 focused source cases pass; installed/hosted verification pending**.
+`codex_hook_command.py` owns recognition of its generated Windows PowerShell
+hook representation; `install.py` retains entry-scoped reinstall/uninstall and
+configuration publication. Ownership requires the exact generated outer options,
+bounded valid base64 decoded as UTF-16, exact static Graphify hook-check script
+wrapper and exact status marker. Permit only trailing ASCII spaces/tabs after the
+encoded token, retaining established native reinstall/uninstall behavior. Leading
+or other whitespace, changed options/payload/script/marker, ordinary commands or
+malformed data remain authored. This bounded token suffix is not general shell
+or whitespace normalization.
+
+Recognition is a pure bounded check: no command execution, filesystem lookup or
+configuration mutation. Real reinstall/uninstall tests must remove only proven
+owned hooks while preserving noncanonical/foreign siblings and metadata. Existing
+configuration-write failure and recovery ownership is unchanged; this correction
+adds no diagnostic identity. REQ-CORE-001-AC05 owns the native hook identity and
+idempotency contract; the integration proof belongs to
+`tests/test_codex_hook_identity.py` and existing native installer cases.

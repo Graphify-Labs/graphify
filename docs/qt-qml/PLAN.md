@@ -2973,7 +2973,7 @@ records this separately from the earlier isolated installation.
 
 ## INC-QML-54 — Upstream 0.9.92 integration
 
-Status: **Planned; integrated source, package and hosted evidence pending**.
+Status: **In progress; focused source checks recorded; complete source, package and hosted gates pending**.
 Owner: upstream integration maintainer. Dependencies: INC-QML-49–53 and the
 existing shared compatibility gates. Integrate upstream `v8` at
 `86c57be8204673c2a1b9849a3292a7dd3ab373d8` into repair head `dd8cc3d0`, preserving
@@ -2996,9 +2996,30 @@ requirement and acceptance identities remain unchanged.
 | --- | --- |
 | REQ-QML-001-AC01–AC04; REQ-QML-014-AC01/AC02; REQ-QML-018-AC02/AC05 | The frozen manifest/lock resolves the upstream runtime floor and retained QML extra; fresh source and installed-wheel profiles exercise production parser entry points, optional-parser absence and offline/no-Qt-SDK behavior. Include upstream Pi package resources and its declared Bun guard; record unavailable platform/dependency cases explicitly. |
 | REQ-QML-002-AC01–AC04; REQ-QML-003-AC01–AC04; REQ-QML-009-AC01–AC04; REQ-QML-016-AC01–AC04; REQ-QML-017-AC01–AC04 | Incoming generic extraction and resolution retain accepted Qt discovery, original-byte spans, identity, literal metadata and native/bridge relationships. Same-name ambiguity, dynamic or malformed input and ignored/out-of-root inputs cannot acquire guessed endpoint or corpus authority. Run joint-boundary regressions and unrelated-language compatibility cases. |
+| REQ-QML-003-AC02/AC04; REQ-QML-010-AC01/AC02; REQ-QML-011-AC03/AC04 | An actual admitted contained directory alias with an `.mjs` variable and neighboring same-stem `.sql` file retains separate file/declaration IDs and accepted walked provenance through final contested-ID remapping. Cold/warm and clean/update profiles agree; excluded/foreign aliases retain existing rejection. Physical identity cannot replace the authoritative walked-source key at this join. |
+| REQ-QML-003-AC02/AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC01/AC02 | Before incremental context/extraction, expand current targets only to the collision cohort already present in accepted code files under the explicit root/canonical-ID policy. Optional `retired=()` seeds come only from already-recorded deleted source identities, derive lexical keys without reads and are never returned/resurrected; selected remains a subset of accepted and outputs contain only surviving accepted peers. Retain walked/physical co-owners, deterministic targets and clean-build IDs after edit/remove/repair/repeat; no outside discovery/reads or whole-codebase refresh. Unchanged unrelated files remain cached/unparsed due to this expansion. Selection/publication failure preserves prior products and uses safe existing identity diagnostics. D31 owns the boundary; helper and real watch/full regressions are required. |
+| REQ-QML-003-AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC02 | Compose existing Terraform refresh, physical co-owner expansion and filename selection to deterministic monotone closure before context, bounded by `len(admitted) + 1` passes. Recorded deletion keys reach walked/physical peers without reads/resurrection; Terraform fanout and filename-collision peers must converge in both directions. Require actual target spies, unrelated-source exclusion and clean-full/restoration/repeat parity. Final conditional Qt full-refresh remains afterward. Planned composition cases: `tests/test_upstream_qt_refresh_order.py`. |
+| REQ-QML-002-AC04; REQ-QML-003-AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC01/AC02 | A scan-root junction uses the same `watch_root` domain already established by discovery and accepted/retired bookkeeping. Preserve walked child aliases without per-source resolve/filter/remap or wider admission. Real mutation/removal/restoration/full/repeat parity must pass; the current wrong-root rejection cannot be bypassed by loosening the helper's admitted-input guard. |
+| REQ-QML-002-AC01/AC04; REQ-QML-010-AC02/AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC01; REQ-QML-018-AC02/AC07 | Explicit supported language overrides of physical native Qt extensions away from C++ retain the selected language before the facade invokes Qt resolution and its native collectors. Valid PHP in a `.h` fixture cannot acquire `QT_CPP_SYNTAX`, failed-source status or native providers from suffix-only reclassification. Cold/warm and actual watch/full override-transition updates remove stale Qt authority and equal clean rebuilds; unsupported/ambiguous targets remain conservative. A physical `.h` explicitly selected as C++ retains its existing Qt profile; `.inc` remapped to C++ retains upstream generic parsing without native provider authority. Planned cases: `tests/test_upstream_qt_language_overrides.py`; arbitrary-extension Qt enrichment and remapped-QML end-to-end support remain outside this increment. |
 | REQ-QML-010-AC01–AC04; REQ-QML-013-AC01–AC04; REQ-QML-018-AC04 | Generic and Qt graph assembly, query and JSON/HTML reload preserve logical direction, provenance and distinct mechanisms, including parallel edges. Rejected direction/metadata transport cannot become successful publication. |
+| REQ-QML-010-AC02/AC04; REQ-QML-011-AC04; REQ-QML-012-AC02; REQ-QML-018-AC06 | Tierless import placeholders follow the canonical minted shape and D30's explicit legacy-shape convention, including a historical semantic stamp and validated finite numeric presentation coordinates. Preserve metadata even when empty, source locations, unknown attributes, other origins and noncanonical records; prior-import cleanup also requires existing prior-ID/source proof. Any declared external role must pass this predicate; code classification or generic isolated pruning cannot bypass protection. Raw/reload/removal/retry/repeat retain accepted graph/failure behavior. Exact-shape authored legacy records remain indistinguishable and may receive automatic treatment under the stated convention; this is not authorship proof. |
+| REQ-QML-010-AC02/AC03; REQ-QML-012-AC01/AC02; REQ-QML-013-AC03; REQ-QML-018-AC06 | The shared graph loader preserves complete direction markers and normal legacy unmarked inference, but cannot repair partial/corrupt explicit markers into accepted authority. Existing malformed-marker rejection and prior-output retention tests must pass through the actual loader/export boundary. |
+| REQ-QML-010-AC01/AC03; REQ-QML-013-AC03; REQ-QML-018-AC06 | JSON output retains upstream `schema_version`/`graphify_version` fields by stamping copied serialized graph metadata. Success and rejection leave caller-owned graph metadata/nodes/edges unchanged, including original parallel-link evidence. Existing input-preservation regressions must fail before the correction and pass afterward. |
+| REQ-QML-010-AC02/AC03/AC04; REQ-QML-012-AC01/AC02; REQ-QML-013-AC01/AC02/AC04 | Upstream override caller lookup may follow accepted inherited same-named members only through owner/supertype/member edges validated by the existing logical-endpoint policy. Partial, foreign or reversed direction transport cannot add callers. The MCP consumer renders every accepted parallel relation in stable semantic order with its original direction/site metadata; equivalent CLI/MCP traversal agrees. Planned production regressions: `tests/test_upstream_qt_query_direction.py`. |
 | REQ-QML-011-AC01–AC04; REQ-QML-012-AC01–AC04; REQ-QML-018-AC06 | Cold/warm, full/manual/watch and repeated updates agree after QML-only, C++-only and metadata-only changes; stale edges disappear. Parser/resolver/real publication failures retain accepted graph, manifest, report and Qt state; recovery and repeat succeed. Combined AST schema 18 retires upstream 17 and published combined 13, retaining the grammar fingerprint and language overrides. Explicitly test override/native-bypass interaction; preserve policy-25 semantics and independent semantic-cache ownership. |
+| REQ-QML-011-AC04; REQ-QML-012-AC02/AC04; REQ-QML-018-AC06 | Consuming pending community labels requests bounded deletion within the existing product transaction. An absent product and repeated deletion are no-ops; unsafe or undeclared names reject before mutation. Actual deletion failure or a later replacement/commit failure restores every prior cohort member, including deleted bytes; repaired retry succeeds. Rollback failure retains recovery copies and reports the existing integrity failure. No unguarded post-commit unlink may consume labels. |
 | REQ-QML-014-AC01–AC04; REQ-QML-015-AC01–AC04 | Review every conflict; regenerate assistant artifacts from authoritative fragments and run their validators, applicable source suites, lint/types and fresh wheel/isolated-install checks. Retain Python/OS native profiles, existing full fork CI gates and the upstream Pi job. Record exact source/base/checkout, commands, failures, skips and baseline differences; old totals do not verify the merged inputs. |
+| REQ-CORE-001-AC05 | Reinstall/uninstall recognizes the generated encoded Windows Codex hook through exact outer PowerShell options, bounded valid base64/UTF-16, exact static Graphify hook-check wrapper and exact status marker, allowing only trailing ASCII space/tab after the token. Accepted space/tab copies remain owned under the established native contract; leading/other whitespace, ordinary/unmarked/foreign/malformed commands or altered options/payload/wrapper/marker remain authored. Recognition performs no execution, filesystem lookup or configuration mutation; actual reinstall/uninstall preserves authored siblings. Planned cross-platform tests: `tests/test_codex_hook_identity.py`. |
+
+Relative-root anchoring matrix refinement (REQ-QML-002-AC04,
+REQ-QML-003-AC04, REQ-QML-011-AC04, REQ-QML-012-AC02): when the saved relative
+scan marker resolves to the same verified `watch_root`, recognize both its alias
+prefix and contained canonical root prefix as project-relative. Preserve
+invocation-directory root, external fallback, containment and untouched nodes;
+neighboring `real2` cannot match `real`. Real relative-root update/full/repeat
+parity and the direct negative-prefix control are required, without per-source
+resolution or label/ID inference. The frozen combined source selection passes
+31 cases with two existing platform skips; full/artifact/hosted gates remain pending.
 
 Diagnostic impact: successful integration adds no diagnostic success claim.
 Existing unsupported/ambiguous input rejection, parser-unavailable, resolution
@@ -3007,6 +3028,47 @@ diagnostic or persistence behavior requires its requirement, error-catalog and
 regression update before implementation; no second writer or corpus evaluator is
 introduced. Upstream's metadata-only PR-management workflow must not check out or
 execute untrusted PR code with its write token.
+
+Integration finding: upstream consumes `.graphify_labels.pending.json`, while the
+Qt product transaction initially supports replacements only. Extend that same
+owner with a bounded deletion request rather than deleting accepted data after
+commit. Success is silent; invalid inventory uses `GRAPH_PUBLICATION_FAILED`,
+recoverable deletion/commit failure retains prior products, and failed restoration
+uses `GRAPH_PUBLICATION_RECOVERY` with retained owned snapshots. Existing
+`GRAPH_PUBLICATION_CLEANUP` distinctions still apply. This refinement is planned
+under the existing criteria; exact production-boundary regressions and receipts
+are required before marking it implemented or verified.
+
+Override finding: `.graphifyrc` selecting `language.h=php` initially produces
+generic PHP facts for valid `adapter.h`, then a suffix-only Qt overlay reports
+`QT_CPP_SYNTAX` and a failed source. The effective supported language selection
+must govern all native overlays and provider collectors. Source review must
+establish each affected boundary; a classifier-only correction does not prove
+that no later index reclassifies the same bytes. Existing physical-extension
+support limits remain in force. The final seven focused source cases pass after
+five before-fix failures and two controls; wider source/package/hosted profiles
+remain pending in [traceability](../../tests/TRACEABILITY.md#native-override-regression-checkpoint).
+
+Export finding: upstream JSON publication initially stamps graph metadata in
+place. Four existing Qt JSON direction variants and an original-parallel-links
+integration case reject that side effect. Preserve the new serialized version
+fields on a copied metadata dictionary without changing the source graph. The
+emitted-viewer harness also needs the real `document.body` surface now used by an
+upstream sidebar tooltip; supplying that external DOM fixture cannot weaken the
+existing pan, filter or event assertions. Focused direction cases pass; complete
+source/artifact/hosted results remain pending.
+
+Installer finding: upstream entry-scoped cleanup initially cannot identify the
+generated encoded Windows Codex hook, leaving owned entries on reinstall or
+uninstall. Extend ownership recognition at the existing command serializer;
+neither status text alone nor general whitespace-normalized matching establishes
+ownership. Only trailing ASCII space/tab after an otherwise exact encoded token
+is accepted, preserving the existing native regression. Unsupported/malformed entries remain authored with no mutation during
+recognition. Successful install/uninstall retains existing diagnostic behavior;
+actual configuration-write failure retains its existing bounded failure/recovery
+contract. No script execution, filesystem lookup or new operational diagnostic
+is introduced by this recognition change. The final 55 source cases pass;
+installed/hosted evidence remains pending.
 
 Exit: complete conflict review and source/package verification, refresh this
 repository's AST graph, and publish the explicit branch for normal PR validation.

@@ -5,6 +5,10 @@ The first table records baseline owners, with their current extension seams.
 implemented QML/Qt owners through INC-QML-06 and local INC-QML-07 consumer hooks.
 Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 
+INC-QML-54's incoming upstream 0.9.92 seams are recorded
+[below](#upstream-0992-integration-seams--inc-qml-54). Integration verification is
+pending; earlier schema-13 and installed-tool checkpoints remain revision-bound.
+
 | Existing owner | Role and extension considerations |
 | --- | --- |
 | `graphify/detect.py` | `classify_file`, `detect`, `detect_incremental`, code extensions and corpus boundaries; exact Qt metadata names/suffixes use shared admission |
@@ -677,3 +681,69 @@ native source membership remains under its existing producer/index owners.
 `qt_incremental` advances the policy to 25; schema 13 and persistence owners
 stay unchanged. Current local source and isolated artifact/install cases pass;
 hosted evidence is pending. The exact committed checkpoint belongs to traceability.
+
+## Upstream 0.9.92 integration seams — INC-QML-54
+
+Status: **Accepted ownership; integration verification pending**.
+
+| Owner | Integration obligation |
+| --- | --- |
+| `extract.py`, `extractors/engine.py`, `extractors/resolution.py` | Combine upstream dispatch/receiver/type/override changes with source-owned Qt facts and conservative native/QML joins; preserve one facade direction and original identity/span ownership. |
+| `extract.py` before `resolve_qt_qml` | The effective-native-input filter honors explicit supported overrides away from C++ before any native Qt collector. Seven focused cases pass; physical-extension Qt scope remains authoritative and generic remapped C++ extraction grants no new native provider authority. |
+| `cache.py`, `qt_incremental.py` | Combined AST schema 18, upstream installed-grammar fingerprint and override-aware keys; retain Qt policy 25, explicit native-context cache bypass and independent semantic lifetime. |
+| `detect.py`, `watch.py`, `build.py` | Preserve one corpus boundary, admitted lexical identities, full/incremental parity and existing transactional publication/recovery owners across shared updates. |
+| `filename_cohorts.py::expand_filename_cohorts`, watch target preparation | Pure `selected, accepted, *, root, retired=()` selection reuses base canonical file IDs and admitted surviving sources. Watch composes existing Terraform, physical and filename selectors to monotone closure before context/final Qt refresh, with deterministic order and admitted-count-plus-one bound. Retired keys never read/resurrect sources; no new discovery or unrelated parsing. |
+| `build.py::_is_external_stub`, automatic minting/watch and `qt_orphan_cleanup` | One canonical minted/legacy-shape predicate owns D30's narrow tierless convention and authored-extra protections. Prior-import cleanup additionally retains source-owned prior-ID proof; exact-shape legacy authorship remains indistinguishable. |
+| `publication.py::ProductPublication`, pending-label watch consumer | Bounded `delete(name)` participates in the same snapshot/commit/rollback as replacements; fourteen focused cases pass for absent/repeated/invalid deletion and whole-cohort restoration after deletion/later commit failure. |
+| `paths.py`, `export.py`, CLI and MCP consumers | Preserve directed source/target meaning through undirected graph storage, reload, projection and traversal, including accepted original parallel Qt edges. |
+| `affected.py`, CLI and MCP override callers | Owner/supertype/member stepping-stone validation reuses `logical_endpoints`; eleven focused cases preserve caller authority, parallel relations and original site metadata in stable semantic order. |
+| `pyproject.toml`, `uv.lock`, `graphify/pi/` | Reconcile package 0.9.92 and parser bounds/extras; include Pi resources and prove source-to-wheel identity in a fresh isolated install. |
+| `tools/skillgen/` | Merge authoritative fragments/generator changes and regenerate outputs; keep coverage, singleton and round-trip validators effective. |
+| `codex_hook_command.py`, `install.py` | Exact generated Windows encoded-hook recognition supports entry-scoped reinstall/uninstall; 55 focused cases pass. Pure bounded decode/static-wrapper/options/status matching allows trailing ASCII space/tab only, with no execution or configuration mutation. |
+| `.github/workflows/ci.yml`, `qml-wheel.yml`, `pr-management.yml` | Retain fork source/native/wheel proof while including the upstream Bun Pi guard. PR management remains metadata-only with no execution of untrusted PR code. |
+
+These are integration review boundaries, not completed verification or a new
+owner for domain behavior. [D29](ARCHITECTURE.md#d29--upstream-0992-compatibility-namespace)
+records the namespace decision; [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+records applicable execution and gaps. Oversized touched legacy owners require
+measured integration ceilings and an explicit focused extraction path before
+handoff; conflict resolution does not authorize an unrelated mechanical port.
+
+### Integration-only cohesion allowances
+
+The following inherited owners exceed the 300-line default. Measured sizes and
+ceilings cover the INC-QML-54 merge and focused contract corrections, not routine
+growth. Preserve authoritative facade/child dependency direction and existing
+characterization; do not combine a mechanical extractor migration with this
+integration. The exit is a separately characterized cohesive extraction under
+the owning maintainer and applicable migration playbook, with cache splitting
+owned by the cache maintainer.
+
+| Owner | File | Measured physical lines / permitted ceiling |
+| --- | --- | --- |
+| Extractor facade maintainer | `graphify/extract.py` | 11,173 / 11,173 |
+| Generic extractor maintainer | `graphify/extractors/engine.py` | 10,352 / 10,352 |
+| Cache maintainer | `graphify/cache.py` | 1,942 / 1,942 |
+| Discovery maintainer | `graphify/detect.py` | 3,019 / 3,019 |
+| Watch/publication maintainer | `graphify/watch.py` | 2,947 / 2,947 |
+| Query/MCP maintainer | `graphify/serve.py` | 3,043 / 3,043 |
+| Dependency-query maintainer | `graphify/affected.py` | 434 / 434 |
+| Graph-build maintainer | `graphify/build.py` | 2,914 / 2,914 |
+| Shared path/persistence maintainer | `graphify/paths.py` | 652 / 652 |
+| Installer maintainer | `graphify/install.py` | 2,795 / 2,795 |
+| Export maintainer | `graphify/export.py` | 1,453 / 1,453 |
+| HTML maintainer | `graphify/exporters/html.py` | 907 / 907 |
+| CLI maintainer | `graphify/cli.py` | 5,451 / 5,451 |
+| CLI dispatch maintainer | `graphify/__main__.py` | 1,092 / 1,092 |
+| Generated-guidance maintainer | `tools/skillgen/gen.py` | 1,620 / 1,620 |
+| Upstream extraction-fixture maintainer | `tests/test_extract.py` | 6,289 / 6,289 |
+| Language-fixture maintainer | `tests/test_languages.py` | 5,821 / 5,821 |
+| Watch-fixture maintainer | `tests/test_watch.py` | 5,599 / 5,599 |
+| Hook-fixture maintainer | `tests/test_hooks.py` | 2,049 / 2,049 |
+| Install-fixture maintainer | `tests/test_install.py` | 1,836 / 1,836 |
+| Round-trip fixture maintainer | `tests/test_install_roundtrip.py` | 323 / 323 |
+
+The new native-override, filename-cohort and placeholder-role regression modules
+have 117, 265 and 124 physical lines; the pure filename helper has 56. All remain
+within the normal 300-line ceiling. Integration evidence and unresolved typing/
+platform cases remain in traceability; these size allowances establish no pass.

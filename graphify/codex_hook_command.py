@@ -15,6 +15,39 @@ import shlex
 from pathlib import Path
 
 
+# Both serialization and ownership recognition use this static wrapper. Cleanup
+# may inspect its literal transport, but must never execute or normalize it.
+_SCRIPT_PREFIX = "$ErrorActionPreference='Stop'; try { & '"
+_SCRIPT_SUFFIX = (
+    "' hook-check; exit $LASTEXITCODE"
+    " } catch { [Console]::Error.WriteLine('graphify hook: selected executable could not be invoked'); exit 1 }"
+)
+
+
+def is_encoded_codex_hook(command: str) -> bool:
+    """Recognize the exact bounded native transport without shell or path lookup."""
+    if len(command) > 8000:
+        return False
+    match = re.fullmatch(
+        r"[A-Za-z]:/[A-Za-z0-9_./-]+/powershell\.exe "
+        r"-NoLogo -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/]+={0,2})[ \t]*",
+        command,
+    )
+    if match is None:
+        return False
+    try:
+        payload = base64.b64decode(match[1], validate=True)
+        if base64.b64encode(payload).decode("ascii") != match[1]:
+            return False
+        script = payload.decode("utf-16-le")
+    except (ValueError, UnicodeError):
+        return False
+    if not script.startswith(_SCRIPT_PREFIX) or not script.endswith(_SCRIPT_SUFFIX):
+        return False
+    literal = script[len(_SCRIPT_PREFIX):-len(_SCRIPT_SUFFIX)]
+    return bool(re.fullmatch(r"(?:[^']|'')+", literal))
+
+
 class HookCommandError(ValueError):
     """A supported literal command cannot be published safely on this host."""
 
@@ -49,11 +82,7 @@ def codex_hook_command(executable: str, *, windows: bool) -> str:
     # Encoding prevents the outer Cmd consumer from expanding percent variables
     # and the outer PowerShell consumer from evaluating dollars or backticks.
     literal = executable.replace("'", "''")
-    script = (
-        "$ErrorActionPreference='Stop'; try { "
-        f"& '{literal}' hook-check; exit $LASTEXITCODE"
-        " } catch { [Console]::Error.WriteLine('graphify hook: selected executable could not be invoked'); exit 1 }"
-    )
+    script = _SCRIPT_PREFIX + literal + _SCRIPT_SUFFIX
     payload = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     command = f"{shell} -NoLogo -NoProfile -NonInteractive -EncodedCommand {payload}"
     # Cmd limits a complete command line to 8191 characters (Microsoft KB830473).

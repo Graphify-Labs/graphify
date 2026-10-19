@@ -489,6 +489,103 @@ def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
     assert result["uncovered_files"] == []
 
 
+def test_edge_between_kept_nodes_survives_when_source_file_was_not_dispatched(tmp_path):
+    """#2276: a references edge between two re-extracted pages is kept when the
+    model stamps it with a real file this run did not dispatch, and a node
+    attributed to another undispatched file is still dropped."""
+    from graphify.build import build, build_merge
+    from graphify.cache import scope_semantic_result
+    from graphify.export import to_json
+    from graphify.llm import extract_corpus_parallel
+
+    page_a = tmp_path / "page_a.md"
+    page_b = tmp_path / "page_b.md"
+    log = tmp_path / "log.md"
+    other = tmp_path / "other.md"
+    for path in (page_a, page_b, log, other):
+        path.write_text("# page\n", encoding="utf-8")
+
+    def _node(nid: str, source_file: str) -> dict:
+        return {
+            "id": nid,
+            "label": nid,
+            "file_type": "document",
+            "source_file": source_file,
+            "source_location": None,
+            "_origin": "semantic",
+        }
+
+    def _edge(source: str, target: str, source_file: str) -> dict:
+        return {
+            "source": source,
+            "target": target,
+            "relation": "references",
+            "source_location": None,
+            "_origin": "semantic",
+            "confidence": "INFERRED",
+            "weight": 1.0,
+            "source_file": source_file,
+            "file_type": "document",
+        }
+
+    prior = {
+        "nodes": [
+            _node("page_a", "page_a.md"),
+            _node("page_b", "page_b.md"),
+            _node("log", "log.md"),
+            _node("leaf", "log.md"),
+        ],
+        "edges": [
+            _edge("log", "leaf", "log.md"),
+            _edge("page_a", "page_b", "page_a.md"),
+        ],
+        "hyperedges": [],
+    }
+    graph_path = tmp_path / "graph.json"
+    to_json(build([prior], root=tmp_path), {}, str(graph_path))
+
+    def fresh(chunk, **kwargs):
+        return {
+            "nodes": [
+                _node("page_a", "page_a.md"),
+                _node("page_b", "page_b.md"),
+                _node("stray", "other.md"),
+            ],
+            "edges": [
+                _edge("page_a", "page_b", "log.md"),
+                _edge("page_a", "stray", "page_a.md"),
+            ],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fresh):
+        result = extract_corpus_parallel(
+            [page_a, page_b], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=2, max_concurrency=1,
+        )
+
+    assert any(
+        e.get("source") == "page_a" and e.get("target") == "page_b"
+        for e in result["edges"]
+    ), f"page_a→page_b missing after extract: {result['edges']}"
+    assert all(n.get("id") != "stray" for n in result["nodes"])
+
+    scope_semantic_result(result, tmp_path, [page_a, page_b])
+    assert any(
+        e.get("source") == "page_a" and e.get("target") == "page_b"
+        for e in result["edges"]
+    ), f"page_a→page_b missing after scope: {result['edges']}"
+
+    G = build_merge([result], graph_path, root=tmp_path)
+    assert G.has_edge("page_a", "page_b")
+    assert G.has_edge("log", "leaf")
+    assert "stray" not in G
+    assert not G.has_edge("page_a", "stray")
+    assert "page_a" in G and "page_b" in G
+
+
 def test_out_of_scope_drop_count_is_zero_when_all_in_scope(tmp_path, capsys):
     """Counter-test: a clean run records out_of_scope_dropped == 0 and no warning."""
     from graphify.llm import extract_corpus_parallel

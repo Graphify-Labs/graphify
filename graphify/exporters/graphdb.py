@@ -85,7 +85,8 @@ def push_to_neo4j(
 
         for u, v, data in G.edges(data=True):
             rel = _safe_rel(data.get("relation", "RELATED_TO"))
-            src, tgt = logical_endpoints(u, v, data) if qt_payload else (u, v)
+            src, tgt = (logical_endpoints(u, v, data) if qt_payload
+                        else (data.get("_src", u), data.get("_tgt", v)))
             props = edge_properties(src, tgt, data, preserve_metadata=qt_payload)
             identity = " {graphify_fact_key: $fact_key}" if qt_payload else ""
             key_args = {"fact_key": props["graphify_fact_key"]} if qt_payload else {}
@@ -198,7 +199,8 @@ def push_to_falkordb(
 
     for u, v, data in G.edges(data=True):
         rel = _safe_rel(data.get("relation", "RELATED_TO"))
-        src, tgt = logical_endpoints(u, v, data) if qt_payload else (u, v)
+        src, tgt = (logical_endpoints(u, v, data) if qt_payload
+                        else (data.get("_src", u), data.get("_tgt", v)))
         props = edge_properties(src, tgt, data, preserve_metadata=qt_payload)
         identity = " {graphify_fact_key: $fact_key}" if qt_payload else ""
         key_args = {"fact_key": props["graphify_fact_key"]} if qt_payload else {}

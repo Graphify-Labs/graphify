@@ -32,6 +32,15 @@ its current local source/package evidence and earlier adoption checkpoints are
 recorded [separately](../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
 The earlier policy-22 hosted checkpoint does not verify this changed source.
 
+INC-QML-54 integrates upstream 0.9.92 while preserving these behavioral criteria.
+Its accepted compatibility decision uses AST schema 18 with upstream grammar
+fingerprinting and language overrides, retaining Qt policy 25 and independent
+semantic-cache ownership. Integrated source, package and hosted verification is
+**Pending**; earlier source/artifact/adoption evidence does not verify the new
+inputs. The [integration matrix](qt-qml/PLAN.md#inc-qml-54--upstream-0992-integration)
+identifies the affected criteria before conflict resolution. The installed
+policy-25 tool remains the separately verified earlier production tree.
+
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
 not Verified across the full declared platform matrix. The earlier adoption
@@ -109,7 +118,7 @@ Full detection and update agree on inclusion of `.qml`, `.ui.qml`, and supported
 
 **Acceptance Criteria**
 
-1 - Full detection, code-only collection, direct supported-file extraction, manual update and watch admit `.qml` and `.ui.qml`; each path selects the same intended extractor. (`REQ-QML-002-AC01`)
+1 - Full detection, code-only collection, direct supported-file extraction, manual update and watch admit `.qml` and `.ui.qml`; each path selects the same intended extractor. An explicit supported language override away from C++ takes precedence over a physical native Qt suffix; selecting another language cannot invoke native Qt collectors or mint their providers solely from that suffix. (`REQ-QML-002-AC01`)
 
 2 - Each delivered metadata format, including exact-name `qmldir` and `CMakeLists.txt`, is admitted consistently by its applicable entry points; unrelated extensionless files remain excluded. (`REQ-QML-002-AC02`)
 
@@ -127,7 +136,7 @@ Components, object instances, properties, signals, and functions produce source-
 
 1 - A fixture with nested objects, properties, signals and functions yields exactly the expected declarations, ownership links, original names and source locations. (`REQ-QML-003-AC01`)
 
-2 - Equal `id`/member names in different component scopes, duplicate basenames in different directories, and `Panel.qml` beside `Panel.cpp` produce distinct identities. (`REQ-QML-003-AC02`)
+2 - Equal `id`/member names in different component scopes, duplicate basenames in different directories, and `Panel.qml` beside `Panel.cpp` produce distinct identities. File records and source declarations remain distinct when an admitted walked directory alias combines a neighboring-file stem collision with a same-named variable; physical-path normalization cannot collapse accepted lexical owners during final ID remapping. (`REQ-QML-003-AC02`)
 
 3 - Comments, strings containing braces/type names, and grouped property blocks create no false component/object declarations; valid object declarations remain present. (`REQ-QML-003-AC03`)
 
@@ -278,7 +287,7 @@ Repeated analysis of identical input has stable IDs and normalized output. Seria
 
 3 - A fixture with different relations on the same endpoint pair round-trips all promised facts through build/export/reload; no relation disappears through simple-graph overwrite. (`REQ-QML-010-AC03`)
 
-4 - Extracted syntax, inferred resolution and ambiguity retain their accepted confidence/evidence distinction; sourceless stubs cannot overwrite a source-backed definition's provenance. (`REQ-QML-010-AC04`)
+4 - Extracted syntax, inferred resolution and ambiguity retain their accepted confidence/evidence distinction; sourceless stubs cannot overwrite a source-backed definition's provenance. Tierless import-placeholder treatment is confined to the canonical minted shape and D30's explicit legacy-shape compatibility convention. Metadata even when empty, source locations, unknown attributes, other origins and noncanonical values remain protected. An exact-shape authored legacy record is indistinguishable from an automatic one; the convention may treat its historical semantic stamp as automatic without claiming authorship certainty. (`REQ-QML-010-AC04`)
 
 <a name="qml-011--incremental-correctness"></a>
 
@@ -292,9 +301,14 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 
 2 - Metadata-only and C++-registration-only edits, provider deletion/rename and duplicate-provider introduction update links in unchanged QML and remove stale derived edges. (`REQ-QML-011-AC02`)
 
-3 - Parser/grammar/config/import-root/ignore-policy changes invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. Shared physical-source edits, rename and deletion remove stale facts under each remaining admitted owner; one notification cannot preserve an obsolete sibling owner. An absent source before discovery remains an intentional deletion, while failed identity lookup after admission rejects partial work. (`REQ-QML-011-AC03`)
+3 - Parser/grammar/config/import-root/ignore-policy changes, including supported language-override transitions, invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. Shared physical-source edits, rename and deletion remove stale facts under each remaining admitted owner; one notification cannot preserve an obsolete sibling owner. When a changed source or an already-recorded deleted source shares a canonical file-node identity with accepted surviving sources, refresh that bounded collision cohort before constructing incremental context so unchanged peers retain clean-build identity. Deleted identities may seed keys only; they are neither read nor resurrected. This refresh cannot admit outside sources or add unrelated files to parsing; unrelated unchanged sources retain their existing cache policy. An absent source before discovery remains an intentional deletion, while failed identity lookup after admission rejects partial work. (`REQ-QML-011-AC03`)
 
-4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. Still-referenced external nodes and source-backed definitions remain intact. (`REQ-QML-011-AC04`)
+4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. Still-referenced external nodes and source-backed definitions remain intact. Consumed pending community-label products are removed only with successful publication of their corresponding product cohort; an already absent product and repeated consumption are safe no-ops. (`REQ-QML-011-AC04`)
+
+The INC-QML-54 pending-label consumption and transactional-deletion refinement is
+**Implemented; fourteen focused source cases pass; broader integration/package/
+hosted verification pending**. Earlier incremental evidence remains bound to its
+recorded products and does not establish this new deletion boundary.
 
 <a name="qml-012--failure-handling-and-persistence"></a>
 
@@ -306,13 +320,13 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure at the Qt/QML resolution boundary cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. Failed physical co-owner selection rejects with `WATCH_SOURCE_IDENTITY_FAILED`; failed native file-spelling admission rejects with `SOURCE_INPUT_IDENTITY_FAILED` before worker/cache work. Both pre-extraction rejections use bounded quoted relative context or an explicit empty field, omit backend bodies and identify repair/retry guidance, without publishing fresh source facts. (`REQ-QML-012-AC01`)
 
-2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. A second failure cleaning partial setup reports `GRAPH_PUBLICATION_CLEANUP`, preserves accepted bytes and retained owned recovery copies, and omits private paths/backend bodies from the public message. (`REQ-QML-012-AC02`)
+2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication, including requested deletion of a consumed pending-label product, must complete as one cohort before reporting update success. A failed deletion or replacement restores the prior cohort, including previously deleted bytes; failed publication reports failure with explicit recovery on rollback failure. A second failure cleaning partial setup reports `GRAPH_PUBLICATION_CLEANUP`, preserves accepted bytes and retained owned recovery copies, and omits private paths/backend bodies from the public message. (`REQ-QML-012-AC02`)
 
 3 - Intentional deletion is distinguished from extraction failure; zero-node/shrink guards, provenance preference and documented destructive-update controls preserve their existing behavior. (`REQ-QML-012-AC03`)
 
-4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. (`REQ-QML-012-AC04`)
+4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. Transactional deletion accepts only a bounded product name from its declared inventory; unsafe or undeclared names reject before any product mutation. (`REQ-QML-012-AC04`)
 
-Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles**.
+Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles; INC-QML-54 transactional deletion has focused source proof, with broader verification pending**.
 INC-QML-48 corrects the Python 3.10 cleanup-fault fixture's injection boundary;
 its exact regression passes all four hosted Linux interpreters.
 INC-QML-41 adds persistent-identity failure coverage
@@ -341,7 +355,7 @@ Query, explain, path, affected, JSON/HTML and other supported exports, and optio
 
 2 - Affected traversal follows the documented dependency direction for property/signal changes and includes the expected handlers/components, including accepted Qt relation contexts. (`REQ-QML-013-AC02`)
 
-3 - JSON, HTML and each advertised export retain the supported Qt/QML facts and evidence after reload; omission by a consumer is explicit rather than presented as full support. (`REQ-QML-013-AC03`)
+3 - JSON, HTML and each advertised export retain the supported Qt/QML facts and evidence after reload; omission by a consumer is explicit rather than presented as full support. Serialization may add required schema/package-version fields to the output, but cannot mutate the caller's graph metadata, nodes or edges on success or rejection. (`REQ-QML-013-AC03`)
 
 4 - With the MCP extra installed, production MCP queries agree with equivalent CLI fixtures; searchable Qt metadata is deliberately projected/indexed rather than assumed discoverable. (`REQ-QML-013-AC04`)
 
@@ -429,7 +443,7 @@ Installed Qt/QML analysis supports the newly accepted project/declaration and ty
 
 6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and existing successful content-keyed source-cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures. JSON serialization rejects partial, foreign, ill-typed or contradictory direction markers before writing, retains previous output and reports QT_EXPORT_DIRECTION; force cannot turn invalid markers into valid-looking endpoints. A corrected retry succeeds and a repeated no-change update is idempotent from the first successful publication, including raw no-cluster output; transient extraction-run lists or absent-versus-empty diagnostic lists alone cannot rewrite accepted graph bytes or modification time. Meaningful diagnostics and source changes remain observable. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
 
-7 - Ambiguous `.h` inputs with supported source-visible C++ declaration markers select the C++ extractor across whitespace, BOM, CRLF and Unicode forms. Comments and string literals cannot supply those markers; plain C and inconclusive headers retain existing C dispatch, and Objective-C dispatch retains its established priority. Header-only edits refresh the selected extractor's source facts through the facade and installed updates without executing the header. (`REQ-QML-018-AC07`)
+7 - Without an explicit supported language override, ambiguous `.h` inputs with supported source-visible C++ declaration markers select the C++ extractor across whitespace, BOM, CRLF and Unicode forms. Comments and string literals cannot supply those markers; plain C and inconclusive headers retain existing C dispatch, and Objective-C dispatch retains its established priority. An explicit supported override away from C++ retains its chosen language without a Qt/native syntax diagnostic or provider authority derived only from the filename. Header-only edits and override transitions refresh the selected extractor's source facts through the facade and installed updates without executing the header. (`REQ-QML-018-AC07`)
 
 Status: **Implemented; all seven criteria locally verified for the bounded
 Windows x64/Python 3.12 profile**. Individual success, rejection, update and failure
@@ -604,11 +618,12 @@ and content contract of the selected operating-system profile.
 
 4 - Uninstall observes the established global/project scope and explicit user-skill opt-in. Protected shared-agent content is retained according to the current platform contract; missing installations remain a safe no-op. (`REQ-CORE-001-AC04`)
 
-5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
+5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. For the generated encoded Windows form, ownership additionally requires exact outer PowerShell options, bounded valid base64/UTF-16 and the exact static hook-check wrapper, permitting only trailing ASCII spaces/tabs after the encoded token. Status alone or general shell/whitespace normalization cannot authorize removal. Leading whitespace, changed options/payload/script/marker, ordinary, foreign and malformed entries remain authored. Recognition executes no script, performs no filesystem lookup and changes no configuration. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
 
-Status: **Locally Verified for native Windows and destination decision profiles**.
-All five criteria have focused source and native consumer evidence; the full
-Windows source suite has no failures. Other kernels and actual Codex Desktop
+Status: **Locally Verified for the recorded native Windows and destination profiles; INC-QML-54 encoded cleanup passes 55 source cases, with installed/hosted proof pending**.
+The earlier profile records focused source/native evidence for all five criteria
+and a full Windows source run without failures; it does not verify the expanded
+encoded cleanup boundary. Other kernels and actual Codex Desktop
 event delivery retain separate system boundaries. INC-CORE-01 and INC-CORE-05
 belong to the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix).
 
