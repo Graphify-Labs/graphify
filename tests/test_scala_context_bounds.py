@@ -228,3 +228,52 @@ def test_class_bound_edge_is_tagged_extracted_with_a_location(tmp_path):
     for e in edges:
         assert e.get("confidence") == "EXTRACTED", e
         assert e.get("source_location") == "L7", e
+
+
+# `derives` clauses (#2048) name typeclasses the type depends on, the same kind
+# of dependency as a context bound, so each one is a `references` edge with the
+# `derives` context. Grammar: a `derive` field on class_definition and
+# enum_definition, one `type` child per derived typeclass.
+DERIVES_SRC = '''\
+trait Show
+trait Eq
+
+case class Point(x: Int) derives Show, Eq
+
+enum Color derives Eq { case Red }
+
+case class Wrapped(x: Int) derives cats.Show
+
+class Bare(x: Int)
+'''
+
+
+def _derives_targets(tmp_path, label):
+    (tmp_path / "Derives.scala").write_text(DERIVES_SRC)
+    r = extract_scala(tmp_path / "Derives.scala")
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    targets = {e["target"] for e in r["edges"]
+               if e["relation"] == "references"
+               and e["source"] == nid[label]
+               and e.get("context") == "derives"}
+    return targets, nid
+
+
+def test_case_class_derives_each_typeclass(tmp_path):
+    targets, nid = _derives_targets(tmp_path, "Point")
+    assert targets == {nid["Show"], nid["Eq"]}
+
+
+def test_enum_derives_typeclass(tmp_path):
+    targets, nid = _derives_targets(tmp_path, "Color")
+    assert targets == {nid["Eq"]}
+
+
+def test_qualified_derives_links_by_last_segment(tmp_path):
+    targets, nid = _derives_targets(tmp_path, "Wrapped")
+    assert targets == {nid["Show"]}
+
+
+def test_class_without_derives_emits_no_derives_edge(tmp_path):
+    targets, _ = _derives_targets(tmp_path, "Bare")
+    assert not targets

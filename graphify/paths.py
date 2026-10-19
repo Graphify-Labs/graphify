@@ -16,14 +16,41 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import errno
+import functools
 import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+def _out_from_env() -> str:
+    """``GRAPHIFY_OUT``, or ``"graphify-out"`` when it is unset, empty, or names
+    the project itself / a parent of it.
+
+    ``os.environ.get(key, default)`` only applies the default when the variable
+    is missing, so ``GRAPHIFY_OUT=`` (a blank ``.env`` entry) used to yield
+    ``""``: output landed in the project root and ``uninstall --purge`` deleted
+    the whole project. ``.`` and ``..`` are never a valid output dir either.
+    """
+    value = (os.environ.get("GRAPHIFY_OUT") or "").strip()
+    if not value:
+        return "graphify-out"
+    norm = os.path.normpath(value)
+    if norm == "." or all(part == ".." for part in Path(norm).parts):
+        print(
+            f"warning: GRAPHIFY_OUT={value!r} points at the project or a parent "
+            "of it; using 'graphify-out' instead",
+            file=sys.stderr,
+        )
+        return "graphify-out"
+    return value
+
+
+GRAPHIFY_OUT = _out_from_env()
 
 
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
@@ -135,6 +162,12 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
+        # On Windows os.replace refuses a read-only destination and the fallback
+        # would rename it aside and clobber it. Refuse here instead, for this
+        # generic write path only: install/cache callers of the fallback must
+        # still be able to replace their own (possibly read-only) copies.
+        if os.name == "nt" and real.is_file() and not os.access(real, os.W_OK):
+            raise PermissionError(errno.EACCES, "destination is read-only", str(real))
         os_replace_with_fallback(tmp, str(real))
     except BaseException:
         try:
@@ -180,12 +213,18 @@ def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
     return True
 
 
-def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
+def write_json_atomic(
+    path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True, compact: bool = False
+) -> None:
     """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
     temp file rather than materializing the whole string first (matters for very
     large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
-    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
-    _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
+    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact`` writes one
+    line with no padding after ``,``/``:`` (graph.json, #3413). See :func:`_atomic_replace`."""
+    separators = (",", ":") if compact else None
+    _atomic_replace(
+        path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii, separators=separators)
+    )
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
@@ -253,6 +292,18 @@ def _is_test_path(path: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=65536)
+def _parent_parts(source_file: str) -> tuple[str, ...]:
+    """Segments of ``source_file``'s parent directory, POSIX-normalized.
+
+    `_path_proximity_winner` compares every candidate's directory against the
+    call site's, and an ambiguous name (``run``, ``get``) brings the same
+    candidate files back on every call site, so the parse is memoized. Equal
+    tuples here mean equal ``PurePosixPath(...).parent`` values.
+    """
+    return PurePosixPath(source_file.replace("\\", "/")).parent.parts
+
+
 def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str]) -> str | None:
     """Pick the candidate whose source file is closest to the call site.
 
@@ -270,7 +321,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     if not call_site_file:
         return None
     call_norm = str(call_site_file).replace("\\", "/")
-    call_dir = PurePosixPath(call_norm).parent
+    call_parts = _parent_parts(call_norm)
 
     # Tier 1: exact same file.
     same_file = [cid for cid, f in candidate_files.items()
@@ -282,7 +333,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 2: same directory.
     same_dir = [cid for cid, f in candidate_files.items()
-                if PurePosixPath(str(f).replace("\\", "/")).parent == call_dir]
+                if _parent_parts(str(f)) == call_parts]
     if len(same_dir) == 1:
         return same_dir[0]
     if len(same_dir) > 1:
@@ -290,10 +341,8 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 3: longest common path-prefix, computed over path segments. The
     # winner must be a strict unique maximum, else we bail (guard holds).
-    call_parts = call_dir.parts
-
     def _common_prefix_len(f: str) -> int:
-        parts = PurePosixPath(str(f).replace("\\", "/")).parent.parts
+        parts = _parent_parts(str(f))
         n = 0
         for a, b in zip(call_parts, parts):
             if a != b:
