@@ -513,3 +513,93 @@ def test_inherited_field_of_a_package_type_emits_no_edge(tmp_path):
                      "export class Child extends Base {\n  run(): number { return this.repo.save(); }\n}\n"),
     })
     assert not any(s == ".run()" and "save" in str(t) for s, t in calls), calls
+
+
+# ── Assignments made after construction (#4473) ───────────────────────────────
+
+def test_instance_method_assignment_types_this_field_calls(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  init() { this.repo = new RepoA(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert ("Service", "RepoA") in _class_pairs(r), _class_pairs(r)
+    assert _caller_hits(calls, "run", "save")
+
+
+def test_static_method_assignment_types_static_this_field_calls(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  static init() { this.repo = new RepoA(); }\n"
+                   "  static run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    pairs = {(nodes[e["source"]]["label"], owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert (".run()", "RepoA") in pairs, pairs
+    assert not any(s == ".run()" and t != "RepoA" for s, t in pairs), pairs
+
+
+def test_conflicting_method_assignments_do_not_infer_a_field_type(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class Service {\n"
+                   "  initA() { this.repo = new RepoA(); }\n"
+                   "  initB() { this.repo = new RepoB(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert not any(s == ".run()" and "save" in str(t) for s, t in calls), calls
+    assert not any(owner == "Service" and target in ("RepoA", "RepoB")
+                   for owner, target in _class_pairs(r)), _class_pairs(r)
+
+
+def test_nested_plain_function_assignment_does_not_type_this_field(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  init() { function nested() { this.repo = new RepoA(); } }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert not any(s == ".run()" and "save" in str(t) for s, t in calls), calls
+
+
+def test_declared_and_constructor_field_types_precede_method_assignments(tmp_path):
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class Declared {\n"
+                   "  repo: RepoA;\n"
+                   "  init() { this.repo = new RepoB(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"
+                   "export class Constructed {\n"
+                   "  constructor() { this.repo = new RepoA(); }\n"
+                   "  init() { this.repo = new RepoB(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    pairs = _class_pairs(r)
+    assert ("Declared", "RepoA") in pairs and ("Declared", "RepoB") not in pairs, pairs
+    assert ("Constructed", "RepoA") in pairs and ("Constructed", "RepoB") not in pairs, pairs
+
+
+def test_method_assignment_from_typed_parameter_types_this_field(tmp_path):
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  init(repo: RepoA) { this.repo = repo; }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert ("Service", "RepoA") in _class_pairs(r), _class_pairs(r)

@@ -14,7 +14,7 @@ from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
-from graphify.build import edge_data, edge_datas
+from graphify.build import edge_datas, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
@@ -61,6 +61,13 @@ def _read_graph(graph_path: str) -> nx.Graph:
     # not mistake the override for graph truth.
     _logical_directed = bool(data.get("directed", False))
     data = {**data, "directed": True}
+    # Repair files whose links hold parallel edges while the serialized flag says
+    # otherwise (#4500): older writers restored original_links verbatim while
+    # node_link_data derived "multigraph": false from the simple graph. Forced the
+    # same way "directed" is forced above, so the load keeps every relationship
+    # instead of collapsing parallel edges.
+    if has_parallel_links(data.get("links"), directed=True):
+        data = {**data, "multigraph": True}
     try:
         from graphify.build import graph_has_legacy_ids as _legacy
         if _legacy(data.get("nodes", [])):
@@ -1028,8 +1035,9 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
     Dedup keys on the ordered pair for directed graphs and the unordered pair
     otherwise: on a DiGraph `u->v` and `v->u` are genuinely distinct edges
     (mutual recursion, circular imports), and collapsing them would drop a real
-    one. On a multigraph parallel edges collapse to one entry, matching the
-    renderer, which already shows only the first (`_subgraph_to_text`).
+    one. On a multigraph the traversal still records one entry per pair; the
+    renderer expands it into one line per parallel edge (`_subgraph_to_text`,
+    #4500).
 
     Traversal edges keep their discovery order; completions are appended after.
     """
@@ -1200,39 +1208,42 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
-            # (u, v) is BFS/DFS visit order, not necessarily the true edge
-            # direction: on an undirected graph G.neighbors() walks callers
-            # and callees alike, so a caller->callee edge renders backwards
-            # whenever the callee is visited first. _src/_tgt (stashed on the
-            # edge data by the `query` CLI loader) carry the real direction;
-            # fall back to (u, v) for graphs/edges that don't set them.
-            src = d.get("_src", u)
-            tgt = d.get("_tgt", v)
-            # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
-            # graph.json): only trust them when they name exactly this edge's
-            # endpoints, else fall back to (u, v). Without this, G.nodes[src]
-            # would KeyError on an unknown id (#2080 review).
-            if {src, tgt} != {u, v}:
-                src, tgt = u, v
-            context = d.get("context")
-            context_suffix = f" context={sanitize_label(str(context))}" if context else ""
-            # The relation SITE (call/import/reference line in the source's
-            # file), not a def line — so "who calls X" cites a clickable call
-            # location, not the caller's def (#BUG1).
-            _loc = str(d.get("source_location") or "")
-            at_suffix = (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                if _loc else ""
-            )
-            line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-            )
-            lines.append(line)
+            # One EDGE line per relationship: on a multigraph a pair can
+            # carry several edges (e.g. contains + calls), each with its
+            # own metadata (#4500). The traversal records one entry per
+            # pair; expanding here keeps every relationship visible.
+            for d in edge_datas(G, u, v):
+                # (u, v) is BFS/DFS visit order, not necessarily the true edge
+                # direction: on an undirected graph G.neighbors() walks callers
+                # and callees alike, so a caller->callee edge renders backwards
+                # whenever the callee is visited first. _src/_tgt (stashed on the
+                # edge data by the `query` CLI loader) carry the real direction;
+                # fall back to (u, v) for graphs/edges that don't set them.
+                src = d.get("_src", u)
+                tgt = d.get("_tgt", v)
+                # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
+                # graph.json): only trust them when they name exactly this edge's
+                # endpoints, else fall back to (u, v). Without this, G.nodes[src]
+                # would KeyError on an unknown id (#2080 review).
+                if {src, tgt} != {u, v}:
+                    src, tgt = u, v
+                context = d.get("context")
+                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+                # The relation SITE (call/import/reference line in the source's
+                # file), not a def line — so "who calls X" cites a clickable call
+                # location, not the caller's def (#BUG1).
+                _loc = str(d.get("source_location") or "")
+                at_suffix = (
+                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                    if _loc else ""
+                )
+                line = (
+                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                    f"--{sanitize_label(str(d.get('relation', '')))} "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                )
+                lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -2079,6 +2090,42 @@ def _community_header(cid: int, community_name) -> str:
     return base
 
 
+def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
+    """One output line per relationship incident to ``nid``.
+
+    Parallel edges between the same pair each render as their own line with
+    their own metadata (#4500); ``edge_data()`` would return only the first.
+    """
+    def _edge_at(d: dict) -> str:
+        # Edge location = the relation SITE (call/import line) in the source
+        # node's file, not a def line (#BUG1).
+        loc = str(d.get("source_location") or "")
+        return (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+            if loc else ""
+        )
+    lines: list[str] = []
+    for nb in G.successors(nid):
+        for d in edge_datas(G, nid, nb):
+            rel = d.get("relation", "")
+            if rel_filter and rel_filter not in rel.lower():
+                continue
+            lines.append(
+                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+            )
+    for nb in G.predecessors(nid):
+        for d in edge_datas(G, nb, nid):
+            rel = d.get("relation", "")
+            if rel_filter and rel_filter not in rel.lower():
+                continue
+            lines.append(
+                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+            )
+    return lines
+
+
 def _build_server(graph_path: str):
     """Build the configured low-level MCP Server (shared by every transport).
 
@@ -2380,32 +2427,7 @@ def _build_server(graph_path: str):
         if err:
             return err
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
-        def _edge_at(d: dict) -> str:
-            # Edge location = the relation SITE (call/import line) in the source
-            # node's file, not a def line (#BUG1).
-            loc = str(d.get("source_location") or "")
-            return (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
-                if loc else ""
-            )
-        for nb in G.successors(nid):
-            d = edge_data(G, nid, nb)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
-        for nb in G.predecessors(nid):
-            d = edge_data(G, nb, nid)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+        lines.extend(_neighbor_lines(G, nid, rel_filter))
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"

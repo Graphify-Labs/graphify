@@ -587,23 +587,46 @@ def test_rust_forward_reference_skips_items_in_const_and_static_initializers(tmp
     assert targets == {"Hidden": "", "Guarded": ""}
 
 
-def test_rust_forward_reference_to_a_casefold_colliding_type_keeps_its_stub(tmp_path):
+def test_rust_forward_reference_to_a_casefold_colliding_type_resolves_to_it(tmp_path):
     """#3782: ids are casefolded, so `fn handle` (also in an `extern` block),
-    `const HANDLE`, `struct HANDLE` or an `impl` for `HANDLE` share the id of
-    `struct Handle` and walk() keeps whichever comes first, and a `type HANDLE`
-    alias shares it without being a node. A reference above the declarations must
-    keep the sourceless stub v8's extractor gives it, instead of binding to another
-    item."""
+    `const HANDLE`, `struct HANDLE` or an `impl` for `HANDLE` fold to the id of
+    `struct Handle`. Those items now get ids of their own (#3302's rule), so the
+    struct owns its id and a reference above the declarations resolves to it, as
+    a reference below already did, instead of to a sourceless stub."""
     extern_fn = 'extern "C" {\n    fn handle();\n}'
     impl_for_alias = "type HANDLE = usize;\n\ntrait Tr {}\n\nimpl Tr for HANDLE {}"
+    for name, other in (
+        ("fn_collision.rs", "fn handle() {}"),
+        ("extern_fn_collision.rs", extern_fn),
+        ("const_collision.rs", "const HANDLE: u32 = 0;"),
+        ("static_collision.rs", "static HANDLE: u32 = 0;"),
+        ("type_collision.rs", "struct HANDLE;"),
+        ("impl_collision.rs", impl_for_alias),
+    ):
+        p = tmp_path / name
+        p.write_text(
+            f"fn user(h: &Handle) {{}}\n\n{other}\n\nstruct Handle {{\n    n: u32,\n}}\n",
+            encoding="utf-8",
+        )
+        r = extract_rust(p)
+        by_id = {n["id"]: n for n in r["nodes"]}
+        handle = next(n for n in r["nodes"] if n["label"] == "Handle")
+        targets = [
+            e["target"] for e in r["edges"]
+            if e["relation"] == "references" and e["target"] in by_id
+        ]
+        assert targets == [handle["id"]], name
+        assert handle["source_file"] == str(p), name
+
+
+def test_rust_forward_reference_keeps_its_stub_when_a_non_type_shares_the_name(tmp_path):
+    """#3782: a `type HANDLE` alias is not a node, and `fn Handle()` beside
+    `struct Handle {}` has the type's exact name, so the two still share one node
+    that walk() gives to whichever comes first. A reference above the
+    declarations keeps the sourceless stub v8's extractor gives it."""
     for name, user, other, label in (
-        ("fn_collision.rs", "fn user(h: &Handle) {}", "fn handle() {}", "Handle"),
-        ("extern_fn_collision.rs", "fn user(h: &Handle) {}", extern_fn, "Handle"),
-        ("const_collision.rs", "fn user(h: &Handle) {}", "const HANDLE: u32 = 0;", "Handle"),
-        ("static_collision.rs", "fn user(h: &Handle) {}", "static HANDLE: u32 = 0;", "Handle"),
-        ("type_collision.rs", "fn user(h: &Handle) {}", "struct HANDLE;", "Handle"),
-        ("impl_collision.rs", "fn user(h: &Handle) {}", impl_for_alias, "Handle"),
         ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE"),
+        ("same_name_fn.rs", "fn user(h: &Handle) {}", "fn Handle() {}", "Handle"),
     ):
         p = tmp_path / name
         p.write_text(

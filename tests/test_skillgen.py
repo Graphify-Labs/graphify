@@ -546,11 +546,25 @@ def test_dispatch_variants_are_host_specific():
         "amp": "Task(description=",
         "trae": "Task(description=",
         "vscode": "paste each response back",
+        "pi": "`delegate` agent",
     }
     for key, marker in expect.items():
         core, _ = _platform_artifacts(key)
         b2 = core[core.index("**Step B2"):core.index("**Step B3")]
         assert marker.lower() in b2.lower(), f"[{key}] dispatch slot missing {marker!r}"
+
+
+def test_pi_never_names_the_claude_general_purpose_agent():
+    """pi-subagents rejects `general-purpose` as an unknown agent (#4494), so
+    neither Pi's dispatch nor its Step B3 re-run hints may name it; claude keeps
+    its own wording."""
+    pi, _ = _platform_artifacts("pi")
+    assert "general-purpose" not in pi
+    assert "Re-run with the `delegate` agent." in pi
+    assert "ensure the `delegate` agent is used." in pi
+    claude, _ = _platform_artifacts("claude")
+    assert "Re-run with general-purpose agent." in claude
+    assert 'ensure `subagent_type="general-purpose"` is used.' in claude
 
 
 def test_compact_extraction_hosts_use_the_compact_spec():

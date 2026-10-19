@@ -4118,15 +4118,40 @@ def dispatch_command(cmd: str) -> None:
         # an API key; the key is enforced below only when there's LLM work.
         from graphify.llm import (
             BACKENDS as _BACKENDS,
-            detect_backend as _detect_backend,
+            detect_backend_with_source as _detect_backend_with_source,
+            backend_disabled_by_env as _backend_disabled_by_env,
             estimate_cost as _estimate_cost,
             extract_corpus_parallel as _extract_corpus_parallel,
             _format_backend_env_keys,
             _get_backend_api_key,
         )
         needs_llm = bool(semantic_files) or dedup_llm
-        if backend is None and needs_llm:
-            backend = _detect_backend()
+        backend_source = None
+        if backend is None and needs_llm and _backend_disabled_by_env():
+            # GRAPHIFY_BACKEND=none: keep the local AST pass and skip every LLM
+            # step, rather than failing or quietly auto-selecting a cloud provider
+            # (#4361). Mirrors --code-only's report of what was held back.
+            skipped = len(semantic_files)
+            print(
+                f"[graphify extract] GRAPHIFY_BACKEND=none: skipping LLM work "
+                f"({skipped} non-code file(s) and LLM dedup kept out); indexing code only."
+            )
+            semantic_files = []
+            doc_files = []
+            paper_files = []
+            image_files = []
+            dedup_llm = False
+            needs_llm = False
+        elif backend is None and needs_llm:
+            backend, backend_source = _detect_backend_with_source()
+            if backend and backend_source.startswith("auto-detected"):
+                # Name the exact setting that chose the backend, so sending the
+                # corpus to a cloud provider is never a surprise (#4361).
+                print(
+                    f"[graphify] using backend '{backend}' ({backend_source}); pass "
+                    "--backend or set GRAPHIFY_BACKEND to choose explicitly, or "
+                    "GRAPHIFY_BACKEND=none to disable LLM work."
+                )
         if backend is not None and backend not in _BACKENDS:
             print(
                 f"error: unknown backend '{backend}'. "
@@ -4300,6 +4325,7 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
+                            "_py_fixture",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4443,7 +4469,8 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
 
             if uncached_paths:
-                print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
+                _via = f"{backend}" + (f", {backend_source}" if backend_source else "")
+                print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {_via}...")
                 corpus_kwargs: dict = {
                     "backend": backend,
                     "model": model,

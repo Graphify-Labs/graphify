@@ -11,6 +11,8 @@ _CHECKOUT_MARKER = "# graphify-checkout-hook-start"
 _CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
 _MERGE_HOOK_MARKER = "# graphify-merge-hook-start"
 _MERGE_HOOK_MARKER_END = "# graphify-merge-hook-end"
+_REWRITE_HOOK_MARKER = "# graphify-rewrite-hook-start"
+_REWRITE_HOOK_MARKER_END = "# graphify-rewrite-hook-end"
 
 # __PINNED_PYTHON__ is replaced at install time with the absolute path of the
 # Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
@@ -438,22 +440,55 @@ if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
     export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
 fi
 
-# Skip during rebase/merge/cherry-pick to avoid blocking --continue with unstaged changes
+# Skip during a rebase or merge to avoid blocking --continue with unstaged changes
 # git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked by
 # hand (each git exec costs 1s+ on AV-scanned Windows machines).
 GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
 [ -d "$GIT_DIR/rebase-apply" ] && exit 0
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
-[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
-
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + """
+# CHERRY_PICK_HEAD can't be the skip signal: git leaves it on disk while post-commit
+# runs, so every pick was silenced (#4490, same trap as MERGE_HEAD in #4463). For a
+# range pick or revert, skip every step but the last and rebuild once from
+# sequencer/head, so a tracked graph.json isn't rewritten between steps. sequencer/ is
+# trusted only when its first todo line is the commit just made; a stale one left by
+# `git reset --hard` would otherwise silence every later commit.
+_GFY_SEQ_BASE=""
+if [ -f "$GIT_DIR/sequencer/todo" ]; then
+    IFS= read -r _GFY_FIRST < "$GIT_DIR/sequencer/todo"
+    _GFY_VERB=${_GFY_FIRST%% *}
+    _GFY_REST=${_GFY_FIRST#* }
+    case "$_GFY_REST" in
+        *" "*) _GFY_SUBJ=${_GFY_REST#* } ;;
+        *)     _GFY_SUBJ="" ;;
+    esac
+    _GFY_SEQ_LIVE=0
+    _GFY_Q='"'
+    case "$_GFY_VERB" in
+        pick)   [ "$(git log -1 --format=%s 2>/dev/null)" = "$_GFY_SUBJ" ] && _GFY_SEQ_LIVE=1 ;;
+        revert) [ "$(git log -1 --format=%s 2>/dev/null)" = "Revert ${_GFY_Q}${_GFY_SUBJ}${_GFY_Q}" ] && _GFY_SEQ_LIVE=1 ;;
+    esac
+    if [ "$_GFY_SEQ_LIVE" = "1" ]; then
+        _GFY_PENDING=0
+        while IFS= read -r _GFY_STEP || [ -n "$_GFY_STEP" ]; do
+            [ -n "$_GFY_STEP" ] && _GFY_PENDING=$((_GFY_PENDING + 1))
+        done < "$GIT_DIR/sequencer/todo"
+        [ "$_GFY_PENDING" -gt 1 ] && exit 0
+        [ -f "$GIT_DIR/sequencer/head" ] && IFS= read -r _GFY_SEQ_BASE < "$GIT_DIR/sequencer/head"
+    fi
+fi
+
 # core.quotePath=false: by default git prints a non-ASCII path as a quoted
 # octal-escaped string, which matches no file on disk, so the edit was silently
 # left out of the rebuild. Names git still quotes are decoded in the rebuild.
 CHANGED=$(git -c core.quotePath=false diff --name-only HEAD~1 HEAD 2>/dev/null || git -c core.quotePath=false diff --name-only HEAD 2>/dev/null)
+# Last pick of a range: cover every commit picked since the sequence began, not only this one.
+if [ -n "$_GFY_SEQ_BASE" ]; then
+    CHANGED=$(git -c core.quotePath=false diff --name-only "$_GFY_SEQ_BASE" HEAD 2>/dev/null)
+fi
 if [ -z "$CHANGED" ]; then
     exit 0
 fi
@@ -583,16 +618,15 @@ if [ ! -d "graphify-out" ]; then
     exit 0
 fi
 
-# This hook only fires after a merge completed cleanly, so MERGE_HEAD is
-# already gone by the time it runs -- these checks are belt and braces for
-# any git version/workflow quirk that lands here mid rebase or cherry-pick
-# anyway, matching the commit and checkout hooks' own defensive posture.
+# git leaves MERGE_HEAD on disk while post-merge runs and deletes it only
+# after the hook returns, so it must not be checked here: that skipped every
+# merge that makes a merge commit (#4463). The checks below are belt and
+# braces for any quirk that lands here mid rebase or cherry-pick.
 # git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked
 # by hand (each git exec costs 1s+ on AV-scanned Windows machines).
 GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
 [ -d "$GIT_DIR/rebase-apply" ] && exit 0
-[ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
 [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
 
 # Honor the same opt out the commit and checkout hooks already respect.
@@ -605,6 +639,58 @@ export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Merge completed - launching background rebuild (log: $_GRAPHIFY_LOG)"
 """ + _detached_launch(_REBUILD_BODY_CHECKOUT) + """)
 # graphify-merge-hook-end
+"""
+
+
+_REWRITE_SCRIPT = """\
+# graphify-rewrite-hook-start
+# Auto-rebuilds the knowledge graph (code only) when a rebase finishes, including
+# `git pull --rebase`. post-commit cannot cover it: it skips while rebase-merge/
+# exists, and every replayed commit is made under it. git runs post-rewrite once,
+# after the last commit, with the tree in its final state (#4490).
+# Installed by: graphify hook install
+(
+
+# Deterministic clustering: networkx louvain iterates string-keyed sets whose
+# order is randomized per-process by PYTHONHASHSEED, so community assignments
+# churn run-to-run. Pinning it makes graphify-out reproducible.
+export PYTHONHASHSEED=0
+__VIZ_LIMIT_EXPORT__
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
+fi
+
+# git writes the old/new sha pairs of the rewritten commits to stdin; drain them so
+# git never blocks on a full pipe. Skipped when run by hand, where stdin is a terminal.
+[ -t 0 ] || cat >/dev/null
+
+# $1 is "rebase" or "amend". An amend already rebuilt through post-commit.
+[ "${1:-}" = "rebase" ] || exit 0
+
+# Only run if the output dir exists (graph has been built before). Resolve it from
+# GRAPHIFY_OUT like the rebuild body does (#1423), not a literal graphify-out/.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+if [ ! -d "${_GFY_OUT%/}" ]; then
+    exit 0
+fi
+
+# No rebase-merge/ or rebase-apply/ check, unlike post-commit and post-checkout: git
+# removes rebase-merge/ only after post-rewrite returns, so it is still on disk here
+# and would skip every rebase (the same trap as MERGE_HEAD in post-merge, #4463).
+
+# Honor the same opt out the commit and checkout hooks already respect.
+[ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
+
+""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
+_GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
+mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
+export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
+echo "[graphify] Rebase completed - launching background rebuild (log: $_GRAPHIFY_LOG)"
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """)
+# graphify-rewrite-hook-end
 """
 
 
@@ -1005,7 +1091,7 @@ def _user_hooks_dir(hooks_dir: Path) -> Path:
 
 
 def install(path: Path = Path(".")) -> str:
-    """Install graphify's post-commit, post-checkout, and post-merge hooks in the nearest git repo."""
+    """Install graphify's post-commit, post-checkout, post-merge, and post-rewrite hooks in the nearest git repo."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -1027,22 +1113,26 @@ def install(path: Path = Path(".")) -> str:
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     merge_hook = _MERGE_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    rewrite_hook = _REWRITE_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
     post_merge_msg = _install_hook(
         hooks_dir, "post-merge", merge_hook, _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END
     )
+    post_rewrite_msg = _install_hook(
+        hooks_dir, "post-rewrite", rewrite_hook, _REWRITE_HOOK_MARKER, _REWRITE_HOOK_MARKER_END
+    )
     merge_msg = _register_merge_driver(root)
 
     return (
         f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
-        f"post-merge: {post_merge_msg}\nmerge driver: {merge_msg}"
+        f"post-merge: {post_merge_msg}\npost-rewrite: {post_rewrite_msg}\nmerge driver: {merge_msg}"
     )
 
 
 def uninstall(path: Path = Path(".")) -> str:
-    """Remove graphify's post-commit, post-checkout, and post-merge hooks."""
+    """Remove graphify's post-commit, post-checkout, post-merge, and post-rewrite hooks."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -1053,11 +1143,14 @@ def uninstall(path: Path = Path(".")) -> str:
     post_merge_msg = _uninstall_hook(
         hooks_dir, "post-merge", _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END
     )
+    post_rewrite_msg = _uninstall_hook(
+        hooks_dir, "post-rewrite", _REWRITE_HOOK_MARKER, _REWRITE_HOOK_MARKER_END
+    )
     merge_msg = _unregister_merge_driver(root)
 
     return (
         f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
-        f"post-merge: {post_merge_msg}\nmerge driver: {merge_msg}"
+        f"post-merge: {post_merge_msg}\npost-rewrite: {post_rewrite_msg}\nmerge driver: {merge_msg}"
     )
 
 
@@ -1126,11 +1219,12 @@ def status(path: Path = Path(".")) -> str:
     commit = _check("post-commit", _HOOK_MARKER, _HOOK_MARKER_END, _HOOK_SCRIPT)
     checkout = _check("post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END, _CHECKOUT_SCRIPT)
     post_merge = _check("post-merge", _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END, _MERGE_SCRIPT)
+    post_rewrite = _check("post-rewrite", _REWRITE_HOOK_MARKER, _REWRITE_HOOK_MARKER_END, _REWRITE_SCRIPT)
     merge = _merge_driver_status(root)
 
     res = (
         f"post-commit: {commit}\npost-checkout: {checkout}\n"
-        f"post-merge: {post_merge}\nmerge driver: {merge}"
+        f"post-merge: {post_merge}\npost-rewrite: {post_rewrite}\nmerge driver: {merge}"
     )
     if cfg_limit is not None:
         res += f"\nviz node limit: {cfg_limit}"

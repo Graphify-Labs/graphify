@@ -1831,6 +1831,70 @@ def test_ambiguous_barrel_reexport_chain_does_not_guess(tmp_path, monkeypatch):
     assert _make_id(_file_stem(Path("src/lib/b.ts")), "dup") in reexport_targets
 
 
+# --- #4486: a named import through a barrel ----------------------------------
+# The structural extractor names the imported symbol on the barrel itself. The
+# barrel defines nothing, so that edge dangled next to the one resolved to the
+# defining symbol, and build minted it as a phantom external node.
+
+
+def _deal_barrel_fixture(tmp_path: Path, barrel: str) -> None:
+    _write(
+        tmp_path / "src/lib/deal.ts",
+        "export interface DealDto { id: string }\n"
+        "export function makeDeal(id: string): DealDto { return { id } }\n",
+    )
+    _write(tmp_path / "src/lib/index.ts", barrel)
+
+
+def _import_targets(result: dict, path: Path) -> list[str]:
+    source = _file_node_id(path)
+    return sorted(
+        edge["target"] for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports"
+    )
+
+
+@pytest.mark.parametrize(
+    "barrel",
+    ["export * from './deal'\n", "export { makeDeal, type DealDto } from './deal'\n"],
+    ids=["star", "named"],
+)
+def test_named_import_through_barrel_is_one_edge_to_the_definition(tmp_path, monkeypatch, barrel):
+    _deal_barrel_fixture(tmp_path, barrel)
+    _write(
+        tmp_path / "src/route.ts",
+        "import { makeDeal, type DealDto } from './lib/index'\n"
+        "export function route(): DealDto { return makeDeal('1') }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(sorted(Path("src").rglob("*.ts")), cache_root=Path("."))
+
+    deal = _file_stem(Path("src/lib/deal.ts"))
+    assert _import_targets(result, Path("src/route.ts")) == sorted(
+        [_make_id(deal, "DealDto"), _make_id(deal, "makeDeal")]
+    )
+
+
+def test_named_import_through_barrel_into_a_package_keeps_its_edge(tmp_path, monkeypatch):
+    _deal_barrel_fixture(tmp_path, "export * from './deal'\nexport { eq } from 'drizzle-orm'\n")
+    _write(
+        tmp_path / "src/route.ts",
+        "import { makeDeal, eq } from './lib/index'\n"
+        "export function route() { eq(); return makeDeal('1') }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(sorted(Path("src").rglob("*.ts")), cache_root=Path("."))
+
+    targets = _import_targets(result, Path("src/route.ts"))
+    index = _file_stem(Path("src/lib/index.ts"))
+    # `eq` resolves to nothing in the corpus, so its edge is the only trace of it.
+    assert _make_id(index, "eq") in targets
+    assert _make_id(index, "makeDeal") not in targets
+    assert _make_id(_file_stem(Path("src/lib/deal.ts")), "makeDeal") in targets
+
+
 # ── #3487: the exports-map condition must follow the importer ────────────────
 
 
@@ -2146,6 +2210,66 @@ def test_workspace_main_dist_target_used_when_no_source_entry_exists(tmp_path: P
         tmp_path / "packages/pkg-a/dist/index.js",
         'export const value = "from-dist";\n',
     )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([dist_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+# --- #4485: the same fallback when `exports` names only dist/ -----------------
+
+
+def _dist_only_exports_package(root: Path, *, built: bool) -> Path:
+    _write(root / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        root / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "type": "module",
+            "main": "dist/index.js",
+            "exports": {
+                ".": {"import": "./dist/index.js", "types": "./dist/index.d.ts"},
+                "./sub": {"import": "./dist/sub.js"},
+            },
+        }),
+    )
+    if built:
+        _write(root / "packages/pkg-a/dist/index.js", "export const value = 'dist';\n")
+        _write(root / "packages/pkg-a/dist/sub.js", "export const sub = 'dist';\n")
+    _write(root / "packages/pkg-a/src/sub.ts", "export const sub = 'ok';\n")
+    return _write(root / "packages/pkg-a/src/index.ts", "export const value = 'ok';\n")
+
+
+@pytest.mark.parametrize("built", [True, False], ids=["built", "clean-clone"])
+def test_workspace_exports_into_dist_fall_through_to_src(tmp_path: Path, built: bool):
+    source_target = _dist_only_exports_package(tmp_path, built=built)
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\n"
+        "import { sub } from '@example/pkg-a/sub'\n"
+        "export const v = value + sub\n",
+    )
+
+    result = _extract_for(
+        [source_target, tmp_path / "packages/pkg-a/src/sub.ts", importer], tmp_path
+    )
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/sub.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+def test_workspace_exports_into_dist_used_when_no_source_exists(tmp_path: Path):
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a", "exports": {".": {"import": "./dist/index.js"}}}),
+    )
+    dist_target = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const value = 1;\n")
     importer = _write(
         tmp_path / "apps/web/src/consumer.ts",
         "import { value } from '@example/pkg-a'\nexport const v = value\n",

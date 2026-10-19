@@ -1246,8 +1246,13 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
     way: ``__x``/``__x__``/``x`` all collapse too) occupies the public name (#3302).
 
     Returns ``{plain_nid: {raw names that would collide on it}}`` for every
-    module-level function and every direct method of a module-level class — the
-    two cases the id-minting code actually distinguishes via ``parent_class_nid``.
+    module-level function, module-level class, and direct method of a
+    module-level class — the cases the id-minting code actually distinguishes
+    via ``parent_class_nid``. Module-level classes share the functions' scope, so
+    ``class Session`` / ``def session()`` and ``class Foo`` / ``class FOO``
+    (casefold) collide there too (#2810). Methods are keyed under their class's
+    *resolved* id: a salted class mints its methods under the salted id, so
+    keying them under the plain one would miss every method collision inside it.
     Deliberately does not recurse into nested classes or nested functions: this
     keeps the scope key trivially exact (matching ``_make_id(stem, class_name)``,
     which only holds because Python never populates ``namespace_stack``) rather
@@ -1261,7 +1266,15 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
     def _record(plain_nid: str, name: str) -> None:
         groups.setdefault(plain_nid, set()).add(name)
 
-    for child in root_node.children:
+    def _undecorated(node):
+        # `@dataclass class X` / `@property def x` wrap the definition in a
+        # decorated_definition; the walker mints the wrapped one's id unchanged.
+        if node.type == "decorated_definition":
+            return node.child_by_field_name("definition") or node
+        return node
+
+    classes: list = []  # (class_name, body) for the method pass below
+    for child in map(_undecorated, root_node.children):
         if child.type == "function_definition":
             name_node = child.child_by_field_name("name")
             if name_node is not None:
@@ -1276,21 +1289,27 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
             class_name = _read_text(class_name_node, source)
             if not class_name:
                 continue
-            class_nid = _make_id(stem, class_name)
-            for member in body.children:
-                if member.type != "function_definition":
-                    continue
-                name_node = member.child_by_field_name("name")
-                if name_node is None:
-                    continue
-                name = _read_text(name_node, source)
-                if name:
-                    _record(_make_id(class_nid, name), name)
+            _record(_make_id(stem, class_name), class_name)
+            classes.append((class_name, body))
+
+    module_groups = {nid: names for nid, names in groups.items() if len(names) >= 2}
+    for class_name, body in classes:
+        class_nid = _underscore_salted_nid(_make_id(stem, class_name), class_name, module_groups)
+        for member in map(_undecorated, body.children):
+            if member.type != "function_definition":
+                continue
+            name_node = member.child_by_field_name("name")
+            if name_node is None:
+                continue
+            name = _read_text(name_node, source)
+            if name:
+                _record(_make_id(class_nid, name), name)
 
     return {nid: names for nid, names in groups.items() if len(names) >= 2}
 
 
-def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]]) -> str:
+def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]],
+                           private_prefixes: tuple[str, ...] = ("_",)) -> str:
     """Resolve a declaration's real node id against the collision map.
 
     Shared by the Python and C# pre-scans (#3302, #4415). A name with no
@@ -1303,15 +1322,61 @@ def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]
     `_x`/`__x` colliding with no public member at all) is salted, so the outcome
     never depends on declaration order — mirrors the exported/unexported rule
     the Go extractor uses for its own case-only collision (#2779).
+    ``private_prefixes`` widens what counts as non-public: JS/TS also marks
+    members private with ``$`` and ``#`` (#4475).
     """
     names = groups.get(plain_nid)
     if not names or len(names) < 2:
         return plain_nid
-    public = [n for n in names if not n.startswith("_")]
+    public = [n for n in names if not n.startswith(private_prefixes)]
     if len(public) == 1 and name == public[0]:
         return plain_nid
     salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
     return _make_id(plain_nid, salt)
+
+
+_JS_PRIVATE_MEMBER_PREFIXES = ("_", "$", "#")
+_JS_MEMBER_METHOD_TYPES = ("method_definition", "method_signature", "abstract_method_signature")
+
+
+def _js_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                   groups_cache: dict) -> str:
+    """Node id for a JS/TS class member, salted when a sibling collides (#4475).
+
+    ``make_id`` drops ``_``, ``$`` and ``#``, so ``updateHash`` / ``_updateHash``,
+    ``close`` / ``#close`` and ``set`` / ``$set`` in one class body mint one id
+    and the second declaration vanished. The member names of the enclosing
+    class body are grouped by the id they would get (methods, signatures and
+    function-valued fields, the members the walk turns into ``.name()`` nodes),
+    then ``_underscore_salted_nid`` applies the Python/C# rule: a unique public
+    name keeps the plain id, every other colliding name gets a salted one.
+    Members that collide with nothing keep their old id. Getter/setter pairs
+    and overloads share one name, so they are not a collision.
+    """
+    body = member_node.parent
+    if body is None:
+        return _make_id(class_nid, name)
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        for c in body.children:
+            if c.type in _JS_MEMBER_METHOD_TYPES:
+                name_node = c.child_by_field_name("name")
+            elif c.type in ("field_definition", "public_field_definition"):
+                value = c.child_by_field_name("value")
+                if value is None or value.type not in _JS_FUNCTION_VALUE_TYPES:
+                    continue
+                name_node = c.child_by_field_name("property") or c.child_by_field_name("name")
+            else:
+                continue
+            text = _read_text(name_node, source) if name_node is not None else ""
+            if text:
+                names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups,
+                                  _JS_PRIVATE_MEMBER_PREFIXES)
 
 
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
@@ -1843,6 +1908,131 @@ def _python_param_names(params_node, source: bytes) -> set[str]:
             if name_n is not None:
                 out.add(_read_text(name_n, source))
     return out
+
+# pytest fixtures (#ISSUE). A test or fixture names a fixture as a parameter:
+# `def test_x(runner): runner.invoke(cli)`, with `runner` defined in the same
+# file or a conftest.py above it. The parameter has no annotation, so it is
+# typed from what the fixture returns.
+_PYTEST_FIXTURE_DECORATORS = frozenset({"pytest.fixture", "fixture", "pytest_asyncio.fixture"})
+_PYTHON_ITERATOR_WRAPPERS = frozenset({
+    "Iterator", "Iterable", "Generator", "AsyncIterator", "AsyncIterable", "AsyncGenerator",
+})
+# A fixture whose returned type is unknown still shadows one further up.
+PYTEST_FIXTURE_UNTYPED = "?"
+
+
+def _python_is_pytest_fixture(func_node, source: bytes) -> bool:
+    parent = func_node.parent
+    if parent is None or parent.type != "decorated_definition":
+        return False
+    for dec in parent.children:
+        if dec.type != "decorator":
+            continue
+        expr = next(iter(dec.named_children), None)
+        if expr is not None and expr.type == "call":
+            expr = expr.child_by_field_name("function")
+        if expr is not None and _read_text(expr, source) in _PYTEST_FIXTURE_DECORATORS:
+            return True
+    return False
+
+
+def _python_annotation_class(type_node, source: bytes) -> str | None:
+    """`Client`, `mod.Client`, or the item of `Iterator[Client]` /
+    `Generator[Client, None, None]` (a yield fixture); anything else is None."""
+    node = type_node
+    while node is not None and node.type == "type":
+        node = next(iter(node.named_children), None)
+    if node is None:
+        return None
+    if node.type == "generic_type":
+        head = next((c for c in node.named_children if c.type in ("identifier", "attribute")), None)
+        params = next((c for c in node.named_children if c.type == "type_parameter"), None)
+        if head is None or params is None:
+            return None
+        if _read_text(head, source).rsplit(".", 1)[-1] not in _PYTHON_ITERATOR_WRAPPERS:
+            return None
+        return _python_annotation_class(next(iter(params.named_children), None), source)
+    if node.type not in ("identifier", "attribute"):
+        return None
+    name = _read_text(node, source).rsplit(".", 1)[-1]
+    return name if name[:1].isupper() else None
+
+
+def _python_fixture_type(func_node, source: bytes, local_types: dict[str, str | None]) -> str:
+    """The class a fixture returns or yields: its return annotation, else every
+    `return` / `yield` naming one class (`return CliRunner()`, `yield client`
+    after `client = Client()`). Anything else is PYTEST_FIXTURE_UNTYPED."""
+    ret = func_node.child_by_field_name("return_type")
+    if ret is not None:
+        return _python_annotation_class(ret, source) or PYTEST_FIXTURE_UNTYPED
+    found: set[str | None] = set()
+    body = func_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in ("function_definition", "class_definition", "lambda"):
+            continue
+        value = None
+        if node.type == "return_statement":
+            value = next(iter(node.named_children), None)
+        elif node.type == "yield":
+            value = next(iter(node.named_children), None)
+        else:
+            stack.extend(node.children)
+            continue
+        if value is None:
+            continue
+        if value.type == "call":
+            fn = value.child_by_field_name("function")
+            name = _read_text(fn, source).rsplit(".", 1)[-1] if fn is not None and fn.type in ("identifier", "attribute") else ""
+            found.add(name if name[:1].isupper() else None)
+        elif value.type == "identifier":
+            found.add(local_types.get(_read_text(value, source)))
+        else:
+            found.add(None)
+    if len(found) == 1:
+        only = next(iter(found))
+        if only:
+            return only
+    return PYTEST_FIXTURE_UNTYPED
+
+
+def _python_untouched_params(func_node, source: bytes) -> set[str]:
+    """Parameters with no annotation and no default that the body never rebinds:
+    the ones pytest may fill with a fixture."""
+    params = func_node.child_by_field_name("parameters")
+    names: set[str] = set()
+    if params is not None:
+        for child in params.children:
+            if child.type == "identifier":
+                names.add(_read_text(child, source))
+    rebound: set[str] = set()
+    body = func_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in ("function_definition", "class_definition", "lambda"):
+            continue
+        if node.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+            _python_collect_assignment_targets(node.child_by_field_name("left"), source, rebound)
+        elif node.type == "named_expression":
+            _python_collect_assignment_targets(node.child_by_field_name("name"), source, rebound)
+        elif node.type in ("as_pattern_target", "global_statement", "nonlocal_statement", "delete_statement"):
+            stack_ids = [node]
+            while stack_ids:
+                cur = stack_ids.pop()
+                if cur.type == "identifier":
+                    rebound.add(_read_text(cur, source))
+                stack_ids.extend(cur.children)
+        stack.extend(node.children)
+    return names - rebound - {"self", "cls"}
+
+
+def _python_is_test_module(str_path: str) -> bool:
+    name = str_path.replace("\\", "/").rsplit("/", 1)[-1]
+    return name == "conftest.py" or (name.startswith("test_") and name.endswith(".py")) or name.endswith("_test.py")
+
+
 
 def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> None:
     """Identifiers bound as `pattern` targets under a Python AST subtree.
@@ -3273,7 +3463,8 @@ def _ts_receiver_type_table(
         ctor = new_expr.child_by_field_name("constructor")
         return _read_text(ctor, source) if ctor is not None and ctor.type in ("identifier", "type_identifier") else None
 
-    assigned: dict[str, dict[str, str]] = {}
+    constructor_assigned: dict[str, dict[str, set[str]]] = {}
+    method_assigned: dict[str, dict[str, set[str]]] = {}
     stack = [root]
     while stack:
         n = stack.pop()
@@ -3327,29 +3518,33 @@ def _ts_receiver_type_table(
                         # either: keep the file table they read.
                         table[name] = tname
         elif t == "method_definition" and field_table is not None:
-            # The constructor declares fields too: parameter properties
-            # (`constructor(private repo: Repo)`) and `this.repo = repo` /
-            # `this.repo = new Repo()`. A declared field type wins over an
-            # assignment (merged after the walk).
             mname = n.child_by_field_name("name")
             owner_name = _class_name(n.parent)
-            accessor = next((c.type for c in n.children if c.type in ("get", "set")), None)
-            if mname is not None and owner_name is not None and accessor is not None:
-                # `get repo(): Repo` / `set repo(r: Repo)` read and write a
-                # `this.repo` of that type, like a field.
-                tname = None
-                if accessor == "get":
-                    ret = n.child_by_field_name("return_type")
-                    tname = (_bare_type_ident(ret) or _optional_type_ident(ret)) if ret is not None else None
-                else:
-                    params = n.child_by_field_name("parameters")
-                    first = next((p for p in params.named_children if p.type in ("required_parameter", "optional_parameter")), None) if params is not None else None
-                    ann = first.child_by_field_name("type") if first is not None else None
-                    tname = (_bare_type_ident(ann) or _optional_type_ident(ann)) if ann is not None else None
-                if tname:
-                    field_table.setdefault(owner_name, {}).setdefault(_read_text(mname, source), tname)
-            if (mname is not None and owner_name is not None
-                    and _read_text(mname, source) == "constructor"):
+            if mname is not None and owner_name is not None:
+                method_name = _read_text(mname, source)
+                is_constructor = method_name == "constructor"
+                is_static = any(c.type == "static" for c in n.children)
+                field_owner = owner_name + _TS_STATIC_SUFFIX if is_static else owner_name
+
+                accessor = next((c.type for c in n.children if c.type in ("get", "set")), None)
+                if accessor is not None:
+                    # `get repo(): Repo` / `set repo(r: Repo)` read and write a
+                    # `this.repo` of that type, like a field.
+                    tname = None
+                    if accessor == "get":
+                        ret = n.child_by_field_name("return_type")
+                        tname = (_bare_type_ident(ret) or _optional_type_ident(ret)) if ret is not None else None
+                    else:
+                        params = n.child_by_field_name("parameters")
+                        first = next((p for p in params.named_children if p.type in ("required_parameter", "optional_parameter")), None) if params is not None else None
+                        ann = first.child_by_field_name("type") if first is not None else None
+                        tname = (_bare_type_ident(ann) or _optional_type_ident(ann)) if ann is not None else None
+                    if tname:
+                        field_table.setdefault(field_owner, {}).setdefault(_read_text(mname, source), tname)
+
+                # Parameter properties are declarations and therefore outrank
+                # assignments. Typed parameters also let any method infer
+                # `this.field = parameter`, not just a constructor.
                 params = n.child_by_field_name("parameters")
                 typed: dict[str, str] = {}
                 for p in params.named_children if params is not None else ():
@@ -3363,29 +3558,59 @@ def _ts_receiver_type_table(
                         continue
                     pname = _read_text(pat, source)
                     typed[pname] = tname
-                    if any(c.type in ("accessibility_modifier", "readonly") for c in p.children):
+                    if is_constructor and any(c.type in ("accessibility_modifier", "readonly") for c in p.children):
                         field_table.setdefault(owner_name, {}).setdefault(pname, tname)
+
+                # Collect field assignments throughout the method, including nested
+                # blocks and arrows (which preserve `this`). A plain nested function
+                # has its own `this`, so stop at that boundary.
                 body = n.child_by_field_name("body")
-                for stmt in body.named_children if body is not None else ():
-                    expr = stmt.named_children[0] if stmt.type == "expression_statement" and stmt.named_children else None
-                    if expr is None or expr.type != "assignment_expression":
+                pending = [body] if body is not None else []
+                while pending:
+                    item = pending.pop()
+                    if item is not body and item.type in (
+                        "method_definition", "function_declaration", "function_expression",
+                        "generator_function_declaration", "generator_function",
+                    ):
                         continue
-                    left, right = expr.child_by_field_name("left"), expr.child_by_field_name("right")
-                    if left is None or right is None or left.type != "member_expression":
-                        continue
-                    obj, prop = left.child_by_field_name("object"), left.child_by_field_name("property")
-                    if obj is None or obj.type != "this" or prop is None:
-                        continue
-                    tname = (typed.get(_read_text(right, source)) if right.type == "identifier"
-                             else _new_type(right) if right.type == "new_expression" else None)
-                    if tname:
-                        assigned.setdefault(owner_name, {}).setdefault(_read_text(prop, source), tname)
+                    if item.type == "assignment_expression":
+                        left = item.child_by_field_name("left")
+                        right = item.child_by_field_name("right")
+                        if left is not None and right is not None and left.type == "member_expression":
+                            obj = left.child_by_field_name("object")
+                            prop = left.child_by_field_name("property")
+                            if obj is not None and obj.type == "this" and prop is not None:
+                                field_name = _read_text(prop, source)
+                                tname = (
+                                    typed.get(_read_text(right, source))
+                                    if right.type == "identifier"
+                                    else _new_type(right) if right.type == "new_expression"
+                                    else None
+                                )
+                                if field_name and tname:
+                                    assignments = constructor_assigned if is_constructor else method_assigned
+                                    assignments.setdefault(field_owner, {}).setdefault(field_name, set()).add(tname)
+                    pending.extend(item.children)
         for c in n.children:
             stack.append(c)
     if field_table is not None:
-        for cls, fields in assigned.items():
-            for name, tname in fields.items():
-                field_table.setdefault(cls, {}).setdefault(name, tname)
+        # Declared field/accessor/parameter-property types were inserted directly
+        # into field_table during the walk. Constructor assignments are next, and
+        # method assignments are fallback evidence only. Any conflicting assignment
+        # at a higher tier blocks inference from a lower tier.
+        constructor_conflicts: set[tuple[str, str]] = set()
+        for cls, fields in constructor_assigned.items():
+            for name, types in fields.items():
+                if len(types) == 1:
+                    field_table.setdefault(cls, {}).setdefault(name, next(iter(types)))
+                elif len(types) > 1:
+                    constructor_conflicts.add((cls, name))
+        for cls, fields in method_assigned.items():
+            for name, types in fields.items():
+                if (cls, name) in constructor_conflicts:
+                    continue
+                if len(types) == 1:
+                    field_table.setdefault(cls, {}).setdefault(name, next(iter(types)))
 
 _TS_STATIC_SUFFIX = "\x00static"
 
@@ -3927,7 +4152,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
                    closure_locals_by_body: dict | None = None,
-                   config=None) -> bool:
+                   config=None, js_member_groups: dict | None = None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -4065,7 +4290,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             field_name = _read_text(prop, source)
             if field_name:
                 line = node.start_point[0] + 1
-                nid = _make_id(parent_class_nid, field_name)
+                nid = _js_member_nid(parent_class_nid, node, field_name, source,
+                                     js_member_groups if js_member_groups is not None else {})
                 add_node_fn(nid, f".{field_name}()", line)
                 add_edge_fn(parent_class_nid, nid, "method", line)
                 if callable_def_nids is not None:
@@ -5677,6 +5903,9 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_swift":
         swift_protocol_names, swift_class_names = _swift_pre_scan(root, source)
 
+    # JS/TS class body -> member collision groups, filled lazily (#4475).
+    js_member_groups: dict = {}
+
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
         python_underscore_groups = _python_pre_scan_underscore_collisions(root, source, stem)
@@ -5727,6 +5956,8 @@ def _extract_generic(
         nid = _make_id(stem, ".".join(namespace_stack), name)
         if config.ts_module == "tree_sitter_c_sharp":
             nid = _underscore_salted_nid(nid, name, csharp_type_groups)
+        elif config.ts_module == "tree_sitter_python":
+            nid = _underscore_salted_nid(nid, name, python_underscore_groups)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
@@ -5880,6 +6111,9 @@ def _extract_generic(
                 class_nid = _underscore_salted_nid(class_nid, class_name, csharp_type_groups)
             if config.ts_module == "tree_sitter_python" and parent_class_nid:
                 class_nid = _make_id(parent_class_nid, class_name)
+            elif config.ts_module == "tree_sitter_python":
+                # `Session` / `session()`, `Foo` / `FOO` in one module (#2810).
+                class_nid = _underscore_salted_nid(class_nid, class_name, python_underscore_groups)
             line = node.start_point[0] + 1
             metadata = None
             ruby_reopened = (
@@ -7333,6 +7567,11 @@ def _extract_generic(
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, csharp_member_groups
                     )
+                elif (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                      and t in _JS_MEMBER_METHOD_TYPES):
+                    func_nid = _js_member_nid(
+                        parent_class_nid, node, sanitized_name, source, js_member_groups
+                    )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
                     kinds = ruby_method_kinds.setdefault(func_nid, set())
@@ -7923,7 +8162,8 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
-                              closure_locals_by_body, config=config):
+                              closure_locals_by_body, config=config,
+                              js_member_groups=js_member_groups):
                 return
 
         # TS enum members, and namespace / module containers
@@ -8169,6 +8409,9 @@ def _extract_generic(
     # Python: per-function `name -> ClassName` for typed parameters and locals,
     # stamped on member calls so the corpus resolver can type `obj.method()`.
     python_var_types: dict[str, dict[str, str | None]] = {}
+    # caller -> parameters pytest may fill with a fixture (tests and fixtures in
+    # test modules / conftest.py only)
+    python_fixture_params: dict[str, set[str]] = {}
     # Ruby: per-method set of bound local/parameter names, so the call-walk can
     # tell a paren-less self-send (`build`) from a plain variable read (`x`).
     ruby_local_names: dict[str, frozenset[str]] = {}
@@ -9253,6 +9496,10 @@ def _extract_generic(
                             _py_type = python_var_types.get(caller_nid, {}).get(member_receiver)
                             if _py_type:
                                 rc_entry["receiver_type"] = _py_type
+                            elif member_receiver in python_fixture_params.get(caller_nid, ()):
+                                # A fixture parameter: typed by the resolver from the
+                                # fixture pytest would pick for it.
+                                rc_entry["_python_fixture_param"] = True
                         # `super(Cls, obj).m()` starts the MRO after Cls, not after the
                         # caller's class; only bare `super()` may walk the caller's bases.
                         if member_receiver == "super" and config.ts_module == "tree_sitter_python":
@@ -9624,12 +9871,24 @@ def _extract_generic(
 
     if config.ts_module == "tree_sitter_python":
         _py_node_by_id = {n["id"]: n for n in nodes}
+        _py_test_module = _python_is_test_module(str_path)
         for caller_nid, body_node in function_bodies:
             python_var_types[caller_nid] = _python_local_class_bindings(body_node, source)
             func = getattr(body_node, "parent", None)
-            if (func is not None and func.type == "function_definition"
-                    and caller_nid in _py_node_by_id and _python_is_property(func, source)):
+            if func is None or func.type != "function_definition":
+                continue
+            if caller_nid in _py_node_by_id and _python_is_property(func, source):
                 _py_node_by_id[caller_nid]["_py_property"] = True
+            if not _py_test_module:
+                continue
+            is_fixture = _python_is_pytest_fixture(func, source)
+            if is_fixture and caller_nid in _py_node_by_id:
+                _py_node_by_id[caller_nid]["_py_fixture"] = _python_fixture_type(
+                    func, source, python_var_types[caller_nid]
+                )
+            name_n = func.child_by_field_name("name")
+            if is_fixture or (name_n is not None and _read_text(name_n, source).startswith("test")):
+                python_fixture_params[caller_nid] = _python_untouched_params(func, source)
 
     # C++: build the per-file `var -> ClassName` table from local declarations in
     # every function body so the cross-file member-call pass can type a receiver

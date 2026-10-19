@@ -18,6 +18,15 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
+def _make_git_dir(repo: Path) -> Path:
+    """A minimal .git directory git itself accepts: HEAD, objects/, refs/ (#4444)."""
+    dot_git = repo / ".git"
+    (dot_git / "objects").mkdir(parents=True)
+    (dot_git / "refs").mkdir()
+    (dot_git / "HEAD").write_text("ref: refs/heads/main\n")
+    return dot_git
+
+
 def as_posix_list(paths) -> list[str]:
     """Normalize detect() output to forward slashes before matching on it.
 
@@ -388,8 +397,7 @@ def test_graphifyignore_hermetic_without_vcs(tmp_path):
 
 def test_graphifyignore_discovered_from_parent_in_vcs(tmp_path):
     """Inside a VCS repo, parent .graphifyignore applies to subdirectory scans."""
-    (tmp_path / ".git").mkdir()
-    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    _make_git_dir(tmp_path)
     (tmp_path / ".graphifyignore").write_text("vendor/\n")
     sub = tmp_path / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -410,7 +418,7 @@ def test_graphifyignore_stops_at_git_boundary(tmp_path):
     (tmp_path / ".graphifyignore").write_text("main.py\n")
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _make_git_dir(repo)
     sub = repo / "sub"
     sub.mkdir()
     (sub / "main.py").write_text("x = 1")
@@ -425,8 +433,7 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     """A .graphifyignore at the git repo root is included when scanning a subdir."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    _make_git_dir(repo)
     (repo / ".graphifyignore").write_text("vendor/\n")
     sub = repo / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -734,54 +741,6 @@ def test_global_git_ignore_needs_a_git_repo(tmp_path):
 
     code = as_posix_list(detect(tmp_path)["files"]["code"])
     assert any(f.endswith("secret.py") for f in code)
-
-
-def test_incomplete_home_git_marker_is_not_a_vcs_root(_sandbox_home):
-    """#4444: a project scanned from under a home directory whose own
-    `.git` is incomplete (no HEAD -- a stray leftover, never a real repo)
-    must not pick up that home's own .gitignore. On a platform that nests
-    its temp dir under home (reported on Windows), the scan's walk upward
-    passes right through it."""
-    home = _sandbox_home
-    (home / ".git").mkdir()  # no HEAD: not a real git dir
-    (home / ".gitignore").write_text("leaked.py\n")
-
-    project = home / "project"
-    project.mkdir()
-    (project / ".graphifyignore").write_text("vendor/\n*.generated.py\n")
-    vendor = project / "vendor"
-    vendor.mkdir()
-    (vendor / "lib.py").write_text("x = 1")
-    (project / "main.py").write_text("print('hi')")
-    (project / "schema.generated.py").write_text("x = 1")
-    (project / "leaked.py").write_text("x = 1")
-
-    result = detect(project)
-    assert result["graphifyignore_patterns"] == 2
-    code = as_posix_list(result["files"]["code"])
-    assert any(f.endswith("main.py") for f in code)
-    assert any(f.endswith("leaked.py") for f in code), (
-        "home's own .gitignore must not leak into a project under an "
-        "incomplete .git -- only .graphifyignore's own two patterns apply"
-    )
-
-
-def test_complete_home_git_marker_is_still_a_valid_vcs_root(_sandbox_home):
-    """The #4444 fix only tightens an incomplete `.git`; a home directory
-    that really is its own repo (a dotfiles checkout) must still work."""
-    home = _sandbox_home
-    (home / ".git").mkdir()
-    (home / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    (home / ".gitignore").write_text("secret.py\n")
-
-    project = home / "project"
-    project.mkdir()
-    (project / "secret.py").write_text("SECRET = 'abc'")
-    (project / "main.py").write_text("print('hi')")
-
-    code = as_posix_list(detect(project)["files"]["code"])
-    assert not any(f.endswith("secret.py") for f in code)
-    assert any(f.endswith("main.py") for f in code)
 
 
 def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):
@@ -4504,3 +4463,104 @@ def test_globstar_matcher_leaves_no_reference_cycle():
     finally:
         gc.enable()
     assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
+
+
+def _home_with_invalid_git(tmp_path, monkeypatch):
+    """A HOME holding a .git git would reject, plus a .gitignore, above a project (#4444)."""
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    (home / ".gitignore").write_text("node_modules\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    proj = home / "work" / "proj"
+    proj.mkdir(parents=True)
+    (proj / ".graphifyignore").write_text("vendor/\n*.generated.py\n")
+    (proj / "main.py").write_text("x = 1")
+    return home, proj
+
+
+@pytest.mark.parametrize("contents", [[], ["config"], ["HEAD"], ["HEAD", "objects"]])
+def test_invalid_git_dir_is_not_a_vcs_root(tmp_path, monkeypatch, contents):
+    """An empty or incomplete .git dir is skipped, so a home .gitignore does not leak in (#4444)."""
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    for name in contents:
+        if name == "HEAD":
+            (home / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        elif name == "config":
+            (home / ".git" / "config").write_text("[core]\n")
+        else:
+            (home / ".git" / name).mkdir()
+    assert detect_mod._find_vcs_root(proj) is None
+    assert [p for _, p in _load_graphifyignore(proj)] == ["vendor/", "*.generated.py"]
+    assert detect(proj)["graphifyignore_patterns"] == 2
+
+
+def test_invalid_git_dir_walk_continues_to_valid_parent(tmp_path):
+    """Skipping an invalid inner .git keeps walking up to the real repo root (#4444)."""
+    _make_git_dir(tmp_path)
+    (tmp_path / ".graphifyignore").write_text("vendor/\n")
+    sub = tmp_path / "pkg"
+    (sub / ".git").mkdir(parents=True)  # stray, invalid
+    assert detect_mod._find_vcs_root(sub) == tmp_path.resolve()
+
+
+def test_valid_git_dir_is_a_vcs_root(tmp_path, monkeypatch):
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    shutil.rmtree(home / ".git")
+    _make_git_dir(home)
+    assert detect_mod._find_vcs_root(proj) == home.resolve()
+    assert "node_modules" in [p for _, p in _load_graphifyignore(proj)]
+
+
+def test_git_file_with_gitdir_is_a_vcs_root(tmp_path):
+    """Linked worktrees and submodules have a .git FILE starting with gitdir:."""
+    wt = tmp_path / "wt"
+    (wt / "sub").mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
+    assert detect_mod._find_vcs_root(wt / "sub") == wt.resolve()
+
+
+def test_git_file_without_gitdir_is_skipped(tmp_path, monkeypatch):
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    shutil.rmtree(home / ".git")
+    (home / ".git").write_text("not a git file\n")
+    assert detect_mod._find_vcs_root(proj) is None
+    assert detect(proj)["graphifyignore_patterns"] == 2
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_real_git_repo_and_worktree_are_vcs_roots(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1")
+    _git(repo, "add", "a.py")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    _git(repo, "worktree", "add", "-q", str(tmp_path / "wt"))
+    (repo / "sub").mkdir()
+    assert detect_mod._find_vcs_root(repo / "sub") == repo.resolve()
+    assert detect_mod._find_vcs_root(tmp_path / "wt") == (tmp_path / "wt").resolve()
+
+
+def test_git_dir_symlink_is_followed(tmp_path):
+    real = tmp_path / "real-git"
+    _make_git_dir(tmp_path / "x")
+    (tmp_path / "x" / ".git").rename(real)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    try:
+        (repo / ".git").symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    assert detect_mod._find_vcs_root(repo) == repo.resolve()
+
+
+def test_unreadable_git_file_is_skipped(tmp_path, monkeypatch):
+    (tmp_path / ".git").write_text("gitdir: x\n")
+    real_open = Path.open
+
+    def deny(self, *a, **k):
+        if self.name == ".git":
+            raise PermissionError("denied")
+        return real_open(self, *a, **k)
+    monkeypatch.setattr(Path, "open", deny)
+    assert detect_mod._is_valid_git_marker(tmp_path / ".git") is False
