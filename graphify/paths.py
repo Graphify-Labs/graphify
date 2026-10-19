@@ -67,6 +67,17 @@ def _unlink_replace_file(path: "str | Path") -> None:
         os.unlink(path)
 
 
+def _restore_replace_mode(path: "str | Path", original_mode: int) -> None:
+    """Restore owned regular-file permissions without changing a symlink target."""
+    if not stat.S_ISREG(original_mode):
+        return
+    current = os.stat(path, follow_symlinks=False).st_mode
+    if not stat.S_ISREG(current):
+        raise OSError("Replacement file changed during mode restoration")
+    if stat.S_IMODE(current) != stat.S_IMODE(original_mode):
+        os.chmod(path, stat.S_IMODE(original_mode))
+
+
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     """``os.replace(src, dst)``, falling back to a copy for a known set of
     Windows quirks (#3508) that raise even when ``src``/``dst`` are the same
@@ -111,14 +122,12 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
         destination_mode = os.stat(dst, follow_symlinks=False).st_mode
     except FileNotFoundError:
         destination_mode = None
-    # A fallback must not bypass a real destination rejection. On Windows a
-    # read-only file can be renamed aside but not removed: doing so previously
-    # published new bytes and then reported failure during source cleanup.
-    # lstat semantics keep direct symlink replacement distinct from its target.
-    if destination_mode is not None and (stat.S_ISDIR(destination_mode) or (
-            os.name == "nt" and stat.S_ISREG(destination_mode)
-            and not destination_mode & stat.S_IWRITE)):
+    # Install/cache owners may replace their own read-only copies. Graph writers
+    # enforce their stricter rejection before calling this shared move helper.
+    # Directories remain invalid; lstat keeps link entries distinct from targets.
+    if destination_mode is not None and stat.S_ISDIR(destination_mode):
         raise replace_error
+    source_mode = os.stat(src, follow_symlinks=False).st_mode
     dst_dir = os.path.dirname(dst) or "."
     fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
     os.close(fd)
@@ -149,7 +158,13 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
                         raise OSError("Replacement source changed during rollback")
                     shutil.copy2(dst, src)
                 os.rename(dst, tmp_copy)
+                # Cleanup may have cleared a read-only bit before failing.
+                # Restore both original modes before consuming the backup;
+                # restoration failure must leave those original bytes available.
+                _restore_replace_mode(src, source_mode)
             if backup_moved and backup is not None:
+                if destination_mode is not None:
+                    _restore_replace_mode(backup, destination_mode)
                 os.rename(backup, dst)
         except OSError as error:
             restore_error = error
@@ -627,6 +642,13 @@ def load_node_link_graph(path_or_data):
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     if isinstance(data, dict):
+        # Semantic loading is the scoped dependency boundary: paths' low-level
+        # atomic writers must not acquire a top-level cycle through build.
+        # Validate transport before NetworkX adoption and detach mutable policy.
+        from graphify.build import _is_external_stub
+        from graphify.qt_import_retention import apply_import_retention, read_import_retention
+        retained = read_import_retention(data, is_placeholder=_is_external_stub)
+        data = apply_import_retention(data, retained, is_placeholder=_is_external_stub)
         data = restore_arc_direction(data)
     try:
         graph = json_graph.node_link_graph(data, edges="links")

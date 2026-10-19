@@ -392,7 +392,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # would drift), the composed body is translated deterministically:
 #
 #   * ```` ```bash ```` fences become ```` ```powershell ```` fences;
-#   * the inline ``$(cat graphify-out/.graphify_python) -c "..."`` python blocks
+#   * the inline ``"$(cat graphify-out/.graphify_python)" -c "..."`` python blocks
 #     become single-quoted here-strings piped to the interpreter's stdin
 #     (``@'...'@ | & (Get-Content graphify-out\.graphify_python) -``). A
 #     single-quoted here-string is verbatim, so the bash ``\"`` escapes are
@@ -407,7 +407,10 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
+# Keep exactly the historical opener as an input alias for callers composing
+# older fragments. Both forms render the same literal PowerShell Python body.
+_PY_INVOKE_POSIX_LEGACY = '$(cat graphify-out/.graphify_python) -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -465,7 +468,7 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
-        elif line == _PY_INVOKE_POSIX:
+        elif line in (_PY_INVOKE_POSIX, _PY_INVOKE_POSIX_LEGACY):
             out.append(_PY_INVOKE_PS_OPEN)
             in_py = True
         elif line == _MKDIR_POSIX:
@@ -1209,7 +1212,7 @@ def _is_watch_injection_fix_line(line: str) -> bool:
     stripped = line.strip()
     return (
         stripped == "python3 -m graphify.watch INPUT_PATH --debounce 3"
-        or stripped == '$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
+        or stripped == '"$(cat graphify-out/.graphify_python)" -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
         or stripped == "Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:"
         or stripped == "This watches the same folder graphify extracted, read from the trusted `graphify-out/.graphify_root` that Step 1 resolved - there is no path to substitute, so a scan root containing shell metacharacters can never be re-interpreted here. Behavior depends on what changed:"
     )
@@ -1330,7 +1333,7 @@ def _is_code_only_fast_path_fix_line(line: str) -> bool:
             'import json',
             'from pathlib import Path',
             '"',
-            '$(cat graphify-out/.graphify_python) -c "',
+            '"$(cat graphify-out/.graphify_python)" -c "',
             "if [ ! -f .graphify_extract.json ]; then",
             "if [ ! -f graphify-out/.graphify_extract.json ]; then",
         )
@@ -1408,6 +1411,27 @@ def _is_sanctioned_monolith_diff(line: str) -> bool:
     return not line.strip() or any(pred(line) for pred in _SANCTIONED_MONOLITH_DIFFS)
 
 
+def _consume_interpreter_quote_pairs(added: Counter, removed: Counter) -> None:
+    """Cancel only counted, exact executable-quoting pairs against frozen text.
+
+    Arguments, bodies and multiplicity remain subject to the existing drift
+    checks. This is deliberately a paired transformation, not permission for
+    arbitrary edits on lines that happen to contain an interpreter marker.
+    """
+    marker = '$(cat graphify-out/.graphify_python)'
+    instruction = ('**In every subsequent bash block, replace `python3` with `'
+                   + marker + '` to use the correct interpreter.**')
+    for old, count in list(removed.items()):
+        stripped = old.lstrip()
+        if not (stripped.startswith((marker + ' -c "', marker + ' -m '))
+                or old == instruction):
+            continue
+        new = old.replace(marker, '"' + marker + '"', 1)
+        paired = min(count, added[new])
+        removed[old] -= paired
+        added[new] -= paired
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
@@ -1440,6 +1464,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
 
     added = Counter(rendered_lines) - Counter(original_lines)
     removed = Counter(original_lines) - Counter(rendered_lines)
+    _consume_interpreter_quote_pairs(added, removed)
 
     problems: list[str] = []
     for line in list(added.elements()) + list(removed.elements()):

@@ -6,8 +6,9 @@ implemented QML/Qt owners through INC-QML-06 and local INC-QML-07 consumer hooks
 Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 
 INC-QML-54's incoming upstream 0.9.92 seams are recorded
-[below](#upstream-0992-integration-seams--inc-qml-54). Integration verification is
-pending; earlier schema-13 and installed-tool checkpoints remain revision-bound.
+[below](#upstream-0992-integration-seams--inc-qml-54). Local merge `90578033` has
+reviewed-wheel identity and bounded isolated proof; its complete source gate
+failed, with corrections and hosted gates pending. Earlier schema-13/installed-tool checkpoints remain revision-bound.
 
 | Existing owner | Role and extension considerations |
 | --- | --- |
@@ -692,13 +693,22 @@ Status: **Accepted ownership; integration verification pending**.
 | `extract.py` before `resolve_qt_qml` | The effective-native-input filter honors explicit supported overrides away from C++ before any native Qt collector. Seven focused cases pass; physical-extension Qt scope remains authoritative and generic remapped C++ extraction grants no new native provider authority. |
 | `cache.py`, `qt_incremental.py` | Combined AST schema 18, upstream installed-grammar fingerprint and override-aware keys; retain Qt policy 25, explicit native-context cache bypass and independent semantic lifetime. |
 | `detect.py`, `watch.py`, `build.py` | Preserve one corpus boundary, admitted lexical identities, full/incremental parity and existing transactional publication/recovery owners across shared updates. |
+| `watch.py::_reconcile_existing_graph` | Implemented fresh-result metadata preservation copies current extraction keys before overriding merged graph/token fields. Cold/warm diagnostics keys remain exact; changed current observations supersede old ones, with no prior-graph failure replay or integrity-gate bypass. |
 | `filename_cohorts.py::expand_filename_cohorts`, watch target preparation | Pure `selected, accepted, *, root, retired=()` selection reuses base canonical file IDs and admitted surviving sources. Watch composes existing Terraform, physical and filename selectors to monotone closure before context/final Qt refresh, with deterministic order and admitted-count-plus-one bound. Retired keys never read/resurrect sources; no new discovery or unrelated parsing. |
 | `build.py::_is_external_stub`, automatic minting/watch and `qt_orphan_cleanup` | One canonical minted/legacy-shape predicate owns D30's narrow tierless convention and authored-extra protections. Prior-import cleanup additionally retains source-owned prior-ID proof; exact-shape legacy authorship remains indistinguishable. |
+| `qt_import_retention.py`, build/watch/Qt cleanup, `to_json` and shared loader | D33's strict `read_import_retention(payload, *, is_placeholder)` returns immutable IDs; pure producer `apply_import_retention` copies payload/graph attrs. `graph.qt_import_retention` schema 1 admits sorted unique existing canonical placeholders, at most 100,000 IDs/4,096 UTF-8 bytes each; invalid transport rejects with `QT_IMPORT_RETENTION_INVALID`. Optional caller-owned loader sink keeps the four-value return and computes once before backfill; all merge/finalizer/reload paths retain cleanup restrictions without new provider/deletion authority or generic-healing loss. |
+| Semantic `paths.load_node_link_graph` / `to_json` predicate access | Implemented local canonical-role import after structural checks avoids a top-level paths/build cycle; helper remains injected, with no facade dependency. Both fresh import orders and valid/corrupt context loads require tests. Separate characterized shared-role extraction is the exit, not an unrelated move in this fix. |
+| `build.py::_read_existing_graph_data`, watch preflight/reconciliation | Capped `Path`→`dict \| None` raw reader owns reserved-context validation/default RuntimeError behavior without origin mutation. Four-value `_load_existing_graph` delegates; reconciliation's explicit `prior_graph_data`/`preflight_done=False` distinguishes direct preflight from supplied/missing snapshot reuse. Clone borrowed top item dictionaries before stamp/rebase, reuse baseline for semantic/resolution context and retain late disk/publication integrity checks. No ambient state or force bypass. |
+| Retained-context legacy compatibility/error transport | Reserved-free `null`/`false`/`0`/`[]`/`""` graph attrs retain `(graph or {})` absent semantics; truthy unsupported scalars/present invalid context stay strict. Early raw-load RuntimeError/ValueError retains established `error:` stderr and untouched bytes; fifteen direct/combined/shared-loader controls plus original watch refusals are required. |
+| `test_graph_invariance.py`, admission guards and `test_native_newline_cli.py` | D34 keeps the owning QML fixture tree byte-identical in aggregate CRLF copies and converts every other text exactly, preserving membership/attributes/IDs. Eight strengthened real-CLI native LF/CRLF span/type-position/topology/oracle cases pass with mandatory each-profile facts and explicit duplicate-provider uncertainty; no generic ID remapper or production normalization. |
 | `publication.py::ProductPublication`, pending-label watch consumer | Bounded `delete(name)` participates in the same snapshot/commit/rollback as replacements; fourteen focused cases pass for absent/repeated/invalid deletion and whole-cohort restoration after deletion/later commit failure. |
 | `paths.py`, `export.py`, CLI and MCP consumers | Preserve directed source/target meaning through undirected graph storage, reload, projection and traversal, including accepted original parallel Qt edges. |
+| `paths.py::os_replace_with_fallback`, `_atomic_replace`, `publication.py::ProductPublication` | Post-905 planned D32 reconciliation: caller-owned installer/cache replacement permits read-only regular copies; generic atomic and accepted-product writers retain read-only rejection. Preserve directory guard, bytes/modes on real cleanup rollback and symlink-target permissions. |
+| `export.py::to_graphml` | D32 prerequisite: Windows `lstat` preflight rejects a regular read-only destination before low-level guard removal. Preserve prior output/input graph, owned-temp cleanup, directory rejection and symlink-entry replacement without target mutation; planned `tests/test_graphml_owned_replacement.py`. |
 | `affected.py`, CLI and MCP override callers | Owner/supertype/member stepping-stone validation reuses `logical_endpoints`; eleven focused cases preserve caller authority, parallel relations and original site metadata in stable semantic order. |
 | `pyproject.toml`, `uv.lock`, `graphify/pi/` | Reconcile package 0.9.92 and parser bounds/extras; include Pi resources and prove source-to-wheel identity in a fresh isolated install. |
 | `tools/skillgen/` | Merge authoritative fragments/generator changes and regenerate outputs; keep coverage, singleton and round-trip validators effective. |
+| Authoritative skill fragments, `gen.py` and round-trip validators | Implemented recorded-interpreter correction quotes the entire POSIX executable substitution for `-c`/`-m`, preserving literal args/cwd/order, explicit legacy conversion and strict quote-only normalization. Six real shipped-resource transport and ten source compatibility cases pass; wider source/platform/artifact gaps remain separate. |
 | `codex_hook_command.py`, `install.py` | Exact generated Windows encoded-hook recognition supports entry-scoped reinstall/uninstall; 55 focused cases pass. Pure bounded decode/static-wrapper/options/status matching allows trailing ASCII space/tab only, with no execution or configuration mutation. |
 | `.github/workflows/ci.yml`, `qml-wheel.yml`, `pr-management.yml` | Retain fork source/native/wheel proof while including the upstream Bun Pi guard. PR management remains metadata-only with no execution of untrusted PR code. |
 
@@ -721,29 +731,49 @@ owned by the cache maintainer.
 
 | Owner | File | Measured physical lines / permitted ceiling |
 | --- | --- | --- |
-| Extractor facade maintainer | `graphify/extract.py` | 11,173 / 11,173 |
-| Generic extractor maintainer | `graphify/extractors/engine.py` | 10,352 / 10,352 |
-| Cache maintainer | `graphify/cache.py` | 1,942 / 1,942 |
+| Extractor facade maintainer | `graphify/extract.py` | 11,173 / 11,180 |
+| Generic extractor maintainer | `graphify/extractors/engine.py` | 10,352 / 10,360 |
+| Cache maintainer | `graphify/cache.py` | 1,942 / 1,950 |
 | Discovery maintainer | `graphify/detect.py` | 3,019 / 3,019 |
-| Watch/publication maintainer | `graphify/watch.py` | 2,947 / 2,947 |
+| Watch/publication maintainer | `graphify/watch.py` | 2,973 / 3,000 |
 | Query/MCP maintainer | `graphify/serve.py` | 3,043 / 3,043 |
 | Dependency-query maintainer | `graphify/affected.py` | 434 / 434 |
-| Graph-build maintainer | `graphify/build.py` | 2,914 / 2,914 |
-| Shared path/persistence maintainer | `graphify/paths.py` | 652 / 652 |
+| Graph-build maintainer | `graphify/build.py` | 2,985 / 3,020 |
+| Shared path/persistence maintainer | `graphify/paths.py` | 674 / 700 |
 | Installer maintainer | `graphify/install.py` | 2,795 / 2,795 |
-| Export maintainer | `graphify/export.py` | 1,453 / 1,453 |
+| Export maintainer | `graphify/export.py` | 1,476 / 1,480 |
 | HTML maintainer | `graphify/exporters/html.py` | 907 / 907 |
 | CLI maintainer | `graphify/cli.py` | 5,451 / 5,451 |
 | CLI dispatch maintainer | `graphify/__main__.py` | 1,092 / 1,092 |
-| Generated-guidance maintainer | `tools/skillgen/gen.py` | 1,620 / 1,620 |
-| Upstream extraction-fixture maintainer | `tests/test_extract.py` | 6,289 / 6,289 |
-| Language-fixture maintainer | `tests/test_languages.py` | 5,821 / 5,821 |
+| Generated-guidance maintainer | `tools/skillgen/gen.py` | 1,645 / 1,650 |
+| Upstream extraction-fixture maintainer | `tests/test_extract.py` | 6,289 / 6,300 |
+| Language-fixture maintainer | `tests/test_languages.py` | 5,821 / 5,830 |
 | Watch-fixture maintainer | `tests/test_watch.py` | 5,599 / 5,599 |
 | Hook-fixture maintainer | `tests/test_hooks.py` | 2,049 / 2,049 |
 | Install-fixture maintainer | `tests/test_install.py` | 1,836 / 1,836 |
 | Round-trip fixture maintainer | `tests/test_install_roundtrip.py` | 323 / 323 |
+| Host-guidance fixture maintainer | `tests/test_devin.py` | 309 / 309 |
+
+The post-905 build/watch allowances cover the shared capped raw reader,
+pre-extraction retained-context policy and same-product lifecycle propagation;
+the next cohesive extraction is the raw-loader/policy publication seam after
+separate characterization. The path allowance covers owned-copy mode restoration
+and bounded deferred retained-context validation. The export allowance covers
+owning GraphML read-only preflight and strict retained-context validation. The
+generator allowance covers exact quoted interpreter transport,
+legacy conversion and strictly paired round-trip compatibility. `test_devin.py`
+has no line growth; its imported oversized fixture receives only quote-fingerprint
+alignment. Next growth requires separately characterized shared-role/replacement
+or renderer responsibility extraction under the same owners, not unrelated
+mechanical movement inside this integration. New owned-replacement, emitted
+interpreter and compatibility modules measure 125, 118 and 67 lines.
+The retained-context helper/Qt orphan cleanup measure 153/106 lines; retention,
+lifecycle, preflight and diagnostic tests measure 299/176/111/56, and the native
+newline CLI module measures 225. All remain below 300 lines. Final handoff
+remeasures these bounded integration owners rather than permitting unrelated
+growth under the allowance.
 
 The new native-override, filename-cohort and placeholder-role regression modules
-have 117, 265 and 124 physical lines; the pure filename helper has 56. All remain
+have 117, 266 and 124 physical lines; the pure filename helper has 56. All remain
 within the normal 300-line ceiling. Integration evidence and unresolved typing/
 platform cases remain in traceability; these size allowances establish no pass.

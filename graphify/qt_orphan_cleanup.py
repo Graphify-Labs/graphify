@@ -10,6 +10,24 @@ from graphify.build import _is_external_stub
 from graphify.graph_direction import logical_endpoints
 
 
+def fresh_import_targets(fresh: dict, prior_nodes: list) -> set[str]:
+    """Read only actual fresh producer owners/edges, with old placeholder roles.
+
+    Generic extractors may leave an imported external endpoint undeclared until
+    build. Its prior canonical role can supply that endpoint, but no old owner
+    or legacy-inferred edge is allowed into fresh source-ownership proof.
+    """
+    from graphify.build import _EXTERNAL_STUB_RELATIONS
+    nodes = list(fresh.get("nodes", []))
+    present = {node.get("id") for node in nodes if isinstance(node, dict)
+               and isinstance(node.get("id"), str)}
+    nodes.extend(node for node in prior_nodes if isinstance(node, dict)
+                 and _is_external_stub(node) and node["id"] not in present)
+    return previous_import_targets({"nodes": nodes, "links": fresh.get("edges", fresh.get("links", [])),
+                                    "directed": bool(fresh.get("directed", False))},
+                                   import_relations=_EXTERNAL_STUB_RELATIONS)
+
+
 def previous_import_targets(prior: dict | None, *, import_relations: frozenset[str]) -> set[str]:
     """Derive exact external candidates from accepted prior source-owned AST imports.
 

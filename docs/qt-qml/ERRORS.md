@@ -303,7 +303,7 @@ targets; never delete or move an unchecked computed path. Do not publish these
 local snapshots because their contents belong to the analyzed project.
 
 INC-QML-54 extends this existing contract to bounded pending-label deletion
-inside the product cohort; implementation and verification are pending. An
+inside the product cohort; focused source and selected installed cases pass. An
 already absent product and repeated deletion request are silent no-ops. A
 recoverable deletion or later commit failure restores all prior members, including
 deleted bytes. Successful retry commits consumption with its corresponding
@@ -312,8 +312,18 @@ redaction and committed/uncommitted cleanup outcomes apply, with no new diagnost
 identity. Earlier replacement-only proof does not establish deletion recovery.
 
 Individual writer restore failures likewise preserve a recovery backup when one
-exists, or explicitly report that no prior backup exists. Ordinary read-only
-destinations reject before displacement. The transaction does not promise atomic
+exists, or explicitly report that no prior backup exists. Generic atomic-write
+and accepted-product read-only destinations reject before displacement. The
+post-905 refinement distinguishes lower-level authorized installer/cache-copy
+replacement: it may consume read-only regular copies, while directory rejection,
+original byte/mode restoration and explicit recovery failure remain mandatory.
+It cannot chmod through symlinks. This refinement is planned, not established by
+the earlier raw-helper rejection test; no new diagnostic identity is proposed.
+Standalone GraphML must first retain its Windows regular read-only rejection at
+the exporter, using bounded `PermissionError` without a personal output path.
+Prior output/input graph and owned temporary cleanup remain protected; a symlink
+entry is not a read-only regular target and its target bytes/mode remain unchanged.
+The transaction does not promise atomic
 visibility across products under process termination, power loss or racing writers.
 Successful AST cache facts may survive publication failure; graph/root/manifest/
 Qt stamp remain the accepted cohort. Schema 9/policy 12 retire older analysis facts;
@@ -575,3 +585,62 @@ reinstall/uninstall source selection passes 55 cases under REQ-CORE-001-AC05;
 installed/hosted proof remains pending. An otherwise
 exact generated token may have trailing ASCII space/tab under the established
 ownership contract; this is not general whitespace or shell normalization.
+
+### Post-905 runbook and fixture failure boundaries
+
+Status: **90578033 full source failed; corrected bounded source cases pass; next frozen full/artifact proof pending**. Quoting the
+recorded interpreter changes executable transport, not runtime selection. Empty,
+missing or failing selection remains a nonzero command failure without trying
+PATH Python/Graphify or installing another runtime. Existing update/publication
+diagnostics and prior-product guards still own any completed analyzer action;
+no new analyzer diagnostic is introduced for a shell launch that never starts it.
+Strict generator rejection remains explicit for unsupported command shapes or
+round-trip drift.
+
+The aggregate invariance success corpus must omit exactly the two intentional
+QML rejection fixtures, retaining direct real-CLI negative coverage. Those
+inputs still produce `QML_GRAPH_PRESERVED`, failure exit and no accepted first
+graph/manifest. The twelve previous setup errors cannot become successful parse
+acceptance by weakening the production gate. Supplying missing external DOM
+event surfaces is a test-harness correction with no new product diagnostic,
+persistence transition or native interaction claim.
+
+D33's graph-owned retained-cleanup context has the following **Implemented locally;
+bounded source verified** diagnostic:
+
+| Code | Severity and owner | Rejection and recovery |
+| --- | --- | --- |
+| `QT_IMPORT_RETENTION_INVALID` | Error; `qt_import_retention` strict reader and its producer/persistence/reload callers | Reject wrong keys/types/schema, unsorted/duplicate IDs, foreign/noncanonical placeholders or limits above 100,000 IDs/4,096 UTF-8 bytes each. Do not truncate or silently drop restrictions. Public failure contains no raw IDs, paths or backend bodies; retain accepted products. Restore a valid matching graph/context from trusted retained evidence, correct the corrupt transport and retry normally; erasing the context is not recovery proof. |
+
+Success adds no warning or cleanup authority. Ordinary publication failure must
+retain graph and context together;
+existing product recovery codes own rollback failure and retained copies. No new
+stamp/cache or authored-origin rewrite is permitted to hide missing lifecycle
+evidence.
+
+Reserved prior context is validated before extraction or candidate cache writes,
+using the one capped raw graph snapshot shared with the existing loader. Forced
+updates cannot bypass `QT_IMPORT_RETENTION_INVALID`. Reject with existing cache
+and product bytes unchanged and no candidate AST cache; repair the matching graph
+context and retry. This early-integrity outcome differs from valid source-cache
+survival after a later product-publication fault.
+The early loader preserves the existing RuntimeError/ValueError `error:` stderr
+channel rather than moving failures into a generic stdout catch. Existing
+cap/read/malformed-graph refusal assertions and prior bytes remain mandatory.
+Reserved-free legacy graph attrs `null`, `false`, `0`, `[]` and `""` are accepted
+absence under `(graph or {})`, not corrupt context. A present null/malformed
+reserved value and truthy unsupported scalar attrs still reject. No context
+authority or broader unsupported-input acceptance is introduced by this case.
+
+The planned reconciliation correction preserves current extraction diagnostics
+and failure lists on warm merges, including explicit empty success keys. Prior
+graph diagnostics cannot be replayed as current success or failure evidence.
+Actual malformed-source and publication guards retain their existing codes and
+prior-product recovery; no new diagnostic or blanket metadata exclusion is added.
+
+D34 changes only validation profiles/oracles. Native newline changes retain
+their actual byte positions; deliberate invalid span/endpoint/role/relation
+mutations fail the dedicated test oracle rather than creating a new runtime
+diagnostic. Real CLI parsing/rejection/publication keeps its existing error and
+recovery policy. Aggregate source admission remains complete for valid fixtures;
+normalizing production bytes or hiding graph attributes is not recovery.

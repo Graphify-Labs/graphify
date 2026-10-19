@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import sys
 from collections import Counter
 from datetime import date
@@ -287,7 +288,14 @@ def existing_graph_node_count(path: "str | Path"):
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
-    from graphify.build import take_shrink_accounting
+    from graphify.build import _is_external_stub, take_shrink_accounting
+    from graphify.qt_import_retention import (
+        FIELD, apply_import_retention, node_link_view, read_import_retention,
+    )
+    # A corrupt cleanup restriction must reject before accounting, shrink guards
+    # or persistence can obscure it. Ordinary graphs avoid the extra node view.
+    retained_imports = (read_import_retention(node_link_view(G), is_placeholder=_is_external_stub)
+                        if FIELD in G.graph else frozenset())
     take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
@@ -371,6 +379,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     except TypeError:
         data = json_graph.node_link_data(G)
 
+    # Serialization adopts a detached policy dictionary/list, never a borrowed
+    # mutable restriction from the caller's accepted graph.
+    data = apply_import_retention(data, retained_imports, is_placeholder=_is_external_stub)
     # node_link_data shares G.graph. Version stamps and sorted hyperedges are
     # output metadata; exporting must not mutate the accepted caller graph.
     data["graph"] = dict(data.get("graph", {}))
@@ -1370,6 +1381,18 @@ def to_graphml(
     # .graphml on disk that downstream tooling mistakes for a completed export
     # (#1831). Write to a sibling temp file, then replace on success.
     out = Path(output_path)
+    # The raw move helper may replace caller-owned installer/cache copies.
+    # This exporter owns a durable graph product, so it independently rejects
+    # an actual Windows read-only regular destination before touching a temp.
+    # lstat deliberately permits replacing a symlink entry without chmod-ing
+    # or otherwise modifying the separately owned link target.
+    if os.name == "nt":
+        try:
+            mode = out.lstat().st_mode
+        except FileNotFoundError:
+            mode = None
+        if mode is not None and stat.S_ISREG(mode) and not mode & stat.S_IWRITE:
+            raise PermissionError("GraphML destination is read-only; restore write access and retry.")
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))

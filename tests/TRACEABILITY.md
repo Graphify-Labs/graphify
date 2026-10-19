@@ -2127,12 +2127,13 @@ installation does not establish a merge or CI success.
 
 ## Upstream 0.9.92 integration — INC-QML-54
 
-Status: **In progress; focused source checks recorded; complete integrated source, artifact and hosted gates pending**.
+Status: **90578033 committed with source-matched bounded installed proof; its full source suite failed; corrections and hosted gates pending**.
 The reviewed inputs are repair `dd8cc3d0` and upstream `86c57be8`, with merge base
 `35adf432`. The [preimplementation matrix](../docs/qt-qml/PLAN.md#inc-qml-54--upstream-0992-integration)
 assigns the existing acceptance identities before conflict resolution. Combined
 AST schema 18, upstream grammar fingerprints/overrides and retained Qt policy 25
-are an accepted integration decision, not completed behavior proof.
+are implemented with the bounded source/installed evidence recorded below. They
+do not establish complete-suite, platform-wide or hosted acceptance.
 
 | Acceptance assignment | Required evidence and checkpoint state |
 | --- | --- |
@@ -2471,7 +2472,598 @@ states above. Both absolute/relative root-alias events, exact `real`/`real2`
 prefix recognition, two-direction Terraform fanout, physical/filename closure,
 unchanged unrelated targets and invalid-selection retained-product/retry cases
 pass. The two source-alias platform skips remain unverified capability cases.
-The frozen cohort and refresh-order modules have 265 and 117 physical lines.
+The frozen cohort and refresh-order modules have 266 and 117 physical lines.
 Complete source suites, fresh reviewed wheel/isolated installation, hosted and
 exact merged-SHA proof remain pending; no new per-user/application adoption is
 performed. Earlier overlapping source counts must not be summed.
+
+## Committed upstream integration checkpoint — 90578033
+
+Status: **Raw-source artifact identity and bounded installed profiles verified;
+complete source gate failed; corrections/hosted proof pending; whole typing failed**.
+
+| Identity | Recorded value |
+| --- | --- |
+| Local merge commit | `9057803361f49988e9e41d64cf4290035184e5f7` |
+| Merge parents | `88010d0b638c25bdc1ef569dc96327e68c53a4c2` and upstream `86c57be8204673c2a1b9849a3292a7dd3ab373d8` |
+| Production tree | `32d1e6b578375cf1f3d3f905f9e116cb83729f0b` |
+| Reviewed 0.9.92 wheel SHA256 | `3744325bbcfa7013ad0a3054ec379a04c00900540b1faae3a161451dc9fcef8b` |
+| Producer identities | AST schema 18; Qt policy 25 |
+
+The wheel is built from raw committed Git blobs. All **326 shipped Graphify
+package files** match the reviewed source bytes; the new Pi package resources
+are present. The developer-only extractor `MIGRATION.md` is intentionally
+unshipped. This is local artifact proof, not a registry publication.
+
+### Original isolated installed profile
+
+The offline `qml`, `watch`, `mcp`, `sql` stage contains 71 distributions across
+runtime and separate verification tooling. Dependency checking passes. Its
+21-module profile passes **495 cases, zero failures/errors/skips**, with 49
+warnings in 64.79 seconds. The declared modules bind individual source
+acceptance assignments to installed production code:
+
+| Installed selection | Cases | Acceptance scope |
+| --- | --- | --- |
+| The thirteen existing parser/CMake/analysis-state/artifact modules of the policy-25 repair profile | 342 | Existing INC-QML-53 parser, literal metadata, retention and artifact assignments, reverified under the integrated source |
+| `test_filename_cohorts.py` | 16 | REQ-QML-003-AC02/AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC01/AC02 |
+| `test_upstream_qt_language_overrides.py` | 7 | REQ-QML-002-AC01/AC04; REQ-QML-010-AC02/AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC01; REQ-QML-018-AC02/AC07 |
+| `test_upstream_qt_placeholder_roles.py` | 55 | REQ-QML-010-AC02/AC04; REQ-QML-011-AC04; REQ-QML-012-AC02; REQ-QML-018-AC06, within D30's explicit legacy convention |
+| `test_upstream_qt_labels_publication.py` | 14 | REQ-QML-011-AC04; REQ-QML-012-AC02/AC04; REQ-QML-018-AC06 |
+| `test_upstream_qt_query_direction.py` | 11 | REQ-QML-010-AC02/AC03/AC04; REQ-QML-013-AC01/AC02/AC04; existing direction rejection/retention |
+| `test_upstream_qt_cache_integration.py` | 14 | REQ-QML-003-AC04; REQ-QML-011-AC03/AC04; REQ-QML-018-AC05/AC06 |
+| `test_codex_hook_identity.py` and unchanged `test_codex_hook_execution.py` | 36 | REQ-CORE-001-AC05 selected identity, reinstall/uninstall and native execution boundaries |
+
+The thirteen repair modules are `test_qt_cpp_template_defaults`,
+`test_qt_cmake_mutations`, `test_qt_cmake_mutation_updates`,
+`test_qt_cmake_tooling_order`, `test_qt_cmake_alias_resolution`,
+`test_qt_analysis_state`, `test_qml_wheel_artifact`,
+`test_qt_cmake_header_membership`, `test_qt_cmake_resource_collisions`,
+`test_qt_cmake_review_boundaries`, `test_qt_cmake_review_updates`,
+`test_qt_cmake_rc_dependencies` and `test_qt_cmake_rc_updates`, each under `tests/`
+with its `.py` suffix. This selected installed profile does not stand in for the
+complete source suite or every criterion's wider platform/system obligations.
+
+Receipts `stage-receipt.json` and `stage-tests.xml`/`.log` remain under the ignored
+`.venv/upstream-sync-0.9.92/` evidence directory. They bind the exact source,
+production tree, wheel, schema/policy, successful outcomes and unchanged package
+bytes. The direct receipt read confirms pytest exit zero and no global-tool
+modification.
+
+Executed isolated entry point, expressed relative to the repository:
+
+```powershell
+.venv/upstream-sync-0.9.92/stage/Scripts/python.exe -I .venv/upstream-sync-0.9.92/run_stage.py
+```
+
+The retained helper and receipts define the exact 21-module collection and
+installed-origin checks; the command is an evidence entry point, not a shipped
+project utility.
+
+An independent actual OS-temporary-directory probe runs outside the checkout
+with the stage interpreter's isolated mode. Every loaded Graphify origin is
+installed, and `-I -m graphify --help` exits zero with CLI help present.
+`runtime-outside-probe.json` binds the same source/version and the 71-distribution
+environment; no checkout import is accepted as installed proof.
+
+### Separate locked HCL add-on profile
+
+Only `tree-sitter-hcl==1.2.0`, matching the frozen lock/native grammar version, is
+added offline with no dependency resolution to the isolated stage. The exact
+delta is one added distribution: 71 becomes 72, with no previous version changes
+or removals, and dependency checking still passes. The six production cases in
+`test_upstream_qt_refresh_order.py` then pass with **zero failures/errors/skips**,
+seven warnings, in 3.75 seconds. They cover both Terraform/filename fanout
+directions, rejected-selector retention/retry and the component-aware stored-root
+prefix guard; the latter is partial supporting evidence, not the whole
+REQ-QML-020 membership criterion.
+
+`stage-addon-receipt.json` and `stage-addon-tests.xml`/`.log` bind the same
+source/tree/wheel, the exact dependency delta and the frozen public test bytes.
+All 326 package files remain byte-identical before/after the add-on; 158 loaded
+Graphify modules have isolated-stage origins. The original 495-case receipts are
+unchanged. These are separate environment profiles and are not combined into a
+single aggregate passing-suite claim.
+
+The exact add-on and execution steps, with local paths expressed relatively, are:
+
+```powershell
+uv pip install --offline --no-deps --python .venv/upstream-sync-0.9.92/stage/Scripts/python.exe tree-sitter-hcl==1.2.0
+.venv/upstream-sync-0.9.92/stage/Scripts/python.exe -I .venv/upstream-sync-0.9.92/run_stage_addon.py
+```
+
+### Source, typing and delivery limits
+
+Whole Ruff, whitespace and all **134 generated artifacts** pass. The AST-only
+repository graph update succeeds with **26,995 nodes and 63,154 edges**, without
+clustering or API calls. Graph generation is source-navigation evidence, not
+acceptance of every relationship or an application graph refresh.
+
+The actual frozen whole-project Pyright result is **651 errors across 823
+files**, compared with the independently rerun prior 605-error/712-file baseline
+under the same interpreter. The earlier 652-error snapshot predates the corrected
+retired-path argument; its detailed 570-retained/35-removed/82-added comparison is
+historical. Source review identifies twenty core additions and the remaining
+seven watch/three service additions at exact upstream function/anchor matches;
+this partial classification is not permission to call whole typing green. New
+small production/test owners pass focused checks; broad typing cleanup is not
+part of this integration.
+
+The complete source run is terminal with **11,547 passed, 44 failed, 172 skipped
+and twelve setup errors** across 11,775 cases. No complete source-suite or hosted
+pass is recorded. Hosted source/base/checkout evidence, any authorized subsequent PR merge
+and its exact resulting-SHA proof remain pending. Neither isolated profile
+changes the active per-user tool, an application graph or team package adoption.
+This source checkpoint and artifact must be re-evaluated if production inputs
+change.
+
+### Complete source result and integrity outcome
+
+The complete 11,775-case source run reports **11,547 passed, 44 failed, twelve
+setup errors and 172 skipped**, with pytest exit 1 in 1,818.10 seconds. The
+wrapper takes 1,822.49 seconds and also exits 1. Exact invocation:
+
+```powershell
+& .venv/Scripts/python.exe .venv/upstream-sync-0.9.92/run_full_source.py 9057803361f49988e9e41d64cf4290035184e5f7 *> .venv/upstream-sync-0.9.92/full-runner.log
+```
+
+Its child runs `python -X utf8 -m pytest tests/ -q --tb=short -rs` with JUnit at
+`.venv/upstream-sync-0.9.92/full-source.xml`, admitted process-local Git Bash,
+isolated `COVERAGE_FILE`, the reviewed `GRAPHIFY_QML_TEST_WHEEL` and disabled
+automatic refresh/tips. `full-source-receipt.json`, `full-source.log` and
+`full-runner.log` retain the exact private local command identities without
+putting personal paths in public documentation.
+
+| Failed boundary | Failures / setup errors |
+| --- | --- |
+| Existing C++ import prior-proof manual/watch variants | 18 / 0 |
+| Part A explicit-root fixture capture and cache relocation | 15 / 0 |
+| Four tooltip external DOM harnesses | 4 / 0 |
+| Devin/aider recorded-interpreter execution | 2 / 0 |
+| Low-level read-only owned-copy replacement | 1 / 0 |
+| Code-only fixture missing trusted Step 1 root | 1 / 0 |
+| Two absolute-key memo hit observations | 2 / 0 |
+| Qualified-target legacy ambiguity exit expectation | 1 / 0 |
+| Aggregate invariance success corpus containing two rejection fixtures | 0 / 12 |
+
+The receipt confirms unchanged source HEAD/tree, dependency identities and the
+pre-existing root coverage file. Its `tracked_inputs_unchanged` flag is **false**:
+the only tracked test-tree mismatch is this documentary `TRACEABILITY.md` update;
+all seven changed tracked files are the assigned documentation. Test/code/tool
+inputs remain unchanged, but the runner still raises its integrity assertion.
+That assertion is retained as failure, not waived or presented as a passed
+freeze gate. The corrected full run must start only after all documentation is
+frozen as well.
+
+All 172 skips retain exact individual reasons in the receipt. The largest
+profiles are 51 Windows symlink-capability cases, 31 POSIX Bash/cat cases,
+30 emitted-hook POSIX-sh cases and sixteen POSIX physical-link/`..` cases.
+Four cases lack the C preprocessor, two lack the required database service and
+three require a Bash-side Python import environment unavailable in this native
+profile. The other 35 retain their explicit platform/resource/version reasons.
+None establish passing acceptance; their applicable Linux/native/service
+profiles remain separate gates. This terminal failed source run does not change
+the earlier bounded installed outcomes or establish hosted/merged-SHA proof.
+
+## Post-905 correction matrix — INC-QML-54
+
+Status: **Planned; no corrected-source acceptance yet**. The complete frozen
+source run has exposed deterministic failures and twelve invariance setup errors;
+its terminal outcome is recorded above. The following assignments precede correction
+and do not supersede the exact `90578033` wheel/495-case/separate-HCL receipts.
+Future changed production or generated inputs need fresh source/artifact proof.
+
+| Acceptance IDs | Exact existing protection or planned new regression | Evidence boundary |
+| --- | --- | --- |
+| REQ-CORE-001-AC03; REQ-QML-012-AC02; REQ-QML-013-AC03; REQ-QML-018-AC06 | `tests/test_atomic_writes.py::test_os_replace_with_fallback_still_replaces_a_readonly_destination`; `tests/test_atomic_replace_retention.py::test_req_qml018_ac06_readonly_rejects_without_displacing_destination`, `test_req_qml018_ac06_directory_is_not_a_replace_fallback_target`, `test_req_qml018_ac06_readonly_source_is_consumed_on_successful_fallback`, `test_req_qml018_ac06_readonly_source_cleanup_rollback_retains_attributes`; `tests/test_atomic_writes.py::test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp`; `tests/test_qt_readonly_publication.py::test_req_qml018_ac06_readonly_graph_preserves_products_then_retries`; planned `tests/test_graphml_owned_replacement.py` | D32 resolves conflicting raw-helper expectations explicitly: caller-owned replacement permits read-only regular copies, atomic/product writers still reject. GraphML's native regular-read-only preflight must land before raw guard removal, with retained input/output, temp cleanup, retry/repeat and real symlink-target controls. Retain real byte/mode rollback, directory/symlink protections and recovery/retry. Corrected test names/new destination-mode/cleanup cases and executed command/result remain pending. |
+| REQ-CORE-001-AC01; REQ-CORE-004-AC02; REQ-QML-014-AC03/AC04 | Planned `tests/test_skillgen_interpreter_identity.py`; retain existing devin/aider real code-only runbook assertions and generator/monolith validators | Execute actual rendered `-c`/`-m` commands using the recorded spaced interpreter against split-prefix and PATH decoys; require literal args/cwd/order and empty/missing/failing no-fallback outcomes. Quote-removal control must fail. Exact legacy/canonical PowerShell parity and strict quote-only round-trip/drift checks are required. Commands/results/test identities remain pending. |
+| REQ-QML-014-AC03/AC04; REQ-QML-019; REQ-QML-021 | The four imported tooltip DOM harness cases under investigation | Fixture supplies only missing `window.addEventListener`; all original tooltip/camera/pan/event assertions remain. Exact case identities and rerun are pending; no native-browser/device acceptance is inferred. |
+| REQ-QML-014-AC02/AC03/AC04 | `tests/test_resolve_memoization.py::test_absolute_path_lookup_skips_getcwd` | Read-only reproduction `resolve-memo-readonly.xml` fails the first-miss observation; stack probe shows the inspected Windows `Path.resolve`/`ntpath.realpath` absolute miss calls `getcwd` once, while a repeated absolute-key hit calls it zero times. Planned test-only absolute-key warmup measures the intended hit contract; cold correctness/relative-CWD checks remain. Corrected result/command pending, no production resolver change. |
+| REQ-QML-001-AC02/AC04; REQ-QML-012-AC01/AC02; REQ-QML-014-AC03/AC04 | `tests/test_graph_invariance.py` original twelve cases plus planned exact-copy membership and two real-CLI rejection controls; `tests/test_qml_parser_probe.py::test_qml00_malformed_empty_partial_inputs_do_not_look_successful[Incomplete.qml]` and `[Malformed.qml]`; partial-input variants of `tests/test_qml_cli_persistence.py::test_cli_qml_failure_preserves_graph_and_manifest_despite_override` and `tests/test_qml_watch_persistence.py::test_watch_qml_failure_preserves_completed_products_with_force` | Success-copy omission is exactly the two deliberate `qml/parser_probe` rejection paths. Preserve every valid Qt input, six invariance assertions, nontrivial graph guards, LF/CRLF and raw/clustered profiles. Separate negatives still return exit 1/`QML_GRAPH_PRESERVED` and no first accepted graph/manifest; force/partial flags cannot weaken existing retained-product guards. Exact added names and corrected result remain pending. |
+
+The [plan](../docs/qt-qml/PLAN.md#post-905-full-suite-findings-acceptance-before-correction)
+records the bounded scope and diagnostic impact; [D32](../docs/qt-qml/ARCHITECTURE.md#d32--output-policy-stays-with-the-owning-writer)
+records why replacing the raw-helper rejection expectation is a deliberate
+writer-ownership reconciliation. No full-suite or corrected-artifact pass is
+claimed by this matrix.
+
+Full-run finding: eighteen manual/watch variants of
+`tests/test_qt_cpp_file_role_updates.py::test_req_qml011_ac04_cpp_import_cleanup_requires_exact_prior_source_proof`
+expect preservation when prior import authority is semantic, unmarked, foreign,
+conflicting, contextual, confidence-bearing, oppositely directed, partially
+directed or foreign-direction transport. D30's generic
+exact-shape sweeps currently remove the missing zero-degree placeholder before
+the existing Qt prior-source proof can protect it. This is a recorded ownership
+discrepancy under REQ-QML-010-AC04/REQ-QML-011-AC04/REQ-QML-012-AC02. The
+accepted correction preserves the original assertions and exact prior-ID/source
+requirement; canonical shape alone cannot authorize this Qt lifecycle cleanup.
+The additional four exact variants are `[partial_direction-manual]`,
+`[partial_direction-watch]`, `[foreign_direction-manual]` and
+`[foreign_direction-watch]`. Sixteen interleaved authored/node-role controls pass.
+The accepted [D33](../docs/qt-qml/ARCHITECTURE.md#d33--retained-cleanup-context-belongs-to-the-accepted-graph)
+mechanism stores strictly versioned/typed/bounded existing-node retention context
+in the same graph product. The accepted APIs are strict immutable
+`read_import_retention(payload, *, is_placeholder)` and pure copied-payload
+producer `apply_import_retention(payload, ids, *, is_placeholder)`. The exact
+schema-1 graph field admits sorted unique existing canonical placeholders only,
+at most 100,000 IDs and 4,096 UTF-8 bytes each; wrong/foreign/duplicate/over-limit
+transport rejects with safe `QT_IMPORT_RETENTION_INVALID`, never truncation.
+An optional caller-owned loader sink keeps its four-value return, computes policy
+before backfill and passes immutable restrictions to every merge/finalizer seam.
+Planned modules `test_qt_import_retention.py` and `test_qt_import_retention_updates.py`
+must provide exact new test identities and commands/results before verification.
+Required acceptance includes
+raw/clustered/build-merge/JSON reload/repeat/last-Qt removal, clearing on accepted
+proof or legitimate node removal/role transition, corrupt/over-limit rejection,
+actual cohort rollback/recovery/retry and preserved generic orphan healing. No
+second durable stamp/cache, global preservation or authored-role relaxation is
+established. This planned transport change invalidates the earlier wheel as
+acceptance evidence for the future corrected source.
+
+Additional **Planned** compatibility/admission assignments:
+
+| Acceptance IDs | Exact test and faithful boundary |
+| --- | --- |
+| REQ-QML-010-AC01; REQ-QML-011-AC01/AC04; REQ-QML-012-AC01/AC02; REQ-QML-018-AC06 | Planned `tests/test_qt_reconcile_diagnostics.py` proves real cold/warm empty-key parity and current diagnostic metadata replacing old observations through `_reconcile_existing_graph` and actual persistence. Return fresh extraction keys plus merged structural/token overrides; never replay prior graph failure metadata. Original raw invariance and malformed-source gates remain exact. Before-fix boundary is the warm diagnostic-field loss in the 108-case selection; exact new names/negative/final command and result pending. |
+| REQ-QML-014-AC02/AC03/AC04 | `tests/test_source_key_memoization.py::test_absolute_path_lookup_skips_getcwd` shares the paired Windows first-absolute-miss observation. Warm its absolute key before measuring hits; retain cold correctness and relative-CWD assertions. Corrected command/result pending. |
+| REQ-QML-003-AC02/AC04; REQ-QML-011-AC03/AC04; REQ-QML-012-AC01/AC02; REQ-QML-014-AC03/AC04 | `tests/test_skill_code_only_incremental_update.py::test_codex_code_only_update_materializes_and_merges_fresh_ast`; planned `test_codex_part_a_missing_trusted_root_rejects_before_ast_then_recovers`; `tests/test_skill_part_a_explicit_root.py::test_part_a_passes_an_explicit_root` fourteen-host variants and `test_relocating_only_the_cache_does_not_rename_part_a_nodes`. Read-only `skill-root-readonly.xml`/`.log` and `skill-codeonly-stderr.log` expose sixteen existing fixture failures: stale literal call capture for fourteen hosts/relocation, plus code-only missing trusted `.graphify_root`. Keep all original incremental assertions; add correct Step 1 setup and no-marker rejection/retention/recovery. Structural capture and real-body execution change only `cache_root`, requiring equal nonempty IDs/portable paths. Corrected command/result pending. |
+| REQ-QML-018-AC04; REQ-QML-013-AC01; REQ-QML-014-AC03/AC04 | `tests/test_upstream_qt_path_integration.py::test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess`. `qualified-target-readonly.xml` fails only the legacy expected exit 1; isolated prospective expectation migration to current typed ambiguity 3 passes in `qualified-target-prospective.xml`. Keep all candidates, exact-ID success, no-guess and graph-byte nonmutation assertions. This is not a committed corrected-source pass; final command/result pending. |
+
+Fresh accepted source reintroduction must clear obsolete context in the same
+successful run; legacy backfill is not fresh source proof. Planned dependency
+characterization covers both fresh-process `paths`/`build` import orders and
+valid/corrupt semantic loads, with the predicate imported locally after structural
+checks and passed into the pure helper. Shared-role extraction remains a separate
+preparatory refactor, not evidence required from an unperformed mechanical move.
+
+### D33 preimplementation regression result
+
+The new `test_qt_import_retention.py` and `test_qt_import_retention_updates.py`
+selection executes before changing its build/watch/Qt-cleanup production owners:
+**75 failed, one passed, zero skips** across 76 cases. The passing valid-JSON
+control is retained; six real transport boundaries, 66 corrupt-context scenarios
+and four lifecycle profiles expose missing retained-context behavior. This is
+negative evidence, not implementation or release acceptance.
+
+```powershell
+& .venv/Scripts/python.exe -X utf8 -m pytest -q --disable-warnings -o addopts= tests/test_qt_import_retention.py tests/test_qt_import_retention_updates.py --junitxml=.venv/upstream-sync-0.9.92/retention-before.xml *> .venv/upstream-sync-0.9.92/retention-before.log
+```
+
+The receipt remains distinct from future final producer/export/import-order
+cases and corrected-source results; final exact names, limits/changed-branch
+coverage and artifact proof are pending.
+
+D33's next twelve corrupt prior-context manual/watch and raw/clustered
+rejection/retry cases expose cache ordering: outputs retain prior bytes, but a
+candidate AST cache is written before late rejection. The approved correction
+shares one build-owned capped raw loader with the existing four-value loader;
+watch owns its snapshot, preflights reserved context before extraction/cache and
+passes it into reconciliation without rereading. Prior proof precedes backfill,
+and origin stamping copies borrowed item dictionaries. Require no force bypass,
+no candidate cache, complete old cache/product retention, explicit loader binding/
+order/single-read tests and corrected retry. Exact test identities/before/final
+commands/results remain pending; D33 is not Verified by earlier product-only
+retention or its initial passing transport cases.
+The saved seam is `build._read_existing_graph_data(Path) -> dict | None`, with
+unchanged cap/default `RuntimeError` and strict reserved-context reading.
+`_load_existing_graph` retains its four-value return; reconciliation accepts
+`prior_graph_data` and explicit `preflight_done=False`. Binding/order controls
+must distinguish direct calls from supplied/missing snapshot reuse, preserve
+borrowed top item dictionaries before stamping/rebasing, and keep late output/
+concurrent-change/publication checks. The active 106-case focused selection has
+not supplied a terminal result yet.
+New compatibility boundaries before correction: legacy `graph: null` without
+reserved context was accepted by `90578033` and must remain an empty attribute
+map through direct/combined/shared semantic loads. Present malformed reserved
+context remains strict. Four existing watch refusal cases also expose a channel
+regression: correct rejection/bytes use generic stdout instead of the established
+RuntimeError/ValueError `error:` stderr path. Preserve all original assertions;
+the narrow early error-handler restoration and exact before/final controls are
+pending, without broad malformed-graph acceptance or diagnostic changes.
+The final approved absence refinement expands the earlier null-only control to
+all five exact old-owner forms: `null`, `false`, `0`, `[]` and `""`, each across
+direct/combined/shared loading. Exact `90578033` installed behavior accepts all
+fifteen with empty graph attrs and no context authority. Preserve `(graph or {})`
+while keeping truthy unsupported scalars and every malformed present reserved
+value strict. Final focused reserved/compatibility results are required after
+the isolated one-line refinement; the earlier three-case null receipt is not
+claimed as all fifteen controls.
+The exact current before-control run reports **twelve failed, three passed,
+91 deselected**, one warning, 2.09 seconds in `retention-falsy-before.xml`/`.log`;
+the three passing cases are the already accepted null profiles. The exact
+reviewed `90578033` installed owner accepts all fifteen. Final corrected focused
+results remain pending after the approved one-line absence refinement.
+The final test-only integrity addition covers absent reserved context plus
+duplicate canonical placeholder records incident to a source-backed native node:
+actual build/raw merge must reject with `QT_IMPORT_RETENTION_INVALID` and retain
+prior bytes, then succeed after one duplicate is removed. Paired ordinary Python
+duplicates preserve upstream generic behavior. These four cases close the
+already implemented duplicate-native-candidate branch; no production change is
+introduced. Exact final test identity/result and refreshed coverage are pending.
+
+### First root-owned correction selection
+
+The first 108-case root-owned selection reports **104 passed, three failed and
+one real-symlink profile skipped** in 65.21 seconds. Native GraphML read-only
+rejection/retry, DOM event-surface, paired memo, typed-ambiguity and exact
+invariance admission/CLI-negative cases pass within that selection. The skipped
+symlink case does not establish its acceptance profile.
+
+Correct success-corpus admission now lets the original invariance assertions
+execute. Three failures remain: raw unchanged rebuild loses top-level diagnostic
+fields, and raw/clustered LF-versus-CRLF equality conflicts with native original-
+byte spans and byte-derived site IDs. The latter requires a faithful correlated
+semantic comparison plus independent original-byte span/identity validation;
+blanket attribute removal or production newline normalization is not accepted.
+Exact intended comparison and metadata correction are under investigation.
+Preserve the original twelve invariance cases, their nontrivial graph guards,
+non-native attributes and all meaningful source/consumer assertions. This is a
+failed intermediate selection, not corrected-source or release acceptance.
+
+### D34 newline-validation acceptance before correction
+
+The read-only `invariance-analysis.log` compares 1,063 nodes per native newline
+variant: 131 common-ID attribute changes reflect original-byte spans/source sizes
+and include metadata; 57 native site IDs change (48 QML expression sites and
+nine Qt fact sites), alongside hashed byte-derived owner/receiver tokens. No
+general ID/hash remapper is accepted as an oracle.
+
+Under [D34](../docs/qt-qml/ARCHITECTURE.md#d34--newline-invariance-respects-original-native-source-bytes),
+all twelve aggregate cases keep full valid membership and exact graph IDs/
+attributes. The CRLF copy preserves the complete owning `tests/fixtures/qml`
+tree byte-for-byte and exactly converts every other text input. Required guards
+check full copied membership, every preserved native byte, every other text's
+exact transformation and both populations nonempty. No valid Qt/QML/project/
+resource/QML-owned-JS input is excluded.
+
+Planned `tests/test_native_newline_cli.py` runs the five-source native metadata
+fixture through actual CLI LF/CRLF variants. Every native span, source size and
+type position must match original input bytes. Require unique
+`(source_file, label, type, source_location, family, kind)` anchors, the Backend
+class/property/statusChanged and QML-binding facts, and equivalent semantic
+roles/reference status/edge roles and direction through those fixture anchors.
+Require byte-derived IDs to differ, with deliberate span/endpoint/role/relation
+corruptions rejected by the oracle. Exact new test names/command/result remain
+pending; product parsing and graph attributes are not normalized or filtered.
+
+Independent existing original-byte protections remain mandatory:
+`tests/test_qt_graph_persistence.py::test_native_repeated_sites_export_with_original_utf8_crlf_spans`,
+`tests/test_cpp_qualified_identity.py::test_req_qml008_ac02_original_bom_crlf_unicode_spans_survive_qualified_member_join`
+and `tests/test_qml_declarations.py::test_qml003_ac01_unicode_crlf_spans_and_original_names`.
+Acceptance maps to REQ-QML-003-AC02/AC04, REQ-QML-010-AC01,
+REQ-QML-011-AC01/AC04, REQ-QML-013-AC03 and REQ-QML-014-AC03/AC04.
+
+### Bounded replacement, generator and Part A source checkpoints
+
+The owned-copy source-first selection fails six cases before correction. Its
+corrected `test_owned_readonly_replacement.py`, `test_atomic_replace_retention.py`
+and `test_atomic_writes.py` selection passes **35 cases with three platform
+skips** (`readonly-before`/`readonly-after` XML/logs under the ignored integration
+evidence directory). Atomic/product rejection and raw byte/mode rollback remain
+separate owners; skips are not native/POSIX symlink or mode acceptance.
+
+`test_skillgen_interpreter_compatibility.py` passes **ten source-only cases** for
+legacy/canonical PowerShell conversion, malformed input and counted exact
+quote-only round-trip matching. Authoritative edits cover 105 executable heads
+across eight command fragments plus three prose samples in nine Markdown inputs.
+Shipped-resource `test_skillgen_interpreter_identity.py` has a faithful initial
+**three failures and three controls** in six cases (`interpreter-runtime-before.xml`,
+45.38 seconds); regenerated-resource execution remains pending. Compatibility
+fingerprints admit only the corresponding canonical quoted forms of the two
+existing sanctioned extra heads and the exact hardened-watch command, without
+whole-line drift exemptions.
+
+Part A/code-only fixture corrections pass **18 cases** in `skill-root-after.xml`:
+the original incremental semantic assertions remain, the new no-marker rejection/
+retention/recovery executes, and fourteen hosts plus actual body/cache-only
+relocation preserve explicit root, nonempty IDs and portable `pkg/mod.py` source.
+The earlier sixteen fixture failures remain recorded separately. No production
+root/runtime fallback is added. Exact final names/commands and broader regenerated
+resource/artifact/full-suite proof remain pending.
+
+### Final bounded skill and owned-replacement source evidence
+
+The source-tree regenerated-resource selection supersedes the pending transport
+state above: **300 passed, 34 skipped, zero failures/errors**, 153.65 seconds,
+in `skill-correction.xml`/`.log`. Each selected shipped resource is the current
+source-tree package content; this is not a new installed-wheel result.
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest -q -p no:cacheprovider --tb=short tests/test_skillgen_interpreter_identity.py tests/test_skillgen_interpreter_compatibility.py tests/test_skillgen.py tests/test_skillgen_input_path_injection.py tests/test_devin.py tests/test_query_fallback_edges.py tests/test_code_only_update_all_hosts.py tests/test_skill_code_only_incremental_update.py tests/test_skill_part_a_explicit_root.py tests/test_skill_no_backtick_substitution.py --junitxml=.venv/upstream-sync-0.9.92/skill-correction.xml
+```
+
+The process uses isolated `skill-correction.coverage`, `PYTHONUTF8=1` and the
+admitted Git Bash tool directories in its process-local PATH.
+
+| Module | Passed / skipped |
+| --- | --- |
+| `test_skillgen_interpreter_identity` | 6 / 0 |
+| `test_skillgen_interpreter_compatibility` | 10 / 0 |
+| `test_skillgen` | 67 / 0 |
+| `test_skillgen_input_path_injection` | 27 / 3 |
+| `test_devin` | 22 / 0 |
+| `test_query_fallback_edges` | 9 / 0 |
+| `test_code_only_update_all_hosts` | 9 / 0 |
+| `test_skill_code_only_incremental_update` | 2 / 0 |
+| `test_skill_part_a_explicit_root` | 16 / 0 |
+| `test_skill_no_backtick_substitution` | 132 / 31 |
+
+REQ-CORE-001-AC01 maps exactly to
+`test_req_core001_ac01_every_shipped_head_quotes_the_recorded_identity`,
+`test_req_core001_ac01_actual_shipped_statements_use_spaced_selected_interpreter`,
+`test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[missing/empty/failure]`
+and `test_req_core001_ac01_shell_harness_detects_unquoted_selection` in the
+identity module. They cover 483 emitted heads across 85 shipped resources,
+actual Bash dispatch to a spaced selected interpreter, active split-prefix/PATH
+decoys, no-fallback failure and a live quote-removal negative control. The
+compatibility module's exact `test_req_core001_ac01_` functions are
+`quoted_and_legacy_powershell_inputs_are_identical`,
+`powershell_rejects_noncanonical_openers`,
+`quote_pair_preserves_every_argument_and_count`,
+`instructional_sample_pair_is_exact` and
+`actual_monolith_roundtrip_rejects_extra_head_drift`.
+
+All original code-only host/update/root/semantic-cache assertions remain; the
+new missing-marker case and actual Part A/cache-only relocation pass. All 134
+generated artifacts and validators match. The 34 skips are 31 POSIX-host-only
+cases and three unavailable Bash-side Python-import cases, retaining their
+unverified profile assignments. These source checks overlap earlier selections
+and are not added into a release or full-suite total.
+
+The separate owned-copy/atomic source selection remains **35 passed, three
+platform skips**, with exact command:
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest -q -p no:cacheprovider --tb=short tests/test_owned_readonly_replacement.py tests/test_atomic_replace_retention.py tests/test_atomic_writes.py --junitxml=.venv/upstream-sync-0.9.92/readonly-after.xml
+```
+
+It uses its isolated coverage file. REQ-CORE-001-AC03 maps to
+`test_req_core001_ac03_owned_readonly_destination_replaces_without_orphans`
+for both source-mode variants; REQ-QML-018-AC06 maps to
+`test_req_qml018_ac06_cleanup_after_readonly_clear_restores_bytes_and_modes`
+for source/backup cleanup and
+`test_req_qml018_ac06_mode_restore_failure_retains_recovery_backup`, all in
+`test_owned_readonly_replacement.py`. Retain existing atomic-product read-only
+rejection, repair/retry, directory rejection and explicit platform gaps. The
+six-failure source-first receipt remains separate negative evidence. New
+artifact/install/full/hosted proof is still pending.
+
+The initial D34 root selection passes **139 cases with one native-symlink skip**
+and zero failures/errors in 63.37 seconds, including all twelve aggregate cases.
+Its first dedicated newline oracle still admitted symmetric missing facts;
+each-profile binding/property/signal/source-token and selected edge-metadata
+checks plus symmetric-removal controls are required before final D34 acceptance.
+This provisional count is not a release or completed-oracle claim.
+
+## Post-905 bounded source release checkpoint
+
+Status: **Corrections implemented; declared focused source profiles pass; next
+frozen complete source, rebuilt wheel/install and hosted proof pending**. The
+reviewed `90578033` wheel remains historical evidence for its own production
+tree. These working-tree selections overlap and are not summed into a full-suite
+or installed-artifact result. All seven documentation files must be frozen
+before the next committed-source test wrapper snapshots its inputs.
+
+### Retained context, preflight and current diagnostics
+
+The final four-module selection passes **132 cases, zero failures/errors/skips**,
+24 warnings, in 25.61 seconds (`retention-release-final.xml`/`.log`):
+
+```powershell
+& .venv/Scripts/python.exe -X utf8 -m pytest -q --disable-warnings -o addopts= tests/test_qt_import_retention.py tests/test_qt_import_retention_preflight.py tests/test_qt_import_retention_updates.py tests/test_qt_reconcile_diagnostics.py --junitxml=.venv/upstream-sync-0.9.92/retention-release-final.xml *> .venv/upstream-sync-0.9.92/retention-release-final.log
+```
+
+| Acceptance scope | Exact automated production boundaries |
+| --- | --- |
+| REQ-QML-010-AC04; REQ-QML-011-AC04; REQ-QML-012-AC02 | `test_qt_import_retention.py::test_graph_owned_retention_crosses_actual_build_merge_and_reload`, `test_policy_view_is_detached_and_role_transitions_are_producer_only`, `test_loader_captures_immutable_raw_policy_before_legacy_backfill`, `test_planner_ignores_irrelevant_untyped_records_without_granting_source_authority`; `test_qt_import_retention_updates.py::test_unproved_native_import_survives_last_qt_removal_and_real_proof_recovers` |
+| REQ-QML-012-AC01/AC02/AC04; REQ-QML-018-AC06 | `test_qt_import_retention.py::test_corrupt_retention_transport_cannot_authorize_a_graph_write`, `test_json_rejection_precedes_accounting_and_preserves_existing_bytes`, `test_remaining_context_integrity_boundaries_reject_without_inference`, `test_exact_count_and_utf8_budgets_preserve_boundary_then_reject`, `test_policy_rejects_malformed_producer_boundaries_without_partial_acceptance`; `test_qt_import_retention_updates.py::test_retention_context_publication_failure_keeps_prior_cohort_and_retries`, `test_corrupt_retention_refuses_force_preserves_cohort_and_recovers` |
+| REQ-QML-012-AC01/AC02; REQ-QML-011-AC04 | All four functions in `test_qt_import_retention_preflight.py`: `test_raw_loader_keeps_provenance_and_four_tuple_loader_compatibility`, `test_raw_loader_retains_missing_parse_and_size_cap_outcomes`, `test_watch_passes_single_raw_baseline_before_dispatch_without_borrowed_mutation`, `test_corrupt_context_never_dispatches_an_extractor_or_creates_cache` |
+| REQ-QML-013-AC03; REQ-QML-014-AC03/AC04 | `test_qt_import_retention.py::test_semantic_loader_deferred_role_dependency_has_no_import_cycle`; `test_legacy_null_graph_without_reserved_context_remains_accepted` covers all five reserved-free forms across three boundaries, with its historical name retained |
+| REQ-QML-010-AC01; REQ-QML-011-AC01/AC04; REQ-QML-012-AC01/AC02; REQ-QML-018-AC06 | `test_qt_reconcile_diagnostics.py::test_real_cold_and_warm_products_keep_current_empty_diagnostic_keys`, `test_current_source_diagnostics_replace_prior_graph_metadata_without_replay` |
+
+All paths above are under `tests/`; parametrized variants retain their individual
+JUnit identities. The twelve corruption/lifecycle cases now retain the complete
+prior product/cache bytes and create no candidate AST cache before rejection.
+The exact fifteen legacy-absence controls pass. Existing source-owned cleanup
+assertions are preserved; canonical shape does not grant prior-import authority.
+
+The final diagnostic regression text has an isolated faithful negative replay:
+removing only the fresh-result copy yields **two failures**, two warnings,
+3.07 seconds (`diagnostics-frozen-before.xml`/`.log`). An earlier one-fail/one-pass
+fixture was too weak because unchanged bytes bypassed publication; the final
+case makes a real AST edit and forces the persistence boundary. That weaker
+checkpoint does not establish the final regression's negative proof.
+
+Broader compatibility runs 383 cases: **376 passed, seven explicit platform
+skips**, 291 warnings, 117.96 seconds (`retention-compatibility-final.xml`/`.log`):
+
+```powershell
+& .venv/Scripts/python.exe -X utf8 -m pytest -q --disable-warnings -o addopts= tests/test_watch.py tests/test_build_merge_shrink_guard.py tests/test_build_merge_hyperedges_and_prune.py tests/test_build_merge_dedup_scope.py tests/test_no_cluster_undeclared_endpoints.py tests/test_qt_cpp_file_role_updates.py tests/test_qml_cli_persistence.py tests/test_qml_watch_persistence.py tests/test_qt_product_publication.py tests/test_qt_readonly_publication.py tests/test_external_stub_endpoints.py tests/test_merge_sweeps_reextract_orphans.py tests/test_prune_sweeps_orphans.py --junitxml=.venv/upstream-sync-0.9.92/retention-compatibility-final.xml *> .venv/upstream-sync-0.9.92/retention-compatibility-final.log
+```
+
+This broader run precedes the isolated two-line legacy-falsy compatibility
+refinement. The full strict reserved-context selection and fifteen exact
+old-owner compatibility controls pass afterward in the 132-case selection;
+the earlier broader result is not falsely rebound to the changed helper. Its
+platform skips retain their exact receipt assignments and establish no passing
+profile. Both commands isolate default pytest options and preserve root coverage.
+
+An isolated branch-coverage repeat of the same 132 cases passes without skips
+in 51.23 seconds (`retention-release-covered.xml`/`.log`). It executes
+`coverage run --branch --source=graphify.qt_import_retention -m pytest` with the
+same four modules/options, isolated `retention-release.coverage`, then writes
+`retention-release-coverage.json`. At that checkpoint the helper covers 95/97
+statements and 51/52 branches (about 98%); defensive Unicode-encoding failure and
+duplicate-native-candidate refusal remain uncovered. A final test-only duplicate
+closure is recorded separately; do not treat the earlier percentage as refreshed
+after those cases. The pre-existing root coverage file stays unchanged.
+
+### D34 and export/source-byte proof
+
+The strengthened native LF/CRLF selection passes **eight cases without skips**
+in 3.93 seconds (`native-strengthened.xml`/`.log`):
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest tests/test_native_newline_cli.py -q --tb=short --junitxml=.venv/upstream-sync-0.9.92/native-strengthened.xml
+```
+
+`test_req_qml003_ac04_native_newlines_keep_cli_roles_and_topology` and seven
+`test_req_qml014_ac04_native_newline_oracle_rejects_corruption` variants check
+original bytes, mandatory each-profile facts, unique semantic anchors and
+span/consistent-span/endpoint/node-role/relation/edge-role/symmetric-binding-
+omission controls. Independent replay rejects the same three saved corruptions
+that the first oracle accepted. The QML read explicitly remains ambiguous with
+`duplicate_provider` under simultaneous CMake/qmake declarations; no confident
+provider or runtime Qt execution is inferred.
+
+The earlier 139-pass/one-symlink-skip source selection includes all twelve original
+aggregate invariance cases, admission/newline-byte guards, native CLI and GraphML,
+paired memo, typed-path, emitted-viewer and three existing native CRLF modules.
+Its symlink skip remains a system gap. Exact added acceptance guards are
+`test_graph_invariance_admission.py::test_req_qml014_ac03_invariance_omits_only_two_rejection_fixtures`,
+`test_req_qml014_ac03_newline_profile_keeps_native_bytes_and_converts_other_text`
+and both `test_req_qml012_ac02_force_still_rejects_invalid_invariance_input`
+variants. `test_graphml_owned_replacement.py` retains native read-only rejection/
+repair/repeat, serialization/replacement failure, directory refusal and the
+separately skipped real-symlink target-protection case. No original graph-ID/
+attribute assertion is globally filtered, and production bytes are unchanged.
+
+### Final static and delivery boundaries before commit
+
+Whole Ruff and whitespace pass. The final explicit-interpreter Pyright run
+reports **651 errors across 834 files**; source-anchor/message comparison retains
+all 651 `90578033` diagnostics with **zero added and zero removed**
+(`pyright-final-source.json`, `pyright-final-comparison.json`). Focused new
+production/test owners pass their declared checks. Whole typing remains failed;
+neither the invalid implicit-interpreter profile nor preliminary unfixed
+test-narrowing diagnostics establishes a product regression or a green type gate.
+
+All runtime/test/tool sources are released and frozen for the next source commit.
+The final repository AST refresh, reviewed raw-blob wheel/installed-origin proof,
+complete committed-source suite and hosted/merged-SHA checks are pending. Earlier
+source-tree resource tests and the `90578033` artifact cannot stand in for those
+new-revision gates. The active per-user tool and application graph remain intact.
+
+### Final test-only duplicate-context closure
+
+`test_qt_import_retention.py::test_implicit_duplicate_native_candidate_rejects_and_repaired_merge_retries`
+passes all **four** C++/Python × build/raw variants, zero skips, 106 deselected,
+one warning, 1.43 seconds (`retention-implicit-duplicate-final.xml`/`.log`):
+
+```powershell
+& .venv/Scripts/python.exe -X utf8 -m pytest -q --disable-warnings -o addopts= tests/test_qt_import_retention.py -k implicit_duplicate_native --junitxml=.venv/upstream-sync-0.9.92/retention-implicit-duplicate-final.xml
+```
+
+With reserved context absent, duplicate native candidates reject safely while
+retaining prior bytes and recover after duplicate removal; ordinary Python
+duplicates retain upstream acceptance. This tests the existing implementation
+without a production change. The module is 299 physical lines and passes focused
+Ruff and explicit-interpreter Pyright with zero errors. The whole-project
+651-diagnostic comparison precedes this last test-only addition; its focused
+check is separate. The 132-case and four-case receipts are not presented as one
+aggregate 136-case execution. The earlier coverage percentage is not refreshed
+by assertion, although this new control exercises the missing duplicate branch.
+
+All source, tests, tools and seven documentation files are now released for the
+next source commit. No further document edits occur during its frozen complete
+test run. New source/wheel/install/full/hosted proof remains pending.

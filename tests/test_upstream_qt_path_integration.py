@@ -70,7 +70,8 @@ def test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess(tmp_path, mon
     path.write_text(json.dumps(payload), encoding="utf-8")
     accepted = path.read_bytes()
     code, output, error = run_path(monkeypatch, path, source_query, target_query, capsys)
-    assert code == 1 and not output and "ambiguous" in error.lower()
+    # Upstream's typed CLI contract distinguishes ambiguity from other errors.
+    assert code == 3 and not output and "ambiguous" in error.lower()
     assert target in error and "same_file_duplicate" in error
     code, output, error = run_path(monkeypatch, path, source, target, capsys)
     assert code == 0 and not error and "Shortest path (1 hops):" in output

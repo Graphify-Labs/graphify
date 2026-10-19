@@ -308,6 +308,11 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     over from an earlier graph that no edge references any more is dropped too;
     a fresh build of the same tree would not have it.
     """
+    # Graph-owned uncertainty restricts every orphan sweep, including raw CLI
+    # merges after the last native source has disappeared. Validate before any
+    # mutation so malformed reserved metadata cannot be silently discarded.
+    from graphify.qt_import_retention import apply_import_retention, read_import_retention
+    retained_import_ids = read_import_retention(data, is_placeholder=_is_external_stub)
     mint_external_stubs_in_data(data)
     nodes = data.get("nodes")
     key = "links" if isinstance(data.get("links"), list) else "edges"
@@ -349,8 +354,13 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
             isinstance(n, dict)
             and _is_external_stub(n)
             and n.get("id") not in referenced
+            and n.get("id") not in retained_import_ids
         )
     ]
+    if retained_import_ids or "qt_import_retention" in (data.get("graph") or {}):
+        updated = apply_import_retention(data, retained_import_ids, is_placeholder=_is_external_stub)
+        data.clear()
+        data.update(updated)
 
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
@@ -1184,6 +1194,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         file and label. AST/semantic and document-file twin reconciliation
         remain enabled.
     """
+    # Input context is validated before normalization/dedup can repair or hide
+    # corrupt transport. Applying after accepted transformations clears only
+    # actual node removal/role changes; the marker never supplies endpoint proof.
+    from graphify.qt_import_retention import apply_import_retention, node_link_view, read_import_retention
+    retained_import_ids = read_import_retention(extraction, is_placeholder=_is_external_stub)
     _root = str(Path(root).resolve()) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
@@ -1891,6 +1906,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # directory-qualified display label so lookup/discovery can disambiguate
     # them (#2032). Labels only — ids and edges are untouched.
     _disambiguate_file_node_labels(G)
+    if retained_import_ids:
+        G.graph = apply_import_retention(node_link_view(G), retained_import_ids,
+                                        is_placeholder=_is_external_stub).get("graph", {})
     return G
 
 
@@ -1921,6 +1939,11 @@ def build(
     collisions remain isolated and are reported.
     """
     from graphify.dedup import deduplicate_entities
+    from graphify.qt_import_retention import apply_import_retention, node_link_view, read_import_retention
+    # Each borrowed chunk validates its own context before producers combine
+    # identities. The final accepted graph supplies legitimate role transitions.
+    retained_import_ids = frozenset().union(*(read_import_retention(ext, is_placeholder=_is_external_stub)
+                                              for ext in extractions))
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
     for ext in extractions:
         combined["nodes"].extend(ext.get("nodes", []))
@@ -1962,6 +1985,9 @@ def build(
         )
         _dedup_collapsed = _before_dedup - len(combined["nodes"])
     G = build_from_json(combined, directed=directed, root=_root, dedup=dedup)
+    if retained_import_ids:
+        G.graph = apply_import_retention(node_link_view(G), retained_import_ids,
+                                        is_placeholder=_is_external_stub).get("graph", {})
     # CLI reads this to tell a dedup shrink from a file deletion (#3774).
     # Popped before to_json so it is not stored in graph.json.
     if _dedup_collapsed:
@@ -2046,7 +2072,30 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
+def _read_existing_graph_data(graph_path: Path) -> dict | None:
+    """Read one caller-owned capped raw snapshot before extraction/cache writes.
+
+    This is the existing incremental loader's read/error boundary. It validates
+    reserved context without inferring origin or modifying borrowed facts; callers
+    share the snapshot rather than reading a second provenance baseline later.
+    """
+    if not graph_path.exists():
+        return None
+    from graphify.security import check_graph_file_size_cap
+    check_graph_file_size_cap(graph_path)
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Cannot read {graph_path} for incremental merge: {exc}. "
+            "Delete the file and run a full rebuild."
+        ) from exc
+    from graphify.qt_import_retention import read_import_retention
+    read_import_retention(data, is_placeholder=_is_external_stub)
+    return data
+
+
+def _load_existing_graph(graph_path: Path, *, retention_policy: dict | None = None) -> "tuple[list, list, list, bool] | None":
     """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
     an incremental merge, accepting both the ``links`` and ``edges`` spellings.
 
@@ -2062,17 +2111,18 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     exists but cannot be parsed — callers must refuse to overwrite rather
     than silently replace a possibly-recoverable graph.
     """
-    if not graph_path.exists():
+    data = _read_existing_graph_data(graph_path)
+    if data is None:
         return None
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(graph_path)
-    try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise RuntimeError(
-            f"Cannot read {graph_path} for incremental merge: {exc}. "
-            "Delete the file and run a full rebuild."
-        ) from exc
+    # Capture immutable cleanup policy from the exact raw payload once, before
+    # legacy provenance backfill could make an unproved import appear authored
+    # by an AST producer. The public four-tuple return remains unchanged.
+    from graphify.qt_import_retention import plan_import_retention
+    if retention_policy is not None:
+        from graphify.qt_orphan_cleanup import previous_import_targets
+        accepted = previous_import_targets(data, import_relations=_EXTERNAL_STUB_RELATIONS)
+        retention_policy["ids"] = plan_import_retention(data, accepted_import_ids=accepted,
+                                                       is_placeholder=_is_external_stub)
     links_key = "links" if "links" in data else "edges"
     nodes = list(data.get("nodes", []))
     edges = list(data.get(links_key, []))
@@ -2196,11 +2246,16 @@ def merge_raw_extraction(
     existing graph is present but unparseable — the caller must refuse to
     overwrite it. No-op when ``graph_path`` does not exist.
     """
+    from graphify.qt_import_retention import apply_import_retention, read_import_retention
+    fresh_retention = read_import_retention(new, is_placeholder=_is_external_stub)
     graph_path = Path(graph_path)
-    loaded = _load_existing_graph(graph_path)
+    retention_policy = {}
+    loaded = _load_existing_graph(graph_path, retention_policy=retention_policy)
     if loaded is None:
         return new
     existing_nodes, existing_edges, existing_hyperedges, _ = loaded
+    from graphify.qt_orphan_cleanup import fresh_import_targets
+    retained_import_ids = (retention_policy["ids"] | fresh_retention) - fresh_import_targets(new, existing_nodes)
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
@@ -2300,6 +2355,10 @@ def merge_raw_extraction(
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
     if unverified_semantic_shrink:
         new["_unverified_semantic_shrink"] = unverified_semantic_shrink
+    if retained_import_ids or "qt_import_retention" in (new.get("graph") or {}):
+        updated = apply_import_retention(new, retained_import_ids, is_placeholder=_is_external_stub)
+        new.clear()
+        new.update(updated)
     return new
 
 
@@ -2341,7 +2400,8 @@ def build_merge(
     # build itself), so a one-shot iterator must be materialised first.
     new_chunks = list(new_chunks)
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
-    _loaded = _load_existing_graph(graph_path)
+    retention_policy = {}
+    _loaded = _load_existing_graph(graph_path, retention_policy=retention_policy)
     if _loaded is not None:
         existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
         had_graph = True
@@ -2351,6 +2411,13 @@ def build_merge(
         existing_hyperedges = []
         existing_directed = False
         had_graph = False
+    from graphify.qt_import_retention import apply_import_retention, node_link_view, read_import_retention
+    from graphify.qt_orphan_cleanup import fresh_import_targets
+    fresh = {"nodes": [node for chunk in new_chunks for node in chunk.get("nodes", [])],
+             "edges": [edge for chunk in new_chunks for edge in chunk.get("edges", [])]}
+    retained_import_ids = retention_policy.get("ids", frozenset()) - fresh_import_targets(fresh, existing_nodes)
+    retained_import_ids |= frozenset().union(*(read_import_retention(chunk, is_placeholder=_is_external_stub)
+                                              for chunk in new_chunks))
     if directed is None:
         directed = existing_directed if had_graph else False
 
@@ -2634,6 +2701,7 @@ def build_merge(
             if not d.get("source_file")
             and G.degree(n) == 0
             and n not in _spare_isolated
+            and n not in retained_import_ids
             and n not in _he_members
             # Only machine-minted placeholders (AST code stubs and #2873
             # external import stubs) are collected when re-extraction strands
@@ -2810,6 +2878,9 @@ def build_merge(
     if unverified_semantic_shrink:
         G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
 
+    if retained_import_ids or "qt_import_retention" in G.graph:
+        G.graph = apply_import_retention(node_link_view(G), retained_import_ids,
+                                        is_placeholder=_is_external_stub).get("graph", {})
     return G
 
 

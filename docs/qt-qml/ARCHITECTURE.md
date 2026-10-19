@@ -924,6 +924,18 @@ sourceless node would conflict with tier/provenance ownership. The
 [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
 record the exact admitted shapes, source/update/reload cases and remaining gaps.
 
+Post-905 refinement: the canonical shape admits automatic placeholder treatment,
+but does not replace the accepted source-owned prior-import evidence required by
+the Qt cleanup lifecycle. Eighteen existing manual/watch prior-edge rejection
+variants fail when a generic sweep removes the candidate first; their original
+preservation assertions remain authoritative. The sixteen interleaved authored/
+node-role controls pass and cannot be weakened. A bounded cross-owner correction
+must preserve legitimate generic orphan retirement and durable repeat/recovery;
+the accepted graph-owned context decision is recorded in D33 below. A global
+preserve-all rule or fabricated authored origin is not an accepted substitute.
+The 168-case scoped checkpoint above remains historical supporting evidence,
+not complete acceptance of this newly exposed interaction.
+
 ## D31 — Refresh admitted filename-collision cohorts before context
 
 Status: **Implemented; frozen 31-case source selection passes with two platform skips; wider verification pending**.
@@ -972,3 +984,151 @@ collision cohort restores the full-run disambiguation inputs without either
 shortcut. The [design](DESIGN.md#bounded-filename-cohort-refresh--inc-qml-54)
 owns interface/order and [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
 records cold/warm, real update/full, repeat, failure and unrelated-cache proof.
+
+The integrated source is committed locally at `90578033`. Its reviewed raw-source
+wheel and bounded isolated profiles pass under AST schema 18/Qt policy 25;
+its complete source gate failed, while corrections/hosted proof remain pending
+and full typing remains failed.
+The [committed checkpoint](../../tests/TRACEABILITY.md#committed-upstream-integration-checkpoint--90578033)
+owns exact artifact identity, profile counts and exclusions. This local commit
+does not establish an authorized PR merge or adoption by another codebase.
+
+## D32 — Output policy stays with the owning writer
+
+Status: **Implemented locally; bounded replacement/GraphML cases pass with explicit platform gaps; final artifact/full proof pending**.
+Upstream's installer/cache replacement contract permits consuming its owned
+read-only regular copies. The earlier raw-helper variant of
+`test_req_qml018_ac06_readonly_rejects_without_displacing_destination` instead
+treats all low-level replacement as guarded graph publication. Those expectations
+conflict at the shared helper; neither can silently stand in for the other.
+
+Keep policy at the owning boundary: `paths.os_replace_with_fallback` performs
+authorized caller-owned replacement, retains directory rejection and restores
+source/destination bytes and modes on recoverable failure. It must not change a
+symlink target's permissions. `_atomic_replace` retains generic read-only output
+rejection; `ProductPublication` retains independent read-only preflight and D19's
+whole-cohort commit/rollback. Remove only the raw helper's blanket regular-file
+read-only guard and its contradictory rejection expectation, with explicit
+owned-copy success and real cleanup/mode-restoration regression protection.
+The atomic-writer and accepted-product rejection assertions remain mandatory.
+Direct caller review also finds standalone GraphML publication relying on the
+old helper guard. Before removing it, the GraphML exporter must own a Windows
+`lstat` preflight rejecting only regular read-only destinations. Retain bounded
+`PermissionError`, prior output/input graph, owned temporary cleanup, directory
+rejection and symlink-entry replacement without target mutation. This caller
+guard is a prerequisite, not a later optional follow-up.
+
+A universal low-level rejection breaks legitimate installer/cache refresh; a
+universal permission to overwrite read-only outputs would break graph retention.
+Separate caller authority preserves both public contracts without adding a
+writer or weakening accepted-product policy. Failed restoration retains owned
+recovery evidence and reports failure; it cannot claim successful replacement.
+The [post-905 matrix](PLAN.md#post-905-full-suite-findings-acceptance-before-correction)
+and [design](DESIGN.md#post-905-correction-boundaries) own the exact positive,
+directory/symlink, real failure, repair and retry cases. Existing receipts remain
+bound to their earlier source; this correction requires fresh verification.
+
+## D33 — Retained cleanup context belongs to the accepted graph
+
+Status: **Implemented locally; final 132-case source selection passes without skips; frozen full/artifact proof pending**.
+A transient protected-ID set loses the distinction between a retained Qt
+placeholder with unproven prior import authority and an ordinary generic legacy
+orphan on a later update, especially after the last Qt source disappears. Both
+may have identical node bytes. Node shape alone cannot restore that lost lifecycle
+context, and fabricating an authored origin would change provenance.
+
+Retain an explicit versioned, strictly typed and bounded cleanup context in the
+same accepted graph product. Its deterministic IDs must name existing graph
+nodes under documented limits. The node-link graph attribute is
+`qt_import_retention = {"schema": 1, "ids": [...]}`: exact keys/types, sorted unique
+canonical existing-placeholder IDs, at most 100,000 entries and 4,096 UTF-8 bytes
+per ID. Unknown versions, duplicates, foreign/noncanonical nodes and overflow
+reject with safe `QT_IMPORT_RETENTION_INVALID`, never truncation or skipped
+restrictions. Legacy reserved-free graph attrs `null`, `false`, `0`, `[]` and `""`
+retain their established `(graph or {})` absent/empty meaning without relaxing
+reserved value/type/version validation. Truthy unsupported scalars still reject.
+Context only restricts automatic cleanup; it grants no native/QML
+provider, relationship, source-admission or deletion authority. The
+graph transaction is the sole durable owner, with no parallel cache or Qt-state
+stamp. Reconciliation, generic merge and raw/clustered finalization must respect
+that context through JSON reload, unchanged repeat and last-Qt-source removal.
+Clear it when accepted new source proof, legitimate node removal or a role
+transition supersedes it. Ordinary generic legacy orphan healing remains intact.
+
+The watch owner must validate reserved context before extraction or candidate AST
+cache writes. One build-owned capped raw graph reader also serves the existing
+four-value loader; watch passes that single raw snapshot into reconciliation.
+Preserve default exception/cap behavior and plan prior proof before backfill;
+copy borrowed item dictionaries before origin stamping. No second read, global
+state or force bypass may admit corrupt prior context. Real rejection/retry
+tests must preserve previous cache/product bytes and create no candidate cache.
+This does not change the independent valid-cache-on-later-publication-failure
+rule.
+
+Malformed or over-limit retained context must reject at a bounded diagnostic
+boundary without replacing accepted products. Actual write/rollback failure
+retains the prior graph and context as one cohort; repaired retry and repeat
+must pass. The focused `qt_import_retention` helper owns strict immutable reading
+and pure producer-only copied-payload application. A caller-owned optional loader
+sink retains the existing four-value return and computes context once before
+generic backfill; merge/finalization/reconciliation consume that immutable policy.
+Validate prior input before filtering legitimate producer transitions; malformed
+prior transport is not a normal removal. Raw source-backed native incidence may
+restrict cleanup only, with accepted prior import proof subtracting protection.
+Actual fresh producer import proof is evaluated separately and clears obsolete
+retention in the same accepted run; legacy backfill cannot mint that authority.
+The semantic graph loader obtains the existing canonical role predicate through
+a function-local import after structural checks, avoiding a top-level
+`paths`→`build` cycle. Keep the helper dependency-injected and test both fresh
+import orders with valid/corrupt loads. Extracting shared pure role ownership is
+a separately characterized follow-up, not a mechanical move inside this fix.
+Corruption, transition, raw/clustered/reload, real failure/recovery and generic
+healing need production regressions. GraphML nested JSON text is an export/review
+representation, not a supported retained-context reload channel. The
+[post-905 matrix](PLAN.md#post-905-full-suite-findings-acceptance-before-correction)
+and [design](DESIGN.md#post-905-correction-boundaries) own these refinements.
+
+Global orphan preservation breaks upstream cleanup; a second durable stamp
+introduces inconsistent recovery authority. Graph-owned context preserves the
+existing Qt prior-proof contract without either shortcut or invented authorship.
+This changes retained graph transport, so prior artifacts and scoped passing
+selections do not establish acceptance of the corrected producer/consumer paths.
+
+## D34 — Newline invariance respects original native source bytes
+
+Status: **Implemented; strengthened eight-case CLI/oracle and scoped aggregate source cases pass; final full/artifact proof pending**.
+The imported aggregate LF/CRLF test assumes every graph attribute/ID is independent
+of source newline bytes. The accepted native contract deliberately preserves
+original-byte spans, source sizes and byte-derived source-site IDs. In the
+inspected 1,063-node graphs, 131 common-ID attribute differences and 57 native
+site-ID changes include QML expression and Qt fact sites; hashed owner/receiver
+byte tokens also differ. A generalized ID/hash remapper would recreate resolver
+logic in the oracle and could hide scope or endpoint errors.
+
+Use two explicit, complementary profiles. The original twelve aggregate cases
+retain every valid fixture and exact graph IDs/attributes. Their CRLF copy keeps
+the entire owning `tests/fixtures/qml` tree byte-identical, including Qt/QML
+source, project/resource metadata and QML-owned JavaScript; every other text file
+gets the exact CRLF conversion. Guard complete copied membership, every preserved
+native byte and every converted non-native byte, with both populations nonempty.
+No input is removed by this newline profile.
+
+A dedicated real-CLI five-source `project_metadata` profile separately compares
+LF and CRLF native graphs. Validate every transported native span/source size/
+type position against the bytes actually analyzed. Assert unique source/label/
+type/location/family/kind anchors, required native class/property/signal and QML
+binding facts, and equivalent semantic roles, reference status and edge roles/
+direction through those anchors. Require byte-derived native IDs to change.
+Each profile independently requires the native property/signal and QML binding;
+the fixture's QML read remains explicitly ambiguous with `duplicate_provider`
+because CMake and qmake both declare it. This preserves uncertainty, not a
+resolved-provider claim. Source-token ownership and selected edge-family/semantic
+metadata checks reject symmetric omission and consistent wrong ownership.
+Deliberate span, endpoint, role and relation corruption must fail the oracle.
+Keep the existing BOM/UTF-8/CRLF producer/export regressions.
+
+This refines a test's byte-identity premise without production newline
+normalization, global attribute exclusion, source-ID rewriting or weaker
+unchanged-source equality. The [design](DESIGN.md#post-905-correction-boundaries)
+and [traceability](../../tests/TRACEABILITY.md#post-905-correction-matrix--inc-qml-54)
+record exact production/oracle cases and pending source/artifact/hosted evidence.

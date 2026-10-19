@@ -1486,7 +1486,10 @@ const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remov
 const els = {};
 const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
   createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
-const window = { innerWidth: 1280, innerHeight: 800 };
+// Middle-button panning registers window handlers before sidebar interaction.
+// Retain those handlers so the harness supplies the browser event boundary.
+const window = { innerWidth: 1280, innerHeight: 800, listeners: {},
+  addEventListener(t, f) { this.listeners[t] = f; } };
 class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
   get(id) { return this.map.get(id); } update() {} }
 const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}

@@ -1014,6 +1014,8 @@ def _reconcile_existing_graph(
     is_ignored_full: Callable[[Path], bool] | None = None,
     preserve_sourceless_ast: bool = False,
     prior_import_ids: set[str] | None = None,
+    prior_graph_data: dict | None = None,
+    preflight_done: bool = False,
 ) -> tuple[dict, dict]:
     """Merge fresh extraction with preserved graph entries and evict stale sources.
 
@@ -1031,33 +1033,36 @@ def _reconcile_existing_graph(
     origins are compatibility annotations and cannot authorize removal.
     """
     existing_graph_data: dict = {}
-    if not existing_graph.exists():
+    # The update owner preflights before extraction can write candidate caches.
+    # Direct callers retain the same capped load/default error behavior. None is
+    # an explicitly missing preflight baseline, not permission for a second read.
+    if not preflight_done:
+        from graphify.build import _read_existing_graph_data
+        prior_graph_data = _read_existing_graph_data(existing_graph)
+    if prior_graph_data is None:
         return result, existing_graph_data
-
-    # Fail-closed load (#2251): reuse build._load_existing_graph, which raises
-    # ValueError when the file exceeds the size cap and RuntimeError when it
-    # exists but cannot be parsed. Those failures must PROPAGATE to the caller
-    # — swallowing them here left existing_graph_data == {}, which _check_shrink
-    # reads as "no baseline, write allowed", so the hook overwrote a graph it
-    # merely failed to READ. A missing file (None) keeps first-build behavior:
-    # reconcile proceeds with an empty baseline and the write is allowed.
-    from graphify.build import _load_existing_graph
-    if _load_existing_graph(existing_graph) is None:
-        return result, existing_graph_data
-    # Cap + parse validated above. Reload as the full dict — reconcile needs
-    # top-level keys (hyperedges, per-node community for _node_community_map,
-    # topology compare) the (nodes, edges, hyperedges) tuple does not carry.
-    # A failure here (e.g. a race rewriting the file) still propagates,
-    # staying fail-closed.
-    existing = json.loads(existing_graph.read_text(encoding="utf-8"))
-    existing_graph_data = existing
+    existing_graph_data = prior_graph_data
+    # Copy only mutable item dictionaries that compatibility backfill/rebasing
+    # owns. Nested fact metadata and graph context remain borrowed read-only.
+    existing = dict(prior_graph_data)
+    for bucket in ("nodes", "links", "edges", "hyperedges"):
+        if isinstance(existing.get(bucket), list):
+            existing[bucket] = [dict(item) if isinstance(item, dict) else item for item in existing[bucket]]
 
     # Capture cleanup authority from persisted producer facts before legacy
     # origin inference can turn an unmarked import into accepted AST evidence.
+    from graphify.build import _EXTERNAL_STUB_RELATIONS, _is_external_stub
+    from graphify.qt_import_retention import apply_import_retention, plan_import_retention
+    from graphify.qt_orphan_cleanup import fresh_import_targets, previous_import_targets
+    accepted_import_ids = previous_import_targets(existing, import_relations=_EXTERNAL_STUB_RELATIONS)
     if prior_import_ids is not None:
-        from graphify.build import _EXTERNAL_STUB_RELATIONS
-        from graphify.qt_orphan_cleanup import previous_import_targets
-        prior_import_ids.update(previous_import_targets(existing, import_relations=_EXTERNAL_STUB_RELATIONS))
+        prior_import_ids.update(accepted_import_ids)
+    # Unknown native import ownership restricts cleanup at every downstream
+    # sweep. Actual fresh producer facts may clear a restriction; old inferred
+    # provenance below cannot. Its durable owner is this same accepted graph.
+    retained_import_ids = plan_import_retention(
+        existing, accepted_import_ids=accepted_import_ids, is_placeholder=_is_external_stub,
+    ) - fresh_import_targets(result, existing.get("nodes", []))
 
     # Backfill tier provenance on legacy items (#2334), mirroring
     # build._load_existing_graph (this reconcile path loads the raw dict
@@ -1326,19 +1331,30 @@ def _reconcile_existing_graph(
             node
             for node in preserved_nodes
             if not _is_external_stub(node) or node["id"] in referenced_ids
+            or node["id"] in retained_import_ids
         ]
 
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
             source_paths.rebase_preserved(item)
 
-        return {
+        reconciled = {
+            # Diagnostics belong to this actual extraction, not the saved
+            # graph. Preserve current empty/failure fields across warm rebuilds
+            # while structural reconciliation and token accounting stay owned here.
+            **result,
             "nodes": result["nodes"] + preserved_nodes,
             "edges": result["edges"] + preserved_edges,
             "hyperedges": result.get("hyperedges", []) + preserved_hyperedges,
             "input_tokens": 0,
             "output_tokens": 0,
-        }, existing_graph_data
+        }
+        return apply_import_retention(reconciled, retained_import_ids,
+                                      is_placeholder=_is_external_stub), existing_graph_data
     except Exception as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("QT_IMPORT_RETENTION_INVALID:"):
+            # Policy corruption is an integrity refusal, never permission to
+            # fall back to a fresh graph that lost its retained uncertainty.
+            raise
         # Post-load reconciliation failure: fall back to the fresh extraction
         # while keeping the loaded baseline, so _check_shrink still guards the
         # write against a collapse. Say so — this used to be silent (#2251).
@@ -1892,6 +1908,16 @@ def _rebuild_code(
                 ast_doc_files.append(p)
 
         existing_graph = out / "graph.json"
+        # Validate reserved graph context before parser dispatch or AST cache
+        # writes. The same raw snapshot remains the sole prior-proof baseline.
+        from graphify.build import _read_existing_graph_data
+        try:
+            prior_graph_data = _read_existing_graph_data(existing_graph)
+        except (RuntimeError, ValueError) as exc:
+            # Preserve the established cap/read/integrity refusal channel even
+            # though it now occurs before parser and syntax-cache side effects.
+            print(f"error: {exc}", file=sys.stderr)
+            return False
         if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
@@ -1913,8 +1939,7 @@ def _rebuild_code(
         semantic_doc_files: set[Path] = set()
         if ast_doc_files and existing_graph.exists():
             try:
-                check_graph_file_size_cap(existing_graph)
-                prior = json.loads(existing_graph.read_text(encoding="utf-8"))
+                prior = prior_graph_data or {}
                 prior_paths = _StoredSourcePaths(
                     prior,
                     out=out,
@@ -2094,8 +2119,7 @@ def _rebuild_code(
         resolution_context_edges: list[dict] = []
         if changed_paths is not None and existing_graph.exists():
             try:
-                check_graph_file_size_cap(existing_graph)
-                ctx_graph = json.loads(existing_graph.read_text(encoding="utf-8"))
+                ctx_graph = prior_graph_data or {}
                 ctx_paths = _StoredSourcePaths(
                     ctx_graph,
                     out=out,
@@ -2318,6 +2342,8 @@ def _rebuild_code(
                 is_ignored_full=_ignored_full,
                 preserve_sourceless_ast=complete_qt_refresh,
                 prior_import_ids=prior_import_ids if complete_qt_refresh else None,
+                prior_graph_data=prior_graph_data,
+                preflight_done=True,
             )
         except (RuntimeError, ValueError) as exc:
             # Existing graph present but unreadable — over the size cap
