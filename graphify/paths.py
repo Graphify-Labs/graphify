@@ -496,6 +496,26 @@ _WINDOWS_MAX_PATH = 260
 _MIN_STEM_BUDGET = 16
 
 
+def _component_name_max(directory: "str | Path") -> int | None:
+    """``PC_NAME_MAX`` (bytes per path component) of the filesystem holding
+    ``directory``, or ``None`` when it cannot be determined.
+
+    The export directory may not exist yet, so ask its nearest existing
+    ancestor, which is on the same filesystem unless something is mounted in
+    between.
+    """
+    path = Path(directory)
+    for candidate in (path, *path.parents):
+        try:
+            name_max = os.pathconf(str(candidate), "PC_NAME_MAX")
+        except FileNotFoundError:
+            continue
+        except (AttributeError, OSError, ValueError):
+            return None
+        return name_max if name_max > 0 else None
+    return None
+
+
 def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: int = 200) -> int:
     """Largest filename stem an exporter may write directly into ``output_dir``.
 
@@ -507,18 +527,27 @@ def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: i
     ``C:\\Users\\me\\projects\\svc\\graphify-out\\obsidian`` exceeds MAX_PATH and
     the write dies with ``FileNotFoundError``, aborting the export mid-vault.
 
-    Returns ``limit`` unchanged on POSIX, so existing output is byte-for-byte
-    stable there. On Windows it returns the smaller of ``limit`` and whatever
-    still fits inside MAX_PATH once ``output_dir``, the separator, ``reserve``
-    (room for caller-added prefixes/collision suffixes) and the ``.md``
-    extension are accounted for.
+    On POSIX it returns the smaller of ``limit`` and the target filesystem's
+    real ``PC_NAME_MAX`` less ``reserve`` and the ``.md`` extension. Under the
+    conventional 255 that is still ``limit``, so existing output is
+    byte-for-byte stable; it only shrinks where the filesystem reports less,
+    e.g. eCryptfs, whose filename encryption leaves ~143 bytes (#2109). On
+    Windows it returns the smaller of ``limit`` and whatever still fits inside
+    MAX_PATH once ``output_dir``, the separator, ``reserve`` (room for
+    caller-added prefixes/collision suffixes) and the ``.md`` extension are
+    accounted for.
 
-    The budget is a CHARACTER count, but callers that cap UTF-8 BYTES may pass
-    it straight through: a string's UTF-8 length is never below its character
-    length, so a byte-capped stem always satisfies the character ceiling too.
+    The Windows budget is a CHARACTER count, but callers that cap UTF-8 BYTES
+    may pass it straight through: a string's UTF-8 length is never below its
+    character length, so a byte-capped stem always satisfies the character
+    ceiling too. The POSIX NAME_MAX budget is in BYTES, which a byte-capping
+    caller meets exactly.
     """
     if os.name != "nt":
-        return limit
+        name_max = _component_name_max(output_dir)
+        if name_max is None:
+            return limit
+        return max(_MIN_STEM_BUDGET, min(limit, name_max - reserve - len(".md")))
     try:
         base = os.path.abspath(str(output_dir))
     except (OSError, ValueError):
