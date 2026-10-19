@@ -94,6 +94,52 @@ def test_deleted_file_hyperedges_are_pruned(tmp_path):
     assert "a1" not in set(G.nodes)
 
 
+def test_update_keeps_unchanged_files_hyperedge_that_shares_an_id(tmp_path):
+    """Hyperedge ids are chosen per extraction, so two files can emit the same
+    id. Re-extracting one must not drop the other's (#3981)."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+    nodes = [
+        {"id": "a1", "label": "a1", "file_type": "document", "source_file": "a.md"},
+        {"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"},
+    ]
+    hyperedges = [
+        {"id": "shared_flow", "label": "flow A", "source_file": "a.md", "nodes": ["a1"]},
+        {"id": "shared_flow", "label": "flow B", "source_file": "b.md", "nodes": ["b1"]},
+    ]
+    _write_graph(graph_path, nodes, [], hyperedges)
+    new_chunk = {
+        "nodes": [{"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"}],
+        "edges": [],
+        "hyperedges": [{"id": "shared_flow", "label": "flow B v2", "source_file": "b.md",
+                        "nodes": ["b1"]}],
+    }
+    G = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    labels = sorted(h["label"] for h in G.graph["hyperedges"] if h["id"] == "shared_flow")
+    assert labels == ["flow A", "flow B v2"]  # a.md's carried, b.md's replaced
+
+
+def test_update_still_drops_a_hyperedge_the_new_chunk_re_emits(tmp_path):
+    """Same id from the same file (relative or absolute form), or with no
+    source_file on either side, is a re-emission: the new copy replaces it."""
+    root, graph_path = _seed_two_file_graph(tmp_path)
+    new_chunk = {
+        "nodes": [{"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"}],
+        "edges": [],
+        "hyperedges": [
+            {"id": "he_a", "label": "flow A v2", "source_file": str(root / "a.md"),
+             "nodes": ["a1"]},
+            # empty source_file is the same as none at all
+            {"id": "he_global", "label": "cross-file flow v2", "source_file": "",
+             "nodes": ["a1", "b1"]},
+        ],
+    }
+    G = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    labels = sorted(h["label"] for h in G.graph["hyperedges"] if h["id"] in {"he_a", "he_global"})
+    assert labels == ["cross-file flow v2", "flow A v2"]
+
+
 # ── #1571: root-less prune (absolute deleted paths vs relative node keys) ──────
 
 def test_prune_without_root_removes_ghost_nodes_via_grandparent_fallback(tmp_path):
@@ -127,6 +173,17 @@ def test_prune_without_root_uses_graphify_root_marker(tmp_path):
     assert _infer_merge_root(graph_path) == str(real_root.resolve())
     G = build_merge([], graph_path, prune_sources=[str(real_root / "HANDOFF.md")], dedup=False)
     assert "handoff" not in {d["label"] for _, d in G.nodes(data=True)}
+
+
+def test_stale_graphify_root_marker_falls_back_to_graphify_out_parent(tmp_path):
+    root = tmp_path / "repo"
+    out = root / "graphify-out"
+    out.mkdir(parents=True)
+    graph_path = out / "graph.json"
+    _write_graph(graph_path, [], [], [])
+    (out / ".graphify_root").write_text(str(tmp_path / "moved" / "repo"), encoding="utf-8")
+
+    assert _infer_merge_root(graph_path) == str(root.resolve())
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
