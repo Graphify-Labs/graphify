@@ -2384,6 +2384,13 @@ def _rebuild_code(
                                 "min_arity",
                                 "variadic",
                                 "signature",
+                                # VB cross-file call resolution (#4570): a unchanged
+                                # type keeps its owner, namespace and overload
+                                # arities, and a C# type its namespace.
+                                "owner",
+                                "full_name",
+                                "accepted_arities",
+                                "namespace",
                             )
                             if key in metadata
                         }
