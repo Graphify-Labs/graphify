@@ -4,6 +4,7 @@ from __future__ import annotations
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference_edge
 from graphify.extractors.resolution import _resolve_c_include_path
+from graphify.security import sanitize_metadata
 from pathlib import Path
 from typing import Any
 import re
@@ -11,6 +12,14 @@ import re
 # A category stem splits only when both halves look like plain ObjC identifiers, so
 # `C++Bridge.h` and `Foo+.h` are left intact.
 _OBJC_STEM_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# Declaration markers, matching what the generic engine puts on every other
+# language's definitions (#2438): `_callable` says "a real callable, not a
+# same-named data symbol", and `_callable_class` narrows that to a type, which is
+# callable only through a constructor. Passes that index declarations gate on
+# these, so a node without them is invisible to them.
+_CALLABLE = ("_callable",)
+_CALLABLE_CLASS = ("_callable", "_callable_class")
 
 
 def _objc_category_base_stem(stem: str) -> str:
@@ -115,20 +124,26 @@ def extract_objc(path: Path) -> dict:
     # same (class, field) tombstones the entry (None) — drop, don't guess.
     objc_field_types: dict[str, dict[str, str | None]] = {}
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int, markers: tuple[str, ...] = ()) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": "code",
-                          "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": "code",
+                    "source_file": str_path, "source_location": f"L{line}"}
+            for marker in markers:
+                node[marker] = True
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
+                 context: str | None = None,
+                 metadata: dict | None = None) -> None:
         edge = {"source": src, "target": tgt, "relation": relation,
                 "confidence": confidence, "source_file": str_path,
                 "source_location": f"L{line}", "weight": weight}
         if context:
             edge["context"] = context
+        if metadata:
+            edge["metadata"] = metadata
         edges.append(edge)
 
     file_nid = _make_id(str(path))
@@ -226,7 +241,8 @@ def extract_objc(path: Path) -> dict:
                     if entry is not None:
                         _record_field_type(cls_nid, *entry)
 
-    def _emit_enum(enum_spec, name: str, line: int) -> None:
+    def _emit_enum(enum_spec, name: str, line: int,
+                   mapped_members: list[tuple[str, int]] | None = None) -> None:
         """Emit a C-style enum type node plus a node + `case_of` edge per
         enumerator, mirroring how every other language with enums models them
         (Java #1719, C++ #3939, Swift). Objective-C is an object-oriented
@@ -236,19 +252,177 @@ def extract_objc(path: Path) -> dict:
         enum_nid = _make_id(stem, name)
         add_node(enum_nid, name, line)
         add_edge(file_nid, enum_nid, "contains", line)
-        body = next((c for c in enum_spec.children if c.type == "enumerator_list"), None)
-        if body is None:
-            return
-        for member in body.children:
-            if member.type != "enumerator":
-                continue
-            mname = next((_read(c) for c in member.children if c.type == "identifier"), None)
-            if not mname:
-                continue
-            m_line = member.start_point[0] + 1
+        if mapped_members is None:
+            body = next((c for c in enum_spec.children if c.type == "enumerator_list"), None)
+            if body is None:
+                return
+            mapped_members = []
+            for member in body.children:
+                if member.type != "enumerator":
+                    continue
+                mname = next((_read(c) for c in member.children if c.type == "identifier"), None)
+                if mname:
+                    mapped_members.append((mname, member.start_point[0] + 1))
+        for mname, m_line in mapped_members:
             member_nid = _make_id(enum_nid, mname)
             add_node(member_nid, mname, m_line)
             add_edge(enum_nid, member_nid, "case_of", m_line)
+
+    def _macro_enum_members() -> list[tuple[str, int, list[tuple[str, int]]]]:
+        """Validate selected typedef macros without changing the original parse tree.
+
+        The Objective-C grammar does not expose these bodies as enum_specifiers.
+        Its macro header still has structural fields and tokens; use those to
+        select a declaration, then parse only its unchanged brace-delimited body
+        as a standalone enum. Every member must map back to the same source bytes.
+        """
+        def descendants(node, kind: str):
+            if node.type == kind:
+                yield node
+            for child in node.children:
+                yield from descendants(child, kind)
+
+        def leaves(node):
+            if node.type == "comment":
+                return
+            if not node.children:
+                yield node
+            else:
+                for child in node.children:
+                    yield from leaves(child)
+
+        source_leaves = list(leaves(root))
+        accepted = []
+        for macro in descendants(root, "macro_type_specifier"):
+            macro_name = macro.child_by_field_name("name")
+            if macro_name is None or _read(macro_name) not in ("NS_ENUM", "NS_OPTIONS"):
+                continue
+
+            # The closest preceding structural token in an enclosing node must
+            # be typedef. This excludes bare macro uses and text in definitions.
+            ancestor = macro.parent
+            while ancestor is not None:
+                preceding = [token for token in leaves(ancestor)
+                             if token.end_byte <= macro.start_byte]
+                if preceding and preceding[-1].type == "typedef":
+                    break
+                ancestor = ancestor.parent
+            if ancestor is None:
+                continue
+
+            tokens = list(leaves(macro))
+            opens = [token for token in tokens if token.type == "("]
+            closes = [token for token in tokens if token.type == ")"]
+            commas = [token for token in tokens if token.type == ","]
+            if len(opens) != 1 or len(closes) != 1 or len(commas) != 1:
+                continue
+            opening, closing, comma = opens[0], closes[0], commas[0]
+            if not (opening.end_byte <= comma.start_byte < comma.end_byte <= closing.start_byte):
+                continue
+            underlying = [node for node in descendants(macro, "type_descriptor")
+                          if opening.end_byte <= node.start_byte
+                          and node.end_byte <= comma.start_byte]
+            outer_types = [node for node in underlying if not any(
+                other is not node and other.start_byte <= node.start_byte
+                and node.end_byte <= other.end_byte for other in underlying
+            )]
+            names = [token for token in tokens
+                     if comma.end_byte <= token.start_byte < closing.start_byte
+                     and token.is_named]
+            if len(outer_types) != 1 or len(names) != 1 or names[0].type not in (
+                "identifier", "type_identifier"
+            ):
+                continue
+            # Valid headers also have grammar ERROR wrappers. Check complete
+            # argument spans rather than ignoring extra tokens inside them.
+            underlying_type = outer_types[0]
+            if any(token.is_missing for token in tokens) or any(
+                opening.end_byte <= token.start_byte < comma.start_byte
+                and not (underlying_type.start_byte <= token.start_byte
+                         and token.end_byte <= underlying_type.end_byte)
+                or comma.end_byte <= token.start_byte < closing.start_byte
+                and not (names[0].start_byte <= token.start_byte
+                         and token.end_byte <= names[0].end_byte)
+                for token in tokens
+            ):
+                continue
+
+            following = [token for token in source_leaves
+                         if token.start_byte >= macro.end_byte]
+            if not following or following[0].type != "{":
+                continue
+            open_brace = following[0]
+            depth = 0
+            close_brace = None
+            for token in following:
+                if token.type == "{":
+                    depth += 1
+                elif token.type == "}":
+                    depth -= 1
+                    if depth == 0:
+                        close_brace = token
+                        break
+                if depth < 0:
+                    break
+            if close_brace is None:
+                continue
+            after_body = [token for token in source_leaves
+                          if token.start_byte >= close_brace.end_byte]
+            if not after_body or after_body[0].type != ";":
+                continue
+
+            name_bytes = source[names[0].start_byte:names[0].end_byte]
+            body_bytes = source[open_brace.start_byte:close_brace.end_byte]
+            prefix = b"enum " + name_bytes + b" "
+            fragment = prefix + body_bytes + b";"
+            fragment_root = parser.parse(fragment).root_node
+            enum_specs = list(descendants(fragment_root, "enum_specifier"))
+            if fragment_root.has_error or len(enum_specs) != 1:
+                continue
+            enum_spec = enum_specs[0]
+            enum_name = enum_spec.child_by_field_name("name")
+            body = enum_spec.child_by_field_name("body")
+            if (enum_name is None or fragment[enum_name.start_byte:enum_name.end_byte] != name_bytes
+                    or enum_spec.has_error or body is None or body.type != "enumerator_list"
+                    or body.has_error or body.start_byte != len(prefix)
+                    or body.end_byte != len(prefix) + len(body_bytes)):
+                continue
+            # Conditional members need preprocessor handling. Do not emit a
+            # partial enum when a clean body contains unsupported child nodes.
+            if any(child.type not in {"{", "}", ",", "comment", "enumerator", "attribute_specifier"}
+                   for child in body.children):
+                continue
+
+            members: list[tuple[str, int]] = []
+            previous_member_end = None
+            for member in body.children:
+                if member.type != "enumerator":
+                    continue
+                # This grammar can accept `Bad Other` as two clean enumerators.
+                # Require the separator token before every later member.
+                if previous_member_end is not None and not any(
+                    token.type == "," and previous_member_end <= token.start_byte < member.start_byte
+                    for token in body.children
+                ):
+                    break
+                identifier = member.child_by_field_name("name")
+                if identifier is None:
+                    identifier = next((c for c in member.children if c.type == "identifier"), None)
+                if identifier is None or member.has_error or identifier.start_byte < body.start_byte:
+                    break
+                original_start = open_brace.start_byte + identifier.start_byte - body.start_byte
+                original_end = open_brace.start_byte + identifier.end_byte - body.start_byte
+                name = fragment[identifier.start_byte:identifier.end_byte]
+                if original_end > close_brace.end_byte or source[original_start:original_end] != name:
+                    break
+                line = open_brace.start_point[0] + identifier.start_point[0] - body.start_point[0] + 1
+                members.append((name.decode("utf-8", errors="replace"), line))
+                previous_member_end = member.end_byte
+            else:
+                accepted.append((_read(names[0]), macro.start_point[0] + 1, members))
+        return accepted
+
+    macro_enums = _macro_enum_members()
 
     def walk(node, parent_nid: str | None = None) -> None:
         t = node.type
@@ -279,7 +453,17 @@ def extract_objc(path: Path) -> dict:
                             else:
                                 module = raw.split("/")[-1].replace(".h", "")
                                 if module:
-                                    add_edge(file_nid, _make_id(module), "imports", line, context="import")
+                                    add_edge(
+                                        file_nid,
+                                        _make_id(module),
+                                        "imports",
+                                        line,
+                                        context="import",
+                                        metadata=sanitize_metadata({
+                                            "raw_include": raw,
+                                            "include_kind": "quoted",
+                                        }),
+                                    )
             return
 
         if t == "module_import":
@@ -308,7 +492,7 @@ def extract_objc(path: Path) -> dict:
             # produced fine when the members lived in `Foo.h` (#1556).
             cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             cls_nid = _make_id(cls_stem, name)
-            add_node(cls_nid, name, line)
+            add_node(cls_nid, name, line, _CALLABLE_CLASS)
             add_edge(file_nid, cls_nid, "contains", line)
             # superclass is second identifier after ':'
             colon_seen = False
@@ -373,7 +557,7 @@ def extract_objc(path: Path) -> dict:
             impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             impl_nid = _make_id(impl_stem, name)
             if impl_nid not in seen_ids:
-                add_node(impl_nid, name, line)
+                add_node(impl_nid, name, line, _CALLABLE_CLASS)
                 add_edge(file_nid, impl_nid, "contains", line)
             for child in node.children:
                 if child.type == "instance_variables":
@@ -391,7 +575,9 @@ def extract_objc(path: Path) -> dict:
                     break
             if name:
                 proto_nid = _make_id(stem, name)
-                add_node(proto_nid, f"<{name}>", line)
+                # A protocol is a type declaration like any other interface, and
+                # the engine marks a Java/C# interface the same way.
+                add_node(proto_nid, f"<{name}>", line, _CALLABLE_CLASS)
                 add_edge(file_nid, proto_nid, "contains", line)
                 # Adopted protocols: `@protocol Derived <Base, Other>`. These
                 # nest under a protocol_reference_list node (distinct from the
@@ -426,7 +612,7 @@ def extract_objc(path: Path) -> dict:
             method_name = "".join(parts) if parts else None
             if method_name:
                 method_nid = _make_id(container, method_name)
-                add_node(method_nid, f"{prefix}{method_name}", line)
+                add_node(method_nid, f"{prefix}{method_name}", line, _CALLABLE)
                 add_edge(container, method_nid, "method", line)
                 if t == "method_definition":
                     method_bodies.append((method_nid, node, container))
@@ -436,9 +622,8 @@ def extract_objc(path: Path) -> dict:
             # `typedef enum { ... } Name;` / `typedef enum Tag { ... } Name;`.
             # The enum body sits on a child enum_specifier that carries no usable
             # name; the name callers reference is the typedef alias (the trailing
-            # type_identifier). NS_ENUM/NS_OPTIONS never reach here — they are
-            # macro_type_specifiers that tree-sitter parses into ERROR subtrees,
-            # so they remain unsupported.
+            # type_identifier). NS_ENUM/NS_OPTIONS are handled separately through
+            # their structural macro headers and isolated enum body fragments.
             enum_spec = next((c for c in node.children if c.type == "enum_specifier"), None)
             if enum_spec is not None and any(
                 c.type == "enumerator_list" for c in enum_spec.children
@@ -472,6 +657,8 @@ def extract_objc(path: Path) -> dict:
             walk(child, parent_nid)
 
     walk(root)
+    for name, line, members in macro_enums:
+        _emit_enum(None, name, line, members)
 
     # Second pass: resolve calls inside method bodies
     all_method_nids = {n["id"] for n in nodes if n["id"] != file_nid}

@@ -145,7 +145,10 @@ for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
 
 if code_files:
-    result = extract(code_files, cache_root=Path('INPUT_PATH'))
+    # root= anchors node ids and source_file on the scan root; cache_root only says
+    # where graphify-out/cache lives. Pass both: without root= the anchor falls back
+    # to cache_root, so pointing the cache elsewhere would rename every node (#3727).
+    result = extract(code_files, cache_root=Path('INPUT_PATH'), root=Path('INPUT_PATH'))
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
@@ -222,10 +225,10 @@ Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-2
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as a read-only type (e.g. Explore) — print a warning: "chunk N missing from disk — subagent may have been dispatched without Write and Bash access. Re-run with a subagent type that has both." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as a read-only type (e.g. Explore) — print a warning: "chunk N missing from disk — subagent may have been dispatched without Write and Bash access. Re-run with @@WRITER_AGENT@@, or on a host whose dispatch policy restricts that, any permitted type with both tools." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run using a subagent type that has Write and Bash access (`general-purpose` by default; any host-permitted type with those two tools otherwise).
+If more than half the chunks failed or are missing, stop and tell the user to re-run ensuring @@WRITER_AGENT_ARG@@ is used, or on a host whose dispatch policy restricts that type, any permitted type with Write and Bash access.
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
@@ -306,6 +309,18 @@ from pathlib import Path
 
 ast = json.loads(Path('graphify-out/.graphify_ast.json').read_text(encoding=\"utf-8\"))
 sem = json.loads(Path('graphify-out/.graphify_semantic.json').read_text(encoding=\"utf-8\"))
+
+# Stamp tier provenance on the semantic side. build._is_ast_tier reads
+# _origin when present and otherwise guesses from the SHAPE of
+# source_location ('L<line>' means AST). A subagent that writes 'L12' for a
+# doc section therefore made that node read as AST, and the next
+# graphify update deleted it along with the re-extracted code file it
+# seemed to belong to (#2843). extract() stamps its own items 'ast'; the
+# semantic side must say so explicitly.
+for n in sem['nodes']:
+    n.setdefault('_origin', 'semantic')
+for e in sem['edges']:
+    e.setdefault('_origin', 'semantic')
 
 # Merge: AST nodes first, semantic nodes deduplicated by id
 seen = {n['id'] for n in ast['nodes']}

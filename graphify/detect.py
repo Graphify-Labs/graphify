@@ -23,6 +23,7 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.rcfile import activate_language_overrides, cache_salt, effective_suffix
 
 
 class FileType(str, Enum):
@@ -45,7 +46,7 @@ _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
 CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
-DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
+DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml', '.j2', '.jinja', '.jinja2'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
@@ -525,7 +526,9 @@ def classify_file(path: Path) -> FileType | None:
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
-    ext = path.suffix.lower()
+    # A project may declare what an ambiguous extension means to it
+    # (.graphifyrc `language.inc=php`, #2961); classify by the declared one.
+    ext = effective_suffix(path).lower()
     if not ext:
         return _shebang_file_type(path)
     if ext in CODE_EXTENSIONS:
@@ -1215,12 +1218,46 @@ def _parse_gitignore_line(raw: str) -> str:
     return _nfc(line)
 
 
+def _is_valid_git_marker(dot_git: Path) -> bool:
+    """Whether ``dot_git`` is a ``.git`` that git itself would accept (#4444).
+
+    A ``.git`` directory needs ``HEAD``, ``objects/`` and ``refs/``, the same
+    entries git's own repository check looks for. A ``.git`` file (linked
+    worktree, submodule) must start with ``gitdir:``. An empty or partial
+    ``.git`` directory, e.g. one left in a home directory, is not a repo and
+    must not become the ignore-walk ceiling. No git subprocess is used.
+    """
+    try:
+        if dot_git.is_dir():
+            return (dot_git / "HEAD").is_file() and (dot_git / "objects").is_dir() and (dot_git / "refs").is_dir()
+        if dot_git.is_file():
+            with dot_git.open("rb") as fh:
+                return fh.read(7) == b"gitdir:"
+    except OSError:
+        pass
+    return False
+
+
+def _has_vcs_marker(directory: Path) -> bool:
+    for marker in _VCS_MARKERS:
+        path = directory / marker
+        if marker == ".git":
+            if _is_valid_git_marker(path):
+                return True
+        elif path.exists():
+            return True
+    return False
+
+
 def _find_vcs_root(start: Path) -> Path | None:
-    """Walk upward from start; return the first directory containing a VCS marker."""
+    """Walk upward from start; return the first directory containing a VCS marker.
+
+    ``.git`` only counts when it is a valid repo marker (#4444).
+    """
     current = start.resolve()
     home = Path.home()
     while True:
-        if any((current / m).exists() for m in _VCS_MARKERS):
+        if _has_vcs_marker(current):
             return current
         parent = current.parent
         if parent == current or current == home:
@@ -1327,6 +1364,45 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
         return None
     exclude = git_dir / "info" / "exclude"
     return exclude if exclude.is_file() else None
+
+
+def _git_global_excludes(vcs_root: Path) -> Path | None:
+    """Resolve git's user-wide excludes file (``core.excludesFile``).
+
+    This is where people keep machine-wide rules for local settings and secret
+    files so they don't repeat them in every repo; git ignores those files but
+    graphify read them (#4335). Asks git for the configured path (``--path``
+    expands ``~``) and falls back to git's default,
+    ``$XDG_CONFIG_HOME/git/ignore`` or ``~/.config/git/ignore``, when the key
+    is unset or git is unavailable. Only applies inside a git repo, like git.
+    Returns None when there is no readable file.
+    """
+    if not (vcs_root / ".git").exists():
+        return None
+    configured = ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vcs_root), "config", "--path", "--get", "core.excludesFile"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+        if proc.returncode == 0:
+            configured = proc.stdout.decode("utf-8", errors="replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = vcs_root / path
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".config"
+        path = base / "git" / "ignore"
+    return path if path.is_file() else None
 
 
 _warned_ignore_encodings: set[str] = set()
@@ -1439,6 +1515,15 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     dirs.reverse()  # ceiling first, scan root last
 
     patterns: list[tuple[Path, str]] = []
+
+    # git's user-wide excludes file ranks below info/exclude, so it goes first
+    # of all, anchored at the VCS root like info/exclude (#4335).
+    global_excludes = _git_global_excludes(ceiling) if gitignore else None
+    if global_excludes is not None:
+        for raw in _read_ignore_text(global_excludes).splitlines():
+            line = _parse_gitignore_line(raw)
+            if line:
+                patterns.append((ceiling, line))
 
     # $GIT_DIR/info/exclude is repo-root-scoped and, per git, ranks below every
     # per-directory .gitignore/.graphifyignore — so load it first (lowest priority
@@ -1835,6 +1920,9 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    # The project's extension->language declarations (#2961) shape
+    # classification for this scan.
+    activate_language_overrides(root)
     configured_out_dir = root / GRAPHIFY_OUT
     configured_out_names = {configured_out_dir.name}
     try:
@@ -2521,6 +2609,9 @@ def save_manifest(
     re-queues the file after the failure is fixed, without deleting
     graphify-out/.
     """
+    # Another root may have activated different overrides in this thread.
+    if root is not None:
+        activate_language_overrides(Path(root))
     existing = load_manifest(manifest_path, root=root)
 
     # Index both raw and NFC forms so scan/clear membership survives the
@@ -2657,12 +2748,19 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
+        # Hash workers do not inherit this thread's language overrides.
+        current_lang = cache_salt(f)
+        lang_changed = current_lang != prev.get("language")
         if kind in ("ast", "both"):
             ast_h = h
+        elif lang_changed:
+            ast_h = ""
         else:
             ast_h = prev.get("ast_hash", "")
         if kind in ("semantic", "both"):
             sem_h = h
+        elif lang_changed:
+            sem_h = ""
         else:
             # Preserve semantic_hash only when content is unchanged
             sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
@@ -2675,6 +2773,7 @@ def save_manifest(
             and mtime == prev.get("mtime")
             and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
             and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
+            and not lang_changed
             and not _in_clear_ast(f)
             and not _in_clear(f)
         )
@@ -2684,6 +2783,9 @@ def save_manifest(
             "ast_hash": ast_h,
             "semantic_hash": sem_h,
         }
+        if current_lang is not None:
+            # No override keeps legacy rows unchanged.
+            entry["language"] = current_lang
         manifest[key] = entry
     if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
@@ -2819,7 +2921,11 @@ def detect_incremental(
             # the graph drifted from disk (#1859). No stored hash means we
             # cannot verify content — any mtime delta forces a re-extract,
             # and the next save promotes the entry into the dict schema.
-            if isinstance(stored, (int, float)):
+            # A language change invalidates even identical bytes and legacy rows.
+            stored_lang = stored.get("language") if isinstance(stored, dict) else None
+            if stored is not None and cache_salt(f) != stored_lang:
+                changed = True
+            elif isinstance(stored, (int, float)):
                 changed = current_mtime != stored
             elif isinstance(stored, dict):
                 # Normalise legacy {mtime, hash} to new schema

@@ -480,3 +480,28 @@ def remap_communities_to_previous(
     for new_cid, nodes in communities.items():
         remapped[new_to_final[new_cid]] = sorted(nodes)
     return dict(sorted(remapped.items(), key=lambda kv: kv[0]))
+
+
+def label_still_applies(
+    cid: int,
+    current_members: list[str],
+    previous_node_community: dict[str, int],
+    saved_sig: str | None,
+    current_sig: str | None,
+) -> bool:
+    """Whether a saved label still names this community (#2298).
+
+    An equal membership signature keeps the label. Otherwise the label stays
+    only when the nodes shared with the previous assignment are a strict
+    majority of both the previous set and the current set. A one-node fragment
+    of a large community fails that test, so remap reusing the old id is not
+    enough to keep the name.
+    """
+    if saved_sig is not None and current_sig is not None and saved_sig == current_sig:
+        return True
+    saved = {str(node) for node, old in previous_node_community.items() if old == cid}
+    current = {str(node) for node in current_members}
+    if not saved or not current:
+        return False
+    overlap = len(saved & current)
+    return overlap * 2 > len(saved) and overlap * 2 > len(current)

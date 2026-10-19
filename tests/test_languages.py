@@ -3092,6 +3092,49 @@ def test_powershell_dot_source_inside_function_emits_edge():
     )
 
 
+
+@pytest.mark.parametrize("line", [
+    '. "$PSScriptRoot\\lib.ps1"',   # quoted path with variable (most common in real scripts)
+    ". $PSScriptRoot\\lib.ps1",     # unquoted path with variable -> path_command_name
+    ". '.\\lib.ps1'",               # single-quoted relative path -> string_literal
+])
+def test_powershell_dot_source_quoted_or_variable_path_emits_edge(tmp_path, line):
+    """Dot-source with a quoted or $PSScriptRoot-based path emits imports_from (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(line + "\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any(t.endswith("lib") for t in targets), f"Missing dot-source lib edge; targets={targets}"
+
+
+def test_powershell_script_scope_call_is_recorded(tmp_path):
+    """A call at script scope (outside any function) is attributed to the file (#4356)."""
+    f = tmp_path / "main.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "Helper\n"
+        "Get-External\n"
+    )
+    r = extract_powershell(f)
+    calls = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    raw = {c["callee"] for c in r["raw_calls"]}
+    assert any(t.endswith("helper") for t in calls), f"Missing script-scope call to Helper; calls={calls}"
+    assert "Get-External" in raw, f"Missing script-scope raw call; raw={raw}"
+
+
+def test_powershell_script_scope_walk_does_not_duplicate_function_calls(tmp_path):
+    """Walking the file root must not re-attribute calls made inside function bodies."""
+    f = tmp_path / "mod.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "function Run { Helper }\n"
+    )
+    r = extract_powershell(f)
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == f.name)
+    callers = {e["source"] for e in r["edges"] if e["relation"] == "calls"}
+    callers |= {c["caller_nid"] for c in r["raw_calls"]}
+    assert file_nid not in callers, f"File node became a caller; callers={callers}"
+
 # ── PowerShell manifest (.psd1) (#1331) ──────────────────────────────────────
 
 def test_powershell_psd1_dispatched():
@@ -5665,3 +5708,94 @@ def test_kotlin_bracketed_annotations_emits_multiple_attribute_edges(tmp_path):
     refs = _edge_labels(result, "references", "attribute")
     assert ("Foo", "Inject") in refs
     assert ("Foo", "VisibleForTesting") in refs
+
+
+_JULIA_DISPATCH_SRC = '''
+module Demo
+abstract type Shape end
+struct Circle{T<:Real} <: Shape
+    r::T
+end
+helper(x) = 2x
+function param(x::T) where {T<:Real}
+    helper(x)
+end
+function rettype(x)::Float64
+    param(x)
+end
+function Base.show(io::IO, c::Circle)
+    print(io, c.r)
+end
+Base.length(c::Circle) = 1
+area(c::Circle{T}) where T = pi * c.r^2
+(c::Circle)(x) = area(c) * x
+Base.:+(a::Circle, b::Circle) = Circle(a.r + b.r)
+@inline function fast(x)
+    x |> helper
+end
+bcast(xs) = helper.(xs)
+end
+'''
+
+
+def _julia_dispatch(tmp_path):
+    f = tmp_path / "dispatch.jl"
+    f.write_text(_JULIA_DISPATCH_SRC)
+    r = extract_julia(f)
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    return r, labels
+
+
+def test_julia_where_rettype_qualified_operator_functor_defs(tmp_path):
+    _, labels = _julia_dispatch(tmp_path)
+    got = set(labels.values())
+    for want in ("param()", "rettype()", "Base.show()", "Base.length()",
+                 "area()", "(Circle)()", "Base.:+()", "fast()", "bcast()"):
+        assert want in got, want
+
+
+def test_julia_parametric_struct_and_no_typeparam_nodes(tmp_path):
+    r, labels = _julia_dispatch(tmp_path)
+    assert "Circle" in labels.values()
+    assert "T" not in labels.values()
+    inh = [(labels[e["source"]], labels.get(e["target"])) for e in r["edges"]
+           if e["relation"] == "inherits"]
+    assert ("Circle", "Shape") in inh
+
+
+def test_julia_broadcast_and_pipe_calls(tmp_path):
+    r, labels = _julia_dispatch(tmp_path)
+    calls = {(labels.get(e["source"]), labels.get(e["target"])) for e in r["edges"]
+             if e["relation"] == "calls"}
+    assert ("fast()", "helper()") in calls
+    assert ("bcast()", "helper()") in calls
+    assert ("param()", "helper()") in calls
+    assert ("rettype()", "param()") in calls
+
+
+def test_julia_parametric_functor_uses_type_not_variable(tmp_path):
+    f = tmp_path / "functor.jl"
+    f.write_text(
+        "struct Box{T}\n    v::T\nend\n"
+        "(b::Box{T})(x) where T = x\n"
+        "(b::Box)(x, y) = x\n"
+        "(::Box{T})(x, y, z) where T = x\n"
+    )
+    r = extract_julia(f)
+    call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
+    # All three methods of the Box functor share one node labelled by the type.
+    assert [n["label"] for n in call_nodes] == ["(Box)()"]
+
+
+def test_julia_qualified_functor_uses_type_not_variable(tmp_path):
+    f = tmp_path / "functor.jl"
+    f.write_text(
+        "(b::Mod.Box)(x) = x\n"
+        "(b::Mod.Box{T})(x, y) where T = x\n"
+        "(::Mod.Box)(x, y, z) = x\n"
+        "(b::A.B.Box)(x, y, z, w) = x\n"
+    )
+    r = extract_julia(f)
+    call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
+    # Module-qualified receiver types resolve to the bare type, never the variable.
+    assert [n["label"] for n in call_nodes] == ["(Box)()"]

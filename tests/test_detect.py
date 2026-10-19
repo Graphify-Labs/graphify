@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import unicodedata
 import pytest
@@ -15,6 +16,15 @@ def _git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _make_git_dir(repo: Path) -> Path:
+    """A minimal .git directory git itself accepts: HEAD, objects/, refs/ (#4444)."""
+    dot_git = repo / ".git"
+    (dot_git / "objects").mkdir(parents=True)
+    (dot_git / "refs").mkdir()
+    (dot_git / "HEAD").write_text("ref: refs/heads/main\n")
+    return dot_git
 
 
 def as_posix_list(paths) -> list[str]:
@@ -387,7 +397,7 @@ def test_graphifyignore_hermetic_without_vcs(tmp_path):
 
 def test_graphifyignore_discovered_from_parent_in_vcs(tmp_path):
     """Inside a VCS repo, parent .graphifyignore applies to subdirectory scans."""
-    (tmp_path / ".git").mkdir()
+    _make_git_dir(tmp_path)
     (tmp_path / ".graphifyignore").write_text("vendor/\n")
     sub = tmp_path / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -408,7 +418,7 @@ def test_graphifyignore_stops_at_git_boundary(tmp_path):
     (tmp_path / ".graphifyignore").write_text("main.py\n")
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _make_git_dir(repo)
     sub = repo / "sub"
     sub.mkdir()
     (sub / "main.py").write_text("x = 1")
@@ -423,7 +433,7 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     """A .graphifyignore at the git repo root is included when scanning a subdir."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _make_git_dir(repo)
     (repo / ".graphifyignore").write_text("vendor/\n")
     sub = repo / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -648,6 +658,89 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     code = as_posix_list(result["files"]["code"])
     assert any(f.endswith("a/b/keep.py") for f in code), "nested ! must beat root + info/exclude"
     assert not any(f.endswith("drop.py") for f in code)
+
+
+def _git_init(path):
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+
+
+def test_configured_core_excludes_file_is_honoured(tmp_path):
+    """A file git ignores only through core.excludesFile must stay out of the
+    graph too (#4335)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    excludes = tmp_path / "my-ignore"
+    excludes.write_text("secret.py\n")
+    subprocess.run(["git", "-C", str(repo), "config", "core.excludesFile", str(excludes)],
+                   check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 1")
+    (repo / "secret.py").write_text("SECRET = 'abc'")
+
+    code = as_posix_list(detect(repo)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("a.py") for f in code)
+
+
+def test_default_global_git_ignore_is_honoured(tmp_path):
+    """With core.excludesFile unset git still reads ~/.config/git/ignore (or
+    $XDG_CONFIG_HOME/git/ignore); HOME is sandboxed by conftest (#4335)."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("**/config.local.json\nsecret.py\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.local.json").write_text('{"token": "x"}')
+    (tmp_path / "secret.py").write_text("SECRET = 'abc'")
+    (tmp_path / "a.py").write_text("x = 1")
+
+    files = as_posix_list(f for fs in detect(tmp_path)["files"].values() for f in fs)
+    assert not any(f.endswith("secret.py") or f.endswith("config.local.json") for f in files)
+    assert any(f.endswith("a.py") for f in files)
+
+
+def test_xdg_config_home_global_git_ignore_is_honoured(tmp_path, monkeypatch):
+    xdg = tmp_path / "xdg"
+    (xdg / "git").mkdir(parents=True)
+    (xdg / "git" / "ignore").write_text("secret.py\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "secret.py").write_text("SECRET = 'abc'")
+    (repo / "a.py").write_text("x = 1")
+
+    code = as_posix_list(detect(repo)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("a.py") for f in code)
+
+
+def test_global_git_ignore_ranks_lowest_and_respects_no_gitignore(tmp_path):
+    """A project `.gitignore` `!` re-include beats the global file, and
+    --no-gitignore turns the global file off like the other git sources."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("*.py\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("!keep.py\n")
+    (tmp_path / "keep.py").write_text("x = 1")
+    (tmp_path / "drop.py").write_text("y = 1")
+
+    code = as_posix_list(detect(tmp_path)["files"]["code"])
+    assert any(f.endswith("keep.py") for f in code), "project ! must beat the global file"
+    assert not any(f.endswith("drop.py") for f in code)
+
+    code = as_posix_list(detect(tmp_path, gitignore=False)["files"]["code"])
+    assert any(f.endswith("drop.py") for f in code)
+
+
+def test_global_git_ignore_needs_a_git_repo(tmp_path):
+    """git only applies its global excludes inside a repo; neither should we."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("secret.py\n")
+    (tmp_path / "secret.py").write_text("SECRET = 'abc'")
+
+    code = as_posix_list(detect(tmp_path)["files"]["code"])
+    assert any(f.endswith("secret.py") for f in code)
 
 
 def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):
@@ -4370,3 +4463,104 @@ def test_globstar_matcher_leaves_no_reference_cycle():
     finally:
         gc.enable()
     assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
+
+
+def _home_with_invalid_git(tmp_path, monkeypatch):
+    """A HOME holding a .git git would reject, plus a .gitignore, above a project (#4444)."""
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    (home / ".gitignore").write_text("node_modules\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    proj = home / "work" / "proj"
+    proj.mkdir(parents=True)
+    (proj / ".graphifyignore").write_text("vendor/\n*.generated.py\n")
+    (proj / "main.py").write_text("x = 1")
+    return home, proj
+
+
+@pytest.mark.parametrize("contents", [[], ["config"], ["HEAD"], ["HEAD", "objects"]])
+def test_invalid_git_dir_is_not_a_vcs_root(tmp_path, monkeypatch, contents):
+    """An empty or incomplete .git dir is skipped, so a home .gitignore does not leak in (#4444)."""
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    for name in contents:
+        if name == "HEAD":
+            (home / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        elif name == "config":
+            (home / ".git" / "config").write_text("[core]\n")
+        else:
+            (home / ".git" / name).mkdir()
+    assert detect_mod._find_vcs_root(proj) is None
+    assert [p for _, p in _load_graphifyignore(proj)] == ["vendor/", "*.generated.py"]
+    assert detect(proj)["graphifyignore_patterns"] == 2
+
+
+def test_invalid_git_dir_walk_continues_to_valid_parent(tmp_path):
+    """Skipping an invalid inner .git keeps walking up to the real repo root (#4444)."""
+    _make_git_dir(tmp_path)
+    (tmp_path / ".graphifyignore").write_text("vendor/\n")
+    sub = tmp_path / "pkg"
+    (sub / ".git").mkdir(parents=True)  # stray, invalid
+    assert detect_mod._find_vcs_root(sub) == tmp_path.resolve()
+
+
+def test_valid_git_dir_is_a_vcs_root(tmp_path, monkeypatch):
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    shutil.rmtree(home / ".git")
+    _make_git_dir(home)
+    assert detect_mod._find_vcs_root(proj) == home.resolve()
+    assert "node_modules" in [p for _, p in _load_graphifyignore(proj)]
+
+
+def test_git_file_with_gitdir_is_a_vcs_root(tmp_path):
+    """Linked worktrees and submodules have a .git FILE starting with gitdir:."""
+    wt = tmp_path / "wt"
+    (wt / "sub").mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
+    assert detect_mod._find_vcs_root(wt / "sub") == wt.resolve()
+
+
+def test_git_file_without_gitdir_is_skipped(tmp_path, monkeypatch):
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    shutil.rmtree(home / ".git")
+    (home / ".git").write_text("not a git file\n")
+    assert detect_mod._find_vcs_root(proj) is None
+    assert detect(proj)["graphifyignore_patterns"] == 2
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_real_git_repo_and_worktree_are_vcs_roots(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1")
+    _git(repo, "add", "a.py")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    _git(repo, "worktree", "add", "-q", str(tmp_path / "wt"))
+    (repo / "sub").mkdir()
+    assert detect_mod._find_vcs_root(repo / "sub") == repo.resolve()
+    assert detect_mod._find_vcs_root(tmp_path / "wt") == (tmp_path / "wt").resolve()
+
+
+def test_git_dir_symlink_is_followed(tmp_path):
+    real = tmp_path / "real-git"
+    _make_git_dir(tmp_path / "x")
+    (tmp_path / "x" / ".git").rename(real)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    try:
+        (repo / ".git").symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    assert detect_mod._find_vcs_root(repo) == repo.resolve()
+
+
+def test_unreadable_git_file_is_skipped(tmp_path, monkeypatch):
+    (tmp_path / ".git").write_text("gitdir: x\n")
+    real_open = Path.open
+
+    def deny(self, *a, **k):
+        if self.name == ".git":
+            raise PermissionError("denied")
+        return real_open(self, *a, **k)
+    monkeypatch.setattr(Path, "open", deny)
+    assert detect_mod._is_valid_git_marker(tmp_path / ".git") is False
