@@ -15,9 +15,9 @@ if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     # path and rejected by the allowlist below (silent python3 fallback, #2629).
     case "$_SHEBANG" in */env\ -S\ *) _SHEBANG="${_SHEBANG#*/env -S }" ;; */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
     _SHEBANG="${_SHEBANG%% *}"
-    # Only trust shebang-derived interpreter paths. Env command names like
+    # Only trust absolute shebang-derived interpreter paths. Env command names like
     # `python` are PATH-controlled; explicit fallbacks handle them below.
-    case "$_SHEBANG" in */*|*\\*) ;; *) _SHEBANG="" ;; esac
+    case "$_SHEBANG" in /*) ;; *) _SHEBANG="" ;; esac
     case "$_SHEBANG" in
         ""|*[!a-zA-Z0-9/_.@-]*) ;;
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
@@ -38,8 +38,14 @@ fi
 # Write interpreter path for all subsequent steps (persists across invocations)
 mkdir -p graphify-out
 "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-# Save scan root so `graphify update` (no args) knows where to look next time
-echo "$(cd INPUT_PATH && pwd)" > graphify-out/.graphify_root
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# The scan path is passed through a quoted heredoc, never substituted into the
+# command line itself: a bare `cd <path>` (or an unquoted heredoc, which
+# still expands $()/backticks in its body) would let a malicious path execute
+# as shell code the moment this line runs.
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+INPUT_PATH
+GRAPHIFY_ROOT_EOF
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.

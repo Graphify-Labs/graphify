@@ -8,9 +8,9 @@ if [ ! -f graphify-out/.graphify_python ]; then
         # forces the unverified python3 fallback into .graphify_python (#2629).
         case "$PYTHON" in */env\ -S\ *) PYTHON="${PYTHON#*/env -S }" ;; */env\ *) PYTHON="${PYTHON#*/env }" ;; esac
         PYTHON="${PYTHON%% *}"
-        # Only trust shebang-derived interpreter paths. Env command names like
+        # Only trust absolute shebang-derived interpreter paths. Env command names like
         # `python` are PATH-controlled; use the explicit python3 fallback.
-        case "$PYTHON" in */*|*\\*) ;; *) PYTHON="python3" ;; esac
+        case "$PYTHON" in /*) ;; *) PYTHON="python3" ;; esac
         case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
         if [ "$PYTHON" != "python3" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then PYTHON="python3"; fi
     else
