@@ -352,3 +352,82 @@ def test_harmony_config_ids_and_labels_do_not_embed_the_checkout_path(tmp_path):
                 continue  # the file node is keyed by path like every other file node
             assert str(tmp_path) not in n["label"], n
             assert _make_id(str(tmp_path)) not in n["id"], n
+
+
+def test_ets_monitor_regex_is_linear_on_an_unclosed_call():
+    """An unclosed @Monitor('a', 'b', … with many arguments must not backtrack exponentially."""
+    import time
+
+    from graphify.extractors.arkts import _ETS_MONITOR_ARG_RE
+
+    # Space-separated arguments without commas and no closing paren: the old nested pattern
+    # split the whitespace between two "\\s*" in every possible way (~1.5 s at 10 arguments,
+    # over 40 s at 14).
+    hostile = "@Monitor(" + "'a'" + "    'a'" * 30
+    started = time.perf_counter()
+    assert _ETS_MONITOR_ARG_RE.search(hostile) is None
+    assert time.perf_counter() - started < 0.5
+    match = _ETS_MONITOR_ARG_RE.search("@Monitor('checkState', \"model.titleName\")")
+    assert match is not None and "model.titleName" in match.group(1)
+
+
+def test_ets_double_slash_inside_strings_does_not_hide_braces(tmp_path):
+    """A URL in a string before an opening brace must not be treated as a comment."""
+    path = tmp_path / "Url.ets"
+    path.write_text(
+        "@Entry\n@Component\nstruct UrlPage {\n"
+        "  @State url: string = 'https://example.invalid/a//b'; build() { Column() {\n"
+        "      Text(this.url)\n    }\n  }\n}\n\n"
+        "@Component\nstruct Second {\n  @State flag: boolean = false\n  build() { Row() {} }\n}\n",
+        encoding="utf-8",
+    )
+    from graphify.extractors.arkts import _find_struct_ranges, _strip_line_comment
+
+    assert _strip_line_comment("let a = 'x//y' // tail") == "let a = 'x//y' "
+    assert _strip_line_comment('fetch("https://h/p") { // go') == 'fetch("https://h/p") { '
+    ranges = _find_struct_ranges(path.read_text(encoding="utf-8").splitlines())
+    assert [(r["name"], r["head_line"], r["close_line"]) for r in ranges] == [
+        ("UrlPage", 3, 8), ("Second", 11, 14)]
+
+
+def test_ets_state_nodes_are_scoped_per_struct(tmp_path):
+    """Two components in one file with the same @State name keep separate state nodes."""
+    path = tmp_path / "Twins.ets"
+    path.write_text(
+        "@Component\nstruct Left {\n  @State count: number = 0\n  build() { Text('l') }\n}\n\n"
+        "@Component\nstruct Right {\n  @State count: number = 1\n  build() { Text('r') }\n}\n",
+        encoding="utf-8",
+    )
+    r = extract_ets(path)
+    states = [n for n in r["nodes"] if n.get("node_type") == "arkts_state" and n["label"] == "@State count"]
+    assert len({n["id"] for n in states}) == 2
+    owners = {e["source"] for e in r["edges"] if e["target"] in {n["id"] for n in states}}
+    assert len(owners) == 2
+
+
+def test_ets_standalone_watch_binds_to_the_enclosing_struct(tmp_path):
+    """@Watch on its own line inside a struct watches that struct's method, not the next struct's."""
+    path = tmp_path / "Watching.ets"
+    path.write_text(
+        "@Component\nstruct First {\n  @State\n  @Watch('onChange')\n  count: number = 0\n"
+        "  onChange(): void {\n  }\n  build() { Text('a') }\n}\n\n"
+        "@Component\nstruct Second {\n  onChange(): void {\n  }\n  build() { Text('b') }\n}\n",
+        encoding="utf-8",
+    )
+    r = extract_ets(path)
+    nodes = {n["id"]: n for n in r["nodes"]}
+    watches = [e for e in r["edges"] if e["relation"] == "watches"]
+    assert len(watches) == 1
+    assert "first" in watches[0]["target"].lower() and "second" not in watches[0]["target"].lower()
+    assert nodes[watches[0]["source"]]["node_type"] == "arkts_watch"
+
+
+def test_json5_comment_stripping_keeps_double_slashes_inside_strings():
+    from graphify.extractors.arkts import _parse_json5
+
+    parsed = _parse_json5(
+        '{\n  // a comment\n  "path": "pages//Index", /* block */ "url": "https://h/x",\n'
+        '  "note": "has /* not a comment */ inside",\n  "list": [1, 2,],\n}\n')
+    assert parsed == {"path": "pages//Index", "url": "https://h/x",
+                      "note": "has /* not a comment */ inside", "list": [1, 2]}
+    assert _parse_json5('{"escaped": "quote \\" // still string"}') == {"escaped": 'quote " // still string'}

@@ -123,7 +123,9 @@ _ETS_RAWFILE_REF_RE = re.compile(r"""\$rawfile\s*\(\s*["']([^"']+)["']\s*\)""")
 # @Watch('methodName') / @Watch("methodName") — the string arg names a method in the same struct
 _ETS_WATCH_ARG_RE = re.compile(r"""@Watch\s*\(\s*["'](\w+)["']\s*\)""")
 # @Monitor('field' | 'field1','field2' | 'nested.path') — V2 multi-target observation
-_ETS_MONITOR_ARG_RE = re.compile(r"""@Monitor\s*\(\s*((?:["'][^"']+["']\s*,?\s*)+)\)""")
+# Linear-time: grab the argument list up to the first ")" and pull string literals out of it
+# separately, instead of a nested repetition that can backtrack on an unclosed call.
+_ETS_MONITOR_ARG_RE = re.compile(r"""@Monitor\s*\(([^()]*)\)""")
 # @Provide('key') / @Consume('key') / @Provider('key') / @Consumer('key')
 _ETS_PROVIDE_CONSUME_ARG_RE = re.compile(
     r"""@(Provide|Consume|Provider|Consumer)\s*\(\s*["'](\w+)["']\s*\)"""
@@ -154,6 +156,31 @@ _ETS_NOT_UI_COMPONENTS = frozenset({
 })
 
 
+def _strip_line_comment(line: str) -> str:
+    """Drop a trailing ``//`` comment, but not ``//`` inside a '...', "..." or `...` literal
+    (URLs, regexes). Single-line view only: a template literal left open at the end of the
+    line is treated as running to the end of the line."""
+    quote = ""
+    escape = False
+    for index, ch in enumerate(line):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and quote:
+            escape = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "'\"`":
+            quote = ch
+            continue
+        if ch == "/" and line.startswith("//", index):
+            return line[:index]
+    return line
+
+
 def _find_struct_ranges(lines: list[str]) -> list[dict]:
     """Find (struct_or_class, start_line, end_line, open_brace_line) for each
     top-level struct/class in the source.
@@ -168,7 +195,7 @@ def _find_struct_ranges(lines: list[str]) -> list[dict]:
     for idx, line in enumerate(lines):
         lineno = idx + 1
         # Strip inline // comments (not inside strings — still crude)
-        code = re.sub(r"//.*$", "", line)
+        code = _strip_line_comment(line)
 
         # Detect new struct/class head on this line, only when not already inside one
         m = _ETS_STRUCT_HEAD_RE.match(code)
@@ -345,8 +372,12 @@ def enrich_arkts(source_text: str, path: Path, result: dict) -> None:
             # Capture Watch/Monitor/Provide/Consume/Storage args for later binding
             if "(" in stripped:
                 full_line = raw_line  # use original line for arg regex
+                # A @Watch on its own line inside a struct decorates the next field of that
+                # struct, so bind it now; only a decorator above a struct head waits for it.
+                enclosing = _containing_struct(struct_ranges, lineno)
+                owner = enclosing["name"] if enclosing else "__pending__"
                 for m in _ETS_WATCH_ARG_RE.finditer(full_line):
-                    pending_watches.append(("__pending__", lineno, m.group(1)))
+                    pending_watches.append((owner, lineno, m.group(1)))
             continue
 
         # Case 3: class/struct head — consume pending decorators
@@ -461,7 +492,10 @@ def _emit_field_decorator(add_node, add_edge, stripped, file_nid, stem, path,
     if deco_name not in _ARKTS_STATE_DECORATORS:
         return
     str_path = str(path)
-    state_nid = _make_id(stem, f"@{deco_name}", field_name)
+    # Scope by the enclosing struct/class: two components in one file may both declare
+    # "@State count", and they are different pieces of state.
+    state_nid = (_make_id(stem, containing["name"], f"@{deco_name}", field_name) if containing
+                 else _make_id(stem, f"@{deco_name}", field_name))
     add_node(state_nid, f"@{deco_name} {field_name}", lineno, "arkts_state")
     # Link to containing struct if we can find it; else to file
     if containing:
@@ -519,7 +553,7 @@ def _enrich_ui_composition(lines, struct_ranges, stem, str_path, add_node, add_e
         parent_nid = _make_id(stem, sr["name"])
         for lno, bl in body_lines:
             # Strip inline // comments
-            code_only = re.sub(r"//.*$", "", bl)
+            code_only = _strip_line_comment(bl)
             # Strip chained property calls: anything starting with "." is a style call
             # But our regex uses \b which won't match after "."
             for m in _ETS_UI_COMPONENT_CALL_RE.finditer(code_only):
@@ -627,9 +661,44 @@ def _enrich_monitors(source_text, struct_ranges, stem, str_path, add_node, add_e
 # semantics: abilities, permissions, routes, HAR dependencies.
 
 
-_JSON5_LINE_COMMENT_RE = re.compile(r"""(?m)(?<!:)//[^\n]*""")
-_JSON5_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _JSON5_TRAILING_COMMA_RE = re.compile(r",(\s*[\]}])")
+
+
+def _strip_json5_comments(text: str) -> str:
+    """Remove ``//`` and ``/* */`` comments that are not inside a quoted string."""
+    out: list[str] = []
+    quote = ""
+    escape = False
+    index = 0
+    length = len(text)
+    while index < length:
+        ch = text[index]
+        if quote:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = ""
+            index += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            index += 1
+            continue
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            index = length if end < 0 else end
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            continue
+        out.append(ch)
+        index += 1
+    return "".join(out)
 
 
 def _parse_json5(text: str) -> dict | list | None:
@@ -639,10 +708,8 @@ def _parse_json5(text: str) -> dict | list | None:
     config files use and hands the rest to json.loads. Returns None on failure.
     """
     try:
-        # Strip // comments (but keep URL schemes like "https://…")
-        t = _JSON5_LINE_COMMENT_RE.sub("", text)
-        # Strip /* ... */ block comments
-        t = _JSON5_BLOCK_COMMENT_RE.sub("", t)
+        # Strip // and /* */ comments outside string literals ("a//b", URLs stay intact)
+        t = _strip_json5_comments(text)
         # Drop trailing commas before ] or }
         t = _JSON5_TRAILING_COMMA_RE.sub(r"\1", t)
         return json.loads(t)
