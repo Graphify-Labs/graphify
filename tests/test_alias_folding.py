@@ -172,3 +172,53 @@ def test_build_from_json_normalizes_without_validation_warnings():
     assert G.number_of_edges() == 1
     _, _, data = next(iter(G.edges(data=True)))
     assert data["relation"] == "calls"
+
+
+def test_node_confidence_folds_the_same_way():
+    """#4529: a node carrying a confidence/confidence_score pair gets the same
+    fold edges and hyperedges already have, instead of passing through the
+    build verbatim."""
+    drifted = {"id": "a", "label": "A", "confidence": "high"}
+    _fold_node_aliases(drifted)
+    assert drifted["confidence"] == "INFERRED"
+    assert "confidence_score" not in drifted
+
+    mis_cased = {"id": "b", "label": "B", "confidence": "extracted"}
+    _fold_node_aliases(mis_cased)
+    assert mis_cased["confidence"] == "EXTRACTED"
+    assert "confidence_score" not in mis_cased
+
+    numeric = {"id": "c", "label": "C", "confidence": 0.9}
+    _fold_node_aliases(numeric)
+    assert numeric["confidence"] == "INFERRED"
+    assert numeric["confidence_score"] == 0.9
+
+
+def test_node_without_confidence_is_left_untouched():
+    """No behavior change for graphs whose nodes carry no confidence (#4529)."""
+    node = {"id": "a", "label": "A", "source_file": "a.py"}
+    _fold_node_aliases(node)
+    assert "confidence" not in node
+    assert "confidence_score" not in node
+
+
+def test_build_from_json_normalizes_node_confidence():
+    """#4529 end to end: a drifted node confidence reaches the built graph
+    folded onto the enum, the same as an edge's."""
+    extraction = {
+        "nodes": [
+            {
+                "id": "a", "label": "A", "file_type": "document",
+                "source_file": "a.md", "confidence": "extracted",
+            },
+            {
+                "id": "b", "label": "B", "file_type": "document",
+                "source_file": "b.md", "confidence": 0.7,
+            },
+        ],
+        "edges": [],
+    }
+    G = build_from_json(extraction)
+    assert G.nodes["a"]["confidence"] == "EXTRACTED"
+    assert G.nodes["b"]["confidence"] == "INFERRED"
+    assert G.nodes["b"]["confidence_score"] == 0.7
