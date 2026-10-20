@@ -1235,6 +1235,48 @@ def _swift_declaration_keyword(node) -> str | None:
             return c.type
     return None
 
+_PY_TYPE_ALIAS_ANNOTATIONS = frozenset({
+    "TypeAlias", "typing.TypeAlias", "typing_extensions.TypeAlias",
+})
+_PY_NEW_TYPE_CALLEES = frozenset({"NewType", "typing.NewType", "typing_extensions.NewType"})
+
+
+def _python_alias_name(stmt, source: bytes) -> str | None:
+    """The type name a module-level statement declares as an explicit alias.
+
+    `type Vector = ...` / `type Pair[T] = ...` (PEP 695), `Matrix: TypeAlias = ...`
+    and `UserId = NewType("UserId", int)` each declare one. A bare
+    `JsonValue = Union[...]` is an alias by convention only and is not one.
+    A same-name re-export (`Field: TypeAlias = core.Field`, `type Field =
+    core.Field[int]`) denotes the original type and declares no new name, so it
+    returns None: references keep resolving to the one real `Field`.
+    """
+    if stmt.type == "type_alias_statement":
+        left, right = stmt.child_by_field_name("left"), stmt.child_by_field_name("right")
+        name = _read_text(left, source).split("[", 1)[0].strip() if left is not None else ""
+    elif stmt.type == "expression_statement" and len(stmt.named_children) == 1:
+        assign = stmt.named_children[0]
+        left = assign.child_by_field_name("left") if assign.type == "assignment" else None
+        if left is None or left.type != "identifier":
+            return None
+        name, right = _read_text(left, source), assign.child_by_field_name("right")
+        annotation = assign.child_by_field_name("type")
+        if annotation is None:
+            callee = right.child_by_field_name("function") if right is not None and right.type == "call" else None
+            # NewType always mints a new type, even under its own name.
+            return name if callee is not None and _read_text(callee, source) in _PY_NEW_TYPE_CALLEES else None
+        if _read_text(annotation, source).strip() not in _PY_TYPE_ALIAS_ANNOTATIONS:
+            return None
+    else:
+        return None
+    if not name.isidentifier():
+        return None
+    target = _read_text(right, source).split("[", 1)[0].strip() if right is not None else ""
+    if "." in target and target.rsplit(".", 1)[1] == name:
+        return None
+    return name
+
+
 def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) -> dict[str, set[str]]:
     """Pre-scan a Python module for name-only differences that collapse to one node id.
 
@@ -1275,7 +1317,10 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
 
     classes: list = []  # (class_name, body) for the method pass below
     for child in map(_undecorated, root_node.children):
-        if child.type == "function_definition":
+        alias_name = _python_alias_name(child, source)
+        if alias_name:
+            _record(_make_id(stem, alias_name), alias_name)
+        elif child.type == "function_definition":
             name_node = child.child_by_field_name("name")
             if name_node is not None:
                 name = _read_text(name_node, source)
@@ -8231,6 +8276,21 @@ def _extract_generic(
                                 callable_def_nids, callable_class_nids,
                                 ruby_namespace, ruby_lexical_scopes):
                 return
+
+        # An explicit module-level type alias declares a type name: give it a
+        # node so annotations using it reference it instead of minting a
+        # sourceless stub. The statement is then walked as usual.
+        if (t in ("type_alias_statement", "expression_statement")
+                and config.ts_module == "tree_sitter_python" and parent_class_nid is None
+                and node.parent is not None and node.parent.type == "module"):
+            alias_name = _python_alias_name(node, source)
+            if alias_name:
+                alias_line = node.start_point[0] + 1
+                alias_nid = _underscore_salted_nid(
+                    _make_id(stem, alias_name), alias_name, python_underscore_groups
+                )
+                add_node(alias_nid, alias_name, alias_line)
+                add_edge(file_nid, alias_nid, "contains", alias_line)
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
         # inner function_definition in a `decorated_definition` node. The
