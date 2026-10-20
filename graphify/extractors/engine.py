@@ -1119,6 +1119,19 @@ def _kotlin_annotation_class_literal_refs(
     return names
 
 
+# The node kinds whose children can include `type_parameters` (tree-sitter-kotlin's
+# node-types.json), plus ERROR, where a misparse can leave them. Only these are
+# scanned: reading `children` of every ancestor made each type reference cost
+# O(siblings), quadratic in a long file.
+_KOTLIN_TYPE_PARAMETER_SCOPES = frozenset({
+    "ERROR",
+    "class_declaration",
+    "function_declaration",
+    "property_declaration",
+    "type_alias",
+})
+
+
 def _kotlin_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     """Return Kotlin type-parameter names visible from ``node``.
 
@@ -1130,6 +1143,9 @@ def _kotlin_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     names: set[str] = set()
     scope = node
     while scope is not None:
+        if scope.type not in _KOTLIN_TYPE_PARAMETER_SCOPES:
+            scope = scope.parent
+            continue
         for child in scope.children:
             if child.type != "type_parameters":
                 continue
@@ -1431,6 +1447,22 @@ def _swift_user_type_name(user_type_node, source: bytes) -> str | None:
             return text or None
     return None
 
+# The node kinds whose children can include `type_parameters` (tree-sitter-swift's
+# node-types.json); see _KOTLIN_TYPE_PARAMETER_SCOPES.
+_SWIFT_TYPE_PARAMETER_SCOPES = frozenset({
+    "ERROR",
+    "class_declaration",
+    "function_declaration",
+    "init_declaration",
+    "macro_declaration",
+    "macro_invocation",
+    "protocol_declaration",
+    "protocol_function_declaration",
+    "subscript_declaration",
+    "typealias_declaration",
+})
+
+
 def _swift_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     """Return Swift generic type-parameter names visible from ``node``.
 
@@ -1443,6 +1475,9 @@ def _swift_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     names: set[str] = set()
     scope = node
     while scope is not None:
+        if scope.type not in _SWIFT_TYPE_PARAMETER_SCOPES:
+            scope = scope.parent
+            continue
         for child in scope.children:
             if child.type != "type_parameters":
                 continue
@@ -1653,6 +1688,16 @@ def _c_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str
             if c.is_named:
                 _c_collect_type_refs(c, source, generic, out)
 
+# The node kinds whose children can include `template_parameter_list`
+# (tree-sitter-cpp's node-types.json); see _KOTLIN_TYPE_PARAMETER_SCOPES.
+_CPP_TYPE_PARAMETER_SCOPES = frozenset({
+    "ERROR",
+    "lambda_expression",
+    "template_declaration",
+    "template_template_parameter_declaration",
+})
+
+
 def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     """Return C++ template type-parameter names visible from ``node``.
 
@@ -1665,6 +1710,9 @@ def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     names: set[str] = set()
     scope = node
     while scope is not None:
+        if scope.type not in _CPP_TYPE_PARAMETER_SCOPES:
+            scope = scope.parent
+            continue
         for child in scope.children:
             if child.type != "template_parameter_list":
                 continue
@@ -1753,6 +1801,28 @@ def _scala_given_synthetic_name(node, source: bytes) -> str | None:
     return "given"
 
 
+# The node kinds whose children can include `type_parameters` (tree-sitter-scala's
+# node-types.json); see _KOTLIN_TYPE_PARAMETER_SCOPES.
+_SCALA_TYPE_PARAMETER_SCOPES = frozenset({
+    "ERROR",
+    "class_definition",
+    "contravariant_type_parameter",
+    "covariant_type_parameter",
+    "enum_definition",
+    "extension_definition",
+    "full_enum_case",
+    "function_declaration",
+    "function_definition",
+    "function_type",
+    "given_definition",
+    "lambda_expression",
+    "trait_definition",
+    "type_definition",
+    "type_lambda",
+    "type_parameters",
+})
+
+
 def _scala_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     """Return Scala type-parameter names visible from ``node``.
 
@@ -1767,6 +1837,9 @@ def _scala_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     names: set[str] = set()
     scope = node
     while scope is not None:
+        if scope.type not in _SCALA_TYPE_PARAMETER_SCOPES:
+            scope = scope.parent
+            continue
         for child in scope.children:
             if child.type != "type_parameters":
                 continue
