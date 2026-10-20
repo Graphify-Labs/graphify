@@ -377,14 +377,26 @@ def test_no_lock_file_is_made_where_there_is_nothing_to_refresh(tmp_path, monkey
 def test_the_first_cli_run_after_an_upgrade_rewrites_it(tmp_path, monkeypatch, capsys):
     plugin, _config = _old_install(tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["graphify", "extract", "."])
+    monkeypatch.setattr(mainmod, "dispatch_install_cli", lambda _cmd: False)
+    monkeypatch.setattr(mainmod, "dispatch_command", lambda _cmd: None)
+
+    mainmod._run_cli()
+
+    assert plugin.read_text(encoding="utf-8") == _OPENCODE_PLUGIN_JS
+    assert "graphify: refreshed" in capsys.readouterr().err
+
+
+def test_version_leaves_an_old_plugin_alone(tmp_path, monkeypatch, capsys):
+    """Checking the version must not rewrite installed files (#4545)."""
+    plugin, _config = _old_install(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["graphify", "--version"])
 
     mainmod._run_cli()
 
-    out, err = capsys.readouterr()
-    assert out.strip() == f"graphify {__version__}"
-    assert plugin.read_text(encoding="utf-8") == _OPENCODE_PLUGIN_JS
-    assert "graphify: refreshed" in err
+    assert capsys.readouterr().out.strip() == f"graphify {__version__}"
+    assert plugin.read_text(encoding="utf-8") == V1_PLUGIN
 
 
 @pytest.mark.parametrize("cmd", ["install", "uninstall", "hook-check", "hook-guard"])

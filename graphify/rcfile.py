@@ -123,7 +123,10 @@ def load_graphifyrc(root: Path) -> dict:
 
     cfg: dict = {}
     languages: dict[str, str] = {}
-    content = rc_path.read_text(encoding="utf-8")
+    # utf-8-sig: Windows PowerShell 5.1 (`Set-Content -Encoding UTF8`) and older
+    # Notepad save UTF-8 with a BOM. Read as plain utf-8, the BOM became part of
+    # the first key, which then matched nothing and was ignored without a word.
+    content = rc_path.read_text(encoding="utf-8-sig")
     for line_num, raw in enumerate(content.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):

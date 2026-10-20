@@ -831,12 +831,21 @@ def _run_cli() -> None:
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
+    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
+    _help_flags = {"-h", "--help", "-?"}
+    # Version and help only report, so they leave installed files alone (#4545).
+    _informational = (
+        len(sys.argv) < 2
+        or sys.argv[1] in {"-v", "--version", "version", *_help_flags}
+        or (sys.argv[1] not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]))
+    )
     if not any(arg in _silent_cmds for arg in sys.argv):
         # A package upgrade leaves every installed skill at the old version;
         # refresh them first, so the check below only fires for copies the
         # refresh could not or must not touch (#1805).
-        _refresh_stale_skills()
-        _refresh_v1_opencode_plugins()
+        if not _informational:
+            _refresh_stale_skills()
+            _refresh_v1_opencode_plugins()
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
@@ -1077,8 +1086,7 @@ def _run_cli() -> None:
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
-    if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
+    if cmd not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return
 
