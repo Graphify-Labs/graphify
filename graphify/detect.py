@@ -1,6 +1,5 @@
 # file discovery, type classification, and corpus health checks
 from __future__ import annotations
-import fnmatch
 import json
 import ntpath
 import os
@@ -1223,7 +1222,7 @@ def _nfc(text: str) -> str:
     the directory it names — the files are scanned and, for docs/PDFs, sent
     to an LLM despite an explicit rule against it.
 
-    Both sides are normalized to NFC before any fnmatch call. NFC is the form
+    Both sides are normalized to NFC before any glob match. NFC is the form
     Linux and Windows already use, so this is a no-op there and only repairs
     the macOS mismatch.
     """
@@ -1650,6 +1649,75 @@ def _lexical_relative(
     return _nfc("/".join(tail))
 
 
+# Compiled per-segment ignore globs, keyed by (pattern, ignorecase). Same
+# bounded-dict shape as _PARSED_PATTERN_CACHE above.
+_SEGMENT_GLOB_CACHE: dict[tuple[str, bool], "re.Pattern[str]"] = {}
+
+
+def _compile_segment_glob(pattern: str, ignorecase: bool) -> "re.Pattern[str]":
+    """Compile one slash-free ignore glob the way git's wildmatch reads it.
+
+    fnmatch differs from git in two ways that change which files are ignored:
+    it has no backslash escape (``\\*`` became "a backslash, then anything"
+    instead of a literal ``*``, so ``\\!important`` or ``\\[id\\]`` never
+    matched), and it reads ``[^a]`` as the set {``^``, ``a``} where git reads a
+    negated set. An unclosed ``[`` matches nothing, as in git.
+    """
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c == "\\" and i < n:
+            out.append(re.escape(pattern[i]))
+            i += 1
+        elif c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            negate = i < n and pattern[i] in "!^"
+            j = i + 1 if negate else i
+            members: list[str] = []
+            first = True
+            while j < n and (pattern[j] != "]" or first):
+                first = False
+                lo = pattern[j]
+                if lo == "\\" and j + 1 < n:
+                    j += 1
+                    lo = pattern[j]
+                j += 1
+                if j + 1 < n and pattern[j] == "-" and pattern[j + 1] != "]":
+                    hi = pattern[j + 1]
+                    j += 2
+                    if hi == "\\" and j < n:
+                        hi = pattern[j]
+                        j += 1
+                    members.append(f"{re.escape(lo)}-{re.escape(hi)}")
+                else:
+                    members.append(re.escape(lo))
+            if j >= n:
+                return re.compile(r"(?!)")  # unclosed set: git matches nothing
+            out.append("[" + ("^" if negate else "") + "".join(members) + "]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+    flags = re.DOTALL | (re.IGNORECASE if ignorecase else 0)
+    return re.compile("".join(out), flags)
+
+
+def _glob_match(name: str, pattern: str, *, ignorecase: bool = False) -> bool:
+    """Match one path component against one slash-free ignore glob."""
+    key = (pattern, ignorecase)
+    compiled = _SEGMENT_GLOB_CACHE.get(key)
+    if compiled is None:
+        compiled = _compile_segment_glob(pattern, ignorecase)
+        if len(_SEGMENT_GLOB_CACHE) >= _PARSED_PATTERN_CACHE_MAX:
+            _SEGMENT_GLOB_CACHE.clear()
+        _SEGMENT_GLOB_CACHE[key] = compiled
+    return compiled.fullmatch(name) is not None
+
+
 def _match_globstar_parts(
     path_parts: tuple[str, ...],
     pattern_parts: tuple[str, ...],
@@ -1688,7 +1756,7 @@ def _match_globstar_parts(
         else:
             result = (
                 path_idx < len(path_parts)
-                and fnmatch.fnmatchcase(path_parts[path_idx], part)
+                and _glob_match(path_parts[path_idx], part)
                 and _match_globstar_parts(
                     path_parts, pattern_parts, path_idx + 1, pattern_idx + 1, memo
                 )
@@ -1701,13 +1769,13 @@ def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
     """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
     path_parts = tuple(path.split("/"))
     pattern_parts = tuple(pattern.split("/"))
-    # Fast path: with no ``**`` the match is a straight segment-wise fnmatch of
+    # Fast path: with no ``**`` the match is a straight segment-wise glob match of
     # equal-length paths, so skip the recursive matcher and its memo entirely.
     if "**" not in pattern_parts:
         if len(path_parts) != len(pattern_parts):
             return False
         return all(
-            fnmatch.fnmatchcase(pp, qp) for pp, qp in zip(path_parts, pattern_parts)
+            _glob_match(pp, qp) for pp, qp in zip(path_parts, pattern_parts)
         )
     return _match_globstar_parts(path_parts, pattern_parts, 0, 0, {})
 
@@ -1766,7 +1834,7 @@ def _is_ignored(
             # with `!dir/` without its files.
             if target_name_nfc is None:
                 target_name_nfc = _nfc(target.name)
-            return fnmatch.fnmatch(target_name_nfc, p)
+            return _glob_match(target_name_nfc, p, ignorecase=_CASEFOLD_PATHS)
 
         result = False
         for anchor, pattern in patterns:
