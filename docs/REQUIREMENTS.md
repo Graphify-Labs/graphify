@@ -56,6 +56,25 @@ Whole typing still fails with the same 651 diagnostics as `90578033`, with no
 added or removed diagnostics under the verified profile. The active per-user
 tool and application graph are unchanged by this integration.
 
+INC-QML-55 addresses a separate native wheel-runner environment gap exposed at
+published source `5876f0a4`: the prefix-selected suite includes two Terraform
+composition regressions, but its QML/watch environment lacks the optional HCL
+parser. Status: **Implemented; five launcher tests and the exact two-case
+installed recovery pass locally; new hosted proof pending**. This changes only test-profile admission after clean
+QML/core smokes; parser/runtime behavior, package dependencies and the pinned
+0.9.92 integration remain unchanged. The advisory security findings are a
+separate unresolved baseline, not part of this environment correction.
+
+INC-QML-56 separately addresses two Linux source-proof gaps at source `5876f0a4`:
+aggregate newline fixtures transformed byte-owning native C++ inputs outside
+the QML directory, and a source evidence gate retained an obsolete six-case
+cache expectation although all fourteen current cache cases pass. Status:
+**Implemented; 79 focused local cases and all twelve committed-LF aggregate
+cases pass in separate selections; new hosted proof pending**. Preserve original-byte contracts wherever native inputs are located,
+all valid inputs and all twelve strict aggregate cases. Versioned required-case
+evidence must match actual collected identities; no production normalization,
+attribute filtering or failure-to-pass relabeling belongs to this correction.
+
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
 not Verified across the full declared platform matrix. The earlier adoption
@@ -117,7 +136,7 @@ The declared parser backend installs on supported Python/OS targets, parses the 
 
 **Acceptance Criteria**
 
-1 - A built Graphify wheel with the selected QML extra installs in each declared Python/OS lane and exposes a usable parser through Graphify's production entry point; record parser/API/grammar versions and licenses. (`REQ-QML-001-AC01`)
+1 - A built Graphify wheel with the selected QML extra installs in each declared Python/OS lane and exposes a usable parser through Graphify's production entry point; record parser/API/grammar versions and licenses. Clean QML/watch and core-only installed smokes complete before test-profile add-ons can alter their environment, preserving the evidence for both original installs. (`REQ-QML-001-AC01`)
 
 2 - With network access disabled and no Qt SDK, every supported-syntax fixture yields its hand-checked declarations and spans; repeated runs produce the same normalized result. (`REQ-QML-001-AC02`)
 
@@ -407,11 +426,11 @@ Supported Python/OS targets have install and behavior evidence. Mixed C++/JS and
 
 **Acceptance Criteria**
 
-1 - Every advertised Python/OS lane has a successful parser install and offline production-extraction result against the agreed corpus, with exact versions and extras recorded. (`REQ-QML-014-AC01`)
+1 - Every advertised Python/OS lane has a successful parser install and offline production-extraction result against the agreed corpus, with exact versions and extras recorded. After both clean QML/watch and core-only smokes pass, the native source-test profile admits the same reviewed wheel's Terraform extra before running its selected Terraform composition regressions. The artifact-only profile does not admit that add-on. Add-on failure stops before source pytest without a fallback or passing-support claim. (`REQ-QML-014-AC01`)
 
 2 - Windows path, Unicode, same-stem, relocated-root and optional-parser-absence fixtures pass the same observable contracts as supported POSIX lanes. (`REQ-QML-014-AC02`)
 
-3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. (`REQ-QML-014-AC03`)
+3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. Aggregate newline validation preserves exact bytes of native inputs that own byte-based metadata regardless of fixture directory, while transforming non-native text exactly; strict graph identities/attributes and dedicated real native LF/CRLF span/topology coverage remain mandatory. (`REQ-QML-014-AC03`)
 
 4 - Skips, baseline portability defects, unavailable optional dependencies and type-check failures remain separately reported; a skipped or unrun lane cannot count as passing support evidence. (`REQ-QML-014-AC04`)
 
@@ -721,7 +740,7 @@ dependencies, and reports failures and exclusions explicitly.
 
 2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. The assigned profile includes owned read-only replacement/rollback, guarded atomic read-only rejection, GraphML rejection/failure/retry, actual shipped recorded-interpreter dispatch and native LF/CRLF byte/topology regressions. A portable guard validates the existing job's actual literal selection inventory; a real PowerShell consumer evaluates that exact assignment and agrees with the guarded inventory. Missing required modules, duplicate/malformed selection and comment-only false inclusion reject. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
 
-3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. Required native case identities and outcomes remain individually reviewable; absence, collection or a skipped case cannot establish passing acceptance. Native-case and integrity reports are written before a combined rejection, so failed evidence remains inspectable. The test's actual PowerShell engine and the outer workflow host remain distinct evidence when versions differ. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
+3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. Assigned source/native case identities and outcomes remain individually reviewable and agree with actual pytest collection. Missing, duplicate, unexpected, swapped or nonpassing required identities reject; matching a module count cannot substitute for exact case evidence. Collection or a skipped case cannot establish passing acceptance. Native-case and integrity reports are written before a combined rejection, so failed evidence remains inspectable. The test's actual PowerShell engine and the outer workflow host remain distinct evidence when versions differ. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
 
 4 - The established push/PR/dispatch triggers and existing required/advisory gate policies remain intact. One PR event owns its validation; no equivalent full feature-push dispatch is added. Obsolete PR revisions can cancel their own workflow runs, while default-branch and explicit recovery runs retain distinct groups and cannot be cancelled by a later PR revision. Jobs use read-only repository permissions. (`REQ-CORE-004-AC04`)
 

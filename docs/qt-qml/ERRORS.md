@@ -676,3 +676,34 @@ erase exclusions or relabel source67 proof as testing the changed workflow.
 The final same-case-count omission controls leave the omitted module token
 quoted on a comment line and still reject. All 23 guards pass in the final
 native gate; its four unrelated platform skips remain explicitly assigned.
+
+## Hosted-profile recovery — INC-QML-55 and INC-QML-56
+
+INC-QML-55 reuses checked subprocess failure for a missing/failed test dependency.
+Both clean installed smokes must succeed before native Terraform admission;
+either smoke failure stops there. Add-on failure stops before native pytest,
+without fallback or a passing-support claim. The same wheel/core/artifact-only
+boundaries remain explicit. This corrects a test-profile optional-HCL omission,
+not a new `QT_CPP_*` or QML parser error. Five real-main cases and actual exact
+two-case installed failure/recovery pass locally; new hosted proof is pending.
+No accepted application product is displaced by this setup step, so it creates
+no new graph rollback owner.
+
+INC-QML-56's implemented newline fixture correction preserves native original bytes
+outside the QML directory; assertion failure is not repaired by normalizing
+production data or filtering native attributes. Its implemented source-audit
+correction passes ten local controls for missing/duplicate/skipped/failed/error
+or unknown required identities, same-count swaps and inventory growth; report
+the actual failed gate separately from pytest, source/dependency preservation
+and service cleanup. Existing runtime/publication diagnostics remain unchanged.
+
+The final combined local selection passes 79 cases without skips; the separate
+committed-LF aggregate passes all twelve original cases. These results establish
+the declared local validation boundaries, with new-head hosted proof pending.
+
+The inherited security scanner job is advisory: both Bandit and pip-audit exit1
+despite a successful job conclusion. Source `5876f0a4` reports twelve Bandit findings
+and sixteen dependency-audit rows/four packages (ten unique package/ID pairs).
+Those reported function ASTs and locked package records match pinned upstream;
+actual risk and false-positive assessment remain **Unconfirmed**. Neither
+environment/newline recovery nor a green advisory job resolves that baseline.

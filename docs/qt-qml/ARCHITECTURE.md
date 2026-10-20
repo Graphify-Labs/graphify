@@ -320,6 +320,14 @@ Before advertising the first Qt/QML release, require:
 - **D7: Metadata is read, not executed.** Explicit import/build roots and supplied generated files provide reproducibility. Full build-system evaluation and dynamic runtime resolution remain separate future work.
 - **D8: Qt events and both object API directions retain their mechanisms.** Emission/connection/load/access sites preserve source ownership, roles and evidence. Ordinary calls remain ordinary calls; event delivery and meta-object dispatch are dependencies with declared semantics and runtime limits.
 
+D2 evidence refinement — INC-QML-55: keep clean QML/watch and core-only installed
+smokes ahead of native-source test add-ons. After both neutral isolated smokes
+pass, only the non-artifact source profile admits the same wheel's Terraform
+extra into its existing extra environment. Artifact-only/core profiles remain
+unchanged. The launcher owns this ordering and checked failure; it is not a new
+runtime parser/dependency owner. Five real-main tests and the real two-case
+HCL absence/recovery profile pass locally; new hosted proof remains pending.
+
 
 <a name="qml-04-implemented-boundary"></a>
 
@@ -1139,3 +1147,28 @@ unchanged-source equality. The [design](DESIGN.md#post-905-correction-boundaries
 and [traceability](../../tests/TRACEABILITY.md#post-905-correction-matrix--inc-qml-54)
 record exact production/oracle cases, corrected source/artifact evidence and
 remaining hosted/platform gaps.
+
+D34 refinement before INC-QML-56 implementation: native original-byte ownership
+is independent of fixture location. Linux source `5876f0a4` exposes two strict
+line-ending failures when generic C++ sources/headers outside the QML tree are
+converted. Keep complete valid membership and every original aggregate
+attribute/ID assertion; preserve native owning bytes wherever admitted, and
+convert other text exactly. Extend the dedicated actual CLI oracle with generic
+non-Qt C++ include/header cases and deliberate corruption controls. No runtime
+normalization, hash remapper or global attribute filtering is accepted. Status:
+**Implemented with focused local proof; new hosted verification pending**, with the
+[INC-QML-56 matrix](PLAN.md#inc-qml-56--preserve-native-byte-owners-and-current-source-case-evidence)
+recorded before the fixture correction. Source-case evidence ownership remains
+with the existing workflow audit, which must match actual collected identities
+and reject absent/duplicate/nonpassing required outcomes.
+
+The aggregate corpus currently has a literal QML script reference with an
+intentionally absent target, not an existing owned JS/MJS fixture. Its script
+ownership boundary therefore needs explicit synthetic valid/transitive-escape
+controls; aggregate raw/clustered passes cannot establish owned-script execution.
+Ordinary outside JS/MJS remains part of exact newline-conversion coverage.
+
+The completed local boundary is 79 focused cases without skips and a separate
+twelve-case aggregate using committed LF input. The aggregate keeps every
+original graph assertion. This validation-only change preserves runtime and
+package ownership; the new reviewed head still needs hosted evidence.

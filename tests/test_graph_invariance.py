@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from graphify.qt_incremental import QT_CPP_SUFFIXES, is_qt_metadata, is_qt_source
+
 FIXTURES = Path(__file__).parent / "fixtures"
 # These deliberate parser-rejection inputs belong to the negative CLI controls,
 # not the successful invariance corpus. Keep every other Qt/QML fixture admitted.
@@ -35,6 +37,17 @@ _REJECTED_FIXTURES = frozenset({
 # Attributes that are not a function of the source tree: community ids are
 # assigned by clustering and are compared elsewhere (#3761).
 _UNSTABLE_KEYS = frozenset({"community", "community_name"})
+
+
+def _native_byte_input(relative: Path) -> bool:
+    """Byte ownership follows the accepted native profile, not a directory name.
+
+    Keep the existing QML project cohort exact, including its owned scripts.
+    Native C++ and Qt source/metadata inputs retain bytes wherever they occur.
+    Ordinary language fixtures still exercise exact LF-to-CRLF conversion.
+    """
+    return (relative.parts[0] == "qml" or relative.suffix.lower() in QT_CPP_SUFFIXES
+            or is_qt_source(relative) or is_qt_metadata(relative))
 
 
 def _copy(src: Path, dst: Path, *, crlf: bool = False) -> Path:
@@ -48,11 +61,10 @@ def _copy(src: Path, dst: Path, *, crlf: bool = False) -> Path:
         for path in dst.rglob("*"):
             if not path.is_file():
                 continue
-            # Qt/QML facts intentionally retain original-byte spans and site
-            # identities. This aggregate profile keeps the owning fixture tree
-            # exact; test_native_newline_cli independently changes native bytes
-            # and checks real CLI topology and each original-source coordinate.
-            if path.relative_to(dst).parts[0] == "qml":
+            # Native facts retain original-byte spans even for non-QObject C++
+            # outside qml/. Dedicated Qt and generic-C++ CLI cases change those
+            # bytes and independently check coordinates plus semantic topology.
+            if _native_byte_input(path.relative_to(dst)):
                 continue
             data = path.read_bytes()
             if b"\0" in data:

@@ -217,14 +217,64 @@ jobs:
               proof[module] = len(selected) == len(expected) and {case.get('name') for case in selected} == expected and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
           # Joint producer/consumer cases must execute, not merely collect;
           # retained JUnit binds their complete reviewed matrix to this checkout.
-          integrated = {'tests.test_upstream_qt_cache_integration': 6,
-                        'tests.test_upstream_qt_discovery_integration': 11,
-                        'tests.test_upstream_qt_export_integration': 10,
-                        'tests.test_upstream_qt_path_integration': 3,
-                        'tests.test_upstream_qt_shared_integration': 4}
-          for module, count in integrated.items():
+          integrated = {
+              'tests.test_upstream_qt_cache_integration': {
+                  'test_req_qml003_ac04_qml018_ac05_mixed_cold_warm_serialized_facts',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-12]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-13]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-17]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-5]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-12]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-13]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-17]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-5]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-12]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-13]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-17]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-5]',
+                  'test_req_qml011_ac03_ac04_qml018_ac06_upgrade_failure_retains_repairs_repeats',
+              },
+              'tests.test_upstream_qt_discovery_integration': {
+                  'test_req_qml002_ac02_ac03_detect_and_collect_share_named_metadata_and_copy_exclusions[False]',
+                  'test_req_qml002_ac02_ac03_detect_and_collect_share_named_metadata_and_copy_exclusions[True]',
+                  'test_req_qml002_ac02_direct_cold_warm_facts_keep_qt_metadata_and_real_application_code[False]',
+                  'test_req_qml002_ac02_direct_cold_warm_facts_keep_qt_metadata_and_real_application_code[True]',
+                  'test_req_qml002_ac03_ac04_followed_metadata_keeps_lexical_scope_and_rejects_foreign_input',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[manual-False]',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[manual-True]',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[watch-False]',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[watch-True]',
+                  'test_req_qml018_ac06_malformed_admitted_metadata_retains_cohort_and_recovers[manual]',
+                  'test_req_qml018_ac06_malformed_admitted_metadata_retains_cohort_and_recovers[watch]',
+              },
+              'tests.test_upstream_qt_export_integration': {
+                  'test_req_qml_010_ac02_original_parallel_links_retain_qml_direction',
+                  'test_req_qml_018_ac04_real_recluster_keeps_parallel_and_qml_links',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[collapsed-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[collapsed-True]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[foreign_target-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[foreign_target-True]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[list-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[list-True]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[partial_source-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[partial_source-True]',
+              },
+              'tests.test_upstream_qt_path_integration': {
+                  'test_req_qml_010_ac03_qualified_native_path_preserves_direction[False]',
+                  'test_req_qml_010_ac03_qualified_native_path_preserves_direction[True]',
+                  'test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess',
+              },
+              'tests.test_upstream_qt_shared_integration': {
+                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[CMakeLists.txt-qt_add_qml_module(app URI Public.Tools VERSION 1.0 QML_FILES Main.qml SOURCES backend.h)\\n]',
+                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[app.pro-CONFIG += qmltypes\\nQML_IMPORT_NAME = Public.Tools\\nQML_IMPORT_MAJOR_VERSION = 1\\nHEADERS += backend.h\\nDISTFILES += Main.qml\\n]',
+                  'test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint[manual]',
+                  'test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint[watch]',
+              },
+          }
+          for module, expected in integrated.items():
               selected = [case for case in cases if case.get('classname') == module]
-              proof[module] = len(selected) == count and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
+              proof[module] = (len(selected) == len(expected) and {case.get('name') for case in selected} == expected
+                               and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected))
           client = None
           proof['test_graphs_deleted'] = False
           try:

@@ -1981,3 +1981,72 @@ configuration-write failure and recovery ownership is unchanged; this correction
 adds no diagnostic identity. REQ-CORE-001-AC05 owns the native hook identity and
 idempotency contract; the integration proof belongs to
 `tests/test_codex_hook_identity.py` and existing native installer cases.
+
+## Native installed-profile admission — INC-QML-55
+
+Status: **Implemented with focused local proof; new hosted head unverified**.
+`tests/qml_ci.py::main` remains the sole launcher owner. Its order is wheel build,
+original QML/watch and core installs, both neutral `-I` smokes, then source-profile
+admission and pytest. Only the non-artifact profile installs that exact built
+wheel with `[terraform]` into the extra environment before its prefix suite.
+The core environment and `--artifact-only` selection receive no add-on.
+
+The existing `run` checked-subprocess boundary propagates either smoke failure
+before admission and an add-on failure before pytest; no interpreter, wheel,
+package fallback or successful-skip substitution is allowed. Five tests execute
+real `main`/`run` while isolating only subprocess execution, retaining a real
+neutral temporary directory and one public wheel fixture. Separate real installed
+proof reproduces both Terraform failures without HCL, then passes after adding
+only the same wheel's declared HCL dependency. These are distinct control and
+installed profiles, not proof of a fresh full hosted suite. No manifest/lock,
+runtime/parser/cache or application publication ownership changes.
+
+## Native byte owners and collected source evidence — INC-QML-56
+
+Status: **Implemented; 79 focused local cases and a separate twelve-case
+committed-LF aggregate pass; new hosted results pending**. Extend D34's validation boundary beyond a fixture-directory
+rule: accepted generic C++ source/header inputs can carry original-byte native
+metadata anywhere in the copied corpus. Keep all valid input membership, all
+twelve raw/clustered aggregate cases and exact graph attribute/ID equality.
+Preserve every admitted native byte owner; convert every other text exactly,
+with platform-independent LF examples and nonempty preserved/converted groups.
+The copy guard must reject a missed owner rather than relying on Windows
+checkout newline conversion to conceal the discrepancy.
+
+The dedicated actual CLI LF/CRLF oracle adds non-Qt C++ include/header examples
+outside the QML tree. Verify original spans/source sizes, include endpoints and
+metadata coordinates as emitted. The separate existing Qt oracle retains API
+type-position coverage. Verify
+mandatory anchored semantic topology. Its unique semantic-anchor-to-stable-ID
+map is exact: a consistent permutation must reject even when the global ID set
+and anchored relations still agree. Preserve before/after oracle evidence using
+saved actual CLI graphs. Existing scope/role/endpoint corruption
+controls stay meaningful; do not infer replacement IDs or normalize production
+bytes. The analyzer and export paths are unchanged.
+
+The aggregate script cohort remains bounded: preserve existing QML-owned JS/MJS
+bytes while converting ordinary outside JS/MJS. Explicit fixture-growth checks
+must reject actual QML/script imports that escape that preserved cohort, before
+an incomplete byte-ownership profile can pass. Extend the reviewed fixture
+profile when such input is added; do not omit the valid source, freeze every
+script globally or derive admission from the graph being tested. No production
+resolver or script-parsing policy changes.
+
+Current real fixture inventory contains no existing QML-owned JS/MJS target;
+its QML literal reference names an intentionally absent helper. Require actual
+nonempty QML/reference inspection without inventing an accepted dependency.
+Synthetic valid and transitive-escape JS/MJS fixtures exercise the ownership
+rule, while ordinary outside JS/MJS conversion is asserted in every forced-LF
+copy control. Do not describe raw aggregate output as owned-script execution.
+
+The existing inline source audit separately owns required JUnit identities.
+Its joint-case inventory must agree with actual pytest collection of all forty-two
+assigned cases, including fourteen cache cases rather than the stale six-case
+expectation. A focused test executes the actual inline audit against complete
+and missing/duplicate/skipped/failed/error/unknown identities, same-count foreign
+swaps and unreviewed collection growth. Matching a module count cannot stand in
+for the exact versioned set. Other source/dependency/
+checkout/service-retention checks and pytest failure status remain authoritative.
+No second audit implementation, new runtime diagnostic or relaxed acceptance
+count is introduced. Exact source tests and local results are recorded in
+traceability. Hosted verification for the new reviewed revision remains pending.

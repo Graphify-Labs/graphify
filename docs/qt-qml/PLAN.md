@@ -2725,7 +2725,7 @@ Scope decision: preserve canonical physical admission and cache identity while
 retaining each accepted lexical fact owner, original-byte spans and nested
 references through direct readers, facade, persisted graph and actual manual/
 watch updates. Correct the owning producer/transport boundary without broadening
-containment or rewriting unrelated analyzer mechanisms. Root owns integration
+containment or rewriting unrelated analyzer mechanisms. The integration maintainer owns integration
 and documentation; the metadata maintainer owns disjoint producer/regression files.
 
 | Acceptance IDs | Scenario and required observable result |
@@ -2802,7 +2802,7 @@ oversized-byte read it intends to test. POSIX does not use that native boundary.
 
 Scope/diagnostics: fix only the stat fixture seam; retain production identity,
 containment, bounded-read and safe diagnostic contracts. No bypass or relaxed
-expected diagnostic is permitted. Root owns documentation and Git integration;
+expected diagnostic is permitted. The integration maintainer owns documentation and Git integration;
 the metadata regression maintainer owns the one disjoint test file. Exit with
 individual corrected hosted outcomes and unchanged runtime/dependency/coverage
 identities. Native Python 3.10.21/3.12.14/3.13.15/3.14.7 each pass all 35 metadata
@@ -3274,3 +3274,126 @@ The final repository AST-only refresh succeeds with 27,243 nodes/63,884 edges,
 per-user tool nor an application graph. Whole Ruff passes with the final
 287-line guard. The remaining delivery gate is publication and applicable
 hosted/review/merge evidence, not another local full suite for this CI-only change.
+
+## INC-QML-55 — Admit native Terraform test dependencies after clean smokes
+
+Status: **Implemented; five launcher cases and real two-case installed recovery
+pass locally; new hosted proof pending**. Owner: installed-wheel
+CI launcher maintainer; the integration maintainer owns Git and hosted publication. Dependency:
+INC-QML-54 at source `5876f0a4`, with pinned upstream 0.9.92 unchanged. INC-QML-55
+is allocated here; no new requirement or acceptance identity is needed.
+
+Finding: the Windows Python3.12 QML wheel source profile reports 2,960 passes,
+19 skips and two failures in `test_upstream_qt_refresh_order.py`. Its clean
+QML/watch and core-only smokes pass; the subsequent native prefix suite reaches
+Terraform composition without the optional HCL grammar. This is a test-profile
+dependency gap, not evidence of a parser regression. That failed hosted source `5876f0a4`
+checkpoint remains historical after correction; it is not converted to pass.
+
+Scope: only `tests/qml_ci.py` and focused `tests/test_qml_ci_profiles.py` plus
+requirement/design/evidence updates. Keep both original installs and neutral
+`-I` smokes unchanged. Only after both smokes pass, the non-artifact native source
+profile installs the same built wheel with `[terraform]` into its QML/watch
+environment, then runs the existing prefix-selected suite. The core environment
+and Ubuntu `--artifact-only` profile receive no add-on. No product parser,
+dependency manifest/lock, optional-extra definition, workflow trigger/job or
+new runner infrastructure changes. Security-advisory cleanup and newer upstream
+integration are outside this increment.
+
+| Acceptance IDs | Required success, rejection/failure and evidence |
+| --- | --- |
+| REQ-QML-001-AC01/AC03; REQ-QML-014-AC01; REQ-QML-018-AC05 | Both original QML/watch and core installs run actual neutral isolated smokes before any Terraform admission. Clean parser-presence/absence evidence cannot be contaminated by the add-on. |
+| REQ-QML-014-AC01/AC03; REQ-CORE-004-AC02/AC03 | Non-artifact native profile installs `[terraform]` from the exact same built wheel into only its extra environment after both smokes, before the full prefix pytest selection. Preserve selected test identities and actual two-case optional-HCL absence→admission proof. |
+| REQ-QML-001-AC03; REQ-QML-014-AC01/AC04 | `--artifact-only` never installs Terraform and retains its original artifact-contract selection. QML-smoke or core-smoke failure stops before add-on and source pytest. |
+| REQ-QML-014-AC01/AC04; REQ-CORE-004-AC03 | Real `qml_ci.main` ordering/failure regressions isolate only subprocess execution: add-on failure propagates and prevents pytest, with no alternate wheel/interpreter/environment fallback. |
+| REQ-QML-014-AC03/AC04; REQ-QML-015-AC01/AC03/AC04 | Capture old-launcher regression failures and controls before correction, then focused launcher tests and actual exact two-case installed proof. Retain old hosted failures, current head/base/checkout, dependency delta and clean-smoke limits. New head uses normal PR synchronization; source `5876f0a4` or a local selective pass is not the new hosted proof. |
+
+Implemented main-boundary tests cover native order/same-wheel admission, unchanged
+artifact-only behavior, add-on failure before pytest and each clean-smoke failure
+before admission. The integration maintainer separately owns the real missing-HCL reproduction and
+same-wheel Terraform-extra recovery. No fake parser result substitutes for that
+installed production proof. The launcher five-case selection passes without
+skips after two failures/three controls on the old launcher. The real clean
+QML/watch profile fails the exact two Terraform cases without HCL and passes
+both after the same-wheel extra adds only `tree-sitter-hcl==1.2.0`. Exact
+identities/commands are assigned in
+[traceability](../../tests/TRACEABILITY.md#native-terraform-test-profile-admission--inc-qml-55).
+
+Diagnostic impact: the existing checked subprocess failure remains the launcher
+failure; no new runtime Qt code is introduced. Success adds no diagnostic.
+Unavailable add-on or failed clean smoke must fail the profile, not skip its
+regressions. No accepted application graph/cache is written by admission, so no
+new product rollback boundary applies; existing source tests retain their own
+publication failure coverage. New head/wheel/hosted evidence must be recorded
+before this increment is called Verified.
+
+## INC-QML-56 — Preserve native byte owners and current source-case evidence
+
+Status: **Implemented; 79 focused local cases and all twelve committed-LF
+aggregate cases pass in separate selections; new hosted verification pending**. Owners: aggregate/native
+validation maintainer for newline fixtures; the integration maintainer for source-workflow evidence and
+`tests/test_ci_source_cases.py`. Dependency: source `5876f0a4` / INC-QML-54; independent
+of INC-QML-55's optional Terraform environment correction. No runtime/parser,
+package/dependency or new workflow infrastructure change is planned.
+
+The Linux source checkpoint reports 11,826 passes, 134 skips and exactly two
+aggregate line-ending failures (`raw`, `clustered`). Native C++ metadata outside
+`tests/fixtures/qml`, including `sample.cpp` and `cpp_logger` sources/headers,
+still owns original-byte spans/source sizes. Transforming those bytes changes
+the expected metadata (observed end-byte20→21/source-size43→46). D34's prior
+directory-only fixture rule is incomplete; location cannot remove byte ownership.
+Retain the failed checkpoint, the valid corpus, all twelve aggregate cases and
+every graph attribute/identity assertion.
+
+Separately, an inherited source evidence gate expects six cache cases while all
+fourteen current cache cases pass (twelve old-schema/version combinations plus
+two other cases). Its other integrity/service-cleanup flags pass. Match the
+actual forty-two joint source-case identities through the existing inline gate;
+do not merely change a count or weaken its outcome checks. The integration maintainer preserves
+both corrections as reviewable changes and publishes one normal PR synchronization
+after local proof, avoiding equivalent duplicate full runs.
+
+| Acceptance IDs | Success, rejection and failure matrix before implementation |
+| --- | --- |
+| REQ-QML-003-AC02/AC04; REQ-QML-010-AC01; REQ-QML-013-AC03; REQ-QML-014-AC02/AC03/AC04 | Aggregate LF/CRLF fixtures retain exact bytes of every admitted native byte-owning input wherever located, including non-Qt C++ source/header/include examples. Preserve complete valid membership and all twelve strict raw/clustered graph assertions. Existing QML-owned JS/MJS cohort bytes remain exact; ordinary outside JS/MJS still converts. A fixture-growth guard rejects QML/script imports escaping that explicit cohort before misleading invariance acceptance, requiring a reviewed profile extension rather than source omission. Other text receives exact newline transformation, with nonempty preserved/converted populations and a guard rejecting an omitted or incorrectly transformed input. |
+| REQ-QML-003-AC02/AC04; REQ-QML-013-AC03; REQ-QML-014-AC02/AC03/AC04; REQ-QML-018-AC02 | Extend the dedicated real native LF/CRLF CLI oracle to generic C++ include/header byte owners outside the QML fixture tree. Validate original-byte spans/source sizes, include endpoints and metadata coordinates as emitted, mandatory facts, exact stable-ID-to-unique-anchor ownership and anchored semantic topology; deliberate ownership/span/role/endpoint/consistent-ID-permutation corruption still rejects. The separate existing Qt oracle retains API type-position coverage. Retain before/after oracle controls on the saved actual graphs. No production newline normalization, generalized ID remapper or global attribute exclusion. |
+| REQ-CORE-004-AC01/AC03; REQ-QML-014-AC03/AC04; REQ-QML-015-AC01/AC03 | Compare actual pytest collection of all forty-two assigned joint source-case identities with the production inline evidence gate. Fourteen cache cases are required as individual outcomes, not six presumed cases or an invented aggregate. |
+| REQ-CORE-004-AC03; REQ-QML-014-AC04 | Execute the actual inline gate with faithful JUnit inputs. Missing/duplicate/skipped/failed/error identities, unknown names, same-count foreign swaps and unreviewed inventory growth reject; valid exact individually passing evidence succeeds. Preserve actual source/dependency/checkout and service-cleanup audit behavior and report failed pytest independently. |
+| REQ-QML-014-AC03/AC04; REQ-QML-015-AC01/AC03/AC04 | Capture old fixture/gate failures and unchanged controls, then focused production-boundary regressions and real Linux/new-head hosted evidence. Earlier local Windows full/source67 proof stays revision/platform-bound; no new acceptance ID, weakened assertion or security-advisory waiver is introduced. |
+
+Success adds no runtime diagnostic. Fixture/gate rejection remains an explicit
+test or evidence failure; retain existing analyzer/publication diagnostics and
+accepted-data guards. These are validation owners, with no new application
+persistence/rollback boundary. Exact local test names, commands, results and
+module sizes are recorded in traceability; new hosted verification is pending.
+
+The source audit is implemented locally: the initial eight-control version
+produces one failure/seven passes against the old 34-case gate in 4.97 seconds.
+The strengthened ten-control version passes in 4.55 seconds against exact 42
+identities (cache 14, discovery 11, export 10, path 3, shared 4). Current workflow
+size is 632 lines under the scoped 650 ceiling; `test_ci_source_cases.py` is 112
+lines. Focused Ruff/Pyright pass. The native fixture/oracle selection passes 41
+cases without skips; the separate raw committed-LF aggregate passes all twelve
+original cases. Final combined launcher, CI and native controls pass 79 cases
+without skips in 34.66 seconds. These overlapping selections are not summed.
+New-head hosted evidence remains pending; the old failures remain historical.
+
+Script-fixture applicability refinement: the real aggregate corpus has a literal
+QML reference to an intentionally absent helper, but no existing QML-owned JS/MJS
+target. It cannot prove execution of an owned script's byte contract. The guard
+requires nonempty inspected QML/literal references; valid and transitive-escape
+ownership is proved by synthetic JS/MJS controls. Every forced-LF copy case also
+checks ordinary outside JS/MJS receives exact CRLF conversion. A new guard's
+initial expectation of an existing accepted script target was incorrect; its
+forty-pass/one-failure result is a test-fixture assumption discrepancy, not a new
+production failure or valid before-fix product control.
+
+Final local handoff: aggregate/admission/C++ oracle owners measure 175/169/227
+physical lines; the launcher/profile/source-gate tests measure 53/135/112.
+All are below 300. Whole Ruff and all five generated checks pass. Whole explicit
+Pyright remains a failing baseline of 651 diagnostics across 837 files, with no
+added or removed diagnostic identities against the prior 651/834 profile.
+The AST-only repository graph refresh exits zero with 27,325 nodes and 64,066
+edges. Runtime/package production tree, active per-user tool and application
+graph are unchanged. Normal PR synchronization must establish hosted evidence
+for the new head; review, merge and exact merged-SHA proof remain separate.

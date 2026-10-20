@@ -758,7 +758,7 @@ owned by the cache maintainer.
 | Install-fixture maintainer | `tests/test_install.py` | 1,836 / 1,836 |
 | Round-trip fixture maintainer | `tests/test_install_roundtrip.py` | 323 / 323 |
 | Host-guidance fixture maintainer | `tests/test_devin.py` | 309 / 309 |
-| CI delivery / INC-QML-54 maintainer | `.github/workflows/ci.yml` | 582 / 600; frozen baseline 508 |
+| CI delivery maintainer | `.github/workflows/ci.yml` | 632 / 650; source `5876f0a4` baseline 582 |
 
 The post-905 build/watch allowances cover the shared capped raw reader,
 pre-extraction retained-context policy and same-product lifecycle propagation;
@@ -779,11 +779,13 @@ newline CLI module measures 225. All remain below 300 lines. Final handoff
 remeasures these bounded integration owners rather than permitting unrelated
 growth under the allowance.
 
-The workflow allowance is scoped to the existing Windows selection and its
-same-owner native-case/integrity audit, preserving current jobs, cleanup,
-concurrency and source/native evidence. It does not authorize unrelated job
-splitting or policy growth. The extraction exit is a separately characterized
-native-proof setup/audit helper when the next cohesive change needs growth.
+The source `5876f0a4` workflow allowance was 582/600 for the Windows selection and
+same-owner native-case/integrity audit. INC-QML-56 extends the ceiling to 650 for
+exact source-case identities and production-inline audit controls, preserving
+current jobs, cleanup, concurrency and source/native evidence. Final source-gate
+measurement is 632 lines. This permits no unrelated job splitting or
+policy growth. The extraction exit is a separately characterized focused
+source/native audit helper if the next meaningful change requires growth.
 The final saved `test_ci_windows_tools.py` measures 287 physical lines and
 remains below 300. Its strengthened comment-decoy controls retain 23 cases,
 all passing in the final seven-module native gate. The earlier standalone
@@ -793,3 +795,18 @@ The new native-override, filename-cohort and placeholder-role regression modules
 have 117, 266 and 124 physical lines; the pure filename helper has 56. All remain
 within the normal 300-line ceiling. Integration evidence and unresolved typing/
 platform cases remain in traceability; these size allowances establish no pass.
+
+## Hosted-profile recovery seams — INC-QML-55 and INC-QML-56
+
+| Owner | Boundary and current evidence |
+| --- | --- |
+| Installed-wheel launcher maintainer: `tests/qml_ci.py::main`, `run` | INC-QML-55 installs the same reviewed wheel's Terraform extra only after both original neutral installed smokes and only for native source tests. Core/artifact-only profiles and checked failure propagation remain unchanged. The launcher measures 53 physical lines. |
+| `tests/test_qml_ci_profiles.py` | Five real-main ordering/rejection tests isolate only the subprocess boundary; two fail/three controls before correction, five pass after. New owner measures 135 lines, below 300. The real installed HCL absence→admission two-case proof is separate. |
+| Aggregate validation maintainer: `tests/test_graph_invariance.py`, `tests/test_graph_invariance_admission.py`, `tests/test_qt_native_cpp_newline_cli.py` | INC-QML-56 implements location-independent native-byte ownership and non-Qt C++ include/header LF/CRLF controls. Its Qt prefix admits the new real-CLI coverage in existing native QML source lanes; Linux source already owns all tests. The native selection passes 41 cases, including eight existing Qt cases; the separate committed-LF aggregate passes all twelve original cases. Files measure 175/169/227 lines. |
+| CI source-evidence maintainer: existing `.github/workflows/ci.yml` inline audit, `tests/test_ci_source_cases.py` | INC-QML-56 implemented actual-collected forty-two-case identity agreement, including all fourteen cache cases; ten passing local controls execute the actual audit for complete/missing/duplicate/skipped/failed/error/unknown evidence, same-count swaps and unreviewed inventory growth. New test measures 112 lines; workflow 632/650. No runtime or new pipeline owner; new hosted proof pending. |
+
+Both increments retain current production tree/package/parser policy. New
+handwritten test owners remain below 300 lines; the touched workflow retains its
+documented CI-owner cohesion allowance of 632/650 physical lines. Final combined
+local controls pass 79 cases without skips. Source `5876f0a4` failed hosted profiles and advisory scanner findings remain
+explicitly separate from the new local correction results.
