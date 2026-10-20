@@ -76,6 +76,27 @@ def test_unresolvable_source_gets_no_callout(tmp_path):
     assert not (vault / "sources" / "_src_missing_nope.md").exists()
 
 
+def test_source_paths_cannot_escape_scan_root(tmp_path):
+    scan_root = tmp_path / "scan"
+    scan_root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("secret = True\n", encoding="utf-8")
+    (scan_root / "linked.py").symlink_to(outside)
+
+    G = nx.Graph()
+    G.add_node("traversal", label="Traversal", file_type="code",
+               source_file="../outside.py", community=0)
+    G.add_node("symlink", label="Symlink", file_type="code",
+               source_file="linked.py", community=0)
+    vault = tmp_path / "vault"
+    to_obsidian(G, {0: ["traversal", "symlink"]}, str(vault),
+                with_sources=True, source_root=scan_root)
+
+    assert not (vault / "Traversal.md").read_text(encoding="utf-8").count("> [!info] Source")
+    assert not (vault / "Symlink.md").read_text(encoding="utf-8").count("> [!info] Source")
+    assert not list((vault / "sources").glob("*.md"))
+
+
 def test_rerun_without_sources_prunes_source_notes(tmp_path):
     """Source notes are graphify-owned, so dropping --with-sources on a re-export
     prunes them and removes the callout — the vault returns to bare notes."""

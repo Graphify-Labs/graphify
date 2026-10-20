@@ -779,24 +779,23 @@ _MAX_SOURCE_BYTES = 2_000_000
 
 
 def _resolve_source_path(source_file: str, roots: list[Path]) -> "Path | None":
-    """Resolve a node's ``source_file`` to an existing readable file on disk.
+    """Resolve a node's ``source_file`` to an existing file beneath a scan root.
 
-    ``source_file`` is stored relative to the scan root (#1941), so we try each
-    candidate root in order; an absolute path is tried as-is first. Returns the
-    first existing regular file, or None when nothing resolves."""
+    ``source_file`` is stored relative to the scan root (#1941). Resolve both
+    the candidate and root before checking containment so traversal components
+    and symlinks cannot expose files outside the scan.
+    """
     if not source_file:
         return None
     p = Path(source_file)
-    candidates: list[Path] = []
-    if p.is_absolute():
-        candidates.append(p)
-    else:
-        candidates.extend(r / source_file for r in roots)
-    for c in candidates:
+    for root in roots:
         try:
-            if c.is_file():
-                return c
-        except OSError:
+            resolved_root = root.resolve()
+            candidate = (p if p.is_absolute() else root / p).resolve(strict=True)
+            candidate.relative_to(resolved_root)
+            if candidate.is_file():
+                return candidate
+        except (OSError, RuntimeError, ValueError):
             continue
     return None
 
