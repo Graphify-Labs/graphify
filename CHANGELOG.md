@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **explain** neighbour ranking prefers EXTRACTED edges and lower-degree nodes, so a growing graph's hubs no longer crowd the default top-20 list (#3143).
+
 ## 0.9.93 (2026-10-20)
 
 Twenty-two community pull requests. Extraction: a reference to a Kotlin type alias, C# delegate, Swift macro, Dart typedef, Python module function or Rust sibling-module `use` now resolves to its real declaration instead of minting a sourceless stub; Metal/CUDA GPU qualifiers no longer mint god nodes; `extern "C"` headers route to the C++ extractor; an extensionless script with a versioned-interpreter shebang is classified; and Obsidian vault-relative wikilinks resolve. Plus a credential-redaction pass on rationale labels, a node-confidence fold, a truncated-reply label decode, a `.graphifyrc` BOM fix, a GraphML multigraph export fix, two-repo file disambiguation in explain and path, a PDF-read warning, no skill writes on `--version`/`--help`, two PR-tooling fixes (slashed default branch, legacy CI statuses), and a skill partly-read-file recovery so a long file a subagent only skimmed is retried on the next `--update` instead of silently kept half-read. The AST cache schema is bumped, so the first build after upgrading re-extracts.
