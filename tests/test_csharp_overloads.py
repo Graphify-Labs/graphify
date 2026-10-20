@@ -98,7 +98,6 @@ def test_method_without_overloads_is_unchanged(tmp_path):
     r = _extract(tmp_path, {"Messages.cs": _MESSAGES})
     fmt = next(n for n in r["nodes"] if n["label"] == ".Format()")
     assert fmt["id"] == "messages_demo_messages_format"
-    assert "signature" not in fmt["metadata"]
 
 
 def test_in_file_and_instance_calls_pick_by_argument_count(tmp_path):
@@ -207,3 +206,64 @@ def test_overload_ids_ignore_whitespace_and_line_endings(tmp_path):
     a = _extract(tmp_path / "a", {"S.cs": src})
     b = _extract(tmp_path / "b", {"S.cs": src.replace(", int>", ",\n        int>").replace("\n", "\r\n")})
     assert sorted(_by_line(a, ".M()").values()) == sorted(_by_line(b, ".M()").values())
+
+
+def test_interface_overload_implemented_on_a_base_does_not_dispatch_to_a_sibling(tmp_path):
+    # Impl declares only M(int); M(string) comes from Base. IR.M(string) must
+    # not be pinned on Impl.M(int) just because both take one argument.
+    r = _extract(tmp_path, {"D.cs": (
+        "public interface IR { void M(int a); void M(string a); }\n"
+        "public class Base { public void M(string a) { } }\n"
+        "public class Impl : Base, IR { public void M(int a) { } }\n"
+    )})
+    by_sig = {
+        n["metadata"].get("signature"): n["id"]
+        for n in r["nodes"] if n["id"].startswith("d_ir_m")
+    }
+    impl = next(n["id"] for n in r["nodes"] if n["id"] == "d_impl_m")
+    assert _edges(r, "dispatches_to") == {(by_sig["int"], impl)}
+
+
+def test_collapse_keeps_distinct_names_on_one_type_apart(tmp_path):
+    # Review: overloads are folded per owner type, but only among candidates
+    # of one name, so `Put` / `_Put` / `put` stay separate targets.
+    r = _extract(tmp_path, {
+        "A.cs": (
+            "public partial class S {\n"
+            "    public void Put(int a) { }\n"
+            "    public void _Put(int a, int b) { }\n"
+            "    public void put(int a, int b, int c) { }\n"
+            "    public void Put(string a, int b) { }\n"
+            "}\n"
+        ),
+        "B.cs": (
+            "public partial class S {\n"
+            "    public void Go() { Put(1); _Put(1, 2); put(1, 2, 3); Put(\"x\", 1); }\n"
+            "}\n"
+        ),
+    })
+    go = _id(r, ".Go()")
+    calls = {t for s, t in _edges(r) if s == go}
+    put = _by_line(r, ".Put()")
+    assert calls == {put["L2"], put["L5"], _id(r, "._Put()"), _id(r, ".put()")}
+
+
+def test_params_parameter_is_variadic_and_optional(tmp_path):
+    r = _extract(tmp_path, {"P.cs": (
+        "public static class P {\n"
+        "    public static void Log(string m) { }\n"
+        "    public static void Log(string m, params object[] args) { }\n"
+        "}\n"
+    )})
+    meta = {n["source_location"]: n["metadata"] for n in r["nodes"] if n["label"] == ".Log()"}
+    assert meta["L3"]["arity"] == 2 and meta["L3"]["min_arity"] == 1 and meta["L3"]["variadic"]
+    assert "variadic" not in meta["L2"]
+
+
+def test_overloads_in_struct_record_and_beside_other_members(tmp_path):
+    r = _extract(tmp_path, {"L.cs": (
+        "public struct St { public void M(int a) { } public int M2 { get; } public void M(int a, int b) { } }\n"
+        "public record R { public void N() { } class Inner { public void N(int x) { } } public void N(int x) { } }\n"
+    )})
+    assert len([n for n in r["nodes"] if n["id"].startswith("l_st_m") and n["label"] == ".M()"]) == 2
+    assert {n["id"] for n in r["nodes"] if n["label"] == ".N()"} == {"l_r_n", "l_r_n_46f8ab", "l_inner_n"}

@@ -7688,9 +7688,7 @@ def _extract_generic(
                         existing_method["metadata"] = sanitize_metadata(existing_metadata)
                 method_metadata = ruby_method_metadata
                 if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
-                    method_metadata = dict(csharp_sig_meta)
-                    if group:
-                        method_metadata["signature"] = csharp_sig
+                    method_metadata = {**csharp_sig_meta, "signature": csharp_sig}
                 add_node(
                     func_nid,
                     f".{func_name}()",
@@ -7699,12 +7697,6 @@ def _extract_generic(
                 )
                 if (config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration"
                         and csharp_sig not in group and nodes and nodes[-1]["id"] == func_nid):
-                    if len(group) == 1:
-                        # The first overload learns it has company.
-                        first = next(iter(group.values()))
-                        first.setdefault("metadata", {}).update(
-                            sanitize_metadata({"signature": next(iter(group))})
-                        )
                     group[csharp_sig] = nodes[-1]
                 add_edge(parent_class_nid, func_nid, "method", line)
                 if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":

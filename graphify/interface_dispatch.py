@@ -197,7 +197,10 @@ def _overload_pairs(
 
     One of each pairs up as always. Otherwise (C# overloads, #4584) each
     interface method pairs with the one implementer method of the same declared
-    signature, else of the same parameter count; no unique match, no edge.
+    signature, else of the same parameter count among those no signature
+    claimed; no unique match, no edge. An implementer method takes at most one
+    interface method, so an overload implemented on a base class is not pinned
+    on a sibling of the same count.
     """
     if len(declared) == 1 and len(candidates) == 1:
         return [(next(iter(declared)), next(iter(candidates)))]
@@ -206,14 +209,16 @@ def _overload_pairs(
         meta = (node_by_id.get(nid) or {}).get("metadata")
         return meta if isinstance(meta, dict) else {}
 
-    pairs = []
-    for source in sorted(declared):
-        want = _meta(source)
-        for key in ("signature", "arity"):
-            if want.get(key) is None:
+    pairs: dict[str, str] = {}
+    for key in ("signature", "arity"):
+        taken = set(pairs.values())
+        for source in sorted(declared):
+            want = _meta(source).get(key)
+            if source in pairs or want is None:
                 continue
-            hits = [c for c in candidates if _meta(c).get(key) == want[key]]
+            hits = [c for c in candidates if c not in taken and _meta(c).get(key) == want]
             if len(hits) == 1:
-                pairs.append((source, hits[0]))
-                break
-    return pairs
+                pairs[source] = hits[0]
+    # Two interface methods on one implementer method: neither is certain.
+    targets = list(pairs.values())
+    return [(s, t) for s, t in pairs.items() if targets.count(t) == 1]
