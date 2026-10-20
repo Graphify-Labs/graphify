@@ -374,6 +374,9 @@ def resolve_vbnet_calls(
                 "source_file": call.get("source_file", ""),
                 "source_location": call.get("source_location"),
                 "weight": 1.0,
+                # a unique binding, not a name match: build.py's cross-language
+                # phantom filter keeps it although .vb and .cs are separate families
+                "_vbnet_resolved": True,
             })
 
 
