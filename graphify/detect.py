@@ -472,6 +472,24 @@ def _env_command_args(args: list[str], *, allow_split: bool = True) -> list[str]
     return []
 
 
+def _strip_interpreter_version(interp: str) -> str:
+    """Map a version-suffixed interpreter onto the name it is a version of.
+
+    Shebangs name a specific version as often as the generic one
+    (``python3.12``, ``python2.7``, ``lua5.4``, ``php8.2``). Try the name with
+    its major version (``python3``), then the bare name (``lua``), and keep the
+    original when neither is a known code interpreter.
+    """
+    if interp in _SHEBANG_CODE_INTERPRETERS:
+        return interp
+    m = re.fullmatch(r"([A-Za-z]+)(\d+)(?:\.\d+)*", interp)
+    if m:
+        for candidate in (m.group(1) + m.group(2), m.group(1)):
+            if candidate in _SHEBANG_CODE_INTERPRETERS:
+                return candidate
+    return interp
+
+
 def _shebang_interpreter(path: Path) -> str | None:
     """Return the interpreter name from a shebang line.
 
@@ -484,8 +502,9 @@ def _shebang_interpreter(path: Path) -> str | None:
       - `#!/usr/bin/env DEBUG=1 python3`   (inline var assignment)
       - `#!"/usr/local/bin/python with spaces"`  (shlex handles quotes)
 
-    Returns the basename of the resolved interpreter, or None if there is
-    no shebang / the file is unreadable / parsing fails.
+    Returns the basename of the resolved interpreter, with a version suffix
+    on a known interpreter dropped (``python3.12`` -> ``python3``), or None if
+    there is no shebang / the file is unreadable / parsing fails.
     """
     try:
         with path.open("rb") as f:
@@ -502,7 +521,7 @@ def _shebang_interpreter(path: Path) -> str | None:
             if not env_args:
                 return None
             interp = Path(env_args[0]).name
-        return interp
+        return _strip_interpreter_version(interp)
     except (OSError, ValueError):
         return None
 
@@ -557,10 +576,18 @@ def classify_file(path: Path) -> FileType | None:
 # Missing-pypdf is a process-global condition, not per-file, so warn at most
 # once per run — a corpus of many PDFs must not print the same hint N times.
 _pypdf_missing_warned = False
+# Unreadable PDFs are per-file, so warn once per path: detect() counts words and
+# the semantic pass reads the text again, and the same file must not warn twice.
+_pdf_failed_warned: set[str] = set()
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract plain text from a PDF file using pypdf."""
+    """Extract plain text from a PDF file using pypdf.
+
+    Returns ``""`` when the file cannot be read (malformed, encrypted, ...), the
+    same as for a PDF with no text, but warns on stderr naming the file and the
+    error first (#4527), so a failed read is not mistaken for an empty document.
+    """
     if not _file_within_size_cap(path):
         return ""
     try:
@@ -583,7 +610,16 @@ def extract_pdf_text(path: Path) -> str:
             if text:
                 pages.append(text)
         return "\n".join(pages)
-    except Exception:
+    except Exception as exc:
+        key = str(path)
+        if key not in _pdf_failed_warned:
+            _pdf_failed_warned.add(key)
+            print(
+                f"[graphify] WARNING: could not extract text from {path} "
+                f"({type(exc).__name__}: {exc}); it contributes no content to "
+                "the graph.",
+                file=sys.stderr,
+            )
         return ""
 
 
