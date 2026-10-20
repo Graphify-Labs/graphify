@@ -89,21 +89,32 @@ def test_home_inside_repo_is_rejected(tmp_path, monkeypatch, capsys):
 
 
 def test_external_graph_uses_persisted_source_root(tmp_path, monkeypatch):
-    from graphify import cli
+    from graphify import cli, watch
     from graphify.cli import _graph_root_for
 
     repo = _git_repo(tmp_path / "repo")
-    out = tmp_path / "store" / "projects" / "repo-hash" / "graphify-out"
+    home = tmp_path / "store"
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.setenv("GRAPHIFY_HOME", str(home))
+    out = Path(paths._out_from_env())
     out.mkdir(parents=True)
     graph = out / "graph.json"
     graph.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cli, "_GRAPHIFY_OUT", str(out))
-    (out / ".graphify_root").write_text(str(repo), encoding="utf-8")
+    monkeypatch.setattr(watch, "_GRAPHIFY_OUT", str(out))
 
+    # Use the same marker writer as a real update rather than faking its value.
+    marker = out / ".graphify_root"
+    marker.write_text(watch._graphify_root_marker_value(Path(".")), encoding="utf-8")
+    assert marker.read_text(encoding="utf-8") == str(repo.resolve())
     assert _graph_root_for(graph) == repo.resolve()
-    (out / ".graphify_root").write_text("not-an-absolute-path", encoding="utf-8")
+
+    marker.write_text("not-an-absolute-path", encoding="utf-8")
     assert _graph_root_for(graph) == out.parent
-    (out / ".graphify_root").unlink()
+    marker.write_text("x" * 4097, encoding="utf-8")
+    assert _graph_root_for(graph) == out.parent
+    marker.unlink()
     assert _graph_root_for(graph) == out.parent
 
 def test_local_graph_ignores_stale_absolute_marker(tmp_path, monkeypatch):
