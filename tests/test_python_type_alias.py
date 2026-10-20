@@ -53,7 +53,7 @@ def _labels(result: dict) -> dict[str, str]:
 
 def _pairs(result: dict, relation: str) -> set[tuple[str, str]]:
     label = _labels(result)
-    return {(label.get(e["source"], e["source"]), label.get(e["target"], e["target"]))
+    return {(label.get(e["source"], str(e["source"])), label.get(e["target"], str(e["target"])))
             for e in result["edges"] if e["relation"] == relation}
 
 
