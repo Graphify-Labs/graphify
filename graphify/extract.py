@@ -5057,6 +5057,12 @@ def _resolve_python_member_calls(
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
             children = contains_children[mods[0]].get(_key(callee), [])
+            if len(children) > 1:
+                # The key folds case and drops `_`, so `dataclass_schema()` and
+                # `class DataclassSchema` share it; Python names are exact. Among
+                # them, the one named exactly `callee` is the call's target.
+                children = [c for c in children
+                            if str(node_by_id[c].get("label", "")).strip("()").lstrip(".") == callee]
             if len(children) != 1:  # absent or ambiguous callable -> bail
                 continue
             _emit_call(caller, children[0], rc)
