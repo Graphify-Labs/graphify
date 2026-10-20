@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import networkx as nx
+import pytest
 from networkx.readwrite import json_graph
 from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas, dedupe_edges, dedupe_nodes
 
@@ -133,6 +134,223 @@ def test_legacy_edge_from_to_canonicalized():
            "input_tokens": 0, "output_tokens": 0}
     G = build_from_json(ext)
     assert G.number_of_edges() == 1
+
+
+def test_legacy_node_name_path_aliases_folded():
+    """#2194: nodes carrying `name`/`path` instead of `label`/`source_file` must
+    be canonicalized before validation, not enter the graph as label-less
+    ghosts. After build the canonicalized dict also passes validation."""
+    from graphify.validate import validate_extraction
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    attrs = G.nodes["n1"]
+    assert attrs["label"] == "Foo"
+    assert attrs["source_file"] == "a/b.md"
+    assert "name" not in attrs
+    assert "path" not in attrs
+    # build_from_json canonicalizes in place; the extraction dict must now be
+    # schema-valid (no missing-field errors for the alias node).
+    assert not [e for e in validate_extraction(ext) if "missing required field" in e]
+
+
+def test_legacy_edge_type_confidence_score_aliases_folded():
+    """#2194: edges carrying `type`/`confidence_score` instead of
+    `relation`/`confidence` fold to canonical fields. Recovery confidence is
+    INFERRED (never EXTRACTED — alias recovery is not provenance) and the
+    companion confidence_score float is retained, not popped."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "type": "references",
+                      "confidence_score": 0.9, "source_file": "a.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    data = edge_data(G, "n1", "n2")
+    assert data["relation"] == "references"
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.9
+    assert "type" not in data
+
+
+def test_legacy_numeric_confidence_normalized_to_inferred(capsys):
+    """Pre-enum graphs stored the LLM pass's float directly in `confidence`
+    (1.0/0.95/0.9/0.85). Reloading such a graph must not warn once per edge on
+    every load — the number normalizes to INFERRED (numeric confidences only
+    ever came from the LLM semantic pass, and LLM-derived edges are INFERRED
+    by definition) with the original float preserved in confidence_score."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+                     {"id": "n3", "label": "C", "file_type": "code", "source_file": "c.py"}],
+           "edges": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.95, "source_file": "a.py"},
+                     {"source": "n2", "target": "n3", "relation": "references",
+                      "confidence": 1.0, "source_file": "b.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    assert "Extraction warning" not in err
+    d12 = edge_data(G, "n1", "n2")
+    assert d12["confidence"] == "INFERRED"
+    assert d12["confidence_score"] == 0.95
+    d23 = edge_data(G, "n2", "n3")
+    assert d23["confidence"] == "INFERRED"
+    assert d23["confidence_score"] == 1.0
+
+
+def test_legacy_numeric_confidence_existing_score_wins():
+    """A numeric `confidence` next to an explicit `confidence_score` must not
+    overwrite the explicit score — the companion field is the authority."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.9, "confidence_score": 0.4, "source_file": "a.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    data = edge_data(G, "n1", "n2")
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.4
+
+
+def test_legacy_numeric_confidence_links_spelling_reload(capsys):
+    """The on-disk shape of the defect: a NetworkX-serialized graph.json
+    (`links` spelling) from a pre-enum version reloads without a validator
+    warning per edge and its edges land INFERRED."""
+    raw = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "links": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.85, "source_file": "a.py"}]}
+    G = build_from_json(raw)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    data = edge_data(G, "n1", "n2")
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.85
+
+
+def test_legacy_numeric_confidence_normalization_is_idempotent(capsys):
+    """Healing must survive a round-trip: after the first load rewrites the tag to
+    INFERRED (with the float in confidence_score), a second load of the persisted
+    graph must stay silent and leave the score stable — otherwise the warning
+    would just move one run later."""
+    from networkx.readwrite import json_graph
+    raw = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "links": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.85, "source_file": "a.py"}]}
+    G1 = build_from_json(raw)
+    capsys.readouterr()
+    # persist exactly as graph.json would, then reload
+    persisted = json_graph.node_link_data(G1, edges="links")
+    G2 = build_from_json(persisted)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    d = edge_data(G2, "n1", "n2")
+    assert d["confidence"] == "INFERRED"
+    assert d["confidence_score"] == 0.85
+
+
+def test_node_alias_canonical_field_wins():
+    """#2194: when both the canonical field and its alias are present, the
+    canonical value wins and the alias key is left untouched."""
+    ext = {"nodes": [{"id": "n1", "label": "Real", "name": "Alias",
+                      "file_type": "code", "source_file": "a.py"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert G.nodes["n1"]["label"] == "Real"
+    assert G.nodes["n1"]["name"] == "Alias"  # preserved, not consumed
+
+
+def test_alias_node_ghost_merges_into_ast_twin():
+    """#2194: an alias-only semantic node (name/path) must participate in the
+    AST/LLM ghost merge once folded — same label and file as an AST node with a
+    different id collapses into the AST node instead of surviving as a ghost."""
+    ext = {"nodes": [
+        {"id": "src_foo_helper", "label": "helper", "file_type": "code",
+         "source_file": "src/foo.py", "_origin": "ast", "source_location": "L10"},
+        {"id": "helper_ghost", "name": "helper", "path": "src/foo.py",
+         "file_type": "code"},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert "src_foo_helper" in G.nodes
+    assert "helper_ghost" not in G.nodes
+    assert G.number_of_nodes() == 1
+
+
+def test_alias_node_gets_nonempty_norm_label(tmp_path):
+    """#2194: a recovered alias node must serialize with a non-empty norm_label
+    so query/explain can find it."""
+    from graphify.export import to_json
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    out = tmp_path / "graph.json"
+    assert to_json(G, {}, str(out))
+    data = json.loads(out.read_text())
+    node = next(n for n in data["nodes"] if n["id"] == "n1")
+    assert node["norm_label"] == "foo"
+
+
+def test_extraction_warning_breakdown_by_cause(capsys):
+    """#2194: a mixed batch of schema errors must report per-cause counts, not
+    just the first error."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+        {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+        # two nodes missing label (and carrying no name alias)
+        {"id": "x1", "file_type": "code", "source_file": "x.py"},
+        {"id": "x2", "file_type": "code", "source_file": "x.py"},
+    ], "edges": [
+        # three edges missing relation (and carrying no type alias)
+        {"source": "n1", "target": "n2", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n2", "target": "n1", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n1", "target": "x1", "confidence": "EXTRACTED", "source_file": "a.py"},
+    ], "input_tokens": 0, "output_tokens": 0}
+    build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "2x missing required field 'label'" in err
+    assert "3x missing required field 'relation'" in err
+
+
+def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
+    """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
+    source_file (Windows detect() emits them) must re-key to the canonical
+    repo-relative stem instead of ghosting against the existing graph."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": abs_stem, "label": "DATAFLOW.md", "file_type": "document",
+         "source_file": abs_sf},
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [
+        {"source": abs_stem, "target": f"{abs_stem}_pipeline", "relation": "describes",
+         "confidence": "INFERRED", "source_file": abs_sf, "weight": 1.0},
+    ], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow" in G.nodes
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert abs_stem not in G.nodes
+    assert G.nodes["docs_dataflow"]["source_file"] == "docs/DATAFLOW.md"
+    assert G.has_edge("docs_dataflow", "docs_dataflow_pipeline")
+
+
+def test_absolute_derived_semantic_ids_rekeyed_backslash(tmp_path):
+    """#2197 (separator variant): the same absolute-derived-id fragment with
+    backslash separators in source_file re-keys identically."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md").replace("/", "\\")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert G.nodes["docs_dataflow_pipeline"]["source_file"] == "docs/DATAFLOW.md"
 
 
 def test_source_file_backslash_normalized():
@@ -359,6 +577,62 @@ def test_ghost_merge_non_ast_same_file_still_merges():
     assert G.number_of_nodes() == 1
 
 
+def test_ghost_merge_wrong_source_file_resolved_by_label():
+    """#3344: a semantic node that only MENTIONS a file (a saved
+    graphify-out/memory/*.md query answer, a runbook narrating "see App.tsx")
+    is stamped with source_file = the document being read, not the file named
+    in its prose — so the (source_file, label) key can never match the real
+    AST node's key. Resolve it by label alone against every AST file-self node
+    (_is_file_node_label), including when the doc's prose dropped a leading
+    path segment ("customer-app/index.ts" for the real
+    "apps/customer-app/index.ts")."""
+    ext = {
+        "nodes": [
+            {"id": "apps_customer_app_app", "label": "App.tsx", "file_type": "code",
+             "source_file": "apps/customer-app/App.tsx", "source_location": "L1", "_origin": "ast"},
+            {"id": "apps_customer_app_index", "label": "customer-app/index.ts", "file_type": "code",
+             "source_file": "apps/customer-app/index.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "app", "label": "App.tsx", "file_type": "code",
+             "source_file": "graphify-out/memory/query_fake.md", "_origin": "semantic"},
+            {"id": "customer_app_index", "label": "customer-app/index.ts", "file_type": "code",
+             "source_file": "graphify-out/memory/query_fake.md", "_origin": "semantic"},
+            {"id": "some_query_node", "label": "Query: why does X connect Y?", "file_type": "document",
+             "source_file": "graphify-out/memory/query_fake.md", "_origin": "semantic"},
+        ],
+        "edges": [
+            {"source": "some_query_node", "target": "app", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "graphify-out/memory/query_fake.md"},
+            {"source": "some_query_node", "target": "customer_app_index", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "graphify-out/memory/query_fake.md"},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert "app" not in G.nodes() and "customer_app_index" not in G.nodes()
+    assert G.has_edge("some_query_node", "apps_customer_app_app")
+    assert G.has_edge("some_query_node", "apps_customer_app_index")
+
+
+def test_ghost_merge_wrong_source_file_ambiguous_basename_left_alone():
+    """#3344: the label-alone fallback must stay conservative — a phantom
+    mentioning a bare basename that TWO different real files share (an
+    "index.ts" in two different directories) has no safe unique winner and
+    must be left as-is rather than merged into an arbitrary one."""
+    ext = {
+        "nodes": [
+            {"id": "apps_admin_web_index", "label": "index.ts", "file_type": "code",
+             "source_file": "apps/admin-web/src/lib/index.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "apps_api_index", "label": "index.ts", "file_type": "code",
+             "source_file": "apps/api/src/lib/index.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "phantom_index", "label": "index.ts", "file_type": "code",
+             "source_file": "graphify-out/memory/query_fake2.md", "_origin": "semantic"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert "phantom_index" in G.nodes()
+    assert "apps_admin_web_index" in G.nodes() and "apps_api_index" in G.nodes()
+
+
 def test_build_merge_preserves_call_edge_direction(tmp_path):
     """Regression for #760.
 
@@ -424,6 +698,97 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
         f"calls edge target flipped after build_merge round-trip: "
         f"expected {truth_tgt} (b), got {reloaded_calls[0]['target']}"
     )
+
+
+def test_build_merge_directed_edge_direction_survives_round_trip(tmp_path):
+    """Regression for #2342: once build_merge correctly inherits the on-disk
+    `directed` flag, the resulting graph must actually be a DiGraph whose
+    edges are readable in the right direction (a -> b, not b -> a)."""
+    from graphify.extract import extract_js
+    from graphify.export import to_json
+
+    src = "function b() {}\nfunction a() { b(); }\n"
+    src_file = tmp_path / "x.js"
+    src_file.write_text(src)
+
+    extraction = extract_js(src_file)
+    call_edges = [e for e in extraction["edges"] if e["relation"] == "calls"]
+    assert len(call_edges) == 1
+    truth_src = call_edges[0]["source"]
+    truth_tgt = call_edges[0]["target"]
+
+    G1 = build([extraction], directed=True, dedup=False)
+    graph_path = tmp_path / "graph.json"
+    assert to_json(G1, {}, str(graph_path), force=True)
+
+    G2 = build_merge([], graph_path, dedup=False)
+    assert G2.is_directed() is True
+    assert G2.has_edge(truth_src, truth_tgt)
+    assert not G2.has_edge(truth_tgt, truth_src)
+
+
+def test_build_merge_inherits_directed_flag_from_disk(tmp_path):
+    """Regression for #2342.
+
+    build_merge with no explicit `directed=` must honor the on-disk graph's
+    own `directed` flag instead of silently defaulting to False, or an
+    incremental --update on a directed graph downgrades it to undirected.
+    """
+    ext = {
+        "nodes": [{"id": "a", "label": "a", "file_type": "concept",
+                   "source_file": "x.md", "source_location": "L1"}],
+        "edges": [],
+    }
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graph.json"
+
+    # Directed graph on disk -> no directed= kwarg -> stays directed.
+    G1 = build([ext], directed=True, dedup=False)
+    assert to_json(G1, {}, str(graph_path), force=True)
+    G2 = build_merge([], graph_path, dedup=False)
+    assert G2.is_directed() is True
+    saved = json.loads(graph_path.read_text())
+    assert saved.get("directed") is True
+
+    # Undirected graph on disk -> no directed= kwarg -> stays undirected (no regression).
+    G3 = build([ext], directed=False, dedup=False)
+    assert to_json(G3, {}, str(graph_path), force=True)
+    G4 = build_merge([], graph_path, dedup=False)
+    assert G4.is_directed() is False
+
+
+def test_build_merge_fresh_graph_defaults_undirected(tmp_path):
+    """No existing graph.json + no directed= kwarg -> falls back to the
+    current default (False), same as before #2342."""
+    graph_path = tmp_path / "does_not_exist.json"
+    G = build_merge([], graph_path, dedup=False)
+    assert G.is_directed() is False
+
+
+def test_build_merge_explicit_directed_overrides_disk_flag(tmp_path):
+    """An explicit directed=True/False from the caller must still win over
+    whatever is stored on disk (#2342)."""
+    ext = {
+        "nodes": [{"id": "a", "label": "a", "file_type": "concept",
+                   "source_file": "x.md", "source_location": "L1"}],
+        "edges": [],
+    }
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graph.json"
+
+    # Directed on disk, explicit directed=False -> caller wins.
+    G1 = build([ext], directed=True, dedup=False)
+    assert to_json(G1, {}, str(graph_path), force=True)
+    G2 = build_merge([], graph_path, directed=False, dedup=False)
+    assert G2.is_directed() is False
+
+    # Undirected on disk, explicit directed=True -> caller wins.
+    G3 = build([ext], directed=False, dedup=False)
+    assert to_json(G3, {}, str(graph_path), force=True)
+    G4 = build_merge([], graph_path, directed=True, dedup=False)
+    assert G4.is_directed() is True
 
 
 def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_path):
@@ -816,6 +1181,142 @@ def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
     assert ("K", "A") in edges, "unchanged file's edge must survive"
 
 
+def _write_two_tier_graph(graph_path):
+    """A graph where docs/readme.md carries BOTH tiers (#2333 COEXIST): an
+    AST layer (document/heading nodes + a contains edge, _origin=ast) and a
+    semantic layer (an unstamped concept node, source_location=None)."""
+    data = {
+        "directed": False,
+        "nodes": [
+            {"id": "docs_readme", "label": "Readme", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L1",
+             "_origin": "ast"},
+            {"id": "docs_readme_intro", "label": "Intro", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L3",
+             "_origin": "ast"},
+            {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
+             "source_file": "docs/readme.md", "source_location": None},
+        ],
+        "links": [
+            {"source": "docs_readme", "target": "docs_readme_intro",
+             "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "docs/readme.md", "source_location": "L3",
+             "weight": 1.0, "_origin": "ast"},
+        ],
+        "hyperedges": [
+            {"id": "auth_group", "label": "Auth Group",
+             "nodes": ["docs_readme", "auth_flow"], "relation": "form",
+             "confidence": "INFERRED", "source_file": "docs/readme.md"},
+        ],
+    }
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_build_merge_semantic_reextract_preserves_ast_layer(tmp_path):
+    """#2333/#2336 (COEXIST): a semantic-only re-extract of a file replaces
+    only that file's SEMANTIC tier — its AST document/heading nodes and AST
+    edges must survive. Before the fix, replace-by-source was tier-blind and
+    the semantic chunk deleted the doc's AST layer."""
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    # Semantic-only chunk for the same file: no _origin, null source_location
+    # (the extraction-spec shape — the semantic path never stamps _origin).
+    chunk = {"nodes": [
+        {"id": "session_model", "label": "Session Model", "file_type": "concept",
+         "source_file": "docs/readme.md", "source_location": None},
+    ], "edges": []}
+    G = build_merge([chunk], graph_path, dedup=False)
+
+    assert "docs_readme" in G and "docs_readme_intro" in G, (
+        "AST layer deleted by a semantic-only re-extract of the same file"
+    )
+    assert G.has_edge("docs_readme", "docs_readme_intro"), (
+        "AST contains edge deleted by a semantic-only re-extract"
+    )
+    assert "auth_flow" not in G, "old semantic node must be replaced"
+    assert "session_model" in G, "new semantic node must be present"
+
+
+def test_build_merge_ast_reextract_preserves_semantic_layer(tmp_path):
+    """#2333/#2336 inverse: an AST-only re-extract of a file replaces only
+    that file's AST tier — its semantic concept nodes (and semantic-tier
+    hyperedges, which an AST pass cannot regenerate) must survive."""
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    # AST-only re-extract: the doc changed — Intro heading replaced by
+    # Quickstart. extract() always stamps _origin=ast.
+    chunk = {"nodes": [
+        {"id": "docs_readme", "label": "Readme", "file_type": "document",
+         "source_file": "docs/readme.md", "source_location": "L1",
+         "_origin": "ast"},
+        {"id": "docs_readme_quickstart", "label": "Quickstart",
+         "file_type": "document", "source_file": "docs/readme.md",
+         "source_location": "L5", "_origin": "ast"},
+    ], "edges": [
+        {"source": "docs_readme", "target": "docs_readme_quickstart",
+         "relation": "contains", "confidence": "EXTRACTED",
+         "source_file": "docs/readme.md", "source_location": "L5",
+         "weight": 1.0, "_origin": "ast"},
+    ]}
+    G = build_merge([chunk], graph_path, dedup=False)
+
+    assert "auth_flow" in G, (
+        "semantic layer deleted by an AST-only re-extract of the same file"
+    )
+    assert "docs_readme_intro" not in G, "stale AST node must be replaced"
+    assert "docs_readme_quickstart" in G, "fresh AST node must be present"
+    assert G.has_edge("docs_readme", "docs_readme_quickstart")
+    carried_he_ids = {he.get("id") for he in G.graph.get("hyperedges", [])}
+    assert "auth_group" in carried_he_ids, (
+        "semantic-tier hyperedge dropped by an AST-only re-extract (#2336)"
+    )
+
+
+def test_merge_raw_extraction_tier_scoped(tmp_path):
+    """#2333 raw-path mirror: merge_raw_extraction (extract --no-cluster
+    incremental) applies the same tier-scoped replace as build_merge — a
+    semantic-only re-extract keeps the file's AST nodes/edges."""
+    from graphify.build import merge_raw_extraction
+
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    new = {"nodes": [
+        {"id": "session_model", "label": "Session Model", "file_type": "concept",
+         "source_file": "docs/readme.md", "source_location": None},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    out = merge_raw_extraction(new, graph_path)
+
+    node_ids = {n["id"] for n in out["nodes"]}
+    assert {"docs_readme", "docs_readme_intro", "session_model"} <= node_ids, (
+        "AST layer dropped by a semantic-only raw re-extract"
+    )
+    assert "auth_flow" not in node_ids, "old semantic node must be replaced"
+    edge_keys = {(e.get("source"), e.get("target")) for e in out["edges"]}
+    assert ("docs_readme", "docs_readme_intro") in edge_keys, (
+        "AST edge dropped by a semantic-only raw re-extract"
+    )
+    he_ids = {he.get("id") for he in out.get("hyperedges", [])}
+    assert "auth_group" not in he_ids, (
+        "semantic-tier hyperedge must be replaced by a semantic re-extract"
+    )
+
+
+def test_is_ast_tier_legacy_fallback():
+    """#2334: _origin wins when present; unstamped legacy items fall back to
+    the source_location shape (AST emits 'L<line>', semantic emits null)."""
+    from graphify.build import _is_ast_tier
+
+    assert _is_ast_tier({"_origin": "ast"}) is True
+    assert _is_ast_tier({"_origin": "ast", "source_location": None}) is True
+    assert _is_ast_tier({"source_location": "L10"}) is True
+    assert _is_ast_tier({"source_location": None}) is False
+    assert _is_ast_tier({}) is False
+    assert _is_ast_tier({"_origin": "semantic", "source_location": "L10"}) is False
+
+
 def test_build_merge_root_collapses_convention_drift(tmp_path):
     """Skill contract: the extraction subagent must emit source_file as the
     verbatim path from FILE_LIST AND the caller must pass root= (the build root).
@@ -933,6 +1434,65 @@ def test_graph_has_legacy_ids_detects_old_scheme():
     # coincides with the old file-stem form of pkg/sub/thing.go.
     go_symbol = [{"id": "sub_thing", "source_file": "pkg/sub/thing.go", "type": "code", "source_location": "L3"}]
     assert graph_has_legacy_ids(go_symbol, root=".") is False
+
+
+# ── #2408: globally-scoped MCP node ids are not file-stem derived ──────────────
+
+@pytest.mark.parametrize("mcp_kind, nid", [
+    ("mcp_command", "mcp_command_npx"),
+    ("mcp_package", "mcp_package_google_cloud_cloud_run_mcp"),
+    ("env_var", "env_var_google_cloud_project"),
+])
+def test_graph_has_legacy_ids_ignores_global_mcp_ids(mcp_kind, nid):
+    """MCP ingest stamps every node with L1 (JSON has no line info), so global ids
+    would otherwise be read as file-level. Under `sub/.mcp.json` the old bare stem
+    is `mcp`, which these ids legitimately start with (#2408)."""
+    from graphify.build import graph_has_legacy_ids
+    node = {
+        "id": nid,
+        "source_file": "sub/.mcp.json",
+        "source_location": "L1",
+        "metadata": {"mcp_kind": mcp_kind},
+    }
+    assert graph_has_legacy_ids([node], root=".") is False
+
+
+def test_graph_has_legacy_ids_still_checks_file_scoped_mcp_nodes():
+    """The exemption is narrow: file-derived MCP kinds stay under detection, and a
+    missing/malformed metadata blob doesn't exempt anything (or crash)."""
+    from graphify.build import graph_has_legacy_ids
+    for kind in ("mcp_config_file", "mcp_server"):
+        stale = {"id": "mcp_mcp_server_x", "source_file": "sub/.mcp.json",
+                 "source_location": "L1", "metadata": {"mcp_kind": kind}}
+        assert graph_has_legacy_ids([stale], root=".") is True
+    for meta in (None, "not-a-dict", {}, {"mcp_kind": None}):
+        stale = {"id": "mcp_mcp_server_x", "source_file": "sub/.mcp.json",
+                 "source_location": "L1", "metadata": meta}
+        assert graph_has_legacy_ids([stale], root=".") is True
+
+
+@pytest.mark.parametrize("mcp_dir", ["", "sub"])
+def test_fresh_mcp_graph_is_not_flagged_legacy(tmp_path, monkeypatch, mcp_dir):
+    """End-to-end: a freshly extracted graph containing a .mcp.json — nested or at
+    the repo root — must not nudge the user to rebuild (#2408)."""
+    from graphify.build import graph_has_legacy_ids
+    from graphify.extract import extract
+
+    (tmp_path / "main.py").write_text("def main():\n    return 1\n")
+    mcp_parent = tmp_path / mcp_dir if mcp_dir else tmp_path
+    mcp_parent.mkdir(parents=True, exist_ok=True)
+    (mcp_parent / ".mcp.json").write_text(json.dumps({"mcpServers": {"cloud-run": {
+        "command": "npx",
+        "args": ["-y", "@google-cloud/cloud-run-mcp"],
+        "env": {"GOOGLE_CLOUD_PROJECT": "x"},
+    }}}))
+
+    monkeypatch.chdir(tmp_path)
+    rel = Path(mcp_dir, ".mcp.json") if mcp_dir else Path(".mcp.json")
+    result = extract([Path("main.py"), rel], root=Path("."), parallel=False)
+    ids = {n["id"] for n in result["nodes"]}
+    assert "mcp_command_npx" in ids  # guard: the ingest actually ran
+    assert graph_has_legacy_ids(result["nodes"], root=".") is False
 
 
 def test_semantic_rekey_relative_vs_absolute_source_file():
@@ -1061,3 +1621,494 @@ def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
     assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
     assert "he_all_ghost" in capsys.readouterr().err
+
+
+# --- foreign-absolute source_file must not leak into IDs --------------------
+# A graph.json is portable: built in Docker/Linux CI, updated on a Windows
+# workstation, or the reverse. Every guard that asks "is this stored path
+# absolute?" therefore has to answer for BOTH platforms. Host-only tests
+# (Path.is_absolute / os.path.isabs) silently call the other platform's
+# absolute paths relative, which bakes a build directory into node IDs (the
+# mirror of #2197, reported as #2618) or joins it under the scan root.
+#
+# os.path.isabs is doubly unsafe here: Python 3.13 changed ntpath.isabs so a
+# single leading slash is no longer absolute, where 3.10-3.12 said it was, so
+# the same guard meant different things across supported interpreters.
+
+FOREIGN_ABSOLUTE_SOURCE_FILES = [
+    "/home/ci/build/repo/docs/api/README.md",   # POSIX-absolute (Linux/Docker build)
+    "C:/Users/u/repo/docs/api/README.md",       # Windows-absolute, forward slashes
+]
+
+
+@pytest.mark.parametrize("sf", FOREIGN_ABSOLUTE_SOURCE_FILES)
+def test_semantic_rekey_skips_absolute_from_either_platform(sf):
+    """#2618: an absolute source_file is left alone whichever OS wrote it."""
+    from graphify.build import _semantic_id_remap
+    nodes = [{"id": "api_readme", "source_file": sf, "type": "document"}]
+    assert _semantic_id_remap(nodes, None) == {}, (
+        f"{sf!r} leaked its on-disk path into the node ID"
+    )
+
+
+@pytest.mark.parametrize("sf", FOREIGN_ABSOLUTE_SOURCE_FILES)
+def test_graph_has_legacy_ids_skips_absolute_from_either_platform(sf):
+    """The legacy-ID probe derives a stem from source_file, so it must skip an
+    absolute path rather than mint a stem out of the whole build directory."""
+    from graphify.build import graph_has_legacy_ids
+    nodes = [{"id": "api_readme", "source_file": sf,
+              "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(nodes, root=None) is False
+
+
+def test_norm_source_file_relativizes_a_posix_absolute_path():
+    """A Linux-built graph's absolute source_file must relativize against the
+    matching root regardless of the host running the update."""
+    from graphify.build import _norm_source_file
+    assert _norm_source_file(
+        "/home/ci/build/repo/docs/api/README.md", "/home/ci/build/repo"
+    ) == "docs/api/README.md"
+
+
+def test_build_from_json_relativizes_definition_file():
+    """A merged C/C++/ObjC decl/def node records where the symbol is implemented
+    in `definition_file`. That is a path into the scanned tree just like
+    `source_file`, so the graph must store it repo-relative — otherwise the
+    build machine's absolute path ships in graph.json and a reader on another
+    checkout (or the MCP `get_node` answer) points at a file that is not there."""
+    from graphify.build import build_from_json
+
+    root = "/home/ci/build/repo"
+    extraction = {
+        "nodes": [{
+            "id": "foo_bar",
+            "label": "bar",
+            "type": "function",
+            "file_type": "code",
+            "_origin": "ast",
+            "source_file": f"{root}/src/Foo.h",
+            "source_location": "L10",
+            "definition_file": f"{root}/src/Foo.cpp",
+            "definition_location": "L42",
+        }],
+        "edges": [],
+    }
+    G = build_from_json(extraction, root=root)
+    assert G.nodes["foo_bar"]["source_file"] == "src/Foo.h"
+    assert G.nodes["foo_bar"]["definition_file"] == "src/Foo.cpp"
+    # the line number is a plain string and must survive untouched
+    assert G.nodes["foo_bar"]["definition_location"] == "L42"
+
+
+def test_derive_prune_root_recovers_root_from_posix_absolute_prune_sources():
+    """The prune-root recovery skips any prune source it thinks is relative.
+
+    With a host-only absoluteness test, every POSIX-absolute prune source was
+    skipped on Windows, the root came back None, and prune/replace silently
+    no-opped — the failure mode of #1151 / #2446 / #2012, reached from the other
+    direction.
+    """
+    from graphify.build import _derive_prune_root
+    stored = {"docs/a.md", "/home/ci/build/repo/docs/b.md"}
+    assert _derive_prune_root(
+        ["/home/ci/build/repo/docs/a.md"], stored
+    ) == "/home/ci/build/repo"
+
+
+# ── #3411: Cross-file stub nodes must not pollute AST replacement set ────────
+
+
+def test_build_merge_sln_stub_does_not_replace_referenced_csproj(tmp_path):
+    """#3411: Re-extracting a .sln must replace only the .sln's AST contribution.
+    Cross-file project stubs (source_file='A/A.csproj') in the .sln chunk must not
+    cause A/A.csproj's PackageReference/TargetFramework nodes and edges to be wiped."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # Initial full extraction:
+    # 1) A.csproj with framework, package reference, and internal edges
+    # 2) A.sln containing A.csproj
+    c_proj = {
+        "nodes": [
+            {"id": "a_a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "framework_net8_0", "label": "net8.0", "file_type": "concept",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "nuget_newtonsoft_json", "label": "Newtonsoft.Json (13.0.3)",
+             "file_type": "code", "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_a_csproj", "target": "framework_net8_0", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "a_a_csproj", "target": "nuget_newtonsoft_json", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "A" / "A.csproj")],
+    }
+    sln_initial = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "source_location": None, "_origin": "ast"},
+            {"id": "a_a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_a_csproj", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "A.sln", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "A.sln")],
+    }
+    G0 = build([c_proj, sln_initial], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Incremental update: ONLY A.sln is modified and re-extracted.
+    # extract_sln produces the solution node AND a cross-file stub for A/A.csproj.
+    sln_reextracted = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "source_location": None, "_origin": "ast"},
+            {"id": "a_a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_a_csproj", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "A.sln", "weight": 1.0, "_origin": "ast"},
+        ],
+        # Explicit provenance: only A.sln was actually extracted
+        "extracted_sources": [str(root / "A.sln")],
+    }
+
+    G1 = build_merge([sln_reextracted], graph_path, dedup=False, root=root)
+
+    node_ids = set(G1.nodes())
+    # 1. Solution node and project stub node are present
+    assert "a_sln" in node_ids, "Solution node must be present"
+    assert "a_a_csproj" in node_ids, "Project node must be present"
+    # 2. PackageReference and TargetFramework nodes of A.csproj must SURVIVE
+    assert "framework_net8_0" in node_ids, (
+        "#3411 regression: TargetFramework node of referenced .csproj was wiped by .sln re-extraction"
+    )
+    assert "nuget_newtonsoft_json" in node_ids, (
+        "#3411 regression: PackageReference node of referenced .csproj was wiped by .sln re-extraction"
+    )
+    # 3. Edges must SURVIVE
+    assert G1.has_edge("a_sln", "a_a_csproj"), "sln contains edge must be present"
+    assert G1.has_edge("a_a_csproj", "framework_net8_0"), (
+        "#3411 regression: references edge to TargetFramework was wiped"
+    )
+    assert G1.has_edge("a_a_csproj", "nuget_newtonsoft_json"), (
+        "#3411 regression: imports edge to PackageReference was wiped"
+    )
+
+
+def test_build_merge_project_reference_stub_does_not_replace_referenced_project(tmp_path):
+    """#3411: Re-extracting B.csproj (which has a ProjectReference to A.csproj) must
+    replace only B.csproj's AST contribution. A.csproj's PackageReference and
+    TargetFramework nodes must remain intact."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # Initial graph: A.csproj with package & framework; B.csproj referencing A.csproj
+    c_proj_a = {
+        "nodes": [
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "framework_net8_0", "label": "net8.0", "file_type": "concept",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "nuget_pkg_a", "label": "PackageA (1.0.0)", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_csproj", "target": "framework_net8_0", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "a_csproj", "target": "nuget_pkg_a", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "A" / "A.csproj")],
+    }
+    c_proj_b = {
+        "nodes": [
+            {"id": "b_csproj", "label": "B.csproj", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "b_old_symbol", "label": "old_fn", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": "L10", "_origin": "ast"},
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "b_csproj", "target": "b_old_symbol", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "b_csproj", "target": "a_csproj", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "B" / "B.csproj")],
+    }
+    G0 = build([c_proj_a, c_proj_b], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Re-extract ONLY B.csproj (b_old_symbol replaced by b_new_symbol; ProjectReference stub to A.csproj emitted)
+    c_proj_b_reextracted = {
+        "nodes": [
+            {"id": "b_csproj", "label": "B.csproj", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "b_new_symbol", "label": "new_fn", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": "L12", "_origin": "ast"},
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "b_csproj", "target": "b_new_symbol", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "b_csproj", "target": "a_csproj", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "B" / "B.csproj")],
+    }
+
+    G1 = build_merge([c_proj_b_reextracted], graph_path, dedup=False, root=root)
+
+    node_ids = set(G1.nodes())
+    # 1. B.csproj was replaced properly
+    assert "b_new_symbol" in node_ids, "New symbol in B.csproj must be present"
+    assert "b_old_symbol" not in node_ids, "Stale symbol in B.csproj must be dropped"
+    # 2. A.csproj package & framework nodes must NOT be dropped
+    assert "nuget_pkg_a" in node_ids, (
+        "#3411 regression: PackageReference in referenced A.csproj was wiped when B.csproj was re-extracted"
+    )
+    assert "framework_net8_0" in node_ids, (
+        "#3411 regression: TargetFramework in referenced A.csproj was wiped when B.csproj was re-extracted"
+    )
+    # 3. All edges survive
+    assert G1.has_edge("a_csproj", "nuget_pkg_a")
+    assert G1.has_edge("a_csproj", "framework_net8_0")
+    assert G1.has_edge("b_csproj", "a_csproj")
+
+
+def test_merge_raw_extraction_cross_file_stub_parity(tmp_path):
+    """#3411: merge_raw_extraction shares the same explicit extraction provenance
+    scoping as build_merge."""
+    import networkx as nx
+    from graphify.build import merge_raw_extraction
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # Initial graph on disk
+    c_proj = {
+        "nodes": [
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "nuget_pkg", "label": "PackageA", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_csproj", "target": "nuget_pkg", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+    }
+    G0 = build([c_proj], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Re-extract A.sln with cross-file stub for A.csproj
+    sln_reextracted = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "source_location": None, "_origin": "ast"},
+            {"id": "a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_csproj", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "A.sln", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": ["A.sln"],
+    }
+
+    merged = merge_raw_extraction(sln_reextracted, graph_path=graph_path, root=root)
+    merged_node_ids = {n["id"] for n in merged["nodes"]}
+
+    assert "nuget_pkg" in merged_node_ids, (
+        "#3411: raw incremental path wiped PackageReference from referenced .csproj"
+    )
+    assert any(
+        e.get("source") == "a_csproj" and e.get("target") == "nuget_pkg"
+        for e in merged["edges"]
+    ), "#3411: raw incremental path wiped imports edge to PackageReference"
+
+
+def test_build_merge_explicit_ast_sources_argument(tmp_path):
+    """#3411: build_merge honors ast_sources argument when passed explicitly."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    c_proj = {
+        "nodes": [
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+            {"id": "nuget_pkg", "label": "PackageA", "file_type": "code",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_csproj", "target": "nuget_pkg", "relation": "imports",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+        ],
+    }
+    G0 = build([c_proj], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Chunk has nodes without 'extracted_sources' attached to chunk,
+    # but ast_sources is provided explicitly to build_merge
+    sln_chunk = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "_origin": "ast"},
+            {"id": "a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_csproj", "relation": "contains",
+             "source_file": "A.sln", "_origin": "ast"},
+        ],
+    }
+
+    G1 = build_merge([sln_chunk], graph_path, dedup=False, root=root, ast_sources=["A.sln"])
+    assert "nuget_pkg" in G1, "ast_sources explicit arg must protect undispatched A.csproj"
+
+
+def test_build_annotations_all_resolve():
+    # build.py imports every annotated name at module scope -- no TYPE_CHECKING-only
+    # names -- so an unresolvable hint here means a missing import, not a lazy one.
+    import inspect
+    import typing
+
+    from graphify import build as build_module
+
+    unresolvable = []
+    for name, obj in vars(build_module).items():
+        if inspect.isfunction(obj) and obj.__module__ == build_module.__name__:
+            try:
+                typing.get_type_hints(obj)
+            except NameError as exc:
+                unresolvable.append(f"{name}: {exc}")
+    assert not unresolvable, "\n".join(unresolvable)
+
+
+def test_method_ghost_dedupe_and_alias_resolution_3705():
+    from graphify.build import build_from_json
+
+    extraction = {
+        "nodes": [
+            # AST node with class segment and leading dot
+            {
+                "id": "broker_mock_tda_mocktdaaccount_save_state",
+                "label": ".save_state()",
+                "file_type": "code",
+                "source_file": "broker/mock_tda.py",
+                "source_location": "L220",
+                "_origin": "ast",
+            },
+            # Spec-conformant semantic ghost node (no class segment, no leading dot)
+            {
+                "id": "broker_mock_tda_save_state",
+                "label": "save_state()",
+                "file_type": "code",
+                "source_file": "broker/mock_tda.py",
+            },
+            {
+                "id": "doc_summary",
+                "label": "Doc Summary",
+                "file_type": "document",
+                "source_file": "docs/summary.md",
+            },
+        ],
+        "edges": [
+            {
+                "source": "doc_summary",
+                "target": "broker_mock_tda_save_state",
+                "relation": "references",
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": "docs/summary.md",
+            }
+        ],
+    }
+    G = build_from_json(extraction)
+    # The ghost node should be removed/remapped into the canonical AST node
+    assert "broker_mock_tda_save_state" not in G.nodes
+    assert "broker_mock_tda_mocktdaaccount_save_state" in G.nodes
+    assert G.has_edge("doc_summary", "broker_mock_tda_mocktdaaccount_save_state")
+
+
+def test_method_ghost_ambiguous_same_name_in_one_file_is_not_merged_3705():
+    """Two AST methods with the same name in the SAME file (different classes)
+    are a genuine ambiguity: a spec-conformant ghost must NOT be remapped or
+    aliased onto either one (#3705 follow-up guard). The single-candidate rule
+    (len == 1) must skip the 2-candidate case and leave the ghost intact."""
+    from graphify.build import build_from_json
+
+    extraction = {
+        "nodes": [
+            {"id": "svc_a_save_state", "label": ".save_state()", "file_type": "code",
+             "source_file": "svc.py", "source_location": "L10", "_origin": "ast"},
+            {"id": "svc_b_save_state", "label": ".save_state()", "file_type": "code",
+             "source_file": "svc.py", "source_location": "L40", "_origin": "ast"},
+            # spec-conformant ghost that could match either — must stay unmerged
+            {"id": "svc_save_state", "label": "save_state()", "file_type": "code",
+             "source_file": "svc.py"},
+            {"id": "doc", "label": "Doc", "file_type": "document", "source_file": "d.md"},
+        ],
+        "edges": [
+            {"source": "doc", "target": "svc_save_state", "relation": "references",
+             "confidence": "INFERRED", "confidence_score": 0.85, "source_file": "d.md"},
+        ],
+    }
+    G = build_from_json(extraction)
+    # Both AST methods survive distinctly; the ambiguous ghost is NOT merged into either.
+    assert "svc_a_save_state" in G.nodes and "svc_b_save_state" in G.nodes
+    assert "svc_save_state" in G.nodes, "ambiguous ghost must be left intact, not remapped"
+    # And it must not have been aliased onto one of them (edge stays on the ghost).
+    assert G.has_edge("doc", "svc_save_state")
+    assert not G.has_edge("doc", "svc_a_save_state")
+    assert not G.has_edge("doc", "svc_b_save_state")
+
+
+
+def test_has_parallel_links_detects_repeated_pairs():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "contains"},
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    assert has_parallel_links(links) is True
+
+
+def test_has_parallel_links_false_without_repeats():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    assert has_parallel_links(links) is False
+    assert has_parallel_links([]) is False
+    assert has_parallel_links(None) is False
+
+
+def test_has_parallel_links_antiparallel_is_not_parallel_when_directed():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "a", "relation": "calls"},
+    ]
+    assert has_parallel_links(links, directed=True) is False
+    assert has_parallel_links(links, directed=False) is True

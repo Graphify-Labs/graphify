@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import graphify.__main__ as mainmod
+from graphify.cli import EXIT_AMBIGUOUS
 
 
 def _write_graph(tmp_path):
@@ -236,3 +237,166 @@ def test_explain_grouping_boundary_at_exactly_21_vs_20_connections(monkeypatch, 
     out20 = _run(monkeypatch, p20, "hub", capsys)
     assert "Grouped by file:" not in out20
     assert "more" not in out20
+
+
+# --- ambiguous label across files (#explain-ambiguity) -----------------------
+
+
+def _write_ambiguous_graph(tmp_path, *, reverse: bool = False):
+    """Two DIFFERENT symbols that happen to share a label, in different files.
+
+    This is the monorepo shape: each workspace defines its own `MetricsPort`.
+    Both land in `_find_node`'s `exact` tier, separated only by iteration order.
+    """
+    nodes = [
+        {"id": "chat_metrics_port", "label": "MetricsPort",
+         "source_file": "services/chat/src/application/ports/metrics.port.ts",
+         "community": 0},
+        {"id": "scraping_metrics_port", "label": "MetricsPort",
+         "source_file": "services/scraping/src/application/ports/metrics.port.ts",
+         "community": 0},
+    ]
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": list(reversed(nodes)) if reverse else nodes,
+        "links": [],
+    }
+    p = tmp_path / ("graph_rev.json" if reverse else "graph.json")
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def _run_expect_exit(monkeypatch, graph_path, label, capsys):
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", label, "--graph", str(graph_path)])
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        return capsys.readouterr().out, exc.code
+    return capsys.readouterr().out, None
+
+
+def test_explain_ambiguous_label_lists_every_candidate(monkeypatch, tmp_path, capsys):
+    p = _write_ambiguous_graph(tmp_path)
+    out, code = _run_expect_exit(monkeypatch, p, "MetricsPort", capsys)
+    assert "Ambiguous" in out
+    assert "services/chat/src/application/ports/metrics.port.ts" in out
+    assert "services/scraping/src/application/ports/metrics.port.ts" in out
+    assert code == EXIT_AMBIGUOUS
+    # It must not present one file as the answer.
+    assert "Node: MetricsPort\n  ID:" not in out
+
+
+def test_explain_ambiguous_answer_does_not_depend_on_node_order(
+    monkeypatch, tmp_path, capsys
+):
+    """The bug: reversing node order flipped which file was reported as fact."""
+    forward, _ = _run_expect_exit(
+        monkeypatch, _write_ambiguous_graph(tmp_path), "MetricsPort", capsys)
+    reverse, _ = _run_expect_exit(
+        monkeypatch, _write_ambiguous_graph(tmp_path, reverse=True), "MetricsPort", capsys)
+    assert "Ambiguous" in forward and "Ambiguous" in reverse
+    # Same candidate set either way, regardless of iteration order.
+    assert sorted(l.strip() for l in forward.splitlines() if "metrics.port.ts" in l) == \
+           sorted(l.strip() for l in reverse.splitlines() if "metrics.port.ts" in l)
+
+
+def test_explain_matches_within_one_file_are_not_ambiguous(monkeypatch, tmp_path, capsys):
+    """A file node plus its members is ordinary precedence, not a tie."""
+    source_file = "services/chat/src/application/ports/metrics.port.ts"
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "file_node", "label": "metrics.port.ts",
+             "source_file": source_file, "source_location": "L1", "community": 0},
+            {"id": "member", "label": "MetricsPort",
+             "source_file": source_file, "source_location": "L4", "community": 0},
+        ],
+        "links": [{"source": "file_node", "target": "member",
+                   "relation": "contains", "confidence": "EXTRACTED"}],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "MetricsPort", capsys)
+    assert "Ambiguous" not in out
+    assert "Node: MetricsPort" in out
+
+
+def test_explain_path_scoped_symbol_resolves_the_ambiguous_case(monkeypatch, tmp_path, capsys):
+    """#3485: the ambiguity message suggests retrying with "the repo-relative
+    path", but a bare path resolves to the FILE node, not the symbol, so
+    that retry either finds nothing or the wrong thing. `path::Symbol`
+    restricts the label match to the given file, so the same query that
+    produced the ambiguity now resolves to the specific symbol asked
+    about."""
+    p = _write_ambiguous_graph(tmp_path)
+    out = _run(
+        monkeypatch, p,
+        "services/chat/src/application/ports/metrics.port.ts::MetricsPort",
+        capsys,
+    )
+    assert "Ambiguous" not in out
+    assert "ID:        chat_metrics_port" in out
+
+    out2 = _run(
+        monkeypatch, p,
+        "services/scraping/src/application/ports/metrics.port.ts::MetricsPort",
+        capsys,
+    )
+    assert "Ambiguous" not in out2
+    assert "ID:        scraping_metrics_port" in out2
+
+
+def test_explain_path_scoped_symbol_falls_back_when_nothing_matches(monkeypatch, tmp_path, capsys):
+    """A path part that matches no file, or a symbol not in that file, must
+    fall through to the ordinary "no match" behavior rather than crash or
+    silently pick something else."""
+    p = _write_ambiguous_graph(tmp_path)
+    out, code = _run_expect_exit(
+        monkeypatch, p,
+        "services/chat/src/application/ports/metrics.port.ts::NotThere",
+        capsys,
+    )
+    assert "No node matching" in out
+
+
+def test_explain_double_colon_label_without_path_match_still_resolves(monkeypatch, tmp_path, capsys):
+    """A language that genuinely uses "::" in a label (Rust modules, C++
+    namespaces) must still resolve via ordinary matching when the string
+    before "::" does not happen to match any file path."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "mymod_foo_bar", "label": "Foo::Bar",
+             "source_file": "src/lib.rs", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "Foo::Bar", capsys)
+    assert "Ambiguous" not in out
+    assert "ID:        mymod_foo_bar" in out
+
+
+def test_explain_double_colon_label_not_hijacked_by_a_coincidental_path_match(monkeypatch, tmp_path, capsys):
+    """A native "::" label must resolve to itself even when its prefix happens
+    to match an unrelated file elsewhere in the graph (an extensionless file
+    literally named the same as the module) -- the path::Symbol form must not
+    shadow a query the literal label already answers."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "mylib_bar", "label": "mylib::Bar",
+             "source_file": "src/mylib.rs", "community": 0},
+            {"id": "mylib_file_bar", "label": "Bar",
+             "source_file": "mylib", "community": 1},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "mylib::Bar", capsys)
+    assert "Ambiguous" not in out
+    assert "ID:        mylib_bar" in out

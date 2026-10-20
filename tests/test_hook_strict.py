@@ -86,7 +86,10 @@ def test_fresh_query_stamp_suppresses_deny(tmp_path, monkeypatch):
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+    # Recently oriented: no block. This session's first nudge still fires, since
+    # the project-wide stamp cannot tell which agent queried (#3435).
     assert not _is_deny(out) and "MANDATORY" in out
+    assert _invoke("read", _read(f), tmp_path, monkeypatch, strict=True) == ""
 
 
 def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
@@ -138,6 +141,13 @@ def test_needs_update_flag_softens(tmp_path, monkeypatch):
     (tmp_path / "graphify-out" / "needs_update").write_text("1", encoding="utf-8")
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
     assert not _is_deny(out) and "stale" in out.lower()
+
+
+def test_stale_notice_shares_the_session_nudge_budget(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, fresh=False)
+    env = {"GRAPHIFY_HOOK_NUDGE_CAP": "1"}
+    assert "stale" in _invoke("read", _read(f), tmp_path, monkeypatch, env=env).lower()
+    assert _invoke("read", _read(f), tmp_path, monkeypatch, env=env) == ""
 
 
 def test_glob_never_denies(tmp_path, monkeypatch):
@@ -200,3 +210,15 @@ def test_install_hook_carries_strict_flag():
     # search hook is unchanged either way
     for hooks in (soft, strict):
         assert next(h for h in hooks if h["matcher"] == "Bash|Grep")["hooks"][0]["command"].endswith("hook-guard search")
+
+
+def test_strict_deny_shows_the_files_graph_nodes(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    (tmp_path / "graphify-out" / "graph.json").write_text(json.dumps({"nodes": [
+        {"id": "x", "label": "x()", "source_file": "src/mod.py", "source_location": "L1"},
+    ], "links": []}), encoding="utf-8")
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+    assert _is_deny(out)
+    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "- x() (src/mod.py L1)" in reason
+    assert 'graphify explain "mod.py"' in reason

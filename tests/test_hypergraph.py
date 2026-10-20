@@ -137,6 +137,40 @@ def test_attach_hyperedges_skips_entry_without_id():
     assert G.graph.get("hyperedges", []) == []
 
 
+def test_attach_hyperedges_tolerates_id_less_persisted():
+    # Regression for #2775: the semantic extractor emits hyperedges with no `id`
+    # and build.py persists them verbatim, so a prior graph.json can carry id-less
+    # hyperedges. On the next (incremental) run, attach_hyperedges read that
+    # persisted set with a hard `h["id"]` and died with `KeyError: 'id'`, writing
+    # nothing. Reading the persisted set must tolerate missing ids.
+    G = nx.DiGraph()
+    G.graph["hyperedges"] = [{"nodes": ["a", "b"], "type": "project", "attributes": {}}]
+    attach_hyperedges(G, [{"id": "flow_a", "label": "Flow A", "nodes": ["A", "B"]}])
+    # No crash; the id-less persisted entry is retained and the new id-bearing
+    # incoming hyperedge is appended.
+    assert len(G.graph["hyperedges"]) == 2
+
+
+def test_attach_hyperedges_tolerates_many_id_less_persisted():
+    """The real corpus had 183/234 persisted hyperedges id-less: all of them must
+    load without crashing and be retained (#2775)."""
+    G = nx.DiGraph()
+    G.graph["hyperedges"] = [
+        {"nodes": ["a", "b"], "type": "project", "attributes": {}} for _ in range(5)
+    ]
+    attach_hyperedges(G, [{"id": "flow_a", "nodes": ["A", "B"]}])
+    assert len(G.graph["hyperedges"]) == 6  # 5 id-less retained + 1 appended
+
+
+def test_attach_hyperedges_treats_empty_id_as_id_less():
+    """An empty-string id is falsy, so it is treated the same as a missing id:
+    it seeds nothing into the dedup set and does not crash."""
+    G = nx.DiGraph()
+    G.graph["hyperedges"] = [{"id": "", "nodes": ["a", "b"], "type": "project"}]
+    attach_hyperedges(G, [{"id": "flow_a", "nodes": ["A", "B"]}])
+    assert len(G.graph["hyperedges"]) == 2
+
+
 # ---------------------------------------------------------------------------
 # 3. to_json includes hyperedges key
 # ---------------------------------------------------------------------------

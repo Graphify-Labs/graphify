@@ -97,3 +97,50 @@ def test_disambiguate_path_proximity_same_dir() -> None:
         "pkg/a/caller.py",
     )
     assert winner == "near"
+
+
+# --- cross-platform absoluteness for STORED paths ---------------------------
+# Path.is_absolute()/os.path.isabs() answer for the host OS, which is the wrong
+# question for a path read out of graph.json: graphs are built in Docker/CI and
+# updated on Windows (and vice versa), so the string in hand may follow the
+# other platform's rules. Getting this wrong bakes an on-disk path into node IDs
+# (#2197, #1789) or joins an absolute path under the scan root.
+
+@pytest.mark.parametrize("path", [
+    "/home/ci/build/repo/docs/api/README.md",   # POSIX absolute
+    "/",                                        # POSIX root
+    "C:/Users/u/repo/docs/a.md",                # Windows drive, forward slashes
+    r"C:\Users\u\repo\docs\a.md",               # Windows drive, backslashes
+    r"\\server\share\docs\a.md",                # UNC
+    "//server/share/docs/a.md",                 # UNC, forward slashes
+])
+def test_is_absolute_any_platform_accepts_both_conventions(path):
+    from graphify.paths import is_absolute_any_platform
+    assert is_absolute_any_platform(path) is True, (
+        f"{path!r} is absolute on some platform and must be treated as such"
+    )
+
+
+@pytest.mark.parametrize("path", [
+    "docs/api/README.md",
+    r"docs\api\README.md",
+    "README.md",
+    ".",
+    "",
+    None,
+    r"\foo",         # Windows root-relative (no drive) — not absolute anywhere
+])
+def test_is_absolute_any_platform_rejects_relative(path):
+    from graphify.paths import is_absolute_any_platform
+    assert is_absolute_any_platform(path) is False
+
+
+def test_is_absolute_any_platform_is_host_independent():
+    """The whole point: the answer must not depend on which OS is running.
+
+    Both spellings are absolute somewhere, so both must return True on every
+    host — that is exactly what Path.is_absolute() fails to do.
+    """
+    from graphify.paths import is_absolute_any_platform
+    assert is_absolute_any_platform("/home/ci/x.md")
+    assert is_absolute_any_platform("C:/Users/u/x.md")

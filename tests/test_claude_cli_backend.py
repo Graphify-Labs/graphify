@@ -87,6 +87,183 @@ def test_raises_on_nonzero_exit():
             llm._call_claude_cli("dummy", max_tokens=8192)
 
 
+_ERROR_ENVELOPE = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": True,
+    "result": "API Error: Rate limit reached",
+    "stop_reason": "stop_sequence",
+    "usage": {"input_tokens": 0, "output_tokens": 0},
+    "modelUsage": {},
+}
+
+
+def test_nonzero_exit_surfaces_envelope_error_when_stderr_empty():
+    # The CLI reports API failures in the stdout JSON envelope, not on stderr.
+    # Without reading it the user gets a bare "exited 1: " and no cause (#2554).
+    completed = MagicMock(
+        returncode=1, stdout=json.dumps(_ERROR_ENVELOPE), stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached"):
+            llm._call_claude_cli("dummy", max_tokens=8192)
+
+
+def test_raises_on_error_envelope_with_zero_exit():
+    # `claude -p` exits 0 on a rate limit and flags it as is_error in the
+    # envelope. Parsing `result` as model output yields an empty graph that
+    # _response_is_hollow then misreads as truncation, so adaptive retry
+    # bisects the chunk while every request is still being refused (#2554).
+    completed = MagicMock(
+        returncode=0, stdout=json.dumps(_ERROR_ENVELOPE), stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached"):
+            llm._call_claude_cli("dummy", max_tokens=8192)
+
+
+def test_raises_on_array_shaped_error_envelope():
+    # Newer CLIs (>= ~2.1) stream a JSON ARRAY of events with the result
+    # object last; the is_error flag must be honoured in that shape too (#2554).
+    streamed = [
+        {"type": "system", "subtype": "init"},
+        dict(_ERROR_ENVELOPE),
+    ]
+    completed = MagicMock(returncode=0, stdout=json.dumps(streamed), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached"):
+            llm._call_claude_cli("dummy", max_tokens=8192)
+
+
+def test_call_llm_raises_on_error_envelope():
+    # _call_llm returns envelope["result"] verbatim, so a rate-limited call
+    # hands "API Error: Rate limit reached" back to its callers as if it were
+    # model output — the dedup tiebreaker and community labeling then write
+    # that string into the graph as a label (#2554).
+    completed = MagicMock(
+        returncode=0, stdout=json.dumps(_ERROR_ENVELOPE), stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached"):
+            llm._call_llm("dummy", backend="claude-cli")
+
+
+def test_call_llm_nonzero_exit_surfaces_envelope_error():
+    completed = MagicMock(
+        returncode=1, stdout=json.dumps(_ERROR_ENVELOPE), stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached"):
+            llm._call_llm("dummy", backend="claude-cli")
+
+
+def test_call_llm_success_still_returns_result_text():
+    # Genuine success (exit 0, is_error false) must keep returning the
+    # envelope's result text untouched.
+    envelope = dict(_ENVELOPE, result="a fine label")
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        assert llm._call_llm("dummy", backend="claude-cli") == "a fine label"
+
+
+@pytest.mark.parametrize(
+    ("env_model", "explicit_model", "expected_model"),
+    [
+        ("haiku", None, "haiku"),
+        (" claude-haiku-4-5-20251001 ", None, "claude-haiku-4-5-20251001"),
+        ("haiku", "sonnet", "sonnet"),
+        (None, "sonnet", "sonnet"),
+        (None, None, None),
+        ("", None, None),
+        ("   ", None, None),
+        ("haiku", "", "claude-code-plan"),
+    ],
+)
+def test_call_llm_model_precedence(
+    monkeypatch, env_model, explicit_model, expected_model,
+):
+    """Plain Claude CLI calls honor the env model without changing explicit defaults."""
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_CLI_MODEL", raising=False)
+    if env_model is not None:
+        monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", env_model)
+    envelope = dict(_ENVELOPE, result="a fine label")
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        if explicit_model is None:
+            result = llm._call_llm("dummy", backend="claude-cli")
+        else:
+            result = llm._call_llm(
+                "dummy", backend="claude-cli", model=explicit_model,
+            )
+    assert result == "a fine label"
+    argv = run.call_args.args[0]
+    if expected_model is None:
+        assert "--model" not in argv
+    else:
+        assert argv.count("--model") == 1
+        assert argv[argv.index("--model") + 1] == expected_model
+
+
+def test_label_batch_uses_claude_cli_model_env(monkeypatch):
+    """The label call chain forwards env-only model selection and still parses labels."""
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", "haiku")
+    envelope = dict(_ENVELOPE, result=json.dumps({"7": "Model Routing"}))
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        labels = llm._label_batch_with_retry(
+            [7], ["7: Claude CLI, Community Labels"],
+            backend="claude-cli", model=None,
+        )
+    assert labels == {7: "Model Routing"}
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--model") + 1] == "haiku"
+
+
+_MCP_PREAMBLE = (
+    "Client.listTools() called but server does not advertise tools capability "
+    "- returning empty list\n"
+)
+
+
+def test_envelope_survives_a_diagnostic_preamble_on_stdout():
+    """An MCP server that advertises no tools must not kill the whole chunk.
+
+    The CLI writes that notice to stdout ahead of the envelope, so json.loads
+    saw `Client.listTools()...` and raised. The failure lands after the model
+    has answered, so the tokens are already spent and the chunk is dropped --
+    every chunk, for anyone with an MCP server configured.
+    """
+    completed = MagicMock(
+        returncode=0, stdout=_MCP_PREAMBLE + json.dumps(_ENVELOPE), stderr=""
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
+
+
+def test_envelope_survives_preamble_around_array_shaped_stream():
+    """Same, for the >= 2.1 array-of-events shape."""
+    stream = [{"type": "system", "subtype": "init"}, _ENVELOPE]
+    completed = MagicMock(
+        returncode=0,
+        stdout=_MCP_PREAMBLE + json.dumps(stream) + "\ntrailing noise\n",
+        stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
+
+
 def test_raises_on_garbage_envelope():
     completed = MagicMock(returncode=0, stdout="not json", stderr="")
     with patch("shutil.which", return_value="/fake/bin/claude"), \

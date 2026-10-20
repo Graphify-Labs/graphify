@@ -14,29 +14,52 @@ import html
 from pathlib import Path
 
 from graphify.extractors.base import _make_id
+from graphify.rcfile import effective_suffix
 
 
-def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str], str]:
+def _build_csharp_type_def_index(
+    all_nodes: list[dict],
+    all_edges: list[dict] | None = None,
+) -> dict[tuple[str, str], str]:
     """Return deterministic ``(namespace, name) -> node_id`` C# type definitions."""
+    non_type_ids: set[str] = set()
+
+    if all_edges is not None:
+        for edge in all_edges:
+            rel = edge.get("relation")
+            if rel in ("case_of", "defines", "method"):
+                tgt = edge.get("_tgt") or edge.get("target")
+                if isinstance(tgt, str):
+                    non_type_ids.add(tgt)
+
     candidates: dict[tuple[str, str], list[dict]] = {}
+
     for node in all_nodes:
         if node.get("type") == "namespace":
             continue
+
         metadata = node.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
+
         if metadata.get("is_nested_type"):
             continue
+
         nid = node.get("id")
         label = node.get("label")
-        if not (isinstance(nid, str) and nid and isinstance(label, str) and label):
+
+        if not (
+            isinstance(nid, str)
+            and nid
+            and isinstance(label, str)
+            and label
+        ):
+            continue
+
+        if all_edges is not None and nid in non_type_ids:
             continue
         source_file = node.get("source_file")
-        if (
-            not isinstance(source_file, str)
-            or not source_file.endswith(".cs")
-            or node.get("file_type") != "code"
-        ):
+        if not _is_cs_file(source_file) or node.get("file_type") != "code":
             continue
         if label.endswith(")") or label.startswith(".") or "." in label:
             continue
@@ -105,7 +128,7 @@ def _resolve_cross_file_csharp_imports(
         if isinstance(label, str) and label and isinstance(nid, str) and nid:
             namespace_id_by_label.setdefault(label, nid)
 
-    type_def_index = _build_csharp_type_def_index(all_nodes)
+    type_def_index = _build_csharp_type_def_index(all_nodes, all_edges)
     if not namespace_id_by_label and not type_def_index:
         return
 
@@ -149,6 +172,270 @@ def _resolve_cross_file_csharp_imports(
     ]
 
 
+_DOTNET_SOURCE_EXTS = (".cs", ".razor", ".cshtml")
+
+
+def _is_cs_file(value: object) -> bool:
+    return isinstance(value, str) and effective_suffix(value) == ".cs"
+
+
+def _is_dotnet_source_file(value: object) -> bool:
+    return isinstance(value, str) and effective_suffix(value) in _DOTNET_SOURCE_EXTS
+
+
+def _metadata(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+class CsharpNameResolver:
+    """Namespace/using/alias-aware C# simple-name resolution.
+
+    Factored out of ``_resolve_csharp_type_references`` so the member-call pass
+    (``_resolve_csharp_member_calls`` in ``graphify/extract.py``) can type a
+    receiver with the same scoping rules the type-reference side already applies
+    (the core of #1620), instead of bailing on any corpus-wide bare-name clash.
+
+    Built from graph-stamped facts only: the ``(namespace, name)`` type-definition
+    index plus the per-file ``using``/alias import edges (each carrying its lexical
+    scope — ``("file", None)`` applies file-wide; ``("namespace", scope_id)``
+    applies only where ``scope_id`` is in the referencing node's ``scope_chain``).
+    """
+
+    def __init__(self, all_nodes: list[dict], all_edges: list[dict]) -> None:
+        self.node_by_id: dict[str, dict] = {
+            node["id"]: node
+            for node in all_nodes
+            if isinstance(node.get("id"), str) and node.get("id")
+        }
+        self.type_def_index = _build_csharp_type_def_index(all_nodes, all_edges)
+        self.known_namespaces = {
+            node.get("label")
+            for node in all_nodes
+            if node.get("type") == "namespace" and isinstance(node.get("label"), str)
+        }
+
+        self.namespace_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
+        self.aliases_by_file: dict[str, dict[str, list[tuple[str, str, str | None]]]] = {}
+        self.static_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
+        self.nested_types_by_holder: dict[str, dict[str, str]] = {}
+        self._holder_nid_cache: dict[str, str | None] = {}
+
+        for edge in all_edges:
+            if edge.get("relation") != "imports":
+                continue
+            source_node = self.node_by_id.get(edge.get("source"))
+            if not (
+                source_node
+                and isinstance(source_node.get("label"), str)
+                and _is_dotnet_source_file(source_node.get("label"))
+            ):
+                continue
+            source_file = source_node.get("source_file")
+            if not _is_dotnet_source_file(source_file):
+                continue
+            metadata = _metadata(edge.get("metadata"))
+            target_fqn = metadata.get("target_fqn")
+            if not isinstance(target_fqn, str) or not target_fqn:
+                continue
+            scope_kind = metadata.get("scope_kind") or "file"
+            scope_id = metadata.get("scope_id")
+            using_kind = metadata.get("using_kind")
+            if using_kind == "namespace":
+                entry = (target_fqn, scope_kind, scope_id)
+                bucket = self.namespace_usings_by_file.setdefault(source_file, [])
+                if entry not in bucket:
+                    bucket.append(entry)
+            elif using_kind == "alias":
+                alias = metadata.get("alias")
+                if isinstance(alias, str) and alias:
+                    entry = (target_fqn, scope_kind, scope_id)
+                    bucket = self.aliases_by_file.setdefault(source_file, {}).setdefault(alias, [])
+                    if entry not in bucket:
+                        bucket.append(entry)
+            elif using_kind == "static":
+                entry = (target_fqn, scope_kind, scope_id)
+                bucket = self.static_usings_by_file.setdefault(source_file, [])
+                if entry not in bucket:
+                    bucket.append(entry)
+
+        nested_candidates: dict[tuple[str, str], dict[str, dict]] = {}
+        for edge in all_edges:
+            if edge.get("relation") != "contains":
+                continue
+            target_nid = edge.get("target")
+            if not isinstance(target_nid, str) or not target_nid:
+                continue
+            target_node = self.node_by_id.get(target_nid)
+            if not (
+                target_node
+                and target_node.get("file_type") == "code"
+                and _metadata(target_node.get("metadata")).get("is_nested_type") is True
+            ):
+                continue
+            label = target_node.get("label")
+            if not isinstance(label, str) or not label:
+                continue
+            holder_nid = edge.get("source")
+            if not isinstance(holder_nid, str) or not holder_nid:
+                continue
+            nested_candidates.setdefault((holder_nid, label), {})[target_nid] = target_node
+
+        for (holder_nid, label), node_dict in nested_candidates.items():
+            canonical_nid = sorted(
+                node_dict.values(),
+                key=lambda n: (
+                    str(n.get("source_file") or ""),
+                    str(n.get("source_location") or ""),
+                    str(n.get("id") or ""),
+                ),
+            )[0]["id"]
+            self.nested_types_by_holder.setdefault(holder_nid, {})[label] = canonical_nid
+
+    @staticmethod
+    def _namespace(node: dict | None) -> str:
+        metadata = _metadata((node or {}).get("metadata"))
+        namespace = metadata.get("namespace", "")
+        return namespace if isinstance(namespace, str) else ""
+
+    @staticmethod
+    def _scope_chain(node: dict) -> list[str]:
+        chain = _metadata(node.get("metadata")).get("scope_chain")
+        return chain if isinstance(chain, list) else []
+
+    def _using_in_scope(self, scope_kind: str, scope_id: str | None, source_node: dict) -> bool:
+        if scope_kind == "file":
+            return True
+        return scope_id is not None and scope_id in self._scope_chain(source_node)
+
+    def _scopes_for(self, source_node: dict, source_file: str) -> list[str]:
+        def _append_unique(items: list[str], value: str) -> None:
+            if value not in items:
+                items.append(value)
+
+        scopes: list[str] = []
+        _append_unique(scopes, self._namespace(source_node))
+        _append_unique(scopes, "")
+        for namespace, scope_kind, scope_id in self.namespace_usings_by_file.get(source_file, []):
+            if self._using_in_scope(scope_kind, scope_id, source_node):
+                _append_unique(scopes, namespace)
+        return scopes
+
+    def _resolve_alias(self, label: str, source_node: dict, source_file: str) -> str | None:
+        hits = set()
+        for target_fqn, scope_kind, scope_id in self.aliases_by_file.get(source_file, {}).get(label, []):
+            if not self._using_in_scope(scope_kind, scope_id, source_node):
+                continue
+            base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn))
+            namespace, sep, simple_name = base_fqn.rpartition(".")
+            if not sep:
+                simple_name = namespace
+                namespace = ""
+            if not simple_name:
+                continue
+            hit = self.type_def_index.get((namespace, simple_name))
+            if hit:
+                hits.add(hit)
+        return next(iter(hits)) if len(hits) == 1 else None
+
+    def _resolve_holder_nid(self, target_fqn: str) -> str | None:
+        base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn)).strip()
+        if not base_fqn:
+            return None
+        if base_fqn in self._holder_nid_cache:
+            return self._holder_nid_cache[base_fqn]
+
+        prefix, sep, name = base_fqn.rpartition(".")
+        if not sep:
+            nid = self.type_def_index.get(("", base_fqn))
+            self._holder_nid_cache[base_fqn] = nid
+            return nid
+
+        top_hit = self.type_def_index.get((prefix, name))
+        if top_hit:
+            self._holder_nid_cache[base_fqn] = top_hit
+            return top_hit
+
+        parent_nid = self._resolve_holder_nid(prefix)
+        if parent_nid:
+            nested_hit = self.nested_types_by_holder.get(parent_nid, {}).get(name)
+            if nested_hit:
+                self._holder_nid_cache[base_fqn] = nested_hit
+                return nested_hit
+
+        self._holder_nid_cache[base_fqn] = None
+        return None
+
+    def resolve_type_name(
+        self, label: str, source_node: dict, source_file: str
+    ) -> tuple[str | None, bool]:
+        """Resolve a simple type name to a definition node id, with a verdict.
+
+        Returns ``(node_id, decisive)``:
+          * ``(nid, True)`` — exactly one in-scope definition (or alias target).
+          * ``(None, True)`` — the name is claimed by this file's scoping (an
+            alias, or >1 in-scope candidates): genuinely ambiguous/unresolvable,
+            the caller must NOT fall back to a looser corpus-wide match.
+          * ``(None, False)`` — scoping knows nothing about the name; a caller
+            may fall back (e.g. to the corpus-wide unique bare-name match).
+        """
+        if label in self.aliases_by_file.get(source_file, {}):
+            return self._resolve_alias(label, source_node, source_file), True
+        candidates: list[str] = []
+        for namespace in self._scopes_for(source_node, source_file):
+            hit = self.type_def_index.get((namespace, label))
+            if hit and hit not in candidates:
+                candidates.append(hit)
+        for target_fqn, scope_kind, scope_id in self.static_usings_by_file.get(source_file, []):
+            if self._using_in_scope(scope_kind, scope_id, source_node):
+                holder_nid = self._resolve_holder_nid(target_fqn)
+                if holder_nid:
+                    hit = self.nested_types_by_holder.get(holder_nid, {}).get(label)
+                    if hit and hit not in candidates:
+                        candidates.append(hit)
+        if len(candidates) == 1:
+            return candidates[0], True
+        if candidates:
+            return None, True
+
+        ns = self._namespace(source_node)
+        if "." in ns:
+            parts = ns.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                hit = self.type_def_index.get((".".join(parts[:i]), label))
+                if hit:
+                    return hit, True
+
+        return None, False
+
+    def resolve_label(self, label: str, source_node: dict, source_file: str) -> str | None:
+        resolved, _decisive = self.resolve_type_name(label, source_node, source_file)
+        return resolved
+
+    def resolve_qualified(
+        self, label: str, qualifier: object, source_node: dict, source_file: str
+    ) -> str | None:
+        # Sound qualified resolution: an in-scope alias for Q shadows the namespace Q. For a qualified
+        # ref Q.label, look up (alias_target_namespace, label). If no in-scope alias, fall through to an
+        # exact known namespace. Dangle on ambiguity / no hit / unknown qualifier.
+        if not isinstance(qualifier, str) or not qualifier:
+            return None
+        in_scope = [
+            entry for entry in self.aliases_by_file.get(source_file, {}).get(qualifier, [])
+            if self._using_in_scope(entry[1], entry[2], source_node)
+        ]
+        if in_scope:
+            hits = set()
+            for target_fqn, _scope_kind, _scope_id in in_scope:
+                alias_ns = _strip_trailing_csharp_generic_args(html.unescape(target_fqn))
+                hit = self.type_def_index.get((alias_ns, label))
+                if hit:
+                    hits.add(hit)
+            return next(iter(hits)) if len(hits) == 1 else None
+        if qualifier in self.known_namespaces:
+            return self.type_def_index.get((qualifier, label))
+        return None
+
+
 def _resolve_csharp_type_references(
     per_file: list[dict],
     paths: list[Path],
@@ -164,137 +451,15 @@ def _resolve_csharp_type_references(
     """
     _ = (per_file, paths)
 
-    def _is_cs_file(value: object) -> bool:
-        return isinstance(value, str) and value.endswith(".cs")
-
-    def _metadata(value: object) -> dict:
-        return value if isinstance(value, dict) else {}
-
-    def _namespace(node: dict | None) -> str:
-        metadata = _metadata((node or {}).get("metadata"))
-        namespace = metadata.get("namespace", "")
-        return namespace if isinstance(namespace, str) else ""
-
-    def _append_unique(items: list[str], value: str) -> None:
-        if value not in items:
-            items.append(value)
-
-    node_by_id = {
-        node["id"]: node
-        for node in all_nodes
-        if isinstance(node.get("id"), str) and node.get("id")
-    }
-    type_def_index = _build_csharp_type_def_index(all_nodes)
-    known_namespaces = {
-        node.get("label")
-        for node in all_nodes
-        if node.get("type") == "namespace" and isinstance(node.get("label"), str)
-    }
-
-    # Each using carries its lexical scope: ("file", None) applies file-wide;
-    # ("namespace", scope_id) applies only where scope_id is in the ref's scope_chain.
-    namespace_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
-    aliases_by_file: dict[str, dict[str, list[tuple[str, str, str | None]]]] = {}
-
-    for edge in all_edges:
-        if edge.get("relation") != "imports":
-            continue
-        source_node = node_by_id.get(edge.get("source"))
-        if not (
-            source_node
-            and isinstance(source_node.get("label"), str)
-            and source_node.get("label", "").endswith(".cs")
-        ):
-            continue
-        source_file = source_node.get("source_file")
-        if not _is_cs_file(source_file):
-            continue
-        metadata = _metadata(edge.get("metadata"))
-        target_fqn = metadata.get("target_fqn")
-        if not isinstance(target_fqn, str) or not target_fqn:
-            continue
-        scope_kind = metadata.get("scope_kind") or "file"
-        scope_id = metadata.get("scope_id")
-        using_kind = metadata.get("using_kind")
-        if using_kind == "namespace":
-            entry = (target_fqn, scope_kind, scope_id)
-            bucket = namespace_usings_by_file.setdefault(source_file, [])
-            if entry not in bucket:
-                bucket.append(entry)
-        elif using_kind == "alias":
-            alias = metadata.get("alias")
-            if isinstance(alias, str) and alias:
-                entry = (target_fqn, scope_kind, scope_id)
-                bucket = aliases_by_file.setdefault(source_file, {}).setdefault(alias, [])
-                if entry not in bucket:
-                    bucket.append(entry)
-
-    def _scope_chain(node: dict) -> list[str]:
-        chain = _metadata(node.get("metadata")).get("scope_chain")
-        return chain if isinstance(chain, list) else []
-
-    def _using_in_scope(scope_kind: str, scope_id: str | None, source_node: dict) -> bool:
-        if scope_kind == "file":
-            return True
-        return scope_id is not None and scope_id in _scope_chain(source_node)
-
-    def _scopes_for(source_node: dict, source_file: str) -> list[str]:
-        scopes: list[str] = []
-        _append_unique(scopes, _namespace(source_node))
-        _append_unique(scopes, "")
-        for namespace, scope_kind, scope_id in namespace_usings_by_file.get(source_file, []):
-            if _using_in_scope(scope_kind, scope_id, source_node):
-                _append_unique(scopes, namespace)
-        return scopes
-
-    def _resolve_alias(label: str, source_node: dict, source_file: str) -> str | None:
-        hits = set()
-        for target_fqn, scope_kind, scope_id in aliases_by_file.get(source_file, {}).get(label, []):
-            if not _using_in_scope(scope_kind, scope_id, source_node):
-                continue
-            base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn))
-            namespace, sep, simple_name = base_fqn.rpartition(".")
-            if not sep:
-                simple_name = namespace
-                namespace = ""
-            if not simple_name:
-                continue
-            hit = type_def_index.get((namespace, simple_name))
-            if hit:
-                hits.add(hit)
-        return next(iter(hits)) if len(hits) == 1 else None
+    resolver = CsharpNameResolver(all_nodes, all_edges)
+    node_by_id = resolver.node_by_id
+    aliases_by_file = resolver.aliases_by_file
 
     def _resolve_label(label: str, source_node: dict, source_file: str) -> str | None:
-        if label in aliases_by_file.get(source_file, {}):
-            return _resolve_alias(label, source_node, source_file)
-        candidates: list[str] = []
-        for namespace in _scopes_for(source_node, source_file):
-            hit = type_def_index.get((namespace, label))
-            if hit and hit not in candidates:
-                candidates.append(hit)
-        return candidates[0] if len(candidates) == 1 else None
+        return resolver.resolve_label(label, source_node, source_file)
 
     def _resolve_qualified(label: str, qualifier: object, source_node: dict, source_file: str) -> str | None:
-        # Sound qualified resolution: an in-scope alias for Q shadows the namespace Q. For a qualified
-        # ref Q.label, look up (alias_target_namespace, label). If no in-scope alias, fall through to an
-        # exact known namespace. Dangle on ambiguity / no hit / unknown qualifier.
-        if not isinstance(qualifier, str) or not qualifier:
-            return None
-        in_scope = [
-            entry for entry in aliases_by_file.get(source_file, {}).get(qualifier, [])
-            if _using_in_scope(entry[1], entry[2], source_node)
-        ]
-        if in_scope:
-            hits = set()
-            for target_fqn, _scope_kind, _scope_id in in_scope:
-                alias_ns = _strip_trailing_csharp_generic_args(html.unescape(target_fqn))
-                hit = type_def_index.get((alias_ns, label))
-                if hit:
-                    hits.add(hit)
-            return next(iter(hits)) if len(hits) == 1 else None
-        if qualifier in known_namespaces:
-            return type_def_index.get((qualifier, label))
-        return None
+        return resolver.resolve_qualified(label, qualifier, source_node, source_file)
 
     def _is_placeholder(node: dict | None) -> bool:
         return bool(node) and not node.get("source_file")
@@ -318,37 +483,46 @@ def _resolve_csharp_type_references(
                 return alias
         return stem or None
 
+    # One canonical sourceless stub per undeclared type NAME, shared across every
+    # file that references it (#4247). An external type the corpus uses but never
+    # declares (`List`, `System.Type`, Unity's `VisualElement`) used to get a
+    # separate per-file placeholder (`a_cs_list`, `b_cs_list`, ...) because the
+    # extractor mints one provisional placeholder per file and the arbiter kept
+    # whichever one each edge already pointed at. Coalesce them all onto a single
+    # name-keyed stub so a query for the type returns one node that connects the
+    # files sharing it.
+    canonical_stub_by_label: dict[str, str] = {}
+
+    def _canonical_stub_matches(nid: object, label: str) -> bool:
+        node = node_by_id.get(nid)
+        return _is_placeholder(node) and node.get("label") == label
+
     def _dangling_stub_id(label: str, current_target: object) -> str:
-        current = node_by_id.get(current_target)
-        if _is_placeholder(current) and current.get("label") == label:
-            return str(current_target)
+        cached = canonical_stub_by_label.get(label)
+        if cached is not None:
+            return cached
 
-        for node in all_nodes:
-            nid = node.get("id")
-            if (
-                isinstance(nid, str)
-                and node.get("label") == label
-                and _is_placeholder(node)
-            ):
-                return nid
-
-        stem = _make_id(label)
-        stub_id = stem
-        if stub_id in node_by_id:
+        stub_id = _make_id(label)
+        # Never shadow a real (sourced) node or a differently-labelled node; a
+        # placeholder already keyed by this bare name is reused as the canonical.
+        if stub_id in node_by_id and not _canonical_stub_matches(stub_id, label):
             stub_id = _make_id("csharp_type_ref", label)
             suffix = 2
-            while stub_id in node_by_id:
+            while stub_id in node_by_id and not _canonical_stub_matches(stub_id, label):
                 stub_id = _make_id("csharp_type_ref", label, str(suffix))
                 suffix += 1
-        node = {
-            "id": stub_id,
-            "label": label,
-            "file_type": "code",
-            "source_file": "",
-            "source_location": "",
-        }
-        all_nodes.append(node)
-        node_by_id[stub_id] = node
+
+        if stub_id not in node_by_id:
+            node = {
+                "id": stub_id,
+                "label": label,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            }
+            all_nodes.append(node)
+            node_by_id[stub_id] = node
+        canonical_stub_by_label[label] = stub_id
         return stub_id
 
     REPOINT_RELATIONS = {"implements", "inherits", "references"}
@@ -357,7 +531,7 @@ def _resolve_csharp_type_references(
         if edge.get("relation") not in REPOINT_RELATIONS:
             continue
         source_file = edge.get("source_file")
-        if not _is_cs_file(source_file):
+        if not _is_dotnet_source_file(source_file):
             continue
         source_node = node_by_id.get(edge.get("source"))
         target_node = node_by_id.get(edge.get("target"))
