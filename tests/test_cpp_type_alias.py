@@ -6,7 +6,9 @@ resolved to a SOURCELESS stub that the corpus rewire can grow into a hub. A
 namespace- or file-scope alias is now a type node contained by its file; every
 declarator of a typedef counts (`typedef int Handle, *HandlePtr;`,
 `typedef int (*Fn)(int);`, `typedef int Arr[4];`), and an alias template
-(`template <class T> using Ptr = T*;`) too.
+(`template <class T> using Ptr = T*;`) too. An include guard or an
+`#if`/`#ifdef` block is a conditional wrapper, not a scope: an alias inside
+one at file scope is still file-scope.
 
 Not declarations here: a member alias (`using value_type = T;` in a class: one
 in every container, and C++ class-member ids are not class-qualified, so they
@@ -126,3 +128,47 @@ def test_a_reference_from_another_file_lands_on_the_alias(tmp_path: Path):
     targets = {e["target"] for e in result["edges"]
                if e["relation"] == "references" and label.get(e["source"]) == "Bag"}
     assert targets == {alias["id"]}
+
+
+_GUARDED = textwrap.dedent("""\
+    #ifndef CONFIG_HPP
+    #define CONFIG_HPP
+    using Guarded = int;
+    typedef long GuardedT;
+    #if defined(USE_WIDE)
+    using Char = wchar_t;
+    #elif defined(USE_U16)
+    using Char16 = char16_t;
+    #else
+    using Narrow = char;
+    #endif
+    #ifdef HAVE_POOL
+    template <typename T> using Pool = T*;
+    #endif
+    struct Config {
+    #ifdef DEBUG
+      using debug_type = int;
+    #endif
+      Guarded g;
+      GuardedT t;
+      Narrow n;
+    };
+    #endif
+    """)
+
+
+def test_aliases_inside_include_guards_and_conditionals_are_nodes(tmp_path: Path):
+    result = _extract(tmp_path, {"config.hpp": _GUARDED})
+    expected = {"Guarded": "L3", "GuardedT": "L4", "Char": "L6", "Char16": "L8",
+                "Narrow": "L10", "Pool": "L13"}
+    for label, line in expected.items():
+        matches = [n for n in result["nodes"] if n["label"] == label]
+        assert len(matches) == 1, label
+        assert matches[0]["source_file"], label
+        assert matches[0]["source_location"] == line, label
+    assert {("Config", "Guarded"), ("Config", "GuardedT"), ("Config", "Narrow")} <= _pairs(result, "references")
+
+
+def test_a_member_alias_inside_a_conditional_is_still_a_member(tmp_path: Path):
+    result = _extract(tmp_path, {"config.hpp": _GUARDED})
+    assert [n for n in result["nodes"] if n["label"] == "debug_type"] == []

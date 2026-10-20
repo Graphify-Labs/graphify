@@ -4812,9 +4812,12 @@ def _cpp_alias_names(node, source: bytes) -> list[str]:
     would fold into one hub. Neither is the struct a C-style
     `typedef struct Foo {...} Foo;` names (the struct's own node is it), nor a
     same-name re-export (`using Bar = ns::Bar;`), which denotes the original
-    type and declares no new name."""
+    type and declares no new name. An include guard or `#if`/`#ifdef` block is
+    a conditional wrapper, not a scope, so an alias inside one keeps the scope
+    around it."""
     scope = node.parent
-    while scope is not None and scope.type == "template_declaration":
+    while scope is not None and (
+            scope.type == "template_declaration" or scope.type.startswith("preproc_")):
         scope = scope.parent
     if scope is None or scope.type not in ("translation_unit", "declaration_list"):
         return []
