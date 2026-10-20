@@ -787,3 +787,42 @@ def test_probe_a_member_call_inside_a_with_block_reaches_the_with_objects_method
     body = "Dim w As New Worker()\n  With w\n   .Save()\n  End With"
     result = _extract_files(tmp_path, {"Worker.vb": _WORKER, "Caller.vb": _caller(body)})
     assert ("Save()", "Worker.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+from graphify.build import build_from_json
+
+
+def _graph_calls(result, caller, caller_file):
+    """(label, file) of everything the caller calls in the BUILT graph: build.py's
+    cross-language phantom filter runs there, not in extract."""
+    graph = build_from_json(result)
+    source = _node_id(result, caller, caller_file)
+    return {(graph.nodes[t]["label"].lstrip("."), Path(str(graph.nodes[t].get("source_file", ""))).name)
+            for s, t, d in graph.edges(source, data=True)
+            if d.get("relation") == "calls" and source in (s, t) and t != source}
+
+
+_CS_RULES = ("namespace Acme.Rules {\n"
+             "    public static class NsRules { public static bool Check(int x) { return x > 0; } }\n"
+             "    public class Inst { public void Run() { } }\n"
+             "}\n")
+
+
+# H19 (#4570 review) -- an INFERRED VB -> C# call survives the cross-language phantom filter
+@_needs_vbnet
+@pytest.mark.parametrize("body, inherits, callee", [
+    ("Acme.Rules.NsRules.Check(1)", " Inherits System.Windows.Forms.Form\n", "Check()"),
+    ("Dim r As New Acme.Rules.Inst()\n  r.Run()", "", "Run()"),
+], ids=["external_base", "typed_local"])
+def test_an_inferred_vb_call_into_csharp_is_kept_in_the_built_graph(tmp_path, body, inherits, callee):
+    result = _extract_files(tmp_path, {"NsRules.cs": _CS_RULES, "Caller.vb": _caller(body, inherits=inherits)})
+    assert (callee, "NsRules.cs") in _graph_calls(result, "Run()", "Caller.vb")
+
+
+# H20 (#4570 review) -- C# cannot call a VB Module member by its bare name: the shared
+# name pass still matches it, and the filter must still drop that edge
+@_needs_vbnet
+def test_a_csharp_bare_name_never_reaches_a_vb_module_member_in_the_built_graph(tmp_path):
+    cs = 'public class CsCaller {\n    public void P_CsBare() { LogIt("x"); }\n}\n'
+    result = _extract_files(tmp_path, {"Helpers.vb": _MODULE, "CsCaller.cs": cs})
+    assert ("LogIt()", "Helpers.vb") not in _graph_calls(result, "P_CsBare()", "CsCaller.cs")
