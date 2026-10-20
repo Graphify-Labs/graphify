@@ -8,6 +8,9 @@ variable named `Callback` whose type is `typedef`: the file grew a
 `references` edge to a SOURCELESS node labelled `typedef`, one per file using
 the keyword. The legacy form (`typedef int Compare(Object a, Object b);`)
 matched nothing at all, so references to it had no declaration to land on.
+A legacy typedef whose return type is itself a function type
+(`typedef int Function(int) Make();`) was named `Function`, after the return
+type's head, and `Make` got no node.
 """
 from __future__ import annotations
 
@@ -77,3 +80,15 @@ def test_an_alias_of_a_named_type_still_references_it(tmp_path: Path):
 def test_a_typedef_line_is_not_a_variable(tmp_path: Path):
     result = _extract(tmp_path)
     assert not any(e.get("context") == "variable_type" for e in result["edges"])
+
+
+def test_a_legacy_typedef_returning_a_function_type_is_named_by_its_own_name(tmp_path: Path):
+    result = _extract(tmp_path, textwrap.dedent("""\
+        typedef int Function(int) Make();
+        typedef void Function() Callback(String s);
+        typedef int Function(int)? MaybeMake();
+        typedef Map<String, int> Function(int a, String b) Build();
+        """))
+    labels = {n["label"]: n["source_location"] for n in result["nodes"] if n.get("source_file")}
+    assert {"Make": "L1", "Callback": "L2", "MaybeMake": "L3", "Build": "L4"}.items() <= labels.items()
+    assert "Function" not in labels

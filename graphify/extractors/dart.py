@@ -408,8 +408,12 @@ def extract_dart(path: Path) -> dict:
     typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([^;]+);"
     # Return-type tokens are whitespace-separated runs that cannot contain
     # whitespace themselves, so a long line that never reaches `(` fails in
-    # linear time instead of trying every way to split it into tokens.
-    legacy_typedef_pattern = r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\("
+    # linear time instead of trying every way to split it into tokens. A token
+    # may carry one parameter list, so a function-typed return type
+    # (`typedef int Function(int) Make();`) is skipped as a whole, and the
+    # name is never `Function`: that is the return type's head, not the alias.
+    legacy_typedef_pattern = (r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+(?:\([^()\n]*\)[\w<>,.?]*)?[ \t]+)*?"
+                              r"(?!Function\b)(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\(")
     typedef_builtins = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}
     # Most files declare no typedef: skip both scans with one substring test.
     for pattern in (typedef_pattern, legacy_typedef_pattern) if "typedef" in src_clean else ():
