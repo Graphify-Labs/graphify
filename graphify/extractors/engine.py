@@ -8477,6 +8477,12 @@ def _extract_generic(
     class_parent: dict[str, str] = {}
     lexical_bases: dict[str, list[str]] = {}
     lexical_calls = config.ts_module in _LEXICAL_CALL_LANGUAGES
+    # JS/TS only (#4598): the enclosing scope of a factory-object owner node
+    # (`const store = {}` inside `makeStore()`), so a sibling call like
+    # `store.get()` inside `store.set = ...` can be told apart from a call on
+    # some unrelated same-named receiver elsewhere, without walking back to
+    # the bare file-wide name map that caused the false self-loops.
+    js_factory_scope: dict[str, str] = {}
     if config.ts_module in _SELF_CALL_LANGUAGES or lexical_calls:
         label_by_nid = {n["id"]: n["label"] for n in nodes}
         for e in edges:
@@ -8486,6 +8492,11 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_php":
                     name = name.casefold()
                 methods_by_owner.setdefault((e["source"], name), e["target"])
+            elif (
+                config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                and e["relation"] == "contains"
+            ):
+                js_factory_scope.setdefault(e["target"], e["source"])
             elif lexical_calls and e["relation"] == "contains":
                 # two nested classes of one name are one node: which class lies around it is unknown
                 if class_parent.setdefault(e["target"], e["source"]) != e["source"]:
@@ -9413,7 +9424,44 @@ def _extract_generic(
                     and is_member_call
                     and not lua_self_qualified
                 )
-                if _python_defer or _java_defer or _csharp_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                # JS/TS: a member call whose receiver is not this/self (that
+                # case is `self_receiver`, resolved below through the caller's
+                # own class, unaffected here) must not fall back to the
+                # bare-name map either, or a delegating wrapper of the form
+                # `function appendFrame(e) { return history.appendFrame(e); }`
+                # binds to itself: a false EXTRACTED self-loop, or to any other
+                # same-named function in the file. Deferring sends it to
+                # raw_calls, where the receiver's declared type (when TS gives
+                # one) resolves it properly; an untyped receiver gets no edge
+                # at all, matching every other language's member-call rule
+                # here (#4598). The one exception is a call on the very
+                # factory object the caller's own method hangs off (`store.get()`
+                # inside `store.set = ...`): the receiver name reconstructs the
+                # caller's own owner id exactly, so this is a genuine sibling
+                # call, not a guess, and resolving it here (not through
+                # raw_calls, which only sees whole-file state) keeps that
+                # existing, already-scoped factory-object behavior intact.
+                _js_factory_sibling_call = False
+                if (
+                    config.ts_module in (
+                        "tree_sitter_javascript", "tree_sitter_typescript",
+                    )
+                    and is_member_call and member_receiver
+                ):
+                    _owner = method_owner.get(caller_nid)
+                    if _owner is not None and _make_id(
+                        js_factory_scope.get(_owner, ""), member_receiver
+                    ) == _owner:
+                        _js_factory_sibling_call = True
+                _js_member_defer = (
+                    config.ts_module in (
+                        "tree_sitter_javascript", "tree_sitter_typescript",
+                    )
+                    and is_member_call
+                    and not self_receiver
+                    and not _js_factory_sibling_call
+                )
+                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -9454,6 +9502,13 @@ def _extract_generic(
                         tgt_nid = _lexical_call_target(
                             caller_nid, callee_name, label_to_nid,
                             method_owner, methods_by_owner, lexical_bases, class_parent,
+                        )
+                    elif _js_factory_sibling_call:
+                        # Resolve straight off the caller's own owner rather
+                        # than the file-wide bare-name map, which could still
+                        # pick an unrelated same-named method elsewhere.
+                        tgt_nid = methods_by_owner.get(
+                            (method_owner.get(caller_nid), callee_name)
                         )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
