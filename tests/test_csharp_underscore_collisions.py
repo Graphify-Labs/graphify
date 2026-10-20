@@ -116,14 +116,19 @@ def test_case_only_method_pair_keeps_both_methods(tmp_path):
     assert _one(r, ".Load()") != _one(r, ".load()")
 
 
-def test_overloads_stay_one_node(tmp_path):
+def test_overloads_get_their_own_nodes(tmp_path):
+    """#4584: this collision check is specifically about an underscore or
+    case variant minting the SAME id as a DIFFERENT name; genuine overloads
+    (the exact same name declared twice) are a different bug, fixed
+    separately in tests/test_csharp_overloads.py -- each gets its own node
+    now rather than collapsing onto one, so a real repro belongs there."""
     r = _extract(tmp_path, {"S.cs": (
         "public class Host {\n"
         "    public void Save() { }\n"
         "    public void Save(int x) { }\n"
         "}\n"
     )})
-    _one(r, ".Save()")
+    assert len(_ids(r, ".Save()")) == 2
 
 
 def test_member_behind_preprocessor_directive_is_counted(tmp_path):

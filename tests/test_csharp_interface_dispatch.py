@@ -163,16 +163,20 @@ def test_no_matching_member_produces_no_edge(tmp_path):
     assert not dispatch
 
 
-def test_overloads_collapsed_into_one_node_still_link(tmp_path):
-    # The extractor mints one node per method name, so two overloads share it.
-    # The guard counts distinct nodes, not `method` edge multiplicity, so this
-    # is one candidate rather than a tie. Same reasoning as the dedup comment in
-    # resolve_pascal_inherited_calls.
+def test_overloaded_implementer_is_an_honest_ambiguity_not_a_guess(tmp_path):
+    """#4584: each overload now gets its own node, so `A` owning two `M`s is a
+    real two-candidate tie for this guard's own "exactly one method of that
+    name" rule -- previously both collapsed onto one node, which looked like
+    a single, unambiguous candidate (the premise this test used to cover) but
+    was really IR.M() landing on a blended node representing both overloads
+    at once. No dispatch edge at all is honest; which overload actually
+    implements IR.M() is a correctness question for the shared dispatch
+    resolver (interface_dispatch.py), not this C# specific test."""
     dispatch, r = _extract(tmp_path, {"S.cs": (
         "public interface IR { void M(); }\n"
         "public class A : IR { public void M() { } public void M(int x) { } }\n"
     )})
-    assert (_find(r, ".M()", "ir"), _find(r, ".M()", "s_a")) in dispatch
+    assert not dispatch
 
 
 def test_abstract_base_class_is_out_of_scope(tmp_path):
