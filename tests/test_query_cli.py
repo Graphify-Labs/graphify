@@ -51,6 +51,56 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
+def _write_uses_only_graph(tmp_path):
+    """Issue #2529 CLI repro: uses edges, no context attribute."""
+    G = nx.Graph()
+    G.add_node(
+        "payment_gateway",
+        label="PaymentGateway",
+        source_file="payment.py",
+        source_location="L1",
+        community=0,
+    )
+    for i in range(6):
+        nid = f"helper_{i:02d}"
+        G.add_node(
+            nid,
+            label=f"Helper{i:02d}",
+            source_file=f"helper{i:02d}.py",
+            source_location="L1",
+            community=0,
+        )
+        G.add_edge("payment_gateway", nid, relation="uses")
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+    return graph_path
+
+
+def test_query_cli_heuristic_modules_does_not_collapse_uses_graph(monkeypatch, tmp_path, capsys):
+    """#2529: `graphify query "which modules handle PaymentGateway setup"`
+    must not shrink to the seed just because 'modules' inferred import."""
+    graph_path = _write_uses_only_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "query",
+            "which modules handle PaymentGateway setup",
+            "--graph",
+            str(graph_path),
+        ],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "discarded" in out
+    assert "heuristic" in out
+    n = int(out.split("nodes found")[0].rsplit("|", 1)[-1].strip())
+    assert n > 1
+    assert "Helper00" in out
+
+
 def _write_calls_graph(tmp_path):
     """A single directed `calls` edge on an (on-disk) undirected graph.json,
 

@@ -953,6 +953,15 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 }
 
 
+# Context names that have a 1:1 edge-relation counterpart. Used when a graph
+# has `relation` but no `context` (the usual LLM-extracted shape, #2529).
+_CONTEXT_TO_RELATION: dict[str, str] = {
+    "call": "calls",
+    "import": "imports",
+    "export": "exports",
+}
+
+
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
     if not filters:
         return []
@@ -991,6 +1000,54 @@ def _resolve_context_filters(question: str, explicit_filters: list[str] | None =
     return [], None
 
 
+def _edge_matches_context(data: dict, filters: set[str]) -> bool:
+    """True when an edge belongs in a context-filtered traversal (#2529).
+
+    Match the explicit ``context`` attribute first. When that is absent —
+    LLM-built graphs almost never set it — also match ``relation`` against the
+    filter name and the 1:1 ``call``/``calls`` (etc.) mapping so ``--context
+    call`` still keeps ``calls`` edges.
+    """
+    ctx = data.get("context")
+    if ctx in filters:
+        return True
+    rel = data.get("relation")
+    if not isinstance(rel, str) or not rel:
+        return False
+    if rel in filters:
+        return True
+    return any(_CONTEXT_TO_RELATION.get(f) == rel for f in filters)
+
+
+def _filters_with_matching_edges(G: nx.Graph, filters: list[str]) -> list[str]:
+    """Subset of ``filters`` that at least one edge in ``G`` actually matches."""
+    if not filters:
+        return []
+    remaining = set(filters)
+    present: set[str] = set()
+    edge_iter = (
+        (d for *_, d in G.edges(keys=True, data=True))
+        if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+        else (d for *_, d in G.edges(data=True))
+    )
+    for data in edge_iter:
+        if not remaining:
+            break
+        for f in list(remaining):
+            if _edge_matches_context(data, {f}):
+                present.add(f)
+                remaining.discard(f)
+    return [f for f in filters if f in present]
+
+
+def _seeds_have_incident_edges(G: nx.Graph, start_nodes: list[str]) -> bool:
+    """True when at least one seed has a remaining incident edge."""
+    for nid in start_nodes:
+        if nid in G and G.degree(nid) > 0:
+            return True
+    return False
+
+
 def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> nx.Graph:
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
@@ -999,11 +1056,11 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for u, v, key, data in G.edges(keys=True, data=True):
-            if data.get("context") in filters:
+            if _edge_matches_context(data, filters):
                 H.add_edge(u, v, key=key, **data)
     else:
         for u, v, data in G.edges(data=True):
-            if data.get("context") in filters:
+            if _edge_matches_context(data, filters):
                 H.add_edge(u, v, **data)
     return H
 
@@ -1502,7 +1559,36 @@ def _render_query(
     unresolved: list[str] | None = None,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
+    view = _traversal_view(G)
+    discard_note: str | None = None
+    if resolved_filters and filter_source == "heuristic":
+        # Ordinary English words ("modules", "template", "return") match
+        # _CONTEXT_HINTS. Applying a filter the graph cannot satisfy — or that
+        # leaves every seed edgeless — collapses BFS to the seeds and reads as
+        # a confident empty answer (#2529). Explicit --context stays as asked.
+        usable = _filters_with_matching_edges(view, resolved_filters)
+        if not usable:
+            discard_note = (
+                f"Context: {', '.join(resolved_filters)} "
+                f"(heuristic, discarded: no matching edges)"
+            )
+            resolved_filters = []
+            filter_source = None
+        else:
+            resolved_filters = usable
+    traversal_graph = _filter_graph_by_context(view, resolved_filters)
+    if (
+        filter_source == "heuristic"
+        and resolved_filters
+        and not _seeds_have_incident_edges(traversal_graph, start_nodes)
+    ):
+        discard_note = (
+            f"Context: {', '.join(resolved_filters)} "
+            f"(heuristic, discarded: no matching edges from seeds)"
+        )
+        resolved_filters = []
+        filter_source = None
+        traversal_graph = view
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
@@ -1521,7 +1607,9 @@ def _render_query(
     if graph_path:
         header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
                                f"({G.number_of_nodes()} nodes)")
-    if resolved_filters:
+    if discard_note:
+        header_parts.append(discard_note)
+    elif resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
