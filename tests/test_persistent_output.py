@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
+import subprocess
 from pathlib import Path
 
 from graphify import paths
@@ -30,10 +30,17 @@ def test_persistent_graph_survives_worktree_cleanup(tmp_path, monkeypatch):
     (out / "graph.json").write_text('{"nodes":[]}', encoding="utf-8")
     (out / "cache").mkdir()
     (out / "cache" / "entry").write_text("cached", encoding="utf-8")
-    scratch = repo / "generated"
-    scratch.mkdir()
-    shutil.rmtree(scratch)  # simulates cleaning the working tree
-
+    # Run a real git clean, not just a simulated deletion.
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    local_out = repo / "graphify-out"
+    local_out.mkdir()
+    (local_out / "graph.json").write_text("not persistent", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repo), "clean", "-fdx"],
+        check=True,
+        capture_output=True,
+    )
+    assert not local_out.exists()
     assert Path(paths._out_from_env()) == out
     assert (out / "graph.json").exists()
     assert (out / "cache" / "entry").read_text(encoding="utf-8") == "cached"
