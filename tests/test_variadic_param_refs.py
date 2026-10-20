@@ -9,7 +9,7 @@ theirs; these five now do too, with the same context a plain parameter gets.
 """
 from __future__ import annotations
 
-import importlib
+import importlib.util
 from pathlib import Path
 
 import pytest
