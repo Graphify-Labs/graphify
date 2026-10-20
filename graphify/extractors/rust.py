@@ -285,16 +285,21 @@ def extract_rust(path: Path) -> dict:
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
     impl_methods: dict[tuple[str, str], set[str]] = {}
 
+    # Nodes by id, so a declaration's node is found without scanning every node
+    # (once per declaration, that scan was quadratic in the file's size).
+    node_by_id: dict[str, dict] = {}
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({
+            node_by_id[nid] = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
                 "source_location": f"L{line}",
-            })
+            }
+            nodes.append(node_by_id[nid])
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -337,15 +342,15 @@ def extract_rust(path: Path) -> dict:
 
     def _scan_type_items(node) -> None:
         t = node.type
-        if t in ("struct_item", "enum_item", "trait_item", "function_item",
-                 "function_signature_item", "static_item", "const_item"):
+        if t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item",
+                 "function_item", "function_signature_item", "static_item", "const_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _read_text(name_node, source)
                 if t in ("static_item", "const_item") and name == "_":
                     return
                 nid = _make_id(stem, name)
-                is_type = t in ("struct_item", "enum_item", "trait_item")
+                is_type = t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item")
                 items_by_id.setdefault(nid, set()).add((is_type, name))
                 if is_type:
                     declared_type_names.setdefault(nid, set()).add(name)
@@ -407,14 +412,15 @@ def extract_rust(path: Path) -> dict:
             # file's path (with extension) into the id and blocks the rewire, which is
             # the phantom-duplicate-node bug (#1402).
             seen_ids.add(nid)
-            nodes.append({
+            node_by_id[nid] = {
                 "id": nid,
                 "label": name,
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
                 "origin_file": str_path,
-            })
+            }
+            nodes.append(node_by_id[nid])
         return nid
 
     def emit_param_return_refs(func_node, func_nid: str, line: int) -> None:
@@ -514,14 +520,20 @@ def extract_rust(path: Path) -> dict:
                     macro_nids_by_name.setdefault(macro_name, macro_nid)
             return
 
-        if t in ("struct_item", "enum_item", "trait_item"):
+        # An associated type in an `impl` body (`type Output = Meters;`) is a
+        # type_item too, but not a file-level item: it would mint one colliding
+        # `Output` node per `impl Add`. Only an alias at module level is one.
+        if t == "type_item" and node.parent is not None and node.parent.parent is not None \
+                and node.parent.parent.type == "impl_item":
+            return
+        if t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
                 item_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 item_nid = file_item_nid(_make_id(stem, item_name), item_name)
                 add_node(item_nid, item_name, line)
-                declaration_node = next(n for n in nodes if n["id"] == item_nid)
+                declaration_node = node_by_id[item_nid]
                 declaration_node["_rust_declaration_count"] = (
                     declaration_node.get("_rust_declaration_count", 0) + 1
                 )
@@ -545,7 +557,7 @@ def extract_rust(path: Path) -> dict:
                                 else:
                                     add_edge(item_nid, tgt, "references", line,
                                              context="generic_arg")
-                if t == "struct_item":
+                if t in ("struct_item", "union_item"):
                     for c in node.children:
                         if c.type != "field_declaration_list":
                             continue
@@ -729,7 +741,7 @@ def extract_rust(path: Path) -> dict:
                         impl_keys[impl_nid] = impl_key
                     elif impl_keys[impl_nid] != impl_key:
                         impl_keys[impl_nid] = None
-                    impl_node = next(n for n in nodes if n["id"] == impl_nid)
+                    impl_node = node_by_id[impl_nid]
                     if impl_keys[impl_nid]:
                         impl_node["_rust_impl_key"] = impl_keys[impl_nid]
                     else:
