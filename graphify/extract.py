@@ -16,6 +16,7 @@ from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
+from .security import redact_secrets
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
@@ -1520,6 +1521,13 @@ _CSHARP_CONFIG = LanguageConfig(
         "enum_declaration",
         "struct_declaration",
         "record_declaration",
+        # A `delegate` is a named type. Without it the declaration was dropped,
+        # yet in-file references to the delegate type (a `BinOp` field/parameter)
+        # still ran through `ensure_named_node` and minted a *sourceless* stub —
+        # a provenance violation (a real in-file type losing to a sourceless god
+        # node). It has a `name` field and no body, so it emits a clean empty
+        # type node that those references bind to.
+        "delegate_declaration",
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
@@ -1535,8 +1543,15 @@ _CSHARP_CONFIG = LanguageConfig(
 )
 
 _KOTLIN_CONFIG = LanguageConfig(
+    # `type_alias` is `typealias ClickHandler = (Int) -> Unit`. Without it the
+    # declaration was dropped, yet an in-file field/parameter typed as the alias
+    # still resolved its name through `ensure_named_node` and minted a
+    # *sourceless* stub — a real in-file type losing to a sourceless god node
+    # (provenance). Scala and TypeScript already model type aliases as nodes; the
+    # alias has an `identifier` name (covered by `name_fallback_child_types`) and
+    # no body, so it emits a clean empty type node those references bind to.
     ts_module="tree_sitter_kotlin",
-    class_types=frozenset({"class_declaration", "object_declaration"}),
+    class_types=frozenset({"class_declaration", "object_declaration", "type_alias"}),
     function_types=frozenset({"function_declaration"}),
     # Grammar 1.1.0 (PyPI tree_sitter_kotlin) names the import node `import`;
     # older forks use `import_header`. Accept both (#2526).
@@ -1701,9 +1716,15 @@ _SWIFT_CONFIG = LanguageConfig(
     # `protocol { ... }`; tree-sitter-swift gives it its own node type rather than
     # reusing `function_declaration`, so without it a protocol's method contract
     # is dropped and the protocol becomes an empty node.
-    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    # `macro_declaration` is the Swift 5.9 `macro stringify(...) = #externalMacro(...)`
+    # form (freestanding or attached). It has no `name` field — the name is a bare
+    # `simple_identifier` child, already covered by `name_fallback_child_types` — so
+    # without it the whole declaration (and its `#name` call sites) was dropped.
+    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration", "macro_declaration"}),
     import_types=frozenset({"import_declaration"}),
-    call_types=frozenset({"call_expression"}),
+    # `macro_invocation` is a freestanding macro call `#stringify(...)`; it is not a
+    # `call_expression`, so it needs its own callee branch in walk_calls.
+    call_types=frozenset({"call_expression", "macro_invocation"}),
     call_function_field="",
     call_accessor_node_types=frozenset({"navigation_expression"}),
     call_accessor_field="",
@@ -1739,6 +1760,9 @@ def _shorten_rationale_label(text: str, width: int = 80) -> str:
     an unbroken URL) -- that would emit a content-free label, so fall back to
     a plain character truncation of the normalized text in that case.
     """
+    # Redact BEFORE shortening: truncating first could cut a token mid-way and
+    # leave an unredactable prefix in the label.
+    text = redact_secrets(text)
     label = textwrap.shorten(text, width=width, placeholder="…")
     if label in ("", "…"):
         flat = " ".join(text.split())
@@ -4773,14 +4797,18 @@ def _resolve_python_member_calls(
     # join would miss under an explicit cache_root). The `imports` edge's source
     # is the caller's own file node; `contains` maps a file node to its children.
     contains_children: dict[str, dict[str, list[str]]] = {}
+    # The same children by exact name, for a folded key several of them share.
+    contains_exact: dict[tuple[str, str], list[str]] = {}
     file_of_node: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") == "contains":
             src, tgt = e.get("source"), e.get("target")
             tnode = node_by_id.get(tgt)
             if tnode is not None:
+                label = str(tnode.get("label", ""))
                 contains_children.setdefault(src, {}).setdefault(
-                    _key(tnode.get("label", "")), []).append(tgt)
+                    _key(label), []).append(tgt)
+                contains_exact.setdefault((src, label.strip("()").lstrip(".")), []).append(tgt)
                 file_of_node[tgt] = src
     imported_by_filenode: dict[str, set[str]] = {}
     # Local alias bound by `as` on a specific import edge (#2082): `from pkg import
@@ -5057,6 +5085,11 @@ def _resolve_python_member_calls(
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
             children = contains_children[mods[0]].get(_key(callee), [])
+            if len(children) > 1:
+                # The key folds case and drops `_`, so `dataclass_schema()` and
+                # `class DataclassSchema` share it; Python names are exact. Among
+                # them, the one named exactly `callee` is the call's target.
+                children = contains_exact.get((mods[0], callee), [])
             if len(children) != 1:  # absent or ambiguous callable -> bail
                 continue
             _emit_call(caller, children[0], rc)
@@ -8752,10 +8785,12 @@ def _is_objc_header(path: Path) -> bool:
 # `class` stub); routing to extract_cpp recovers the real type. Kept CONSERVATIVE:
 # a plain C header with none of these stays on extract_c. ObjC sniffing keeps
 # priority (an ObjC header can legitimately contain `::`/`class` inside an inline
-# C++ block when compiled as Objective-C++).
+# C++ block when compiled as Objective-C++). `extern "C"` covers the common
+# C-API header guarded by `#ifdef __cplusplus`: the C grammar rejects the
+# linkage block and the whole header extracts zero symbols.
 _CPP_HEADER_MARKERS = (
     b"class ", b"namespace ", b"template", b"::",
-    b"public:", b"private:", b"protected:",
+    b"public:", b"private:", b"protected:", b'extern "C"',
 )
 
 
