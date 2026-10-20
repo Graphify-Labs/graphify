@@ -55,7 +55,8 @@ def test_the_scope_walk_scales_linearly_with_sibling_declarations(case: str):
             stack.extend(node.children)
             # Kotlin names a type with an `identifier` inside `user_type`.
             if node.type == "type_identifier" or (
-                    node.type == "identifier" and node.parent.type == "user_type"):
+                    node.type == "identifier" and node.parent is not None
+                    and node.parent.type == "user_type"):
                 out.append(node)
         return source, out
 
