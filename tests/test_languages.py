@@ -336,6 +336,20 @@ def test_cuda_host_call_edges():
     assert ("main()", "host_norm()") in calls
 
 
+def test_cuda_qualifiers_mint_no_sourceless_nodes():
+    """#4550: __global__/__device__ are CUDA execution-space qualifiers, not
+    part of the C++ grammar this file parses with. Left in place, the real
+    return type lands in an ERROR node and the qualifier itself becomes a
+    sourceless, corpus-wide god node every kernel/function "references"."""
+    r = extract_cpp(FIXTURES / "sample.cu")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    assert "__global__" not in sourceless
+    assert "__device__" not in sourceless
+    assert not any(n["label"] in ("__global__", "__device__") for n in r["nodes"]), (
+        "a qualifier keyword must not become a node at all, sourced or not"
+    )
+
+
 # Metal Shading Language is a C++14-derived language, so .metal files route
 # through the C++ extractor just like CUDA does.
 
@@ -355,6 +369,43 @@ def test_metal_finds_kernel_function_and_struct():
     assert any("Vec3" in l for l in labels)
     assert any("dot3" in l for l in labels)
     assert any("saxpy" in l for l in labels)
+
+
+def test_metal_qualifiers_mint_no_sourceless_nodes():
+    """#4550: kernel/device/constant are Metal address-space and function
+    qualifiers, not part of the C++ grammar this file parses with. Left in
+    place, the real type lands in an ERROR node and the qualifier itself
+    becomes a sourceless, corpus-wide god node every shader "references"."""
+    r = extract_cpp(FIXTURES / "sample.metal")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    assert sourceless.isdisjoint({"kernel", "device", "constant"})
+    assert not any(n["label"] in ("kernel", "device", "constant") for n in r["nodes"]), (
+        "a qualifier keyword must not become a node at all, sourced or not"
+    )
+
+
+def test_cpp_file_with_a_type_literally_named_device_is_unaffected():
+    """#4550: the qualifier filter is keyed by the GPU-dialect extension, so a
+    plain .cpp file's own type genuinely named `device` (a legal C++
+    identifier) must still resolve normally."""
+    import os
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        old = os.getcwd()
+        try:
+            os.chdir(d)
+            p = Path("plain.cpp")
+            p.write_text(
+                "class device {\npublic:\n    void run();\n};\n"
+                "void device::run() {}\n"
+            )
+            r = extract_cpp(p)
+        finally:
+            os.chdir(old)
+    device = next(n for n in r["nodes"] if n["label"] == "device")
+    assert device["source_file"]
 
 
 # ── Ruby ─────────────────────────────────────────────────────────────────────
