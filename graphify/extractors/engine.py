@@ -8764,6 +8764,17 @@ def _extract_generic(
                 # fields: the callee is the identifier itself, implicit `self`.
                 callee_name = _read_text(node, source)
                 self_receiver = "self"
+            elif config.ts_module == "tree_sitter_swift" and node.type == "macro_invocation":
+                # A freestanding macro call (`#stringify(...)`, #4551): the name
+                # is a simple_identifier sibling of the leading `#` token, not
+                # children[0] like an ordinary call's receiver/name would be.
+                # Not a member call and not an implicit `self.` call either --
+                # a macro is resolved by its own name, the same as a bare
+                # function call with no receiver at all.
+                for child in node.children:
+                    if child.type == "simple_identifier":
+                        callee_name = _read_text(child, source)
+                        break
             elif config.ts_module == "tree_sitter_swift":
                 # Swift: first child may be simple_identifier or navigation_expression
                 first = node.children[0] if node.children else None
