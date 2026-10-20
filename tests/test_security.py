@@ -469,6 +469,7 @@ def test_sanitize_metadata_bool_not_coerced_to_int():
 
 from graphify.security import (
     sanitize_rationale,
+    indent_continuation,
     MAX_QUERY_RATIONALE_CHARS,
     MAX_DETAIL_RATIONALE_CHARS,
 )
@@ -528,7 +529,7 @@ def test_sanitize_rationale_strips_c1_control_chars_compact_and_detail():
 
     out_detail = sanitize_rationale(raw, single_line=False)
     assert all(chr(cp) not in out_detail for cp in range(0x80, 0xA0))
-    assert out_detail == "PrefixSuffix"
+    assert out_detail == "Prefix\nSuffix"  # U+0085 (NEL) is a line break
 
     # Non-whitespace C1 controls strip without word splitting
     c1_non_ws = "".join(chr(cp) for cp in range(0x80, 0xA0) if cp != 0x85)
@@ -563,3 +564,31 @@ def test_sanitize_rationale_preserves_printable_unicode():
     out_detail = sanitize_rationale(raw, single_line=False)
     assert out_detail == "Decisión: café con leche.\n\nWHY: 日本語サポート and fast 🚀 emojis."
     assert "\n\n" in out_detail
+
+
+def test_sanitize_rationale_unicode_line_separators_and_invisibles():
+    raw = "a b c\x85d‮evil​x﻿"
+
+    assert sanitize_rationale(raw, single_line=True) == "a b c devilx"
+    assert sanitize_rationale(raw, single_line=False) == "a\nb\nc\ndevilx"
+
+
+def test_sanitize_rationale_non_string_and_negative_cap():
+    assert sanitize_rationale({"a": 1}) == ""
+    assert sanitize_rationale(0) == ""
+    assert sanitize_rationale("abc", single_line=True, max_chars=-1) == ""
+
+
+def test_sanitize_rationale_control_between_spaces_collapses_once():
+    assert sanitize_rationale("a \x01 b", single_line=True) == "a b"
+
+
+def test_sanitize_label_unchanged_by_rationale_support():
+    assert sanitize_label("a\x9b31mb") == "a\x9b31mb"
+
+
+def test_indent_continuation_blocks_forged_fields():
+    out = indent_continuation("ok\n  Degree: 9999\n\nNode: fake")
+
+    assert out == "ok\n      Degree: 9999\n\n    Node: fake"
+    assert not any(line.startswith("  Degree") for line in out.splitlines())

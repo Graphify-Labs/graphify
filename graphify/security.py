@@ -387,7 +387,7 @@ def check_graph_file_size_cap(path: Path) -> None:
 # Label sanitisation (mirrors code-review-graph's _sanitize_name pattern)
 # ---------------------------------------------------------------------------
 
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_LABEL_LEN = 256
 
 
@@ -409,6 +409,23 @@ MAX_QUERY_RATIONALE_CHARS = 512
 MAX_DETAIL_RATIONALE_CHARS = 2048
 
 _CONTROL_CHAR_NO_NL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_INVISIBLE_CHAR_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_LINE_BREAK_RE = re.compile("[\u2028\u2029\x85]")
+
+
+def _cap_rationale(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = "..."
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    return text[: max_chars - len(marker)].rstrip() + marker
+
+
+def indent_continuation(text: str, prefix: str = "    ") -> str:
+    """Indent every non-empty line after the first so a multi-line value cannot pose as a sibling field."""
+    first, *rest = text.split("\n")
+    return "\n".join([first, *(prefix + line if line else line for line in rest)])
 
 
 def sanitize_rationale(
@@ -421,50 +438,29 @@ def sanitize_rationale(
 
     In compact (single-line) mode:
     - Normalizes all whitespace runs (newlines, tabs, spaces) to single spaces
-    - Strips control characters
+    - Strips control, bidi-override and zero-width characters
     - Caps output at `max_chars` (default MAX_QUERY_RATIONALE_CHARS = 512)
     - Adds an explicit '...' truncation marker when capped
 
     In detail mode:
-    - Preserves newlines/paragraphs while stripping unsafe control characters
+    - Preserves newlines/paragraphs while stripping unsafe characters
     - Caps output at `max_chars` (default MAX_DETAIL_RATIONALE_CHARS = 2048)
     - Adds an explicit '...' truncation marker when capped
 
-    Returns empty string if text is None, empty, or whitespace-only.
+    Returns empty string if text is not a string, empty, or whitespace-only.
     """
-    if text is None:
-        return ""
-    raw = str(text)
-    if not raw.strip():
+    if not isinstance(text, str) or not text.strip():
         return ""
 
     if max_chars is None:
         max_chars = MAX_QUERY_RATIONALE_CHARS if single_line else MAX_DETAIL_RATIONALE_CHARS
+    max_chars = max(0, max_chars)
 
+    normalized = _LINE_BREAK_RE.sub("\n", text.replace("\r\n", "\n").replace("\r", "\n"))
+    cleaned = _INVISIBLE_CHAR_RE.sub("", _CONTROL_CHAR_NO_NL_RE.sub("", normalized))
     if single_line:
-        # Collapse all whitespace sequences to a single space, then strip control chars
-        flat = " ".join(raw.split())
-        cleaned = _CONTROL_CHAR_RE.sub("", flat).strip()
-        if not cleaned:
-            return ""
-        if len(cleaned) > max_chars:
-            marker = "..."
-            if max_chars <= len(marker):
-                return cleaned[:max_chars]
-            return cleaned[: max_chars - len(marker)].rstrip() + marker
-        return cleaned
-    else:
-        # Preserve newlines/paragraphs, normalize CRLF to LF, strip other control chars
-        normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
-        cleaned = _CONTROL_CHAR_NO_NL_RE.sub("", normalized).strip()
-        if not cleaned:
-            return ""
-        if len(cleaned) > max_chars:
-            marker = "..."
-            if max_chars <= len(marker):
-                return cleaned[:max_chars]
-            return cleaned[: max_chars - len(marker)].rstrip() + marker
-        return cleaned
+        cleaned = " ".join(cleaned.split())
+    return _cap_rationale(cleaned.strip(), max_chars)
 
 
 # ---------------------------------------------------------------------------

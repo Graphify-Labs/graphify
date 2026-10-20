@@ -2118,7 +2118,7 @@ def test_tool_get_node_and_query_graph_mcp(tmp_path):
         )
     )
     text_rat = res_rat.root.content[0].text
-    assert "  Rationale: Decision: OAuth2 compliance.\n\nWHY: Standard protocol." in text_rat
+    assert "  Rationale: Decision: OAuth2 compliance.\n\n    WHY: Standard protocol." in text_rat
 
     # Test call_tool query_graph without rationale
     q_no_rat = asyncio.run(
@@ -2311,7 +2311,7 @@ def test_mcp_strict_boolean_include_rationale(tmp_path):
             )
         )
     )
-    assert "  Rationale: Decision: OAuth2 compliance.\n\nWHY: Standard protocol." in res_get_true.root.content[0].text
+    assert "  Rationale: Decision: OAuth2 compliance.\n\n    WHY: Standard protocol." in res_get_true.root.content[0].text
 
     res_q_true = asyncio.run(
         call_handler(

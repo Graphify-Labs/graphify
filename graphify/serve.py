@@ -17,6 +17,7 @@ from graphify.security import (
     sanitize_label,
     check_graph_file_size_cap,
     sanitize_rationale,
+    indent_continuation,
     MAX_QUERY_RATIONALE_CHARS,
     MAX_DETAIL_RATIONALE_CHARS,
     _CONTROL_CHAR_RE,
@@ -2462,7 +2463,7 @@ def _build_server(graph_path: str):
                 max_chars=MAX_DETAIL_RATIONALE_CHARS,
             )
             if rat:
-                lines.append(f"  Rationale: {rat}")
+                lines.append("  Rationale: " + indent_continuation(rat))
         lines.append(f"  Degree: {G.degree(nid)}")
         lines.extend(attrs_line)
         return "\n".join(lines)

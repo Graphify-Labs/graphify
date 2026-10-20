@@ -2126,14 +2126,14 @@ def dispatch_command(cmd: str) -> None:
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
         if include_rationale:
-            from graphify.security import sanitize_rationale, MAX_DETAIL_RATIONALE_CHARS
+            from graphify.security import sanitize_rationale, indent_continuation, MAX_DETAIL_RATIONALE_CHARS
             rat = sanitize_rationale(
                 d.get("rationale"),
                 single_line=False,
                 max_chars=MAX_DETAIL_RATIONALE_CHARS,
             )
             if rat:
-                print(f"  Rationale: {rat}")
+                print("  Rationale: " + indent_continuation(rat))
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.
