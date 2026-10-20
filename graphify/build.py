@@ -459,6 +459,11 @@ def _fold_node_aliases(node: dict) -> None:
     ``norm_label == ""`` (invisible to query/explain), and is excluded from every
     label-keyed merge/dedup — a permanent ghost that ``graphify update``
     re-feeds through build_from_json forever.
+
+    A node-level ``confidence``/``confidence_score`` pair is folded through
+    ``_fold_confidence`` too (#4529), so nodes share the normalization contract
+    edges and hyperedges already have. A node without either field is left
+    untouched.
     """
     if not node.get("label") and isinstance(node.get("name"), str) and node["name"]:
         node["label"] = node.pop("name")
@@ -468,12 +473,13 @@ def _fold_node_aliases(node: dict) -> None:
             if isinstance(val, str) and val.strip():
                 node["source_file"] = node.pop(alias)
                 break
+    _fold_confidence(node)
 
 
 def _fold_confidence(obj: dict) -> None:
     """Fold a legacy/drifted ``confidence`` onto the enum, in place (#2194, #4495).
 
-    Shared by edges and hyperedges, both of which carry the same
+    Shared by nodes, edges and hyperedges, all of which can carry the same
     ``confidence``/``confidence_score`` pair and the same two failure modes.
 
     A NUMERIC ``confidence`` (pre-enum graphs stored the LLM pass's float —

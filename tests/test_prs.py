@@ -134,6 +134,33 @@ class TestParseCi:
         assert _parse_ci(rollup) == "FAILURE"
 
 
+    def test_status_context_failure_is_failure(self):
+        """A commit status from external CI (StatusContext) carries only `state`,
+        no conclusion/status; a failing one must not read as NONE."""
+        rollup = [{"__typename": "StatusContext", "context": "ci/jenkins", "state": "FAILURE"}]
+        assert _parse_ci(rollup) == "FAILURE"
+
+    def test_status_context_error_is_failure(self):
+        rollup = [{"__typename": "StatusContext", "context": "ci/jenkins", "state": "ERROR"}]
+        assert _parse_ci(rollup) == "FAILURE"
+
+    def test_status_context_failure_beside_passing_check_run_is_failure(self):
+        rollup = [
+            {"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"},
+            {"__typename": "StatusContext", "context": "ci/jenkins", "state": "FAILURE"},
+        ]
+        assert _parse_ci(rollup) == "FAILURE"
+
+    def test_status_context_pending_is_pending(self):
+        for state in ("PENDING", "EXPECTED"):
+            rollup = [{"__typename": "StatusContext", "context": "ci/jenkins", "state": state}]
+            assert _parse_ci(rollup) == "PENDING", state
+
+    def test_status_context_success_is_success(self):
+        rollup = [{"__typename": "StatusContext", "context": "ci/jenkins", "state": "SUCCESS"}]
+        assert _parse_ci(rollup) == "SUCCESS"
+
+
 # ── _path_match ───────────────────────────────────────────────────────────────
 
 class TestPathMatch:
@@ -354,6 +381,17 @@ class TestDetectDefaultBranch:
             "graphify.prs.subprocess.run", return_value=mock_result
         ):
             assert _detect_default_branch() == "develop"
+
+    def test_git_default_branch_with_slash_is_kept_whole(self):
+        """A default branch named release/2.x must not be cut down to 2.x, or every
+        PR targeting it is classified as targeting the wrong base."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "refs/remotes/origin/release/2.x\n"
+        with patch("graphify.prs._gh", return_value=None), patch(
+            "graphify.prs.subprocess.run", return_value=mock_result
+        ):
+            assert _detect_default_branch() == "release/2.x"
 
     def test_both_fail_returns_main(self):
         mock_result = MagicMock()

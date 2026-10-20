@@ -1532,7 +1532,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _QUERY_NO_MATCH, _query_graph_text
+        from graphify.serve import _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
@@ -1664,7 +1664,9 @@ def dispatch_command(cmd: str) -> None:
         )
         _touch_query_stamp(gp)
         print(_result)
-        if _result == _QUERY_NO_MATCH:
+        if _is_ambiguity_refusal(_result):
+            sys.exit(EXIT_AMBIGUOUS)
+        if _result == _QUERY_NO_MATCH or _result.startswith("No unique node match for --seed:"):
             sys.exit(EXIT_NOT_FOUND)
     elif cmd == "affected":
         if len(sys.argv) < 3:
