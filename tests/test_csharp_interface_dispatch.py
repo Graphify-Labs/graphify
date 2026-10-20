@@ -127,10 +127,9 @@ def test_three_implementers_floor_at_the_weak_inference_tier(tmp_path):
 
 
 def test_one_ambiguous_implementer_does_not_suppress_its_siblings(tmp_path):
-    # B owns two distinct nodes named `.M()` (synthetic: the real extractor
-    # collapses same-named overloads into one node, so this models a case
-    # where it would not, e.g. partial classes merged incorrectly). B's
-    # ambiguity must stay scoped to B and not suppress A's clean match.
+    # B owns two distinct nodes named `.M()` with nothing (signature or
+    # arity) to tell them apart. B's ambiguity must stay scoped to B and not
+    # suppress A's clean match.
     from graphify.csharp_dispatch import resolve_csharp_interface_dispatch
 
     nodes = [
@@ -163,11 +162,9 @@ def test_no_matching_member_produces_no_edge(tmp_path):
     assert not dispatch
 
 
-def test_overloads_collapsed_into_one_node_still_link(tmp_path):
-    # The extractor mints one node per method name, so two overloads share it.
-    # The guard counts distinct nodes, not `method` edge multiplicity, so this
-    # is one candidate rather than a tie. Same reasoning as the dedup comment in
-    # resolve_pascal_inherited_calls.
+def test_overloaded_implementer_still_links(tmp_path):
+    # A's overloads are two nodes since #4584; the interface's M() pairs with
+    # the one of the same parameter count.
     dispatch, r = _extract(tmp_path, {"S.cs": (
         "public interface IR { void M(); }\n"
         "public class A : IR { public void M() { } public void M(int x) { } }\n"
