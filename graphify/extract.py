@@ -5569,9 +5569,15 @@ def _resolve_csharp_member_calls(
     # references targets by the time the resolver registry runs).
     resolver = CsharpNameResolver(all_nodes, all_edges)
 
-    # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type.
-    # C# owns its methods via `method` edges.
-    method_index: dict[tuple[str, str], str] = {}
+    # (type_node_id, method_key) -> every method_node_id sharing that name on
+    # that type, and caller -> enclosing type. C# owns its methods via
+    # `method` edges. A plain name usually has exactly one declaration; an
+    # overload set (#4584) has one entry per arity, each stamped with its own
+    # `csharp_overload_arity` at extraction time (see the engine's method
+    # walk), so a call naming more than one of them can still be told apart
+    # by its own argument count below.
+    method_index: dict[tuple[str, str], list[str]] = {}
+    method_arity: dict[str, int] = {}
     enclosing_type: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
@@ -5581,7 +5587,10 @@ def _resolve_csharp_member_calls(
         if tnode is None:
             continue
         enclosing_type.setdefault(tgt, src)
-        method_index[(src, _key(tnode.get("label", "")))] = tgt
+        method_index.setdefault((src, _key(tnode.get("label", ""))), []).append(tgt)
+        arity = (tnode.get("metadata") or {}).get("csharp_overload_arity")
+        if isinstance(arity, int):
+            method_arity[tgt] = arity
 
     # Base-class chain from `inherits` edges (C# files only). The type-reference
     # pass has already re-pointed each resolvable base to its real definition and
@@ -5607,13 +5616,24 @@ def _resolve_csharp_member_calls(
             if tgt not in bucket:
                 bucket.append(tgt)
 
-    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
+    def _method_on_type_or_bases(
+        type_nid: str, callee_key: str, call_arity: int | None = None
+    ) -> str | None:
         """The method's definition on the type or its resolvable base chain.
 
         A type that declares the method directly wins (overrides shadow the
-        base). Otherwise walk `inherits` upward; an unresolved base anywhere the
-        walk actually reaches poisons the lookup (no edge), as does anything
-        other than exactly one declaration found.
+        base), whether or not a specific declaration there is resolvable --
+        the lookup never falls through to a base class once the name exists
+        here. Otherwise walk `inherits` upward; an unresolved base anywhere
+        the walk actually reaches poisons the lookup (no edge), as does
+        anything other than exactly one declaration found.
+
+        A name with more than one declaration on the SAME type is a real
+        overload set (#4584): resolved only when ``call_arity`` (the call's
+        own argument count) uniquely matches one of them. No arity, or an
+        arity shared by more than one overload (same count, different
+        parameter types -- this extractor does not infer argument types to
+        break that tie), yields no hit from this type at all, never a guess.
         """
         hits: set[str] = set()
         seen: set[str] = set()
@@ -5623,10 +5643,17 @@ def _resolve_csharp_member_calls(
             if nid in seen:
                 continue
             seen.add(nid)
-            method_nid = method_index.get((nid, callee_key))
-            if method_nid:
-                hits.add(method_nid)
-                continue  # an override shadows anything above it
+            candidates = method_index.get((nid, callee_key))
+            if candidates:
+                if len(candidates) == 1:
+                    hits.add(candidates[0])
+                elif call_arity is not None:
+                    arity_matches = [
+                        c for c in candidates if method_arity.get(c) == call_arity
+                    ]
+                    if len(arity_matches) == 1:
+                        hits.add(arity_matches[0])
+                continue  # an override shadows anything above it, resolvable or not
             if nid in unresolved_base:
                 return None  # the method may live on the out-of-corpus base
             frontier.extend(bases_of.get(nid, []))
@@ -5808,7 +5835,9 @@ def _resolve_csharp_member_calls(
                 _park_if_absent(type_name, caller_node, rc)
                 continue
             type_qualified = False
-        method_nid = _method_on_type_or_bases(type_nid, _key(callee))
+        method_nid = _method_on_type_or_bases(
+            type_nid, _key(callee), rc.get("csharp_call_arity")
+        )
         if not method_nid:
             continue  # receiver typed, but the type has no such method — skip
         if method_nid == caller or (caller, method_nid) in existing_pairs:

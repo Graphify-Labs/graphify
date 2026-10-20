@@ -190,9 +190,29 @@ def _csharp_type_name_for_id(node, class_name: str) -> str:
     return f"{class_name}`{arity}" if arity else class_name
 
 
+def _csharp_method_param_signature(method_node, source: bytes) -> str:
+    """A method declaration's own parameter signature, as written (#4584).
+
+    Joins each parameter's own type text with a comma, e.g. ``int,string``.
+    Two overloads of the same name always differ here -- C# itself requires
+    it -- so this is a stable, deterministic key for telling them apart,
+    independent of which one the walk happens to visit first.
+    """
+    params = method_node.child_by_field_name("parameters")
+    if params is None:
+        return ""
+    parts = []
+    for p in params.children:
+        if not p.is_named or p.type != "parameter":
+            continue
+        type_node = p.child_by_field_name("type")
+        parts.append(_read_text(type_node, source) if type_node is not None else "")
+    return ",".join(parts)
+
+
 def _csharp_pre_scan_name_collisions(
     root_node, source: bytes, stem: str
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[tuple[str, str], int]]:
     """Pre-scan a C# file for declared names that collapse to one node id.
 
     C# is case-sensitive and `_Name` is the usual spelling of a private member,
@@ -204,16 +224,29 @@ def _csharp_pre_scan_name_collisions(
     the Python #3302 collision in C#; the outcome is the same rule
     (``_underscore_salted_nid``).
 
-    Returns ``(type_groups, member_groups)``, each ``{plain_nid: {raw names}}``
-    for the ids two or more distinct names would share. Types are keyed the way
-    the walk mints them (``_make_id(stem, namespace, name_for_id)``), members
-    (methods, properties, enum members) by ``_make_id(type_nid, name)`` where
-    ``type_nid`` is the type's FINAL id, already salted when the type itself
-    collides. Same-file partial declarations of one type share an id, so their
-    members are grouped together. Overloads are one name, never a collision.
+    Returns ``(type_groups, member_groups, overload_counts)``. ``type_groups``
+    and ``member_groups`` are each ``{plain_nid: {raw names}}`` for the ids two
+    or more distinct names would share. Types are keyed the way the walk mints
+    them (``_make_id(stem, namespace, name_for_id)``), members (methods,
+    properties, enum members) by ``_make_id(type_nid, name)`` where ``type_nid``
+    is the type's FINAL id, already salted when the type itself collides.
+    Same-file partial declarations of one type share an id, so their members
+    are grouped together.
+
+    ``overload_counts`` is ``{(type_nid, exact_name): count}`` for a method
+    declared two or more times on the SAME type under the EXACT SAME spelling
+    (a real overload set, #4584) -- deliberately keyed by the raw name, not
+    by the folded ``plain_nid`` ``member_groups`` itself uses: ``_Action`` and
+    ``Action`` collapse onto one ``plain_nid`` too, but they are two DIFFERENT
+    names colliding (the ``_underscore_salted_nid`` case above), not one name
+    declared twice, and must not be counted as an overload set by mistake.
+    The walk salts a method's id by its own parameter signature only when its
+    ``(type_nid, name)`` lands in this map, so a type with no overloads pays
+    nothing extra and keeps its ids exactly as before.
     """
     type_names: dict[str, set[str]] = {}
     member_names: dict[str, set[str]] = {}
+    overload_counts: dict[tuple[str, str], int] = {}
     type_decls: list[tuple[object, str, str]] = []
 
     def _visit(n, ns: list[str]) -> None:
@@ -256,7 +289,11 @@ def _csharp_pre_scan_name_collisions(
                 name_node = c.child_by_field_name("name")
                 name = _read_text(name_node, source) if name_node is not None else ""
                 if name:
-                    member_names.setdefault(_make_id(type_nid, name), set()).add(name)
+                    member_nid = _make_id(type_nid, name)
+                    member_names.setdefault(member_nid, set()).add(name)
+                    if c.type == "method_declaration":
+                        key = (type_nid, name)
+                        overload_counts[key] = overload_counts.get(key, 0) + 1
             elif c.type in ("declaration_list", "enum_member_declaration_list") or (
                 c.type.startswith("preproc_")
             ):
@@ -266,7 +303,8 @@ def _csharp_pre_scan_name_collisions(
     for decl, plain, name in type_decls:
         _members(decl, _underscore_salted_nid(plain, name, type_groups))
     member_groups = {nid: names for nid, names in member_names.items() if len(names) >= 2}
-    return type_groups, member_groups
+    overload_counts = {key: count for key, count in overload_counts.items() if count >= 2}
+    return type_groups, member_groups, overload_counts
 
 
 def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
@@ -5930,10 +5968,11 @@ def _extract_generic(
     csharp_interface_names: set[str] = set()
     csharp_type_groups: dict[str, set[str]] = {}
     csharp_member_groups: dict[str, set[str]] = {}
+    csharp_overload_counts: dict[tuple[str, str], int] = {}
     if config.ts_module == "tree_sitter_c_sharp":
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
-        csharp_type_groups, csharp_member_groups = _csharp_pre_scan_name_collisions(
-            root, source, stem
+        csharp_type_groups, csharp_member_groups, csharp_overload_counts = (
+            _csharp_pre_scan_name_collisions(root, source, stem)
         )
 
     swift_protocol_names: set[str] = set()
@@ -7599,6 +7638,7 @@ def _extract_generic(
                     ruby_method_kind = "ambiguous"
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
+                csharp_overload_arity: int | None = None
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -7607,6 +7647,23 @@ def _extract_generic(
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, csharp_member_groups
                     )
+                    # A real overload set (#4584): underscore-salting leaves
+                    # this id untouched, since every overload shares one
+                    # literal name, not a name/underscore-variant pair. Each
+                    # overload salts independently by its OWN parameter
+                    # signature, so the outcome never depends on which one
+                    # the walk happens to visit first. The arity (not the
+                    # full signature) is stamped onto the node too, so the
+                    # cross-file call resolver can pick the one overload a
+                    # call's own argument count actually matches.
+                    if (t == "method_declaration"
+                            and (parent_class_nid, sanitized_name) in csharp_overload_counts):
+                        sig = _csharp_method_param_signature(node, source)
+                        salt = hashlib.sha1(
+                            sig.encode("utf-8"), usedforsecurity=False
+                        ).hexdigest()[:6]
+                        func_nid = _make_id(func_nid, salt)
+                        csharp_overload_arity = len(sig.split(",")) if sig else 0
                 elif (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
                       and t in _JS_MEMBER_METHOD_TYPES):
                     func_nid = _js_member_nid(
@@ -7632,11 +7689,15 @@ def _extract_generic(
                         existing_metadata = dict(existing_method.get("metadata") or {})
                         existing_metadata.update(ruby_method_metadata)
                         existing_method["metadata"] = sanitize_metadata(existing_metadata)
+                node_metadata = ruby_method_metadata
+                if csharp_overload_arity is not None:
+                    node_metadata = dict(node_metadata or {})
+                    node_metadata["csharp_overload_arity"] = csharp_overload_arity
                 add_node(
                     func_nid,
                     f".{func_name}()",
                     line,
-                    metadata=ruby_method_metadata,
+                    metadata=node_metadata,
                 )
                 add_edge(parent_class_nid, func_nid, "method", line)
                 if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
@@ -9594,6 +9655,17 @@ def _extract_generic(
                             # member or property that happens to share X's name.
                             if node.type == "object_creation_expression":
                                 rc_entry["csharp_new"] = True
+                            # The call's own argument count, so the resolver can
+                            # pick the one overload it actually matches when a
+                            # name resolves to more than one method on the
+                            # receiver's type (#4584). Only the count, never the
+                            # argument types: those would need real expression
+                            # type inference this extractor does not attempt.
+                            _args_node = node.child_by_field_name("arguments")
+                            if _args_node is not None:
+                                rc_entry["csharp_call_arity"] = sum(
+                                    1 for c in _args_node.children if c.is_named
+                                )
                             if csharp_qualified_prefix:
                                 rc_entry["qualified_prefix"] = csharp_qualified_prefix
                             if csharp_receiver_chain:
