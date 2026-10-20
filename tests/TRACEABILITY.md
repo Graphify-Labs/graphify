@@ -3564,3 +3564,84 @@ suppression, dependency upgrade, runtime fix or exploit validation is performed.
 Detailed bounded provenance is retained in ignored `hosted-recovery/`
 `delivery-security-baseline.json`/`.md` and `root-security-job.log`. This advisory
 gap remains outside INC-QML-55 and INC-QML-56; a green job is not clean-security acceptance.
+
+## Watch test-clock isolation — INC-QML-57
+
+Status: **Implemented with 31 local passes and one actual-POSIX capability skip;
+new-head hosted proof pending**. The matrix preceded correction. CI run `39492352532`
+tests source `c7386ad0430f7a2a46e00ce66ad11647f2333e12` against base
+`82a4f296446b4cc219ffecfe3345a037e9c362e4` at actual PR merge checkout
+`0c6b24762fb2d352770c2d39fed7be28e95e2c16` (`pull_request`). Linux Python 3.14
+records **11,871 passed, 134 skipped and one failure** across 12,006 cases:
+`test_pr10_watch_overrides.py::test_ignored_root_configuration_still_rebuilds_the_graph[False]`.
+The graph is absent and captured output stops before the Git-head boundary.
+All 47 required cases (42 joint integration plus service/artifact controls),
+four integrity checks and job-owned graph/service cleanup pass independently.
+All four Linux wheels match the 327 committed package files.
+
+Python 3.13 records **11,872 passed and 134 skipped** in complete JUnit but its
+job is cancelled; this is not a successful hosted job. Python 3.10/3.12 cancel
+without JUnit or completed integrity evidence; their cleanup is confirmed.
+Windows CI separately succeeds with 1,060 passes/56 platform skips, 29 required
+native cases and all integrity checks passing. QML/macOS terminal evidence is
+not inferred from any of those profiles.
+
+| Acceptance IDs | Exact current owner and regression evidence |
+| --- | --- |
+| REQ-QML-014-AC03; REQ-CORE-004-AC03 | `test_watch_clock_isolation.py::test_req_qml014_ac03_watch_pump_keeps_stdlib_clock_identity` checks clock identity before/during/after; `test_req_qml014_ac03_lock_retry_sleep_does_not_consume_event[0.05/0.5]` checks that retries delegate even when the delay matches the loop poll. `test_req_qml014_ac03_changed_poll_contract_fails_without_hanging` rejects changed direct-loop polling promptly. These cases pass through the existing helper. |
+| REQ-QML-014-AC03/AC04; REQ-CORE-004-AC03 | `test_req_qml014_ac03_nested_dependency_sleep_keeps_original_config_acceptance[False/True]` calls the unchanged original PR10 acceptance function with actual rebuild/nested standard sleep. `test_req_qml014_ac03_posix_timed_child_wait_keeps_event_pump_scoped` exercises an actual child timed wait on POSIX; native Windows remains an explicit unexecuted POSIX boundary. |
+| REQ-QML-014-AC03/AC04; REQ-CORE-004-AC04; REQ-QML-015-AC01/AC03/AC04 | Run original lifecycle/PR10 assertions and focused new regressions without deadline increases, new acceptance skips or runtime changes; publish one ordinary new-head PR synchronization. Cancelled/unrun lanes remain explicit gaps. |
+
+The ordinary local failed-case replay passes, while an isolated probe adds a
+harmless real clock call at the nested Git-head boundary and reproduces the
+same missing-graph failure. `drive_watch` changes the shared `time.sleep`, and
+the observed POSIX timed-wait implementation can call it. These observations
+establish the dependency-leak mechanism without capturing or claiming the exact
+nested hosted caller. Evidence is retained privately in
+`hosted-recovery/c738-linux-*/audit.json`, `c738-watch-probe.xml`,
+`c738-watch-delay.xml/.log` and the associated stack probes. Correction and
+new-head hosted results remain pending; no original assertions are removed.
+
+An initial five-case clock regression records **four failures and one native
+Windows POSIX-boundary skip** in 1.81 seconds before correction. Its initial
+combined lifecycle selection passes **29 cases with one POSIX-boundary skip**
+in 5.14 seconds. The later direct-caller/changed-poll guard and equal-delay retry
+control require their own final receipt; these counts are intermediate.
+The POSIX test uses an actual bounded child that closes output pipes and waits
+for a release file; observing the real standard-library timed-wait sleep
+releases it. Profiling is restored and the child release is ensured on exit;
+the standard-library callable is never replaced. This case remains locally
+unexecuted on Windows. The shared helper has one pre-existing optional-handler
+type diagnostic; no claim of a wholly clean focused legacy-file typecheck is
+made.
+
+The caller-identity refinement has its own negative control: **two failures and
+one passing control**, four deselected, in 1.39 seconds against the interval-only
+proxy. This covers equal-delay retry and explicit changed-poll rejection.
+Final helper, original PR10 and lifecycle tests pass **31 cases, one POSIX skip,
+zero failures/errors**, 22 warnings, in **8.00 seconds**:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/upstream-sync-0.9.92-final/hosted-recovery/c738-watch-clock-final.coverage'
+.venv/Scripts/python.exe -X utf8 -m pytest -q --disable-warnings -o addopts= tests/test_watch_clock_isolation.py tests/test_pr10_watch_overrides.py tests/test_language_override_lifecycle.py --junitxml=.venv/upstream-sync-0.9.92-final/hosted-recovery/c738-watch-clock-final.xml
+.venv/Scripts/python.exe -m ruff check tests/test_language_override_lifecycle.py tests/test_watch_clock_isolation.py
+.venv/Scripts/python.exe -m pyright --pythonpath .venv/Scripts/python.exe tests/test_watch_clock_isolation.py
+```
+
+Receipts are `c738-watch-clock-before.xml/.log`,
+`c738-watch-clock-guard-before.xml/.log` and `c738-watch-clock-final.xml/.log`
+under `hosted-recovery`. Ruff passes both files; new-module Pyright passes with
+zero errors/warnings. The helper's optional-handler diagnostic matches the
+frozen typing baseline. Helper/new-module sizes are 307/129 physical lines;
+the helper's scoped 320-line cohesion allowance is recorded in code reference.
+Original coverage bytes stay unchanged. No production/package/workflow change,
+new deadline or assertion weakening occurs. Actual POSIX timed waiting and
+normal new-head hosted verification remain outstanding.
+
+The final integration-owner replay passes the same 31 cases with one explicit
+POSIX skip in 6.56 seconds, preserving source inputs, dependencies and prior
+coverage bytes. Whole-repository Ruff passes. Explicit-interpreter Pyright
+retains 651 baseline errors across 838 files, with no added or removed
+file/rule/message/severity signatures. The AST-only repository graph refresh
+exits zero with 27,352 nodes and 64,126 edges. These checks retain the native
+Windows boundary; they do not establish the pending hosted POSIX result.

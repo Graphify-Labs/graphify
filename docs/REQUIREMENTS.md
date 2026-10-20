@@ -75,6 +75,14 @@ all valid inputs and all twelve strict aggregate cases. Versioned required-case
 evidence must match actual collected identities; no production normalization,
 attribute filtering or failure-to-pass relabeling belongs to this correction.
 
+INC-QML-57 addresses a later watch-test isolation failure at source `c7386ad0`.
+Status: **Implemented; 31 local cases pass with one explicit POSIX-boundary skip;
+new-head hosted verification pending**. Isolate the deterministic event clock from the process-wide
+standard library while preserving real rebuilds and existing assertions. Its
+local reproduction identifies a harness-contamination mechanism; the exact
+nested caller in the hosted failure was not captured. Runtime behavior remains
+unchanged, and cancelled jobs do not establish acceptance.
+
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
 not Verified across the full declared platform matrix. The earlier adoption
@@ -430,7 +438,7 @@ Supported Python/OS targets have install and behavior evidence. Mixed C++/JS and
 
 2 - Windows path, Unicode, same-stem, relocated-root and optional-parser-absence fixtures pass the same observable contracts as supported POSIX lanes. (`REQ-QML-014-AC02`)
 
-3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. Aggregate newline validation preserves exact bytes of native inputs that own byte-based metadata regardless of fixture directory, while transforming non-native text exactly; strict graph identities/attributes and dedicated real native LF/CRLF span/topology coverage remain mandatory. (`REQ-QML-014-AC03`)
+3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. Aggregate newline validation preserves exact bytes of native inputs that own byte-based metadata regardless of fixture directory, while transforming non-native text exactly; strict graph identities/attributes and dedicated real native LF/CRLF span/topology coverage remain mandatory. Deterministic watch-event harnesses isolate their event clock without replacing the process-wide standard-library clock; nested real rebuild/subprocess waits must not consume synthetic watch events. (`REQ-QML-014-AC03`)
 
 4 - Skips, baseline portability defects, unavailable optional dependencies and type-check failures remain separately reported; a skipped or unrun lane cannot count as passing support evidence. (`REQ-QML-014-AC04`)
 

@@ -707,3 +707,17 @@ and sixteen dependency-audit rows/four packages (ten unique package/ID pairs).
 Those reported function ASTs and locked package records match pinned upstream;
 actual risk and false-positive assessment remain **Unconfirmed**. Neither
 environment/newline recovery nor a green advisory job resolves that baseline.
+
+## Watch test-clock isolation — INC-QML-57
+
+This implemented test-only correction adds no runtime diagnostic. The existing
+hosted symptom is a missing accepted graph after the watch loop exits before
+rebuild. A deterministic probe reproduces it when a nested real clock call
+consumes the test's synthetic events and raises the harness stop. Isolating the
+clock must preserve genuine observer/rebuild errors and normal teardown; no
+failure is converted to skip or success. Runtime rejection, graph/cache
+retention and retry contracts are unchanged because their production owners
+are untouched. A changed direct-loop poll fails with the bounded assertion
+`watch harness polling contract changed`; other callers delegate real sleep.
+The local selection passes 31 cases and skips the actual POSIX wait boundary.
+New-head hosted evidence is required separately from local proof.

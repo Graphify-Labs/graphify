@@ -2050,3 +2050,27 @@ checkout/service-retention checks and pytest failure status remain authoritative
 No second audit implementation, new runtime diagnostic or relaxed acceptance
 count is introduced. Exact source tests and local results are recorded in
 traceability. Hosted verification for the new reviewed revision remains pending.
+
+## Watch test-clock isolation — INC-QML-57
+
+Status: **Implemented with bounded local proof; actual POSIX timed waiting and
+new-head hosted proof pending**. `tests/test_language_override_lifecycle.py::drive_watch`
+owns only the deterministic test-event pump. Its scoped clock proxy replaces
+the watch module's `time` reference, delegates ordinary clock operations and
+provides the synthetic sleep only for a direct watch-loop caller, asserting its
+existing 0.5-second delay. A changed polling contract fails explicitly. Other
+callers, including lock retry even if its delay later equals 0.5, delegate to
+captured real sleep; `monotonic` retains its original callable. It must not mutate the shared standard
+library module or its `sleep` attribute. Nested real rebuilds and subprocess
+timed waits retain the standard clock; only the watch loop advances the pump.
+Monkeypatch teardown restores the watch reference. Existing observer-thread
+execution, actions, deadlines, graph assertions and failure propagation stay.
+
+No runtime interface, mutable application state, persistence owner, cache schema
+or architectural decision changes. The discrepancy is a test dependency leak;
+architecture documentation needs no new ADR. Exact hosted nested execution is
+unobserved, so deterministic mechanism proof and hosted revision proof remain
+separate. The [matrix](PLAN.md#inc-qml-57--isolate-the-watch-test-event-clock)
+requires global clock-identity checks, nested real sleep and actual POSIX timed
+wait protection. The final Windows selection passes 31 cases with that single
+POSIX capability skip; its actual child-wait boundary remains unverified locally.

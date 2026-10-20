@@ -810,3 +810,22 @@ handwritten test owners remain below 300 lines; the touched workflow retains its
 documented CI-owner cohesion allowance of 632/650 physical lines. Final combined
 local controls pass 79 cases without skips. Source `5876f0a4` failed hosted profiles and advisory scanner findings remain
 explicitly separate from the new local correction results.
+
+## Watch harness clock owner — INC-QML-57
+
+Implemented correction: `tests/test_language_override_lifecycle.py::drive_watch`
+keeps its existing observer/event/rebuild responsibilities and receives a
+test-local delegating clock proxy through `watch_mod.time`. The shared standard
+library clock remains authoritative for nested library and subprocess waits.
+No production forwarding layer, runtime dependency or new persistence owner is
+introduced. The existing helper file measures 295 lines before correction;
+the bounded clock/caller-contract guard has an integration-only ceiling of 320
+lines, owned by the watch-harness/integration maintainer. Keeping clock and event
+delivery together preserves the established helper boundary during this fix.
+The extraction exit is a separately characterized test-clock/event helper if
+the next cohesive responsibility requires growth. Final measurement and focused
+proof are recorded: helper 307/320 and `tests/test_watch_clock_isolation.py`
+129/300 lines. The combined selection passes 31 cases with one POSIX-boundary
+skip; actual POSIX and new-head hosted evidence remain pending. The new module
+passes typing; the legacy helper retains one pre-existing optional-handler
+diagnostic.

@@ -3397,3 +3397,42 @@ The AST-only repository graph refresh exits zero with 27,325 nodes and 64,066
 edges. Runtime/package production tree, active per-user tool and application
 graph are unchanged. Normal PR synchronization must establish hosted evidence
 for the new head; review, merge and exact merged-SHA proof remain separate.
+
+## INC-QML-57 — Isolate the watch test-event clock
+
+Status: **Implemented; 31 local cases pass, with actual POSIX timed waiting
+unexecuted on Windows; new-head hosted proof pending**. Owner: watch-harness
+test maintainer. Dependency: source `c7386ad0`; no runtime, package, workflow,
+parser, persistence or architecture change is authorized by this increment.
+
+The Linux Python 3.14 source lane fails the existing ignored-root override case
+before its graph appears. A read-only deterministic probe reproduces that
+failure when a nested real clock call consumes the synthetic event pump:
+`drive_watch` currently changes `watch_mod.time.sleep` on the shared standard
+library module. POSIX timed subprocess waits can use that same module. The
+hosted nested caller was not captured, so the faithful reproduction establishes
+the harness-contamination mechanism without claiming its exact hosted stack.
+
+| Acceptance IDs | Success, rejection, state and failure checks before implementation |
+| --- | --- |
+| REQ-QML-014-AC03; REQ-CORE-004-AC03 | Replace only the watch module's test clock reference with a scoped delegating proxy. The process-wide `time` module and `time.sleep` identity stay unchanged before, during and after the helper. Preserve the real event actions, rebuilds, assertions and teardown. |
+| REQ-QML-014-AC03; REQ-CORE-004-AC03 | Only a direct call from the watch loop advances the synthetic pump, with an assertion that its delay remains 0.5 seconds. A changed polling contract fails explicitly instead of hanging silently. Other callers, including the lock retry even if its delay later equals 0.5, delegate to captured real sleep; `monotonic` retains its original callable. Lock-retry and changed-poll controls protect these adjacent boundaries. |
+| REQ-QML-014-AC03/AC04; REQ-CORE-004-AC03 | A nested real standard-library sleep during rebuild does not consume a watch event or terminate the watch loop. Exercise actual POSIX timed subprocess waiting where supported and report any platform boundary explicitly. Capture failure before correction and passing regression afterward. |
+| REQ-QML-014-AC03/AC04; REQ-CORE-004-AC04; REQ-QML-015-AC01/AC03/AC04 | Retain original override lifecycle assertions and exact failed hosted case. Do not increase polling deadlines, weaken assertions or add acceptance skips. Run focused helper/lifecycle cases, required static checks and the normal new-head PR synchronization; cancelled lanes are not passes. |
+
+Diagnostic impact: successful test control adds no runtime diagnostic. Synthetic
+watch stop and genuine nested failures retain their existing behavior; a nested
+real clock call must not fabricate event exhaustion. Graph/cache rollback and
+runtime error contracts do not change. Exact new test names, commands and results
+are recorded in [traceability](../../tests/TRACEABILITY.md#watch-test-clock-isolation--inc-qml-57). The earlier Linux 3.14 failure, cancelled Python 3.13 job with
+passing JUnit, and other cancelled lanes remain revision-bound evidence.
+
+The original five clock cases fail four/skip the POSIX boundary before the
+correction. The later caller/poll-contract controls fail two/pass one against
+the interval-only proxy. Final helper, original PR10 and lifecycle selection
+passes 31 cases, skips only the actual POSIX child wait, and reports 22 warnings
+in 8.00 seconds. No original assertion or deadline changes. The helper measures
+307/320 physical lines and the new test module 129/300. Both files pass Ruff;
+the new module passes typing, while the helper retains its known pre-existing
+optional-handler diagnostic. Runtime/package, active tool and application graph
+are unchanged; this local profile does not establish a future hosted pass.

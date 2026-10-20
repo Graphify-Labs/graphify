@@ -1,8 +1,10 @@
 """Language declarations must invalidate incremental state and reach watch events."""
 import hashlib
 import json
+import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,7 +163,17 @@ def drive_watch(root, monkeypatch, actions, *, observed_roots=None):
     monkeypatch.setattr(observers, "Observer", Observer)
     monkeypatch.setattr(polling, "PollingObserver", Observer)
     monkeypatch.setattr(watch_mod, "_rebuild_code", rebuild)
-    monkeypatch.setattr(watch_mod.time, "sleep", pump)
+    # Pump only the watch loop; dependency and lock-retry sleeps stay real.
+    clock = watch_mod.time
+
+    def loop_sleep(seconds):
+        if sys._getframe(1).f_code is watch_mod.watch.__code__:
+            assert seconds == 0.5, "watch harness polling contract changed"
+            return pump(seconds)
+        return clock.sleep(seconds)
+
+    watch_clock = SimpleNamespace(monotonic=clock.monotonic, sleep=loop_sleep)
+    monkeypatch.setattr(watch_mod, "time", watch_clock)
     watch_mod.watch(root, debounce=0)
 
 
