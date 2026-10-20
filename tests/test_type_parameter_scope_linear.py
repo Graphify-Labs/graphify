@@ -11,7 +11,7 @@ ERROR, where a misparse can leave one; the collected names are unchanged.
 from __future__ import annotations
 
 import gc
-import importlib
+import importlib.util
 import time
 
 import pytest
