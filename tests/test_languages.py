@@ -384,6 +384,38 @@ def test_metal_qualifiers_mint_no_sourceless_nodes():
     )
 
 
+def test_gpu_qualifier_blanking_leaves_comments_and_strings_untouched():
+    """#4550 review: the blanking regex has no idea it landed inside a
+    comment or a string/char literal, so a qualifier word that merely
+    appears in a log message or a doc comment must not be rewritten --
+    nothing reads that text as a node, and altering it diverges the parsed
+    bytes from the file on disk for no reason."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    from graphify.extract import _normalize_gpu_qualifiers
+
+    src = (
+        b"// This is a kernel function running on device with constant memory\n"
+        b"kernel void saxpy(\n"
+        b"    device const float* x [[buffer(0)]],\n"
+        b"    constant float& a [[buffer(1)]]\n"
+        b") {\n"
+        b'    const char* msg = "kernel device constant failure";\n'
+        b"    char c = 'x';\n"
+        b"}\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        out = _normalize_gpu_qualifiers(src, _Path(d) / "test.metal")
+    assert b"// This is a kernel function running on device with constant memory" in out
+    assert b'"kernel device constant failure"' in out
+    assert b"'x'" in out
+    # The real, code-position qualifiers are still blanked.
+    assert out.count(b"kernel") == 2  # only the two inside comment/string survive
+    assert out.count(b"device") == 2
+    assert out.count(b"constant") == 2
+
+
 def test_cpp_file_with_a_type_literally_named_device_is_unaffected():
     """#4550: the qualifier filter is keyed by the GPU-dialect extension, so a
     plain .cpp file's own type genuinely named `device` (a legal C++
