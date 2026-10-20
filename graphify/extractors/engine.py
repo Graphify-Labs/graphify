@@ -1248,7 +1248,8 @@ def _python_alias_name(stmt, source: bytes) -> str | None:
     and `UserId = NewType("UserId", int)` each declare one. A bare
     `JsonValue = Union[...]` is an alias by convention only and is not one.
     A same-name re-export (`Field: TypeAlias = core.Field`, `type Field =
-    core.Field[int]`) denotes the original type and declares no new name, so it
+    core.Field[int]`, or `Field: TypeAlias = Field` after `from core import
+    Field`) denotes the original type and declares no new name, so it
     returns None: references keep resolving to the one real `Field`.
     """
     if stmt.type == "type_alias_statement":
@@ -1272,7 +1273,7 @@ def _python_alias_name(stmt, source: bytes) -> str | None:
     if not name.isidentifier():
         return None
     target = _read_text(right, source).split("[", 1)[0].strip() if right is not None else ""
-    if "." in target and target.rsplit(".", 1)[1] == name:
+    if target.rsplit(".", 1)[-1] == name:
         return None
     return name
 

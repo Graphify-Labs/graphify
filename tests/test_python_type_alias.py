@@ -10,7 +10,8 @@ the same collision census as module-level classes and functions.
 Boundaries: only these explicit forms count. A bare `JsonValue = Union[...]`
 is an alias by convention only, and treating every capitalised assignment as a
 type would be a guess. A same-name re-export (`Field: TypeAlias = core.Field`,
-`type Field = core.Field[int]`) denotes the original type and declares no new
+`type Field = core.Field[int]`, `Field: TypeAlias = Field` after
+`from core import Field`) denotes the original type and declares no new
 name, so it emits no node: references keep resolving to the one real `Field`.
 """
 from __future__ import annotations
@@ -107,6 +108,20 @@ def test_a_same_name_re_export_emits_no_node(tmp_path: Path, alias: str):
     result = _extract(tmp_path, {"api.py": alias})
     assert [n for n in result["nodes"] if n["label"] == "Field"] == []
 
+
+
+def test_a_bare_same_name_re_export_keeps_references_on_the_original(tmp_path: Path):
+    result = _extract(tmp_path, {
+        "core.py": "class Field:\n    pass\n",
+        "api.py": ("from typing import TypeAlias\nfrom core import Field\n\n"
+                   "Field: TypeAlias = Field\n\ndef f(x: Field) -> None: ...\n"),
+    })
+    [field] = [n for n in result["nodes"] if n["label"] == "Field"]
+    assert field["source_file"].endswith("core.py")
+    label = _labels(result)
+    targets = {e["target"] for e in result["edges"]
+               if e["relation"] == "references" and label.get(e["source"]) == "f()"}
+    assert targets == {field["id"]}
 
 @pytest.mark.parametrize("statement", [
     "JsonValue = dict[str, object]\n",          # an alias by convention only
