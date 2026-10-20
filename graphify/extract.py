@@ -1520,6 +1520,12 @@ _CSHARP_CONFIG = LanguageConfig(
         "enum_declaration",
         "struct_declaration",
         "record_declaration",
+        # delegate_declaration has a name field and no body of its own (#4552):
+        # a named type with no members. Without it here, a field/parameter
+        # typed as the delegate resolved the name through ensure_named_node
+        # and minted a sourceless stub instead of pointing at the real,
+        # same-file declaration.
+        "delegate_declaration",
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
