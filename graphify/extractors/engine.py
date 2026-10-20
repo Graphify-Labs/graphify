@@ -4750,6 +4750,64 @@ def _scala_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
         return True
     return False
 
+def _cpp_declarator_type_name(declarator, source: bytes) -> str | None:
+    """The name a typedef declarator introduces: `Handle`, `*HandlePtr`,
+    `(*Fn)(int)`, `Arr[4]` each wrap one `type_identifier`."""
+    node = declarator
+    while node is not None and node.type != "type_identifier":
+        inner = node.child_by_field_name("declarator")
+        if inner is None and node.type == "parenthesized_declarator":
+            inner = next(iter(node.named_children), None)
+        node = inner
+    return _read_text(node, source) if node is not None else None
+
+
+def _cpp_type_last_name(type_node, source: bytes) -> str | None:
+    """`Bar` for `ns::Bar` or `ns::Bar<T>`: the name a qualified type ends in."""
+    if type_node is not None and type_node.type == "type_descriptor":
+        type_node = type_node.child_by_field_name("type")
+    if type_node is None or type_node.type != "qualified_identifier":
+        return None
+    while type_node is not None and type_node.type == "qualified_identifier":
+        type_node = type_node.child_by_field_name("name")
+    if type_node is not None and type_node.type == "template_type":
+        type_node = type_node.child_by_field_name("name")
+    return _read_text(type_node, source) if type_node is not None else None
+
+
+def _cpp_alias_names(node, source: bytes) -> list[str]:
+    """The type names a namespace- or file-scope `using X = ...;` or `typedef`
+    declares. A member alias (`using value_type = T;` in a class) is not one: it
+    sits in every container and C++ member ids are not class-qualified, so they
+    would fold into one hub. Neither is the struct a C-style
+    `typedef struct Foo {...} Foo;` names (the struct's own node is it), nor a
+    same-name re-export (`using Bar = ns::Bar;`), which denotes the original
+    type and declares no new name."""
+    scope = node.parent
+    while scope is not None and scope.type == "template_declaration":
+        scope = scope.parent
+    if scope is None or scope.type not in ("translation_unit", "declaration_list"):
+        return []
+    target = node.child_by_field_name("type")
+    if node.type == "alias_declaration":
+        name_node = node.child_by_field_name("name")
+        candidates = [_read_text(name_node, source)] if name_node is not None else []
+    else:
+        candidates = [_cpp_declarator_type_name(d, source)
+                      for d in node.children_by_field_name("declarator")]
+    own_names = {_cpp_type_last_name(target, source)}
+    if target is not None and target.type in (
+            "struct_specifier", "class_specifier", "union_specifier", "enum_specifier"):
+        spec_name = target.child_by_field_name("name")
+        if spec_name is not None:
+            own_names.add(_read_text(spec_name, source))
+    names: list[str] = []
+    for name in candidates:
+        if name and name not in own_names and name not in names:
+            names.append(name)
+    return names
+
+
 def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     nodes: list, edges: list, seen_ids: set, function_bodies: list,
                     parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
@@ -4760,7 +4818,22 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
     `enumerator` node (`Red`, `Green = 2`) whose name is its `name` field
     (an `identifier`). Without this the enum type is a memberless leaf. This is
     the C++ parity of Java #1719 (enum_constant), Swift, and Scala.
+
+    A namespace- or file-scope alias (`using X = ...;`, `typedef ... X;`) also
+    gets a type node contained by the file, so a type reference to it lands on
+    a sourced declaration instead of a sourceless stub. Returns False for it:
+    the walk goes on, so a typedef'd struct body still gets its own node.
+    C++ never populates namespace_stack, so the id is the one
+    ensure_named_node looks up for a name declared in this file.
     """
+    if node.type in ("alias_declaration", "type_definition"):
+        line = node.start_point[0] + 1
+        for alias_name in _cpp_alias_names(node, source):
+            alias_nid = _make_id(stem, alias_name)
+            if alias_nid not in seen_ids:
+                add_node_fn(alias_nid, alias_name, line)
+                add_edge_fn(file_nid, alias_nid, "contains", line)
+        return False
     if node.type == "enumerator" and parent_class_nid:
         name_node = node.child_by_field_name("name")
         if name_node is None:
