@@ -5208,6 +5208,11 @@ def test_extensionless_shebang_via_dispatch(tmp_path):
     split.write_text("#!/usr/bin/env -S bash -eu\necho hi\n")
     assert _get_extractor(split) is extract_bash
 
+    # A version-suffixed interpreter resolves like the generic name
+    versioned = tmp_path / "tool"
+    versioned.write_text("#!/usr/bin/env python3.12\nprint('hi')\n")
+    assert _get_extractor(versioned) is extract_python
+
 
 def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
     from graphify.extract import _get_extractor

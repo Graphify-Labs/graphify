@@ -1635,6 +1635,31 @@ _C_PRIMITIVE_TYPE_NODES = frozenset({
     "primitive_type", "sized_type_specifier", "auto", "placeholder_type_specifier",
 })
 
+# GPU C++ dialects (Metal, CUDA) route through the C++ extractor, but their
+# address-space / execution-space / function qualifiers are not part of the C++
+# grammar. tree-sitter-cpp parses a leading qualifier (`kernel`, `__global__`,
+# ...) as the declaration's `type_identifier` (the real type is pushed into an
+# ERROR node), and the type-ref collector would emit it. Each one then becomes a
+# sourceless, corpus-shared god node that every shader/kernel `references` — a
+# provenance violation (a node with no source_file) that also pollutes god-node
+# rankings. These words are legal identifiers in plain C++, so the filter is
+# keyed by file extension and never applied to `.cpp`/`.cc`/`.h`/etc.
+_METAL_TYPE_QUALIFIER_KEYWORDS = frozenset({
+    "kernel", "vertex", "fragment",
+    "device", "constant", "threadgroup", "threadgroup_imageblock",
+    "thread", "ray_data", "object_data",
+})
+_CUDA_TYPE_QUALIFIER_KEYWORDS = frozenset({
+    "__global__", "__device__", "__host__", "__shared__", "__constant__",
+    "__managed__", "__restrict__", "__forceinline__", "__noinline__",
+    "__grid_constant__", "__launch_bounds__",
+})
+_CPP_DIALECT_TYPE_QUALIFIERS: dict[str, frozenset[str]] = {
+    ".metal": _METAL_TYPE_QUALIFIER_KEYWORDS,
+    ".cu": _CUDA_TYPE_QUALIFIER_KEYWORDS,
+    ".cuh": _CUDA_TYPE_QUALIFIER_KEYWORDS,
+}
+
 def _c_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a C type expression; append (name, role) tuples for user-defined types.
     Skips primitive types and qualifiers; recognises type_identifier."""
@@ -1685,14 +1710,19 @@ def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
 
 
 def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
-                           skip: frozenset[str] | None = None) -> None:
+                           skip: frozenset[str] | None = None,
+                           dialect_quals: frozenset[str] = frozenset()) -> None:
     """Walk a C++ type expression; append (name, role) tuples.
     Resolves qualified_identifier tails (std::string → string) and template_type
     base + arguments (std::vector<HttpClient> → vector + HttpClient as generic_arg).
 
     Template type parameters in scope (``skip``) are local bindings, not
     references; emitting one mints a sourceless stub (the bare `t` god node a
-    `template<typename T>` class or function would otherwise share corpus-wide)."""
+    `template<typename T>` class or function would otherwise share corpus-wide).
+
+    ``dialect_quals`` holds GPU C++-dialect qualifiers (Metal/CUDA; only non-empty
+    for those file extensions) that tree-sitter-cpp misparses as a leading
+    `type_identifier`; they are language keywords, not corpus symbols."""
     if node is None or node.type in _C_PRIMITIVE_TYPE_NODES:
         return
     if skip is None:
@@ -1700,32 +1730,32 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text and text not in skip:
+        if text and text not in skip and text not in dialect_quals:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_identifier":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            _cpp_collect_type_refs(name_node, source, generic, out, skip)
+            _cpp_collect_type_refs(name_node, source, generic, out, skip, dialect_quals)
         return
     if t == "template_type":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             text = _read_text(name_node, source)
-            if text and text not in skip:
+            if text and text not in skip and text not in dialect_quals:
                 out.append((text, "generic_arg" if generic else "type"))
         args_node = node.child_by_field_name("arguments")
         if args_node is not None:
             for c in args_node.children:
                 if c.is_named:
-                    _cpp_collect_type_refs(c, source, True, out, skip)
+                    _cpp_collect_type_refs(c, source, True, out, skip, dialect_quals)
         return
     if t in ("type_descriptor", "pointer_declarator", "reference_declarator",
              "array_declarator", "type_qualifier", "abstract_pointer_declarator",
              "abstract_reference_declarator", "abstract_array_declarator"):
         for c in node.children:
             if c.is_named:
-                _cpp_collect_type_refs(c, source, generic, out, skip)
+                _cpp_collect_type_refs(c, source, generic, out, skip, dialect_quals)
 
 def _scala_given_synthetic_name(node, source: bytes) -> str | None:
     """A stable label for an anonymous Scala 3 given (`given Show[Int] with`).
@@ -5785,6 +5815,14 @@ def _extract_generic(
 
     stem = _file_stem(path)
     str_path = str(path)
+    # GPU C++ dialects (Metal .metal, CUDA .cu/.cuh) route through the C++
+    # extractor, but their address-space/execution-space/function qualifiers are
+    # not C++ keywords, so tree-sitter-cpp misparses a leading `kernel` /
+    # `__global__` as the declaration type. Suppress them for those extensions
+    # only; they are valid identifiers in plain C++.
+    dialect_type_quals: frozenset[str] = _CPP_DIALECT_TYPE_QUALIFIERS.get(
+        path.suffix.lower(), frozenset()
+    )
     # Names bound by an import of a module outside the corpus. Module-scoped, so it
     # is computed once per file and consulted from every scope — see
     # `_js_external_import_names`.
@@ -6913,7 +6951,8 @@ def _extract_generic(
                             arg_refs: list[tuple[str, str]] = []
                             for arg in template_args_node.children:
                                 if arg.is_named:
-                                    _cpp_collect_type_refs(arg, source, True, arg_refs)
+                                    _cpp_collect_type_refs(arg, source, True, arg_refs,
+                                                           dialect_quals=dialect_type_quals)
                             for ref_name, _role in arg_refs:
                                 target_nid = ensure_named_node(ref_name, line)
                                 if target_nid != class_nid:
@@ -7426,7 +7465,8 @@ def _extract_generic(
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
-                    _cpp_collect_type_refs(type_node, source, False, refs)
+                    _cpp_collect_type_refs(type_node, source, False, refs,
+                                           dialect_quals=dialect_type_quals)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "field"
                         target_nid = ensure_named_node(ref_name, line)
@@ -7881,8 +7921,13 @@ def _extract_generic(
                                 break
 
             if config.ts_module in ("tree_sitter_c", "tree_sitter_cpp"):
-                collect = (_cpp_collect_type_refs if config.ts_module == "tree_sitter_cpp"
-                           else _c_collect_type_refs)
+                if config.ts_module == "tree_sitter_cpp":
+                    def collect(node, source: bytes, generic: bool,
+                                out: list[tuple[str, str]]) -> None:
+                        _cpp_collect_type_refs(node, source, generic, out, None,
+                                               dialect_type_quals)
+                else:
+                    collect = _c_collect_type_refs
                 return_node = node.child_by_field_name("type")
                 if return_node is not None:
                     refs: list[tuple[str, str]] = []
@@ -8765,9 +8810,18 @@ def _extract_generic(
                 callee_name = _read_text(node, source)
                 self_receiver = "self"
             elif config.ts_module == "tree_sitter_swift":
+                # Freestanding macro call `#stringify(...)`: `macro_invocation` is
+                # `# simple_identifier call_suffix`. The macro is a free top-level
+                # symbol, not a method on `self`, so resolve it by bare name without
+                # a receiver (an unresolved `#name` stays unresolved — fail-closed).
+                if node.type == "macro_invocation":
+                    for child in node.children:
+                        if child.type == "simple_identifier":
+                            callee_name = _read_text(child, source)
+                            break
                 # Swift: first child may be simple_identifier or navigation_expression
                 first = node.children[0] if node.children else None
-                if first:
+                if node.type != "macro_invocation" and first:
                     if first.type == "simple_identifier":
                         callee_name = _read_text(first, source)
                         # Inside a method a bare `save()` is `self.save()`.

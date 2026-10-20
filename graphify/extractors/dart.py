@@ -6,6 +6,10 @@ import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 
+# A match starting with `typedef` is declared in step 2.5, so the variable and
+# method passes skip it. Precompiled: those passes test every match they make.
+_TYPEDEF_LINE = re.compile(r"\s*typedef\b")
+
 
 def extract_dart(path: Path) -> dict:
     """Extract classes, mixins, functions, imports, generic calls, and annotations from a .dart file using regex."""
@@ -396,18 +400,33 @@ def extract_dart(path: Path) -> dict:
                      add_edge(target_nid, provider_nid, "defines", context="riverpod_provider", line=annotation_line)
 
     # 2.5 Typedefs (Type Aliases)
-    typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([a-zA-Z0-9_<>,.?\s]+);"
-    for m in re.finditer(typedef_pattern, src_clean, re.MULTILINE):
-        typedef_name = m.group(1)
-        typedef_line = _line_at(m.start(1))
-        target_type = m.group(2).split("<")[0].split(".")[-1].strip()
-        if target_type not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}:
+    # `typedef Name<T> = <type>;`, whose type may be a function type with
+    # parentheses (`void Function(int)`), and the legacy function-typedef form
+    # `typedef int Compare(Object a, Object b);`. Every alias is a node in this
+    # file. Only an alias of a plain named type references it: a function
+    # type's leading name is its return type, not the type it aliases.
+    typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([^;]+);"
+    # Return-type tokens are whitespace-separated runs that cannot contain
+    # whitespace themselves, so a long line that never reaches `(` fails in
+    # linear time instead of trying every way to split it into tokens.
+    legacy_typedef_pattern = r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\("
+    typedef_builtins = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}
+    # Most files declare no typedef: skip both scans with one substring test.
+    for pattern in (typedef_pattern, legacy_typedef_pattern) if "typedef" in src_clean else ():
+        for m in re.finditer(pattern, src_clean, re.MULTILINE):
+            typedef_name = m.group(1)
+            typedef_line = _line_at(m.start(1))
             typedef_nid = _make_id(stem, typedef_name)
+            if typedef_nid in defined:
+                continue
             add_node(typedef_nid, typedef_name, line=typedef_line)
             add_edge(file_nid, typedef_nid, "defines", line=typedef_line)
-            target_nid = _make_id(target_type)
-            add_node(target_nid, target_type, source_file=None)
-            add_edge(typedef_nid, target_nid, "references", context="typedef", line=typedef_line)
+            named = re.fullmatch(r"([\w.]+)\s*(?:<.*>)?\s*\??", m.group(2).strip(), re.DOTALL) if pattern is typedef_pattern else None
+            target_type = named.group(1).split(".")[-1] if named else ""
+            if target_type and target_type not in typedef_builtins:
+                target_nid = _make_id(target_type)
+                add_node(target_nid, target_type, source_file=None)
+                add_edge(typedef_nid, target_nid, "references", context="typedef", line=typedef_line)
 
     # 3. Extensions (extension MyExt on MyClass)
     ext_pattern = r"^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"
@@ -434,6 +453,8 @@ def extract_dart(path: Path) -> dict:
         destructured_names = m.group(3)
 
         if not re.match(r"^\s*(?:late|final|const|var)\b", m.group(0)) and not var_type:
+            continue
+        if _TYPEDEF_LINE.match(m.group(0)):  # declared as an alias in 2.5
             continue
 
         if single_name:
@@ -463,6 +484,8 @@ def extract_dart(path: Path) -> dict:
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
     method_pattern = r"^\s{0,2}(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+(?:\.\w+)?)\s*\("
     for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
+        if _TYPEDEF_LINE.match(m.group(0)):  # legacy alias, declared in 2.5
+            continue
         raw_name = m.group(1)
         name = raw_name.split(".")[-1]
         if name in {"if", "for", "while", "switch", "catch", "return", "void", "dynamic", "final", "const", "get", "set"}:
