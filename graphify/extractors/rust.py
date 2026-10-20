@@ -746,11 +746,30 @@ def extract_rust(path: Path) -> dict:
         if t == "use_declaration":
             arg = node.child_by_field_name("argument")
             if arg:
+                # The mods declared beside this `use`: an inline `mod` block is a scope of
+                # its own, so a `use serde::..` inside `mod tests { .. }` sees none of the
+                # file's top-level mods (#4564).
+                scope_mods = {
+                    _read_text(name_node, source)
+                    for sibling in (node.parent.children if node.parent is not None else ())
+                    if sibling.type == "mod_item"
+                    and (name_node := sibling.child_by_field_name("name")) is not None
+                }
+
                 def name_use(written: str, path: str) -> None:
                     # The name as written, for the corpus rewire (#4439): the id folds its
                     # case. Only for a path rooted in this crate: `serde::Serialize` or
-                    # `std::fs::File` is never the corpus's own `Serialize` or `File`.
-                    if path.lstrip(": ").split("::")[0].strip() in ("crate", "self", "super"):
+                    # `std::fs::File` is never the corpus's own `Serialize` or `File`. A
+                    # first segment that is a `mod` declared in this scope is this crate's
+                    # too (`mod item; pub use item::Invoice;`), unless the path starts with
+                    # `::`, which always names a crate (#4564).
+                    first = path.lstrip(": ").split("::")[0].strip()
+                    ident = re.match(r"[A-Za-z_][A-Za-z0-9_]*", first)  # `item as items` -> `item`
+                    if first in ("crate", "self", "super") or (
+                        ident is not None
+                        and ident.group() in scope_mods
+                        and not path.lstrip().startswith("::")
+                    ):
                         edges[-1]["_rust_use_name"] = written.split(" as ")[0].strip()
                 module_name = _rust_use_module(_read_text(arg, source))
                 grouped = arg.type in ("use_list", "scoped_use_list")

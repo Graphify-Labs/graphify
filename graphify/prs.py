@@ -174,9 +174,11 @@ def _detect_default_branch(repo: str | None = None) -> str:
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
             )
             if result.returncode == 0:
-                # refs/remotes/origin/main → main
+                # refs/remotes/origin/main → main. Strip the prefix rather than
+                # keep the last segment, so a default branch with a slash in its
+                # name (release/2.x) survives whole.
                 ref = result.stdout.strip()
-                return ref.split("/")[-1] if ref else "main"
+                return ref.removeprefix("refs/remotes/origin/") or "main"
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
     return "main"
@@ -188,11 +190,15 @@ _CI_FAILURE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED", "TIMED_OUT", "ACTIO
 def _parse_ci(rollup: list) -> str:
     if not rollup:
         return "NONE"
-    conclusions = {r.get("conclusion") for r in rollup if r.get("conclusion")}
-    if conclusions & _CI_FAILURE_CONCLUSIONS:
+    # statusCheckRollup mixes two entry types: CheckRun (GitHub Actions and other
+    # check apps) carries status/conclusion, while StatusContext (commit statuses
+    # from external CI such as Jenkins or CircleCI) carries only state, one of
+    # SUCCESS, FAILURE, ERROR, PENDING or EXPECTED. Read both.
+    conclusions = {r.get("conclusion") or r.get("state") for r in rollup} - {None, ""}
+    if conclusions & (_CI_FAILURE_CONCLUSIONS | {"ERROR"}):
         return "FAILURE"
     statuses = {r.get("status") for r in rollup}
-    if "IN_PROGRESS" in statuses or "QUEUED" in statuses:
+    if "IN_PROGRESS" in statuses or "QUEUED" in statuses or conclusions & {"PENDING", "EXPECTED"}:
         return "PENDING"
     if "SUCCESS" in conclusions:
         return "SUCCESS"
