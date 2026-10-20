@@ -600,3 +600,68 @@ def test_js_short_rationale_comment_unchanged(tmp_path):
     assert [n["label"] for n in rationale] == [
         "NOTE: must run before compile() or the linker will fail"
     ]
+
+
+# ── Secret redaction in rationale labels ──────────────────────────────────────
+
+_GH_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def _labels(result):
+    return [n["label"] for n in result["nodes"] if n.get("file_type") == "rationale"]
+
+
+def test_comment_secret_redacted_from_rationale_label(tmp_path):
+    path = _write_py(tmp_path, f'''
+        def deploy():
+            # WHY: the prod token is {_GH_TOKEN} so CI can push
+            pass
+    ''')
+    labels = _labels(extract_python(path))
+    assert any("WHY" in label for label in labels)
+    assert not any(_GH_TOKEN in label or "ghp_a1B2" in label for label in labels)
+    assert any("[redacted]" in label for label in labels)
+
+
+def test_docstring_secret_redacted_from_rationale_label(tmp_path):
+    path = _write_py(tmp_path, f'''
+        def connect():
+            """Uses {_AWS_KEY} because the legacy bucket needs static credentials."""
+            pass
+    ''')
+    labels = _labels(extract_python(path))
+    assert labels and not any(_AWS_KEY in label for label in labels)
+
+
+def test_secret_not_left_as_prefix_when_label_truncates(tmp_path):
+    long_prefix = "word " * 14  # pushes the token across the 80-char cut
+    path = _write_py(tmp_path, f'''
+        def f():
+            # NOTE: {long_prefix}{_GH_TOKEN}
+            pass
+    ''')
+    assert not any("ghp_" in label for label in _labels(extract_python(path)))
+
+
+def test_secret_absent_from_persisted_graph_json(tmp_path):
+    import json
+    path = _write_py(tmp_path, f'''
+        def deploy():
+            # WHY: prod token {_GH_TOKEN}
+            pass
+    ''')
+    G = build_from_json(extract_python(path))
+    from networkx.readwrite import json_graph
+    assert "ghp_a1B2" not in json.dumps(json_graph.node_link_data(G, edges="links"))
+
+
+def test_ordinary_rationale_untouched(tmp_path):
+    path = _write_py(tmp_path, '''
+        def process():
+            # WHY: chunked processing because the dataset exceeds RAM
+            pass
+    ''')
+    labels = _labels(extract_python(path))
+    assert any("chunked processing because the dataset exceeds RAM" in label for label in labels)
+    assert not any("[redacted]" in label for label in labels)
