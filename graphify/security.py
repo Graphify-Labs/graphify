@@ -391,6 +391,38 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_LABEL_LEN = 256
 
 
+# Credential shapes redacted from free text that is persisted into the graph
+# (rationale/comment labels). Shape-based only, so it is risk reduction rather
+# than a guarantee: vendor-prefixed tokens and PEM private-key headers.
+_SECRET_SHAPE_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+    r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+    r"|\bgh[pousr]_[A-Za-z0-9]{36,}"
+    r"|\bgithub_pat_[A-Za-z0-9_]{22,}"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|\b[sr]k_(?:live|test)_[A-Za-z0-9]{10,}"
+    r"|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}"
+    r"|\bAIza[0-9A-Za-z_-]{35}\b"
+    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+    r"|(?<=\bBearer )[A-Za-z0-9._~+/=-]{16,}"
+    r"|(?<=://)[^\s/:@]+:[^\s/@]+(?=@)"
+)
+
+REDACTED_MARKER = "[redacted]"
+
+
+def redact_secrets(text: str | None) -> str:
+    """Replace credential-shaped substrings in *text* with ``[redacted]``.
+
+    Applied to free text copied out of source files (docstrings and ``# WHY:``
+    style comments) before it becomes a node label, so a token pasted into a
+    comment does not land in graph.json / graph.html / GRAPH_REPORT.md.
+    """
+    if not text:
+        return "" if text is None else text
+    return _SECRET_SHAPE_RE.sub(REDACTED_MARKER, str(text))
+
+
 def sanitize_label(text: str | None) -> str:
     """Strip control characters and cap length.
 

@@ -1346,9 +1346,12 @@ def to_graphml(
     for node_id in H.nodes():
         for key, val in list(H.nodes[node_id].items()):
             H.nodes[node_id][key] = _graphml_safe(val)
-    for u, v in H.edges():
-        for key, val in list(H.edges[u, v].items()):
-            H.edges[u, v][key] = _graphml_safe(val)
+    # edges(data=True) rather than H.edges[u, v]: graph.json is loaded as a
+    # MultiGraph when it carries parallel edges (#4500), and a MultiGraph edge
+    # view needs a key, so the (u, v) form crashed the whole export.
+    for *_, attrs in H.edges(data=True):
+        for key, val in list(attrs.items()):
+            attrs[key] = _graphml_safe(val)
 
     # Write atomically: a mid-serialization error otherwise leaves a 0-byte
     # .graphml on disk that downstream tooling mistakes for a completed export
