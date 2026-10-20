@@ -4801,9 +4801,12 @@ def _cpp_alias_names(node, source: bytes) -> list[str]:
         spec_name = target.child_by_field_name("name")
         if spec_name is not None:
             own_names.add(_read_text(spec_name, source))
+    # A set, not `in names`: one typedef can declare thousands of names.
     names: list[str] = []
+    seen = set(own_names)
     for name in candidates:
-        if name and name not in own_names and name not in names:
+        if name and name not in seen:
+            seen.add(name)
             names.append(name)
     return names
 
