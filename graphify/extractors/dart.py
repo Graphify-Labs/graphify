@@ -6,6 +6,10 @@ import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 
+# A match starting with `typedef` is declared in step 2.5, so the variable and
+# method passes skip it. Precompiled: those passes test every match they make.
+_TYPEDEF_LINE = re.compile(r"\s*typedef\b")
+
 
 def extract_dart(path: Path) -> dict:
     """Extract classes, mixins, functions, imports, generic calls, and annotations from a .dart file using regex."""
@@ -407,7 +411,8 @@ def extract_dart(path: Path) -> dict:
     # linear time instead of trying every way to split it into tokens.
     legacy_typedef_pattern = r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\("
     typedef_builtins = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}
-    for pattern in (typedef_pattern, legacy_typedef_pattern):
+    # Most files declare no typedef: skip both scans with one substring test.
+    for pattern in (typedef_pattern, legacy_typedef_pattern) if "typedef" in src_clean else ():
         for m in re.finditer(pattern, src_clean, re.MULTILINE):
             typedef_name = m.group(1)
             typedef_line = _line_at(m.start(1))
@@ -449,7 +454,7 @@ def extract_dart(path: Path) -> dict:
 
         if not re.match(r"^\s*(?:late|final|const|var)\b", m.group(0)) and not var_type:
             continue
-        if re.match(r"^\s*typedef\b", m.group(0)):  # declared as an alias in 2.5
+        if _TYPEDEF_LINE.match(m.group(0)):  # declared as an alias in 2.5
             continue
 
         if single_name:
@@ -479,7 +484,7 @@ def extract_dart(path: Path) -> dict:
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
     method_pattern = r"^\s{0,2}(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+(?:\.\w+)?)\s*\("
     for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
-        if re.match(r"^\s*typedef\b", m.group(0)):  # legacy alias, declared in 2.5
+        if _TYPEDEF_LINE.match(m.group(0)):  # legacy alias, declared in 2.5
             continue
         raw_name = m.group(1)
         name = raw_name.split(".")[-1]
