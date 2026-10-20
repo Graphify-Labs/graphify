@@ -1536,7 +1536,12 @@ _CSHARP_CONFIG = LanguageConfig(
 
 _KOTLIN_CONFIG = LanguageConfig(
     ts_module="tree_sitter_kotlin",
-    class_types=frozenset({"class_declaration", "object_declaration"}),
+    # type_alias has no body of its own (#4553): a named type with no members,
+    # same shape Scala and TypeScript already model their own type aliases as.
+    # Without it here, a property/parameter typed as the alias resolves the
+    # name through ensure_named_node and mints a sourceless stub instead of
+    # pointing at the real, same-file declaration.
+    class_types=frozenset({"class_declaration", "object_declaration", "type_alias"}),
     function_types=frozenset({"function_declaration"}),
     # Grammar 1.1.0 (PyPI tree_sitter_kotlin) names the import node `import`;
     # older forks use `import_header`. Accept both (#2526).
