@@ -1243,6 +1243,9 @@ def _js_source_path(source_file: str, root: Path) -> Path | None:
     except Exception:
         return path
 
+_SFC_SUFFIXES = frozenset({".vue", ".svelte"})
+
+
 def _apply_symbol_resolution_facts(
     paths: list[Path],
     nodes: list[dict],
@@ -1600,6 +1603,20 @@ def _apply_symbol_resolution_facts(
                     edge["target_file"] = str(path_by_resolved.get(origin[0], origin[0]))
             break
 
+    def origin_node_id(origin: tuple[Path, str]) -> str | None:
+        """Node an exported binding resolves to.
+
+        A single-file component's default export *is* the component: no symbol
+        node carries the name ``default``, so a barrel's ``export { default as
+        Alert } from './Alert.vue'`` resolves to the ``.vue`` file node itself.
+        """
+        found = symbol_nodes.get(origin)
+        if found is not None or origin[1] != "default":
+            return found
+        if origin[0].suffix.lower() in _SFC_SUFFIXES and origin[0] in path_by_resolved:
+            return source_file_id.get(origin[0])
+        return None
+
     for import_fact in facts.imports:
         source_id = source_file_id.get(_resolve_cached(import_fact.file_path))
         if source_id is None:
@@ -1608,7 +1625,16 @@ def _apply_symbol_resolution_facts(
             import_fact.target_path,
             import_fact.imported_name,
         )
-        target_id = symbol_nodes.get((origin_path, origin_symbol))
+        target_id = origin_node_id((origin_path, origin_symbol))
+        if target_id is not None and (origin_path, origin_symbol) not in symbol_nodes:
+            # A component reached through a barrel: the barrel must export that
+            # name from exactly one module (two `default as Alert` re-exports
+            # are ambiguous, #2034) or the import is left unresolved.
+            sole, _ = exported_candidates(
+                (_resolve_cached(import_fact.target_path), import_fact.imported_name), frozenset()
+            )
+            if sole != {(origin_path, origin_symbol)}:
+                target_id = None
         if target_id is None:
             continue
         add_edge(
@@ -1652,7 +1678,7 @@ def _apply_symbol_resolution_facts(
             candidates, _ = exported_candidates(barrel_key, frozenset())
             if len(candidates) == 1:
                 origin = next(iter(candidates))
-                if origin != barrel_key and symbol_nodes.get(origin) in owned_ids:
+                if origin != barrel_key and origin_node_id(origin) in owned_ids:
                     superseded.add(id(edge))
             break
     if superseded:
@@ -1784,6 +1810,37 @@ def _apply_symbol_resolution_facts(
             use_fact.file_path,
         )
 
+_JS_SPLIT_FROM_RE = re.compile(
+    rb"""(?m)^([ \t]*\}[ \t]*)(\r?\n)([ \t]*)(from[ \t]*(?:'[^'\n]*'|"[^"\n]*"))"""
+)
+
+
+def _normalize_js_split_from_clause(source: bytes) -> bytes | None:
+    """Pull a ``from '...'`` clause that starts the line after a closing ``}`` up.
+
+    ``export {\\n  default as Tabs\\n}\\nfrom './Tabs.vue'`` (the layout some
+    generators and formatters emit) is valid JavaScript, but tree-sitter-javascript
+    and tree-sitter-typescript end the ``export``/``import`` statement at the
+    ``}``: the clause becomes two stray expression statements, so the module
+    string is never seen and the barrel file gets no import/re-export edge at
+    all. A line holding only ``}`` followed by a line starting ``from '...'`` can
+    only be that statement (``from 'x'`` is a syntax error anywhere else), so the
+    clause is moved onto the ``}`` line. The rewrite is byte-for-byte the same
+    length and keeps every line break count, so offsets and line numbers hold.
+    """
+    if b"from" not in source:
+        return None
+
+    def _join(m: re.Match) -> bytes:
+        head, newline, indent, clause = m.groups()
+        sep = b" " if indent else b""
+        pad = b" " * (len(indent) - len(sep))
+        return head + sep + clause + pad + newline
+
+    out = _JS_SPLIT_FROM_RE.sub(_join, source)
+    return out if out != source else None
+
+
 def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
@@ -1797,6 +1854,7 @@ def _parse_js_tree(path: Path):
             source = masked.encode("utf-8")
         else:
             source = _read_source_bytes(path, warn=False)
+        source = _normalize_js_split_from_clause(source) or source
         use_ts = effective_suffix(path) in (".ts", ".mts", ".cts") or (
             effective_suffix(path) == ".vue" and vue_lang not in ("js", "jsx")
         )
