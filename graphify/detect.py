@@ -55,6 +55,13 @@ VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.w
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
 FILE_COUNT_UPPER = 500             # files - above this, warn about token cost
+# #2942: a large *fraction* of the corpus having no supported extractor (not
+# just a small, expected sliver of e.g. lockfiles or binaries) means the
+# resulting graph looks complete but structurally represents only part of the
+# codebase. Gated on an absolute floor too, so a tiny repo with one stray
+# unsupported file does not trip this.
+UNCLASSIFIED_WARN_MIN_FILES = 20
+UNCLASSIFIED_WARN_FRACTION = 0.2
 
 # Resource caps for parsing untrusted office/PDF files (F2). A corpus is
 # attacker-controllable (graphify runs on cloned/shared folders), and .docx/.xlsx
@@ -2257,12 +2264,33 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             f"Consider running on a subfolder."
         )
 
+    # #2942: a few unclassified files (lockfiles, binaries, stray config) are
+    # routine and already reported above by count. A large SHARE of the files
+    # actually seen having no supported extractor at all is a different,
+    # louder signal: the graph may look complete while structurally missing
+    # a large part of the codebase (e.g. a repo whose business logic lives in
+    # XML, or another language graphify does not parse).
+    unclassified_warning: str | None = None
+    _seen_total = total_files + len(unclassified)
+    if (
+        len(unclassified) >= UNCLASSIFIED_WARN_MIN_FILES
+        and _seen_total
+        and len(unclassified) / _seen_total >= UNCLASSIFIED_WARN_FRACTION
+    ):
+        unclassified_warning = (
+            f"{len(unclassified)} of {_seen_total} files seen "
+            f"({round(len(unclassified) / _seen_total * 100)}%) have no supported "
+            f"extractor and are missing from this graph entirely. It may look "
+            f"complete while representing only part of the codebase."
+        )
+
     return {
         "files": {k.value: v for k, v in files.items()},
         "total_files": total_files,
         "total_words": total_words,
         "needs_graph": needs_graph,
         "warning": warning,
+        "unclassified_warning": unclassified_warning,
         "skipped_sensitive": skipped_sensitive,
         "unclassified": sorted(unclassified),
         "walk_errors": walk_errors,
