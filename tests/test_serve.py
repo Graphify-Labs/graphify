@@ -1782,6 +1782,59 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     assert "No node matching" in err
 
 
+def test_resolve_single_node_reports_a_substring_near_miss_as_such():
+    """`MailController` must not come back as `EmailController` (#3917)."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    nid, err = _resolve_single_node(G, "mailcontroller")
+    assert nid is None
+    assert err.startswith("No exact match for 'mailcontroller'")
+    assert "EmailController" in err
+    assert "Controller/EmailController.php L12" in err
+    assert "Controller/EmailController.php::EmailController" in err
+
+
+def test_resolve_single_node_still_takes_a_prefix_shorthand():
+    """Prefix matching is how a caller starts typing a name, so it still resolves."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    assert _resolve_single_node(G, "email") == ("mail", None)
+
+
+def test_resolve_single_node_prefers_an_exact_name_over_a_substring():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="MailController", source_file="Controller/MailController.php")
+    G.add_node("email", label="EmailController", source_file="Controller/EmailController.php")
+
+    assert _resolve_single_node(G, "mailcontroller") == ("mail", None)
+
+
+def test_near_miss_lists_at_most_five_candidates():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    for i in range(7):
+        G.add_node(f"c{i}", label=f"A{i}PostController", source_file=f"Controller/Post{i}.php")
+
+    nid, err = _resolve_single_node(G, "post")
+    assert nid is None
+    assert "A0PostController" in err
+    assert "A4PostController" in err
+    assert "A5PostController" not in err
+    assert "... and 2 more" in err
+
+
+
 # --- rationale attribute scoring (#2293) ---
 
 _FAB_RATIONALE = (
