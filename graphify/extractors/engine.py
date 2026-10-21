@@ -5945,8 +5945,11 @@ def _extract_generic(
     js_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
+    python_import_modules: dict[str, str] = {}
+    python_import_names: dict[str, tuple[str, str]] = {}
     if config.ts_module == "tree_sitter_python":
         python_underscore_groups = _python_pre_scan_underscore_collisions(root, source, stem)
+        python_import_modules, python_import_names = _python_import_bindings(root, source)
 
     def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
                  metadata: dict | None = None) -> None:
@@ -8331,9 +8334,16 @@ def _extract_generic(
                             continue
                         deco_line = child.start_point[0] + 1
                         target = ensure_named_node(deco_name, deco_line)
+                        # Record which module the decorator was imported from
+                        # (`import pytest` -> `@pytest.fixture`), so the corpus
+                        # rewire only binds it to a definition in that module
+                        # and never to an unrelated same-named local def (#2732).
+                        deco_module = _python_decorator_module(
+                            child, source, python_import_modules, python_import_names)
                         if target != owner_nid:
                             add_edge(owner_nid, target, "references", deco_line,
-                                     context="decorator")
+                                     context="decorator",
+                                     metadata={"ref_module": deco_module} if deco_module else None)
             for child in node.children:
                 walk(child, parent_class_nid=parent_class_nid)
             return
@@ -10250,6 +10260,79 @@ def _python_decorator_name(deco_node, source: bytes) -> str | None:
             return _read_text(target, source)
         return None
     return None
+
+def _python_import_bindings(root_node, source: bytes) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """Module-level import bindings of a Python file (#2732).
+
+    Returns ``(modules, names)``: ``modules`` maps a local name bound by
+    ``import m`` / ``import m as alias`` / ``import a.b`` to its module, and
+    ``names`` maps a local name bound by ``from m import x [as alias]`` to
+    ``(m, x)``. Relative imports are left out: they name corpus modules, and a
+    decorator reached through one keeps the existing resolution. Function-local
+    imports are left out too, matching the facts pass's file-wide evidence rule.
+    """
+    modules: dict[str, str] = {}
+    names: dict[str, tuple[str, str]] = {}
+    for stmt in root_node.children:
+        if stmt.type == "import_statement":
+            for c in stmt.named_children:
+                if c.type == "dotted_name":
+                    dotted = _read_text(c, source)
+                    modules[dotted] = dotted
+                    modules.setdefault(dotted.split(".", 1)[0], dotted.split(".", 1)[0])
+                elif c.type == "aliased_import":
+                    n, a = c.child_by_field_name("name"), c.child_by_field_name("alias")
+                    if n is not None and a is not None:
+                        modules[_read_text(a, source)] = _read_text(n, source)
+        elif stmt.type == "import_from_statement":
+            mod = stmt.child_by_field_name("module_name")
+            if mod is None or mod.type != "dotted_name":
+                continue  # relative (`from . import x`) or malformed
+            module = _read_text(mod, source)
+            for c in stmt.named_children:
+                if c is mod:
+                    continue
+                if c.type == "dotted_name":
+                    name = _read_text(c, source)
+                    names[name] = (module, name)
+                elif c.type == "aliased_import":
+                    n, a = c.child_by_field_name("name"), c.child_by_field_name("alias")
+                    if n is not None and a is not None:
+                        names[_read_text(a, source)] = (module, _read_text(n, source))
+    return modules, names
+
+
+def _python_decorator_module(deco_node, source: bytes, modules: dict[str, str],
+                             names: dict[str, tuple[str, str]]) -> str | None:
+    """The module a decorator's symbol was imported from, or None (#2732).
+
+    ``@pytest.fixture`` under ``import pytest`` -> ``pytest``; ``@pt.fixture``
+    under ``import pytest as pt`` -> ``pytest``; ``@fixture`` under ``from
+    pytest import fixture`` -> ``pytest``; ``@tools.retry`` under ``from pkg
+    import tools`` -> ``pkg.tools``. None when no module-level import binds it,
+    so the decorator keeps the existing unique-definition resolution.
+    """
+    for child in deco_node.children:
+        if not child.is_named:
+            continue
+        target = child
+        if target.type == "call":
+            target = target.child_by_field_name("function") or target
+        if target.type == "attribute":
+            obj = target.child_by_field_name("object")
+            receiver = _read_text(obj, source) if obj is not None else ""
+            if receiver in modules:
+                return modules[receiver]
+            if receiver in names:
+                module, name = names[receiver]
+                return f"{module}.{name}"
+            return None
+        if target.type == "identifier":
+            bound = names.get(_read_text(target, source))
+            return bound[0] if bound else None
+        return None
+    return None
+
 
 def _ts_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a TS `decorator` node.
