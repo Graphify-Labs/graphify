@@ -4704,12 +4704,87 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         return True
     return False
 
+def _swift_alias_name(node, source: bytes) -> str | None:
+    """The name a `typealias X = ...` declares, or None for a same-name
+    re-export (`typealias Field = Core.Field`), which denotes the original type
+    and declares no new name."""
+    name_node = node.child_by_field_name("name")
+    if name_node is None or name_node.type != "type_identifier":
+        return None
+    name = _read_text(name_node, source)
+    # tree-sitter-swift tags the aliased type with the `name` field too.
+    value = node.children_by_field_name("name")[-1]
+    if value.type == "user_type":
+        segments = [c for c in value.children if c.type == "type_identifier"]
+        if len(segments) > 1 and _read_text(segments[-1], source) == name:
+            return None
+    return name or None
+
+
+def _swift_brace_balance(node) -> int:
+    """`{` tokens minus `}` tokens in a subtree, ignoring zero-width MISSING ones."""
+    balance = 0
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.child_count:
+            stack.extend(n.children)
+        elif n.type == "{" and not n.is_missing:
+            balance += 1
+        elif n.type == "}" and not n.is_missing:
+            balance -= 1
+    return balance
+
+
+def _swift_file_scope_aliases(root, source: bytes) -> dict[int, str]:
+    """start_byte -> name of each file-scope `typealias`.
+
+    A member alias (`typealias Element = Int` in a type, protocol or
+    extension) is not one: it witnesses an associated type that many types
+    name, and a node for it would capture references meant for those. Neither
+    is a function-local one. tree-sitter-swift misparses many real files (an
+    `#if` inside a type body is enough), and error recovery can lift a type's
+    members to the top level, so in such a file a top-level alias counts only
+    when it parsed cleanly itself and the `{`/`}` tokens before it balance."""
+    children = root.children
+    top = [i for i, c in enumerate(children) if c.type == "typealias_declaration"]
+    if not top:
+        return {}
+    aliases: dict[int, str] = {}
+    depth = 0
+    for child in children[:top[-1] + 1]:
+        if child.type == "typealias_declaration" and depth == 0 and not child.has_error:
+            name = _swift_alias_name(child, source)
+            if name:
+                aliases[child.start_byte] = name
+        if root.has_error:
+            depth += _swift_brace_balance(child)
+    return aliases
+
+
 def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                       nodes: list, edges: list, seen_ids: set, function_bodies: list,
                       parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                      ensure_named_node_fn) -> bool:
-    """Handle enum_entry for Swift. Returns True if handled."""
-    if node.type == "enum_entry" and parent_class_nid:
+                      ensure_named_node_fn, file_aliases: dict[int, str]) -> bool:
+    """Handle enum_entry for Swift. Returns True if handled.
+
+    A file-scope `typealias` also gets a type node contained by the file, so a
+    type reference to it lands on a sourced declaration instead of a sourceless
+    stub. Returns False for it: the walk goes on as before. Swift never
+    populates namespace_stack, so the id is the one ensure_named_node looks up
+    for a name declared in this file.
+    """
+    node_type = node.type
+    if node_type == "typealias_declaration":
+        alias_name = file_aliases.get(node.start_byte)
+        if alias_name:
+            line = node.start_point[0] + 1
+            alias_nid = _make_id(stem, alias_name)
+            if alias_nid not in seen_ids:
+                add_node_fn(alias_nid, alias_name, line)
+                add_edge_fn(file_nid, alias_nid, "contains", line)
+        return False
+    if node_type == "enum_entry" and parent_class_nid:
         line = node.start_point[0] + 1
         for child in node.children:
             if child.type == "simple_identifier":
@@ -5938,8 +6013,10 @@ def _extract_generic(
 
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
+    swift_file_aliases: dict[int, str] = {}
     if config.ts_module == "tree_sitter_swift":
         swift_protocol_names, swift_class_names = _swift_pre_scan(root, source)
+        swift_file_aliases = _swift_file_scope_aliases(root, source)
 
     # JS/TS class body -> member collision groups, filled lazily (#4475).
     js_member_groups: dict = {}
@@ -8229,7 +8306,7 @@ def _extract_generic(
             if _swift_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge,
-                                  ensure_named_node):
+                                  ensure_named_node, swift_file_aliases):
                 return
 
         # Groovy shares Java's `enum_constant` node shape (name field + optional
