@@ -186,7 +186,7 @@ from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXT
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
-from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa: E402,F401
+from graphify.extractors.objc import _objc_category_base_stem, _objc_local_var_types, extract_objc  # noqa: E402,F401
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
 
@@ -9811,6 +9811,20 @@ def extract(
         old_pref_abs = _file_node_id(path_abs)
         if old_pref_abs != new_id and old_pref_abs != old_pref:
             old_prefs.append((old_pref_abs, new_id))
+        # An ObjC category (`Foo+Cat.h`) keys its class node and methods off the
+        # BASE stem `Foo`, so they fold into `Foo.h`'s class (#1556). Those ids
+        # start with the base stem's prefix, not this file's, so register it as
+        # well, after the file's own prefixes, or they keep the absolute-path form
+        # and the checkout location leaks into the graph (#502).
+        if "+" in rel.name:
+            rel_stem = _file_stem(rel)
+            base_rel = _objc_category_base_stem(rel_stem)
+            if base_rel != rel_stem:
+                new_base = _make_id(base_rel)
+                for _form in (path, path_abs):
+                    old_base = _make_id(_objc_category_base_stem(_file_stem(_form)))
+                    if old_base != new_base and (old_base, new_base) not in old_prefs:
+                        old_prefs.append((old_base, new_base))
         # Bash entrypoint node ids append "__entry" to the file-level id
         # (extractors/bash.py), so a script-invocation edge endpoint minted
         # from an out-of-batch target path keeps a suffixed absolute-derived
