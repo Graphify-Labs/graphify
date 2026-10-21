@@ -379,6 +379,100 @@ def test_graphify_root_still_preserves_relative_when_graphify_out_is_relative(
     )
 
 
+def test_rebuild_external_root_keeps_mixed_detect_and_ast_caches_external(
+    tmp_path, monkeypatch
+):
+    """#1287: document stats and AST cache share output, not source identity."""
+    import graphify.detect as detect_mod
+    import graphify.extract as extract_mod
+
+    corpus = tmp_path / "corpus"
+    (corpus / "pkg").mkdir(parents=True)
+    (corpus / "pkg" / "app.py").write_text(
+        "def run():\n    return 1\n", encoding="utf-8"
+    )
+    (corpus / "guide.txt").write_text(
+        "The guide explains this small package.\n", encoding="utf-8"
+    )
+    external = tmp_path / "external"
+    seen_detect = []
+    seen_extract = []
+    real_detect = detect_mod.detect
+    real_extract = extract_mod.extract
+
+    def detect_spy(root, **kwargs):
+        seen_detect.append((root, kwargs.get("cache_root")))
+        return real_detect(root, **kwargs)
+
+    def extract_spy(paths, **kwargs):
+        seen_extract.append((kwargs.get("root"), kwargs.get("cache_root")))
+        return real_extract(paths, **kwargs)
+
+    monkeypatch.setattr(detect_mod, "detect", detect_spy)
+    monkeypatch.setattr(extract_mod, "extract", extract_spy)
+    assert _rebuild_code(
+        corpus, output_root=external, no_cluster=True, acquire_lock=False
+    ) is True
+    from graphify.cache import _flush_stat_index
+    _flush_stat_index()
+    assert seen_detect == [(corpus, external)]
+    assert seen_extract == [(corpus.resolve(), external)]
+    out = external / "graphify-out"
+    assert (out / "graph.json").exists()
+    assert (out / "manifest.json").exists()
+    assert (out / "cache" / "stat-index.json").exists()
+    assert any(
+        path.is_file() and path.name != "stat-index.json"
+        for path in (out / "cache").rglob("*")
+    ), "AST cache should be written under the external output"
+    assert not (corpus / "graphify-out").exists()
+
+
+def test_rebuild_omitted_output_root_preserves_detect_default(tmp_path, monkeypatch):
+    """Default watch/hook callers keep detect(None) and scan-root AST identity."""
+    import graphify.detect as detect_mod
+    import graphify.extract as extract_mod
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "app.py").write_text(
+        "def run():\n    return 1\n", encoding="utf-8"
+    )
+    seen = []
+    real_detect = detect_mod.detect
+    real_extract = extract_mod.extract
+
+    def detect_spy(root, **kwargs):
+        seen.append(("detect", kwargs.get("cache_root")))
+        return real_detect(root, **kwargs)
+
+    def extract_spy(paths, **kwargs):
+        seen.append(("extract", kwargs.get("root"), kwargs.get("cache_root")))
+        return real_extract(paths, **kwargs)
+
+    monkeypatch.setattr(detect_mod, "detect", detect_spy)
+    monkeypatch.setattr(extract_mod, "extract", extract_spy)
+    assert _rebuild_code(tmp_path, no_cluster=True, acquire_lock=False) is True
+    assert seen == [
+        ("detect", None),
+        ("extract", tmp_path.resolve(), tmp_path.resolve()),
+    ]
+    assert (tmp_path / "graphify-out" / "graph.json").exists()
+
+
+@pytest.mark.parametrize("source_arg", [".", "corpus"])
+def test_rebuild_explicit_same_root_keeps_portable_marker(tmp_path, monkeypatch, source_arg):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    monkeypatch.chdir(corpus if source_arg == "." else tmp_path)
+    assert _rebuild_code(
+        Path(source_arg), output_root=corpus, no_cluster=True, acquire_lock=False
+    ) is True
+    assert (corpus / "graphify-out" / ".graphify_root").read_text() == "."
+    assert _rebuild_code(Path(source_arg), no_cluster=True, acquire_lock=False) is True
+    assert (corpus / "graphify-out" / ".graphify_root").read_text() == source_arg
+
+
 def test_rebuild_code_writes_community_name(tmp_path):
     """#1808: `graphify update` / _rebuild_code must forward community_labels to
     to_json, so graph.json nodes carry a human-readable community_name (hub-derived
@@ -2520,6 +2614,51 @@ def test_rebuild_code_drains_late_arrivals(tmp_path, monkeypatch):
     assert inner_calls[1] == ["late.py"]
     # And the queue is now empty (no further late drains).
     assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+@pytest.mark.parametrize("full_rebuild", [False, True], ids=["incremental", "full"])
+def test_external_rebuild_lock_and_recursive_drains_keep_output_root(
+    tmp_path, monkeypatch, full_rebuild
+):
+    """#1287: a queued contender and both recursive passes use one output."""
+    from graphify import watch as watch_mod
+
+    external = tmp_path / "external"
+    out = external / "graphify-out"
+    source = tmp_path / "app.py"
+    source.write_text("def run(): pass\n", encoding="utf-8")
+    changed_paths = None if full_rebuild else [source]
+    pending_name = ".pending_full" if full_rebuild else ".pending_changes"
+    with watch_mod._rebuild_lock(out, blocking=False) as held:
+        assert held is True
+        assert _rebuild_code(
+            tmp_path, changed_paths=changed_paths, output_root=external
+        ) is False
+        assert (out / pending_name).exists()
+        assert not (tmp_path / "graphify-out").exists()
+
+    original = watch_mod._rebuild_code
+    inner_calls = []
+
+    def inner_spy(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            inner_calls.append(kwargs)
+            if len(inner_calls) == 1:
+                if full_rebuild:
+                    watch_mod._queue_pending_full(out)
+                else:
+                    watch_mod._queue_pending(out, [Path("late.py")])
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", inner_spy)
+    assert original(
+        tmp_path, changed_paths=changed_paths, output_root=external
+    ) is True
+    assert len(inner_calls) == 2
+    assert all(call["output_root"] == external for call in inner_calls)
+    assert inner_calls[1]["changed_paths"] == (None if full_rebuild else [Path("late.py")])
+    assert not (out / pending_name).exists()
+    assert not (tmp_path / "graphify-out").exists()
 
 
 def test_rebuild_code_full_corpus_skips_pending_queue(tmp_path, monkeypatch):
