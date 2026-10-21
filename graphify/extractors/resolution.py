@@ -2828,6 +2828,22 @@ def _collect_python_symbol_resolution_facts(
                 # emitted nothing, and `brain.think()` never became an edge.
                 pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
                 if pkg_dir is None:
+                    # Nothing in this corpus provides the module. A single-segment
+                    # absolute one may live in another repo: keep the names so the
+                    # cross-repo merge can finish the import and its calls (#3744).
+                    # Never a stdlib module: another repo's loose `collections.py`
+                    # is not what `from collections import deque` imports (#4261).
+                    if (
+                        level == 0
+                        and module_name
+                        and "." not in module_name
+                        and module_name not in _PYTHON_STDLIB_MODULE_NAMES
+                    ):
+                        line = node.start_point[0] + 1
+                        for imported_name, local_name in _python_imported_names(node, source):
+                            facts.unresolved_module_imports.append(
+                                (path, local_name, module_name, imported_name, line)
+                            )
                     continue
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
@@ -2893,6 +2909,7 @@ def _augment_symbol_resolution_edges(
     root: Path,
     ambiguous_python_modules: set[str] | None = None,
     resolution_context_nodes: list[dict] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
@@ -2907,6 +2924,89 @@ def _augment_symbol_resolution_edges(
         )
     else:
         _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    _park_unresolved_python_imports(nodes, facts, raw_calls)
+
+
+# Same per-node cap as extract._park_unresolved_member_call: a file importing many
+# third-party names must not bloat every node's metadata in graph.json.
+_MAX_PARKED_PYTHON_IMPORTS_PER_NODE = 64
+
+
+def _park_unresolved_python_imports(
+    nodes: list[dict],
+    facts: _SymbolResolutionFacts,
+    raw_calls: list[dict] | None = None,
+) -> None:
+    """Park `from module import name` that this corpus cannot resolve (#3744).
+
+    The import goes on the importing file node, and every plain call through the
+    imported (or aliased) name goes on its caller, as the ``unresolved_calls``
+    entries the #3152 merge pass reads. Like the member-call parking, the payload
+    is names only: ids are rewritten by the remaps and the repo prefixing, names
+    survive both. Calls come from the per-file ``raw_calls`` — the facts the
+    joint-scan resolver binds the same calls from — so decorated functions and
+    methods park too; the facts pass's own ``uses`` only walk undecorated
+    top-level functions and are the fallback when no raw calls are given. A call
+    whose caller has no node is attributed to the file node.
+    """
+    if not facts.unresolved_module_imports:
+        return
+    from graphify.cross_repo_calls import UNRESOLVED_CALLS_KEY
+
+    by_id = {str(n.get("id")): n for n in nodes if n.get("id")}
+    imported: dict[tuple[Path, str], tuple[str, str]] = {}
+
+    def park(node_id: str, entry: dict) -> None:
+        node = by_id.get(node_id)
+        if node is None:
+            return
+        metadata = node.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            return
+        parked = metadata.setdefault(UNRESOLVED_CALLS_KEY, [])
+        if not isinstance(parked, list) or len(parked) >= _MAX_PARKED_PYTHON_IMPORTS_PER_NODE:
+            return
+        key = (entry["callee"], entry["module"], entry.get("relation"))
+        if any(
+            isinstance(p, dict) and (p.get("callee"), p.get("module"), p.get("relation")) == key
+            for p in parked
+        ):
+            return
+        parked.append(entry)
+
+    for path, local_name, module, imported_name, line in facts.unresolved_module_imports:
+        imported[(_resolve_cached(path), local_name)] = (module, imported_name)
+        park(_make_id(str(path)), {
+            "callee": imported_name, "module": module, "lang": "python",
+            "relation": "imports", "line": f"L{line}",
+        })
+
+    calls: list[tuple[Path, str, str, str]] = []  # (file, caller id, local name, line)
+    if raw_calls is not None:
+        for raw in raw_calls:
+            if not isinstance(raw, dict) or raw.get("is_member_call"):
+                continue
+            source_file = str(raw.get("source_file") or "")
+            callee = str(raw.get("callee") or "").strip()
+            if not source_file or not callee:
+                continue
+            calls.append((Path(source_file), str(raw.get("caller_nid") or ""), callee,
+                          str(raw.get("source_location") or "")))
+    else:
+        calls = [(use.file_path, use.source_id, use.local_name, f"L{use.line}")
+                 for use in facts.uses if use.relation == "calls"]
+
+    for file_path, caller, local_name, line in calls:
+        target = imported.get((_resolve_cached(file_path), local_name))
+        if target is None:
+            continue
+        module, imported_name = target
+        if caller not in by_id:
+            caller = _make_id(str(file_path))
+        entry = {"callee": imported_name, "module": module, "lang": "python"}
+        if line:
+            entry["line"] = line
+        park(caller, entry)
 
 def _resolve_cross_file_imports(
     per_file: list[dict],
