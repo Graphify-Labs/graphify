@@ -6,7 +6,7 @@ from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
-    extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
+    extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor, extract_jsp,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
     extract_powershell_manifest, extract_robot,
@@ -4451,6 +4451,52 @@ def test_razor_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids
+
+
+# -- JavaServer Pages (.jsp, .jspf, .jspx) --------------------------------------
+# Detailed coverage (resolution rules, request-time values, end-to-end linking)
+# lives in tests/test_jsp_extractor.py.
+
+_JSP_VIEWS = FIXTURES / "jsp_webapp" / "src" / "main" / "webapp" / "WEB-INF" / "views"
+
+
+def test_jsp_no_error():
+    r = extract_jsp(_JSP_VIEWS / "orders" / "list.jsp")
+    assert "error" not in r
+
+
+def test_jsp_finds_page_imports():
+    r = extract_jsp(_JSP_VIEWS / "orders" / "list.jsp")
+    assert "com.example.shop.Product" in _labels(r)
+    assert "imports" in _relations(r)
+
+
+def test_jsp_finds_includes():
+    r = extract_jsp(_JSP_VIEWS / "orders" / "list.jsp")
+    assert "includes" in _relations(r)
+
+
+def test_jsp_finds_declaration_methods():
+    r = extract_jsp(_JSP_VIEWS / "orders" / "list.jsp")
+    labels = _labels(r)
+    assert ".formatPrice()" in labels
+    assert ".countItems()" in labels
+
+
+def test_jspx_finds_xml_syntax_directives():
+    r = extract_jsp(_JSP_VIEWS / "orders" / "detail.jspx")
+    assert "com.example.shop.Product" in _labels(r)
+    assert {"imports", "includes", "references", "contains"} <= _relations(r)
+
+
+def test_jsp_no_dangling_edges():
+    r = extract_jsp(_JSP_VIEWS / "orders" / "list.jsp")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids
+        # A resolved include targets the included file's own node, named by
+        # the target_file stamp; every other target is a node of this result.
+        assert e["target"] in node_ids or e.get("target_file")
 
 
 # ---------------Salesforce Apex (.cls / .trigger)----------------------

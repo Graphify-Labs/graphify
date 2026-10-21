@@ -22,6 +22,7 @@ from graphify.extractors.erlang import extract_erlang
 from graphify.extractors.fortran import extract_fortran
 from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
+from graphify.extractors.jsp import extract_jsp
 from graphify.extractors.julia import extract_julia
 from graphify.extractors.markdown import extract_markdown
 from graphify.extractors.objc import extract_objc
@@ -56,6 +57,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "fortran": extract_fortran,
     "go": extract_go,
     "json": extract_json,
+    "jsp": extract_jsp,
     "julia": extract_julia,
     "lazarus_form": extract_lazarus_form,
     "markdown": extract_markdown,
