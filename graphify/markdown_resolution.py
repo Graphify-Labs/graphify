@@ -195,15 +195,18 @@ def resolve_markdown_mentions(
             parents.setdefault(str(e.get("target")), set()).add(str(e.get("source")))
     nodes_by_id = {n["id"]: n for n in all_nodes if n.get("id")}
     node_ids = set(nodes_by_id)
-    # Every symbol name this document cites, so a bare method name can check
-    # whether its owner class is named alongside it (#4609).
-    mentioned_labels = {
-        str(rc.get("callee", "")).strip()
-        for rc in mentions
-        if str(rc.get("callee", "")).strip()
-    } | {
-        str(q) for rc in mentions for q in (rc.get("qualifiers") or [])
-    }
+    # Every symbol name each document cites, so a bare method name can check
+    # whether its owner class is named alongside it in the same document
+    # (#4609). Scoped per file: a class named in another document says
+    # nothing about this one.
+    mentioned_labels: dict[str, set[str]] = {}
+    for rc in mentions:
+        labels = mentioned_labels.setdefault(str(rc.get("source_file", "")), set())
+        callee = str(rc.get("callee", "")).strip()
+        if callee:
+            labels.add(callee)
+        for qualifier in rc.get("qualifiers") or []:
+            labels.add(str(qualifier))
     existing = {
         (e.get("source"), e.get("target"))
         for e in all_edges if e.get("relation") == "references"
@@ -255,7 +258,12 @@ def resolve_markdown_mentions(
                 candidates = [
                     c for c in candidates
                     if not _owning_class(c, nodes_by_id, parents)
-                    or _owner_is_mentioned(c, nodes_by_id, parents, mentioned_labels)
+                    or _owner_is_mentioned(
+                        c,
+                        nodes_by_id,
+                        parents,
+                        mentioned_labels.get(str(rc.get("source_file", "")), set()),
+                    )
                 ]
             target = candidates[0] if len(candidates) == 1 else None
             confidence, score = "INFERRED", 0.95

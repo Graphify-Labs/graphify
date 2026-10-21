@@ -293,6 +293,30 @@ def test_bare_word_resolves_when_its_owner_class_is_mentioned(tmp_path):
     assert cited == {owner["id"], method["id"]}
 
 
+def test_owner_named_in_another_document_does_not_keep_the_edge(tmp_path):
+    """The owner class has to be named in the document that cites the method.
+
+    A class named in a different document says nothing about this one, so
+    the mention of the method must not resolve.
+    """
+    r = _extract(tmp_path, {
+        "src/handler.py": (
+            "class HandlerResult:\n"
+            "    def successWithWarnings(self):\n"
+            "        return 'w'\n"
+        ),
+        "docs/notes.md": "# Notes\n\n`successWithWarnings` is the call.\n",
+        "docs/other.md": "# Other\n\n`HandlerResult` is the result type.\n",
+    })
+
+    notes = _node(r, "Notes")
+    method = next(
+        n for n in r["nodes"]
+        if n["label"] == ".successWithWarnings()" and "handler" in n["id"])
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    assert method["id"] not in cited
+
+
 def test_mentions_survive_a_rebuild_over_an_existing_graph(tmp_path):
     """The watch reconcile owns authored ``[link](file)`` edges, not mentions.
 
