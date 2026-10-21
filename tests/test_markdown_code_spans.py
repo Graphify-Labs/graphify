@@ -235,6 +235,64 @@ def test_dotted_mentions_need_qualifier_evidence(tmp_path):
     assert cited == {widget["id"], gadget["id"], widget_render["id"]}
 
 
+def test_bare_word_does_not_resolve_to_a_lone_method(tmp_path):
+    """A parenthesis-less bare word is prose, not a call (#4609).
+
+    ``redis`` the server must not link to a lone ``redis()`` method on an
+    unrelated class. The same word with parentheses is a call and resolves; a
+    bare word that names a free function or a class still resolves.
+    """
+    r = _extract(tmp_path, {
+        "src/client.py": (
+            "class Client:\n"
+            "    def redis(self):\n"
+            "        return 'r'\n"
+        ),
+        "src/util.py": "def redis():\n    return 'r'\n",
+        "docs/notes.md": (
+            "# Notes\n\n"
+            "The `redis` server is not `Client.redis`; call `redis()` to reach it.\n"
+        ),
+    })
+
+    notes = _node(r, "Notes")
+    util_redis = _node(r, "redis()", "util.py")
+    client_redis = next(
+        n for n in r["nodes"] if n["label"] == ".redis()" and "client" in n["id"])
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    # Neither the bare word nor the ambiguous `redis()` names the method.
+    assert client_redis["id"] not in cited
+    # `redis()` is a call, but `redis` is defined twice, so it stays ambiguous.
+    assert cited == set()
+    assert util_redis["id"] not in cited
+
+
+def test_bare_word_resolves_when_its_owner_class_is_mentioned(tmp_path):
+    """A method cited beside its owner class keeps the reference (#4609)."""
+    r = _extract(tmp_path, {
+        "src/handler.py": (
+            "class HandlerResult:\n"
+            "    def successWithWarnings(self):\n"
+            "        return 'w'\n"
+        ),
+        "docs/notes.md": (
+            "# Notes\n\n"
+            "`HandlerResult.successWithWarnings` reports warnings; "
+            "`HandlerResult` is the result type.\n"
+        ),
+    })
+
+    notes = _node(r, "Notes")
+    owner = _node(r, "HandlerResult")
+    method = next(
+        n for n in r["nodes"]
+        if n["label"] == ".successWithWarnings()" and "handler" in n["id"])
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    # The qualifier in `HandlerResult.successWithWarnings` names the owner, so
+    # the method resolves; the bare `HandlerResult` names the class itself.
+    assert cited == {owner["id"], method["id"]}
+
+
 def test_mentions_survive_a_rebuild_over_an_existing_graph(tmp_path):
     """The watch reconcile owns authored ``[link](file)`` edges, not mentions.
 
