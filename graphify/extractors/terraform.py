@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from graphify.extractors.base import _make_id, _read_source_bytes
 from graphify.security import (
+    REDACTED_MARKER,
     _CONTROL_CHAR_RE,
     _METADATA_MAX_ATTRIBUTES,
     _METADATA_MAX_LIST_ITEMS,
@@ -31,7 +32,7 @@ _SENSITIVE_KEY_RE = re.compile(
     r"sas[-_]?token|auth|passphrase)",
     re.IGNORECASE,
 )
-_REDACTED = "[redacted]"
+_REDACTED = REDACTED_MARKER
 _PAIRED_VALUE_KEYS = frozenset({"value", "valuefrom", "value_from"})
 
 
