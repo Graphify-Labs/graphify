@@ -27,6 +27,8 @@ _AS_TYPE_RE = re.compile(rf"As\s+(?:Global\.)?({_NAME})\s*(.*)$", re.I | re.S)
 _NEW_RE = re.compile(rf"New\s+(?:Global\.)?({_NAME})\s*(.*)$", re.I | re.S)
 _GENERIC_RE = re.compile(r"\(\s*Of\b", re.I)
 _VB_TYPE_KINDS = {"class", "module", "structure"}
+# a typed variable may be an interface; a name used as a qualifier (`Name.Call()`) may not
+_VB_TYPED_KINDS = _VB_TYPE_KINDS | {"interface"}
 _INFERRED_SCORE = 0.85
 
 
@@ -75,7 +77,10 @@ class _VbCallIndex:
         self.members: dict[tuple[str, str], list[tuple[str, list[int]]]] = {}
         self.module_owners: dict[str, set[str]] = {}
         self.data_node_names: dict[str, str] = {}
-        self.data_members: dict[str, set[str]] = {}
+        self.data_node_types: dict[str, tuple[str | None, str, list[str]]] = {}
+        # owner -> field/property/event name -> (declared type as written, the
+        # declaring file's namespace and imports); a name declared twice has no type
+        self.data_members: dict[str, dict[str, tuple[str | None, str, list[str]]]] = {}
         self.bases: dict[str, set[tuple]] = {}
         self.cs_type_ns: dict[str, str] = {}
         self.cs_full: dict[str, list[str]] = {}
@@ -96,9 +101,8 @@ class _VbCallIndex:
                     owner = str(metadata.get("full_name") or node.get("label") or "").casefold()
                     if owner:
                         self.owner_of[nid] = owner
-                        if kind in _VB_TYPE_KINDS:
-                            self.kind[owner] = kind
-                            self.namespace[owner] = owner.rpartition(".")[0]
+                        self.kind[owner] = kind
+                        self.namespace[owner] = owner.rpartition(".")[0]
                 elif kind in {"method", "constructor"}:
                     owner, name = metadata.get("owner"), metadata.get("name")
                     accepted = metadata.get("accepted_arities")
@@ -112,6 +116,13 @@ class _VbCallIndex:
                             self.module_owners.setdefault(name.casefold(), set()).add(owner.casefold())
                 elif kind in {"field", "property", "event"}:
                     self.data_node_names[nid] = str(node.get("label") or "").casefold()
+                    declared = metadata.get("declared_type")
+                    imports = metadata.get("imports")
+                    self.data_node_types[nid] = (
+                        declared if isinstance(declared, str) else None,
+                        str(metadata.get("namespace") or "").casefold(),
+                        [str(i).casefold() for i in imports] if isinstance(imports, list) else [],
+                    )
             elif (
                 _is_cs_file(node.get("source_file"))
                 and node.get("file_type") == "code"
@@ -148,7 +159,11 @@ class _VbCallIndex:
                         (target, name.group().casefold(), name.group())
                     )
             elif relation == "contains" and source in self.owner_of and target in self.data_node_names:
-                self.data_members.setdefault(self.owner_of[source], set()).add(self.data_node_names[target])
+                declared_members = self.data_members.setdefault(self.owner_of[source], {})
+                name = self.data_node_names[target]
+                declared_members[name] = (
+                    (None, "", []) if name in declared_members else self.data_node_types[target]
+                )
             elif relation == "inherits" and source in self.owner_of:
                 base = self.node_by_id.get(target)
                 owner = self.owner_of[source]
@@ -179,8 +194,15 @@ class _VbCallIndex:
             or namespace in imports
         )
 
-    def find_types(self, written: str, caller_namespace: str, imports: list[str]) -> list[tuple]:
-        """The types a written name can mean from this namespace, deduplicated."""
+    def find_types(
+        self, written: str, caller_namespace: str, imports: list[str], typed: bool = False
+    ) -> list[tuple]:
+        """The types a written name can mean from this namespace, deduplicated.
+
+        ``typed`` is for the type of a variable, which may be an interface; a
+        qualifier (``Name.Call()``) only names a class, a Module or a structure.
+        """
+        kinds = _VB_TYPED_KINDS if typed else _VB_TYPE_KINDS
         name = written.casefold()
         if name.startswith("global."):
             prefixes, name = [""], name[len("global."):]
@@ -189,7 +211,7 @@ class _VbCallIndex:
         found: list[tuple] = []
         for prefix in prefixes:
             full = f"{prefix}.{name}" if prefix else name
-            if self.kind.get(full) in _VB_TYPE_KINDS and ("vb", full) not in found:
+            if self.kind.get(full) in kinds and ("vb", full) not in found:
                 found.append(("vb", full))
             for nid in self.cs_full.get(full, ()):
                 if ("cs", nid) not in found:
@@ -213,18 +235,30 @@ class _VbCallIndex:
             self._chain_external[owner] = external
         return self._chain_external[owner]
 
+    def find_field(self, owner: str, name: str) -> tuple[str | None, str, list[str]] | None:
+        """(declared type, namespace, imports) of the field, property or event ``name``.
+
+        The type itself is searched first, then its VB bases nearest first, so a
+        ``Shadows`` field in a derived type wins. None when no such member exists;
+        a member with no declared type comes back with a None type.
+        """
+        level, seen = [owner], set()
+        while level:
+            following: list[str] = []
+            for current in level:
+                if current in seen:
+                    continue
+                seen.add(current)
+                found = self.data_members.get(current, {}).get(name)
+                if found is not None:
+                    return found
+                following += [b[1] for b in sorted(self.bases.get(current, ())) if b[0] == "vb"]
+            level = following
+        return None
+
     def hidden_by_member(self, owner: str, name: str) -> bool:
         """True when the type or a base declares a field, property or event called ``name``."""
-        seen, stack = set(), [owner]
-        while stack:
-            current = stack.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            if name in self.data_members.get(current, ()):
-                return True
-            stack.extend(base[1] for base in self.bases.get(current, ()) if base[0] == "vb")
-        return False
+        return self.find_field(owner, name) is not None
 
     # -- member lookup ---------------------------------------------------------
 
@@ -296,19 +330,32 @@ class _VbCallIndex:
                 return None
             target, found, _depth = self.lookup_member(bases[0], name, arity)
             return None if target is None else (target, "EXTRACTED", 1.0, "call")
-        if kind == "local":
+        if kind in ("local", "typed"):
             declared = call.get("receiver_type")
-            types = self.find_types(declared, namespace, imports) if declared else []
+            types = self.find_types(declared, namespace, imports, typed=True) if declared else []
             if len(types) != 1:
                 return None
             target, found, _depth = self.lookup_member(types[0], name, arity)
             return None if target is None else (target, "INFERRED", _INFERRED_SCORE, "call")
-        if kind == "name":
+        if kind in ("name", "field"):
             receiver = str(call.get("receiver") or "")
             first = receiver.split(".")[0].casefold()
-            if first in {str(n).casefold() for n in call.get("nested_types") or []}:
+            if kind == "name" and first in {str(n).casefold() for n in call.get("nested_types") or []}:
                 return None
-            if self.hidden_by_member(owner, first):
+            member = self.find_field(owner, first)
+            if member is not None:
+                # a field, property or event of that name is the receiver: it hides a
+                # type or Module of the same name, and only its declared type (read in
+                # the declaring file's scope) says whose method is called
+                declared, declared_namespace, declared_imports = member
+                if "." in receiver or not declared:
+                    return None
+                types = self.find_types(declared, declared_namespace, declared_imports, typed=True)
+                if len(types) != 1:
+                    return None
+                target, found, _depth = self.lookup_member(types[0], name, arity)
+                return None if target is None else (target, "INFERRED", _INFERRED_SCORE, "call")
+            if kind == "field":
                 return None
             types = self.find_types(receiver, namespace, imports)
             if len(types) != 1:
@@ -411,6 +458,8 @@ def extract_vbnet(path: Path) -> dict:
     # (which is the namespace-qualified name, not the bare receiver token).
     owner_by_short: dict[str, str] = {}
     methods: dict[tuple[str, str, int], list[str]] = {}
+    # owner_key -> casefolded names of the fields, properties and events this file declares
+    data_names: dict[str, set[str]] = {}
     events: dict[tuple[str, str], str] = {}
     bodies: list[tuple[Node, str, str, str, str, list[str]]] = []
     pending_handles: list[tuple[str, str, str, Node]] = []
@@ -496,16 +545,36 @@ def extract_vbnet(path: Path) -> dict:
         )
 
     def add_data_member(
-        type_id: str, member: Node, name: str, kind: str, relation: str = "contains"
+        type_id: str,
+        member: Node,
+        name: str,
+        kind: str,
+        relation: str = "contains",
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         member_id = add_node(
             _make_id(type_id, kind, name.casefold(), str(member.start_point[0])),
             name,
             member,
             kind=kind,
+            metadata=metadata,
         )
         add_edge(type_id, member_id, relation, member)
         return member_id
+
+    def data_metadata(as_clause: Node | None, owner_key: str, namespace: str) -> dict[str, Any]:
+        """Owner and declared type of a field or property, for the cross-file resolver.
+
+        Only ``As T`` and ``As New T()`` give a type: Option Infer does not apply to
+        fields, so ``= New T()`` alone leaves the member untyped. The declaring
+        file's namespace and imports travel with the type, since they decide which
+        ``T`` it names.
+        """
+        details: dict[str, Any] = {"owner": owner_key}
+        declared = _declared_type(_read_text(as_clause, source), None) if as_clause is not None else None
+        if declared:
+            details.update(declared_type=declared, namespace=namespace, imports=list(file_imports))
+        return details
 
     def process_type(block: Node, parent_id: str, namespace: str) -> None:
         kind = _TYPE_BLOCKS[block.type]
@@ -535,6 +604,7 @@ def extract_vbnet(path: Path) -> dict:
                 referenced = _read_text(type_node, source)
                 add_edge(type_id, type_reference(referenced, type_node), relation, clause)
 
+        field_names = data_names.setdefault(owner_key, set())
         nested_types: list[str] = []
         for child in block.named_children:
             inner = child.named_children[0] if child.type == "type_declaration" and child.named_children else child
@@ -565,22 +635,36 @@ def extract_vbnet(path: Path) -> dict:
                 ):
                     member_name = declarator.child_by_field_name("name")
                     if member_name is not None:
+                        field_names.add(_read_text(member_name, source).casefold())
                         add_data_member(
                             type_id,
                             declarator,
                             _read_text(member_name, source),
                             "field",
+                            metadata=data_metadata(
+                                next((c for c in declarator.named_children if c.type == "as_clause"), None),
+                                owner_key,
+                                namespace,
+                            ),
                         )
                 continue
             if member.type in {"property_declaration", "event_declaration"}:
                 member_name = member.child_by_field_name("name")
                 if member_name is not None:
                     data_name = _read_text(member_name, source)
+                    field_names.add(data_name.casefold())
+                    is_property = member.type == "property_declaration"
                     member_id = add_data_member(
                         type_id,
                         member,
                         data_name,
-                        "property" if member.type == "property_declaration" else "event",
+                        "property" if is_property else "event",
+                        metadata=data_metadata(
+                            next((c for c in member.named_children if c.type == "as_clause"), None)
+                            if is_property else None,
+                            owner_key,
+                            namespace,
+                        ),
                     )
                     if member.type == "event_declaration":
                         events[(owner_key, data_name.casefold())] = member_id
@@ -744,46 +828,94 @@ def extract_vbnet(path: Path) -> dict:
             pending.extend(node.named_children)
         return table
 
+    def with_target(statement: Node) -> tuple[str, str] | None:
+        """What a ``With`` statement's ``.Member`` calls are made on.
+
+        ``("text", name)`` for a name or ``Me.name`` (resolved like the call
+        ``name.Member()``), ``("new", T)`` for ``New T(...)``, None for anything
+        else (a call result, a chain): its type is not known.
+        """
+        expression = statement.child_by_field_name("target")
+        if expression is None:
+            return None
+        written = _read_text(expression, source).strip()
+        if _NAME_RE.match(written):
+            return ("text", written)
+        creation = expression.named_children[0] if expression.named_children else None
+        if creation is not None and creation.type == "new_expression":
+            type_node = creation.child_by_field_name("type")
+            if type_node is not None and _NAME_RE.match(_read_text(type_node, source)):
+                return ("new", _read_text(type_node, source))
+        return None
+
     for body, caller_id, owner_key, type_name, namespace, nested_types in bodies:
         locals_table = method_locals(body)
-        stack = [body]
+        # (node, the With target `.Member` refers to there): the innermost With wins, a
+        # lambda inside it sees it, and a nested method or property declaration does not
+        stack: list[tuple[Node, tuple[str, str] | None | bool]] = [(body, False)]
         while stack:
-            node = stack.pop()
+            node, within = stack.pop()
             if node != body and node.type in {
                 "method_declaration", "constructor_declaration", "property_declaration",
                 "operator_declaration",
             }:
+                continue
+            if node.type == "with_statement":
+                # the expression is evaluated outside the block; its statements inside
+                inner = with_target(node)
+                target_expression = node.child_by_field_name("target")
+                stack.extend(
+                    (child, within if child == target_expression else inner)
+                    for child in reversed(node.named_children)
+                )
                 continue
             if node.type == "invocation":
                 target_node = node.child_by_field_name("target")
                 arguments = node.child_by_field_name("arguments")
                 if target_node is not None:
                     written = _read_text(target_node, source)
+                    typed_receiver = None
+                    # `.Save()` inside a With block calls on the With object: read it as
+                    # the call it stands for. With no known object it names no method.
+                    if written.startswith("."):
+                        if within and _IDENT_RE.match(written[1:]):
+                            if within[0] == "text":
+                                written = within[1] + written
+                            else:
+                                typed_receiver = within[1]
+                        else:
+                            written = ""
                     parts = written.split(".")
                     receiver_text = ".".join(parts[:-1])
                     receiver = receiver_text.casefold()
                     callee = parts[-1]
                     first_segment = receiver.split(".")[0]
-                    # `.Save()` inside a With block, and `handler(x)` where `handler` is a
-                    # local, call a value: neither names a method to resolve.
-                    value_call = written.startswith(".") or (
-                        not receiver and callee.casefold() in locals_table
+                    # `handler(x)` where `handler` is a local calls a value, not a method
+                    value_call = not written or (
+                        not receiver and typed_receiver is None and callee.casefold() in locals_table
                     )
                     is_local = first_segment in locals_table
-                    self_receiver = not value_call and (
+                    self_receiver = not value_call and typed_receiver is None and (
                         not receiver
                         or receiver in {"me", "myclass", type_name.casefold()}
+                    )
+                    # `Me.field`, `MyClass.field` and `OwnType.field` (a Shared field) read
+                    # a member of the caller's own type
+                    own_member = (
+                        not value_call and typed_receiver is None and not is_local
+                        and len(parts) == 3
+                        and first_segment in {"me", "myclass", type_name.casefold()}
                     )
                     # A self/unqualified call targets the caller's own type; a
                     # qualified call (Helpers.Log(), OtherType.Foo()) targets the
                     # named receiver type/module declared in this file. Anything
                     # else is left to the cross-file resolver (resolve_vbnet_calls).
                     target_owner = None
-                    if value_call:
+                    if value_call or typed_receiver is not None or own_member:
                         pass
                     elif self_receiver:
                         target_owner = owner_key
-                    elif not is_local:
+                    elif not is_local and first_segment not in data_names.get(owner_key, ()):
                         target_owner = owner_by_short.get(receiver.split(".")[-1])
                     arity = len(arguments.named_children) if arguments is not None else 0
                     if target_owner is not None:
@@ -792,19 +924,24 @@ def extract_vbnet(path: Path) -> dict:
                         )
                         if len(candidates) == 1:
                             add_edge(caller_id, candidates[0], "calls", node)
-                            stack.extend(reversed(node.named_children))
+                            stack.extend((child, within) for child in reversed(node.named_children))
                             continue
                     if value_call or not _IDENT_RE.match(callee) or (
                         receiver_text and not _NAME_RE.match(receiver_text)
                     ):
-                        stack.extend(reversed(node.named_children))
+                        stack.extend((child, within) for child in reversed(node.named_children))
                         continue
-                    if not receiver:
+                    if typed_receiver is not None:
+                        receiver_kind = "typed"
+                    elif not receiver:
                         receiver_kind = "none"
                     elif self_receiver:
                         receiver_kind = "me"
                     elif receiver == "mybase":
                         receiver_kind = "mybase"
+                    elif own_member:
+                        receiver_kind = "field"
+                        receiver_text = parts[1]
                     elif is_local:
                         receiver_kind = "local" if receiver == first_segment else "value"
                     elif first_segment in {"me", "mybase"}:
@@ -829,10 +966,12 @@ def extract_vbnet(path: Path) -> dict:
                         }
                         if receiver_kind == "local" and locals_table.get(receiver):
                             raw_call["receiver_type"] = locals_table[receiver]
+                        if typed_receiver is not None:
+                            raw_call["receiver_type"] = typed_receiver
                         if nested_types:
                             raw_call["nested_types"] = nested_types
                         raw_calls.append(raw_call)
-            stack.extend(reversed(node.named_children))
+            stack.extend((child, within) for child in reversed(node.named_children))
 
     clean_edges = [
         edge for edge in edges
