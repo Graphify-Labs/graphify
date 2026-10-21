@@ -596,7 +596,6 @@ def test_probe_a_call_through_an_inferred_local_reaches_the_types_method(tmp_pat
     pytest.param(
         _caller("_w = New Worker()\n  _w.Save()", members=" Private _w As Worker\n"),
         id="field",
-        marks=pytest.mark.xfail(strict=True, reason="limitation: field-typed receivers are not tracked"),
     ),
     pytest.param(
         "Public Class Caller\n Public Sub Run(x As Worker)\n  x.Save()\n End Sub\nEnd Class\n",
@@ -781,7 +780,6 @@ def test_a_property_or_field_named_like_a_module_sub_hides_it(tmp_path, member):
 
 # P9 (compiler: c12) -- `.Save()` inside `With w` reaches w's class
 @_needs_vbnet
-@pytest.mark.xfail(strict=True, reason="limitation: With-block targets are not tracked")
 def test_probe_a_member_call_inside_a_with_block_reaches_the_with_objects_method(tmp_path):
     body = "Dim w As New Worker()\n  With w\n   .Save()\n  End With"
     result = _extract_files(tmp_path, {"Worker.vb": _WORKER, "Caller.vb": _caller(body)})
@@ -825,3 +823,310 @@ def test_a_csharp_bare_name_never_reaches_a_vb_module_member_in_the_built_graph(
     cs = 'public class CsCaller {\n    public void P_CsBare() { LogIt("x"); }\n}\n'
     result = _extract_files(tmp_path, {"Helpers.vb": _MODULE, "CsCaller.cs": cs})
     assert ("LogIt()", "Helpers.vb") not in _graph_calls(result, "P_CsBare()", "CsCaller.cs")
+
+
+# ── #4588: calls through fields and With blocks ──
+# Expected targets come from the compiler runs in /var/tmp/vbcases-4588 (dotnet sdk 8.0.426, REPORT.md), cited by case id.
+# HARD = the fix must pass. PROBE = records a decision or a limit.
+
+_REPOSITORY = ("Public Class Repository\n Public Sub Load(id As Integer)\n End Sub\n"
+               " Public Sub Save()\n End Sub\nEnd Class\n")
+_OTHER = "Public Class Other\n Public Sub Save()\n End Sub\nEnd Class\n"
+_BASE_C = "Public Class BaseC\n Protected _r As New Repository()\nEnd Class\n"
+_PRICE_RULES = ("namespace Shop.Rules\n{\n    public class PriceRules\n    {\n"
+                "        public decimal Total(int id) { return 0m; }\n    }\n}\n")
+_REPO_FILES = {"Repository.vb": _REPOSITORY}
+_FIELD = " Private _r As New Repository()\n"
+
+
+def _target(result, edge):
+    """(label, file) of the node an edge points at."""
+    node = next(n for n in result["nodes"] if n["id"] == edge["target"])
+    return node["label"].lstrip("."), Path(str(node.get("source_file", ""))).name
+
+
+# H21 (compiler: f01, f02, f03, f06) -- a call through a field typed in its declaration reaches the type's method
+@_needs_vbnet
+@pytest.mark.parametrize("members, body, callee", [
+    (_FIELD, "_r.Load(1)", "Load()"),
+    (" Private _r As Repository\n Public Sub New()\n  _r = New Repository()\n End Sub\n", "_r.Save()", "Save()"),
+    (_FIELD, "Me._r.Save()", "Save()"),
+    (" Private _r As Repository = New Repository()\n", "_r.Save()", "Save()"),
+], ids=["f01_as_new", "f02_assigned_in_new", "f03_me_field", "f06_as_t_equals_new"])
+def test_a_call_through_a_field_typed_in_its_declaration_reaches_the_types_method(tmp_path, members, body, callee):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller(body, members=members)})
+    assert (callee, "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# H22 (compiler: f05) -- the field is declared in the other partial file of the same class (the Designer file).
+# The compiler run replaces `Inherits System.Windows.Forms.Form` with an in-corpus FormBase (no WinForms on Linux).
+@_needs_vbnet
+def test_a_call_through_a_field_declared_in_another_partial_file_reaches_the_types_method(tmp_path):
+    designer = ("Partial Public Class Caller\n Inherits FormBase\n\n Friend Archive As New Repository()\nEnd Class\n")
+    caller = "Partial Public Class Caller\n Public Sub Run()\n  Archive.Save()\n End Sub\nEnd Class\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "FormBase.vb": "Public Class FormBase\nEnd Class\n",
+                                       "Caller.Designer.vb": designer, "Caller.vb": caller})
+    assert ("Save()", "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# H23 (compiler: w01, w02, w03) -- `.Method()` inside a With block reaches the With object's method
+@_needs_vbnet
+@pytest.mark.parametrize("members, body, callee", [
+    (_FIELD, "With _r\n   .Load(2)\n  End With", "Load()"),
+    ("", "Dim r As New Repository()\n  With r\n   .Save()\n  End With", "Save()"),
+    ("", "With New Repository()\n   .Load(3)\n  End With", "Load()"),
+], ids=["w01_field", "w02_local", "w03_new"])
+def test_a_member_call_inside_a_with_block_reaches_the_with_objects_method(tmp_path, members, body, callee):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller(body, members=members)})
+    assert (callee, "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# H24 (compiler: f04, w04) -- a C#-typed field, plain and in a With block: asserted on the BUILT graph,
+# where build.py's cross-language filter runs
+@_needs_vbnet
+@pytest.mark.parametrize("body", ["_rules.Total(1)", "With _rules\n   .Total(2)\n  End With"], ids=["f04_field", "w04_with_field"])
+def test_a_call_through_a_csharp_typed_field_is_kept_in_the_built_graph(tmp_path, body):
+    members = " Private _rules As New Shop.Rules.PriceRules()\n"
+    result = _extract_files(tmp_path, {"PriceRules.cs": _PRICE_RULES, "Caller.vb": _caller(body, members=members)})
+    assert ("Total()", "PriceRules.cs") in _graph_calls(result, "Run()", "Caller.vb")
+
+
+# H25 (compiler: x08) -- the caller has its own Save: inside `With _r`, `.Save()` is Repository's, never the caller's
+@_needs_vbnet
+def test_a_with_block_call_reaches_the_with_objects_method_and_not_the_callers_own(tmp_path):
+    own = " Public Sub Save()\n End Sub\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller("With _r\n   .Save()\n  End With", members=_FIELD + own)})
+    assert _calls(result, "Run()", "Caller.vb") == {("Save()", "Repository.vb")}
+
+
+# H26 (compiler: x06) -- nested With: the inner `.Save()` is Other's, the one after the inner End With is Repository's
+@_needs_vbnet
+def test_nested_with_blocks_bind_each_call_to_the_innermost_with_object(tmp_path):
+    body = "With _r\n   With _o\n    .Save()\n   End With\n   .Save()\n  End With"
+    members = _FIELD + " Private _o As New Other()\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Other.vb": _OTHER, "Caller.vb": _caller(body, members=members)})
+    by_line = sorted(_call_edges(result, "Run()", "Caller.vb"), key=lambda e: int(e["source_location"][1:]))
+    assert [_target(result, e) for e in by_line] == [("Save()", "Other.vb"), ("Save()", "Repository.vb")]
+
+
+# H27 (compiler: x07) -- a call in a lambda inside a With block reaches the With object's method
+@_needs_vbnet
+def test_a_call_in_a_lambda_inside_a_with_block_reaches_the_with_objects_method(tmp_path):
+    body = "With _r\n   Dim f = Sub() .Save()\n   f()\n  End With"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller(body, members=_FIELD)})
+    assert ("Save()", "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# H28 (compiler: x02) -- a local named like the field wins. Passes before the fix (typed locals are resolved since #4570):
+# it guards the fix against letting the field's type win over the local's
+@_needs_vbnet
+def test_a_local_named_like_a_field_wins_over_the_field(tmp_path):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Other.vb": _OTHER,
+                                       "Caller.vb": _caller("Dim _r As New Other()\n  _r.Save()", members=" Private _r As Repository = New Repository()\n")})
+    assert _calls(result, "Run()", "Caller.vb") == {("Save()", "Other.vb")}
+
+
+# H29 (compiler: x03) -- a parameter named like the field wins. Passes before the fix (typed parameters are resolved
+# since #4570): it guards the fix against letting the field's type win over the parameter's
+@_needs_vbnet
+def test_a_parameter_named_like_a_field_wins_over_the_field(tmp_path):
+    members = " Private _r As Repository = New Repository()\n Public Sub Use(_r As Other)\n  _r.Save()\n End Sub\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Other.vb": _OTHER, "Caller.vb": _caller("Use(New Other())", members=members)})
+    assert _calls(result, "Use()", "Caller.vb") == {("Save()", "Other.vb")}
+
+
+# H30 (compiler: x05) -- a Shadows field in the derived class wins over the base's field of another type
+@_needs_vbnet
+def test_a_shadows_field_wins_over_the_base_classs_field(tmp_path):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Other.vb": _OTHER, "BaseC.vb": _BASE_C,
+                                       "Caller.vb": _caller("_r.Save()", members=" Protected Shadows _r As New Other()\n", inherits=" Inherits BaseC\n")})
+    assert _calls(result, "Run()", "Caller.vb") == {("Save()", "Other.vb")}
+
+
+# H31 (compiler: x14) -- a field named like a type wins over the type: `Repository.Save()` is Other's
+@_needs_vbnet
+def test_a_field_named_like_a_type_wins_over_the_type(tmp_path):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Other.vb": _OTHER,
+                                       "Caller.vb": _caller("Repository.Save()", members=" Private Repository As New Other()\n")})
+    assert _calls(result, "Run()", "Caller.vb") == {("Save()", "Other.vb")}
+
+
+# H32 (compiler: x04) -- a field inherited from a VB base class in another file
+@_needs_vbnet
+def test_a_call_through_a_field_inherited_from_a_vb_base_class_reaches_the_types_method(tmp_path):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "BaseC.vb": _BASE_C,
+                                       "Caller.vb": _caller("_r.Save()", inherits=" Inherits BaseC\n")})
+    assert ("Save()", "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# H33 (compiler: x01a, x01b) -- a field declared without `As` is an Object: Option Infer does not apply to fields
+# (OptionStrict On rejects it with BC30209), the call is late bound, so no edge. Passes before the fix: it stops
+# a fix from inferring the field's type from its initializer
+@_needs_vbnet
+def test_a_call_through_a_field_declared_without_as_binds_to_no_method(tmp_path):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller("_r.Save()", members=" Private _r = New Repository()\n")})
+    assert _calls(result, "Run()", "Caller.vb") == set()
+
+
+# H34 (no compiler case: a graphify invariant) -- a field typed by a type outside the corpus gets no edge and adds no
+# node: a same-named class in the corpus (`Button`) is a different type than System.Windows.Forms.Button
+@_needs_vbnet
+def test_a_call_through_a_field_of_an_external_type_adds_no_edge_and_no_node(tmp_path):
+    decoy = "Public Class Button\n Public Sub PerformClick()\n End Sub\nEnd Class\n"
+    members = " Friend WithEvents Button1 As System.Windows.Forms.Button\n"
+
+    def nodes(sub, body):
+        folder = tmp_path / sub
+        folder.mkdir()
+        result = _extract_files(folder, {"Button.vb": decoy, "Caller.vb": _caller(body, members=members)})
+        return result, sorted((n["label"], Path(str(n.get("source_file") or "")).name) for n in result["nodes"])
+
+    with_call, with_nodes = nodes("with", "Button1.PerformClick()")
+    _without, without_nodes = nodes("without", "")
+    assert _calls(with_call, "Run()", "Caller.vb") == set()
+    assert with_nodes == without_nodes
+
+
+# H35 (compiler: f01, f03, w01) -- every new edge is INFERRED: the field's type is read from the declaration,
+# not from the call, so it is not as certain as a Module call
+@_needs_vbnet
+@pytest.mark.parametrize("body", ["_r.Save()", "Me._r.Save()", "With _r\n   .Save()\n  End With"], ids=["field", "me_field", "with_field"])
+def test_an_edge_through_a_field_or_a_with_block_is_inferred(tmp_path, body):
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller(body, members=_FIELD)})
+    (edge,) = _call_edges(result, "Run()", "Caller.vb")
+    assert edge["target"] == _node_id(result, "Save()", "Repository.vb")
+    assert edge["confidence"] == "INFERRED"
+
+
+# H36 (compiler: x15) -- a field of another class is not visible: BC30451, so no edge from the caller to any Save
+@_needs_vbnet
+def test_a_call_through_a_name_that_is_only_a_field_of_another_class_gets_no_edge(tmp_path):
+    other = "Public Class Other\n Private _r As New Repository()\nEnd Class\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Other.vb": other, "Caller.vb": _caller("_r.Save()")})
+    assert not {c for c in _calls(result, "Run()", "Caller.vb") if c[0] == "Save()"}
+
+
+# H37 (compiler: x16) -- a field typed by a name imported from two namespaces is ambiguous: BC30561,
+# so no edge from the caller to any Save
+@_needs_vbnet
+def test_a_call_through_a_field_whose_type_name_is_ambiguous_gets_no_edge(tmp_path):
+    def namespaced(name):
+        return f"Namespace {name}\n Public Class Repository\n  Public Sub Save()\n  End Sub\n End Class\nEnd Namespace\n"
+
+    caller = "Imports A\nImports B\n" + _caller("_r.Save()", members=" Private _r As Repository\n")
+    result = _extract_files(tmp_path, {"A.vb": namespaced("A"), "B.vb": namespaced("B"), "Caller.vb": caller})
+    assert not {c for c in _calls(result, "Run()", "Caller.vb") if c[0] == "Save()"}
+
+
+# P10 (compiler: x09a, x09b) -- an auto-property behaves like a field: bare and through Me
+@_needs_vbnet
+@pytest.mark.parametrize("body", ["Repo.Save()", "Me.Repo.Save()"], ids=["x09a_bare", "x09b_me"])
+def test_probe_a_call_through_an_auto_property_reaches_the_types_method(tmp_path, body):
+    members = " Public Property Repo As Repository = New Repository()\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller(body, members=members)})
+    assert ("Save()", "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# P11 (compiler: x10a, x10b) -- a Shared field, bare and qualified by the class name
+@_needs_vbnet
+@pytest.mark.parametrize("body", ["_r.Save()", "Caller._r.Save()"], ids=["x10a_bare", "x10b_qualified"])
+def test_probe_a_call_through_a_shared_field_reaches_the_types_method(tmp_path, body):
+    members = " Private Shared _r As New Repository()\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller(body, members=members)})
+    assert ("Save()", "Repository.vb") in _calls(result, "Run()", "Caller.vb")
+
+
+# P12 (compiler: x11a, x11b) -- a field typed as an interface binds statically to the interface member
+# (x11b: the class has no Save, only SaveImpl Implements IRepo.Save, and `_r.Save()` still compiles)
+@_needs_vbnet
+def test_probe_a_call_through_an_interface_typed_field_reaches_the_interface_member(tmp_path):
+    irepo = "Public Interface IRepo\n Sub Save()\nEnd Interface\n"
+    impl = "Public Class Repository\n Implements IRepo\n Public Sub Save() Implements IRepo.Save\n End Sub\nEnd Class\n"
+    members = " Private _r As IRepo = New Repository()\n"
+    result = _extract_files(tmp_path, {"IRepo.vb": irepo, "Repository.vb": impl, "Caller.vb": _caller("_r.Save()", members=members)})
+    assert _calls(result, "Run()", "Caller.vb") == {("Save()", "IRepo.vb")}
+
+
+# P13 (compiler: x12) -- a field typed as a base class holds an override: the run printed the override, so the edge to
+# the declared base's Save is a guess about the runtime type, and must be INFERRED
+@_needs_vbnet
+def test_probe_a_call_through_a_base_typed_field_reaches_the_declared_types_method_as_inferred(tmp_path):
+    base = "Public Class RepoBase\n Public Overridable Sub Save()\n End Sub\nEnd Class\n"
+    sub = "Public Class Repository\n Inherits RepoBase\n Public Overrides Sub Save()\n End Sub\nEnd Class\n"
+    members = " Private _r As RepoBase = New Repository()\n"
+    result = _extract_files(tmp_path, {"RepoBase.vb": base, "Repository.vb": sub, "Caller.vb": _caller("_r.Save()", members=members)})
+    (edge,) = _call_edges(result, "Run()", "Caller.vb")
+    assert edge["target"] == _node_id(result, "Save()", "RepoBase.vb")
+    assert edge["confidence"] == "INFERRED"
+
+
+# P14 (compiler: x13) -- `With GetRepo()` binds in VB, but graphify does not type function results: no edge to Save.
+# (`Run` does call GetRepo itself, so that edge stays.) Passes before the fix; it records the decision, so a fix
+# that starts typing function results must change it knowingly
+@_needs_vbnet
+def test_probe_a_with_block_on_a_function_result_gets_no_edge(tmp_path):
+    members = " Private Function GetRepo() As Repository\n  Return New Repository()\n End Function\n"
+    result = _extract_files(tmp_path, {**_REPO_FILES, "Caller.vb": _caller("With GetRepo()\n   .Save()\n  End With", members=members)})
+    assert _calls(result, "Run()", "Caller.vb") == {("GetRepo()", "Caller.vb")}
+
+
+# P15 (the issue's own repro; the compiler run substitutes FormBase for the Form base, see f05) -- the Designer
+# class inherits a class outside the corpus, so the edges may be hidden by a member of that base: they are still drawn
+@_needs_vbnet
+def test_probe_the_issue_repro_with_an_external_form_base_gets_an_edge_per_case(tmp_path):
+    designer = ("Partial Class OrderForm\n    Inherits System.Windows.Forms.Form\n\n"
+                "    Friend Archive As New Repository()\nEnd Class\n")
+    form = (
+        "Partial Class OrderForm\n"
+        "    Private _repository As New Repository()\n"
+        "    Private _rules As New Shop.Rules.PriceRules()\n"
+        "    Private _late As Repository\n"
+        "    Public Sub New()\n        _late = New Repository()\n    End Sub\n"
+        "    Public Sub F1_FieldNew()\n        _repository.Load(1)\n    End Sub\n"
+        "    Public Sub F2_FieldAssignedLater()\n        _late.Save()\n    End Sub\n"
+        "    Public Sub F3_MeField()\n        Me._repository.Save()\n    End Sub\n"
+        "    Public Sub F4_FieldCSharp()\n        _rules.Total(1)\n    End Sub\n"
+        "    Public Sub F5_FieldInOtherPartialFile()\n        Archive.Save()\n    End Sub\n"
+        "    Public Sub W1_WithField()\n        With _repository\n            .Load(2)\n        End With\n    End Sub\n"
+        "    Public Sub W2_WithLocal()\n        Dim r As New Repository()\n        With r\n            .Save()\n        End With\n    End Sub\n"
+        "    Public Sub W3_WithNew()\n        With New Repository()\n            .Load(3)\n        End With\n    End Sub\n"
+        "    Public Sub W4_WithFieldCSharp()\n        With _rules\n            .Total(2)\n        End With\n    End Sub\n"
+        "    Public Sub P1_Parameter(x As Repository)\n        x.Save()\n    End Sub\n"
+        "End Class\n")
+    result = _extract_files(tmp_path, {**_REPO_FILES, "PriceRules.cs": _PRICE_RULES,
+                                       "OrderForm.Designer.vb": designer, "OrderForm.vb": form})
+    expected = {"F1_FieldNew()": ("Load()", "Repository.vb"), "F2_FieldAssignedLater()": ("Save()", "Repository.vb"),
+                "F3_MeField()": ("Save()", "Repository.vb"), "F4_FieldCSharp()": ("Total()", "PriceRules.cs"),
+                "F5_FieldInOtherPartialFile()": ("Save()", "Repository.vb"), "W1_WithField()": ("Load()", "Repository.vb"),
+                "W2_WithLocal()": ("Save()", "Repository.vb"), "W3_WithNew()": ("Load()", "Repository.vb"),
+                "W4_WithFieldCSharp()": ("Total()", "PriceRules.cs"), "P1_Parameter()": ("Save()", "Repository.vb")}
+    missing = {name for name, target in expected.items() if target not in _graph_calls(result, name, "OrderForm.vb")}
+    assert missing == set()
+
+
+# P16 (#2406; compiler: f05) -- rebuilding only Caller.vb keeps its call through a field declared in the unchanged
+# Designer file: the field's type has to reach the rebuilt file through the context nodes
+@_needs_vbnet
+def test_probe_an_incremental_rebuild_of_the_caller_keeps_a_call_through_a_field_in_an_unchanged_partial_file(tmp_path):
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "Repository.vb").write_text(_REPOSITORY, encoding="utf-8")
+    (corpus / "Caller.Designer.vb").write_text(
+        "Partial Public Class Caller\n Friend Archive As New Repository()\nEnd Class\n", encoding="utf-8")
+    caller = corpus / "Caller.vb"
+    body = "Partial Public Class Caller\n Public Sub Run()\n  Archive.Save()\n End Sub\n{}End Class\n"
+    caller.write_text(body.format(""), encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    caller.write_text(body.format(" Public Sub Other()\n End Sub\n"), encoding="utf-8")
+    assert _rebuild_code(corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False) is True
+
+    graph = json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    by_id = {n["id"]: n for n in graph["nodes"]}
+    called = {(by_id[e["target"]]["label"], by_id[e["target"]].get("source_file"))
+              for e in graph["links"]
+              if e["relation"] == "calls" and by_id[e["source"]]["label"] == "Run()"}
+    assert ("Save()", "Repository.vb") in called
