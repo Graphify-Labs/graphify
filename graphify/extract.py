@@ -5878,6 +5878,11 @@ def _bind_member_field_tables(
     return bound
 
 
+# Static methods every PHP enum gets implicitly (`cases()` on all, `from`/`tryFrom`
+# on backed ones); they have no method node, so a call binds to the enum itself.
+_PHP_ENUM_BUILTIN_STATICS = frozenset({"from", "tryfrom", "cases"})
+
+
 def _resolve_php_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -5950,6 +5955,7 @@ def _resolve_php_member_calls(
         if tt and tt.get("path"):
             type_table_by_file[str(tt["path"])] = tt.get("table", {})
 
+    enum_nids = {edge.get("source") for edge in all_edges if edge.get("relation") == "case_of"}
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
@@ -6009,6 +6015,15 @@ def _resolve_php_member_calls(
                 continue
 
             method_nids = method_index.get((type_nid, key(callee)), set())
+            if (
+                not method_nids
+                and not inferred
+                and type_nid in enum_nids
+                and key(callee) in _PHP_ENUM_BUILTIN_STATICS
+            ):
+                # `Status::from($v)` / `tryFrom` / `cases()` are implicit on every
+                # backed/pure enum, so there is no method node: bind to the enum.
+                method_nids = {type_nid}
             if len(method_nids) != 1:
                 continue
             method_nid = next(iter(method_nids))
@@ -6026,6 +6041,90 @@ def _resolve_php_member_calls(
                 "confidence_score": 0.85 if inferred else 1.0,
                 "source_file": raw_call.get("source_file", ""),
                 "source_location": raw_call.get("source_location"),
+                "weight": 1.0,
+            })
+
+
+def _resolve_php_class_constant_refs(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    r"""Resolve PHP ``Scope::MEMBER`` accesses to enum-case / class nodes.
+
+    ``Status::Active``, ``Status::Active->label()`` and ``match ($x) { Status::Draft => .. }``
+    all parse as a ``class_constant_access_expression``. The extractor parks each one
+    (``raw_calls`` entries tagged ``php_const_ref``); here the scope is resolved against the corpus' type
+    definitions exactly like :func:`_resolve_php_member_calls` does (``self``/``static``
+    -> enclosing class, otherwise the unique type with that unqualified name,
+    case-insensitively because PHP class names are), and the member is matched
+    **case-sensitively** - PHP constants and enum cases are case-sensitive.
+
+    * member is a case of the scope enum -> ``references_constant`` edge to the case node
+    * otherwise (a ``const`` - not a node - or an unknown member) -> the same relation to
+      the scope type itself, which is what the in-file extractor already emits
+    * unresolved or ambiguous scope -> nothing. Source names the class, so the edge is
+      EXTRACTED; no guessing.
+    """
+    def class_key(name: str) -> str:
+        return str(name).strip().lstrip("\\").rsplit("\\", 1)[-1].lower()
+
+    contained = {edge.get("target") for edge in all_edges
+                 if edge.get("relation") == "contains"}
+    type_def_nids: dict[str, list[str]] = {}
+    for node in all_nodes:
+        if (
+            _lang_family(node.get("source_file")) == "php"
+            and node.get("id") in contained
+            and _is_type_like_definition(node)
+        ):
+            type_def_nids.setdefault(class_key(node.get("label", "")), []).append(node["id"])
+
+    node_by_id = {node.get("id"): node for node in all_nodes}
+    enclosing_type = {
+        edge["target"]: edge["source"] for edge in all_edges
+        if edge.get("relation") == "method"
+    }
+    cases_of: dict[str, dict[str, str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "case_of":
+            continue
+        case_node = node_by_id.get(edge.get("target"))
+        if case_node is not None:
+            cases_of.setdefault(edge["source"], {}).setdefault(
+                str(case_node.get("label", "")), case_node["id"])
+
+    existing = {(e.get("source"), e.get("target"), e.get("relation")) for e in all_edges}
+    for result in per_file:
+        for ref in result.get("raw_calls", []):
+            if not ref.get("php_const_ref"):
+                continue
+            caller, scope, member = ref.get("caller_nid"), ref.get("receiver"), ref.get("const_name")
+            if not caller or not scope or not member or caller not in node_by_id:
+                continue
+            if scope.startswith("$"):
+                continue
+            if scope.lower() in ("self", "static"):
+                type_nid = enclosing_type.get(caller)
+            elif scope.lower() == "parent":
+                continue
+            else:
+                defs = type_def_nids.get(class_key(scope), [])
+                type_nid = defs[0] if len(defs) == 1 else None
+            if not type_nid:
+                continue
+            target = cases_of.get(type_nid, {}).get(member, type_nid)
+            if target == caller or (caller, target, "references_constant") in existing:
+                continue
+            existing.add((caller, target, "references_constant"))
+            all_edges.append({
+                "source": caller,
+                "target": target,
+                "relation": "references_constant",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": ref.get("source_file", ""),
+                "source_location": ref.get("source_location"),
                 "weight": 1.0,
             })
 
@@ -7447,6 +7546,9 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("php_member_calls", frozenset({".php"}), _resolve_php_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("php_class_constant_refs", frozenset({".php"}), _resolve_php_class_constant_refs)
 )
 register_language_resolver(
     LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)

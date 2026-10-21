@@ -8694,6 +8694,19 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
+    def _php_class_const_parts(n) -> tuple[str, str] | None:
+        # `Scope::MEMBER` is two named children: the scope (`name`,
+        # `qualified_name`, or `relative_scope` for self/static/parent) and the
+        # member `name`. `Foo::class` is the class-name literal, not a member.
+        named = [c for c in n.children if c.is_named and c.type != "comment"]
+        if len(named) != 2 or named[1].type != "name":
+            return None
+        scope_text = _read_text(named[0], source)
+        member = _read_text(named[1], source)
+        if not scope_text or not member or member == "class":
+            return None
+        return scope_text, member
+
     _tracked_body_ids: set[object] = set()
     _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
     # #2575: nested NAMED functions get the same descent as closures. walk()
@@ -9807,6 +9820,23 @@ def _extract_generic(
         if config.ts_module == "tree_sitter_php" and node.type == "class_constant_access_expression":
             class_name = _php_class_const_scope(node)
             if class_name:
+                # Park the (scope, member) pair for the corpus resolver: the
+                # scope class (and an enum's cases) usually live in another
+                # file, so only the whole-corpus pass can bind `Status::Active`
+                # to its case node.
+                _const_parts = _php_class_const_parts(node)
+                if _const_parts and caller_nid:
+                    # Carried in raw_calls (no `callee`, so every call pass skips
+                    # it) because that is the list whose `caller_nid` and
+                    # `source_file` the id remaps and cache portability rewrite.
+                    raw_calls.append({
+                        "caller_nid": caller_nid,
+                        "php_const_ref": True,
+                        "receiver": _const_parts[0],
+                        "const_name": _const_parts[1],
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    })
                 tgt_nid = label_to_nid_ci.get(class_name.lower())
                 if tgt_nid and tgt_nid != caller_nid:
                     pair3 = (caller_nid, tgt_nid, "references_constant")

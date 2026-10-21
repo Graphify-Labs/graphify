@@ -30,7 +30,7 @@ from graphify.build import build_from_json, edge_data
 
 SPECIFIC = ["calls", "imports", "imports_from", "inherits", "implements",
             "method", "indirect_call", "re_exports", "contains"]
-GENERIC = ["references", "uses", "mentions"]
+GENERIC = ["references", "references_constant", "uses", "mentions"]
 
 
 def _extraction(edges):
