@@ -2157,7 +2157,19 @@ def dispatch_command(cmd: str) -> None:
             )
         if connections:
             print(f"\nConnections ({len(connections)}):")
-            connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
+            # Degree is a popularity prior, not a relevance signal: as the
+            # graph grows, the top-20 fills with hubs (#3143). Rank EXTRACTED
+            # before INFERRED/AMBIGUOUS, then lower-degree neighbours first
+            # (IDF-style: a node that connects to everything discriminates
+            # nothing). Equal keys keep collection order so the truncation
+            # grouping tests stay stable.
+            _conf_rank = {"EXTRACTED": 0, "INFERRED": 1, "AMBIGUOUS": 2}
+            connections.sort(
+                key=lambda c: (
+                    _conf_rank.get(str(c[2].get("confidence") or ""), 3),
+                    G.degree(c[1]),
+                )
+            )
             shown = connections if show_all else connections[:20]
             for direction, nb, edata in shown:
                 rel = edata.get("relation", "")

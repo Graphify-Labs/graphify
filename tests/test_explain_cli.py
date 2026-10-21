@@ -239,6 +239,99 @@ def test_explain_grouping_boundary_at_exactly_21_vs_20_connections(monkeypatch, 
     assert "more" not in out20
 
 
+def _write_mixed_neighbour_graph(tmp_path):
+    """A concept with one specific EXTRACTED neighbour and one high-degree hub.
+
+    Old ranking (degree descending) put the hub first. #3143 ranks EXTRACTED
+    then lower degree first, so the specific neighbour must lead.
+    """
+    nodes = [
+        {"id": "payments", "label": "Payments",
+         "source_file": "docs/payments.md", "community": 0},
+        {"id": "charge_card", "label": "charge_card()",
+         "source_file": "src/pay.py", "community": 0},
+        {"id": "app", "label": "App",
+         "source_file": "src/app.py", "community": 0},
+    ]
+    links = [
+        {"source": "payments", "target": "charge_card",
+         "relation": "references", "confidence": "EXTRACTED",
+         "source_file": "docs/payments.md", "source_location": "L4"},
+        {"source": "payments", "target": "app",
+         "relation": "contains", "confidence": "INFERRED",
+         "source_file": "docs/payments.md", "source_location": "L1"},
+    ]
+    for i in range(16):
+        nid = f"leaf_{i}"
+        nodes.append({"id": nid, "label": f"leaf_{i}()",
+                      "source_file": f"src/leaf_{i}.py", "community": 1})
+        links.append({"source": "app", "target": nid,
+                      "relation": "contains", "confidence": "INFERRED",
+                      "source_file": "src/app.py"})
+    graph_data = {"directed": False, "multigraph": False, "graph": {},
+                  "nodes": nodes, "links": links}
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def _connection_labels(out: str) -> list[str]:
+    labels = []
+    in_conns = False
+    for line in out.splitlines():
+        if line.startswith("Connections"):
+            in_conns = True
+            continue
+        if in_conns and line.strip().startswith(("-->", "<--")):
+            # "  --> charge_card() [references] [EXTRACTED] docs/payments.md:L4"
+            body = line.strip()[3:].strip()
+            labels.append(body.split(" [", 1)[0])
+        elif in_conns and line.strip() and not line.startswith(" "):
+            break
+    return labels
+
+
+def test_explain_ranks_extracted_specific_neighbour_before_hub(monkeypatch, tmp_path, capsys):
+    """#3143: a high-degree hub must not occupy the first explain slot when a
+    low-degree EXTRACTED neighbour exists. Pre-fix ranking was G.degree()
+    descending, so App (degree 17) beat charge_card() (degree 1)."""
+    p = _write_mixed_neighbour_graph(tmp_path)
+    out = _run(monkeypatch, p, "Payments", capsys)
+    labels = _connection_labels(out)
+    assert labels, out
+    assert labels[0] == "charge_card()", labels[:5]
+    assert "App" in labels
+    assert labels.index("charge_card()") < labels.index("App")
+
+
+def test_explain_ranks_lower_degree_first_when_confidence_ties(monkeypatch, tmp_path, capsys):
+    """#3143: same-confidence neighbours sort by degree ascending so a hub
+    does not crowd out a specific symbol."""
+    nodes = [
+        {"id": "root", "label": "Root", "source_file": "a.py", "community": 0},
+        {"id": "specific", "label": "specific()", "source_file": "b.py", "community": 0},
+        {"id": "hub", "label": "Hub", "source_file": "c.py", "community": 0},
+    ]
+    links = [
+        {"source": "root", "target": "specific",
+         "relation": "calls", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "root", "target": "hub",
+         "relation": "calls", "confidence": "EXTRACTED", "source_file": "a.py"},
+    ]
+    for i in range(12):
+        nid = f"n{i}"
+        nodes.append({"id": nid, "label": f"n{i}()", "source_file": f"d{i}.py", "community": 1})
+        links.append({"source": "hub", "target": nid,
+                      "relation": "calls", "confidence": "EXTRACTED", "source_file": "c.py"})
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"directed": False, "multigraph": False, "graph": {},
+                             "nodes": nodes, "links": links}))
+    out = _run(monkeypatch, p, "Root", capsys)
+    labels = _connection_labels(out)
+    assert labels[0] == "specific()", labels[:5]
+    assert labels.index("specific()") < labels.index("Hub")
+
+
 # --- ambiguous label across files (#explain-ambiguity) -----------------------
 
 
