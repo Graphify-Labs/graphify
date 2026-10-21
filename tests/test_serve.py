@@ -26,6 +26,7 @@ from graphify.serve import (
     _node_search_text,
     _get_trigram_index,
     _trigram_candidates,
+    _edge_matches_context,
     _filter_graph_by_context,
     _infer_context_filters,
     _query_terms,
@@ -674,6 +675,108 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
     assert "Context: call (heuristic)" in text
     assert "cluster" in text
     assert "build" not in text
+
+
+def _uses_only_payment_graph() -> nx.Graph:
+    """LLM-extracted shape from #2529: plenty of `uses` edges, no `context`."""
+    G = nx.Graph()
+    G.add_node(
+        "payment_gateway",
+        label="PaymentGateway",
+        source_file="payment.py",
+        source_location="L1",
+        community=0,
+    )
+    for i in range(8):
+        nid = f"helper_{i:02d}"
+        G.add_node(
+            nid,
+            label=f"Helper{i:02d}",
+            source_file=f"helper{i:02d}.py",
+            source_location="L1",
+            community=0,
+        )
+        G.add_edge("payment_gateway", nid, relation="uses")
+        if i % 3 == 0:
+            leaf = f"leaf_{i:02d}"
+            G.add_node(
+                leaf,
+                label=f"Leaf{i:02d}",
+                source_file=f"leaf{i:02d}.py",
+                source_location="L1",
+                community=0,
+            )
+            G.add_edge(nid, leaf, relation="uses")
+    return G
+
+
+def test_heuristic_modules_word_does_not_collapse_uses_only_graph():
+    """#2529: 'modules' infers an import filter. On a uses-only graph that
+    filter has nothing to keep, so BFS used to stop at the seed (1 node).
+    The heuristic must be discarded and the uses neighbourhood returned."""
+    G = _uses_only_payment_graph()
+    unfiltered = _query_graph_text(G, "PaymentGateway setup", mode="bfs", depth=2)
+    collapsed = _query_graph_text(
+        G, "which modules handle PaymentGateway setup", mode="bfs", depth=2
+    )
+    unfiltered_n = int(unfiltered.split("nodes found")[0].rsplit("|", 1)[-1].strip())
+    collapsed_n = int(collapsed.split("nodes found")[0].rsplit("|", 1)[-1].strip())
+    assert unfiltered_n > 1
+    assert collapsed_n == unfiltered_n
+    assert "discarded" in collapsed
+    assert "heuristic" in collapsed
+    assert "Helper00" in collapsed
+
+
+def test_heuristic_template_word_discards_missing_generic_arg_filter():
+    """#2529: 'template' infers generic_arg. A graph with no such edges must
+    not silently shrink to the seeds."""
+    G = _uses_only_payment_graph()
+    text = _query_graph_text(G, "PaymentGateway template", mode="bfs", depth=2)
+    n = int(text.split("nodes found")[0].rsplit("|", 1)[-1].strip())
+    assert n > 1
+    assert "discarded: no matching edges" in text
+
+
+def test_heuristic_still_filters_when_seeds_have_matching_edges():
+    """A heuristic that the graph can actually satisfy still narrows BFS."""
+    G = _make_graph()
+    text = _query_graph_text(G, "who calls extract", mode="bfs", depth=2)
+    assert "Context: call (heuristic)" in text
+    assert "discarded" not in text
+    assert "cluster" in text
+    assert "build" not in text
+
+
+def test_edge_matches_context_falls_back_to_relation():
+    """#2529 part 2: --context call keeps a calls edge that has no context attr."""
+    assert _edge_matches_context({"relation": "calls"}, {"call"}) is True
+    assert _edge_matches_context({"relation": "uses"}, {"call"}) is False
+    assert _edge_matches_context({"context": "call", "relation": "uses"}, {"call"}) is True
+
+
+def test_filter_graph_by_context_matches_relation_when_context_absent():
+    G = nx.Graph()
+    G.add_node("a", label="A")
+    G.add_node("b", label="B")
+    G.add_node("c", label="C")
+    G.add_edge("a", "b", relation="calls")
+    G.add_edge("a", "c", relation="uses")
+    filtered = _filter_graph_by_context(G, ["call"])
+    assert filtered.has_edge("a", "b")
+    assert not filtered.has_edge("a", "c")
+
+
+def test_explicit_context_filter_is_not_discarded_when_empty():
+    """Explicit --context is opt-in: keep it even if it matches nothing."""
+    G = _uses_only_payment_graph()
+    text = _query_graph_text(
+        G, "PaymentGateway setup", mode="bfs", depth=2, context_filters=["import"]
+    )
+    assert "Context: import (explicit)" in text
+    assert "discarded" not in text
+    n = int(text.split("nodes found")[0].rsplit("|", 1)[-1].strip())
+    assert n == 1
 
 
 # --- _load_graph ---
