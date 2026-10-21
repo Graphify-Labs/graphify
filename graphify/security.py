@@ -116,6 +116,9 @@ def validate_url(url: str) -> str:
         )
 
     hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Blocked URL without a hostname. Got: {url!r}")
+
     if hostname:
         # Block known cloud metadata hostnames
         if hostname.lower() in _BLOCKED_HOSTS:
