@@ -1851,8 +1851,10 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
                     if arg.is_named:
                         _scala_collect_type_refs(arg, source, True, out, skip)
         return
+    # `os: Opt*` and the by-name `o: => Opt` wrap the parameter type.
     if t in ("compound_type", "infix_type", "function_type", "tuple_type",
-             "annotated_type", "projected_type"):
+             "annotated_type", "projected_type", "repeated_parameter_type",
+             "lazy_parameter_type"):
         for c in node.children:
             if c.is_named:
                 _scala_collect_type_refs(c, source, generic, out, skip)
@@ -7682,10 +7684,12 @@ def _extract_generic(
                 csharp_type_params = _csharp_type_parameters_in_scope(node, source)
                 params_node = node.child_by_field_name("parameters")
                 if params_node is not None:
-                    for p in params_node.children:
-                        if p.type != "parameter":
-                            continue
-                        type_node = p.child_by_field_name("type")
+                    # `params Opt[] os` is no `parameter` node: its `type` and
+                    # `name` fields sit on the parameter list itself.
+                    type_nodes = [p.child_by_field_name("type")
+                                  for p in params_node.children if p.type == "parameter"]
+                    type_nodes.append(params_node.child_by_field_name("type"))
+                    for type_node in type_nodes:
                         refs: list[tuple[str, str, bool, str]] = []
                         _csharp_collect_type_refs(
                             type_node, source, False, refs, csharp_type_params
@@ -7733,9 +7737,15 @@ def _extract_generic(
                 params_node = node.child_by_field_name("parameters")
                 if params_node is not None:
                     for p in params_node.children:
-                        if p.type != "formal_parameter":
+                        if p.type == "formal_parameter":
+                            type_node = p.child_by_field_name("type")
+                        elif p.type == "spread_parameter":
+                            # `Opt... os` has no `type` field; its type is the
+                            # named child before `...`, as for a record component.
+                            type_node = next((c for c in p.children if c.is_named
+                                              and c.type not in ("modifiers", "variable_declarator")), None)
+                        else:
                             continue
-                        type_node = p.child_by_field_name("type")
                         refs = []
                         _java_collect_type_refs(type_node, source, False, refs)
                         for ref_name, role in refs:
@@ -7781,7 +7791,8 @@ def _extract_generic(
                         # property_promotion_parameter, not simple_parameter. Its
                         # type sits in the same direct named child shape, so accept
                         # both here; a promoted param is additionally a class field.
-                        if p.type not in ("simple_parameter", "property_promotion_parameter"):
+                        if p.type not in ("simple_parameter", "property_promotion_parameter",
+                                          "variadic_parameter"):
                             continue
                         is_promoted = p.type == "property_promotion_parameter"
                         type_node = None

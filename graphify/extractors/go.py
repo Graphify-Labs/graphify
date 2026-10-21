@@ -302,7 +302,9 @@ def extract_go(path: Path) -> dict:
         params = func_node.child_by_field_name("parameters")
         if params is not None:
             for p in params.children:
-                if p.type != "parameter_declaration":
+                # `opts ...Option` is a variadic_parameter_declaration, with
+                # the same `type` field.
+                if p.type not in ("parameter_declaration", "variadic_parameter_declaration"):
                     continue
                 type_node = p.child_by_field_name("type")
                 refs: list[tuple[str, str]] = []
