@@ -92,7 +92,7 @@ All external input passes through `graphify/security.py` before use:
 
 - URLs → `validate_url()` (http/https only) + `_NoFileRedirectHandler` (blocks file:// redirects)
 - Fetched content → `safe_fetch()` / `safe_fetch_text()` (size cap, timeout)
-- Graph file paths → `validate_graph_path()` (must resolve inside `graphify-out/`)
+- Graph files loaded by the MCP server → `.json` only, capped by `check_graph_file_size_cap()` (a client-supplied `project_path` may name any readable directory; see `SECURITY.md`)
 - Node labels → `sanitize_label()` (strips control chars, caps 256 chars)
 
 See `SECURITY.md` for the full threat model.
