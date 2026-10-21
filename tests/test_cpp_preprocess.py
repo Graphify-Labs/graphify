@@ -63,6 +63,25 @@ def _read_secret_from(source_file: Path) -> bool:
 
 
 @pytest.mark.skipif(shutil.which("cpp") is None, reason="cpp not available")
+def test_real_cpp_stdin_linemarkers_populate_original_line_map(tmp_path):
+    src = tmp_path / "mapped.F90"
+    src.write_text(
+        "#line 40\n"
+        "subroutine later()\n"
+        "end subroutine later\n"
+    )
+
+    output, line_map = extract._cpp_preprocess(src)
+
+    assert line_map is not None
+    assert b"#" not in output
+    output_lines = output.splitlines()
+    subroutine_line = output_lines.index(b"subroutine later()")
+    assert line_map[subroutine_line] == 40
+    assert line_map[subroutine_line + 1] == 41
+
+
+@pytest.mark.skipif(shutil.which("cpp") is None, reason="cpp not available")
 def test_absolute_include_cannot_read_host_file(tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP_SECRET_SENTINEL=abc123\n")

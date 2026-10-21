@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: symbols in a capital-F Fortran file (`.F`/`.F90`/`.F95`/`.F03`/`.F08`) now report the correct `source_location` (#2092). cpp's `-P` option suppressed linemarkers, so removed directives and inactive conditional blocks shifted tree-sitter locations. cpp now runs without `-P`, and the emitted stdin linemarkers map node and edge locations back to original source lines; lowercase `.f90` and the cpp-unavailable fallback are unaffected.
+
 ## 0.9.93 (2026-10-20)
 
 Twenty-two community pull requests. Extraction: a reference to a Kotlin type alias, C# delegate, Swift macro, Dart typedef, Python module function or Rust sibling-module `use` now resolves to its real declaration instead of minting a sourceless stub; Metal/CUDA GPU qualifiers no longer mint god nodes; `extern "C"` headers route to the C++ extractor; an extensionless script with a versioned-interpreter shebang is classified; and Obsidian vault-relative wikilinks resolve. Plus a credential-redaction pass on rationale labels, a node-confidence fold, a truncated-reply label decode, a `.graphifyrc` BOM fix, a GraphML multigraph export fix, two-repo file disambiguation in explain and path, a PDF-read warning, no skill writes on `--version`/`--help`, two PR-tooling fixes (slashed default branch, legacy CI statuses), and a skill partly-read-file recovery so a long file a subagent only skimmed is retried on the next `--update` instead of silently kept half-read. The AST cache schema is bumped, so the first build after upgrading re-extracts.
@@ -971,7 +975,7 @@ Intra-class call binding across five languages, new language-structure coverage,
 - Feat: `get_neighbors` and `get_community` (MCP) now honor a `token_budget` (default 2000) instead of rendering unbounded, so one call on a god node or large community can't flood the client's context (#2069, thanks @ojmucianski). Truncation is announced at the top of the output (matching `query`), with a line count and a narrowing hint.
 - Docs: `--code-only` is now surfaced in the `extract` usage text and README (#2071, thanks @HerenderKumar); documented as an `extract` flag rather than a `/graphify` skill flag.
 - Docs: README troubleshooting note for an older `graphifyy` in system site-packages shadowing `uv run --with graphifyy`, which silently runs the old version (#1540, thanks @HerenderKumar).
-- Fix: symbols in a capital-F Fortran file (`.F`/`.F90`/`.F95`/`.F03`/`.F08`) now report the correct `source_location` (#2092). These files are run through `cpp`, which was invoked with `-P` — that suppresses linemarkers, and because `cpp` blanks directive lines, drops inactive `#ifdef` blocks, and collapses blank runs, tree-sitter's line numbers no longer matched the original file, so every symbol (even in files with no directives) was reported at the wrong line and `explain`/`affected`/the MCP read surface sent readers to unrelated code. `cpp` now runs without `-P`, and the emitted `# <n> "<file>"` linemarkers are consumed to map each node/edge location back to its original source line; lowercase `.f90` and the cpp-unavailable fallback are unaffected.
+
 
 ## 0.9.23 (2026-07-21)
 
