@@ -126,6 +126,14 @@ lack this path. The merge runs after colliding ids are salted apart by path, so
 a half whose file stem collides with another file's (`Spec.cs` and `_Spec.cs`,
 `Cfg/Helpers.cs` and `Cfg_Helpers.cs`) still merges and keeps its members.
 
+PHP member calls bind to the enclosing class's own method only for `$this->m()`.
+Every other instance receiver (typed property, constructor-promoted parameter,
+typed parameter, `new X` local, call chain) is deferred to
+`_resolve_php_member_calls`, which types the receiver and looks the method up on
+that type, then on its in-corpus ancestors and traits (nearest level wins;
+ambiguity binds nothing). A method declared only in a vendor ancestor yields no
+edge. AST cache schema bump retires results from the old binding.
+
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double

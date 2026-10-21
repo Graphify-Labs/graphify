@@ -9413,7 +9413,17 @@ def _extract_generic(
                     and is_member_call
                     and not lua_self_qualified
                 )
-                if _python_defer or _java_defer or _csharp_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                # PHP: only `$this->m()` may use the file-wide bare-name map (it names
+                # the caller's own class). Any other instance receiver - a typed
+                # property/param/local, an unknown variable, a call chain - belongs to
+                # `_resolve_php_member_calls`, which types it; the bare-name map would
+                # bind `$this->svc->create()` to the enclosing class's own `create`.
+                _php_defer = (
+                    config.ts_module == "tree_sitter_php"
+                    and is_member_call
+                    and member_receiver != "this"
+                )
+                if _php_defer or _python_defer or _java_defer or _csharp_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (

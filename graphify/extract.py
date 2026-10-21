@@ -5878,6 +5878,37 @@ def _bind_member_field_tables(
     return bound
 
 
+def _php_inherited_methods(
+    type_nid: str,
+    method_key: str,
+    method_index: dict[tuple[str, str], set[str]],
+    bases: dict[str, list[str]],
+) -> set[str]:
+    """Methods named ``method_key`` on ``type_nid``, else on its nearest ancestors.
+
+    Breadth-first over ``inherits`` and ``mixes_in`` (traits), level by level: the
+    first level holding any declaration answers, and more than one declaration at
+    that level is ambiguous, so the caller binds nothing. Empty when no in-corpus
+    ancestor declares it.
+    """
+    seen = {type_nid}
+    level = [type_nid]
+    while level:
+        found: set[str] = set()
+        for nid in level:
+            found |= method_index.get((nid, method_key), set())
+        if found:
+            return found
+        nxt: list[str] = []
+        for nid in level:
+            for base in sorted(bases.get(nid, [])):
+                if base not in seen:
+                    seen.add(base)
+                    nxt.append(base)
+        level = nxt
+    return set()
+
+
 def _resolve_php_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -5944,6 +5975,11 @@ def _resolve_php_member_calls(
         if edge.get("relation") == "inherits":
             inherits_bases.setdefault(edge["source"], []).append(edge["target"])
 
+    php_bases: dict[str, list[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") in ("inherits", "mixes_in"):
+            php_bases.setdefault(edge["source"], []).append(edge["target"])
+
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         tt = result.get("php_type_table")
@@ -5955,7 +5991,9 @@ def _resolve_php_member_calls(
         for raw_call in result.get("raw_calls", []):
             if not raw_call.get("is_member_call"):
                 continue
-            if not str(raw_call.get("source_file", "")).endswith(".php"):
+            # `_lang_family`, not a `.php` suffix: a `language.inc=php` override must
+            # reach this resolver too, now that the engine no longer binds these calls.
+            if _lang_family(raw_call.get("source_file")) != "php":
                 continue
             receiver = raw_call.get("receiver")
             callee = raw_call.get("callee")
@@ -6008,7 +6046,14 @@ def _resolve_php_member_calls(
                 # resolve against; leave unresolved rather than guess.
                 continue
 
-            method_nids = method_index.get((type_nid, key(callee)), set())
+            if inferred:
+                # A typed instance receiver reaches inherited and trait methods; the
+                # nearest in-corpus declaration wins. A method only a vendor ancestor
+                # declares (e.g. a framework base class in vendor/) is found nowhere, so no edge.
+                method_nids = _php_inherited_methods(
+                    type_nid, key(callee), method_index, php_bases)
+            else:
+                method_nids = method_index.get((type_nid, key(callee)), set())
             if len(method_nids) != 1:
                 continue
             method_nid = next(iter(method_nids))
