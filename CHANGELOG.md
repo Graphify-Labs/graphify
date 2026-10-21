@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: `graphify export obsidian --with-sources` copies referenced source files into an Obsidian vault and links node notes to them; path resolution is confined to the selected scan root (#1968, thanks @SinghAman21).
+
 ## 0.9.93 (2026-10-20)
 
 Twenty-two community pull requests. Extraction: a reference to a Kotlin type alias, C# delegate, Swift macro, Dart typedef, Python module function or Rust sibling-module `use` now resolves to its real declaration instead of minting a sourceless stub; Metal/CUDA GPU qualifiers no longer mint god nodes; `extern "C"` headers route to the C++ extractor; an extensionless script with a versioned-interpreter shebang is classified; and Obsidian vault-relative wikilinks resolve. Plus a credential-redaction pass on rationale labels, a node-confidence fold, a truncated-reply label decode, a `.graphifyrc` BOM fix, a GraphML multigraph export fix, two-repo file disambiguation in explain and path, a PDF-read warning, no skill writes on `--version`/`--help`, two PR-tooling fixes (slashed default branch, legacy CI statuses), and a skill partly-read-file recovery so a long file a subagent only skimmed is retried on the next `--update` instead of silently kept half-read. The AST cache schema is bumped, so the first build after upgrading re-extracts.
@@ -1024,6 +1028,7 @@ Intra-class call binding across five languages, new language-structure coverage,
 - Fix: `graphify prs` decodes `gh`/`git`/`claude` output as UTF-8 instead of the Windows locale codec (#1980, thanks @Luke J). On Windows `text=True` decoded child output as cp1252, mojibaking or crashing on emoji / non-ASCII names in PR titles and diffs; all subprocess reads now pass `encoding="utf-8", errors="replace"` (matching the #1505 precedent), which also fixes the encode side when feeding a non-ASCII prompt to the claude-cli backend.
 
 ## 0.9.18 (2026-07-17)
+
 
 - Fix: an incomplete extraction no longer force-writes a partial graph over a complete one (#1951, thanks @TPAteeq). A crashed AST/semantic pass, a some-chunks-failed run, or a walk that couldn't fully enumerate the corpus (permission-denied subtree) produced a smaller graph that the `to_json(force=True)` path wrote anyway, bypassing the #479 shrink guard; the `--no-cluster` raw dump had no guard at all. Both paths now refuse to overwrite a larger existing graph when the run was incomplete (exit 1, nothing written) unless `--allow-partial` is passed, and a present-but-unparseable existing graph fails closed (a corrupt/mid-write file could be hiding a complete graph). `detect()`'s `walk_errors` now count as incomplete too.
 - Fix: `graph.json`, `manifest.json`, and the other JSON artifacts are now written atomically (#1952, thanks @TPAteeq). A kill, OOM, or ENOSPC mid-write used to leave a truncated file — and a truncated `graph.json` then wedged every later run via the shrink guard's fail-safe. Writes now go to a temp file in the same directory and `os.replace` into place (writing *through* a symlink so shared-store setups keep working); the writers the original change missed (the `--no-cluster` dump, `merge-graphs`/`merge-chunks`/`merge-semantic`, the analysis/labels sidecars, and the global graph/manifest) are routed through it too.
