@@ -48,7 +48,7 @@ from typing import Any
 
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS
 
-MARKDOWN_MENTION_SUFFIXES = frozenset({".md", ".mdx", ".qmd", ".skill"})
+MARKDOWN_MENTION_SUFFIXES = frozenset({".md", ".mdx", ".qmd", ".skill", ".adoc", ".asciidoc"})
 
 _CONTAINMENT_RELATIONS = frozenset({"contains", "method"})
 
