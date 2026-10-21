@@ -10308,9 +10308,11 @@ def _python_decorator_module(deco_node, source: bytes, modules: dict[str, str],
 
     ``@pytest.fixture`` under ``import pytest`` -> ``pytest``; ``@pt.fixture``
     under ``import pytest as pt`` -> ``pytest``; ``@fixture`` under ``from
-    pytest import fixture`` -> ``pytest``; ``@tools.retry`` under ``from pkg
-    import tools`` -> ``pkg.tools``. None when no module-level import binds it,
-    so the decorator keeps the existing unique-definition resolution.
+    pytest import fixture`` -> ``pytest``; ``@api.route`` under ``from mylib
+    import api`` -> ``mylib`` (``api`` may be a submodule, a class or an object,
+    so only the module it was imported from is certain). None when no
+    module-level import binds it, so the decorator keeps the existing
+    unique-definition resolution.
     """
     for child in deco_node.children:
         if not child.is_named:
@@ -10324,8 +10326,7 @@ def _python_decorator_module(deco_node, source: bytes, modules: dict[str, str],
             if receiver in modules:
                 return modules[receiver]
             if receiver in names:
-                module, name = names[receiver]
-                return f"{module}.{name}"
+                return names[receiver][0]
             return None
         if target.type == "identifier":
             bound = names.get(_read_text(target, source))

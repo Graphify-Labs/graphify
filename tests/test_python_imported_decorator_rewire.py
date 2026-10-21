@@ -135,3 +135,29 @@ def test_genuine_local_users_of_the_name_still_rewire(tmp_path):
     helper = _nid("tests/test_helper.py", "fixture")
     assert helper not in _deco_targets(r, _nid("tests/test_a.py", "env"))
     assert helper in _deco_targets(r, _nid("tests/test_b.py", "other"))
+
+
+# --- review follow-ups (graphify-labs bot on #4622) ---------------------------
+
+
+def test_package_reexported_decorator_still_links_to_its_definition(tmp_path):
+    """`from mypkg import retry` where mypkg/__init__.py re-exports retry from
+    mypkg/decorators.py: the definition lives inside the package, so the rewire
+    must still reach it (the module guard accepts files within the package)."""
+    r = _run(tmp_path, {
+        "mypkg/__init__.py": "from .decorators import retry\n",
+        "mypkg/decorators.py": "def retry(fn):\n    return fn\n",
+        "app.py": "from mypkg import retry\n\n@retry\ndef load():\n    return 1\n",
+    })
+    assert _nid("mypkg/decorators.py", "retry") in _deco_targets(r, _nid("app.py", "load"))
+
+
+def test_decorator_reached_through_an_imported_object_keeps_existing_behaviour(tmp_path):
+    """`from mylib import api` + `@api.route`: `api` is an object, not a
+    submodule, so the edge must not claim a fake `mylib.api` module that blocks
+    the rewire v8 already made onto mylib's `route`."""
+    r = _run(tmp_path, {
+        "mylib.py": "def route(fn):\n    return fn\n\n\nclass Api:\n    pass\n\n\napi = Api()\n",
+        "app.py": "from mylib import api\n\n@api.route\ndef load():\n    return 1\n",
+    })
+    assert _nid("mylib.py", "route") in _deco_targets(r, _nid("app.py", "load"))

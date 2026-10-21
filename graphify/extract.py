@@ -4067,10 +4067,12 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         A Python decorator imported from a module (`import pytest` ->
         `@pytest.fixture`, `from pytest import fixture`) carries
         ``metadata.ref_module``. The unique-definition rewire would otherwise
-        bind it to any one same-named def in the corpus — e.g. a local helper
-        called `fixture` — so it may only land on a definition whose file IS
-        that module (`m.py` or `m/__init__.py`, dotted paths matched as a path
-        suffix). An edge without the marker is left to the existing rules.
+        bind it to any one same-named def in the corpus (e.g. a local helper
+        called `fixture`), so it may only land on a definition that lives in
+        that module: its own file (`m.py`, `m/__init__.py`) or a file inside the
+        package (`m/decorators.py`, the target of a re-export from
+        `m/__init__.py`). Dotted modules match as consecutive path segments. An
+        edge without the marker is left to the existing rules.
         """
         md = edge.get("metadata")
         module = md.get("ref_module") if isinstance(md, dict) else None
@@ -4080,10 +4082,9 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         if not source_file:
             return False
         parts = Path(source_file).with_suffix("").parts
-        if parts and parts[-1] == "__init__":
-            parts = parts[:-1]
         wanted = tuple(module.split("."))
-        return tuple(parts[-len(wanted):]) != wanted
+        n = len(wanted)
+        return not any(parts[i:i + n] == wanted for i in range(len(parts) - n + 1))
 
     for edge in edges:
         is_csharp_scoped_edge = (
