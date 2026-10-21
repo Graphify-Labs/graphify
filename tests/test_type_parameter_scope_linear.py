@@ -34,9 +34,9 @@ CASES = {
 def test_the_scope_walk_scales_linearly_with_sibling_declarations(case: str):
     """Doubling the declarations must not roughly quadruple the walk's time.
 
-    Times the walk alone, from every type name, in CPU time with GC off
-    and the best of three runs, as test_ts_normalizer_scales_linearly_on_large_files
-    does: linear work doubles (~2x), quadratic work quadruples (~4x).
+    Times the walk alone, from every type name, in CPU time with GC off,
+    the method of test_ts_normalizer_scales_linearly_on_large_files: linear
+    work doubles (~2x), quadratic work quadruples (~4x).
     """
     module, fn_name, line = CASES[case]
     if importlib.util.find_spec(module) is None:
@@ -74,8 +74,18 @@ def test_the_scope_walk_scales_linearly_with_sibling_declarations(case: str):
 
     small_input, large_input = refs(4000), refs(8000)
     timed(*refs(200))
-    small = min(timed(*small_input) for _ in range(3))
-    large = min(timed(*large_input) for _ in range(3))
+    # Each run takes only tens of milliseconds, so alternate the sizes, letting
+    # both see the same machine state, and keep the best of seven. Three runs of
+    # one size, then three of the other, crossed 3.5x on a busy machine. A run
+    # of a quarter second is no longer noise-bound (the quadratic walk takes
+    # seconds), so one round of those decides.
+    smalls, larges = [], []
+    for _ in range(7):
+        smalls.append(timed(*small_input))
+        larges.append(timed(*large_input))
+        if smalls[-1] >= 0.25:
+            break
+    small, large = min(smalls), min(larges)
     assert large < small * 3.5, (
         f"scaling looks super-linear: {small:.4f}s -> {large:.4f}s "
         f"({large / small:.1f}x for 2x input)"
