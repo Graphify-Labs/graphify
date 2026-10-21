@@ -55,6 +55,16 @@ def test_validate_url_rejects_empty_scheme():
         validate_url("//no-scheme.example.com")
 
 
+@pytest.mark.parametrize("url", [
+    "http://example.com:abc/path",
+    "https://example.com:65536/path",
+    "http://example.com:0/path",
+])
+def test_validate_url_rejects_invalid_port(url):
+    with pytest.raises(ValueError, match="port"):
+        validate_url(url)
+
+
 # ---------------------------------------------------------------------------
 # safe_fetch - scheme and redirect guards (mocked network)
 # ---------------------------------------------------------------------------
