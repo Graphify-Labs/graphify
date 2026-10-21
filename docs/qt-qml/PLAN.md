@@ -3436,3 +3436,60 @@ in 8.00 seconds. No original assertion or deadline changes. The helper measures
 the new module passes typing, while the helper retains its known pre-existing
 optional-handler diagnostic. Runtime/package, active tool and application graph
 are unchanged; this local profile does not establish a future hosted pass.
+
+
+## INC-QML-58 — Literal CMake resource-output pairs
+
+Status: **Implemented and locally verified for the bounded source/installed
+profile; 223 focused passes, zero skips. Combined full-suite/replay evidence has
+11,904 unique passing cases and 171 remaining skips; new-head hosted and
+non-Windows proof remain unverified**.
+Owner: Qt metadata maintainer. Depends on source `e4623d63`; delivered on a focused
+branch without merging the pending upstream integration. Qt 6.11 documents both
+resource forms: [qt_add_resources](https://doc.qt.io/qt-6.11/qt-add-resources.html).
+The existing target-form reader rejects a literal variable-output QRC declaration
+and its subsequent generated-source use. Do not alter analyzed application syntax
+or bypass `QML_GRAPH_PRESERVED`.
+
+| Acceptance IDs | Preimplementation acceptance and boundary matrix |
+| --- | --- |
+| REQ-QML-009-AC01/AC03; REQ-QML-020-AC01 | An unscoped literal QRC-output command immediately followed by an exact private target-source use can attach its literal QRC inputs to exactly one preceding local QML module. Preserve original UTF-8/BOM/CRLF spans and stable IDs. Emit existing `qt_source`/`qrc` membership and an explicit generated-resource use, never invented generated C++ filenames/providers or duplicated XML aliases. |
+| REQ-QML-009-AC04; REQ-QML-012-AC01/AC04 | Require exactly two lexical output-identifier mentions, producer and adjacent consumer, and a bounded known declaration-prefix allowlist. Unknown prefix commands, explicit variable writers, includes, control/function scopes, preexisting/reused names, nonadjacent/forward/unpaired/duplicate producers, mixed consumers, unsupported RCC options, input properties, expressions and escaping QRC paths remain incomplete. This is a source-local lexical profile, not evaluation or proof of empty inherited CMake/cache/environment values. The generated-use fact records known QRC additions only. |
+| REQ-QML-011-AC01/AC02/AC04; REQ-QML-012-AC02 | Direct, facade, graph/JSON and actual code-only CLI tests prove accepted QRC membership and no corpus expansion. Metadata/QRC-only changes, repeated/full/warm runs agree; unsupported mutations under force preserve prior graph, manifest, report and Qt-state bytes, then recover without deleting products. Qt policy 26 invalidates prior context through its existing owner; AST schema remains 18 because metadata bypasses the syntax cache. |
+| REQ-QML-014-AC03/AC04 | Keep all existing unsupported-form assertions, including an unpaired variable-output command. Run surrounding CMake/qmake/resource and integrity regressions plus appropriate static checks; retain baseline typing debt and any unexecuted platform/system boundary. |
+
+The pair reader owns only bounded source-local lexical eligibility and explicit
+QRC input/use facts. The existing project index, XML reader and membership resolver
+retain their owners. It reads no referenced files and never executes CMake/rcc.
+A bounded command inventory must reject before unsafe growth. Successful parsing
+adds no diagnostic; unsupported forms retain `QML_PROJECT_UNSUPPORTED`, malformed
+input retains its syntax diagnostic, and rejected publication retains the existing
+integrity/recovery policy. Test failure-before-fix, exact commands, results and
+remaining profile limitations belong in traceability before completion.
+
+Exit review: the reported literal resource-output form is supported without a new
+runtime, dependency, resolver or persistence owner. No additional product increment
+is needed for this bounded correction. General CMake evaluation and richer RCC
+options remain outside the accepted profile; they need distinct acceptance/design
+before expansion. No analyzed project was rewritten or built.
+
+The initial full Windows run has 11,836 passes, 49 failures and 190 skips. All 49
+failures belong to shell/generated-script consumers selecting an inaccessible WSL
+alias or lacking `sh`; exact replay under the existing CI-style explicit Git
+Bash/Python profile passes all 49. A separate 78-case shell-skip replay passes 16
+and retains 62 platform-guarded skips; all three wheel cases separately pass.
+These are distinct receipts, not one successful full-suite invocation. Their
+union is 12,075 exact case identities: 11,904 pass and 171 remain skipped, with no
+unresolved executed failure. Source, head, dependency versions and original
+coverage bytes remain identical across both environment replays. No assertions,
+platform guards or dependency contracts were altered to obtain those passes.
+
+Remaining skips include native Windows symlink privileges, POSIX filesystem and
+shell guards, optional C preprocessor/oracle availability, service availability
+and profile-specific cases. They do not establish release acceptance or current
+Linux/macOS execution. Existing 651 type diagnostics remain unresolved. Exact
+commands, source-matched wheel evidence and limitations are in
+[traceability](../../tests/TRACEABILITY.md#literal-cmake-resource-output-pairs--inc-qml-58).
+The repository-only AST graph refresh exits zero with 27,394 nodes and 64,252
+edges; application installation/graph refresh, hosted validation and merging
+remain separate delivery steps.

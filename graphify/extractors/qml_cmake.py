@@ -5,11 +5,13 @@ import hashlib
 import re
 from pathlib import Path
 
+from graphify.extractors.qml_cmake_outputs import (
+    add_output_resources, command_inventory, output_pairs,
+)
 from graphify.extractors.qml_cmake_properties import (
     native_source, properties_for, reject, source_properties, target_sources,
 )
 from graphify.extractors.qml_cmake_resources import add_resources
-from graphify.extractors.qml_cmake_syntax import commands
 from graphify.extractors.qml_project_read import ProjectFacts, extract_project, failure, literal_path
 from graphify.extractors.qml_resources import resource_url
 
@@ -127,7 +129,16 @@ def parse_cmake(source: bytes | str, *, relative_file="CMakeLists.txt") -> dict:
     try:
         facts = ProjectFacts(source, relative_file, "cmake")
         properties, consumed, modules = {}, set(), {}
-        for command in commands(facts.text):
+        # Eligibility is source-local and bounded; ordinary declarations retain
+        # their existing sequential property/module owners and failure status.
+        inventory = command_inventory(facts.text)
+        pairs = output_pairs(inventory, facts.file, facts.text)
+        for index, command in enumerate(inventory):
+            if index - 1 in pairs:
+                continue
+            if index in pairs:
+                add_output_resources(facts, command, pairs[index], modules, properties, consumed)
+                continue
             if command.name in {"qt_add_qml_module", "qt6_add_qml_module"}:
                 module = _module(facts, command, properties, consumed)
                 if module:

@@ -1172,3 +1172,33 @@ The completed local boundary is 79 focused cases without skips and a separate
 twelve-case aggregate using committed LF input. The aggregate keeps every
 original graph assertion. This validation-only change preserves runtime and
 package ownership; the new reviewed head still needs hosted evidence.
+
+## D35 — Source-local CMake resource outputs record additions, not expansion
+
+Status: **Implemented bounded design with focused local and isolated installed
+proof; new-head hosted verification unexecuted**.
+Owner: Qt metadata maintainer. Applies to INC-QML-58 and
+REQ-QML-009-AC01/AC03/AC04, REQ-QML-011-AC01/AC02/AC04 and REQ-QML-020-AC01.
+
+Qt 6.11 supports a variable-output form of
+[qt_add_resources](https://doc.qt.io/qt-6.11/qt-add-resources.html) that appends
+generated source paths to a variable. Record the literal QRC additions and their
+adjacent target consumption without evaluating CMake or inventing generated C++
+paths. A source-local lexical profile requires exactly two mentions of the output
+identifier, a known prefix, and one uniquely preceding local QML module. Unknown
+prefix commands, includes, variable writers and scopes prevent this interpretation.
+
+The alternative of general variable evaluation would require execution/scope,
+cache, environment, parent-directory and package-script semantics outside the
+static analyzer contract. First occurrence in an admitted file does not prove an
+inherited variable is empty. A generated-resource use is evidence of the known
+QRC additions only; it does not enumerate the complete value of the variable or
+prove absence of inherited native sources. App-only admission remains app-only.
+
+The new reader owns lexical eligibility and source facts. Existing XML resource
+extraction owns aliases, the project index owns accepted-corpus context, the
+membership resolver owns directed file joins, and the current publication owner
+retains failed candidate products. No new persistence layer or runtime dependency
+is introduced. Qt analysis policy 26 retires prior context; AST cache schema 18
+is unchanged because Qt metadata bypasses that cache. Exact profile and evidence
+belong in design and traceability, respectively.

@@ -2074,3 +2074,56 @@ separate. The [matrix](PLAN.md#inc-qml-57--isolate-the-watch-test-event-clock)
 requires global clock-identity checks, nested real sleep and actual POSIX timed
 wait protection. The final Windows selection passes 31 cases with that single
 POSIX capability skip; its actual child-wait boundary remains unverified locally.
+
+## Literal CMake resource-output pairs — INC-QML-58
+
+D35 extends the static metadata reader with the following source-local profile:
+
+```cmake
+qt_add_qml_module(app URI Example QML_FILES Main.qml)
+qt_add_resources(RESOURCE_SOURCES icons.qrc)
+target_sources(app PRIVATE ${RESOURCE_SOURCES})
+```
+
+Both Qt and Qt6 command spellings are eligible. The producer must be flat, have an
+ASCII `[A-Za-z_][A-Za-z_0-9]*` output identifier and one or more distinct contained
+`.qrc` paths, and be followed
+immediately by the exact three-token private consumer. The target must identify
+exactly one preceding local QML module. The output identifier must have exactly
+two source-token mentions: this producer and this consumer. Mentions are
+case-sensitive lexical identifiers, including identifiers within paths and
+expressions, rather than substring matches. Quoted/bracket variable consumers,
+options, mixed source lists, properties on QRC inputs, repeated/reused names,
+missing or ambiguous preceding targets and paths outside the scan root remain unsupported.
+
+The prefix allowlist is `cmake_minimum_required`, `project`, `qt_add_executable`,
+`qt6_add_executable`, `set_target_properties`, `set_source_files_properties`,
+`qt_add_qml_module`, `qt6_add_qml_module`, `target_sources`, `qt_add_resources`, and
+`qt6_add_resources`. A scoped or unknown command, variable writer, include,
+subdirectory or package load before the pair blocks this profile. This is a
+lexical allowlist, not proof that invoking those commands would be free of side
+effects. Unrelated trailing commands keep their existing interpretation; later
+mentions of the output identifier invalidate the pair. No inherited/cache/parent
+variable contents are expanded or declared empty. Known additions are recorded,
+not a complete generated-source list or runtime interpretation.
+
+`qml_cmake_outputs.py` owns bounded command collection, eligibility and pair fact
+emission; `qml_cmake.py` requests that inventory and owns sequential
+property/module state. Inventory
+is limited to 10,000 commands before the linear mention/prefix prepass. Existing
+byte, token, nesting and fact bounds also apply. Accepted pairs emit `qt_source`
+with `source_kind=qrc`, original QRC token span, `output_variable`, `module_key`
+and owning module; `generated=False` describes the input. The consumer emits
+`qt_generated_resource_use` at the original `${VAR}` span, with `generated=True`
+describing that mechanism and references to its known QRC input declarations under
+`qt_generated_resource_input`. It never fabricates generated filenames or copies
+XML alias records. The existing membership resolver joins only admitted QRC file
+roles; absent/ignored inputs cannot acquire an endpoint or authorize a read.
+
+Qt policy 26 invalidates prior accepted context through the existing state owner.
+No syntax-cache schema, producer root, resolver dependency, durable data format or
+publication order changes. Rejection, forced retry and corrected recovery retain
+the existing graph/manifest/report/Qt-state cohort contract. Unit, facade,
+serialized graph, actual app-only CLI and metadata/QRC-only update regressions
+supply the bounded evidence; actual native builds and complete variable expansion
+remain outside this profile.

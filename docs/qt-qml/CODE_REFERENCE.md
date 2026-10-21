@@ -829,3 +829,31 @@ proof are recorded: helper 307/320 and `tests/test_watch_clock_isolation.py`
 skip; actual POSIX and new-head hosted evidence remain pending. The new module
 passes typing; the legacy helper retains one pre-existing optional-handler
 diagnostic.
+
+## CMake resource-output owner — INC-QML-58
+
+The Qt metadata maintainer owns `graphify/extractors/qml_cmake_outputs.py`:
+source-local pair eligibility, lexical occurrence/prefix inventory and explicit
+QRC input/generated-use facts and bounded command collection. `qml_cmake.py`
+coordinates that inventory and retains sequential module/property state.
+Existing `qml_cmake_resources.py` retains
+the target-form API; `qt_project_index.py`, `qt_project_membership.py` and the XML
+resource reader keep their established lookup, directed join and alias ownership.
+No forwarding layer, general CMake evaluator or new persistence owner is added.
+
+`qt_incremental.py` advances only analysis policy to 26. New unit/integration
+owners are `tests/test_qt_cmake_resource_outputs.py` and
+`tests/test_qt_cmake_output_updates.py`; existing policy-state tests retain their
+invalidation assertions and add policy 25 to the historical inputs. All touched
+source/test owners remain subject to the ordinary 300-line limit; final measured
+sizes and checks belong in traceability. D35 and the design profile define the
+accepted lexical boundary and inherited-variable limitation.
+
+Final owner measurements are `qml_cmake.py` 160, `qml_cmake_outputs.py` 110,
+`qt_incremental.py` 115, the new direct/integration tests 133/129, and existing
+analysis-state/RC-update tests 161/118 physical lines. All remain below 300;
+no size exception or unrelated refactor is introduced. Whole-repository Ruff,
+unchanged-baseline typing comparison, artifact checks and AST-only repository
+refresh are complete. Traceability records the separate full-suite and
+process-local environment recovery results, retained Windows/optional skips and
+unexecuted new-head hosted/non-Windows proof.

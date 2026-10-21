@@ -721,3 +721,25 @@ are untouched. A changed direct-loop poll fails with the bounded assertion
 `watch harness polling contract changed`; other callers delegate real sleep.
 The local selection passes 31 cases and skips the actual POSIX wait boundary.
 New-head hosted evidence is required separately from local proof.
+
+## CMake resource-output diagnostics — INC-QML-58
+
+Accepted source-local pairs add source facts without a new diagnostic. An
+ineligible pair falls through to the existing producer/consumer rejection owners:
+`QML_PROJECT_UNSUPPORTED`, severity error, CMake source context, with reasons
+`unsupported_literal_resources_arguments` or
+`source_mutation_outside_literal_subset`; property mutation guards retain their
+specific reasons. An eligible lexical pair without a unique preceding module or
+with already consumed/property-bearing inputs rejects as
+`resource_output_module_or_input_unavailable`. The generated-use record describes known QRC additions only,
+not complete variable expansion. Repair the descriptor into the documented
+literal profile or retain the prior accepted graph while broader support is
+implemented; an unexecuted native build is not verification of the graph.
+
+An inventory exceeding 10,000 commands rejects as `QML_PROJECT_LIMIT` with reason
+`cmake_command_limit` before pair analysis. Malformed syntax, byte/token/scope/fact
+bounds and read failures retain their existing typed owners. No build hook,
+package script, CMake/rcc process, additional source read or network request is
+introduced. Rejected candidates, including forced retry, must preserve the prior
+graph/manifest/report/Qt-state cohort; corrected input then recovers and settles.
+Actual graph-write failures remain owned by existing publication/recovery code.

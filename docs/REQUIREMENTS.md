@@ -286,9 +286,9 @@ Supported literal CMake, qmake, `qmldir`, `.qmltypes`, and `.qrc` declarations d
 
 2 - Supported `qmldir` and `.qmltypes` fixtures retain exports, flags, members and provenance; conflicting source/generated declarations retain both origins and a conflict diagnostic. (`REQ-QML-009-AC02`)
 
-3 - `.qrc` and supported literal target-form CMake resource prefixes/aliases resolve resource URLs to accepted source files. A source-property alias replaces the physical resource spelling rather than creating a second runtime URL; malformed or conflicting evidence cannot restore that fallback. Explicit resource and module-generated providers participate in one ambiguity decision: distinct declarations remain unresolved regardless of discovery order, including when they name one physical endpoint; only repeated copies of the same declaration identity coalesce. Unsupported source-property directory selectors and discarded-content resources cannot establish local aliases or source endpoints. Traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
+3 - `.qrc` and supported literal target-form CMake resource prefixes/aliases resolve resource URLs to accepted source files. A supported source-local variable-output resource pair records its literal QRC inputs and generated-resource consumption through a uniquely preceding QML module; it never invents generated C++ endpoints or resource aliases. A source-property alias replaces the physical resource spelling rather than creating a second runtime URL; malformed or conflicting evidence cannot restore that fallback. Explicit resource and module-generated providers participate in one ambiguity decision: distinct declarations remain unresolved regardless of discovery order, including when they name one physical endpoint; only repeated copies of the same declaration identity coalesce. Unsupported source-property directory selectors and discarded-content resources cannot establish local aliases or source endpoints. Traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
 
-4 - CMake/qmake conditions or expressions outside the accepted literal or proven native-RC build-only subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
+4 - CMake/qmake conditions or expressions outside the accepted literal, bounded resource-output-pair or proven native-RC build-only subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
 
 For source-property commands whose complete literal source list consists of
 native `.rc` inputs, `INCLUDE_DIRECTORIES` and `OBJECT_DEPENDS` are admitted as
@@ -855,3 +855,17 @@ analysis; schema 13 and persistence owners remain unchanged. This correction has
 **verified local source cases and isolated artifact/install profile; hosted proof pending**.
 The `7e29b34a` source/wheel checkpoint verifies the
 earlier profile and does not verify this new admission behavior.
+
+
+INC-QML-58 refines REQ-QML-009-AC01/AC03/AC04 under the
+[resource-output matrix](qt-qml/PLAN.md#inc-qml-58--literal-cmake-resource-output-pairs).
+Status: **Implemented; focused source and isolated installed profiles verified
+locally. Windows full-suite and targeted environment-recovery receipts have no
+unresolved executed failures; 171 cases remain skipped. New-head hosted and
+non-Windows execution are unverified**.
+Only an adjacent literal producer/exact private consumer, exactly two lexical
+output-identifier mentions, a known declaration-prefix allowlist and a unique
+prior local module are eligible. Known QRC additions do not describe the complete
+variable expansion. Inherited variable contents,
+general CMake evaluation, RCC options, arbitrary mutation and external discovery
+remain outside this profile. Existing integrity and persistence criteria apply.

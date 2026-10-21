@@ -3645,3 +3645,117 @@ retains 651 baseline errors across 838 files, with no added or removed
 file/rule/message/severity signatures. The AST-only repository graph refresh
 exits zero with 27,352 nodes and 64,126 edges. These checks retain the native
 Windows boundary; they do not establish the pending hosted POSIX result.
+
+## Literal CMake resource-output pairs — INC-QML-58
+
+D35 and the design profile refine REQ-QML-009-AC01/AC03/AC04. Evidence describes
+known literal QRC additions only; it does not prove an inherited variable is
+empty, enumerate native generated outputs, execute a build or admit a parent
+project descriptor. Unsupported general CMake evaluation remains a separate scope.
+
+| Acceptance IDs | Exact automated production evidence and profile |
+| --- | --- |
+| REQ-QML-009-AC01/AC03; REQ-QML-010-AC01; REQ-QML-020-AC01 | `tests/test_qt_cmake_resource_outputs.py::test_req_qml009_ac01_resource_output_pair_preserves_qrc_and_use_spans` covers Qt/Qt6, multiple QRCs, BOM/CRLF/Unicode original-byte coordinates, stable IDs after inserted comments, module ownership, explicit generated-use/input flags, reference direction and JSON/sanitation transport. `test_req_qml009_ac03_known_declaration_prefix_and_trailing_opaque_command` covers the bounded prefix and existing target-form resource coexistence. All six success profiles fail before implementation and pass afterward. |
+| REQ-QML-009-AC04; REQ-QML-012-AC01/AC04 | `test_req_qml009_ac04_prefix_barriers_and_any_prior_identifier_prevent_binding` and `test_req_qml009_ac04_unsupported_pair_shapes_never_emit_generated_use` in that module protect unknown prefix commands, explicit writers, includes/package loads/control scopes, prior/reused names, duplicate/forward modules, wrong-target/nonprivate/mixed/quoted/computed consumers, orphan and repeated producers, unsafe/duplicate QRCs, unsupported RCC options and input properties. `test_req_qml012_ac04_command_inventory_boundary_is_typed_and_bounded` proves 10,000 accepted versus 10,001 rejected commands with exact typed reason and no facts. The command-bound assertion fails before correction; all other negative cases retain rejection. |
+| REQ-QML-009-AC03; REQ-QML-011-AC01/AC04; REQ-QML-020-AC01 | `tests/test_qt_cmake_output_updates.py::test_req_qml009_ac03_pair_reaches_graph_export_reload_and_warm_full_parity` proves the admitted QRC file join, use-token span, directed reference and XML-owned aliases through real collector/facade, graph assembly, JSON reload, warm repeat and clean extraction. `test_req_qml009_ac03_actual_app_only_extract_cli_keeps_corpus_boundary` runs the actual `extract app --code-only --no-cluster --max-workers 1` subprocess; a rejected parent descriptor stays outside the admitted graph. |
+| REQ-QML-011-AC02 | `test_req_qml011_ac02_metadata_and_qrc_only_changes_remove_stale_pair_facts` in that module retargets the CMake QRC input, changes only an XML alias, removes the pair, and compares each accepted result with a clean build. |
+| REQ-QML-012-AC02; REQ-QML-011-AC04 | `test_req_qml012_ac02_rejected_mutation_retains_products_repeats_and_recovers` covers normal and forced rejection, byte-for-byte graph/manifest/report/Qt-state retention, repeated failure, corrected recovery and settled repeat. `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` now covers policy 25 as well as 22/23/24; `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits26` retains the transactional upgrade/rejection/recovery assertions and adds policy 25. The latter replaces the earlier `commits25` test spelling; earlier recorded policy-25 evidence remains historical. |
+| REQ-QML-014-AC03/AC04; REQ-QML-001-AC01/AC03 | All original unsupported-form assertions remain. The focused surrounding CMake/resource/state suite passes 223 cases with zero skips. A source-matched wheel passes all three existing artifact tests, clean isolated core-only and QML-extra installed smokes, and a separate neutral installed QML CLI pair probe. No dependency contract or workflow change is needed: existing Qt-prefixed native selection and Linux source selection already collect the new modules. New-head hosted and non-Windows execution remain unverified. |
+
+Before production correction, the new direct module reports **7 failed, 43
+passed**, and the five integration cases fail at the existing incomplete-metadata
+gate. The first post-fix integration replay exposed a new test helper's incorrect
+use of unordered NetworkX endpoints; serialized JSON already contained the right
+arcs. The helper now reads authoritative `_src`/`_tgt` direction and NetworkX node
+identity. No product assertion was removed. Final integration replay passes all
+five cases. Final focused coverage is 223 passes, zero failures/skips, 22 warnings
+in 67.74 seconds: the new helper has 100% line coverage, while `qml_cmake.py` has
+92% in this selection. Its nine uncovered lines are existing module-option
+validation paths, not newly introduced pair branches. Line coverage does not
+establish runtime coverage of analyzed applications or exhaustive CMake semantics.
+
+The focused selection is:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/cmake-resource-output-repair/focused.coverage'
+.venv/Scripts/python.exe -X utf8 -m pytest -q --disable-warnings --junitxml=.venv/cmake-resource-output-repair/focused.xml --cov=graphify.extractors.qml_cmake_outputs --cov=graphify.extractors.qml_cmake --cov-report=term-missing --cov-report=json:.venv/cmake-resource-output-repair/focused-coverage.json tests/test_qt_cmake_resource_outputs.py tests/test_qt_cmake_output_updates.py tests/test_qt_cmake_mutations.py tests/test_qt_cmake_review_boundaries.py tests/test_qt_cmake_resource_collisions.py tests/test_qt_cmake_rc_updates.py tests/test_qt_analysis_state.py tests/test_qt_resource_resolution.py tests/test_qt_project_metadata.py
+```
+
+Whole-repository Ruff and all five generated-artifact checks pass (`--check`,
+`--audit-coverage`, `--schema-singleton`, `--monolith-roundtrip`, and
+`--always-on-roundtrip`). Explicit-interpreter whole Pyright still fails with
+651 diagnostics across 841 files: file/rule/message/severity signatures are
+identical to the prior 651/838 profile, with no additions or removals. This is
+retained baseline debt, not a passing type check. New helper and unit files pass
+focused typing; the whole comparison also covers the new integration owner.
+
+`uv build --wheel --python .venv/Scripts/python.exe --out-dir
+.venv/cmake-resource-output-repair/wheel` produces the unchanged 0.9.92 package
+version. All 191 production Python files, including the new helper, match the
+reviewed source bytes in the artifact. Existing license/extra metadata tests and
+neutral `-I` installed smokes pass on Windows/Python 3.12.14; the neutral installed
+pair probe yields one directed QRC membership without a native build. The active
+per-user tool and application graph are separate adoption boundaries and have not
+been replaced by these isolated installations. Wheel, JUnit, source-match,
+coverage and baseline-comparison receipts remain outside version control under
+`.venv/cmake-resource-output-repair/`.
+
+Final whole-suite result, repository-graph refresh, owner measurements and
+increment exit status are appended after their terminal checks; no pending or
+unexecuted check establishes completion.
+
+Final whole-suite invocation on Windows/Python 3.12.14:
+
+```powershell
+$env:COVERAGE_FILE = Join-Path (Get-Location) '.venv/cmake-resource-output-repair/full.coverage'
+.venv/Scripts/python.exe -X utf8 -m pytest tests -q --junitxml=.venv/cmake-resource-output-repair/full.xml
+```
+
+The terminal result is **49 failed, 11,836 passed, 190 skipped**, 3,886 warnings
+in 1,860.60 seconds. The 49 failures are exactly two code-only host-update,
+thirteen hook, six shell-portability helper, twenty-three input-path injection
+and five selected-interpreter cases. Actual failure text identifies an
+inaccessible Windows WSL `bash` alias or unavailable `sh`, rather than a CMake/
+Qt assertion. The existing CI Windows native profile supplies qualified Git
+Bash/sh and an interpreter shim; a process-local replay of these exact 49 node
+IDs passes **49/49**, zero skips, one warning in 60.83 seconds. No source/test
+correction, assertion relaxation, installer or global PATH change is involved.
+
+An additional replay of the 78 originally shell-related skipped identities passes
+16 and retains 62 skips in 10.01 seconds. Those remaining legacy guards explicitly
+exclude native Windows/POSIX execution even when MSYS tools are available; their
+reason text can still say `sh required` or `needs bash and cat on a POSIX host`.
+Do not remove those guards to relabel unexecuted work as passing. The three
+initially skipped wheel-artifact identities separately pass with the reviewed
+wheel supplied. Exact identity union across `full.xml`, `failed-profile/tests.xml`,
+`skipped-shell-profile/tests.xml` and `wheel-artifact.xml` is **12,075 unique cases:
+11,904 passed, 171 skipped, zero unresolved failures/errors**. This is combined
+evidence from separate receipts, not a single green full-suite invocation.
+
+The native replay profile follows the existing
+[CI Windows compatibility setup](../.github/workflows/ci.yml): qualified portable
+Git Bash/sh, verified selected Python and Node identities, a process-local
+`python3` shim that rejects pip fallback, offline installer settings and isolated
+tool/pip/appdata destinations. Both replays retain production-file hashes, HEAD,
+dependency name/version inventory and the original coverage hash. The complete
+node IDs, preflight, original failure messages, outcome union and skip reasons
+remain in ignored receipts; no private corpus or local operational path is part
+of the public fixture. The active tool/application graph and hosted workflows
+were not changed by this validation.
+
+The 171 remaining skips include symlink privilege and POSIX filesystem/shell
+boundaries, optional C preprocessor/validation-oracle availability, unavailable
+services and profile-specific cases. New-source Linux/macOS execution remains
+unverified. New CMake behavior and affected criteria have zero skips in the
+223-case focused profile; no skipped system boundary is used to mark broader
+platform support verified. The existing 651 type diagnostics also remain open.
+
+Final code/test owner sizes are 160/110/115/133/129/161/118 lines for facade,
+output helper, policy, direct tests, integration tests, analysis-state tests and
+RC-update tests respectively; every owner is below 300. The AST-only repository
+update completes successfully with 27,394 nodes and 64,252 edges after retaining
+a backup. Existing non-Qt fixture syntax warnings remain explicit. The original
+coverage hash is unchanged. Independent production and public-document review
+finds no blocker. Increment exit adds no further product increment for this
+bounded form; broader CMake evaluation requires its own accepted profile. Local
+commit review, hosted validation, merging and application adoption remain distinct.
