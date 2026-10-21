@@ -54,6 +54,16 @@ def test_validate_url_rejects_empty_scheme():
     with pytest.raises(ValueError):
         validate_url("//no-scheme.example.com")
 
+@pytest.mark.parametrize("url", [
+    "http://",
+    "https://",
+    "http:///etc/passwd",
+    "https:///example.com/path",
+])
+def test_validate_url_rejects_missing_hostname(url):
+    with pytest.raises(ValueError, match="without a hostname"):
+        validate_url(url)
+
 
 # ---------------------------------------------------------------------------
 # safe_fetch - scheme and redirect guards (mocked network)
