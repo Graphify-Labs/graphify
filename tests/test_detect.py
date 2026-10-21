@@ -3657,6 +3657,49 @@ def test_detect_unclassified_empty_when_all_supported(tmp_path):
     assert res.get("unclassified", []) == []
 
 
+def test_unclassified_warning_fires_when_most_of_the_corpus_has_no_extractor(tmp_path):
+    # #2942: a repo whose business logic lives in a language graphify cannot
+    # parse (here: generic .xml) produces a graph that looks complete but
+    # represents only part of the codebase. Past the absolute-count floor
+    # and the fraction threshold, detect() must say so plainly, not just
+    # report a bare count that reads as routine lockfile/binary noise.
+    for i in range(30):
+        (tmp_path / f"doc{i}.xml").write_text("<root/>\n")
+    for i in range(10):
+        (tmp_path / f"code{i}.py").write_text("x = 1\n")
+    res = detect(tmp_path)
+    assert len(res["unclassified"]) == 30
+    warning = res.get("unclassified_warning")
+    assert warning is not None
+    assert "30 of 40" in warning
+    assert "75%" in warning
+
+
+def test_unclassified_warning_silent_under_the_absolute_floor(tmp_path):
+    # Two stray unsupported files out of many is routine, not a structural
+    # gap -- the loud warning must not fire just because SOME fraction of a
+    # tiny handful of unclassified files happens to be large.
+    (tmp_path / "odd1.xml").write_text("<root/>\n")
+    (tmp_path / "odd2.xml").write_text("<root/>\n")
+    for i in range(20):
+        (tmp_path / f"code{i}.py").write_text("x = 1\n")
+    res = detect(tmp_path)
+    assert len(res["unclassified"]) == 2
+    assert res.get("unclassified_warning") is None
+
+
+def test_unclassified_warning_silent_under_the_fraction_threshold(tmp_path):
+    # Past the absolute floor but still a small share of a large, mostly
+    # supported corpus -- still routine, must stay silent.
+    for i in range(25):
+        (tmp_path / f"odd{i}.xml").write_text("<root/>\n")
+    for i in range(400):
+        (tmp_path / f"code{i}.py").write_text("x = 1\n")
+    res = detect(tmp_path)
+    assert len(res["unclassified"]) == 25
+    assert res.get("unclassified_warning") is None
+
+
 def test_graphifyinclude_is_inert_and_not_unclassified(tmp_path, capsys):
     """#2112: .graphifyinclude support was removed (dead since #873).
 
