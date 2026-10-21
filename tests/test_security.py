@@ -55,6 +55,15 @@ def test_validate_url_rejects_empty_scheme():
         validate_url("//no-scheme.example.com")
 
 
+@pytest.mark.parametrize("url", [
+    "https://user:secret@example.com/path",
+    "https://user@example.com/path",
+])
+def test_validate_url_rejects_embedded_credentials(url):
+    with pytest.raises(ValueError, match="embedded credentials"):
+        validate_url(url)
+
+
 # ---------------------------------------------------------------------------
 # safe_fetch - scheme and redirect guards (mocked network)
 # ---------------------------------------------------------------------------
