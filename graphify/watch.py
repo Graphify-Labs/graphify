@@ -2391,6 +2391,11 @@ def _rebuild_code(
                                 "full_name",
                                 "accepted_arities",
                                 "namespace",
+                                # VB field and property types (#4588): an unchanged
+                                # partial file keeps the types its fields are declared
+                                # with, and the imports that say which type they name.
+                                "declared_type",
+                                "imports",
                             )
                             if key in metadata
                         }
