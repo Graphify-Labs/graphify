@@ -287,3 +287,62 @@ def test_mentions_survive_the_extraction_cache(tmp_path):
     guide = _node(second, "Guide")
     widget = _node(second, "Widget", "widget.py")
     assert (guide["id"], widget["id"]) in _pairs(second)
+
+
+def test_bare_lowercase_word_does_not_link_to_an_unrelated_method(tmp_path):
+    """`redis` the server is prose, not a reference to whichever method is named redis (#4609)."""
+    r = _extract(tmp_path, {
+        "cache.py": "class Cache:\n    def redis(self):\n        return 'connection'\n",
+        "README.md": "# Queue\n\nJobs run on `redis` (the server, not our code).\n",
+    })
+
+    queue = _node(r, "Queue")
+    assert {t for (s, t) in _references(r) if s == queue["id"]} == set()
+
+
+def test_bare_method_mention_survives_when_the_document_cites_its_class(tmp_path):
+    """`successWithWarnings` next to `HandlerResult` is a real reference (#4609)."""
+    r = _extract(tmp_path, {
+        "handler.py": "class HandlerResult:\n    def successWithWarnings(self):\n        return 1\n",
+        "notes.md": "# Notes\n\n`HandlerResult` returns `successWithWarnings`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    method = _node(r, ".successWithWarnings()")
+    assert (notes["id"], method["id"]) in _references(r)
+
+
+def test_bare_method_with_parentheses_still_resolves(tmp_path):
+    """A trailing () is explicit evidence, so the owner does not have to be cited (#4609)."""
+    r = _extract(tmp_path, {
+        "cache.py": "class Cache:\n    def redis(self):\n        return 'connection'\n",
+        "notes.md": "# Notes\n\nCall `redis()` on the cache.\n",
+    })
+
+    notes = _node(r, "Notes")
+    method = _node(r, ".redis()")
+    assert (notes["id"], method["id"]) in _references(r)
+
+
+def test_bare_function_mention_still_resolves_without_its_owner(tmp_path):
+    """The extra owner test is scoped to methods; a free function label stays evidence (#4609)."""
+    r = _extract(tmp_path, {
+        "deploy.py": "def deploy():\n    pass\n",
+        "notes.md": "# Notes\n\nRun `deploy` after the tests.\n",
+    })
+
+    notes = _node(r, "Notes")
+    deploy = _node(r, "deploy()", "deploy.py")
+    assert (notes["id"], deploy["id"]) in _references(r)
+
+
+def test_owner_cited_in_another_document_does_not_count(tmp_path):
+    """The owner evidence is per document: one doc's mention cannot license another's (#4609)."""
+    r = _extract(tmp_path, {
+        "handler.py": "class HandlerResult:\n    def successWithWarnings(self):\n        return 1\n",
+        "a.md": "# A\n\n`HandlerResult` is the result type.\n",
+        "b.md": "# B\n\nReads `successWithWarnings`.\n",
+    })
+
+    b = _node(r, "B")
+    assert {t for (s, t) in _references(r) if s == b["id"]} == set()
