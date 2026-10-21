@@ -2689,6 +2689,7 @@ def test_fortran_capital_F_parses_preprocessed():
     assert any("compute_volume" in l for l in labels)
 
 
+
 def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
     """A derived type's `contains` section binds procedures as its methods.
 
@@ -2791,6 +2792,29 @@ def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
         assert e["source"] in node_ids and e["target"] in node_ids, e
     stub = next(n for n in r["nodes"] if n["label"] == "external_render")
     assert stub["source_file"] == ""
+
+
+def test_fortran_capital_F_source_location_maps_through_cpp():
+    """#2092: cpp blanks the `#define`/`#ifdef` lines and renumbers the output, so
+    every symbol used to be reported at the wrong line. The linemarkers are now
+    consumed to map each location back to the original file. In
+    sample_preprocessed.F90 `module shapes` is on L3 and `compute_volume` on L11
+    (these hold whether or not cpp is installed — the raw fallback keeps them too)."""
+    r = extract_fortran(FIXTURES / "sample_preprocessed.F90")
+    locs = {n["label"]: n["source_location"] for n in r["nodes"]}
+    assert locs.get("shapes") == "L3"
+    assert locs.get("compute_volume()") == "L11"
+
+
+def test_fortran_capital_F_blank_lines_do_not_shift_location(tmp_path):
+    """#2092: `cpp -P` also collapsed runs of blank lines, so a directive-free .F90
+    was mislocated too. A subroutine after five blank lines must report L6, not L1."""
+    src = tmp_path / "z.F90"
+    src.write_text("\n\n\n\n\nsubroutine zebrafunc()\nend subroutine\n")
+    r = extract_fortran(src)
+    locs = {n["label"]: n["source_location"] for n in r["nodes"]}
+    assert locs.get("zebrafunc()") == "L6"
+
 
 
 # ── PowerShell ───────────────────────────────────────────────────────────────
