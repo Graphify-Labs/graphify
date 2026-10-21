@@ -158,7 +158,8 @@ def _lost_saved_semantic_nodes(
 # be inventing a cross-axis judgement, whereas "specific beats generic" is the only
 # same-direction comparison this collapse needs. The one opposite-direction
 # exception is _STRUCTURAL_MEMBER_RELATIONS.
-_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+_GENERIC_RELATIONS: frozenset[str] = frozenset(
+    {"references", "references_constant", "uses", "mentions"})
 # Membership of a type or file. On an undirected graph these share a node pair
 # with a `calls` edge in the opposite direction when a member calls or constructs
 # its owner (`static Report Fault() { return new Report(); }`). Last-write kept

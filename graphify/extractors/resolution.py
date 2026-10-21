@@ -3963,7 +3963,8 @@ def _resolve_java_type_references(
 
 
 _PHP_SUPERTYPE_RELATIONS = ("inherits", "implements", "mixes_in")
-_PHP_REPOINT_RELATIONS = frozenset({"inherits", "implements", "mixes_in", "imports", "references"})
+_PHP_REPOINT_RELATIONS = frozenset(
+    {"inherits", "implements", "mixes_in", "imports", "references", "references_constant"})
 
 
 def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
@@ -3991,11 +3992,31 @@ def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
     return f"{ns}\\{raw}" if ns else raw
 
 
+def _php_file_namespace(parser, path: Path) -> str | None:
+    """The one top-level ``namespace`` a PHP file declares ("" if none), else None
+    (unreadable, or several namespaces: never guess which one a class belongs to)."""
+    try:
+        source = _read_source_bytes(path, warn=False)
+        tree = parser.parse(source)
+    except Exception:
+        return None
+    found = {
+        _read_text(c, source)
+        for top in tree.root_node.children if top.type == "namespace_definition"
+        for c in top.children if c.type == "namespace_name"
+    }
+    if len(found) > 1:
+        return None
+    return next(iter(found), "")
+
+
 def _resolve_php_type_references(
     per_file: list[dict],
     paths: list[Path],
     all_nodes: list[dict],
     all_edges: list[dict],
+    context_nodes: list[dict] | None = None,
+    root: Path | None = None,
 ) -> None:
     """Disambiguate PHP inherits/implements/mixes_in/imports/references targets
     using each file's ``namespace`` declaration and ``use`` imports (#1923).
@@ -4139,6 +4160,31 @@ def _resolve_php_type_references(
         fqn = f"{ns}\\{label}" if ns else label
         fqn_to_id.setdefault(fqn.lower(), nid)
 
+    # Incremental builds re-extract only the changed files: a class they name may
+    # live in an unchanged file. Give those declarations their FQN from the file's
+    # own `namespace` (top-level only; a multi-namespace file stays out), so the
+    # written-name resolution below is the same as in a full build. Fresh
+    # declarations were registered first and win.
+    if context_nodes and root is not None:
+        ctx_ns: dict[str, str | None] = {}
+        for node in context_nodes:
+            label = node.get("label", "")
+            src = node.get("source_file", "")
+            nid = node.get("id", "")
+            if not (label and src and nid) or src in ns_by_file:
+                continue
+            if label.endswith(")") or "." in label or effective_suffix(Path(src)).lower() not in (
+                    ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"):
+                continue
+            if src not in ctx_ns:
+                ctx_path = Path(src) if Path(src).is_absolute() else Path(root) / src
+                ctx_ns[src] = _php_file_namespace(parser, ctx_path)
+            ns = ctx_ns[src]
+            if ns is None:
+                continue
+            fqn = f"{ns}\\{label}" if ns else label
+            fqn_to_id.setdefault(fqn.lower(), nid)
+
     node_ids = {n.get("id") for n in all_nodes if n.get("id")}
     stub_label: dict[str, str] = {
         n["id"]: n.get("label", "")
@@ -4178,15 +4224,21 @@ def _resolve_php_type_references(
         tgt = edge.get("target")
         label = stub_label.get(tgt)
         uses = uses_by_file.get(ref_file, {})
-        if not label and relation == "imports":
+        # The name as the source wrote it (`_php_raw`): a `Foo::class` or type hint.
+        # Its target is only a bare-name placeholder, which may even be a real node
+        # id, so it is never treated as a stub to retire.
+        written = edge.get("_php_raw")
+        if written:
+            label = written.rsplit("\\", 1)[-1].strip()
+        elif not label and relation == "imports":
             label = next((alias for alias in uses if _make_id(alias) == tgt), "")
         if not label:
             continue
         bare = label.strip().lower()
         ns = ns_by_file[ref_file]
 
-        raw = None
-        if relation in _PHP_SUPERTYPE_RELATIONS:
+        raw = written or None
+        if relation in _PHP_SUPERTYPE_RELATIONS and not raw:
             raw = raw_by_file.get(ref_file, {}).get((relation, bare))
 
         explicit = False
@@ -4198,18 +4250,29 @@ def _resolve_php_type_references(
             explicit = True
         elif ns:
             fqn = f"{ns}\\{label}"
+        elif written:
+            fqn = label  # global namespace: a written name resolves to itself
         else:
             continue  # no namespace facts: legacy unique-label rewire applies
 
+        retire = tgt in stub_label if written else True
         resolved = fqn_to_id.get(fqn.lower())
+        if resolved and resolved == edge.get("source") and written:
+            continue  # a class naming itself: no self-loop (the marker drops a constant)
         if resolved and resolved != tgt:
             edge["target"] = resolved
-            repointed_from.add(tgt)
+            if retire:
+                repointed_from.add(tgt)
+            edge.pop("_php_raw", None)
+        elif resolved:
+            edge.pop("_php_raw", None)
         elif explicit and resolved is None:
             # Proven external: park the edge on an FQN-labeled stub the
             # bare-name rewire cannot collapse (this is the #1923 fix).
             edge["target"] = _external_stub(fqn)
-            repointed_from.add(tgt)
+            if retire:
+                repointed_from.add(tgt)
+            edge.pop("_php_raw", None)
         # non-explicit miss: leave the bare stub for the legacy rewire
 
     if new_nodes:

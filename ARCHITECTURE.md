@@ -126,6 +126,22 @@ lack this path. The merge runs after colliding ids are salted apart by path, so
 a half whose file stem collides with another file's (`Spec.cs` and `_Spec.cs`,
 `Cfg/Helpers.cs` and `Cfg_Helpers.cs`) still merges and keeps its members.
 
+PHP class names written in source (`Foo::class` and other `Foo::BAR` class
+constants, plus type hints) resolve with PHP's own name-resolution rules in
+`_resolve_php_type_references`: `use` alias, same namespace, or a leading-`\`
+FQCN, each tying the edge to the one declaration with that FQN (`EXTRACTED`).
+The extractor records the name as written on the edge (`_php_raw`, stripped
+before output) and `self`/`static` map to the enclosing class. A name imported
+from outside the corpus keeps the shared FQN-labelled external stub; a
+`::class` that resolves to neither is dropped, never guessed. Not covered:
+`Foo::class` in a method's parameter default, a `new \A\B()` or static call
+written with a qualified name (those still resolve by bare name), and
+`namespace` blocks that mix several namespaces in one file. `references_constant`
+is a generic relation when the graph collapses a node pair to one edge (like
+`references`), so a method naming its own class, or a file that both imports and
+`::class`-references a class, keeps its `method` / `imports` edge. The AST cache
+schema bump retires results without the written name.
+
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
