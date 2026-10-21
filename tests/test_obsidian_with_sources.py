@@ -88,12 +88,15 @@ def test_source_paths_cannot_escape_scan_root(tmp_path):
                source_file="../outside.py", community=0)
     G.add_node("symlink", label="Symlink", file_type="code",
                source_file="linked.py", community=0)
+    G.add_node("absolute", label="Absolute", file_type="code",
+               source_file=str(outside), community=0)
     vault = tmp_path / "vault"
-    to_obsidian(G, {0: ["traversal", "symlink"]}, str(vault),
+    to_obsidian(G, {0: ["traversal", "symlink", "absolute"]}, str(vault),
                 with_sources=True, source_root=scan_root)
 
     assert not (vault / "Traversal.md").read_text(encoding="utf-8").count("> [!info] Source")
     assert not (vault / "Symlink.md").read_text(encoding="utf-8").count("> [!info] Source")
+    assert not (vault / "Absolute.md").read_text(encoding="utf-8").count("> [!info] Source")
     assert not list((vault / "sources").glob("*.md"))
 
 
