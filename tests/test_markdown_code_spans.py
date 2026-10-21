@@ -346,3 +346,39 @@ def test_owner_cited_in_another_document_does_not_count(tmp_path):
 
     b = _node(r, "B")
     assert {t for (s, t) in _references(r) if s == b["id"]} == set()
+
+
+def test_owner_evidence_survives_an_edge_that_already_exists():
+    """A mention whose edge is already in the graph still counts as citing its target.
+
+    The resolver skips an edge that is already there, but the document has still
+    cited that symbol, so the evidence must stay on record for a later method
+    mention in the same document (#4609, review finding on the PR).
+    """
+    from graphify.markdown_resolution import resolve_markdown_mentions
+
+    per_file = [{"raw_calls": [
+        {"caller_nid": "doc_notes", "callee": "HandlerResult", "language": "markdown",
+         "context": "HandlerResult", "source_file": "notes.md", "source_location": "L3"},
+        {"caller_nid": "doc_notes", "callee": "successWithWarnings", "language": "markdown",
+         "context": "successWithWarnings", "source_file": "notes.md", "source_location": "L3"},
+    ]}]
+    nodes = [
+        {"id": "doc_notes", "label": "Notes", "file_type": "document",
+         "source_file": "notes.md"},
+        {"id": "handler_handlerresult", "label": "HandlerResult", "file_type": "code",
+         "_callable": True, "_callable_class": True, "source_file": "handler.py"},
+        {"id": "handler_handlerresult_successwithwarnings", "label": ".successWithWarnings()",
+         "file_type": "code", "_callable": True, "source_file": "handler.py"},
+    ]
+    edges = [
+        {"source": "handler_handlerresult",
+         "target": "handler_handlerresult_successwithwarnings", "relation": "method"},
+        # The class reference edge is already in the graph.
+        {"source": "doc_notes", "target": "handler_handlerresult", "relation": "references"},
+    ]
+
+    resolve_markdown_mentions(per_file, nodes, edges)
+
+    assert ("doc_notes", "handler_handlerresult_successwithwarnings") in {
+        (e["source"], e["target"]) for e in edges if e.get("relation") == "references"}

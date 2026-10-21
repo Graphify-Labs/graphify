@@ -229,7 +229,14 @@ def resolve_markdown_mentions(
 
     def _add(rc: dict, target: str | None, confidence: str, score: float) -> None:
         caller = str(rc.get("caller_nid", ""))
-        if target is None or target == caller or (caller, target) in existing:
+        if target is None or target == caller:
+            return
+        doc = _posix(str(rc.get("source_file", "")))
+        if (caller, target) in existing:
+            # The edge is already in the graph, but this document still CITES that
+            # target, so it stays on record as owner evidence for a later method
+            # mention in the same document (#4609 review finding).
+            cited_targets.setdefault(doc, set()).add(target)
             return
         existing.add((caller, target))
         all_edges.append({
@@ -243,7 +250,7 @@ def resolve_markdown_mentions(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
-        cited_targets.setdefault(_posix(str(rc.get("source_file", ""))), set()).add(target)
+        cited_targets.setdefault(doc, set()).add(target)
 
     # Pass 1: explicit evidence resolves on its own — a cited path, a dotted
     # qualifier chain, or a trailing (). Record those targets per document.
