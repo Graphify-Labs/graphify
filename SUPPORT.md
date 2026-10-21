@@ -6,7 +6,7 @@ Thanks for using graphify. Here is where to go, depending on what you need.
 
 - **Docs:** [docs.graphify.com](https://docs.graphify.com) — guides, command reference, and integrations. Start here.
 - **GitHub Discussions:** [Discussions](https://github.com/Graphify-Labs/graphify/discussions) for longer-form questions, ideas, and show-and-tell.
-- **Discord:** [discord.gg/XDnKVpzdXB](https://discord.gg/XDnKVpzdXB) for real-time chat with the community and maintainers.
+- **Discord:** [discord.gg/graphify](https://discord.gg/graphify) for real-time chat with the community and maintainers.
 
 Please search the docs and existing discussions/issues before posting — your question may already be answered.
 
