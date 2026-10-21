@@ -5927,6 +5927,8 @@ def _resolve_php_member_calls(
         ):
             type_def_nids.setdefault(class_key(node.get("label", "")), []).append(node["id"])
 
+    php_type_nids = {nid for nids in type_def_nids.values() for nid in nids}
+
     method_index: dict[tuple[str, str], set[str]] = {}
     enclosing_type: dict[str, str] = {}
     for edge in all_edges:
@@ -5993,6 +5995,14 @@ def _resolve_php_member_calls(
                 if len(type_defs) != 1:
                     continue
                 type_nid = type_defs[0]
+            elif not receiver.startswith("$") and "php_scope_nid" in raw_call:
+                # Bound by `_resolve_php_type_references` with PHP name rules (use
+                # alias / same namespace / leading `\`); empty = names no in-corpus
+                # type, so no edge (a same-named class elsewhere is a decoy).
+                scope_nid = raw_call["php_scope_nid"]
+                if not scope_nid or scope_nid not in php_type_nids:
+                    continue
+                type_nid = scope_nid
             elif not receiver.startswith("$"):
                 type_defs = type_def_nids.get(class_key(receiver), [])
                 if not type_defs:
@@ -10125,7 +10135,8 @@ def extract(
     if _php_sel:
         try:
             _resolve_php_type_references(
-                [r for r, _ in _php_sel], [p for _, p in _php_sel], all_nodes, all_edges
+                [r for r, _ in _php_sel], [p for _, p in _php_sel], all_nodes, all_edges,
+                resolution_context_nodes, root,
             )
         except Exception as exc:
             import logging
@@ -10820,7 +10831,15 @@ def extract(
 
     # A Rust `use` group keeps one edge per binding; its v8 edge only served the calls above.
     all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
+    # A PHP `Foo::class` the resolver could not tie to a declaration (or to an
+    # explicit `use` import) still carries its written name: drop it rather than
+    # keep a guessed edge. Unresolved type hints keep their legacy stub edge.
+    all_edges[:] = [
+        e for e in all_edges
+        if not (e.get("_php_raw") and e.get("relation") == "references_constant")
+    ]
     for e in all_edges:
+        e.pop("_php_raw", None)
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
 

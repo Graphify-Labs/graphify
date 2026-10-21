@@ -859,8 +859,14 @@ def _php_name_text(node, source: bytes) -> str | None:
         return None
     return _read_text(node, source).rsplit("\\", 1)[-1] or None
 
-def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a PHP type expression; append (name, role) tuples."""
+def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                           raws: list[str] | None = None) -> None:
+    """Walk a PHP type expression; append (name, role) tuples.
+
+    ``raws``, when given, receives the name as written (``\\App\\Models\\X``) in step
+    with ``out``, so the corpus-level resolver can apply PHP name resolution to it
+    instead of the namespace-stripped bare name.
+    """
     if node is None:
         return
     t = node.type
@@ -872,22 +878,26 @@ def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
                 text = _php_name_text(c, source)
                 if text:
                     out.append((text, "generic_arg" if generic else "type"))
+                    if raws is not None:
+                        raws.append(_read_text(c, source).strip())
                 return
         return
     if t in ("name", "qualified_name"):
         text = _php_name_text(node, source)
         if text:
             out.append((text, "generic_arg" if generic else "type"))
+            if raws is not None:
+                raws.append(_read_text(node, source).strip())
         return
     if t in ("nullable_type", "union_type", "intersection_type", "optional_type"):
         for c in node.children:
             if c.is_named:
-                _php_collect_type_refs(c, source, generic, out)
+                _php_collect_type_refs(c, source, generic, out, raws)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _php_collect_type_refs(c, source, generic, out)
+                _php_collect_type_refs(c, source, generic, out, raws)
 
 def _php_declared_type_name(node, source: bytes) -> str | None:
     """The single class name a PHP type annotation names, or None.
@@ -6022,6 +6032,28 @@ def _extract_generic(
             })
         return nid
 
+    def php_type_reference(owner_nid: str, class_nid: str | None, ref_name: str,
+                           raw_name: str, relation_ctx: str, line: int) -> str | None:
+        """Emit a PHP type-hint `references` edge; return its target id.
+
+        `self`/`static` are the enclosing class, not a name to look up. Any other
+        name keeps the legacy bare-name stub, plus the name as written (`_php_raw`)
+        so `_resolve_php_type_references` can apply PHP name resolution to it.
+        """
+        if ref_name.lower() in ("self", "static"):
+            if not class_nid:
+                return None
+            target_nid = class_nid
+            edge_raw = None
+        else:
+            target_nid = ensure_named_node(ref_name, line)
+            edge_raw = raw_name
+        if target_nid != owner_nid:
+            add_edge(owner_nid, target_nid, "references", line, context=relation_ctx)
+            if edge_raw:
+                edges[-1]["_php_raw"] = edge_raw
+        return target_nid
+
     stem_forward_refs: dict[str, str] = {}
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
@@ -7231,13 +7263,24 @@ def _extract_generic(
                     continue
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str]] = []
-                _php_collect_type_refs(c, source, False, refs)
-                for ref_name, role in refs:
+                raws: list[str] = []
+                _php_collect_type_refs(c, source, False, refs, raws)
+                for (ref_name, role), raw_name in zip(refs, raws):
                     ctx = "generic_arg" if role == "generic_arg" else "field"
-                    target_nid = ensure_named_node(ref_name, line)
-                    if target_nid != parent_class_nid:
-                        add_edge(parent_class_nid, target_nid, "references", line, context=ctx)
+                    php_type_reference(parent_class_nid, parent_class_nid, ref_name,
+                                       raw_name, ctx, line)
                 break
+            # A default (`protected $casts = ['status' => Status::class]`) is walked
+            # as the class's own expression, like the Kotlin/Swift initializers.
+            for element in node.children:
+                if element.type != "property_element":
+                    continue
+                seen_eq = False
+                for default in element.children:
+                    if not default.is_named:
+                        seen_eq = seen_eq or default.type == "="
+                    elif seen_eq:
+                        initializer_nodes.append((parent_class_nid, default))
             return
 
         if (config.ts_module == "tree_sitter_kotlin"
@@ -7791,28 +7834,31 @@ def _extract_generic(
                                 type_node = sub
                                 break
                         refs: list[tuple[str, str]] = []
-                        _php_collect_type_refs(type_node, source, False, refs)
-                        for ref_name, role in refs:
+                        raws: list[str] = []
+                        _php_collect_type_refs(type_node, source, False, refs, raws)
+                        for (ref_name, role), raw_name in zip(refs, raws):
                             ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
-                            target_nid = ensure_named_node(ref_name, line)
-                            if target_nid != func_nid:
-                                add_edge(func_nid, target_nid, "references", line, context=ctx)
+                            target_nid = php_type_reference(
+                                func_nid, parent_class_nid, ref_name, raw_name, ctx, line)
                             # A promoted param declares a real class field; mirror
                             # the property_declaration field-context edge so the
                             # type is discoverable as a class field too.
-                            if is_promoted and parent_class_nid and target_nid != parent_class_nid:
+                            if (is_promoted and parent_class_nid and target_nid
+                                    and target_nid != parent_class_nid):
                                 fctx = "generic_arg" if role == "generic_arg" else "field"
                                 add_edge(parent_class_nid, target_nid, "references",
                                          line, context=fctx)
+                                if ref_name.lower() not in ("self", "static"):
+                                    edges[-1]["_php_raw"] = raw_name
                 return_node = _php_method_return_type_node(node)
                 if return_node is not None:
                     refs = []
-                    _php_collect_type_refs(return_node, source, False, refs)
-                    for ref_name, role in refs:
+                    raws = []
+                    _php_collect_type_refs(return_node, source, False, refs, raws)
+                    for (ref_name, role), raw_name in zip(refs, raws):
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
-                        target_nid = ensure_named_node(ref_name, line)
-                        if target_nid != func_nid:
-                            add_edge(func_nid, target_nid, "references", line, context=ctx)
+                        php_type_reference(func_nid, parent_class_nid, ref_name,
+                                           raw_name, ctx, line)
 
             if config.ts_module == "tree_sitter_kotlin":
                 params_container = None
@@ -8687,12 +8733,78 @@ def _extract_generic(
         scope = n.child_by_field_name("scope")
         if scope is None:
             for c in n.children:
-                if c.is_named and c.type in ("name", "qualified_name", "identifier"):
+                if c.is_named and c.type in ("name", "qualified_name", "identifier", "relative_scope"):
                     scope = c
                     break
         if scope is None:
             return None
         return _read_text(scope, source)
+
+    # PHP `self::class` / `static::class`: only a real class (one with members or a
+    # property initializer) can be the enclosing class; a free function cannot.
+    _php_class_owners: set[str] = set(method_owner.values()) | {o for o, _ in initializer_nodes}
+
+    def _php_emit_class_constant(n, caller_nid: str) -> None:
+        """`Foo::BAR` / `Foo::class` -> references_constant edge from ``caller_nid``.
+
+        `self`/`static` name the enclosing class (the caller itself for a property
+        default). Any other name is handed to `_resolve_php_type_references` as
+        written (`_php_raw`: use alias, same namespace or leading-`\\` FQCN); the
+        target here is only a placeholder id, and an unresolved name drops the edge.
+        """
+        class_name = _php_class_const_scope(n)
+        if not class_name:
+            return
+        lowered = class_name.lower()
+        raw_name = None
+        if lowered in ("self", "static"):
+            owner_nid = method_owner.get(caller_nid, caller_nid)
+            if owner_nid not in _php_class_owners:
+                return
+            tgt_nid, dedupe_key = owner_nid, owner_nid
+        elif lowered == "parent":
+            return
+        else:
+            raw_name = class_name
+            tgt_nid = _make_id(class_name.rsplit("\\", 1)[-1])
+            dedupe_key = lowered
+        if tgt_nid == caller_nid:
+            return
+        pair3 = (caller_nid, dedupe_key, "references_constant")
+        if pair3 in seen_static_ref_pairs:
+            return
+        seen_static_ref_pairs.add(pair3)
+        edge3 = {
+            "source": caller_nid,
+            "target": tgt_nid,
+            "relation": "references_constant",
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
+            "source_file": str_path,
+            "source_location": f"L{n.start_point[0] + 1}",
+            "weight": 1.0,
+        }
+        if raw_name:
+            edge3["_php_raw"] = raw_name
+        edges.append(edge3)
+
+    def _php_scan_constants(n, caller_nid: str) -> None:
+        """Emit class-constant edges under ``n`` for top-level code no body owns.
+
+        Routes and bootstrap files attribute them to the file node. Declarations are
+        skipped (their bodies and defaults are walked with their own owner), as are
+        closures: each is already its own caller.
+        """
+        for c in n.children:
+            if c.type in ("class_declaration", "interface_declaration", "enum_declaration",
+                          "trait_declaration", "function_definition", "method_declaration",
+                          "namespace_use_declaration"):
+                continue
+            if c.type in ("anonymous_function", "arrow_function"):
+                continue
+            if c.type == "class_constant_access_expression":
+                _php_emit_class_constant(c, caller_nid)
+            _php_scan_constants(c, caller_nid)
 
     _tracked_body_ids: set[object] = set()
     _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
@@ -9805,24 +9917,7 @@ def _extract_generic(
 
         # PHP class constant access: Foo::BAR → references_constant edge
         if config.ts_module == "tree_sitter_php" and node.type == "class_constant_access_expression":
-            class_name = _php_class_const_scope(node)
-            if class_name:
-                tgt_nid = label_to_nid_ci.get(class_name.lower())
-                if tgt_nid and tgt_nid != caller_nid:
-                    pair3 = (caller_nid, tgt_nid, "references_constant")
-                    if pair3 not in seen_static_ref_pairs:
-                        seen_static_ref_pairs.add(pair3)
-                        line = node.start_point[0] + 1
-                        edges.append({
-                            "source": caller_nid,
-                            "target": tgt_nid,
-                            "relation": "references_constant",
-                            "confidence": "EXTRACTED",
-                            "confidence_score": 1.0,
-                            "source_file": str_path,
-                            "source_location": f"L{line}",
-                            "weight": 1.0,
-                        })
+            _php_emit_class_constant(node, caller_nid)
 
         # Dispatch tables (#1566): a function listed as a value in a dict/list/set/
         # tuple literal inside this body is an indirect dependency of the enclosing
@@ -9986,6 +10081,11 @@ def _extract_generic(
     for owner_nid, init_node in initializer_nodes:
         walk_calls(init_node, owner_nid)
 
+    # PHP top-level statements (routes/web.php, bootstrap/app.php) own no function
+    # body: their `Foo::class` references belong to the file node.
+    if config.ts_module == "tree_sitter_php":
+        _php_scan_constants(root, file_nid)
+
     # ── Event listener pass ───────────────────────────────────────────────────
     seen_listen_pairs: set[tuple[str, str]] = set()
     for event_name, listener_name, line in pending_listen_edges:
@@ -10077,7 +10177,10 @@ def _extract_generic(
     _seen_edge_payloads: set[str] = set()
     for edge in edges:
         src, tgt = edge["source"], edge["target"]
-        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
+        # A PHP written class name (`_php_raw`) targets a placeholder id until the
+        # corpus resolver ties it to a declaration; unresolved ones are dropped there.
+        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")
+                                 or edge.get("_php_raw")):
             payload = json.dumps(edge, sort_keys=True, default=str)
             if payload in _seen_edge_payloads:
                 continue
