@@ -115,6 +115,9 @@ def validate_url(url: str) -> str:
             f"Got: {url!r}"
         )
 
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Blocked URL containing embedded credentials. Got: {url!r}")
+
     hostname = parsed.hostname
     if hostname:
         # Block known cloud metadata hostnames
