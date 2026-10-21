@@ -13,6 +13,13 @@ from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from graphify.kotlin_constructor_locals import (
+    COMPLETE as _KOTLIN_COMPLETE,
+    RECEIPT as _KOTLIN_RECEIPT, cache_current as _kotlin_cache_current,
+    UNSUPPORTED as _KOTLIN_UNSUPPORTED,
+    is_jvm_source as _is_jvm_source, is_proof_source as _is_kotlin_proof_source,
+    is_kotlin as _is_kotlin, resolve as _resolve_kotlin_constructor_locals,
+)
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
@@ -7519,6 +7526,12 @@ register_language_resolver(
         "kotlin_member_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_member_calls
     )
 )
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_constructor_locals", frozenset({".kt", ".kts"}),
+        _resolve_kotlin_constructor_locals,
+    )
+)
 # Go receiver-typed member-call resolution: `g.Greet()` where the method is declared in
 # another file. The shared pass skips member calls, so these had no edge unless the bare
 # method name happened to match a symbol in the caller's own file.
@@ -8923,7 +8936,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
         cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
-        if cached is not None:
+        if cached is not None and _kotlin_cache_current(path, cached):
             return idx, cached
 
     extractor = _get_extractor(path)
@@ -9319,7 +9332,7 @@ def extract(
         bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
-            if cached is not None:
+            if cached is not None and _kotlin_cache_current(path, cached):
                 per_file[i] = cached
                 continue
         uncached_work.append((i, path))
@@ -9370,6 +9383,33 @@ def extract(
                 "nodes": [], "edges": [],
                 "error": "internal: no extraction result produced",
             }
+
+    kotlin_results = [
+        result for path, result in zip(paths, per_file)
+        if _is_kotlin(path) and result is not None
+    ]
+    selected_proof = {p.resolve() for p in paths if _is_kotlin_proof_source(p)}
+    context_items = [*(resolution_context_nodes or []), *(resolution_context_edges or [])]
+    outside_proof = any(
+        not item.get("source_file") or (
+            _is_kotlin_proof_source(item["source_file"])
+            and (root / item["source_file"]).resolve() not in selected_proof
+        )
+        for item in context_items
+    )
+    unsupported_jvm = any(
+        _is_jvm_source(p) and not _is_kotlin_proof_source(p)
+        for p in [*paths, *(item.get("source_file") for item in context_items)]
+    )
+    kotlin_complete = not outside_proof and all(
+        r is not None and r.get("nodes") and not r.get("error") and not r.get("parse_errors")
+        and (not _is_kotlin(p) or _kotlin_cache_current(p, r))
+        for p, r in zip(paths, per_file) if _is_kotlin_proof_source(p)
+    )
+    for result in kotlin_results:
+        result[_KOTLIN_COMPLETE] = bool(kotlin_complete)
+        result[_KOTLIN_UNSUPPORTED] = unsupported_jvm
+        result.pop(_KOTLIN_RECEIPT, None)
 
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
@@ -11025,6 +11065,9 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        _KOTLIN_COMPLETE: bool(kotlin_complete and all(
+            r.get(_KOTLIN_RECEIPT) is True for r in kotlin_results
+        )),
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
@@ -11033,11 +11076,11 @@ def extract(
 
 
 # Keys of an extract() result that only steer the current run (#2543, #3411).
-# They hold the absolute paths of this run's inputs, so a writer that dumps the
-# raw extraction as graph.json (--no-cluster) must leave them out: they put the
-# checkout path and OS username into the graph, and differ between the first
-# build and a rebuild of the same tree.
-RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources"})
+# Input-path bookkeeping and completeness receipts are not stable graph data.
+# A writer that dumps raw extraction as graph.json (--no-cluster) must omit
+# them: paths leak checkout details, and run metadata can differ between the
+# first build and a rebuild of the same tree.
+RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources", _KOTLIN_COMPLETE})
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
