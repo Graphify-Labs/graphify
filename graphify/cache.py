@@ -1822,6 +1822,101 @@ def save_semantic_cache(
     return saved
 
 
+def drop_unreported_chunk_sources(out_dir: Path, root: Path) -> tuple[list[str], int]:
+    """Treat a dispatched file with no coverage entry as unread (skill path, #2225).
+
+    A semantic subagent reports how many lines of each file it read in its chunk's
+    ``coverage`` map. A file it never opened can still get nodes guessed from its
+    name, and has no entry (or 0), so a check of the reported counts alone passes it
+    and the guesses are cached as a complete extraction. This finds every file in
+    ``.graphify_uncached.txt`` that is non-empty on disk, is not an image (images
+    have no line count) and has no positive count; drops what the chunk files
+    attribute to it; and returns those files, verbatim, for the caller to mark
+    partial so the next ``--update`` re-dispatches them.
+
+    Items are dropped by ``source_file``, never by id: a file that was read can
+    mint the same deterministic id. An edge or hyperedge from a file that was read
+    is dropped only when it points at an id that no kept chunk node, AST node or
+    cached node still carries. A chunk with no ``coverage`` map at all did not
+    follow the contract, so files it holds items for are not judged; with no map
+    anywhere, nothing is. Returns ``(unread_files, dropped_item_count)``.
+    """
+    from graphify.detect import IMAGE_EXTENSIONS
+
+    out_dir, root = Path(out_dir), Path(root)
+    dispatched_file = out_dir / ".graphify_uncached.txt"
+    if not dispatched_file.exists():
+        return [], 0
+
+    def full(src: str) -> Path:
+        p = Path(src)
+        return (p if p.is_absolute() else root / p).resolve()
+
+    def key(src: str) -> str:
+        return os.path.normcase(str(full(src)))
+
+    chunks = {
+        c: json.loads(c.read_text(encoding="utf-8"))
+        for c in sorted(out_dir.glob(".graphify_chunk_*.json"))
+    }
+    if not any("coverage" in d for d in chunks.values()):
+        # No chunk reports coverage at all (a producer predating the coverage
+        # contract): there is nothing to judge a missing entry against.
+        return [], 0
+    covered: dict[str, int] = {}
+    # A file with items in a chunk that carries no coverage map at all cannot be
+    # judged: that chunk did not follow the contract, so its silence proves nothing.
+    unjudged: set[str] = set()
+    for d in chunks.values():
+        if "coverage" not in d:
+            unjudged |= {
+                key(x["source_file"])
+                for k in ("nodes", "edges", "hyperedges") for x in d.get(k) or []
+                if x.get("source_file")
+            }
+        for src, n in (d.get("coverage") or {}).items():
+            covered[key(src)] = max(covered.get(key(src), 0), int(n))
+
+    dispatched = [line for line in dispatched_file.read_text(encoding="utf-8").splitlines() if line]
+    unread = [
+        f for f in dispatched
+        if Path(f).suffix.lower() not in IMAGE_EXTENSIONS
+        and covered.get(key(f), 0) == 0 and key(f) not in unjudged
+        and full(f).is_file() and full(f).stat().st_size > 0
+    ]
+    if not unread:
+        return [], 0
+    gone = {key(f) for f in unread}
+
+    def from_unread(item: dict) -> bool:
+        return bool(item.get("source_file")) and key(item["source_file"]) in gone
+
+    kept_ids = {n.get("id") for d in chunks.values() for n in d.get("nodes") or [] if not from_unread(n)}
+    for other in (".graphify_ast.json", ".graphify_cached.json"):
+        if (out_dir / other).exists():
+            payload = json.loads((out_dir / other).read_text(encoding="utf-8"))
+            kept_ids |= {n.get("id") for n in payload.get("nodes") or []}
+    dangling = {n.get("id") for d in chunks.values() for n in d.get("nodes") or [] if from_unread(n)} - kept_ids
+
+    dropped = 0
+    for path, d in chunks.items():
+        nodes = [n for n in d.get("nodes") or [] if not from_unread(n)]
+        edges = [
+            e for e in d.get("edges") or []
+            if not from_unread(e) and e.get("source") not in dangling and e.get("target") not in dangling
+        ]
+        hyperedges = [
+            h for h in d.get("hyperedges") or []
+            if not from_unread(h) and not dangling & set(h.get("nodes") or [])
+        ]
+        removed = sum(len(d.get(k) or []) for k in ("nodes", "edges", "hyperedges")) - len(nodes) - len(edges) - len(hyperedges)
+        if removed:
+            d["nodes"], d["edges"], d["hyperedges"] = nodes, edges, hyperedges
+            path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+            dropped += removed
+    return unread, dropped
+
+
 def scope_semantic_result(
     result: dict,
     root: Path = Path("."),
