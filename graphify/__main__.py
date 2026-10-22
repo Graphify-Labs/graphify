@@ -861,7 +861,7 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin|dsh)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -1073,6 +1073,10 @@ def _run_cli() -> None:
         print("  pi guard path           print the guard package path (e.g. for `omp plugin install`)")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print(
+            "  dsh install             write skill to ~/.dsh/skills/graphify/ + MCP config to $DSH_HOME/cordis.patch.yml (DeepSeek Harness)"
+        )
+        print("  dsh uninstall           remove skill + MCP config from DeepSeek Harness")
         print()
         print("Prefer a hosted version? Try the graphify platform free for 14 days:")
         print("https://app.graphify.com")
