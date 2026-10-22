@@ -52,6 +52,7 @@ from graphify.rcfile import (
     set_language_overrides,
 )
 from graphify.resolver_registry import LanguageResolver, run_language_resolvers
+from graphify.extractors.base import set_active_scan_root
 
 PHP_SOURCE = """<?php
 namespace PfBlockerNG;
@@ -72,9 +73,11 @@ def _no_overrides_leak():
     """Overrides are process state; never let one test's config leak into the next."""
     set_language_overrides(None)
     rcfile._warned_roots.clear()
+    set_active_scan_root(None)
     yield
     set_language_overrides(None)
     rcfile._warned_roots.clear()
+    set_active_scan_root(None)
 
 
 def _quiet_extract(paths, **kw):
