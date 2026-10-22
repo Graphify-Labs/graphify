@@ -4534,6 +4534,9 @@ def _park_unresolved_member_call(
     location = raw_call.get("source_location")
     if location:
         entry["line"] = str(location)
+    call_file = raw_call.get("source_file")
+    if call_file:
+        entry["file"] = str(call_file)
     parked.append(entry)
 
 
@@ -10908,6 +10911,18 @@ def extract(
             if df_path.is_absolute():
                 new_df, _, _ = _sf_entry(str(df), df_path)
                 item["definition_file"] = new_df
+        # A parked member call records the call-SITE file (the .m), which differs
+        # from the caller node's own source_file (often the .h) and so is not
+        # relativized by the source_file arm above. Left absolute it leaks the
+        # checkout path into graph.json and into the cross-repo edge built from it
+        # (#3152 parking carries names only for the same reason). Relativize it
+        # here, where the canonical source_file form is already computed.
+        md = item.get("metadata")
+        if isinstance(md, dict):
+            for _pc in md.get(UNRESOLVED_CALLS_KEY) or ():
+                _pf = isinstance(_pc, dict) and _pc.get("file")
+                if _pf and Path(_pf).is_absolute():
+                    _pc["file"], _, _ = _sf_entry(str(_pf), Path(_pf))
 
     if ext_id_remap:
         # Bash entrypoint ids are the file-level id + "__entry"
