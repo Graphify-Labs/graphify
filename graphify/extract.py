@@ -6429,6 +6429,40 @@ def _resolve_objc_member_calls(
             return
         _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "objc", rc)
 
+    def _defines_selector(n: dict | None) -> bool:
+        """The node is a method DEFINITION, not just a declaration.
+
+        An @implementation lives in a ``.m``/``.mm``; a merged decl/def node keeps
+        the impl site in ``definition_file`` while its own ``source_file`` is the
+        header. A header-only node is a bare declaration.
+        """
+        if not n:
+            return False
+        if n.get("definition_file"):
+            return True
+        return Path(str(n.get("source_file", ""))).suffix.lower() in (".m", ".mm")
+
+    def _resolve_member_target(type_defs: list[str], callee: str):
+        """Target node + relation for a selector sent to ``type_defs`` (or (None, None)).
+
+        One candidate: the selector's method, else the class node (``references``).
+        Several candidates with the same class name are a class split across
+        directories or categories that ``_merge_decl_def_classes`` left unmerged
+        (its fold is dir-local, #1556). Union their members and bind the selector
+        only when exactly ONE candidate DEFINES it — two unrelated same-named
+        classes that both define it stay ambiguous, so the god-node guard holds.
+        """
+        ck = _key(callee)
+        if len(type_defs) == 1:
+            mnid = method_index.get((type_defs[0], ck))
+            return (mnid, "calls") if mnid else (type_defs[0], "references")
+        defs = {m for t in type_defs
+                if (m := method_index.get((t, ck))) is not None
+                and _defines_selector(node_by_id.get(m))}
+        if len(defs) == 1:
+            return (next(iter(defs)), "calls")
+        return (None, None)
+
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
             continue
@@ -6452,23 +6486,18 @@ def _resolve_objc_member_calls(
             if not type_defs:
                 _park_absent(caller, callee, type_name, rc)
                 continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
             type_qualified = False
         elif receiver in ("self", "super"):
-            type_nid = enclosing_type.get(caller)
-            if not type_nid:
+            enc = enclosing_type.get(caller)
+            if not enc:
                 continue
+            type_defs = [enc]
             type_qualified = True
         elif receiver[:1].isupper():
             type_defs = type_def_nids.get(_key(receiver), [])
             if not type_defs:
                 _park_absent(caller, callee, receiver, rc)
                 continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
             type_qualified = True
         else:
             # Locals shadow fields: the file's `Foo *f` local table first, then the
@@ -6483,13 +6512,10 @@ def _resolve_objc_member_calls(
             if not type_defs:
                 _park_absent(caller, callee, type_name, rc)
                 continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
             type_qualified = False
-        method_nid = method_index.get((type_nid, _key(callee)))
-        target = method_nid or type_nid
-        relation = "calls" if method_nid else "references"
+        target, relation = _resolve_member_target(type_defs, callee)
+        if target is None:
+            continue
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
