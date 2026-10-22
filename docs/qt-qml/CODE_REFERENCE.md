@@ -5,6 +5,15 @@ The first table records baseline owners, with their current extension seams.
 implemented QML/Qt owners through INC-QML-06 and local INC-QML-07 consumer hooks.
 Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 
+INC-QML-54's upstream 0.9.92 seams are recorded
+[below](#upstream-0992-integration-seams--inc-qml-54). Corrected source `67bb2022`
+passes its complete local source suite and source-matched isolated installed
+profiles, with explicit skips. The historical `90578033` full-source failure is
+preserved. Native CI coverage correction and fresh hosted gates remain separate;
+earlier schema-13/installed-tool checkpoints remain revision-bound. The
+[corrected checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+owns exact source/tree/wheel identities, commands and evidence limits.
+
 | Existing owner | Role and extension considerations |
 | --- | --- |
 | `graphify/detect.py` | `classify_file`, `detect`, `detect_incremental`, code extensions and corpus boundaries; exact Qt metadata names/suffixes use shared admission |
@@ -257,7 +266,7 @@ REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 | `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; canonical contained input identity admits real path aliases without rewriting lexical provenance, reading target content, expanding the corpus or mutating borrowed facts |
 | `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
 | `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
-| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 22/schema 13 retain the same owners, preserve combined upstream/Qt facts and refresh prior followed Qt metadata provenance at unchanged package/source versions |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 25/schema 13 retain the same owners, preserve combined upstream/Qt facts and refresh prior followed Qt metadata/resource/native-header and RC prerequisite analysis at unchanged package/source versions |
 | `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
 | `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
 | `tests/test_qt_project_membership_aliases.py` | Real Windows short-path and parent-symlink admission; unchanged installed-smoke assertions, canonical/cold/warm/full/manual/watch equality, foreign/conflicting transport rejection and durable retention/recovery |
@@ -606,7 +615,7 @@ to [INC-CORE-08](../COMPATIBILITY.md#native-shell-process-identity--inc-core-08)
 
 ## Current-upstream and followed metadata seams — INC-QML-49/50
 
-The integrated profile uses package 0.9.76, AST schema 13 and Qt policy 22.
+The INC-QML-49/50 checkpoint uses package 0.9.76, AST schema 13 and Qt policy 22.
 The cache owns combined upstream Python/Qt producer compatibility; semantic
 content lifetime remains separate. Discovery combines exact Qt metadata
 admission with installed-Graphify exclusion under one ignore/containment gate.
@@ -618,7 +627,7 @@ Qt endpoint pair before the shared writer publishes.
 selection for FactBuilder, qmldir and literal project/resource/type-description
 readers. The existing physical identity boundary admits inputs; the fact source
 retains each separately walked contained alias and original-byte location.
-Policy 22 refreshes earlier canonical-only derived products. Exact profile
+At that checkpoint policy 22 refreshes earlier canonical-only derived products. Exact profile
 evidence belongs to traceability, with the reproduced earlier failure retained.
 
 ## Runner and metadata fixture seams — INC-QML-51/52
@@ -637,3 +646,214 @@ when reporting a smaller pre-read size, so its existing rejection assertions
 exercise the read boundary rather than unsupported native identity. Exact
 before/after and hosted outcomes belong to the
 [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2).
+
+## Bounded parser repair seams — INC-QML-53
+
+`extractors/qt_cpp_compat.py` owns same-length empty-default recovery and the
+reparsed named template-parameter/declaration proof. `qt_cpp_syntax` retains final
+syntax admission and original source bytes; mapping and native producers retain
+canonical identity/span ownership. The focused template-default regression module
+exercises all three boundaries, not merely parser error flags.
+
+`extractors/qml_cmake.py` owns module declarations and ordered command dispatch.
+`qml_cmake_properties.py` owns source properties, private target-source additions,
+the literal RC-only irrelevance proof and separate nonnative `qt_tooling_source`
+facts. Native `HEADER_FILE_ONLY` inputs retain `qt_source` membership; source-property
+scope selectors reject before local state mutation or the RC exemption.
+`qml_cmake_resources.py` owns explicit PREFIX/FILES target-form resource aliases.
+They reuse `ProjectFacts` bounds/original-byte spans and existing resource-path
+validation and reject `DISCARD_FILE_CONTENTS` instead of treating empty resources
+as source endpoints. The project index applies `qt_source.resource_alias` to its
+module-prefix provider; malformed overrides cannot reactivate physical spelling.
+Explicit and module-generated resource providers enter one ambiguity decision.
+Exact-ID coalescing/conflict validation applies only to source-owned Qt module,
+source and resource declarations; generic shared C# namespace IDs retain their
+existing extraction/provenance contract.
+The `qt_project_membership` resource consumer uses that same project-owned URL
+decision rather than reinterpreting the explicit-resource index in isolation.
+
+`qt_incremental` owns policy 25 invalidation; schema 13, semantic-cache and
+publication modules retain their existing responsibilities. New focused metadata
+tests cover provenance, tooling separation, accepted/rejected mutations and
+actual cold/warm/incremental producer output. Exact executed and pending profiles
+are recorded in [traceability](../../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
+
+The RC prerequisite refinement remains owned by
+`qml_cmake_properties.source_properties`: prove the complete literal RC source
+list and compile-only property-name set before exempting opaque values from
+runtime metadata interpretation. Selector rejection stays before the exemption;
+native source membership remains under its existing producer/index owners.
+`qt_incremental` advances the policy to 25; schema 13 and persistence owners
+stay unchanged. Current local source and isolated artifact/install cases pass;
+hosted evidence is pending. The exact committed checkpoint belongs to traceability.
+
+## Upstream 0.9.92 integration seams — INC-QML-54
+
+Status: **Implemented; corrected source67 full-suite and isolated installed profiles pass; final native gate passes 76 cases with four platform skips/all 29 critical cases passing; new hosted proof pending**.
+
+| Owner | Integration obligation |
+| --- | --- |
+| `extract.py`, `extractors/engine.py`, `extractors/resolution.py` | Combine upstream dispatch/receiver/type/override changes with source-owned Qt facts and conservative native/QML joins; preserve one facade direction and original identity/span ownership. |
+| `extract.py` before `resolve_qt_qml` | The effective-native-input filter honors explicit supported overrides away from C++ before any native Qt collector. Seven focused cases pass; physical-extension Qt scope remains authoritative and generic remapped C++ extraction grants no new native provider authority. |
+| `cache.py`, `qt_incremental.py` | Combined AST schema 18, upstream installed-grammar fingerprint and override-aware keys; retain Qt policy 25, explicit native-context cache bypass and independent semantic lifetime. |
+| `detect.py`, `watch.py`, `build.py` | Preserve one corpus boundary, admitted lexical identities, full/incremental parity and existing transactional publication/recovery owners across shared updates. |
+| `watch.py::_reconcile_existing_graph` | Implemented fresh-result metadata preservation copies current extraction keys before overriding merged graph/token fields. Cold/warm diagnostics keys remain exact; changed current observations supersede old ones, with no prior-graph failure replay or integrity-gate bypass. |
+| `filename_cohorts.py::expand_filename_cohorts`, watch target preparation | Pure `selected, accepted, *, root, retired=()` selection reuses base canonical file IDs and admitted surviving sources. Watch composes existing Terraform, physical and filename selectors to monotone closure before context/final Qt refresh, with deterministic order and admitted-count-plus-one bound. Retired keys never read/resurrect sources; no new discovery or unrelated parsing. |
+| `build.py::_is_external_stub`, automatic minting/watch and `qt_orphan_cleanup` | One canonical minted/legacy-shape predicate owns D30's narrow tierless convention and authored-extra protections. Prior-import cleanup additionally retains source-owned prior-ID proof; exact-shape legacy authorship remains indistinguishable. |
+| `qt_import_retention.py`, build/watch/Qt cleanup, `to_json` and shared loader | D33's strict `read_import_retention(payload, *, is_placeholder)` returns immutable IDs; pure producer `apply_import_retention` copies payload/graph attrs. `graph.qt_import_retention` schema 1 admits sorted unique existing canonical placeholders, at most 100,000 IDs/4,096 UTF-8 bytes each; invalid transport rejects with `QT_IMPORT_RETENTION_INVALID`. Optional caller-owned loader sink keeps the four-value return and computes once before backfill; all merge/finalizer/reload paths retain cleanup restrictions without new provider/deletion authority or generic-healing loss. |
+| Semantic `paths.load_node_link_graph` / `to_json` predicate access | Implemented local canonical-role import after structural checks avoids a top-level paths/build cycle; helper remains injected, with no facade dependency. Both fresh import orders and valid/corrupt context loads require tests. Separate characterized shared-role extraction is the exit, not an unrelated move in this fix. |
+| `build.py::_read_existing_graph_data`, watch preflight/reconciliation | Capped `Path`→`dict \| None` raw reader owns reserved-context validation/default RuntimeError behavior without origin mutation. Four-value `_load_existing_graph` delegates; reconciliation's explicit `prior_graph_data`/`preflight_done=False` distinguishes direct preflight from supplied/missing snapshot reuse. Clone borrowed top item dictionaries before stamp/rebase, reuse baseline for semantic/resolution context and retain late disk/publication integrity checks. No ambient state or force bypass. |
+| Retained-context legacy compatibility/error transport | Reserved-free `null`/`false`/`0`/`[]`/`""` graph attrs retain `(graph or {})` absent semantics; truthy unsupported scalars/present invalid context stay strict. Early raw-load RuntimeError/ValueError retains established `error:` stderr and untouched bytes; fifteen direct/combined/shared-loader controls plus original watch refusals are required. |
+| `test_graph_invariance.py`, admission guards and `test_native_newline_cli.py` | D34 keeps the owning QML fixture tree byte-identical in aggregate CRLF copies and converts every other text exactly, preserving membership/attributes/IDs. Eight strengthened real-CLI native LF/CRLF span/type-position/topology/oracle cases pass with mandatory each-profile facts and explicit duplicate-provider uncertainty; no generic ID remapper or production normalization. |
+| `publication.py::ProductPublication`, pending-label watch consumer | Bounded `delete(name)` participates in the same snapshot/commit/rollback as replacements; fourteen focused cases pass for absent/repeated/invalid deletion and whole-cohort restoration after deletion/later commit failure. |
+| `paths.py`, `export.py`, CLI and MCP consumers | Preserve directed source/target meaning through undirected graph storage, reload, projection and traversal, including accepted original parallel Qt edges. |
+| `paths.py::os_replace_with_fallback`, `_atomic_replace`, `publication.py::ProductPublication` | Implemented D32 reconciliation: caller-owned installer/cache replacement permits read-only regular copies; generic atomic and accepted-product writers retain read-only rejection. Preserve directory guard, bytes/modes on real cleanup rollback and symlink-target permissions. |
+| `export.py::to_graphml` | Implemented owning Windows `lstat` preflight rejects a regular read-only destination. `tests/test_graphml_owned_replacement.py` proves prior output/input graph, owned-temp cleanup, directory rejection and repaired retry. Actual symlink-entry replacement retains its separately skipped host-capability assignment. |
+| `affected.py`, CLI and MCP override callers | Owner/supertype/member stepping-stone validation reuses `logical_endpoints`; eleven focused cases preserve caller authority, parallel relations and original site metadata in stable semantic order. |
+| `pyproject.toml`, `uv.lock`, `graphify/pi/` | Reconcile package 0.9.92 and parser bounds/extras; include Pi resources and prove source-to-wheel identity in a fresh isolated install. |
+| `tools/skillgen/` | Merge authoritative fragments/generator changes and regenerate outputs; keep coverage, singleton and round-trip validators effective. |
+| Authoritative skill fragments, `gen.py` and round-trip validators | Implemented recorded-interpreter correction quotes the entire POSIX executable substitution for `-c`/`-m`, preserving literal args/cwd/order, explicit legacy conversion and strict quote-only normalization. Six real shipped-resource transport and ten source compatibility cases pass; wider source/platform/artifact gaps remain separate. |
+| `codex_hook_command.py`, `install.py` | Exact generated Windows encoded-hook recognition supports entry-scoped reinstall/uninstall; 55 focused cases pass. Pure bounded decode/static-wrapper/options/status matching allows trailing ASCII space/tab only, with no execution or configuration mutation. |
+| `.github/workflows/ci.yml`, `qml-wheel.yml`, `pr-management.yml` | Retain fork source/native/wheel proof while including the upstream Bun Pi guard. PR management remains metadata-only with no execution of untrusted PR code. |
+| Existing Windows `$selection`, `tests/test_ci_windows_tools.py` and integrity step | Implemented CORE-004-AC02/AC03 coverage correction adds exactly six native modules. Portable literal-array validation and actual PowerShell evaluation share the workflow assignment; omitted paths quoted on comment lines cannot fake inclusion. Native fixture owns OS skips. The integrity step requires 29 exact passing native case identities and writes case/integrity artifacts before combined rejection. Final native gate passes 76 cases/four platform skips, including all 23 guard cases and all 29 critical identities; hosted proof remains separate. No runtime/package, trigger, dependency or new dispatcher owner changes. |
+
+These remain the integration owners; local proof does not establish unexecuted
+platform/hosted acceptance or a new owner for domain behavior. [D29](ARCHITECTURE.md#d29--upstream-0992-compatibility-namespace)
+records the namespace decision; [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+records applicable execution and gaps. Oversized touched legacy owners require
+measured integration ceilings and an explicit focused extraction path before
+handoff; conflict resolution does not authorize an unrelated mechanical port.
+
+### Integration-only cohesion allowances
+
+The following inherited owners exceed the 300-line default. Measured sizes and
+ceilings cover the INC-QML-54 merge and focused contract corrections, not routine
+growth. Preserve authoritative facade/child dependency direction and existing
+characterization; do not combine a mechanical extractor migration with this
+integration. The exit is a separately characterized cohesive extraction under
+the owning maintainer and applicable migration playbook, with cache splitting
+owned by the cache maintainer.
+
+| Owner | File | Measured physical lines / permitted ceiling |
+| --- | --- | --- |
+| Extractor facade maintainer | `graphify/extract.py` | 11,173 / 11,180 |
+| Generic extractor maintainer | `graphify/extractors/engine.py` | 10,352 / 10,360 |
+| Cache maintainer | `graphify/cache.py` | 1,942 / 1,950 |
+| Discovery maintainer | `graphify/detect.py` | 3,019 / 3,019 |
+| Watch/publication maintainer | `graphify/watch.py` | 2,973 / 3,000 |
+| Query/MCP maintainer | `graphify/serve.py` | 3,043 / 3,043 |
+| Dependency-query maintainer | `graphify/affected.py` | 434 / 434 |
+| Graph-build maintainer | `graphify/build.py` | 2,985 / 3,020 |
+| Shared path/persistence maintainer | `graphify/paths.py` | 674 / 700 |
+| Installer maintainer | `graphify/install.py` | 2,795 / 2,795 |
+| Export maintainer | `graphify/export.py` | 1,476 / 1,480 |
+| HTML maintainer | `graphify/exporters/html.py` | 907 / 907 |
+| CLI maintainer | `graphify/cli.py` | 5,451 / 5,451 |
+| CLI dispatch maintainer | `graphify/__main__.py` | 1,092 / 1,092 |
+| Generated-guidance maintainer | `tools/skillgen/gen.py` | 1,645 / 1,650 |
+| Upstream extraction-fixture maintainer | `tests/test_extract.py` | 6,289 / 6,300 |
+| Language-fixture maintainer | `tests/test_languages.py` | 5,821 / 5,830 |
+| Watch-fixture maintainer | `tests/test_watch.py` | 5,599 / 5,599 |
+| Hook-fixture maintainer | `tests/test_hooks.py` | 2,049 / 2,049 |
+| Install-fixture maintainer | `tests/test_install.py` | 1,836 / 1,836 |
+| Round-trip fixture maintainer | `tests/test_install_roundtrip.py` | 323 / 323 |
+| Host-guidance fixture maintainer | `tests/test_devin.py` | 309 / 309 |
+| CI delivery maintainer | `.github/workflows/ci.yml` | 632 / 650; source `5876f0a4` baseline 582 |
+
+The post-905 build/watch allowances cover the shared capped raw reader,
+pre-extraction retained-context policy and same-product lifecycle propagation;
+the next cohesive extraction is the raw-loader/policy publication seam after
+separate characterization. The path allowance covers owned-copy mode restoration
+and bounded deferred retained-context validation. The export allowance covers
+owning GraphML read-only preflight and strict retained-context validation. The
+generator allowance covers exact quoted interpreter transport,
+legacy conversion and strictly paired round-trip compatibility. `test_devin.py`
+has no line growth; its imported oversized fixture receives only quote-fingerprint
+alignment. Next growth requires separately characterized shared-role/replacement
+or renderer responsibility extraction under the same owners, not unrelated
+mechanical movement inside this integration. New owned-replacement, emitted
+interpreter and compatibility modules measure 125, 118 and 67 lines.
+The retained-context helper/Qt orphan cleanup measure 153/106 lines; retention,
+lifecycle, preflight and diagnostic tests measure 299/174/111/56, and the native
+newline CLI module measures 225. All remain below 300 lines. Final handoff
+remeasures these bounded integration owners rather than permitting unrelated
+growth under the allowance.
+
+The source `5876f0a4` workflow allowance was 582/600 for the Windows selection and
+same-owner native-case/integrity audit. INC-QML-56 extends the ceiling to 650 for
+exact source-case identities and production-inline audit controls, preserving
+current jobs, cleanup, concurrency and source/native evidence. Final source-gate
+measurement is 632 lines. This permits no unrelated job splitting or
+policy growth. The extraction exit is a separately characterized focused
+source/native audit helper if the next meaningful change requires growth.
+The final saved `test_ci_windows_tools.py` measures 287 physical lines and
+remains below 300. Its strengthened comment-decoy controls retain 23 cases,
+all passing in the final seven-module native gate. The earlier standalone
+23-case/286-line receipt remains historical; hosted execution is separate.
+
+The new native-override, filename-cohort and placeholder-role regression modules
+have 117, 266 and 124 physical lines; the pure filename helper has 56. All remain
+within the normal 300-line ceiling. Integration evidence and unresolved typing/
+platform cases remain in traceability; these size allowances establish no pass.
+
+## Hosted-profile recovery seams — INC-QML-55 and INC-QML-56
+
+| Owner | Boundary and current evidence |
+| --- | --- |
+| Installed-wheel launcher maintainer: `tests/qml_ci.py::main`, `run` | INC-QML-55 installs the same reviewed wheel's Terraform extra only after both original neutral installed smokes and only for native source tests. Core/artifact-only profiles and checked failure propagation remain unchanged. The launcher measures 53 physical lines. |
+| `tests/test_qml_ci_profiles.py` | Five real-main ordering/rejection tests isolate only the subprocess boundary; two fail/three controls before correction, five pass after. New owner measures 135 lines, below 300. The real installed HCL absence→admission two-case proof is separate. |
+| Aggregate validation maintainer: `tests/test_graph_invariance.py`, `tests/test_graph_invariance_admission.py`, `tests/test_qt_native_cpp_newline_cli.py` | INC-QML-56 implements location-independent native-byte ownership and non-Qt C++ include/header LF/CRLF controls. Its Qt prefix admits the new real-CLI coverage in existing native QML source lanes; Linux source already owns all tests. The native selection passes 41 cases, including eight existing Qt cases; the separate committed-LF aggregate passes all twelve original cases. Files measure 175/169/227 lines. |
+| CI source-evidence maintainer: existing `.github/workflows/ci.yml` inline audit, `tests/test_ci_source_cases.py` | INC-QML-56 implemented actual-collected forty-two-case identity agreement, including all fourteen cache cases; ten passing local controls execute the actual audit for complete/missing/duplicate/skipped/failed/error/unknown evidence, same-count swaps and unreviewed inventory growth. New test measures 112 lines; workflow 632/650. No runtime or new pipeline owner; new hosted proof pending. |
+
+Both increments retain current production tree/package/parser policy. New
+handwritten test owners remain below 300 lines; the touched workflow retains its
+documented CI-owner cohesion allowance of 632/650 physical lines. Final combined
+local controls pass 79 cases without skips. Source `5876f0a4` failed hosted profiles and advisory scanner findings remain
+explicitly separate from the new local correction results.
+
+## Watch harness clock owner — INC-QML-57
+
+Implemented correction: `tests/test_language_override_lifecycle.py::drive_watch`
+keeps its existing observer/event/rebuild responsibilities and receives a
+test-local delegating clock proxy through `watch_mod.time`. The shared standard
+library clock remains authoritative for nested library and subprocess waits.
+No production forwarding layer, runtime dependency or new persistence owner is
+introduced. The existing helper file measures 295 lines before correction;
+the bounded clock/caller-contract guard has an integration-only ceiling of 320
+lines, owned by the watch-harness/integration maintainer. Keeping clock and event
+delivery together preserves the established helper boundary during this fix.
+The extraction exit is a separately characterized test-clock/event helper if
+the next cohesive responsibility requires growth. Final measurement and focused
+proof are recorded: helper 307/320 and `tests/test_watch_clock_isolation.py`
+129/300 lines. The combined selection passes 31 cases with one POSIX-boundary
+skip; actual POSIX and new-head hosted evidence remain pending. The new module
+passes typing; the legacy helper retains one pre-existing optional-handler
+diagnostic.
+
+## CMake resource-output owner — INC-QML-58
+
+The Qt metadata maintainer owns `graphify/extractors/qml_cmake_outputs.py`:
+source-local pair eligibility, lexical occurrence/prefix inventory and explicit
+QRC input/generated-use facts and bounded command collection. `qml_cmake.py`
+coordinates that inventory and retains sequential module/property state.
+Existing `qml_cmake_resources.py` retains
+the target-form API; `qt_project_index.py`, `qt_project_membership.py` and the XML
+resource reader keep their established lookup, directed join and alias ownership.
+No forwarding layer, general CMake evaluator or new persistence owner is added.
+
+`qt_incremental.py` advances only analysis policy to 26. New unit/integration
+owners are `tests/test_qt_cmake_resource_outputs.py` and
+`tests/test_qt_cmake_output_updates.py`; existing policy-state tests retain their
+invalidation assertions and add policy 25 to the historical inputs. All touched
+source/test owners remain subject to the ordinary 300-line limit; final measured
+sizes and checks belong in traceability. D35 and the design profile define the
+accepted lexical boundary and inherited-variable limitation.
+
+Final owner measurements are `qml_cmake.py` 160, `qml_cmake_outputs.py` 110,
+`qt_incremental.py` 115, the new direct/integration tests 133/129, and existing
+analysis-state/RC-update tests 161/118 physical lines. All remain below 300;
+no size exception or unrelated refactor is introduced. Whole-repository Ruff,
+unchanged-baseline typing comparison, artifact checks and AST-only repository
+refresh are complete. Traceability records the separate full-suite and
+process-local environment recovery results, retained Windows/optional skips and
+unexecuted new-head hosted/non-Windows proof.

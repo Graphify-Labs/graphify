@@ -25,9 +25,9 @@ def integrated_versions(monkeypatch):
     real_version = qt_state.version
 
     def current_version(package):
-        return "0.9.76" if package == "graphifyy" else real_version(package)
+        return "0.9.92" if package == "graphifyy" else real_version(package)
 
-    monkeypatch.setattr(cache, "_EXTRACTOR_VERSION", "0.9.76")
+    monkeypatch.setattr(cache, "_EXTRACTOR_VERSION", "0.9.92")
     monkeypatch.setattr(cache, "_cleaned_ast_dirs", set())
     # Each case owns a fresh project. Keep process bookkeeping isolated, then
     # complete its real stat-index flush before fixture restoration.
@@ -71,8 +71,8 @@ def python_source(root):
     return source
 
 
-@pytest.mark.parametrize("old_schema", [5, 12])
-@pytest.mark.parametrize("old_version", ["0.9.74", "0.9.76"])
+@pytest.mark.parametrize("old_schema", [5, 12, 13, 17])
+@pytest.mark.parametrize("old_version", ["0.9.74", "0.9.76", "0.9.92"])
 def test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh(
         tmp_path, monkeypatch, integrated_versions, old_schema, old_version):
     """Real legacy writes miss even at the same version, refresh, then warm-hit."""
@@ -96,7 +96,8 @@ def test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh(
     fresh = cache.load_cached(source, root=tmp_path)
     assert fresh is not None
     assert {item.get("_python_receiver_shadowed") for item in fresh["raw_calls"]} == {False, True}
-    assert cache.cache_dir(tmp_path).name == "v0.9.76-s13"
+    assert cache._AST_CACHE_SCHEMA == 18
+    assert cache.cache_dir(tmp_path).name == f"v0.9.92-s18-g{cache._grammar_fingerprint()}"
     warm = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert normalized(build_from_json(cold, directed=True, root=tmp_path)) == normalized(
         build_from_json(warm, directed=True, root=tmp_path))
@@ -146,7 +147,7 @@ def test_req_qml003_ac04_qml018_ac05_mixed_cold_warm_serialized_facts(
 
 def test_req_qml011_ac03_ac04_qml018_ac06_upgrade_failure_retains_repairs_repeats(
         tmp_path, monkeypatch, integrated_versions):
-    """A real schema-13 cache replacement failure cannot advance prior products."""
+    """A real combined-schema cache replacement failure cannot advance products."""
     project(tmp_path)
     source = python_source(tmp_path)
     semantic = semantic_entry(tmp_path)
@@ -164,7 +165,7 @@ def test_req_qml011_ac03_ac04_qml018_ac06_upgrade_failure_retains_repairs_repeat
 
     def fail_current_ast(temporary, target):
         target = Path(target)
-        if target.parent.name == "v0.9.76-s13":
+        if target.parent.name == f"v0.9.92-s18-g{cache._grammar_fingerprint()}":
             # Serialization and staging must really finish before the injected
             # replacement failure reaches the actual cache persistence owner.
             assert Path(temporary).is_file()

@@ -8,6 +8,12 @@ import pytest
 from graphify import llm
 
 
+@pytest.fixture(autouse=True)
+def _clear_ollama_seed_env(monkeypatch):
+    """Keep a developer's ambient seed from changing request-shape tests."""
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+
+
 def _clear_backend_env(monkeypatch):
     for env_key in (
         "GEMINI_API_KEY",
@@ -539,10 +545,31 @@ def _install_fake_openai(monkeypatch, fake_resp):
             self.completions = self
         def create(self, **__):
             return fake_resp
+        def post(self, *_, **__):
+            # The ollama backend talks to Ollama's native /api/chat (#4413).
+            return _native_ollama_reply(fake_resp)
 
     fake_module = types.ModuleType("openai")
     fake_module.OpenAI = _FakeOpenAI
+    fake_module.APIStatusError = _FakeAPIStatusError
     monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+
+class _FakeAPIStatusError(Exception):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _native_ollama_reply(fake_resp):
+    """Re-shape a fake ChatCompletion as Ollama's /api/chat reply."""
+    choice = fake_resp.choices[0]
+    return {
+        "message": {"role": "assistant", "content": choice.message.content},
+        "done_reason": choice.finish_reason,
+        "prompt_eval_count": fake_resp.usage.prompt_tokens,
+        "eval_count": fake_resp.usage.completion_tokens,
+    }
 
 
 def test_call_openai_compat_labels_empty_content_hollow(monkeypatch):
@@ -644,10 +671,195 @@ def _install_capturing_openai(monkeypatch):
                 completion_tokens=100,
             )
 
+        def post(self, path, *, body, **__):
+            # Ollama's native /api/chat request (#4413), kept apart from the
+            # /v1 kwargs so tests can tell which endpoint was used.
+            captured["native_url"] = path
+            captured["native"] = body
+            return _native_ollama_reply(_fake_openai_response(
+                '{"nodes":[{"id":"x"}],"edges":[],"hyperedges":[]}',
+                finish_reason="stop",
+                completion_tokens=100,
+            ))
+
     fake_module = types.ModuleType("openai")
     fake_module.OpenAI = _FakeOpenAI
+    fake_module.APIStatusError = _FakeAPIStatusError
     monkeypatch.setitem(sys.modules, "openai", fake_module)
     return captured
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("0", 0),
+        ("  00042  ", 42),
+        ("9223372036854775807", 9223372036854775807),
+    ],
+)
+def test_resolve_ollama_seed(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    assert llm._resolve_ollama_seed() == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "-1",
+        "+1",
+        "1.0",
+        "1e3",
+        "0x10",
+        "1 2",
+        "١",
+        "9223372036854775808",
+    ],
+)
+def test_invalid_ollama_seed_fails_before_client_construction(monkeypatch, raw):
+    import sys
+    import types
+
+    constructor_calls = []
+
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            constructor_calls.append((args, kwargs))
+
+    fake_module = types.ModuleType("openai")
+    setattr(fake_module, "OpenAI", _FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    with pytest.raises(
+        ValueError,
+        match=r"GRAPHIFY_OLLAMA_SEED.*0\.\.9223372036854775807",
+    ):
+        llm._call_openai_compat(
+            "http://localhost:11434/v1",
+            "ollama",
+            "qwen2.5-coder:7b",
+            "user msg",
+            backend="ollama",
+        )
+
+    assert constructor_calls == []
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("0", 0),
+        ("  00042  ", 42),
+        ("9223372036854775807", 9223372036854775807),
+    ],
+)
+def test_ollama_seed_is_top_level_and_preserves_extra_body(monkeypatch, raw, expected):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_NUM_CTX", "65536")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+    native = captured["native"]
+    assert native["options"]["seed"] == expected
+    assert native["options"]["num_ctx"] == 65536
+    assert native["keep_alive"] == "30m"
+    assert native["think"] is False
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_ollama_seed_disabled_omits_request_key(monkeypatch, raw):
+    captured = _install_capturing_openai(monkeypatch)
+    if raw is not None:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+    assert "seed" not in captured["native"]["options"]
+
+
+def test_call_llm_ollama_forwards_seed(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "ollama")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "7")
+
+    llm._call_llm("label this", backend="ollama")
+
+    assert captured["native"]["options"]["seed"] == 7
+
+
+def test_call_llm_invalid_ollama_seed_fails_before_api_key_lookup(monkeypatch):
+    api_key_calls = []
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "-1")
+    monkeypatch.setattr(
+        llm,
+        "_get_backend_api_key",
+        lambda backend: api_key_calls.append(backend),
+    )
+
+    with pytest.raises(ValueError, match="GRAPHIFY_OLLAMA_SEED"):
+        llm._call_llm("label this", backend="ollama")
+
+    assert api_key_calls == []
+
+
+def test_non_ollama_backend_ignores_invalid_ollama_seed(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "invalid")
+
+    llm._call_openai_compat(
+        "https://api.openai.com/v1",
+        "sk-test",
+        "gpt-4.1-mini",
+        "user msg",
+        backend="openai",
+    )
+
+    assert "seed" not in captured
+
+
+def test_custom_ollama_url_provider_ignores_seed_and_preserves_extra_body(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "invalid")
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "custom-key")
+    monkeypatch.setitem(
+        llm.BACKENDS,
+        "local-custom",
+        {
+            "base_url": "http://localhost:11434/v1",
+            "default_model": "custom-model",
+            "env_key": "CUSTOM_API_KEY",
+            "pricing": {"input": 0.0, "output": 0.0},
+            "temperature": 0,
+            "extra_body": {"options": {"num_ctx": 4096}},
+        },
+    )
+
+    llm._call_llm("label this", backend="local-custom")
+
+    assert "seed" not in captured
+    assert captured["extra_body"] == {"options": {"num_ctx": 4096}}
 
 
 def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
@@ -660,12 +872,12 @@ def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
         "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
-    assert "extra_body" in captured, "extra_body must be sent to Ollama"
-    eb = captured["extra_body"]
+    assert "native" in captured, "options must be sent to Ollama's /api/chat"
+    native = captured["native"]
     # num_ctx is now dynamic: derived from message size, not hardcoded 131072
-    assert "num_ctx" in eb.get("options", {}), "num_ctx must be present"
-    assert eb["options"]["num_ctx"] >= 8192, "num_ctx must be at least the floor value"
-    assert eb.get("keep_alive") == "30m", "default keep_alive must be 30m"
+    assert "num_ctx" in native["options"], "num_ctx must be present"
+    assert native["options"]["num_ctx"] >= 8192, "num_ctx must be at least the floor value"
+    assert native.get("keep_alive") == "30m", "default keep_alive must be 30m"
 
 
 def test_ollama_num_ctx_scales_with_small_token_budget(monkeypatch):
@@ -684,7 +896,7 @@ def test_ollama_num_ctx_scales_with_small_token_budget(monkeypatch):
         small_chunk_msg, temperature=0, max_completion_tokens=16384, backend="ollama",
     )
 
-    num_ctx = captured["extra_body"]["options"]["num_ctx"]
+    num_ctx = captured["native"]["options"]["num_ctx"]
     # Should be far less than 131072 for an 8k input — VRAM-friendly
     assert num_ctx < 131072, (
         f"num_ctx={num_ctx} is too large for a small chunk; "
@@ -704,7 +916,7 @@ def test_ollama_num_ctx_env_override(monkeypatch):
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
-    assert captured["extra_body"]["options"]["num_ctx"] == 65536
+    assert captured["native"]["options"]["num_ctx"] == 65536
 
 
 def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
@@ -824,11 +1036,10 @@ def test_ollama_thinking_disabled_via_env_survives_num_ctx(monkeypatch):
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
-    assert captured["extra_body"] == {
-        "thinking": {"type": "disabled"},
-        "options": {"num_ctx": 65536},
-        "keep_alive": "30m",
-    }
+    native = captured["native"]
+    assert native["think"] is False
+    assert native["options"]["num_ctx"] == 65536
+    assert native["keep_alive"] == "30m"
 
 
 def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeypatch):
@@ -1148,6 +1359,39 @@ def test_native_extraction_prompt_requests_rationale():
         assert "If the source does not explicitly provide a reason, omit this attribute" in prompt
         # Verify the node schema example includes rationale: null
         assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
+
+
+def test_native_extraction_prompt_pins_source_file_to_the_dispatched_file():
+    """The native-backend prompt must say what source_file means. Without it the
+    model attributes a document's entities to the files the document cites or
+    links, and the out-of-scope filter (#1895) drops them on incremental runs
+    (#2297, #3377), or a doc-described API lands on the code file (#2270), or a
+    path reconstructed from a mention reaches the graph (#2217).
+    """
+    for deep in (False, True):
+        # Collapse whitespace so reflowing the prompt doesn't break the asserts.
+        prompt = " ".join(llm._extraction_system(deep=deep).split())
+        assert "the `path` attribute of its enclosing <untrusted_source> block" in prompt, deep
+        assert "is a reference, not the source" in prompt, deep
+        assert "never use its path as source_file" in prompt, deep
+        assert "never omit source_file" in prompt, deep
+
+
+def test_native_extraction_prompt_shares_skill_spec_source_file_rule_heading():
+    """Both extraction paths open their source_file rule with the same heading.
+    Only the heading is pinned: the rule bodies differ (the skill's covers
+    copying the FILE_LIST path verbatim, the native one adds the reference
+    clause), so this catches either side dropping or renaming the rule, not
+    drift in its wording."""
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    native = llm._EXTRACTION_SYSTEM
+    spec, native = (" ".join(text.split()) for text in (spec, native))
+    shared = "source_file RULE (every node, edge, and hyperedge)"
+    assert shared in spec, "skill extraction-spec changed its source_file rule heading"
+    assert shared in native, "native prompt lacks the skill's source_file rule heading"
 
 
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------

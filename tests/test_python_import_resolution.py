@@ -147,6 +147,31 @@ def test_overdeep_relative_import_is_unresolved_not_fatal(tmp_path: Path):
     assert _node_id(result, "ok()", "pkg/mod.py")
 
 
+def _missing_import_targets(checkout: Path) -> set[str]:
+    _write(checkout / "pkg" / "__init__.py", "")
+    source = _write(
+        checkout / "pkg" / "app.py",
+        "from .absent import helper\n"
+        "from pkg.absent import other\n\n"
+        "def run():\n"
+        "    return helper(), other()\n",
+    )
+    result = extract([source, checkout / "pkg" / "__init__.py"], cache_root=checkout)
+    return {e["target"] for e in result["edges"] if e["relation"] == "imports_from"}
+
+
+def test_missing_relative_import_target_id_does_not_depend_on_the_checkout(tmp_path: Path):
+    """A relative import of a module with no file behind it minted its target id
+    from the attempted absolute path (``..._pkg_absent_py``), which the
+    root-relative remap never rewrites: the checkout location and OS username
+    ended up in the graph. It now gets the dotted module name, the id an
+    unresolved absolute import of the same module already gets."""
+    first = _missing_import_targets(tmp_path / "clone_one")
+    second = _missing_import_targets(tmp_path / "elsewhere" / "clone_two")
+
+    assert first == second == {"pkg_absent"}
+
+
 def test_ordinary_relative_import_still_resolves(tmp_path: Path):
     target = _write(tmp_path / "pkg" / "sibling.py", "def helper():\n    return 1\n")
     source = _write(tmp_path / "pkg" / "mod.py", "from .sibling import helper\n")

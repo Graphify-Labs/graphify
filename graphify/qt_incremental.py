@@ -11,10 +11,10 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-# Followed Qt metadata now retains its walked source owner. Refresh unchanged
-# prior products through the existing publication owner rather than reusing
-# canonical-only metadata facts; the syntax cache has its separate epoch.
-QT_POLICY_VERSION = 22
+# Literal CMake QRC output pairs extend accepted metadata at unchanged package
+# and source identity. Retire prior context through the existing state owner;
+# metadata bypasses the syntax cache, whose schema remains unchanged.
+QT_POLICY_VERSION = 26
 
 
 def is_qt_metadata(path: str | Path) -> bool:

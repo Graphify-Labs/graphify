@@ -217,14 +217,64 @@ jobs:
               proof[module] = len(selected) == len(expected) and {case.get('name') for case in selected} == expected and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
           # Joint producer/consumer cases must execute, not merely collect;
           # retained JUnit binds their complete reviewed matrix to this checkout.
-          integrated = {'tests.test_upstream_qt_cache_integration': 6,
-                        'tests.test_upstream_qt_discovery_integration': 11,
-                        'tests.test_upstream_qt_export_integration': 10,
-                        'tests.test_upstream_qt_path_integration': 3,
-                        'tests.test_upstream_qt_shared_integration': 4}
-          for module, count in integrated.items():
+          integrated = {
+              'tests.test_upstream_qt_cache_integration': {
+                  'test_req_qml003_ac04_qml018_ac05_mixed_cold_warm_serialized_facts',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-12]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-13]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-17]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-5]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-12]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-13]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-17]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.76-5]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-12]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-13]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-17]',
+                  'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.92-5]',
+                  'test_req_qml011_ac03_ac04_qml018_ac06_upgrade_failure_retains_repairs_repeats',
+              },
+              'tests.test_upstream_qt_discovery_integration': {
+                  'test_req_qml002_ac02_ac03_detect_and_collect_share_named_metadata_and_copy_exclusions[False]',
+                  'test_req_qml002_ac02_ac03_detect_and_collect_share_named_metadata_and_copy_exclusions[True]',
+                  'test_req_qml002_ac02_direct_cold_warm_facts_keep_qt_metadata_and_real_application_code[False]',
+                  'test_req_qml002_ac02_direct_cold_warm_facts_keep_qt_metadata_and_real_application_code[True]',
+                  'test_req_qml002_ac03_ac04_followed_metadata_keeps_lexical_scope_and_rejects_foreign_input',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[manual-False]',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[manual-True]',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[watch-False]',
+                  'test_req_qml011_ac03_ac04_updates_preserve_exclusions_metadata_and_clean_parity[watch-True]',
+                  'test_req_qml018_ac06_malformed_admitted_metadata_retains_cohort_and_recovers[manual]',
+                  'test_req_qml018_ac06_malformed_admitted_metadata_retains_cohort_and_recovers[watch]',
+              },
+              'tests.test_upstream_qt_export_integration': {
+                  'test_req_qml_010_ac02_original_parallel_links_retain_qml_direction',
+                  'test_req_qml_018_ac04_real_recluster_keeps_parallel_and_qml_links',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[collapsed-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[collapsed-True]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[foreign_target-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[foreign_target-True]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[list-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[list-True]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[partial_source-False]',
+                  'test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement[partial_source-True]',
+              },
+              'tests.test_upstream_qt_path_integration': {
+                  'test_req_qml_010_ac03_qualified_native_path_preserves_direction[False]',
+                  'test_req_qml_010_ac03_qualified_native_path_preserves_direction[True]',
+                  'test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess',
+              },
+              'tests.test_upstream_qt_shared_integration': {
+                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[CMakeLists.txt-qt_add_qml_module(app URI Public.Tools VERSION 1.0 QML_FILES Main.qml SOURCES backend.h)\\n]',
+                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[app.pro-CONFIG += qmltypes\\nQML_IMPORT_NAME = Public.Tools\\nQML_IMPORT_MAJOR_VERSION = 1\\nHEADERS += backend.h\\nDISTFILES += Main.qml\\n]',
+                  'test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint[manual]',
+                  'test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint[watch]',
+              },
+          }
+          for module, expected in integrated.items():
               selected = [case for case in cases if case.get('classname') == module]
-              proof[module] = len(selected) == count and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
+              proof[module] = (len(selected) == len(expected) and {case.get('name') for case in selected} == expected
+                               and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected))
           client = None
           proof['test_graphs_deleted'] = False
           try:
@@ -400,7 +450,15 @@ jobs:
             Set-Content (Join-Path $proofDirectory 'shell-consumers.json') -Encoding utf8
           if ($LASTEXITCODE -ne 0) { throw 'The admitted native shell consumer cannot execute' }
           if ((& $proofNode --version) -ne 'v24.19.0') { throw 'The reviewed Node.js test interpreter was not selected' }
+          # These non-prefixed contracts are not admitted by the QML wheel
+          # selector; execute their native Windows boundaries explicitly.
           $selection = @(
+            'tests/test_atomic_writes.py',
+            'tests/test_atomic_replace_retention.py',
+            'tests/test_owned_readonly_replacement.py',
+            'tests/test_graphml_owned_replacement.py',
+            'tests/test_skillgen_interpreter_identity.py',
+            'tests/test_native_newline_cli.py',
             'tests/test_codex_hook_execution.py', 'tests/test_filesystem_profiles.py', 'tests/test_source_input_admission.py', 'tests/test_source_identity_remap_owners.py',
             'tests/test_install.py', 'tests/test_install_references.py', 'tests/test_install_roundtrip.py',
             'tests/test_skill_auto_refresh.py', 'tests/test_uninstall_scope.py', 'tests/test_settings_merge.py',
@@ -432,11 +490,76 @@ jobs:
             $headRetained = $currentHead -eq $identity.checkout_sha
             git diff --quiet HEAD -- graphify tests tools uv.lock pyproject.toml .github/workflows
             $inputsRetained = $LASTEXITCODE -eq 0
-            $integrity = [ordered]@{dependencies_unchanged=$dependencyRetained; checkout_unchanged=$headRetained; tracked_inputs_unchanged=$inputsRetained}
+            $nativeCaseProof = @'
+          import json, sys, xml.etree.ElementTree as ET
+          # Exact source-declared cases bind native acceptance; unrelated platform skips
+          # remain separate. Missing, duplicated or skipped critical cases cannot pass.
+          required = {
+              'tests.test_atomic_writes': [
+                  'test_os_replace_with_fallback_still_replaces_a_readonly_destination',
+                  'test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp'
+              ],
+              'tests.test_atomic_replace_retention': [
+                  'test_req_qml018_ac06_readonly_rejects_without_displacing_destination[json]',
+                  'test_req_qml018_ac06_readonly_rejects_without_displacing_destination[text]',
+                  'test_req_qml018_ac06_readonly_source_cleanup_rollback_retains_attributes',
+                  'test_req_qml018_ac06_readonly_source_is_consumed_on_successful_fallback'
+              ],
+              'tests.test_owned_readonly_replacement': [
+                  'test_req_core001_ac03_owned_readonly_destination_replaces_without_orphans[False]',
+                  'test_req_core001_ac03_owned_readonly_destination_replaces_without_orphans[True]',
+                  'test_req_qml018_ac06_cleanup_after_readonly_clear_restores_bytes_and_modes[backup]',
+                  'test_req_qml018_ac06_cleanup_after_readonly_clear_restores_bytes_and_modes[source]',
+                  'test_req_qml018_ac06_mode_restore_failure_retains_recovery_backup'
+              ],
+              'tests.test_graphml_owned_replacement': [
+                  'test_req_qml018_ac06_graphml_failed_write_preserves_product[replace]',
+                  'test_req_qml018_ac06_graphml_failed_write_preserves_product[serialize]',
+                  'test_req_qml018_ac06_graphml_never_replaces_a_directory',
+                  'test_req_qml018_ac06_graphml_rejects_readonly_output_and_recovers'
+              ],
+              'tests.test_skillgen_interpreter_identity': [
+                  'test_req_core001_ac01_actual_shipped_statements_use_spaced_selected_interpreter',
+                  'test_req_core001_ac01_every_shipped_head_quotes_the_recorded_identity',
+                  'test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[empty]',
+                  'test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[failure]',
+                  'test_req_core001_ac01_invalid_selected_interpreter_never_falls_back[missing]',
+                  'test_req_core001_ac01_shell_harness_detects_unquoted_selection'
+              ],
+              'tests.test_native_newline_cli': [
+                  'test_req_qml003_ac04_native_newlines_keep_cli_roles_and_topology',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[binding_omission]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[consistent_span]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[edge_role]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[endpoint]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[relation]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[role]',
+                  'test_req_qml014_ac04_native_newline_oracle_rejects_corruption[span]'
+              ]
+          }
+          try:
+              cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+          except (OSError, ET.ParseError):
+              cases = []
+          expected = {(module, name) for module, names in required.items() for name in names}
+          observed = {identity: [case for case in cases if (case.get('classname'), case.get('name')) == identity]
+                      for identity in expected}
+          passed = sum(len(matches) == 1 and not any(matches[0].find(tag) is not None
+                       for tag in ('failure', 'error', 'skipped')) for matches in observed.values())
+          proof = dict(required_native_cases=len(expected), passed_native_cases=passed,
+                       required_native_cases_passed=passed == len(expected))
+          print(json.dumps(proof))
+          raise SystemExit(0 if proof['required_native_cases_passed'] else 1)
+          '@
+            $nativeCaseEvidence = (& $proofPython -c $nativeCaseProof (Join-Path $proofDirectory 'tests.xml'))
+            $nativeCaseExit = $LASTEXITCODE
+            $nativeCaseEvidence | Set-Content (Join-Path $proofDirectory 'native-cases.json') -Encoding utf8
+            $nativeCasesPassed = $nativeCaseExit -eq 0
+            $integrity = [ordered]@{dependencies_unchanged=$dependencyRetained; checkout_unchanged=$headRetained; tracked_inputs_unchanged=$inputsRetained; required_native_cases_passed=$nativeCasesPassed}
             $integrity | ConvertTo-Json | Set-Content (Join-Path $proofDirectory 'integrity.json') -Encoding utf8
-            if (-not ($dependencyRetained -and $headRetained -and $inputsRetained)) { throw 'Proof inputs changed' }
+            if (-not ($dependencyRetained -and $headRetained -and $inputsRetained -and $nativeCasesPassed)) { throw 'Native acceptance or proof inputs failed' }
           } catch {
-            Write-Host 'Source/dependency preservation proof failed; review the retained integrity evidence.'
+            Write-Host 'Native acceptance or source/dependency preservation proof failed; review the retained evidence.'
             $auditExit = 1
           }
           if ($testExit -ne 0) { exit $testExit }
@@ -454,8 +577,32 @@ jobs:
             ${{ runner.temp }}/graphify-compat-results/tests.*
             ${{ runner.temp }}/graphify-compat-results/pytest-exit.txt
             ${{ runner.temp }}/graphify-compat-results/integrity.json
+            ${{ runner.temp }}/graphify-compat-results/native-cases.json
           retention-days: 14
           if-no-files-found: warn
+
+  pi-guard:
+    # tests/pi.test.ts loads the real extension (Node built-ins only, no
+    # node_modules, as when installed) against the real installed Python CLI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Pi guard tests
+        run: GRAPHIFY_TEST_CLI=$PWD/.venv/bin/graphify bun test tests/pi.test.ts
 
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new

@@ -1,0 +1,620 @@
+"""A project can declare what an ambiguous extension means to it (#2961).
+
+`.inc` is hard-mapped to the Pascal extractor, but it is "include file" in
+whatever language a project uses: PHP on pfSense, Pascal in Delphi, SQL or
+assembly elsewhere. A PHP `.inc` parsed as Pascal does not fail — it yields a
+handful of incidental nodes, so the graph looks populated while the shipped
+runtime is missing from it (7 nodes instead of 471 on the reporter's file).
+
+No global mapping can be right for everyone, so the project says what it
+means in `.graphifyrc`::
+
+    language.inc=php
+
+The declaration has to reach every place graphify keys a decision on the
+suffix — classification, extractor dispatch, the case-folding and interop
+rules for cross-file resolution, the language resolvers, and the AST cache
+key (same bytes parse to a different graph under a different extractor) —
+and it has to survive the trip into the extraction worker processes.
+"""
+from __future__ import annotations
+
+import concurrent.futures
+import io
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+import pytest
+
+from graphify import rcfile
+from graphify.detect import FileType, classify_file, detect
+from graphify.extract import (
+    _get_extractor,
+    _lang_family,
+    _lang_is_case_insensitive,
+    extract,
+    extract_pascal,
+    extract_php,
+)
+from graphify.extractors.ocaml import extract_ocaml
+from graphify.extractors.robot import extract_robot
+
+try:
+    from graphify.extract import _worker_init
+except ImportError:  # pre-fix tree: the pool had no initializer
+    _worker_init = None
+from graphify.rcfile import (
+    activate_language_overrides,
+    cache_salt,
+    effective_suffix,
+    load_graphifyrc,
+    parse_language_value,
+    set_language_overrides,
+)
+from graphify.resolver_registry import LanguageResolver, run_language_resolvers
+
+PHP_SOURCE = """<?php
+namespace PfBlockerNG;
+
+class RuleSet {
+    public function load(string $path): array { return $this->parse($path); }
+    private function parse(string $path): array { return []; }
+}
+
+function pfb_update_lists(array $cfg): void { $r = new RuleSet(); $r->load('/tmp/x'); }
+function pfb_apply_rules(): void { pfb_update_lists([]); }
+function pfb_cron(): void { pfb_apply_rules(); }
+"""
+
+
+@pytest.fixture(autouse=True)
+def _no_overrides_leak():
+    """Overrides are process state; never let one test's config leak into the next."""
+    set_language_overrides(None)
+    rcfile._warned_roots.clear()
+    yield
+    set_language_overrides(None)
+    rcfile._warned_roots.clear()
+
+
+def _quiet_extract(paths, **kw):
+    with redirect_stdout(io.StringIO()):
+        return extract(paths, **kw)
+
+
+# ---------------------------------------------------------------------------
+# The .graphifyrc parser
+# ---------------------------------------------------------------------------
+
+def test_language_line_maps_an_extension_to_a_canonical_suffix(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
+    assert load_graphifyrc(tmp_path) == {"languages": {".inc": ".php"}}
+
+
+@pytest.mark.parametrize("key", ["language.inc", "language..inc", "language.INC", "language. inc "])
+def test_the_extension_key_is_normalised(tmp_path, key):
+    (tmp_path / ".graphifyrc").write_text(f"{key}=php\n", encoding="utf-8")
+    assert load_graphifyrc(tmp_path)["languages"] == {".inc": ".php"}
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("php", ".php"), ("PHP", ".php"), ("pascal", ".pas"), ("delphi", ".pas"),
+    ("typescript", ".ts"), ("c++", ".cpp"), (".php", ".php"), (".PHP", ".php"),
+    ("markdown", ".md"), (".md", ".md"),
+])
+def test_values_accept_a_language_name_or_an_explicit_extension(value, expected):
+    assert parse_language_value(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", "klingon", ".", ". php", "php script"])
+def test_an_unknown_language_is_an_error_naming_the_alternatives(value):
+    with pytest.raises(ValueError):
+        parse_language_value(value)
+
+
+def test_an_unknown_explicit_extension_warns_and_keeps_the_default(tmp_path, capsys):
+    (tmp_path / ".graphifyrc").write_text(
+        "language.tpl=.ts\nlanguage.inc=.phhp\n",
+        encoding="utf-8",
+    )
+
+    assert activate_language_overrides(tmp_path) == {}
+    assert effective_suffix(Path("a.inc")) == ".inc"
+    assert "unknown extension '.phhp'" in capsys.readouterr().err
+
+
+def test_a_bad_language_line_reports_its_line_number(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("viz_node_limit=5\nlanguage.inc=klingon\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"language\.inc .* line 2.*klingon"):
+        load_graphifyrc(tmp_path)
+
+
+def test_a_bad_language_key_is_an_error(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("language.=php\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 1"):
+        load_graphifyrc(tmp_path)
+
+
+def test_the_existing_option_and_unknown_keys_still_behave(tmp_path):
+    (tmp_path / ".graphifyrc").write_text(
+        "# comment\nviz_node_limit=0\nfuture_option=whatever\nlanguage.tpl=.ts\n",
+        encoding="utf-8",
+    )
+    cfg = load_graphifyrc(tmp_path)
+    assert cfg == {"viz_node_limit": 0, "languages": {".tpl": ".ts"}}
+
+
+def test_hooks_still_reads_the_same_file_through_its_old_name(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+    (tmp_path / ".graphifyrc").write_text("viz_node_limit=3\nlanguage.inc=php\n", encoding="utf-8")
+    assert _load_graphifyrc(tmp_path)["viz_node_limit"] == 3
+    (tmp_path / ".graphifyrc").write_text("viz_node_limit=-1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid viz_node_limit"):
+        _load_graphifyrc(tmp_path)
+
+
+def test_no_file_means_no_overrides(tmp_path):
+    assert load_graphifyrc(tmp_path) == {}
+    assert activate_language_overrides(tmp_path) == {}
+
+
+# ---------------------------------------------------------------------------
+# Every suffix-keyed decision sees the declared language
+# ---------------------------------------------------------------------------
+
+def test_effective_suffix_is_the_real_one_until_a_project_says_otherwise():
+    assert effective_suffix(Path("x/a.inc")) == ".inc"
+    assert effective_suffix(Path("x/a.F90")) == ".F90"  # case preserved
+    set_language_overrides({".inc": ".php"})
+    assert effective_suffix(Path("x/a.inc")) == ".php"
+    assert effective_suffix(Path("x/a.INC")) == ".php"
+    assert effective_suffix(Path("x/a.F90")) == ".F90"
+
+
+def test_dispatch_goes_to_the_declared_extractor():
+    assert _get_extractor(Path("a.inc")) is extract_pascal
+    set_language_overrides({".inc": ".php"})
+    assert _get_extractor(Path("a.inc")) is extract_php
+    assert _get_extractor(Path("b.pas")) is extract_pascal  # untouched
+
+
+def test_a_remapped_header_skips_the_content_sniff(tmp_path):
+    """`.h` is normally sniffed for C++/ObjC; a declaration makes it definite."""
+    from graphify.extract import extract_cpp
+    h = tmp_path / "plain.h"
+    h.write_text("int add(int a, int b);\n", encoding="utf-8")
+    set_language_overrides({".h": ".cpp"})
+    assert _get_extractor(h) is extract_cpp
+
+
+def test_a_remap_to_an_extension_without_an_extractor_yields_none():
+    set_language_overrides({".inc": ".nosuchlang"})
+    assert _get_extractor(Path("a.inc")) is None
+
+
+def test_classification_follows_the_declaration():
+    assert classify_file(Path("page.tpl")) is None  # unknown extension
+    set_language_overrides({".tpl": ".php", ".txt": ".md"})
+    assert classify_file(Path("page.tpl")) is FileType.CODE
+    assert classify_file(Path("notes.txt")) is FileType.DOCUMENT
+
+
+def test_case_folding_and_interop_family_follow_the_declaration():
+    assert not _lang_is_case_insensitive("lib/a.inc")
+    assert _lang_family("lib/a.inc") is None
+    set_language_overrides({".inc": ".php"})
+    assert _lang_is_case_insensitive("lib/a.inc")  # PHP identifiers fold case
+    assert _lang_family("lib/a.inc") == "php"
+
+
+def test_language_resolvers_wake_for_the_declared_language():
+    ran: list[str] = []
+    resolvers = [
+        LanguageResolver("php", frozenset({".php"}), lambda *a: ran.append("php")),
+        LanguageResolver("pascal", frozenset({".pas", ".inc"}), lambda *a: ran.append("pascal")),
+    ]
+    paths = [Path("a.inc")]
+    run_language_resolvers(paths, [{}], [], [], resolvers=resolvers)
+    assert ran == ["pascal"]
+    ran.clear()
+    set_language_overrides({".inc": ".php"})
+    run_language_resolvers(paths, [{}], [], [], resolvers=resolvers)
+    assert ran == ["php"]
+
+
+# ---------------------------------------------------------------------------
+# The reporter's repro: same bytes, two extensions
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def php_pair(tmp_path):
+    (tmp_path / "a.inc").write_text(PHP_SOURCE, encoding="utf-8")
+    (tmp_path / "b.php").write_text(PHP_SOURCE, encoding="utf-8")
+    return tmp_path
+
+
+def _counts(root, name):
+    r = _quiet_extract([root / name], cache_root=root, root=root)
+    return len(r["nodes"]), len(r["edges"])
+
+
+def test_without_a_declaration_the_inc_file_is_nearly_empty(php_pair):
+    """The failure mode: no error, just a graph missing the runtime."""
+    inc, php = _counts(php_pair, "a.inc"), _counts(php_pair, "b.php")
+    assert php[0] > 5 and php[1] > 5
+    assert inc[0] < php[0] and inc[1] < php[1]
+
+
+def test_with_the_declaration_the_two_files_yield_the_same_graph(php_pair):
+    (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
+    assert _counts(php_pair, "a.inc") == _counts(php_pair, "b.php")
+
+
+def test_a_library_caller_needs_no_setup_beyond_the_file(php_pair):
+    """extract() finds `<root>/.graphifyrc` itself — the skill runbook and the
+    MCP server call it directly, never through the CLI."""
+    (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
+    set_language_overrides(None)  # nothing pre-activated
+    assert _counts(php_pair, "a.inc") == _counts(php_pair, "b.php")
+
+
+def test_extract_announces_the_active_overrides(php_pair):
+    (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
+    out = io.StringIO()
+    with redirect_stdout(out):
+        extract([php_pair / "a.inc"], cache_root=php_pair, root=php_pair)
+    assert ".inc -> .php" in out.getvalue()
+
+
+def test_detect_counts_a_declared_extension_as_code(tmp_path):
+    (tmp_path / "page.tpl").write_text(PHP_SOURCE, encoding="utf-8")
+    with redirect_stdout(io.StringIO()):
+        before = detect(tmp_path)["files"]
+    (tmp_path / ".graphifyrc").write_text("language.tpl=php\n", encoding="utf-8")
+    with redirect_stdout(io.StringIO()):
+        after = detect(tmp_path)["files"]
+    assert not any(p.endswith("page.tpl") for p in before.get("code", []))
+    assert any(p.endswith("page.tpl") for p in after.get("code", []))
+
+
+# ---------------------------------------------------------------------------
+# The cache must not replay the other language's parse
+# ---------------------------------------------------------------------------
+
+def test_cache_salt_exists_only_for_remapped_files():
+    assert cache_salt(Path("a.inc")) is None
+    set_language_overrides({".inc": ".php"})
+    assert cache_salt(Path("a.inc")) == "language=.php"
+    assert cache_salt(Path("b.php")) is None
+
+
+def test_changing_the_declaration_does_not_serve_the_stale_entry(php_pair):
+    """Extract as Pascal (cached), declare PHP, extract again: the PHP graph,
+    not the Pascal entry keyed by the same bytes."""
+    pascal = _counts(php_pair, "a.inc")
+    (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
+    php = _counts(php_pair, "a.inc")
+    assert php == _counts(php_pair, "b.php") != pascal
+    # and back again: the PHP entry must not be served for the Pascal parse
+    (php_pair / ".graphifyrc").write_text("language.inc=pascal\n", encoding="utf-8")
+    assert _counts(php_pair, "a.inc") == pascal
+
+
+# ---------------------------------------------------------------------------
+# Worker processes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(_worker_init is None, reason="pre-fix tree")
+def test_worker_init_installs_the_parents_overrides():
+    _worker_init({".inc": ".php"})
+    assert _get_extractor(Path("a.inc")) is extract_php
+
+
+@pytest.mark.skipif(_worker_init is None, reason="pre-fix tree")
+def test_the_pool_hands_its_workers_the_overrides(php_pair, monkeypatch):
+    """Under `spawn` a worker starts with empty module state; the pool must
+    forward the mapping through its initializer."""
+    seen: dict = {}
+
+    class RecordingPool(concurrent.futures.ThreadPoolExecutor):
+        def __init__(self, max_workers=None, initializer=None, initargs=(), **kw):
+            seen["initializer"] = initializer
+            seen["initargs"] = initargs
+            super().__init__(max_workers=max_workers, initializer=initializer, initargs=initargs)
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", RecordingPool)
+    for i in range(25):  # past _PARALLEL_THRESHOLD
+        (php_pair / f"f{i}.inc").write_text(PHP_SOURCE, encoding="utf-8")
+    (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
+    files = sorted(php_pair.glob("f*.inc"))
+    result = _quiet_extract(files, cache_root=php_pair, root=php_pair, parallel=True)
+    assert seen["initializer"] is _worker_init
+    assert seen["initargs"] == ({".inc": ".php"},)
+    # and every file came back as PHP, not Pascal
+    per_file = {}
+    for n in result["nodes"]:
+        per_file.setdefault(n.get("source_file"), 0)
+        per_file[n.get("source_file")] += 1
+    assert len(per_file) == 25 and min(per_file.values()) > 5
+
+
+# ---------------------------------------------------------------------------
+# A config typo must be loud, not fatal
+# ---------------------------------------------------------------------------
+
+def test_a_malformed_rc_warns_once_and_scans_without_overrides(php_pair):
+    (php_pair / ".graphifyrc").write_text("language.inc=klingon\n", encoding="utf-8")
+    err = io.StringIO()
+    with redirect_stderr(err):
+        first = _counts(php_pair, "a.inc")
+        _counts(php_pair, "a.inc")
+    assert first == _counts(php_pair, "a.inc")  # Pascal, as before
+    assert err.getvalue().count("ignoring .graphifyrc") == 1
+    assert "klingon" in err.getvalue()
+
+
+def test_activating_a_root_without_rc_clears_a_previous_roots_overrides(tmp_path):
+    set_language_overrides({".inc": ".php"})
+    activate_language_overrides(tmp_path)
+    assert effective_suffix(Path("a.inc")) == ".inc"
+
+
+def test_overrides_do_not_leak_across_concurrent_threads():
+    """Two extractions in one process, on different threads with different
+    roots, must not clobber each other's overrides (#2961 review).
+
+    Thread A maps `.inc -> .php`, thread B maps `.inc -> .pas`. Each barrier-
+    synchronizes so both activations are live at once, then each re-reads its
+    own `effective_suffix('x.inc')`. With the old module-global dict, whichever
+    thread activated last won for BOTH; with thread-local state each keeps its
+    own.
+    """
+    import threading
+
+    barrier = threading.Barrier(2)
+    results: dict[str, str] = {}
+
+    def worker(name: str, target: str) -> None:
+        set_language_overrides({".inc": target})
+        barrier.wait()  # both activations now live simultaneously
+        results[name] = effective_suffix("x.inc")
+
+    ta = threading.Thread(target=worker, args=("php", ".php"))
+    tb = threading.Thread(target=worker, args=("pas", ".pas"))
+    ta.start(); tb.start()
+    ta.join(); tb.join()
+
+    assert results == {"php": ".php", "pas": ".pas"}, results
+
+
+def test_setting_overrides_on_one_thread_leaves_another_thread_clean():
+    """A thread that never activated overrides sees none, even while another
+    thread has them active."""
+    import threading
+
+    set_language_overrides(None)  # main thread: no overrides
+    seen: dict[str, str] = {}
+    started = threading.Event()
+
+    def other() -> None:
+        set_language_overrides({".inc": ".php"})
+        started.set()
+        # keep this thread's overrides live while main checks
+        import time
+        time.sleep(0.05)
+
+    t = threading.Thread(target=other)
+    t.start()
+    started.wait()
+    # main thread must still see the real suffix, not the other thread's map
+    assert effective_suffix("x.inc") == ".inc"
+    t.join()
+
+
+def _edges(result, relation):
+    return [e for e in result["edges"] if e["relation"] == relation]
+
+
+def test_a_declared_ts_file_keeps_its_implements_edge(tmp_path):
+    base_src = "export interface Base {\n    id: number;\n}\n"
+    consumer_src = (
+        "import { Base } from './base';\n\n"
+        "class Consumer implements Base {\n    id: number = 1;\n}\n"
+    )
+    declared = tmp_path / "declared"
+    declared.mkdir()
+    (declared / "base.ts").write_text(base_src, encoding="utf-8")
+    (declared / "consumer.tpl").write_text(consumer_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.tpl=.ts\n", encoding="utf-8")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "base.ts").write_text(base_src, encoding="utf-8")
+    (real / "consumer.ts").write_text(consumer_src, encoding="utf-8")
+
+    declared_result = _quiet_extract(
+        [declared / "base.ts", declared / "consumer.tpl"], cache_root=declared, root=declared
+    )
+    real_result = _quiet_extract(
+        [real / "base.ts", real / "consumer.ts"], cache_root=real, root=real
+    )
+    assert len(_edges(real_result, "implements")) == 1
+    assert len(_edges(declared_result, "implements")) == len(_edges(real_result, "implements"))
+
+
+def test_a_declared_java_file_disambiguates_implements_by_package(tmp_path):
+    pkg1 = "package com.pkg1;\npublic interface Base {\n    void run();\n}\n"
+    pkg2 = "package com.pkg2;\npublic interface Base {\n    void other();\n}\n"
+    impl_src = (
+        "package com.app;\nimport com.pkg1.Base;\n\n"
+        "public class Impl implements Base {\n    public void run() {}\n}\n"
+    )
+    declared = tmp_path / "declared"
+    (declared / "pkg1").mkdir(parents=True)
+    (declared / "pkg2").mkdir()
+    (declared / "pkg1" / "Base.java").write_text(pkg1, encoding="utf-8")
+    (declared / "pkg2" / "Base.java").write_text(pkg2, encoding="utf-8")
+    (declared / "Impl.jav").write_text(impl_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.jav=java\n", encoding="utf-8")
+
+    result = _quiet_extract(
+        [declared / "pkg1" / "Base.java", declared / "pkg2" / "Base.java", declared / "Impl.jav"],
+        cache_root=declared, root=declared,
+    )
+    implements = _edges(result, "implements")
+    assert len(implements) == 1
+    target = implements[0]["target"]
+    target_node = next(n for n in result["nodes"] if n["id"] == target)
+    assert target_node.get("source_file", "").replace("\\", "/").endswith("pkg1/Base.java")
+
+
+def test_a_declared_python_file_repoints_a_nested_package_import(tmp_path):
+    mod_src = "def helper():\n    pass\n"
+    caller_src = "import pkg.mod\n\npkg.mod.helper()\n"
+    declared = tmp_path / "declared"
+    (declared / "src" / "pkg").mkdir(parents=True)
+    (declared / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (declared / "src" / "pkg" / "mod.pyx").write_text(mod_src, encoding="utf-8")
+    (declared / "src" / "app.py").write_text(caller_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.pyx=python\n", encoding="utf-8")
+
+    result = _quiet_extract(
+        [
+            declared / "src" / "pkg" / "__init__.py",
+            declared / "src" / "pkg" / "mod.pyx",
+            declared / "src" / "app.py",
+        ],
+        cache_root=declared, root=declared,
+    )
+    imports = _edges(result, "imports")
+    mod_node_id = next(n["id"] for n in result["nodes"] if n["source_file"].endswith("mod.pyx"))
+    assert any(e["target"] == mod_node_id for e in imports)
+
+
+def test_a_declared_csharp_file_disambiguates_inherits_by_namespace(tmp_path):
+    ns1 = "namespace App.Pkg1 {\n    public interface Shape { }\n}\n"
+    ns2 = "namespace App.Pkg2 {\n    public interface Shape { }\n}\n"
+    main_src = (
+        "using App.Pkg1;\n\nnamespace App {\n    public class Wrapper : Shape {\n    }\n}\n"
+    )
+    declared = tmp_path / "declared"
+    (declared / "Pkg1").mkdir(parents=True)
+    (declared / "Pkg2").mkdir()
+    (declared / "Pkg1" / "Shape.cs").write_text(ns1, encoding="utf-8")
+    (declared / "Pkg2" / "Shape.cs").write_text(ns2, encoding="utf-8")
+    (declared / "Main.rzr").write_text(main_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.rzr=csharp\n", encoding="utf-8")
+
+    result = _quiet_extract(
+        [declared / "Pkg1" / "Shape.cs", declared / "Pkg2" / "Shape.cs", declared / "Main.rzr"],
+        cache_root=declared, root=declared,
+    )
+    inherits = _edges(result, "inherits")
+    assert len(inherits) == 1
+    target = inherits[0]["target"]
+    target_node = next(n for n in result["nodes"] if n["id"] == target)
+    assert target_node.get("source_file", "").replace("\\", "/").endswith("Pkg1/Shape.cs")
+
+
+def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys):
+    # .ets (ArkTS) is a recognized CODE_EXTENSIONS member with no registered
+    # AST extractor (unlike .r, which upstream now implements behind an
+    # optional dependency and would instead warn "dependency is missing").
+    (tmp_path / "a.tpl").write_text("class Foo {}\n", encoding="utf-8")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=.ets\n", encoding="utf-8")
+    _quiet_extract([tmp_path / "a.tpl"], cache_root=tmp_path, root=tmp_path)
+    assert "no AST extractor" in capsys.readouterr().err
+
+
+def test_a_declared_mli_interface_is_parsed_as_an_interface_not_ml(tmp_path):
+    pytest.importorskip("tree_sitter_ocaml")
+    root = tmp_path
+    (root / ".graphifyrc").write_text("language.tpl4=.mli\n", encoding="utf-8")
+    activate_language_overrides(root)
+    impl_src = "let helper x =\n  x + 1\n\nlet main () =\n  helper 41\n"
+    declared_path = root / "a.tpl4"
+    declared_path.write_text(impl_src, encoding="utf-8")
+    real_mli = root / "a.mli"
+    real_mli.write_text(impl_src, encoding="utf-8")
+
+    declared_result = extract_ocaml(declared_path)
+    set_language_overrides(None)
+    real_result = extract_ocaml(real_mli)
+    assert real_result["edges"] == []  # real .mli: not valid interface syntax, nothing extracted
+    assert declared_result["edges"] == real_result["edges"]
+
+
+def test_a_declared_resource_file_excludes_test_cases_like_a_real_resource(tmp_path):
+    pytest.importorskip("robot")
+    root = tmp_path
+    (root / ".graphifyrc").write_text("language.tplr=.resource\n", encoding="utf-8")
+    content = (
+        "*** Test Cases ***\nMy Test\n    Log    hello\n\n"
+        "*** Keywords ***\nDo Something\n    Log    hi\n"
+    )
+    activate_language_overrides(root)
+    declared_path = root / "a.tplr"
+    declared_path.write_text(content, encoding="utf-8")
+    real_resource = root / "a.resource"
+    real_resource.write_text(content, encoding="utf-8")
+
+    declared_result = extract_robot(declared_path)
+    set_language_overrides(None)
+    real_result = extract_robot(real_resource)
+    declared_labels = {n["label"] for n in declared_result["nodes"]}
+    real_labels = {n["label"] for n in real_result["nodes"]}
+    assert "My Test" not in real_labels  # real .resource: Test Cases section dropped
+    assert "Do Something" in real_labels
+    assert declared_labels - {declared_path.name} == real_labels - {real_resource.name}
+
+
+def test_declared_typescript_preserves_symbols_and_original_source_paths(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("language.tpl=typescript\n", encoding="utf-8")
+    source = tmp_path / "declarations.tpl"
+    source.write_text("""interface Point { x: number; y: number; }
+enum Color { Red, Green, Blue }
+class Shape<T> {
+  constructor(private kind: T) {}
+  describe(): string { return String(this.kind); }
+}
+""", encoding="utf-8")
+    result = _quiet_extract([source], root=tmp_path, cache_root=tmp_path)
+    expected = {"Point", "Color", "Red", "Green", "Blue", "Shape", ".constructor()", ".describe()"}
+    assert expected <= {node["label"] for node in result["nodes"]}
+    assert {node["source_file"] for node in result["nodes"] if node["label"] in expected} == {source.name}
+
+
+def test_declared_typescript_imports_follow_changed_tsconfig_without_source_edit(tmp_path):
+    import json
+
+    (tmp_path / ".graphifyrc").write_text("language.tpl=ts\n", encoding="utf-8")
+    caller, one, two = (tmp_path / name for name in ("consumer.tpl", "one.ts", "two.ts"))
+    caller.write_text("import { chosen } from '@target'; export function run() { return chosen(); }\n", encoding="utf-8")
+    one.write_text("export function chosen() { return 1; }\n", encoding="utf-8")
+    two.write_text("export function chosen() { return 2; }\n", encoding="utf-8")
+    config = tmp_path / "tsconfig.json"
+    for target in ("one.ts", "two.ts"):
+        config.write_text(json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@target": [target]}}}), encoding="utf-8")
+        result = _quiet_extract([caller, one, two], root=tmp_path, cache_root=tmp_path)
+        nodes = {node["id"]: node for node in result["nodes"]}
+        targets = {nodes[edge["target"]].get("source_file") for edge in _edges(result, "imports_from")
+                   if nodes.get(edge["source"], {}).get("source_file") == caller.name}
+        assert targets == {target}, (target, targets)
+
+
+def test_declared_go_resolves_qualified_type_among_same_named_packages(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("language.gox=go\n", encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module example.com/app\ngo 1.21\n", encoding="utf-8")
+    paths = []
+    for package in ("pkg1", "pkg2"):
+        directory = tmp_path / package
+        directory.mkdir()
+        source = directory / "shape.go"
+        source.write_text(f"package {package}\ntype Shape struct {{ Sides int }}\n", encoding="utf-8")
+        paths.append(source)
+    caller = tmp_path / "main.gox"
+    caller.write_text('package main\nimport "example.com/app/pkg1"\ntype Wrapper struct { S pkg1.Shape }\n', encoding="utf-8")
+    result = _quiet_extract([caller, *paths], root=tmp_path, cache_root=tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    targets = {nodes[edge["target"]].get("source_file") for edge in _edges(result, "references")
+               if nodes.get(edge["source"], {}).get("label") == "Wrapper"}
+    assert targets == {"pkg1/shape.go"}, targets

@@ -3,6 +3,15 @@
 Adapters own source diagnostics; the writer owns publication guards. Paths are
 relative/bounded; messages omit source content and dependency exception details.
 
+INC-QML-54's corrected source `67bb2022` passes the complete local suite with
+173 explicit skips; its source-matched isolated wheel passes 715 cases with one
+symlink skip, and the separate HCL add-on passes six cases. Exact identity and
+profile limits belong to the
+[committed checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022).
+The earlier source905 failure remains historical. The final native CI module
+gate passes 76 cases with four platform skips and all 29 critical cases passing.
+New hosted/platform proof remains outstanding.
+
 | Code | Severity | Trigger | Recovery |
 | --- | --- | --- | --- |
 | QML_PARSER_MISSING | error | Optional parser absent | Install graphifyy[qml] |
@@ -289,8 +298,8 @@ resolution adds no warning; source corrections recover through normal update.
 
 | Code | Severity and owner | Outcome and recovery |
 | --- | --- | --- |
-| `GRAPH_PUBLICATION_FAILED` | Error; caller-owned product preparation/commit | Update returns failure and prior accepted products survive recoverable faults. Correct permissions/source/output conditions and retry the ordinary update. First-build failure accepts no product cohort. |
-| `GRAPH_PUBLICATION_RECOVERY` | Integrity error; publication rollback | A second restoration failure leaves recovery snapshots on disk. Stop accepting the mixed output, restore the complete prior cohort from the retained owned snapshot, correct the OS failure and rebuild. An automatic retry alone is not restoration proof. |
+| `GRAPH_PUBLICATION_FAILED` | Error; caller-owned product preparation/commit | Update returns failure and prior accepted products survive recoverable faults, including requested deletion or a later replacement failure. Invalid or undeclared deletion names reject before mutation. Correct permissions/source/output conditions and retry the ordinary update. First-build failure accepts no product cohort. |
+| `GRAPH_PUBLICATION_RECOVERY` | Integrity error; publication rollback | A restoration failure leaves recovery snapshots on disk, including originals of deleted products. Stop accepting the mixed output, restore the complete prior cohort from the retained owned snapshot, correct the OS failure and rebuild. An automatic retry alone is not restoration proof. |
 | `GRAPH_PUBLICATION_CLEANUP` | Warning after committed success; error after an uncommitted run; owned transaction cleanup | Accepted committed products remain coherent. Retained scratch files need cleanup after releasing locks/permissions; failed preparation preserves prior products. Cleanup failure never retroactively turns coherent committed success into false rollback evidence. |
 
 Diagnostics expose bounded stages/codes, not private filesystem paths or serializer
@@ -302,9 +311,28 @@ missing original product is restored to absence. Follow configured output symlin
 targets; never delete or move an unchecked computed path. Do not publish these
 local snapshots because their contents belong to the analyzed project.
 
+INC-QML-54 extends this existing contract to bounded pending-label deletion
+inside the product cohort; focused source and selected installed cases pass. An
+already absent product and repeated deletion request are silent no-ops. A
+recoverable deletion or later commit failure restores all prior members, including
+deleted bytes. Successful retry commits consumption with its corresponding
+graph/state; there is no separate post-commit unlink. The same bounded codes,
+redaction and committed/uncommitted cleanup outcomes apply, with no new diagnostic
+identity. Earlier replacement-only proof does not establish deletion recovery.
+
 Individual writer restore failures likewise preserve a recovery backup when one
-exists, or explicitly report that no prior backup exists. Ordinary read-only
-destinations reject before displacement. The transaction does not promise atomic
+exists, or explicitly report that no prior backup exists. Generic atomic-write
+and accepted-product read-only destinations reject before displacement. The
+post-905 refinement distinguishes lower-level authorized installer/cache-copy
+replacement: it may consume read-only regular copies, while directory rejection,
+original byte/mode restoration and explicit recovery failure remain mandatory.
+It cannot chmod through symlinks. This refinement is planned, not established by
+the earlier raw-helper rejection test; no new diagnostic identity is proposed.
+Standalone GraphML must first retain its Windows regular read-only rejection at
+the exporter, using bounded `PermissionError` without a personal output path.
+Prior output/input graph and owned temporary cleanup remain protected; a symlink
+entry is not a read-only regular target and its target bytes/mode remain unchanged.
+The transaction does not promise atomic
 visibility across products under process termination, power loss or racing writers.
 Successful AST cache facts may survive publication failure; graph/root/manifest/
 Qt stamp remain the accepted cohort. Schema 9/policy 12 retire older analysis facts;
@@ -481,3 +509,237 @@ Physical resolution precedes lexical normalization for POSIX link/`..` spelling.
 Containment rejection still has its separate root/input contract. Neither lexical
 source names nor a matching physical target grant member/module/native endpoint
 authority. Exact native/POSIX failure and retry assignments belong to traceability.
+
+## Literal parser repair outcomes — INC-QML-53
+
+No new catalogue code is required. Successful supported-source recovery continues
+through ordinary extraction/rebuild reporting, with no synthetic warning or runtime
+success claim. Validation outcomes remain `QML_PROJECT_UNSUPPORTED` for unsupported
+CMake mutations, `QML_CMAKE_SYNTAX` for malformed command syntax and `QT_CPP_SYNTAX`
+for malformed or unsupported native syntax. New bounded metadata reasons include
+`unsupported_source_property_scope`, `unsupported_source_property_value`,
+`source_property_after_metadata_use`,
+`unsupported_target_source_kind`, `unsupported_literal_resources_arguments` and
+`resource_path_escape_or_invalid_alias`; the existing
+`source_mutation_outside_literal_subset` still covers other rejected mutations.
+Source-property `DIRECTORY`/`TARGET_DIRECTORY` selectors reject before local
+mutation or the RC-only exemption; `DISCARD_FILE_CONTENTS` rejects in every
+resource argument position, including an exactly quoted keyword. Their bounded reasons and recovery are covered
+by the corrected source tests assigned in traceability. Correct either input to
+the supported source-local, content-preserving subset before retrying; force
+cannot authorize an incomplete graph.
+
+Recoverable read/root/access failures keep their existing owner/code/retry advice;
+this repair adds no filesystem write boundary or new persistence outcome.
+Incomplete metadata/native extraction reaches `QML_GRAPH_PRESERVED` at publication,
+retaining the accepted graph and manifest under the existing forced-update guard.
+Explicit and module-generated providers participate in the same resource
+ambiguity outcome: distinct declarations remain unresolved even for one physical
+endpoint; duplicate copies of one declaration identity coalesce. Provider order
+never selects an arbitrary alias. Public synthetic retention tests verify graph/manifest
+bytes and an existing report; installed/adoption proof remains separately assigned
+in traceability. Missing support is repaired by extending the tested literal/AST
+profile, never by dropping inputs or bypassing the guard.
+
+Conflicting records for one Qt module/source/resource declaration identity raise
+`QML_METADATA` before the index can choose a transported target. Recovery requires
+consistent source-backed records followed by the normal guarded retry. Generic
+namespace IDs shared across unrelated-language source files retain their existing
+contract; this Qt validation cannot reject those legitimate repeated identities.
+
+The native-RC prerequisite refinement adds no diagnostic code or writer.
+A complete literal RC list with only INCLUDE_DIRECTORIES/OBJECT_DEPENDS is
+build-only evidence, including scoped commands and opaque computed values; it
+cannot create a provider/resource fact or cause a prerequisite-file read. Mixed
+source kinds, unknown/runtime properties, malformed pairs and scope selectors
+retain the existing unsupported/syntax outcomes and guarded publication behavior.
+Out-of-root native declarations retain explicit unavailable membership and no
+new read; the exemption is not a root-admission bypass. Policy-25 local source
+and retention/recovery cases pass in source and the isolated installed profile;
+hosted proof remains pending.
+
+## Effective native-language selection — INC-QML-54
+
+An explicit supported override of a physical native Qt extension away from C++
+must not emit `QT_CPP_SYNTAX` or other native-stage rejection solely because of
+the filename. The selected language retains its own parser/diagnostic owner and
+cannot acquire native providers. Seven focused override cold/warm and transition
+cases pass; corrected source67 full-suite and isolated installed cases now pass.
+New hosted evidence remains pending.
+Genuine selected-language failures keep their existing diagnostics.
+This correction adds no code identity, recovery writer or arbitrary-extension
+Qt/QML support claim. Its production regressions and current status belong to
+[traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54).
+
+### Bounded collision-target selection
+
+INC-QML-54's accepted filename-cohort selection uses the existing
+`WATCH_SOURCE_IDENTITY_FAILED` rejection with unavailable source context when its
+explicit admitted-input/root contract cannot be established. It cannot expose
+supplied paths or backend bodies, silently continue with partial targets, read a
+recorded deleted seed or resurrect it as input. Correct the source/root condition
+and retry the ordinary guarded update; prior accepted products remain protected.
+This extends the existing owning stage without a new code or persistence writer.
+The earlier 31-case source selection retains two platform skips. Corrected
+source67 full-suite and isolated installed/add-on proof now pass; new hosted
+verification remains pending.
+
+### Encoded hook ownership recognition
+
+INC-QML-54's generated Windows hook recognizer is a pure ownership check.
+Malformed, leading/other-whitespace, foreign or unmarked candidates remain authored;
+they do not become failed executable actions because no command runs. Real
+installation transport validation and configuration-write failures retain their
+existing bounded rejection/recovery behavior. The recognizer adds no diagnostic
+identity or filesystem/configuration side effect. Its adversarial and actual
+reinstall/uninstall source selection passes 55 cases under REQ-CORE-001-AC05;
+corrected source67 full-suite and assigned isolated installed cases now pass,
+with new hosted proof pending. An otherwise
+exact generated token may have trailing ASCII space/tab under the established
+ownership contract; this is not general whitespace or shell normalization.
+
+### Post-905 runbook and fixture failure boundaries
+
+Status: **Corrected source67 complete local source and isolated installed cases pass; new native CI/hosted evidence remains separate**. Quoting the
+recorded interpreter changes executable transport, not runtime selection. Empty,
+missing or failing selection remains a nonzero command failure without trying
+PATH Python/Graphify or installing another runtime. Existing update/publication
+diagnostics and prior-product guards still own any completed analyzer action;
+no new analyzer diagnostic is introduced for a shell launch that never starts it.
+Strict generator rejection remains explicit for unsupported command shapes or
+round-trip drift.
+
+The aggregate invariance success corpus must omit exactly the two intentional
+QML rejection fixtures, retaining direct real-CLI negative coverage. Those
+inputs still produce `QML_GRAPH_PRESERVED`, failure exit and no accepted first
+graph/manifest. The twelve previous setup errors cannot become successful parse
+acceptance by weakening the production gate. Supplying missing external DOM
+event surfaces is a test-harness correction with no new product diagnostic,
+persistence transition or native interaction claim.
+
+D33's graph-owned retained-cleanup context has the following **Implemented;
+corrected source67 full-suite and isolated installed verified** diagnostic:
+
+| Code | Severity and owner | Rejection and recovery |
+| --- | --- | --- |
+| `QT_IMPORT_RETENTION_INVALID` | Error; `qt_import_retention` strict reader and its producer/persistence/reload callers | Reject wrong keys/types/schema, unsorted/duplicate IDs, foreign/noncanonical placeholders or limits above 100,000 IDs/4,096 UTF-8 bytes each. Do not truncate or silently drop restrictions. Public failure contains no raw IDs, paths or backend bodies; retain accepted products. Restore a valid matching graph/context from trusted retained evidence, correct the corrupt transport and retry normally; erasing the context is not recovery proof. |
+
+Success adds no warning or cleanup authority. Ordinary publication failure must
+retain graph and context together;
+existing product recovery codes own rollback failure and retained copies. No new
+stamp/cache or authored-origin rewrite is permitted to hide missing lifecycle
+evidence.
+
+Reserved prior context is validated before extraction or candidate cache writes,
+using the one capped raw graph snapshot shared with the existing loader. Forced
+updates cannot bypass `QT_IMPORT_RETENTION_INVALID`. Reject with existing cache
+and product bytes unchanged and no candidate AST cache; repair the matching graph
+context and retry. This early-integrity outcome differs from valid source-cache
+survival after a later product-publication fault.
+The early loader preserves the existing RuntimeError/ValueError `error:` stderr
+channel rather than moving failures into a generic stdout catch. Existing
+cap/read/malformed-graph refusal assertions and prior bytes remain mandatory.
+Reserved-free legacy graph attrs `null`, `false`, `0`, `[]` and `""` are accepted
+absence under `(graph or {})`, not corrupt context. A present null/malformed
+reserved value and truthy unsupported scalar attrs still reject. No context
+authority or broader unsupported-input acceptance is introduced by this case.
+
+The implemented reconciliation correction preserves current extraction diagnostics
+and failure lists on warm merges, including explicit empty success keys. Prior
+graph diagnostics cannot be replayed as current success or failure evidence.
+Actual malformed-source and publication guards retain their existing codes and
+prior-product recovery; no new diagnostic or blanket metadata exclusion is added.
+
+D34 changes only validation profiles/oracles. Native newline changes retain
+their actual byte positions; deliberate invalid span/endpoint/role/relation
+mutations fail the dedicated test oracle rather than creating a new runtime
+diagnostic. Real CLI parsing/rejection/publication keeps its existing error and
+recovery policy. Aggregate source admission remains complete for valid fixtures;
+normalizing production bytes or hiding graph attributes is not recovery.
+
+### Native CI selection evidence
+
+Status: **Implemented and locally verified under REQ-CORE-004-AC02/AC03;
+76 native passes/four platform skips, all 29 critical cases passing; hosted
+proof pending**. Missing required native modules,
+duplicate/dynamic/malformed literal-array entries and comment-only inclusion
+produce bounded test/CI failure; this adds no runtime diagnostic. Actual native
+JUnit case evidence must reject missing, duplicated, failed or skipped critical
+case identities. Write the case and integrity reports before combined rejection
+so a failed gate retains useful evidence; preserve pytest failure and existing
+cleanup/upload rules. A local report does not prove hosted upload. The actual
+PowerShell array/tail controls exercise the owning consumer without executing
+the job setup or introducing a fallback dispatcher. Correct the selection or
+failed native behavior and rerun normal validation at the new revision; do not
+erase exclusions or relabel source67 proof as testing the changed workflow.
+
+The final same-case-count omission controls leave the omitted module token
+quoted on a comment line and still reject. All 23 guards pass in the final
+native gate; its four unrelated platform skips remain explicitly assigned.
+
+## Hosted-profile recovery — INC-QML-55 and INC-QML-56
+
+INC-QML-55 reuses checked subprocess failure for a missing/failed test dependency.
+Both clean installed smokes must succeed before native Terraform admission;
+either smoke failure stops there. Add-on failure stops before native pytest,
+without fallback or a passing-support claim. The same wheel/core/artifact-only
+boundaries remain explicit. This corrects a test-profile optional-HCL omission,
+not a new `QT_CPP_*` or QML parser error. Five real-main cases and actual exact
+two-case installed failure/recovery pass locally; new hosted proof is pending.
+No accepted application product is displaced by this setup step, so it creates
+no new graph rollback owner.
+
+INC-QML-56's implemented newline fixture correction preserves native original bytes
+outside the QML directory; assertion failure is not repaired by normalizing
+production data or filtering native attributes. Its implemented source-audit
+correction passes ten local controls for missing/duplicate/skipped/failed/error
+or unknown required identities, same-count swaps and inventory growth; report
+the actual failed gate separately from pytest, source/dependency preservation
+and service cleanup. Existing runtime/publication diagnostics remain unchanged.
+
+The final combined local selection passes 79 cases without skips; the separate
+committed-LF aggregate passes all twelve original cases. These results establish
+the declared local validation boundaries, with new-head hosted proof pending.
+
+The inherited security scanner job is advisory: both Bandit and pip-audit exit1
+despite a successful job conclusion. Source `5876f0a4` reports twelve Bandit findings
+and sixteen dependency-audit rows/four packages (ten unique package/ID pairs).
+Those reported function ASTs and locked package records match pinned upstream;
+actual risk and false-positive assessment remain **Unconfirmed**. Neither
+environment/newline recovery nor a green advisory job resolves that baseline.
+
+## Watch test-clock isolation — INC-QML-57
+
+This implemented test-only correction adds no runtime diagnostic. The existing
+hosted symptom is a missing accepted graph after the watch loop exits before
+rebuild. A deterministic probe reproduces it when a nested real clock call
+consumes the test's synthetic events and raises the harness stop. Isolating the
+clock must preserve genuine observer/rebuild errors and normal teardown; no
+failure is converted to skip or success. Runtime rejection, graph/cache
+retention and retry contracts are unchanged because their production owners
+are untouched. A changed direct-loop poll fails with the bounded assertion
+`watch harness polling contract changed`; other callers delegate real sleep.
+The local selection passes 31 cases and skips the actual POSIX wait boundary.
+New-head hosted evidence is required separately from local proof.
+
+## CMake resource-output diagnostics — INC-QML-58
+
+Accepted source-local pairs add source facts without a new diagnostic. An
+ineligible pair falls through to the existing producer/consumer rejection owners:
+`QML_PROJECT_UNSUPPORTED`, severity error, CMake source context, with reasons
+`unsupported_literal_resources_arguments` or
+`source_mutation_outside_literal_subset`; property mutation guards retain their
+specific reasons. An eligible lexical pair without a unique preceding module or
+with already consumed/property-bearing inputs rejects as
+`resource_output_module_or_input_unavailable`. The generated-use record describes known QRC additions only,
+not complete variable expansion. Repair the descriptor into the documented
+literal profile or retain the prior accepted graph while broader support is
+implemented; an unexecuted native build is not verification of the graph.
+
+An inventory exceeding 10,000 commands rejects as `QML_PROJECT_LIMIT` with reason
+`cmake_command_limit` before pair analysis. Malformed syntax, byte/token/scope/fact
+bounds and read failures retain their existing typed owners. No build hook,
+package script, CMake/rcc process, additional source read or network request is
+introduced. Rejected candidates, including forced retry, must preserve the prior
+graph/manifest/report/Qt-state cohort; corrected input then recovers and settles.
+Actual graph-write failures remain owned by existing publication/recovery code.

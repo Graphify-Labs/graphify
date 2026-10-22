@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import unicodedata
 import pytest
@@ -15,6 +16,15 @@ def _git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _make_git_dir(repo: Path) -> Path:
+    """A minimal .git directory git itself accepts: HEAD, objects/, refs/ (#4444)."""
+    dot_git = repo / ".git"
+    (dot_git / "objects").mkdir(parents=True)
+    (dot_git / "refs").mkdir()
+    (dot_git / "HEAD").write_text("ref: refs/heads/main\n")
+    return dot_git
 
 
 def as_posix_list(paths) -> list[str]:
@@ -387,7 +397,7 @@ def test_graphifyignore_hermetic_without_vcs(tmp_path):
 
 def test_graphifyignore_discovered_from_parent_in_vcs(tmp_path):
     """Inside a VCS repo, parent .graphifyignore applies to subdirectory scans."""
-    (tmp_path / ".git").mkdir()
+    _make_git_dir(tmp_path)
     (tmp_path / ".graphifyignore").write_text("vendor/\n")
     sub = tmp_path / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -408,7 +418,7 @@ def test_graphifyignore_stops_at_git_boundary(tmp_path):
     (tmp_path / ".graphifyignore").write_text("main.py\n")
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _make_git_dir(repo)
     sub = repo / "sub"
     sub.mkdir()
     (sub / "main.py").write_text("x = 1")
@@ -423,7 +433,7 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     """A .graphifyignore at the git repo root is included when scanning a subdir."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".git").mkdir()
+    _make_git_dir(repo)
     (repo / ".graphifyignore").write_text("vendor/\n")
     sub = repo / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -648,6 +658,89 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     code = as_posix_list(result["files"]["code"])
     assert any(f.endswith("a/b/keep.py") for f in code), "nested ! must beat root + info/exclude"
     assert not any(f.endswith("drop.py") for f in code)
+
+
+def _git_init(path):
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+
+
+def test_configured_core_excludes_file_is_honoured(tmp_path):
+    """A file git ignores only through core.excludesFile must stay out of the
+    graph too (#4335)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    excludes = tmp_path / "my-ignore"
+    excludes.write_text("secret.py\n")
+    subprocess.run(["git", "-C", str(repo), "config", "core.excludesFile", str(excludes)],
+                   check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 1")
+    (repo / "secret.py").write_text("SECRET = 'abc'")
+
+    code = as_posix_list(detect(repo)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("a.py") for f in code)
+
+
+def test_default_global_git_ignore_is_honoured(tmp_path):
+    """With core.excludesFile unset git still reads ~/.config/git/ignore (or
+    $XDG_CONFIG_HOME/git/ignore); HOME is sandboxed by conftest (#4335)."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("**/config.local.json\nsecret.py\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.local.json").write_text('{"token": "x"}')
+    (tmp_path / "secret.py").write_text("SECRET = 'abc'")
+    (tmp_path / "a.py").write_text("x = 1")
+
+    files = as_posix_list(f for fs in detect(tmp_path)["files"].values() for f in fs)
+    assert not any(f.endswith("secret.py") or f.endswith("config.local.json") for f in files)
+    assert any(f.endswith("a.py") for f in files)
+
+
+def test_xdg_config_home_global_git_ignore_is_honoured(tmp_path, monkeypatch):
+    xdg = tmp_path / "xdg"
+    (xdg / "git").mkdir(parents=True)
+    (xdg / "git" / "ignore").write_text("secret.py\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "secret.py").write_text("SECRET = 'abc'")
+    (repo / "a.py").write_text("x = 1")
+
+    code = as_posix_list(detect(repo)["files"]["code"])
+    assert not any(f.endswith("secret.py") for f in code)
+    assert any(f.endswith("a.py") for f in code)
+
+
+def test_global_git_ignore_ranks_lowest_and_respects_no_gitignore(tmp_path):
+    """A project `.gitignore` `!` re-include beats the global file, and
+    --no-gitignore turns the global file off like the other git sources."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("*.py\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("!keep.py\n")
+    (tmp_path / "keep.py").write_text("x = 1")
+    (tmp_path / "drop.py").write_text("y = 1")
+
+    code = as_posix_list(detect(tmp_path)["files"]["code"])
+    assert any(f.endswith("keep.py") for f in code), "project ! must beat the global file"
+    assert not any(f.endswith("drop.py") for f in code)
+
+    code = as_posix_list(detect(tmp_path, gitignore=False)["files"]["code"])
+    assert any(f.endswith("drop.py") for f in code)
+
+
+def test_global_git_ignore_needs_a_git_repo(tmp_path):
+    """git only applies its global excludes inside a repo; neither should we."""
+    (Path.home() / ".config" / "git").mkdir(parents=True)
+    (Path.home() / ".config" / "git" / "ignore").write_text("secret.py\n")
+    (tmp_path / "secret.py").write_text("SECRET = 'abc'")
+
+    code = as_posix_list(detect(tmp_path)["files"]["code"])
+    assert any(f.endswith("secret.py") for f in code)
 
 
 def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):
@@ -1320,6 +1413,177 @@ def test_negation_ancestor_itself_reincluded(tmp_path):
     patterns = _load_graphifyignore(tmp_path)
     # vendor/ is excluded then re-included; ancestor eval returns False so file is evaluated on its own
     assert not _is_ignored(f, tmp_path, patterns)
+
+
+# --- a pattern without a slash names one path component, as in gitignore ---
+#
+# It is compared with the name of the entry under test, never with a path or a
+# path prefix. _is_ignored already tests every ancestor on its own, so a
+# directory re-included with `!dir/` brings its files back, `*` cannot reach
+# across a "/", and `!name` re-includes the entry called `name`, not what is
+# below it.
+
+def _touch(root, *rels):
+    for rel in rels:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1\n")
+
+
+def _ignored_among(root, ignore_text, rels):
+    (root / ".graphifyignore").write_text(ignore_text)
+    patterns = _load_graphifyignore(root)
+    return {rel for rel in rels if _is_ignored(root / rel, root, patterns)}
+
+
+@pytest.mark.parametrize(
+    ("ignore_text", "ignored", "kept"),
+    [
+        pytest.param(
+            ".*\n!.github/\n",
+            [".cache/junk.py", ".hidden.py", ".github/.local.py"],
+            [".github/scripts/release.py", ".github/CODEOWNERS", "app.py"],
+            id="dot-directory",
+        ),
+        pytest.param(
+            "tags\n!tags/\n",  # github/gitignore, Global/Tags.gitignore
+            ["tags"],
+            ["src/tags/handler.py", "src/tags/sub/deep.py"],
+            id="tags-template",
+        ),
+        pytest.param(
+            "cache*\n!cache_keep/\n",
+            ["cache.db", "cache_old/a.txt"],
+            ["cache_keep/a.txt"],
+            id="wildcard-directory",
+        ),
+    ],
+)
+def test_reincluded_directory_brings_its_files_back(tmp_path, ignore_text, ignored, kept):
+    """`!dir/` re-includes the directory and what is in it, unless a pattern names the files themselves."""
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, ignore_text, ignored + kept) == set(ignored)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "ignored", "kept"),
+    [
+        pytest.param(
+            "test_*.py",
+            ["test_one.py", "pkg/test_two.py"],
+            ["test_helpers/util.py", "test_helpers/sub/deep.py"],
+            id="directory-sharing-a-prefix",
+        ),
+        pytest.param(
+            "doc*.md",
+            ["doc.md", "pkg/docs.md"],
+            ["docs/api.md", "docs/guide/readme.md"],
+            id="wildcard-before-suffix",
+        ),
+        pytest.param(
+            "s*c.py",
+            ["sc.py", "pkg/spec.py"],
+            ["src/c.py", "src/a/c.py"],
+            id="star-does-not-cross-slash",
+        ),
+        pytest.param(
+            "*.py\n!vendor",
+            ["c.py", "vendor/a.py", "vendor/sub/b.py"],
+            ["vendor/notes.txt"],
+            id="negation-names-the-entry-not-its-files",
+        ),
+        pytest.param(
+            "*.py\n!test_*.py",
+            ["util.py", "test_helpers/util.py"],
+            ["test_one.py", "pkg/test_two.py"],
+            id="negation-does-not-cross-slash",
+        ),
+        pytest.param(
+            "build\n!vendor",
+            ["build/out.py", "vendor/build/out.py"],
+            ["vendor/ok.py", "pkg/ok.py"],
+            id="negated-ancestor-name-re-includes-nothing-below",
+        ),
+        pytest.param(
+            "build",
+            ["build/out.py", "pkg/build/deep/out.py"],
+            ["build.py", "builder/ok.py", "notbuild/ok.py"],
+            id="plain-name-still-excludes-its-directory",
+        ),
+        pytest.param(
+            "build/",
+            ["build/out.py", "pkg/build/deep/out.py"],
+            ["build.py", "builder/ok.py", "notbuild/ok.py"],
+            id="directory-only-still-excludes-its-directory",
+        ),
+    ],
+)
+def test_unanchored_pattern_matches_a_name_not_a_path(tmp_path, pattern, ignored, kept):
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, f"{pattern}\n", ignored + kept) == set(ignored)
+
+
+def _detected(root):
+    return {
+        Path(p).relative_to(root).as_posix()
+        for paths in detect(root)["files"].values()
+        for p in paths
+    }
+
+
+def test_unanchored_pattern_in_nested_gitignore_matches_a_name(tmp_path):
+    """A .gitignore below the scan root is loaded by the walk itself; its patterns match names too."""
+    _touch(
+        tmp_path,
+        "app.py",
+        "sub/test_one.py",
+        "sub/deeper/test_two.py",
+        "sub/test_helpers/util.py",
+    )
+    (tmp_path / "sub" / ".gitignore").write_text("test_*.py\n")
+
+    assert _detected(tmp_path) == {"app.py", "sub/test_helpers/util.py"}
+
+
+def test_unanchored_pattern_reaches_every_consumer_of_the_engine(tmp_path):
+    """detect(), the extractor's collect_files and ignored_predicate (watch, markdown links) agree."""
+    from graphify.extract import collect_files
+
+    _touch(tmp_path, "app.py", ".github/scripts/release.py", ".cache/junk.py", "test_helpers/util.py", "test_one.py")
+    (tmp_path / ".graphifyignore").write_text(".*\n!.github/\ntest_*.py\n")
+    expected = {"app.py", ".github/scripts/release.py", "test_helpers/util.py"}
+
+    assert _detected(tmp_path) == expected
+    assert {Path(p).relative_to(tmp_path).as_posix() for p in collect_files(tmp_path)} == expected
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    present = {".cache/junk.py", "test_one.py"} | expected
+    assert {rel for rel in present if not ignored(tmp_path / rel)} == expected
+
+
+def test_unanchored_pattern_verdicts_do_not_depend_on_cache_order(tmp_path):
+    """The walk meets directories first and the watcher meets files first; a shared _cache must agree."""
+    expected = {
+        ".github": False,
+        ".github/scripts": False,
+        ".github/scripts/release.py": False,
+        ".cache/junk.py": True,
+        "test_helpers": False,
+        "test_helpers/util.py": False,
+        "test_one.py": True,
+    }
+    _touch(tmp_path, ".github/scripts/release.py", ".cache/junk.py", "test_helpers/util.py", "test_one.py")
+    (tmp_path / ".graphifyignore").write_text(".*\n!.github/\ntest_*.py\n")
+    patterns = _load_graphifyignore(tmp_path)
+
+    rels = list(expected)
+    uncached = {rel: _is_ignored(tmp_path / rel, tmp_path, patterns) for rel in rels}
+    assert uncached == expected
+    for order in (rels, rels[::-1]):
+        cache: dict = {}
+        cached = {rel: _is_ignored(tmp_path / rel, tmp_path, patterns, _cache=cache) for rel in order}
+        assert cached == expected
 
 
 def test_negation_does_not_disable_directory_pruning(tmp_path, monkeypatch):
@@ -3589,6 +3853,237 @@ def test_save_manifest_full_scan_keeps_out_of_root_rows(tmp_path):
         outside.unlink(missing_ok=True)
 
 
+def _write_checkout_files(checkout: Path) -> list[Path]:
+    """Three files under one checkout: a.py, b.py, and src/c.py (#3581)."""
+    files = [checkout / "a.py", checkout / "b.py", checkout / "src" / "c.py"]
+    (checkout / "src").mkdir(parents=True)
+    files[0].write_text("a = 1\n", encoding="utf-8")
+    files[1].write_text("b = 2\n", encoding="utf-8")
+    files[2].write_text("c = 3\n", encoding="utf-8")
+    return files
+
+
+def _save_checkout_manifest(checkout: Path, files: list[Path], *, root, scan_corpus):
+    manifest_path = str(checkout / "graphify-out" / "manifest.json")
+    save_manifest(
+        {"code": [str(p) for p in files]},
+        manifest_path,
+        kind="both",
+        root=root,
+        scan_corpus=scan_corpus,
+    )
+    return manifest_path
+
+
+def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_set(tmp_path):
+    """A copied graphify-out must not keep the old checkout's absolute keys
+    when the new save passes the full scan corpus (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_subset_save_keeps_other_checkout_absolute_keys(tmp_path):
+    """Omitting scan_corpus is a subset save (#917). It must keep absolute
+    keys that point at the other checkout."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b, scan_corpus=None,
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert {"a.py", "b.py", "src/c.py"} <= set(raw)
+    old = [k for k in raw if k.startswith(str(checkout_a))]
+    assert len(old) == 3, f"a subset save must keep the other checkout, got {set(raw)}"
+
+
+def test_save_manifest_subset_save_keeps_includes_that_share_basenames(tmp_path):
+    """A subset save must keep two include rows whose file names match the
+    files it restamps."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    b.write_text("y = 2\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-includes"
+    outside_dir.mkdir()
+    outside_a = outside_dir / "a.py"
+    outside_b = outside_dir / "b.py"
+    outside_a.write_text("z = 3\n", encoding="utf-8")
+    outside_b.write_text("w = 4\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(b), str(outside_a), str(outside_b)]},
+            manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a), str(b)]}, manifest_path, root=tmp_path,
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert {"a.py", "b.py"} <= set(raw)
+        assert str(outside_a.resolve()) in raw, set(raw)
+        assert str(outside_b.resolve()) in raw, set(raw)
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_save_manifest_move_has_no_absolute_key_when_scan_corpus_is_set(tmp_path):
+    """Deleting the old checkout before the save already yields relative keys
+    when scan_corpus is set (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    shutil.rmtree(checkout_a)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_move_has_no_absolute_key_when_scan_corpus_is_unset(tmp_path):
+    """Deleting the old checkout before the save already yields relative keys
+    when scan_corpus is omitted (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    shutil.rmtree(checkout_a)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b, scan_corpus=None,
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_drops_other_checkout_keys_mixed_with_relative_keys(tmp_path):
+    """A manifest that already holds the new relative keys plus the old
+    absolute keys drops the old checkout on the next save (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    manifest_a = _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    mixed = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    stale = json.loads(Path(manifest_a).read_text(encoding="utf-8"))
+    mixed.update(stale)
+    Path(manifest_b).write_text(json.dumps(mixed), encoding="utf-8")
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_keeps_one_include_that_shares_a_basename(tmp_path):
+    """One include row stays even when its file name matches a project file."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-include-a"
+    outside_dir.mkdir()
+    outside = outside_dir / "a.py"
+    outside.write_text("z = 3\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(outside)]}, manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(outside.resolve()) in raw, (
+            f"a single include row must stay, got {set(raw)}"
+        )
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_save_manifest_keeps_includes_whose_paths_are_not_this_tree(tmp_path):
+    """Two include rows stay when their suffixes are not relative keys this save writes."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-includes"
+    outside_dir.mkdir()
+    notes = outside_dir / "notes.md"
+    extra = outside_dir / "extra.md"
+    notes.write_text("notes\n", encoding="utf-8")
+    extra.write_text("extra\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(notes), str(extra)]},
+            manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(notes.resolve()) in raw
+        assert str(extra.resolve()) in raw
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
 def test_detect_incremental_reports_excluded_not_deleted(tmp_path):
     """A previously-indexed file that becomes excluded (still on disk) must
     land in excluded_files, not deleted_files (#1908)."""
@@ -3650,6 +4145,67 @@ def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
     inc2 = detect_incremental(tmp_path, manifest_path, extra_excludes=["b.py"])
     assert inc2["deleted_files"] == []
     assert inc2["excluded_files"] == []
+
+
+# ── #3785: Multi-directory manifest scoping and out-of-root deletion filter ──
+
+def test_detect_incremental_subfolder_ignores_out_of_root_manifest_entries(tmp_path):
+    """#3785: detect_incremental() on a subfolder must ignore manifest entries
+    belonging to other subdirectories or parent directories, neither reporting
+    them as deleted nor as excluded."""
+    workspace = tmp_path / "workspace"
+    sub_a = workspace / "workflows"
+    sub_b = workspace / "experts"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    wf_file = sub_a / "workflow.py"
+    exp_file = sub_b / "expert.py"
+    wf_file.write_text("def run(): pass\n", encoding="utf-8")
+    exp_file.write_text("def consult(): pass\n", encoding="utf-8")
+
+    manifest_path = str(workspace / "graphify-out" / "manifest.json")
+
+    # Step 1: Workspace root or sibling subfolder is graphed
+    full = detect(workspace)
+    save_manifest(full["files"], manifest_path=manifest_path, root=workspace)
+
+    # Step 2: Incremental update on subfolder A only
+    inc_a = detect_incremental(sub_a, manifest_path=manifest_path)
+    assert inc_a["deleted_files"] == [], f"Unexpected false deletions: {inc_a['deleted_files']}"
+    assert inc_a["excluded_files"] == [], f"Unexpected false exclusions: {inc_a['excluded_files']}"
+
+
+def test_detect_incremental_cross_subfolder_shared_manifest(tmp_path):
+    """#3785: Sequential runs on distinct subfolders against a shared manifest
+    must preserve each other's entries so neither run clobbers the other or
+    reports false deletions."""
+    workspace = tmp_path / "workspace"
+    sub_a = workspace / "workflows"
+    sub_b = workspace / "experts"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    (sub_a / "workflow.py").write_text("def run(): pass\n", encoding="utf-8")
+    (sub_b / "expert.py").write_text("def consult(): pass\n", encoding="utf-8")
+
+    manifest_path = str(workspace / "graphify-out" / "manifest.json")
+
+    # Run 1: Graph sub_b
+    full_b = detect(sub_b)
+    save_manifest(full_b["files"], manifest_path=manifest_path, root=sub_b)
+
+    # Run 2: Incremental update on sub_a
+    inc_a = detect_incremental(sub_a, manifest_path=manifest_path)
+    assert inc_a["deleted_files"] == []
+    assert inc_a["excluded_files"] == []
+    save_manifest(inc_a["files"], manifest_path=manifest_path, root=sub_a)
+
+    # Run 3: Incremental update on sub_b must still find its files unchanged
+    inc_b2 = detect_incremental(sub_b, manifest_path=manifest_path)
+    assert inc_b2["deleted_files"] == []
+    assert inc_b2["excluded_files"] == []
+    assert inc_b2["new_files"]["code"] == []
 
 
 # ── #2838: manifest seen timestamps preserved for unchanged entries ──
@@ -3907,3 +4463,104 @@ def test_globstar_matcher_leaves_no_reference_cycle():
     finally:
         gc.enable()
     assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
+
+
+def _home_with_invalid_git(tmp_path, monkeypatch):
+    """A HOME holding a .git git would reject, plus a .gitignore, above a project (#4444)."""
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    (home / ".gitignore").write_text("node_modules\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    proj = home / "work" / "proj"
+    proj.mkdir(parents=True)
+    (proj / ".graphifyignore").write_text("vendor/\n*.generated.py\n")
+    (proj / "main.py").write_text("x = 1")
+    return home, proj
+
+
+@pytest.mark.parametrize("contents", [[], ["config"], ["HEAD"], ["HEAD", "objects"]])
+def test_invalid_git_dir_is_not_a_vcs_root(tmp_path, monkeypatch, contents):
+    """An empty or incomplete .git dir is skipped, so a home .gitignore does not leak in (#4444)."""
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    for name in contents:
+        if name == "HEAD":
+            (home / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        elif name == "config":
+            (home / ".git" / "config").write_text("[core]\n")
+        else:
+            (home / ".git" / name).mkdir()
+    assert detect_mod._find_vcs_root(proj) is None
+    assert [p for _, p in _load_graphifyignore(proj)] == ["vendor/", "*.generated.py"]
+    assert detect(proj)["graphifyignore_patterns"] == 2
+
+
+def test_invalid_git_dir_walk_continues_to_valid_parent(tmp_path):
+    """Skipping an invalid inner .git keeps walking up to the real repo root (#4444)."""
+    _make_git_dir(tmp_path)
+    (tmp_path / ".graphifyignore").write_text("vendor/\n")
+    sub = tmp_path / "pkg"
+    (sub / ".git").mkdir(parents=True)  # stray, invalid
+    assert detect_mod._find_vcs_root(sub) == tmp_path.resolve()
+
+
+def test_valid_git_dir_is_a_vcs_root(tmp_path, monkeypatch):
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    shutil.rmtree(home / ".git")
+    _make_git_dir(home)
+    assert detect_mod._find_vcs_root(proj) == home.resolve()
+    assert "node_modules" in [p for _, p in _load_graphifyignore(proj)]
+
+
+def test_git_file_with_gitdir_is_a_vcs_root(tmp_path):
+    """Linked worktrees and submodules have a .git FILE starting with gitdir:."""
+    wt = tmp_path / "wt"
+    (wt / "sub").mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
+    assert detect_mod._find_vcs_root(wt / "sub") == wt.resolve()
+
+
+def test_git_file_without_gitdir_is_skipped(tmp_path, monkeypatch):
+    home, proj = _home_with_invalid_git(tmp_path, monkeypatch)
+    shutil.rmtree(home / ".git")
+    (home / ".git").write_text("not a git file\n")
+    assert detect_mod._find_vcs_root(proj) is None
+    assert detect(proj)["graphifyignore_patterns"] == 2
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_real_git_repo_and_worktree_are_vcs_roots(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1")
+    _git(repo, "add", "a.py")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    _git(repo, "worktree", "add", "-q", str(tmp_path / "wt"))
+    (repo / "sub").mkdir()
+    assert detect_mod._find_vcs_root(repo / "sub") == repo.resolve()
+    assert detect_mod._find_vcs_root(tmp_path / "wt") == (tmp_path / "wt").resolve()
+
+
+def test_git_dir_symlink_is_followed(tmp_path):
+    real = tmp_path / "real-git"
+    _make_git_dir(tmp_path / "x")
+    (tmp_path / "x" / ".git").rename(real)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    try:
+        (repo / ".git").symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    assert detect_mod._find_vcs_root(repo) == repo.resolve()
+
+
+def test_unreadable_git_file_is_skipped(tmp_path, monkeypatch):
+    (tmp_path / ".git").write_text("gitdir: x\n")
+    real_open = Path.open
+
+    def deny(self, *a, **k):
+        if self.name == ".git":
+            raise PermissionError("denied")
+        return real_open(self, *a, **k)
+    monkeypatch.setattr(Path, "open", deny)
+    assert detect_mod._is_valid_git_marker(tmp_path / ".git") is False

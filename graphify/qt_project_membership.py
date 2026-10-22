@@ -105,7 +105,9 @@ def _resource(index, declaration, metadata, fresh_ids):
     path = literal_path(index.paths[declaration["id"]], metadata.get("value") or "")
     if path is None or path != metadata.get("target_path"):
         return Resolution("unavailable", reason="membership_path_outside_root_or_conflicting")
-    result = index.resource_index.resolve_url(metadata.get("logical_url") or "")
+    # The project owner combines explicit and module-generated providers. A raw
+    # alias-index lookup would bypass cross-representation ambiguity at export.
+    result = index.resolve_url(metadata.get("logical_url") or "")
     if result.status != "resolved":
         return result
     accepted = _target(index, path, fresh_ids)

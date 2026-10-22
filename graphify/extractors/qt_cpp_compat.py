@@ -127,6 +127,86 @@ def _empty_parameter_defaults(source, code, tree, walk):
     return bytes(parsed)
 
 
+def _template_parameter(node, walk):
+    """Require a named template parameter, not an ambiguous initializer argument."""
+    syntax = node.child_by_field_name("type")
+    declarator = node.child_by_field_name("declarator")
+    if syntax is None or declarator is None:
+        return False
+    if not any(child.type == "template_type" for child in walk(syntax)):
+        return False
+    # Parenthesized/functional declarations can also spell ordinary call
+    # arguments. Do not turn that grammar ambiguity into declaration authority.
+    while declarator.type in {"pointer_declarator", "reference_declarator"}:
+        declarator = (declarator.child_by_field_name("declarator")
+                      or (declarator.named_children[-1] if declarator.named_children else None))
+        if declarator is None:
+            return False
+    return declarator.type == "identifier" and not declarator.has_error
+
+
+def _declaration_parameter(node):
+    """Defaults belong to a function declaration, never nested callback types."""
+    parameters = node.parent
+    function = parameters.parent if parameters is not None else None
+    if (parameters is None or parameters.type != "parameter_list" or function is None
+            or function.type != "function_declarator"):
+        return False
+    name = function.child_by_field_name("declarator")
+    if name is None or name.type not in {"identifier", "field_identifier", "qualified_identifier"}:
+        return False
+    owner = function.parent
+    while owner is not None:
+        if owner.type in {"parameter_list", "argument_list", "init_declarator"}:
+            return False
+        if owner.type in {"declaration", "field_declaration", "function_definition"}:
+            return True
+        owner = owner.parent
+    return False
+
+
+def _reclassified_template_defaults(source, code, *, parse, walk):
+    """INC-QML-53: validate empty defaults whose original AST lost the declaration.
+
+    Some template parameter defaults cause expression/init-declarator trees,
+    including error-free misclassification. A speculative omission becomes an
+    accepted parse view only when the recovered AST proves exact parameter
+    ownership. Rejected spans are restored; final admission still owns errors.
+    """
+    candidates = [match for match in _EMPTY.finditer(_statement_code(code))
+                  if source[match.start():match.start() + 1] == b"="]
+    if not candidates:
+        return source
+    proposed = bytearray(source)
+    for match in candidates:
+        proposed[match.start():match.end()] = re.sub(rb"[^\r\n]", b" ", source[match.start():match.end()])
+    tree = parse(bytes(proposed))
+    if tree.has_error:
+        return source
+    parameters = [node for node in walk(tree)
+                  if node.type == "parameter_declaration" and not node.has_error
+                  and _declaration_parameter(node) and _template_parameter(node, walk)]
+    # Indexing by the preceding code token keeps candidate matching linear rather
+    # than comparing every default with every declaration in an untrusted file.
+    by_end = {node.end_byte: node for node in parameters}
+    accepted = set()
+    for match in candidates:
+        previous = match.start()
+        while previous and code[previous - 1] in b" \t\r\n":
+            previous -= 1
+        parameter = by_end.get(previous)
+        following = match.end()
+        while following < len(code) and code[following] in b" \t\r\n":
+            following += 1
+        if (parameter is not None and following < parameter.parent.end_byte
+                and code[following:following + 1] in {b",", b")"}):
+            accepted.add(match.start())
+    for match in candidates:
+        if match.start() not in accepted:
+            proposed[match.start():match.end()] = source[match.start():match.end()]
+    return bytes(proposed)
+
+
 def recover_cpp_syntax(source: bytes, code: bytes, *, parse, walk) -> bytes:
     """Return an equal-length view using the caller's bounded parser/traversal.
 
@@ -139,4 +219,5 @@ def recover_cpp_syntax(source: bytes, code: bytes, *, parse, walk) -> bytes:
     recovered = _unused_statements(source, code, tree, parse=parse, walk=walk)
     if recovered != source:
         tree = parse(recovered)
-    return _empty_parameter_defaults(recovered, code, tree, walk)
+    recovered = _empty_parameter_defaults(recovered, code, tree, walk)
+    return _reclassified_template_defaults(recovered, code, parse=parse, walk=walk)

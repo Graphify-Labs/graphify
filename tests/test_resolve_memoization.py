@@ -68,3 +68,33 @@ def test_exception_paths_match_resolve(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     weird = "a/../b/./c.py"
     assert _resolve_cached(weird) == Path(weird).resolve()
+
+
+@needs_cache
+def test_absolute_path_lookup_skips_getcwd(tmp_path, monkeypatch):
+    """An absolute path resolves the same from any cwd, so its key leaves the
+    cwd out and a memo hit never calls os.getcwd() (a syscall per call).
+
+    A cold Windows Path.resolve() may itself consult the cwd; warm the exact
+    absolute key before observing the memo-hit contract, not just its relative
+    spelling. Cold correctness and cwd-sensitive relative hits stay covered.
+    """
+    target = tmp_path / "a.py"
+    expected = target.resolve()
+    assert _resolve_cached is not None
+    assert _cached_realpath is not None
+    calls = []
+    real_getcwd = os.getcwd
+    monkeypatch.chdir(tmp_path)
+    _cached_realpath.cache_clear()
+    assert _resolve_cached("a.py") == expected  # warm the memo
+    assert _resolve_cached(target) == expected  # distinct absolute memo key
+    before = _cached_realpath.cache_info()
+    monkeypatch.setattr(os, "getcwd", lambda: calls.append(1) or real_getcwd())
+    assert _resolve_cached(target) == expected
+    assert _resolve_cached(str(target)) == expected
+    assert calls == []
+    after = _cached_realpath.cache_info()
+    assert after.misses == before.misses and after.hits == before.hits + 2
+    assert _resolve_cached("a.py") == expected
+    assert calls, "a relative path keys on the cwd, even on a memo hit"

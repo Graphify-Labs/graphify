@@ -19,9 +19,9 @@ def fallback(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Actual Windows read-only attribute")
-@pytest.mark.parametrize("writer", ["text", "json", "replace"])
+@pytest.mark.parametrize("writer", ["text", "json"])
 def test_req_qml018_ac06_readonly_rejects_without_displacing_destination(tmp_path, writer):
-    """The actual OS rejection keeps bytes/permissions; repair then succeeds."""
+    """Owning graph writers reject readonly data; raw owned-copy moves have separate coverage."""
     target, source = tmp_path / "graph.json", tmp_path / "source.tmp"
     target.write_bytes(b'{"original":true}')
     original = target.read_bytes()
@@ -31,10 +31,8 @@ def test_req_qml018_ac06_readonly_rejects_without_displacing_destination(tmp_pat
         with pytest.raises(PermissionError):
             if writer == "text":
                 write_text_atomic(target, '{"new":true}')
-            elif writer == "json":
-                write_json_atomic(target, {"new": True})
             else:
-                os_replace_with_fallback(source, target)
+                write_json_atomic(target, {"new": True})
         assert target.read_bytes() == original
         assert not target.stat().st_mode & stat.S_IWRITE
         assert source.read_bytes() == b'{"new":true}'

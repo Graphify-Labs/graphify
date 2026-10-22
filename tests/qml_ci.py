@@ -34,6 +34,11 @@ def main():
     with tempfile.TemporaryDirectory() as neutral:
         run(interpreter(extra), "-I", smoke, cwd=neutral)
         run(interpreter(core), "-I", smoke, "--core-only", cwd=neutral)
+    # Native source tests include joint Terraform/Qt refresh contracts. Admit
+    # that declared extra only after clean QML/core wheel proof has succeeded;
+    # Ubuntu's artifact-only profile retains its original optional boundaries.
+    if "--artifact-only" not in sys.argv:
+        run("uv", "pip", "install", "--python", interpreter(extra), str(wheel) + "[terraform]")
     environment = dict(os.environ, GRAPHIFY_QML_TEST_WHEEL=str(wheel), PYTHONUTF8="1")
     # Joint upstream/Qt boundaries belong to the same native source profile;
     # Linux's all-extras job owns them while this lane keeps isolated smokes.

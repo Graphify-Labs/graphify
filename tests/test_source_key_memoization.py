@@ -84,3 +84,29 @@ def test_cache_is_cwd_sensitive(tmp_path, monkeypatch):
     # And cross-root: from d2, resolving against d1's root must fall back to
     # the raw path (out-of-root), exactly as the unmemoized code did.
     assert _source_key("mod.py", d1) == _reference_source_key("mod.py", d1)
+
+
+@needs_cache
+def test_absolute_path_lookup_skips_getcwd(tmp_path, monkeypatch):
+    """An absolute source_file memo hit omits cwd; a relative hit still reads it.
+
+    Windows may consult cwd inside the first Path.resolve(). Warm the exact
+    absolute key before instrumentation while checking its cold answer too.
+    """
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    absolute = str(tmp_path / "a.py")
+    assert _cached_source_key is not None
+    calls = []
+    real_getcwd = os.getcwd
+    monkeypatch.chdir(tmp_path)
+    _cached_source_key.cache_clear()
+    assert _source_key("a.py", tmp_path) == "a.py"  # warm the memo
+    assert _source_key(absolute, tmp_path) == "a.py"  # distinct absolute key
+    before = _cached_source_key.cache_info()
+    monkeypatch.setattr(os, "getcwd", lambda: calls.append(1) or real_getcwd())
+    assert _source_key(absolute, tmp_path) == "a.py"
+    assert calls == []
+    after = _cached_source_key.cache_info()
+    assert after.misses == before.misses and after.hits == before.hits + 1
+    assert _source_key("a.py", tmp_path) == "a.py"
+    assert calls, "a relative path keys on the cwd, even on a memo hit"

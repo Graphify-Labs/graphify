@@ -16,14 +16,41 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import errno
+import functools
 import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+def _out_from_env() -> str:
+    """``GRAPHIFY_OUT``, or ``"graphify-out"`` when it is unset, empty, or names
+    the project itself / a parent of it.
+
+    ``os.environ.get(key, default)`` only applies the default when the variable
+    is missing, so ``GRAPHIFY_OUT=`` (a blank ``.env`` entry) used to yield
+    ``""``: output landed in the project root and ``uninstall --purge`` deleted
+    the whole project. ``.`` and ``..`` are never a valid output dir either.
+    """
+    value = (os.environ.get("GRAPHIFY_OUT") or "").strip()
+    if not value:
+        return "graphify-out"
+    norm = os.path.normpath(value)
+    if norm == "." or all(part == ".." for part in Path(norm).parts):
+        print(
+            f"warning: GRAPHIFY_OUT={value!r} points at the project or a parent "
+            "of it; using 'graphify-out' instead",
+            file=sys.stderr,
+        )
+        return "graphify-out"
+    return value
+
+
+GRAPHIFY_OUT = _out_from_env()
 
 
 def _unlink_replace_file(path: "str | Path") -> None:
@@ -38,6 +65,17 @@ def _unlink_replace_file(path: "str | Path") -> None:
         # read-only copy/source; never follow a link or alter its target here.
         os.chmod(path, mode | stat.S_IWRITE)
         os.unlink(path)
+
+
+def _restore_replace_mode(path: "str | Path", original_mode: int) -> None:
+    """Restore owned regular-file permissions without changing a symlink target."""
+    if not stat.S_ISREG(original_mode):
+        return
+    current = os.stat(path, follow_symlinks=False).st_mode
+    if not stat.S_ISREG(current):
+        raise OSError("Replacement file changed during mode restoration")
+    if stat.S_IMODE(current) != stat.S_IMODE(original_mode):
+        os.chmod(path, stat.S_IMODE(original_mode))
 
 
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
@@ -84,14 +122,12 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
         destination_mode = os.stat(dst, follow_symlinks=False).st_mode
     except FileNotFoundError:
         destination_mode = None
-    # A fallback must not bypass a real destination rejection. On Windows a
-    # read-only file can be renamed aside but not removed: doing so previously
-    # published new bytes and then reported failure during source cleanup.
-    # lstat semantics keep direct symlink replacement distinct from its target.
-    if destination_mode is not None and (stat.S_ISDIR(destination_mode) or (
-            os.name == "nt" and stat.S_ISREG(destination_mode)
-            and not destination_mode & stat.S_IWRITE)):
+    # Install/cache owners may replace their own read-only copies. Graph writers
+    # enforce their stricter rejection before calling this shared move helper.
+    # Directories remain invalid; lstat keeps link entries distinct from targets.
+    if destination_mode is not None and stat.S_ISDIR(destination_mode):
         raise replace_error
+    source_mode = os.stat(src, follow_symlinks=False).st_mode
     dst_dir = os.path.dirname(dst) or "."
     fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
     os.close(fd)
@@ -122,7 +158,13 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
                         raise OSError("Replacement source changed during rollback")
                     shutil.copy2(dst, src)
                 os.rename(dst, tmp_copy)
+                # Cleanup may have cleared a read-only bit before failing.
+                # Restore both original modes before consuming the backup;
+                # restoration failure must leave those original bytes available.
+                _restore_replace_mode(src, source_mode)
             if backup_moved and backup is not None:
+                if destination_mode is not None:
+                    _restore_replace_mode(backup, destination_mode)
                 os.rename(backup, dst)
         except OSError as error:
             restore_error = error
@@ -175,6 +217,12 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
+        # On Windows os.replace refuses a read-only destination and the fallback
+        # would rename it aside and clobber it. Refuse here instead, for this
+        # generic write path only: install/cache callers of the fallback must
+        # still be able to replace their own (possibly read-only) copies.
+        if os.name == "nt" and real.is_file() and not os.access(real, os.W_OK):
+            raise PermissionError(errno.EACCES, "destination is read-only", str(real))
         os_replace_with_fallback(tmp, str(real))
     except BaseException:
         try:
@@ -220,12 +268,18 @@ def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
     return True
 
 
-def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
+def write_json_atomic(
+    path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True, compact: bool = False
+) -> None:
     """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
     temp file rather than materializing the whole string first (matters for very
     large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
-    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
-    _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
+    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact`` writes one
+    line with no padding after ``,``/``:`` (graph.json, #3413). See :func:`_atomic_replace`."""
+    separators = (",", ":") if compact else None
+    _atomic_replace(
+        path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii, separators=separators)
+    )
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
@@ -293,6 +347,18 @@ def _is_test_path(path: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=65536)
+def _parent_parts(source_file: str) -> tuple[str, ...]:
+    """Segments of ``source_file``'s parent directory, POSIX-normalized.
+
+    `_path_proximity_winner` compares every candidate's directory against the
+    call site's, and an ambiguous name (``run``, ``get``) brings the same
+    candidate files back on every call site, so the parse is memoized. Equal
+    tuples here mean equal ``PurePosixPath(...).parent`` values.
+    """
+    return PurePosixPath(source_file.replace("\\", "/")).parent.parts
+
+
 def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str]) -> str | None:
     """Pick the candidate whose source file is closest to the call site.
 
@@ -310,7 +376,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     if not call_site_file:
         return None
     call_norm = str(call_site_file).replace("\\", "/")
-    call_dir = PurePosixPath(call_norm).parent
+    call_parts = _parent_parts(call_norm)
 
     # Tier 1: exact same file.
     same_file = [cid for cid, f in candidate_files.items()
@@ -322,7 +388,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 2: same directory.
     same_dir = [cid for cid, f in candidate_files.items()
-                if PurePosixPath(str(f).replace("\\", "/")).parent == call_dir]
+                if _parent_parts(str(f)) == call_parts]
     if len(same_dir) == 1:
         return same_dir[0]
     if len(same_dir) > 1:
@@ -330,10 +396,8 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 3: longest common path-prefix, computed over path segments. The
     # winner must be a strict unique maximum, else we bail (guard holds).
-    call_parts = call_dir.parts
-
     def _common_prefix_len(f: str) -> int:
-        parts = PurePosixPath(str(f).replace("\\", "/")).parent.parts
+        parts = _parent_parts(str(f))
         n = 0
         for a, b in zip(call_parts, parts):
             if a != b:
@@ -534,6 +598,26 @@ def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def restore_arc_direction(data: dict) -> dict:
+    """Stamp each link's stored direction as ``_src``/``_tgt`` before loading.
+
+    graph.json is written ``directed: false`` but carries true direction in arc
+    order (#563), or in ``_src``/``_tgt`` markers on legacy canonicalized files.
+    An undirected ``node_link_graph`` load re-orders endpoints by node-list
+    position, so readers recover direction from these markers. An existing pair
+    wins (#2309); partial or corrupt explicit markers remain intact for consumer
+    rejection instead of acquiring inferred authority from the other endpoint.
+    """
+    links = data.get("links")
+    if not isinstance(links, list):
+        return data
+    return dict(data, links=[
+        {**link, "_src": link.get("source"), "_tgt": link.get("target")}
+        if isinstance(link, dict) and "_src" not in link and "_tgt" not in link else link
+        for link in links
+    ])
+
+
 def load_node_link_graph(path_or_data):
     """Load a graphify graph.json into a networkx graph, accepting both writers.
 
@@ -557,6 +641,15 @@ def load_node_link_graph(path_or_data):
         data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    if isinstance(data, dict):
+        # Semantic loading is the scoped dependency boundary: paths' low-level
+        # atomic writers must not acquire a top-level cycle through build.
+        # Validate transport before NetworkX adoption and detach mutable policy.
+        from graphify.build import _is_external_stub
+        from graphify.qt_import_retention import apply_import_retention, read_import_retention
+        retained = read_import_retention(data, is_placeholder=_is_external_stub)
+        data = apply_import_retention(data, retained, is_placeholder=_is_external_stub)
+        data = restore_arc_direction(data)
     try:
         graph = json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"

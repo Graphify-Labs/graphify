@@ -1,4 +1,4 @@
-"""INC-QML-38: raw publication owns provenance of only its newly minted stubs."""
+"""INC-QML-38/D30: tierless import placeholders preserve authored provenance."""
 from __future__ import annotations
 
 import json
@@ -50,14 +50,14 @@ def prepare(root, monkeypatch, language, *, imported=True):
 
 @pytest.mark.parametrize("operation", ["manual", "watch"])
 @pytest.mark.parametrize("language", ["cpp", "python"])
-def test_first_raw_stub_has_explicit_semantic_origin(tmp_path, monkeypatch, operation, language):
-    """Canonical import minting stamps its sourceless placeholder on the first publication."""
+def test_first_raw_stub_is_tierless(tmp_path, monkeypatch, operation, language):
+    """D30 adopts upstream tierless derived imports on the actual first raw publication."""
     prepare(tmp_path, monkeypatch, language)
     assert update(tmp_path, monkeypatch, operation)
     published = nodes(tmp_path)
     assert published["missing"] == {
         "id": "missing", "label": "missing", "type": "external", "external": True,
-        "file_type": "concept", "source_file": "", "_origin": "semantic"}
+        "file_type": "concept", "source_file": ""}
     source_nodes = [node for node in published.values() if node.get("source_file")]
     assert source_nodes and all(node.get("_origin") == "ast" for node in source_nodes)
 
@@ -99,14 +99,14 @@ def test_existing_authored_endpoint_is_not_stamped_by_minting(tmp_path, monkeypa
     assert update(tmp_path, monkeypatch, operation, [source])
     published = nodes(tmp_path)
     assert published["authored"] == authored
-    assert published["created"]["_origin"] == "semantic"
+    assert "_origin" not in published["created"]
     # The previous import loses its only accepted source reference (INC35).
     assert "missing" not in published
 
 
 @pytest.mark.parametrize("operation", ["manual", "watch"])
-def test_first_stamped_cpp_import_deletion_restoration_and_repeat(tmp_path, monkeypatch, operation):
-    """First-publication provenance remains eligible for exact prior-import orphan cleanup."""
+def test_first_tierless_cpp_import_deletion_restoration_and_repeat(tmp_path, monkeypatch, operation):
+    """Tierless first-publication provenance remains eligible for exact prior-import cleanup."""
     source = prepare(tmp_path, monkeypatch, "cpp")
     original = source.read_bytes()
     assert update(tmp_path, monkeypatch, operation)
@@ -129,7 +129,7 @@ def test_first_stamped_cpp_import_deletion_restoration_and_repeat(tmp_path, monk
 @pytest.mark.parametrize("language", ["cpp", "python"])
 def test_new_stub_replacement_failure_retains_cohort_cache_then_retries(tmp_path, monkeypatch,
                                                                     operation, language):
-    """Real replacement failure cannot accept a newly stamped graph; retry commits once."""
+    """Real replacement failure retains the prior cohort; retry publishes tierless imports once."""
     source = prepare(tmp_path, monkeypatch, language, imported=False)
     # Qt refreshes may omit per-file AST cache admission; a real unchanged
     # Python file supplies durable cache bytes rather than a vacuous snapshot.
@@ -162,7 +162,7 @@ def test_new_stub_replacement_failure_retains_cohort_cache_then_retries(tmp_path
     assert all(path.exists() and path.read_bytes() == data for path, data in caches.items())
     assert not list(output.glob(".gfy-publish-*"))
     assert update(tmp_path, monkeypatch, operation, [source])
-    assert nodes(tmp_path)["missing"]["_origin"] == "semantic"
+    assert "_origin" not in nodes(tmp_path)["missing"]
     accepted, timestamp = pin_graph_mtime(graph)
     assert update(tmp_path, monkeypatch, operation)
     assert graph.read_bytes() == accepted and graph.stat().st_mtime_ns == timestamp

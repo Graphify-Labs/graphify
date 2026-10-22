@@ -168,7 +168,17 @@ def test_public_qt6_cmake_and_qmake_fixtures_describe_identical_membership():
         assert context.target_id is not None
         md = index.module_metadata(context.target_id)
         assert (md["uri"], md["major"], md["minor"]) == ("Public.Tools", 1, 0)
-        assert index.resolve_component("Public.Tools", "Main").target_id == index.resolve_url("qrc:/ui/Public/Tools/Main.qml").target_id
+        component = index.resolve_component("Public.Tools", "Main")
+        resource = index.resolve_url("qrc:/ui/Public/Tools/Main.qml")
+        assert component.status == "resolved"
+        if md["build_system"] == "cmake":
+            # This shared corpus declares the same URL in QRC and through the
+            # CMake module. Distinct mappings remain ambiguous even for one file;
+            # qmake supplies only the explicit QRC mapping, so it stays resolved.
+            assert resource.status == "ambiguous" and resource.reason == "duplicate_resource_alias"
+            assert resource.candidates == (component.target_id,)
+        else:
+            assert resource.target_id == component.target_id
 
 
 @pytest.mark.parametrize("same_file", [False, True])

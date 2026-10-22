@@ -5,8 +5,15 @@ import hashlib
 import re
 from pathlib import Path
 
-from graphify.extractors.qml_cmake_syntax import commands
-from graphify.extractors.qml_project_read import ProjectFacts, extract_project, failure
+from graphify.extractors.qml_cmake_outputs import (
+    add_output_resources, command_inventory, output_pairs,
+)
+from graphify.extractors.qml_cmake_properties import (
+    native_source, properties_for, reject, source_properties, target_sources,
+)
+from graphify.extractors.qml_cmake_resources import add_resources
+from graphify.extractors.qml_project_read import ProjectFacts, extract_project, failure, literal_path
+from graphify.extractors.qml_resources import resource_url
 
 _SINGLE = {"URI", "VERSION", "RESOURCE_PREFIX", "OUTPUT_DIRECTORY", "TYPEINFO",
            "PLUGIN_TARGET", "CLASS_NAME", "NAMESPACE"}
@@ -47,7 +54,7 @@ def _sections(tokens):
     return sections
 
 
-def _module(facts, command):
+def _module(facts, command, properties, consumed):
     start, end = facts.byte_offsets[command.start], facts.byte_offsets[command.end]
     tokens = command.tokens
     if command.scoped or any(token.dynamic for token in tokens):
@@ -73,8 +80,26 @@ def _module(facts, command):
                        no_resource_target_path="NO_RESOURCE_TARGET_PATH" in sections)
     for group, kind in (("QML_FILES", "qml"), ("SOURCES", "cpp"), ("RESOURCES", "resource")):
         for token in sections.get(group, []):
-            facts.add_chars("qt_source", (key, kind, token.value), token.value, token.start, token.end,
-                            owner=module, module_key=key, value=token.value, source_kind=kind)
+            props = properties_for(facts, token, properties)
+            alias = props.get("QT_RESOURCE_ALIAS")
+            if alias is not None and resource_url("/", alias) is None:
+                reject(facts, command, "resource_path_escape_or_invalid_alias")
+                continue
+            consumed.add(literal_path(facts.file, token.value) or token.value)
+            fields = {"resource_alias": alias} if alias is not None else {}
+            if "QT_QML_SINGLETON_TYPE" in props:
+                fields["singleton_type"] = props["QT_QML_SINGLETON_TYPE"] in {"TRUE", "ON", "1"}
+            if "HEADER_FILE_ONLY" in props:
+                fields["header_file_only"] = props["HEADER_FILE_ONLY"] in {"TRUE", "ON", "1"}
+            # Object compilation does not determine native header/AUTOMOC
+            # ownership. Only nonnative IDE inputs become separate tooling facts;
+            # each token keeps its own role without reclassifying its siblings.
+            fact_kind, source_kind = "qt_source", kind
+            if kind == "cpp" and fields.get("header_file_only") and not native_source(token):
+                fact_kind = "qt_tooling_source"
+                source_kind = "tooling"
+            facts.add_chars(fact_kind, (key, source_kind, token.value), token.value, token.start, token.end,
+                            owner=module, module_key=key, value=token.value, source_kind=source_kind, **fields)
     for group in ("IMPORTS", "DEPENDENCIES", "OPTIONAL_IMPORTS", "DEFAULT_IMPORTS"):
         if any(token.value == "TARGET" for token in sections.get(group, [])):
             facts.reject("target_import_requires_policy_and_target_resolution", start, end)
@@ -96,20 +121,36 @@ def _module(facts, command):
     for option in ("PAST_MAJOR_VERSIONS",):
         if option in sections:
             facts.reject("past_major_versions_not_materialized", start, end)
+    return module, key
 
 
 def parse_cmake(source: bytes | str, *, relative_file="CMakeLists.txt") -> dict:
     """Supported declarations are literal, flat and source-local, with exact spans."""
     try:
         facts = ProjectFacts(source, relative_file, "cmake")
-        for command in commands(facts.text):
+        properties, consumed, modules = {}, set(), {}
+        # Eligibility is source-local and bounded; ordinary declarations retain
+        # their existing sequential property/module owners and failure status.
+        inventory = command_inventory(facts.text)
+        pairs = output_pairs(inventory, facts.file, facts.text)
+        for index, command in enumerate(inventory):
+            if index - 1 in pairs:
+                continue
+            if index in pairs:
+                add_output_resources(facts, command, pairs[index], modules, properties, consumed)
+                continue
             if command.name in {"qt_add_qml_module", "qt6_add_qml_module"}:
-                _module(facts, command)
-            elif command.name in {"qt_target_qml_sources", "target_sources",
-                                  "set_source_files_properties", "set_property"}:
-                # These can change the module's source/version/resource metadata.
-                facts.reject("source_mutation_outside_literal_subset", facts.byte_offsets[command.start],
-                             facts.byte_offsets[command.end])
+                module = _module(facts, command, properties, consumed)
+                if module:
+                    modules.setdefault(command.tokens[0].value, []).append(module)
+            elif command.name == "set_source_files_properties":
+                source_properties(facts, command, properties, consumed)
+            elif command.name == "target_sources":
+                target_sources(facts, command, modules, properties, consumed)
+            elif command.name in {"qt_add_resources", "qt6_add_resources"}:
+                add_resources(facts, command, properties, consumed)
+            elif command.name in {"qt_target_qml_sources", "set_property"}:
+                reject(facts, command)
         return facts.result()
     except (UnicodeError, ValueError) as exc:
         return failure(relative_file, "cmake", exc)

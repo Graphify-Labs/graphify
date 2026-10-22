@@ -26,6 +26,63 @@ uses AST cache schema 13 and Qt policy 22; its
 [revision-bound hosted proof](../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
 records current source, native and isolated-install profiles.
 
+INC-QML-53 repairs additional bounded C++ parameter and literal CMake forms under
+the existing criteria. The corrected repair uses Qt policy 25 and AST schema 13;
+its current local source/package evidence and earlier adoption checkpoints are
+recorded [separately](../tests/TRACEABILITY.md#bounded-parser-repair--inc-qml-53).
+The earlier policy-22 hosted checkpoint does not verify this changed source.
+
+INC-QML-54 integrates upstream 0.9.92 while preserving these behavioral criteria.
+Its accepted compatibility decision uses AST schema 18 with upstream grammar
+fingerprinting and language overrides, retaining Qt policy 25 and independent
+semantic-cache ownership. Corrected source `67bb2022` passes the complete local
+source suite: 11,776 passed, 173 explicitly assigned skips, zero failures/errors;
+all four preservation checks pass. Its source-matched wheel verifies all 327
+shipped Graphify files and passes 715 installed cases with one explicit GraphML
+symlink-capability skip. A separate locked HCL add-on passes six cases. The
+historical `90578033` full source failure is recorded separately. Earlier
+adoption evidence does not verify the new inputs. The
+[integration matrix](qt-qml/PLAN.md#inc-qml-54--upstream-0992-integration)
+identifies the affected criteria before conflict resolution. The installed
+policy-25 tool remains the separately verified earlier production tree.
+The [corrected committed checkpoint](../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+records source, installed and separate HCL profiles. The six added Windows
+modules plus the existing CI guard pass 76 cases with four explicit platform
+skips; all 29 critical native cases and all four preservation checks pass.
+This later CI/test/docs working-tree proof is separate from source67's complete
+suite. New hosted head/base/checkout, review/merge and exact merged-SHA proof
+remain pending.
+Whole typing still fails with the same 651 diagnostics as `90578033`, with no
+added or removed diagnostics under the verified profile. The active per-user
+tool and application graph are unchanged by this integration.
+
+INC-QML-55 addresses a separate native wheel-runner environment gap exposed at
+published source `5876f0a4`: the prefix-selected suite includes two Terraform
+composition regressions, but its QML/watch environment lacks the optional HCL
+parser. Status: **Implemented; five launcher tests and the exact two-case
+installed recovery pass locally; new hosted proof pending**. This changes only test-profile admission after clean
+QML/core smokes; parser/runtime behavior, package dependencies and the pinned
+0.9.92 integration remain unchanged. The advisory security findings are a
+separate unresolved baseline, not part of this environment correction.
+
+INC-QML-56 separately addresses two Linux source-proof gaps at source `5876f0a4`:
+aggregate newline fixtures transformed byte-owning native C++ inputs outside
+the QML directory, and a source evidence gate retained an obsolete six-case
+cache expectation although all fourteen current cache cases pass. Status:
+**Implemented; 79 focused local cases and all twelve committed-LF aggregate
+cases pass in separate selections; new hosted proof pending**. Preserve original-byte contracts wherever native inputs are located,
+all valid inputs and all twelve strict aggregate cases. Versioned required-case
+evidence must match actual collected identities; no production normalization,
+attribute filtering or failure-to-pass relabeling belongs to this correction.
+
+INC-QML-57 addresses a later watch-test isolation failure at source `c7386ad0`.
+Status: **Implemented; 31 local cases pass with one explicit POSIX-boundary skip;
+new-head hosted verification pending**. Isolate the deterministic event clock from the process-wide
+standard library while preserving real rebuilds and existing assertions. Its
+local reproduction identifies a harness-contamination mechanism; the exact
+nested caller in the hosted failure was not captured. Runtime behavior remains
+unchanged, and cancelled jobs do not establish acceptance.
+
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
 not Verified across the full declared platform matrix. The earlier adoption
@@ -87,7 +144,7 @@ The declared parser backend installs on supported Python/OS targets, parses the 
 
 **Acceptance Criteria**
 
-1 - A built Graphify wheel with the selected QML extra installs in each declared Python/OS lane and exposes a usable parser through Graphify's production entry point; record parser/API/grammar versions and licenses. (`REQ-QML-001-AC01`)
+1 - A built Graphify wheel with the selected QML extra installs in each declared Python/OS lane and exposes a usable parser through Graphify's production entry point; record parser/API/grammar versions and licenses. Clean QML/watch and core-only installed smokes complete before test-profile add-ons can alter their environment, preserving the evidence for both original installs. (`REQ-QML-001-AC01`)
 
 2 - With network access disabled and no Qt SDK, every supported-syntax fixture yields its hand-checked declarations and spans; repeated runs produce the same normalized result. (`REQ-QML-001-AC02`)
 
@@ -103,7 +160,7 @@ Full detection and update agree on inclusion of `.qml`, `.ui.qml`, and supported
 
 **Acceptance Criteria**
 
-1 - Full detection, code-only collection, direct supported-file extraction, manual update and watch admit `.qml` and `.ui.qml`; each path selects the same intended extractor. (`REQ-QML-002-AC01`)
+1 - Full detection, code-only collection, direct supported-file extraction, manual update and watch admit `.qml` and `.ui.qml`; each path selects the same intended extractor. An explicit supported language override away from C++ takes precedence over a physical native Qt suffix; selecting another language cannot invoke native Qt collectors or mint their providers solely from that suffix. (`REQ-QML-002-AC01`)
 
 2 - Each delivered metadata format, including exact-name `qmldir` and `CMakeLists.txt`, is admitted consistently by its applicable entry points; unrelated extensionless files remain excluded. (`REQ-QML-002-AC02`)
 
@@ -121,7 +178,7 @@ Components, object instances, properties, signals, and functions produce source-
 
 1 - A fixture with nested objects, properties, signals and functions yields exactly the expected declarations, ownership links, original names and source locations. (`REQ-QML-003-AC01`)
 
-2 - Equal `id`/member names in different component scopes, duplicate basenames in different directories, and `Panel.qml` beside `Panel.cpp` produce distinct identities. (`REQ-QML-003-AC02`)
+2 - Equal `id`/member names in different component scopes, duplicate basenames in different directories, and `Panel.qml` beside `Panel.cpp` produce distinct identities. File records and source declarations remain distinct when an admitted walked directory alias combines a neighboring-file stem collision with a same-named variable; physical-path normalization cannot collapse accepted lexical owners during final ID remapping. (`REQ-QML-003-AC02`)
 
 3 - Comments, strings containing braces/type names, and grouped property blocks create no false component/object declarations; valid object declarations remain present. (`REQ-QML-003-AC03`)
 
@@ -225,13 +282,38 @@ Supported literal CMake, qmake, `qmldir`, `.qmltypes`, and `.qrc` declarations d
 
 **Acceptance Criteria**
 
-1 - Qt 6 CMake and qmake fixtures yield the expected literal module URI/version, sources, imports and resources; macro-based C++ exposure gets its module context from this evidence. (`REQ-QML-009-AC01`)
+1 - Qt 6 CMake and qmake fixtures yield the expected literal module URI/version, sources, imports and resources; macro-based C++ exposure gets its module context from this evidence. A flat literal private C/C++ source addition may join exactly one preceding source-local QML module target. Native inputs retain source membership when `HEADER_FILE_ONLY` disables ordinary compilation; that property alone cannot exclude a declared Qt header or its native provider. Explicit nonnative tooling inputs retain separate facts and cannot establish runtime module membership or a native provider. (`REQ-QML-009-AC01`)
 
 2 - Supported `qmldir` and `.qmltypes` fixtures retain exports, flags, members and provenance; conflicting source/generated declarations retain both origins and a conflict diagnostic. (`REQ-QML-009-AC02`)
 
-3 - `.qrc` prefixes/aliases resolve supported resource URLs to accepted source files; traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
+3 - `.qrc` and supported literal target-form CMake resource prefixes/aliases resolve resource URLs to accepted source files. A supported source-local variable-output resource pair records its literal QRC inputs and generated-resource consumption through a uniquely preceding QML module; it never invents generated C++ endpoints or resource aliases. A source-property alias replaces the physical resource spelling rather than creating a second runtime URL; malformed or conflicting evidence cannot restore that fallback. Explicit resource and module-generated providers participate in one ambiguity decision: distinct declarations remain unresolved regardless of discovery order, including when they name one physical endpoint; only repeated copies of the same declaration identity coalesce. Unsupported source-property directory selectors and discarded-content resources cannot establish local aliases or source endpoints. Traversal, out-of-root references and XML external-entity payloads cannot read host files or expand the corpus. (`REQ-QML-009-AC03`)
 
-4 - CMake/qmake conditions or expressions outside the literal subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
+4 - CMake/qmake conditions or expressions outside the accepted literal, bounded resource-output-pair or proven native-RC build-only subset produce an incomplete/unsupported reason; analysis never runs a build tool, plugin, `moc` or QML engine. (`REQ-QML-009-AC04`)
+
+For source-property commands whose complete literal source list consists of
+native `.rc` inputs, `INCLUDE_DIRECTORIES` and `OBJECT_DEPENDS` are admitted as
+build-only declarations without interpreting, expanding or reading their values.
+Either property alone, both in either order, and repeated compile-only names
+cannot establish a QML/C++ provider,
+runtime resource URL or additional analyzed source. Property scope selectors reject
+before this exemption. Mixed non-RC inputs, runtime-affecting or unknown properties,
+dynamic source paths and malformed property syntax remain unsupported. This
+bounded refinement belongs to REQ-QML-009-AC01/AC04; its policy-25 local source
+cases and isolated artifact/install profile are verified; hosted proof remains pending. It does not alter native `HEADER_FILE_ONLY` membership
+or authorize out-of-root declarations.
+
+Status: **Policy-25 local source cases and isolated artifact/install profile
+verified; hosted proof pending**. Earlier policy-24 artifact evidence is historical;
+global/team adoption remains separate.
+The extension admits source properties before metadata use and explicit
+`qt_add_resources`/`qt6_add_resources` target/name/PREFIX/FILES mappings. Bare QML
+`target_sources`, unknown/duplicate/not-yet-declared module targets, public or
+interface additions, computed inputs, relevant conditions, late property changes,
+`DIRECTORY`/`TARGET_DIRECTORY` property selectors, generated inputs and unsupported
+resource options including `DISCARD_FILE_CONTENTS` remain excluded. A literal
+native `.rc` addition and its `INCLUDE_DIRECTORIES`/`OBJECT_DEPENDS` properties may be exempted only
+because they cannot change analyzed QML/C++ membership or QRC URL identity.
+Existing metadata bounds and publication guards remain mandatory.
 
 <a name="qml-010--deterministic-graph-and-provenance"></a>
 
@@ -241,13 +323,13 @@ Repeated analysis of identical input has stable IDs and normalized output. Seria
 
 **Acceptance Criteria**
 
-1 - Identical inputs yield equal canonical node/edge/fact output across process count, filesystem order and cache state; case-distinct or normalization-colliding names remain distinguishable. (`REQ-QML-010-AC01`)
+1 - Identical inputs yield equal canonical node/edge/fact output across process count, filesystem order and cache state; case-distinct or normalization-colliding names remain distinguishable. When native source newline bytes change, facts retain exact original-byte spans/source sizes and explicitly byte-derived site identities may change; accepted semantic node/reference roles and relationship topology remain equivalent. Unchanged source retains exact identity and attribute equality. (`REQ-QML-010-AC01`)
 
-2 - Every emitted edge has valid endpoints and every source-backed fact retains an accepted root-relative path and correct source span after ID remapping and JSON reload. (`REQ-QML-010-AC02`)
+2 - Every emitted edge has valid endpoints and every source-backed fact retains an accepted root-relative path and correct source span after ID remapping and JSON reload. Exact copies of one source-owned Qt module/source/resource declaration may coalesce; conflicting copies reject rather than selecting metadata by input order. Generic namespace identities shared across source files retain their established provenance behavior. (`REQ-QML-010-AC02`)
 
 3 - A fixture with different relations on the same endpoint pair round-trips all promised facts through build/export/reload; no relation disappears through simple-graph overwrite. (`REQ-QML-010-AC03`)
 
-4 - Extracted syntax, inferred resolution and ambiguity retain their accepted confidence/evidence distinction; sourceless stubs cannot overwrite a source-backed definition's provenance. (`REQ-QML-010-AC04`)
+4 - Extracted syntax, inferred resolution and ambiguity retain their accepted confidence/evidence distinction; sourceless stubs cannot overwrite a source-backed definition's provenance. Tierless import-placeholder treatment is confined to the canonical minted shape and D30's explicit legacy-shape compatibility convention. Metadata even when empty, source locations, unknown attributes, other origins and noncanonical values remain protected. An exact-shape authored legacy record is indistinguishable from an automatic one; the convention may treat its historical semantic stamp as automatic without claiming authorship certainty. (`REQ-QML-010-AC04`)
 
 <a name="qml-011--incremental-correctness"></a>
 
@@ -261,9 +343,24 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 
 2 - Metadata-only and C++-registration-only edits, provider deletion/rename and duplicate-provider introduction update links in unchanged QML and remove stale derived edges. (`REQ-QML-011-AC02`)
 
-3 - Parser/grammar/config/import-root/ignore-policy changes invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. Shared physical-source edits, rename and deletion remove stale facts under each remaining admitted owner; one notification cannot preserve an obsolete sibling owner. An absent source before discovery remains an intentional deletion, while failed identity lookup after admission rejects partial work. (`REQ-QML-011-AC03`)
+3 - Parser/grammar/config/import-root/ignore-policy changes, including supported language-override transitions, invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. Shared physical-source edits, rename and deletion remove stale facts under each remaining admitted owner; one notification cannot preserve an obsolete sibling owner. When a changed source or an already-recorded deleted source shares a canonical file-node identity with accepted surviving sources, refresh that bounded collision cohort before constructing incremental context so unchanged peers retain clean-build identity. Deleted identities may seed keys only; they are neither read nor resurrected. This refresh cannot admit outside sources or add unrelated files to parsing; unrelated unchanged sources retain their existing cache policy. An absent source before discovery remains an intentional deletion, while failed identity lookup after admission rejects partial work. (`REQ-QML-011-AC03`)
 
-4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. Still-referenced external nodes and source-backed definitions remain intact. (`REQ-QML-011-AC04`)
+4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. In Qt-aware refresh, automatic retirement of an existing C++ import placeholder additionally requires exact accepted source-owned prior import evidence; canonical node shape alone or incomplete, foreign, conflicting or nonauthoritative prior transport cannot grant cleanup authority through any generic sweep. Bounded retained-cleanup context persists with the same accepted graph through raw/clustered output, reload, repeat and removal of the last Qt source. It restricts cleanup only, grants no provider or deletion authority, and clears when accepted new source proof or a legitimate node removal/role transition supersedes it. Malformed context rejects publication without replacing accepted products. Still-referenced external nodes and source-backed definitions remain intact. Consumed pending community-label products are removed only with successful publication of their corresponding product cohort; an already absent product and repeated consumption are safe no-ops. (`REQ-QML-011-AC04`)
+
+The INC-QML-54 pending-label consumption and transactional-deletion refinement is
+**Implemented; corrected source67 full-suite and isolated installed cases pass;
+hosted verification pending**. Earlier incremental evidence remains bound to its
+recorded products and does not establish this new deletion boundary.
+The post-905 D30/prior-import interaction is **Implemented; corrected source67
+full-suite and all 136 installed retention/diagnostic cases pass; hosted proof pending**:
+the original prior-source-proof preservation assertions remain authoritative.
+Fresh accepted source reintroduction clears obsolete retention in that same
+successful update. Legacy reload/backfill cannot manufacture accepted fresh
+import evidence or silently clear a prior restriction.
+Reconciliation preserves the current extraction's diagnostic/failure metadata
+alongside merged graph structure. Unchanged cold/warm success retains the same
+empty diagnostic keys; changed current diagnostics replace old observations,
+and prior accepted graph diagnostics cannot be replayed as current source state.
 
 <a name="qml-012--failure-handling-and-persistence"></a>
 
@@ -273,15 +370,25 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 **Acceptance Criteria**
 
-1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure at the Qt/QML resolution boundary cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. Failed physical co-owner selection rejects with `WATCH_SOURCE_IDENTITY_FAILED`; failed native file-spelling admission rejects with `SOURCE_INPUT_IDENTITY_FAILED` before worker/cache work. Both pre-extraction rejections use bounded quoted relative context or an explicit empty field, omit backend bodies and identify repair/retry guidance, without publishing fresh source facts. (`REQ-QML-012-AC01`)
+1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure at the Qt/QML resolution boundary cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. Failed physical co-owner selection rejects with `WATCH_SOURCE_IDENTITY_FAILED`; failed native file-spelling admission rejects with `SOURCE_INPUT_IDENTITY_FAILED` before worker/cache work. Both pre-extraction rejections use bounded quoted relative context or an explicit empty field, omit backend bodies and identify repair/retry guidance, without publishing fresh source facts. Invalid retained-import context rejects with `QT_IMPORT_RETENTION_INVALID` before reload or publication can turn corrupt cleanup restrictions into authority; diagnostics disclose no raw IDs, paths or backend bodies. (`REQ-QML-012-AC01`)
 
-2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. A second failure cleaning partial setup reports `GRAPH_PUBLICATION_CLEANUP`, preserves accepted bytes and retained owned recovery copies, and omits private paths/backend bodies from the public message. (`REQ-QML-012-AC02`)
+2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication, including requested deletion of a consumed pending-label product, must complete as one cohort before reporting update success. Read-only accepted output products reject before displacement, independently of lower-level installer/cache-owned replacement permissions. A failed deletion or replacement restores the prior cohort, including previously deleted bytes; failed publication reports failure with explicit recovery on rollback failure. A second failure cleaning partial setup reports `GRAPH_PUBLICATION_CLEANUP`, preserves accepted bytes and retained owned recovery copies, and omits private paths/backend bodies from the public message. (`REQ-QML-012-AC02`)
 
 3 - Intentional deletion is distinguished from extraction failure; zero-node/shrink guards, provenance preference and documented destructive-update controls preserve their existing behavior. (`REQ-QML-012-AC03`)
 
-4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. (`REQ-QML-012-AC04`)
+4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. Transactional deletion accepts only a bounded product name from its declared inventory; unsafe or undeclared names reject before any product mutation. Retained-import context uses schema 1, exact keys/types and a sorted unique list of at most 100,000 existing canonical placeholder IDs, each at most 4,096 UTF-8 bytes. Unknown versions/keys, duplicates, foreign or noncanonical nodes and over-limit values reject without truncating or discarding restrictions to permit cleanup. (`REQ-QML-012-AC04`)
 
-Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles**.
+Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles; INC-QML-54 source67 full-suite and isolated installed cases pass, with new hosted proof pending**.
+Post-905 reconciliation of lower-level owned-copy replacement with unchanged
+atomic/product read-only rejection is implemented in the bounded 35-pass source
+selection, with three explicit platform skips. Corrected source67 full-suite and
+source-matched installed proof now pass; platform skips and new hosted proof
+remain explicit gaps. Earlier receipts do not verify the corrected shared helper.
+Invalid prior retained-import context rejects before extraction or candidate AST
+cache writes, including forced manual/watch updates. Existing successful cache
+bytes and the accepted product cohort remain unchanged; corrected retry succeeds.
+This preflight does not change the separate rule that valid source facts may
+survive a later product-publication failure.
 INC-QML-48 corrects the Python 3.10 cleanup-fault fixture's injection boundary;
 its exact regression passes all four hosted Linux interpreters.
 INC-QML-41 adds persistent-identity failure coverage
@@ -310,9 +417,14 @@ Query, explain, path, affected, JSON/HTML and other supported exports, and optio
 
 2 - Affected traversal follows the documented dependency direction for property/signal changes and includes the expected handlers/components, including accepted Qt relation contexts. (`REQ-QML-013-AC02`)
 
-3 - JSON, HTML and each advertised export retain the supported Qt/QML facts and evidence after reload; omission by a consumer is explicit rather than presented as full support. (`REQ-QML-013-AC03`)
+3 - JSON, HTML and each advertised export retain the supported Qt/QML facts and evidence after reload; omission by a consumer is explicit rather than presented as full support. Serialization may add required schema/package-version fields to the output, but cannot mutate the caller's graph metadata, nodes or edges on success or rejection. GraphML publication on Windows rejects a read-only regular destination before displacement and retains prior bytes, attributes and input graph; repaired retry/repeat succeeds. A destination symlink retains entry-replacement semantics without changing its target bytes or permissions. (`REQ-QML-013-AC03`)
 
 4 - With the MCP extra installed, production MCP queries agree with equivalent CLI fixtures; searchable Qt metadata is deliberately projected/indexed rather than assumed discoverable. (`REQ-QML-013-AC04`)
+
+INC-QML-54's post-905 GraphML owner preflight is **Implemented with corrected
+source67 full-suite and isolated installed proof** for read-only/real-failure/
+retry cases. Its real-symlink case retains an explicit platform skip; new hosted
+proof remains required. Earlier installed-wheel results retain their own scope.
 
 <a name="qml-014--platform-and-compatibility-evidence"></a>
 
@@ -322,11 +434,11 @@ Supported Python/OS targets have install and behavior evidence. Mixed C++/JS and
 
 **Acceptance Criteria**
 
-1 - Every advertised Python/OS lane has a successful parser install and offline production-extraction result against the agreed corpus, with exact versions and extras recorded. (`REQ-QML-014-AC01`)
+1 - Every advertised Python/OS lane has a successful parser install and offline production-extraction result against the agreed corpus, with exact versions and extras recorded. After both clean QML/watch and core-only smokes pass, the native source-test profile admits the same reviewed wheel's Terraform extra before running its selected Terraform composition regressions. The artifact-only profile does not admit that add-on. Add-on failure stops before source pytest without a fallback or passing-support claim. (`REQ-QML-014-AC01`)
 
 2 - Windows path, Unicode, same-stem, relocated-root and optional-parser-absence fixtures pass the same observable contracts as supported POSIX lanes. (`REQ-QML-014-AC02`)
 
-3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. (`REQ-QML-014-AC03`)
+3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. Aggregate newline validation preserves exact bytes of native inputs that own byte-based metadata regardless of fixture directory, while transforming non-native text exactly; strict graph identities/attributes and dedicated real native LF/CRLF span/topology coverage remain mandatory. Deterministic watch-event harnesses isolate their event clock without replacing the process-wide standard-library clock; nested real rebuild/subprocess waits must not consume synthetic watch events. (`REQ-QML-014-AC03`)
 
 4 - Skips, baseline portability defects, unavailable optional dependencies and type-check failures remain separately reported; a skipped or unrun lane cannot count as passing support evidence. (`REQ-QML-014-AC04`)
 
@@ -398,7 +510,7 @@ Installed Qt/QML analysis supports the newly accepted project/declaration and ty
 
 6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and existing successful content-keyed source-cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures. JSON serialization rejects partial, foreign, ill-typed or contradictory direction markers before writing, retains previous output and reports QT_EXPORT_DIRECTION; force cannot turn invalid markers into valid-looking endpoints. A corrected retry succeeds and a repeated no-change update is idempotent from the first successful publication, including raw no-cluster output; transient extraction-run lists or absent-versus-empty diagnostic lists alone cannot rewrite accepted graph bytes or modification time. Meaningful diagnostics and source changes remain observable. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
 
-7 - Ambiguous `.h` inputs with supported source-visible C++ declaration markers select the C++ extractor across whitespace, BOM, CRLF and Unicode forms. Comments and string literals cannot supply those markers; plain C and inconclusive headers retain existing C dispatch, and Objective-C dispatch retains its established priority. Header-only edits refresh the selected extractor's source facts through the facade and installed updates without executing the header. (`REQ-QML-018-AC07`)
+7 - Without an explicit supported language override, ambiguous `.h` inputs with supported source-visible C++ declaration markers select the C++ extractor across whitespace, BOM, CRLF and Unicode forms. Comments and string literals cannot supply those markers; plain C and inconclusive headers retain existing C dispatch, and Objective-C dispatch retains its established priority. An explicit supported override away from C++ retains its chosen language without a Qt/native syntax diagnostic or provider authority derived only from the filename. Header-only edits and override transitions refresh the selected extractor's source facts through the facade and installed updates without executing the header. (`REQ-QML-018-AC07`)
 
 Status: **Implemented; all seven criteria locally verified for the bounded
 Windows x64/Python 3.12 profile**. Individual success, rejection, update and failure
@@ -479,9 +591,11 @@ project code.
 
 2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; separately discovered in-corpus symlink sources retain their distinct walked provenance even when their physical target is shared. Alternate spelling of the scan root must not collapse those corpus owners or authorize new target roles. Graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
 
-3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Earlier native/Qt products refresh under current policy 22 at unchanged package/source versions, including canonical-only followed metadata from policy 21; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Earlier native/Qt products refresh under the current Qt policy at unchanged package/source versions, including canonical-only followed metadata from policy 21 and superseded literal-metadata profiles; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
 
-Status: **Implemented; earlier canonical/membership profiles have recorded verification. Followed Qt metadata provenance and current policy-22 integration require new profile evidence**.
+Status: **Implemented; canonical/membership and followed-metadata profiles retain
+revision-bound evidence. The policy-25 RC refinement has local source evidence;
+isolated artifact/install cases pass, while hosted proof remains pending**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
 evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
 The initial two source/lifecycle suites contribute 37 passing cases to their
@@ -557,25 +671,32 @@ The existing HTML publication and canonical graph contracts remain authoritative
 
 ### REQ-CORE-001 — Installed assistant contracts
 
-Installed assistant hooks invoke the Graphify CLI through the intended executable
+Installed assistant hooks and generated runbooks invoke Graphify through the intended executable
 identity. Skill installation, refresh and uninstall honor the existing destination
 and content contract of the selected operating-system profile.
 
 **Acceptance Criteria**
 
-1 - A Codex hook installed from an executable path containing spaces reaches that exact executable and passes `hook-check` as the CLI subcommand. Literal path transport preserves executable identity and argument boundaries through the supported consumer shells, with a nonmatching executable rejected by the regression. (`REQ-CORE-001-AC01`)
+1 - A Codex hook installed from an executable path containing spaces reaches that exact executable and passes `hook-check` as the CLI subcommand. Generated POSIX runbooks invoke their recorded Python interpreter as one executable word, preserving literal arguments, working directory and update ordering when the path contains spaces or legal shell-sensitive characters. A split-prefix or PATH decoy cannot substitute another interpreter or Graphify; an empty, missing or failing recorded interpreter fails without an installation or runtime-selection fallback. Literal path transport preserves executable identity and argument boundaries through the supported consumer shells, with a nonmatching executable rejected by the regression. (`REQ-CORE-001-AC01`)
 
 2 - Hermes and Gemini user installations use their platform-owned destinations and include resolvable skill references. POSIX and Windows profiles use their documented home/data and Gemini/shared-agents locations; project installation retains its separate scope. (`REQ-CORE-001-AC02`)
 
-3 - Refresh writes the correct platform-adapted skill bytes for each uniquely owned stale installed destination and preserves unrelated content. Ambiguous shared Gemini/agents copies retain their bytes and stamp; version checking with automatic refresh disabled reports the actual matching destination/installer. An already current installation is unchanged. Shared-directory ownership isolation remains outside the implemented contract. (`REQ-CORE-001-AC03`)
+3 - Refresh writes the correct platform-adapted skill bytes for each uniquely owned stale installed destination and preserves unrelated content. Authorized replacement of an installer/cache-owned copy may consume a read-only regular source or destination; a directory destination rejects, and failed replacement or cleanup restores prior source/destination bytes and modes without changing a symlink target's permissions. This permission belongs to the owning replacement caller and does not authorize generic atomic writes or accepted graph products to overwrite a read-only destination. Ambiguous shared Gemini/agents copies retain their bytes and stamp; version checking with automatic refresh disabled reports the actual matching destination/installer. An already current installation is unchanged. Shared-directory ownership isolation remains outside the implemented contract. (`REQ-CORE-001-AC03`)
 
 4 - Uninstall observes the established global/project scope and explicit user-skill opt-in. Protected shared-agent content is retained according to the current platform contract; missing installations remain a safe no-op. (`REQ-CORE-001-AC04`)
 
-5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
+5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. For the generated encoded Windows form, ownership additionally requires exact outer PowerShell options, bounded valid base64/UTF-16 and the exact static hook-check wrapper, permitting only trailing ASCII spaces/tabs after the encoded token. Status alone or general shell/whitespace normalization cannot authorize removal. Leading whitespace, changed options/payload/script/marker, ordinary, foreign and malformed entries remain authored. Recognition executes no script, performs no filesystem lookup and changes no configuration. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
 
-Status: **Locally Verified for native Windows and destination decision profiles**.
-All five criteria have focused source and native consumer evidence; the full
-Windows source suite has no failures. Other kernels and actual Codex Desktop
+Status: **Locally Verified for the recorded native Windows and destination profiles; INC-QML-54 corrected source67 full-suite and isolated installed cases pass, with new hosted proof pending**.
+The post-905 caller-owned read-only correction is **Implemented locally** with
+35 focused passes and three platform skips. Recorded-interpreter source and
+freshly regenerated shipped-resource selections pass: six actual transport cases
+and ten strict compatibility cases, within a 300-pass/34-skip source selection.
+Earlier hook/replacement/wheel
+receipts do not verify these changed contracts, and skips retain their gaps.
+The earlier profile records focused source/native evidence for all five criteria
+and a full Windows source run without failures; it does not verify the expanded
+encoded cleanup boundary. Other kernels and actual Codex Desktop
 event delivery retain separate system boundaries. INC-CORE-01 and INC-CORE-05
 belong to the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix).
 
@@ -625,9 +746,9 @@ dependencies, and reports failures and exclusions explicitly.
 
 1 - Ubuntu Python 3.10, 3.12, 3.13 and 3.14 jobs execute the full source suite with all frozen extras, a real C preprocessor, Bash/sh, Node and a reviewed wheel input. A disposable pinned FalkorDB service admits graph commands before its persistence/idempotency tests run. Missing tools or the wrong service fail readiness; they cannot establish passing acceptance through skips. Real POSIX object, permission and deleted-directory fixtures execute where applicable. (`REQ-CORE-004-AC01`)
 
-2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
+2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. The assigned profile includes owned read-only replacement/rollback, guarded atomic read-only rejection, GraphML rejection/failure/retry, actual shipped recorded-interpreter dispatch and native LF/CRLF byte/topology regressions. A portable guard validates the existing job's actual literal selection inventory; a real PowerShell consumer evaluates that exact assignment and agrees with the guarded inventory. Missing required modules, duplicate/malformed selection and comment-only false inclusion reject. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
 
-3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
+3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. Assigned source/native case identities and outcomes remain individually reviewable and agree with actual pytest collection. Missing, duplicate, unexpected, swapped or nonpassing required identities reject; matching a module count cannot substitute for exact case evidence. Collection or a skipped case cannot establish passing acceptance. Native-case and integrity reports are written before a combined rejection, so failed evidence remains inspectable. The test's actual PowerShell engine and the outer workflow host remain distinct evidence when versions differ. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
 
 4 - The established push/PR/dispatch triggers and existing required/advisory gate policies remain intact. One PR event owns its validation; no equivalent full feature-push dispatch is added. Obsolete PR revisions can cancel their own workflow runs, while default-branch and explicit recovery runs retain distinct groups and cannot be cancelled by a later PR revision. Jobs use read-only repository permissions. (`REQ-CORE-004-AC04`)
 
@@ -639,6 +760,13 @@ tests and configuration checks do not establish hosted acceptance. The
 binds actual jobs, archives, individual required cases, integrity and cleanup to
 their tested source/base/checkout. Baseline typing, advisory security and separate
 application/device procedures are outside this runner-profile verification.
+
+INC-QML-54's expanded Windows selection and individual-case integrity guard are
+**Implemented and locally verified: the seven-module native gate passes 76
+cases with four platform skips; all 29 critical cases pass** under
+REQ-CORE-004-AC02/AC03. Its local source and installed
+profiles do not extend the earlier hosted checkpoint to the new workflow/head.
+Fresh hosted execution, upload and exact revision evidence remain required.
 
 ## Current-upstream integration profile
 
@@ -688,3 +816,56 @@ so oversized bytes reach and fail the intended metadata-size boundary. The
 scope-limit and size-limit rejection assertions remain unchanged. All 35 metadata
 boundary cases pass on native Python 3.10/3.12/3.13/3.14 after the correction;
 exact corrected hosted evidence is recorded in the integrated checkpoint above.
+
+## Bounded parser repair profile — INC-QML-53
+
+Valid empty template-parameter defaults must retain their function and neighboring
+native-member declarations with original byte spans. Removing a candidate default
+in a same-length parse view is accepted only when the reparsed AST proves a named
+template parameter of a function declaration/definition. Ordinary initializers,
+calls, macro text, nested callback ambiguity and malformed defaults cannot borrow
+that authority. This refines REQ-QML-001-AC04, REQ-QML-008-AC02/AC04 and
+REQ-QML-018-AC02; it does not promise general C++ grammar recovery.
+
+The literal metadata additions above refine REQ-QML-009-AC01/AC03/AC04 and the
+existing provenance, membership and incremental criteria. Qt policy 25 requires
+refresh at unchanged package/source identity; AST schema 13 and semantic-cache
+ownership are unchanged. Unsupported input still reaches the normal incomplete
+metadata/native syntax diagnostics and cannot replace accepted products, including
+under force. Focused source tests and before-fix regressions pass where assigned
+in traceability. Policy-23/24 wheel/install checkpoints remain historical and do
+not verify the new RC prerequisite admission. Corrected policy-25 source and
+adjacent compatibility cases and the fresh isolated artifact/install profile pass
+within their declared local profiles. The broad Qt source selection retains 35
+explicit platform skips. Complete all-language and hosted evidence, and the separately owned
+application-corpus refresh remain pending. No new requirement or acceptance identifier is
+allocated; REQ-QML-022 remains unallocated.
+
+### RC compilation-prerequisite refinement
+
+INC-QML-53 additionally implements a narrowly proven build-only exemption for literal
+native RC source-property commands containing `OBJECT_DEPENDS`,
+`INCLUDE_DIRECTORIES`, or both. Conditions and computed prerequisite/include
+values do not affect QML/C++ membership or runtime QRC URL identity and remain
+uninterpreted. Literal RC source identity and property-name/syntax validation
+remain mandatory; selectors cannot borrow this exemption to affect another scope.
+Existing native source membership and unavailable out-of-root targets remain
+unchanged, with no corpus expansion. Policy 25 retires prior policy-23/24
+analysis; schema 13 and persistence owners remain unchanged. This correction has
+**verified local source cases and isolated artifact/install profile; hosted proof pending**.
+The `7e29b34a` source/wheel checkpoint verifies the
+earlier profile and does not verify this new admission behavior.
+
+
+INC-QML-58 refines REQ-QML-009-AC01/AC03/AC04 under the
+[resource-output matrix](qt-qml/PLAN.md#inc-qml-58--literal-cmake-resource-output-pairs).
+Status: **Implemented; focused source and isolated installed profiles verified
+locally. Windows full-suite and targeted environment-recovery receipts have no
+unresolved executed failures; 171 cases remain skipped. New-head hosted and
+non-Windows execution are unverified**.
+Only an adjacent literal producer/exact private consumer, exactly two lexical
+output-identifier mentions, a known declaration-prefix allowlist and a unique
+prior local module are eligible. Known QRC additions do not describe the complete
+variable expansion. Inherited variable contents,
+general CMake evaluation, RCC options, arbitrary mutation and external discovery
+remain outside this profile. Existing integrity and persistence criteria apply.

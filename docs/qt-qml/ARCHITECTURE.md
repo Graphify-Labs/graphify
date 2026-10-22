@@ -320,6 +320,14 @@ Before advertising the first Qt/QML release, require:
 - **D7: Metadata is read, not executed.** Explicit import/build roots and supplied generated files provide reproducibility. Full build-system evaluation and dynamic runtime resolution remain separate future work.
 - **D8: Qt events and both object API directions retain their mechanisms.** Emission/connection/load/access sites preserve source ownership, roles and evidence. Ordinary calls remain ordinary calls; event delivery and meta-object dispatch are dependencies with declared semantics and runtime limits.
 
+D2 evidence refinement — INC-QML-55: keep clean QML/watch and core-only installed
+smokes ahead of native-source test add-ons. After both neutral isolated smokes
+pass, only the non-artifact source profile admits the same wheel's Terraform
+extra into its existing extra environment. Artifact-only/core profiles remain
+unchanged. The launcher owns this ordering and checked failure; it is not a new
+runtime parser/dependency owner. Five real-main tests and the real two-case
+HCL absence/recovery profile pass locally; new hosted proof remains pending.
+
 
 <a name="qml-04-implemented-boundary"></a>
 
@@ -826,3 +834,371 @@ The [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integr
 binds D26/D27 source, native and installed evidence to the tested revision.
 Static source proof does not establish physical UI/device interaction, runtime
 Qt effects or upstream released-package delivery.
+
+## D28 — Bounded syntax recovery keeps semantic and publication authority
+
+Status: **Accepted for INC-QML-53; policy-25 local source and isolated
+artifact/install profiles verified; hosted proof pending**.
+A grammar misclassification of valid empty template-parameter defaults is repaired
+through an AST-validated byte-preserving view. The compatibility adapter may
+remove only the candidate default; the recovered declaration's named parameter
+ownership must be independently established before canonical/native extraction.
+Expression/storage contexts, callback ambiguity and malformed input cannot
+borrow that proof. Source bytes and public extractor interfaces stay unchanged.
+
+The literal CMake reader similarly extends its admitted subset through focused
+property/source/resource helpers, retaining original source order and ownership.
+Implementation source additions join a unique preceding local module. Native
+inputs retain source membership when ordinary compilation is disabled;
+only explicit nonnative tooling stays outside runtime membership. Literal aliases
+replace physical resource spelling rather than adding a fabricated runtime URL.
+Explicit and module-generated resource providers share the same ambiguity
+decision. Distinct declarations remain ambiguous even for one physical target;
+only repeated copies of one declaration identity coalesce.
+Conflicting copies of a Qt module/source/resource declaration identity reject
+rather than allowing input order to select transported metadata. This validation
+does not redefine generic namespace identities shared across source files.
+Unsupported or ambiguous mutations keep the closed coverage guard. Native RC-only
+metadata can be excluded from this analysis only when it demonstrably cannot
+change QML/C++ membership or resource identity. Unsupported source-property scope
+selectors reject before that exemption or local state mutation; discarded-content
+resources cannot borrow a source file's QML identity. The CMake/Qt semantic
+references and corrected header-processing rationale belong to the
+[design contract](DESIGN.md#bounded-c-and-cmake-admission--inc-qml-53).
+
+This is source analysis, not general C++ recovery, CMake evaluation or a Qt runtime
+model. It introduces no dependency, SDK execution, second corpus interpretation,
+diagnostic catalogue identity or persistence writer. Qt policy 25 forces the
+existing derived-product refresh; combined AST schema 13 and semantic-cache
+ownership remain unchanged. Historical policy-22 source/installed/hosted proof
+and policy-23/24 repair artifacts do not validate this correction; new evidence
+belongs to the INC-QML-53 traceability profile and its explicit pending boundaries.
+
+The policy-25 refinement admits only the proven native-RC
+compilation-property boundary: literal `.rc` source lists with
+`INCLUDE_DIRECTORIES`, `OBJECT_DEPENDS`, or both. Build-only values remain opaque;
+no value reads, expansion or runtime membership authority are introduced. Scope
+selectors still reject before the exemption, and native/out-of-root source
+membership rules remain unchanged. The design owns the exact name/syntax proof
+and CMake references; traceability owns the new execution evidence. Prior
+policy-24 artifact/source acceptance does not verify this changed extension;
+current source and isolated artifact/install cases pass, while hosted proof remains pending.
+
+## D29 — Upstream 0.9.92 compatibility namespace
+
+Status: **Implemented for INC-QML-54; corrected source67 full-suite and isolated installed cases pass; new hosted/platform gaps remain**.
+Upstream `86c57be8` introduces AST schema 17 and a cache namespace fingerprint of
+installed tree-sitter distributions. The published combined Qt producer uses
+schema 13. Integration assigns schema 18 so neither published namespace can
+supply stale source facts under package 0.9.92. Retain upstream grammar-set
+fingerprinting and language-override ownership, together with Qt policy 25's
+explicit native-context cache bypass and derived-product refresh. Semantic
+content lifetime remains independently owned; this change cannot authorize
+semantic re-extraction or execute analyzed project code.
+
+Keeping 13 would reuse the Qt producer identity for changed upstream facts;
+adopting 17 would collide with upstream-only producer output at the same package
+version. A new combined namespace makes this boundary explicit without a second
+cache or persistence writer. Grammar changes, language overrides and native Qt
+contexts must be exercised together before accepting integration. Cold/warm and
+full/incremental parity, stale-edge removal, rejected-update retention and
+repaired retry remain required. The [design](DESIGN.md#upstream-0992-integration--inc-qml-54)
+owns integration seams; [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+owns executed and pending evidence. Earlier installed-tool and hosted results
+remain bound to their original revisions.
+
+## D30 — Automatic placeholder tiers preserve authored provenance
+
+Status: **Implemented; corrected source67 full-suite and isolated installed cases pass; new hosted proof pending**.
+Upstream import placeholders are tierless; the prior Qt raw publisher stamps new
+placeholder records semantic. Integration retains tierless status for the
+canonical minted shape and an explicitly bounded legacy-shape compatibility
+convention. Preserve authored metadata, attributes and origins outside that
+convention; it is not a rewrite of arbitrary source or semantic facts. Keep existing source-backed preference,
+still-referenced placeholder retention, unreferenced removal, failure retention
+and unchanged-repeat contracts under their current build/publication owners.
+
+A legacy record whose entire shape matches an automatic placeholder has no
+reliable authored-versus-generated distinction from stored data. The accepted
+compatibility convention includes a historical semantic stamp, so an exact-shape
+authored legacy record may receive automatic treatment. This is an explicit
+exception, not provenance certainty. Metadata even when empty, source locations,
+unknown fields, other origins and noncanonical values remain protected. A shared
+bounded predicate owns the shape and validated presentation fields, including
+finite numeric coordinates. Prior-import cleanup additionally requires its
+existing prior-ID/source proof. Adding a second predicate or relabeling every
+sourceless node would conflict with tier/provenance ownership. The
+[design](DESIGN.md#automatic-placeholder-provenance--inc-qml-54) and
+[traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+record the exact admitted shapes, source/update/reload cases and remaining gaps.
+
+Post-905 refinement: the canonical shape admits automatic placeholder treatment,
+but does not replace the accepted source-owned prior-import evidence required by
+the Qt cleanup lifecycle. Eighteen existing manual/watch prior-edge rejection
+variants fail when a generic sweep removes the candidate first; their original
+preservation assertions remain authoritative. The sixteen interleaved authored/
+node-role controls pass and cannot be weakened. A bounded cross-owner correction
+must preserve legitimate generic orphan retirement and durable repeat/recovery;
+the accepted graph-owned context decision is recorded in D33 below. A global
+preserve-all rule or fabricated authored origin is not an accepted substitute.
+The 168-case scoped checkpoint above remains historical supporting evidence,
+not complete acceptance of this newly exposed interaction.
+
+## D31 — Refresh admitted filename-collision cohorts before context
+
+Status: **Implemented; corrected source67 full-suite and isolated installed/add-on cases pass with explicit platform gaps; new hosted proof pending**.
+Stored source anchoring shares the verified root domain. When a saved relative
+marker resolves to `watch_root`, accept its alias prefix and the contained
+`watch_root.relative_to(invocation_root)` prefix as project-relative. Preserve
+invocation-directory project root, external-root fallback and source containment;
+match components so a neighboring prefix grants no authority. No per-source
+resolution or label/ID inference is introduced.
+
+Prior graph context does not retain authoritative pre-salt file roles. Do not
+reconstruct those roles from display labels or existing IDs. The shared filename
+cohort helper receives the accepted code files, explicit admitted scan root and
+selected targets, reusing the existing base canonical file-ID policy. Discovery
+canonicalizes the scan parent into `watch_root`; accepted and retired paths already
+use that domain. Pass the same root, preserving walked child aliases rather than
+resolving individual sources or retaining an incompatible invocation-root alias.
+Optional retired seeds come only from the watch owner's already-recorded deleted
+source identities; they supply lexical collision keys without being read or
+returned as sources. Selected targets must remain a subset of current accepted
+inputs; only admitted surviving peers may be returned.
+It adds only accepted peers whose
+canonical file-node ID collides with a selected source, preserving distinct
+walked aliases and the prior physical co-owner expansion.
+
+The watch owner composes existing Terraform refresh, physical co-owner expansion
+and filename-cohort expansion to a bounded monotone closure before incremental context construction
+and extraction. Initialize admitted walked nonsemantic sources once; repeat
+until the selected set stops growing, retaining deterministic order. Each changed
+iteration adds an admitted source, so closure takes at most the admitted count
+plus one passes. This captures a deleted-seed peer whose physical co-owner joins
+on a later pass. A filename peer can introduce a Terraform source whose existing
+module fanout joins on the next pass, and Terraform fanout can introduce another
+filename collision. Unrelated unchanged files remain under their
+existing cache policy and are not parsed because of this refresh. Do not discover
+new files, read outside the accepted corpus or refresh the whole codebase. The
+helper preserves notification order and appends same-key peers in walked-relative
+path order. It performs no resolution, stat or source read and introduces no ambient root, source
+parser, cache or persistence writer. Failed selection cannot silently preserve
+stale accepted context; existing failure/retention and repaired-retry contracts
+remain applicable.
+
+Reconstructing lost source roles from labels guesses authority; refreshing every
+file discards the bounded incremental contract. Re-extracting only the accepted
+collision cohort restores the full-run disambiguation inputs without either
+shortcut. The [design](DESIGN.md#bounded-filename-cohort-refresh--inc-qml-54)
+owns interface/order and [traceability](../../tests/TRACEABILITY.md#upstream-0992-integration--inc-qml-54)
+records cold/warm, real update/full, repeat, failure and unrelated-cache proof.
+
+The initial integrated `90578033` checkpoint failed its complete source gate;
+that result remains historical. Corrected `67bb2022` passes 11,776 complete-source
+cases with 173 explicit skips and all four preservation checks. Its raw-source
+wheel matches all 327 package files; the isolated profile passes 715 cases with
+one GraphML symlink skip, and a separate HCL add-on passes six cases. AST schema
+18/Qt policy 25 remains unchanged. Whole typing still fails with the same 651
+diagnostics as source905. The
+[corrected checkpoint](../../tests/TRACEABILITY.md#committed-corrected-integration-checkpoint--67bb2022)
+owns exact identity, commands and exclusions. Native CI coverage is a separate
+workflow/test change: the final seven-module local gate passes 76 cases with
+four platform skips, all 23 strengthened guards and all 29 critical native
+cases passing. Hosted/review/merge/merged-SHA proof and
+adoption by another codebase are not established by these local results.
+
+## D32 — Output policy stays with the owning writer
+
+Status: **Implemented; corrected source67 full-suite and isolated installed replacement/GraphML cases pass; real-symlink and new hosted gaps remain**.
+Upstream's installer/cache replacement contract permits consuming its owned
+read-only regular copies. The earlier raw-helper variant of
+`test_req_qml018_ac06_readonly_rejects_without_displacing_destination` instead
+treats all low-level replacement as guarded graph publication. Those expectations
+conflict at the shared helper; neither can silently stand in for the other.
+
+Keep policy at the owning boundary: `paths.os_replace_with_fallback` performs
+authorized caller-owned replacement, retains directory rejection and restores
+source/destination bytes and modes on recoverable failure. It must not change a
+symlink target's permissions. `_atomic_replace` retains generic read-only output
+rejection; `ProductPublication` retains independent read-only preflight and D19's
+whole-cohort commit/rollback. Remove only the raw helper's blanket regular-file
+read-only guard and its contradictory rejection expectation, with explicit
+owned-copy success and real cleanup/mode-restoration regression protection.
+The atomic-writer and accepted-product rejection assertions remain mandatory.
+Direct caller review also finds standalone GraphML publication relying on the
+old helper guard. Before removing it, the GraphML exporter must own a Windows
+`lstat` preflight rejecting only regular read-only destinations. Retain bounded
+`PermissionError`, prior output/input graph, owned temporary cleanup, directory
+rejection and symlink-entry replacement without target mutation. This caller
+guard is a prerequisite, not a later optional follow-up.
+
+A universal low-level rejection breaks legitimate installer/cache refresh; a
+universal permission to overwrite read-only outputs would break graph retention.
+Separate caller authority preserves both public contracts without adding a
+writer or weakening accepted-product policy. Failed restoration retains owned
+recovery evidence and reports failure; it cannot claim successful replacement.
+The [post-905 matrix](PLAN.md#post-905-full-suite-findings-acceptance-before-correction)
+and [design](DESIGN.md#post-905-correction-boundaries) own the exact positive,
+directory/symlink, real failure, repair and retry cases. Existing receipts remain
+bound to their earlier source; this correction requires fresh verification.
+
+## D33 — Retained cleanup context belongs to the accepted graph
+
+Status: **Implemented; corrected source67 full-suite and all 136 isolated installed retention/diagnostic cases pass; new hosted proof pending**.
+A transient protected-ID set loses the distinction between a retained Qt
+placeholder with unproven prior import authority and an ordinary generic legacy
+orphan on a later update, especially after the last Qt source disappears. Both
+may have identical node bytes. Node shape alone cannot restore that lost lifecycle
+context, and fabricating an authored origin would change provenance.
+
+Retain an explicit versioned, strictly typed and bounded cleanup context in the
+same accepted graph product. Its deterministic IDs must name existing graph
+nodes under documented limits. The node-link graph attribute is
+`qt_import_retention = {"schema": 1, "ids": [...]}`: exact keys/types, sorted unique
+canonical existing-placeholder IDs, at most 100,000 entries and 4,096 UTF-8 bytes
+per ID. Unknown versions, duplicates, foreign/noncanonical nodes and overflow
+reject with safe `QT_IMPORT_RETENTION_INVALID`, never truncation or skipped
+restrictions. Legacy reserved-free graph attrs `null`, `false`, `0`, `[]` and `""`
+retain their established `(graph or {})` absent/empty meaning without relaxing
+reserved value/type/version validation. Truthy unsupported scalars still reject.
+Context only restricts automatic cleanup; it grants no native/QML
+provider, relationship, source-admission or deletion authority. The
+graph transaction is the sole durable owner, with no parallel cache or Qt-state
+stamp. Reconciliation, generic merge and raw/clustered finalization must respect
+that context through JSON reload, unchanged repeat and last-Qt-source removal.
+Clear it when accepted new source proof, legitimate node removal or a role
+transition supersedes it. Ordinary generic legacy orphan healing remains intact.
+
+The watch owner must validate reserved context before extraction or candidate AST
+cache writes. One build-owned capped raw graph reader also serves the existing
+four-value loader; watch passes that single raw snapshot into reconciliation.
+Preserve default exception/cap behavior and plan prior proof before backfill;
+copy borrowed item dictionaries before origin stamping. No second read, global
+state or force bypass may admit corrupt prior context. Real rejection/retry
+tests must preserve previous cache/product bytes and create no candidate cache.
+This does not change the independent valid-cache-on-later-publication-failure
+rule.
+
+Malformed or over-limit retained context must reject at a bounded diagnostic
+boundary without replacing accepted products. Actual write/rollback failure
+retains the prior graph and context as one cohort; repaired retry and repeat
+must pass. The focused `qt_import_retention` helper owns strict immutable reading
+and pure producer-only copied-payload application. A caller-owned optional loader
+sink retains the existing four-value return and computes context once before
+generic backfill; merge/finalization/reconciliation consume that immutable policy.
+Validate prior input before filtering legitimate producer transitions; malformed
+prior transport is not a normal removal. Raw source-backed native incidence may
+restrict cleanup only, with accepted prior import proof subtracting protection.
+Actual fresh producer import proof is evaluated separately and clears obsolete
+retention in the same accepted run; legacy backfill cannot mint that authority.
+The semantic graph loader obtains the existing canonical role predicate through
+a function-local import after structural checks, avoiding a top-level
+`paths`→`build` cycle. Keep the helper dependency-injected and test both fresh
+import orders with valid/corrupt loads. Extracting shared pure role ownership is
+a separately characterized follow-up, not a mechanical move inside this fix.
+Corruption, transition, raw/clustered/reload, real failure/recovery and generic
+healing need production regressions. GraphML nested JSON text is an export/review
+representation, not a supported retained-context reload channel. The
+[post-905 matrix](PLAN.md#post-905-full-suite-findings-acceptance-before-correction)
+and [design](DESIGN.md#post-905-correction-boundaries) own these refinements.
+
+Global orphan preservation breaks upstream cleanup; a second durable stamp
+introduces inconsistent recovery authority. Graph-owned context preserves the
+existing Qt prior-proof contract without either shortcut or invented authorship.
+This changes retained graph transport, so prior artifacts and scoped passing
+selections do not establish acceptance of the corrected producer/consumer paths.
+
+## D34 — Newline invariance respects original native source bytes
+
+Status: **Implemented; corrected source67 full-suite and eight isolated installed CLI/oracle cases pass; new hosted proof pending**.
+The imported aggregate LF/CRLF test assumes every graph attribute/ID is independent
+of source newline bytes. The accepted native contract deliberately preserves
+original-byte spans, source sizes and byte-derived source-site IDs. In the
+inspected 1,063-node graphs, 131 common-ID attribute differences and 57 native
+site-ID changes include QML expression and Qt fact sites; hashed owner/receiver
+byte tokens also differ. A generalized ID/hash remapper would recreate resolver
+logic in the oracle and could hide scope or endpoint errors.
+
+Use two explicit, complementary profiles. The original twelve aggregate cases
+retain every valid fixture and exact graph IDs/attributes. Their CRLF copy keeps
+the entire owning `tests/fixtures/qml` tree byte-identical, including Qt/QML
+source, project/resource metadata and QML-owned JavaScript; every other text file
+gets the exact CRLF conversion. Guard complete copied membership, every preserved
+native byte and every converted non-native byte, with both populations nonempty.
+No input is removed by this newline profile.
+
+A dedicated real-CLI five-source `project_metadata` profile separately compares
+LF and CRLF native graphs. Validate every transported native span/source size/
+type position against the bytes actually analyzed. Assert unique source/label/
+type/location/family/kind anchors, required native class/property/signal and QML
+binding facts, and equivalent semantic roles, reference status and edge roles/
+direction through those anchors. Require byte-derived native IDs to change.
+Each profile independently requires the native property/signal and QML binding;
+the fixture's QML read remains explicitly ambiguous with `duplicate_provider`
+because CMake and qmake both declare it. This preserves uncertainty, not a
+resolved-provider claim. Source-token ownership and selected edge-family/semantic
+metadata checks reject symmetric omission and consistent wrong ownership.
+Deliberate span, endpoint, role and relation corruption must fail the oracle.
+Keep the existing BOM/UTF-8/CRLF producer/export regressions.
+
+This refines a test's byte-identity premise without production newline
+normalization, global attribute exclusion, source-ID rewriting or weaker
+unchanged-source equality. The [design](DESIGN.md#post-905-correction-boundaries)
+and [traceability](../../tests/TRACEABILITY.md#post-905-correction-matrix--inc-qml-54)
+record exact production/oracle cases, corrected source/artifact evidence and
+remaining hosted/platform gaps.
+
+D34 refinement before INC-QML-56 implementation: native original-byte ownership
+is independent of fixture location. Linux source `5876f0a4` exposes two strict
+line-ending failures when generic C++ sources/headers outside the QML tree are
+converted. Keep complete valid membership and every original aggregate
+attribute/ID assertion; preserve native owning bytes wherever admitted, and
+convert other text exactly. Extend the dedicated actual CLI oracle with generic
+non-Qt C++ include/header cases and deliberate corruption controls. No runtime
+normalization, hash remapper or global attribute filtering is accepted. Status:
+**Implemented with focused local proof; new hosted verification pending**, with the
+[INC-QML-56 matrix](PLAN.md#inc-qml-56--preserve-native-byte-owners-and-current-source-case-evidence)
+recorded before the fixture correction. Source-case evidence ownership remains
+with the existing workflow audit, which must match actual collected identities
+and reject absent/duplicate/nonpassing required outcomes.
+
+The aggregate corpus currently has a literal QML script reference with an
+intentionally absent target, not an existing owned JS/MJS fixture. Its script
+ownership boundary therefore needs explicit synthetic valid/transitive-escape
+controls; aggregate raw/clustered passes cannot establish owned-script execution.
+Ordinary outside JS/MJS remains part of exact newline-conversion coverage.
+
+The completed local boundary is 79 focused cases without skips and a separate
+twelve-case aggregate using committed LF input. The aggregate keeps every
+original graph assertion. This validation-only change preserves runtime and
+package ownership; the new reviewed head still needs hosted evidence.
+
+## D35 — Source-local CMake resource outputs record additions, not expansion
+
+Status: **Implemented bounded design with focused local and isolated installed
+proof; new-head hosted verification unexecuted**.
+Owner: Qt metadata maintainer. Applies to INC-QML-58 and
+REQ-QML-009-AC01/AC03/AC04, REQ-QML-011-AC01/AC02/AC04 and REQ-QML-020-AC01.
+
+Qt 6.11 supports a variable-output form of
+[qt_add_resources](https://doc.qt.io/qt-6.11/qt-add-resources.html) that appends
+generated source paths to a variable. Record the literal QRC additions and their
+adjacent target consumption without evaluating CMake or inventing generated C++
+paths. A source-local lexical profile requires exactly two mentions of the output
+identifier, a known prefix, and one uniquely preceding local QML module. Unknown
+prefix commands, includes, variable writers and scopes prevent this interpretation.
+
+The alternative of general variable evaluation would require execution/scope,
+cache, environment, parent-directory and package-script semantics outside the
+static analyzer contract. First occurrence in an admitted file does not prove an
+inherited variable is empty. A generated-resource use is evidence of the known
+QRC additions only; it does not enumerate the complete value of the variable or
+prove absence of inherited native sources. App-only admission remains app-only.
+
+The new reader owns lexical eligibility and source facts. Existing XML resource
+extraction owns aliases, the project index owns accepted-corpus context, the
+membership resolver owns directed file joins, and the current publication owner
+retains failed candidate products. No new persistence layer or runtime dependency
+is introduced. Qt analysis policy 26 retires prior context; AST cache schema 18
+is unchanged because Qt metadata bypasses that cache. Exact profile and evidence
+belong in design and traceability, respectively.

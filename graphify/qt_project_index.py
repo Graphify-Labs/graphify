@@ -17,17 +17,31 @@ class QtProjectIndex:
     def __init__(self, nodes, edges, *, root: Path, import_roots=None):
         self.root = Path(root).resolve()
         self.nodes, self.paths, self.modules, self.sources = {}, {}, {}, {}
+        accepted, declarations = [], {}
         for node in nodes:
+            md = qml_metadata(node)
+            # Only this index's source-owned providers have declaration-local
+            # identity. Generic namespaces intentionally share IDs across files;
+            # their ordinary graph identity/provenance policy remains unchanged.
+            if node.get("id") and md.get("kind") in {"qt_module", "qt_source", "resource_alias"}:
+                previous = declarations.get(node["id"])
+                if previous is not None:
+                    if previous != node:
+                        raise ValueError("QML_METADATA: conflicting records for declaration identity")
+                    continue
+                declarations[node["id"]] = node
             path = source_path(node, self.root)
             if path is not None and node.get("id"):
+                accepted.append(node)
                 self.nodes[node["id"]], self.paths[node["id"]] = node, path
-                md = qml_metadata(node)
                 if md.get("kind") == "qt_module":
                     self.modules.setdefault(md.get("module_key"), []).append(node["id"])
                 elif md.get("kind") == "qt_source":
                     self.sources.setdefault(md.get("module_key"), []).append(node["id"])
-        self.module_index = QmlModuleIndex(nodes, edges, root=self.root, import_roots=import_roots)
-        self.resource_index = QtResourceIndex(nodes, root=self.root)
+        # Repeated transport copies of one declaration ID do not create another
+        # provider. Distinct source declarations retain their separate identities.
+        self.module_index = QmlModuleIndex(accepted, edges, root=self.root, import_roots=import_roots)
+        self.resource_index = QtResourceIndex(accepted, root=self.root)
         self.memberships, self.qml_files = {}, {}
         for key, records in self.sources.items():
             for nid in records:
@@ -119,17 +133,43 @@ class QtProjectIndex:
         return existing
 
     def resolve_url(self, literal_url: str, base_url: str | None = None) -> Resolution:
-        # CMake-generated aliases exist only when the prefix is explicit; policy
-        # defaults and source-property aliases are never guessed.
-        result = self.resource_index.resolve_url(literal_url, base_url)
-        if result.reason != "resource_alias_unavailable":
-            return result
+        # Explicit QRC/CMake aliases and module-generated mappings compete in
+        # the same runtime namespace. Resolve their declarations together before
+        # granting any endpoint; an earlier index must not pick the winner.
         logical = normalize_url(literal_url, base_url)
         if isinstance(logical, Resolution):
             return logical
-        matches, evidence = [], []
+        explicit = self.resource_index.resolve_url(literal_url, base_url)
+        explicit = Resolution(explicit.status, explicit.target_id, explicit.reason,
+                              tuple(sorted(set(explicit.evidence))[:50]),
+                              tuple(sorted(set(explicit.candidates))[:50]))
+        providers = self._module_resource_providers(logical)
+        if not providers:
+            return explicit
+        # An unsupported, ambiguous or outside-corpus explicit mapping cannot
+        # borrow an otherwise available module mapping to acquire authority.
+        if explicit.reason != "resource_alias_unavailable" and explicit.status != "resolved":
+            return explicit
+        evidence = set(explicit.evidence)
+        matches = [explicit.target_id] if explicit.target_id else []
+        for (module, source), targets in providers.items():
+            evidence.update((module, source))
+            matches.extend(targets)
+        evidence = tuple(sorted(evidence)[:50])
+        if any(not targets for targets in providers.values()):
+            return Resolution("unavailable", reason="resource_target_outside_corpus", evidence=evidence)
+        if explicit.target_id or len(providers) > 1:
+            # Two distinct declarations remain ambiguous even for the same
+            # target. Exact repeated declaration copies already coalesced above.
+            return Resolution("ambiguous", reason="duplicate_resource_alias", evidence=evidence,
+                              candidates=tuple(sorted(set(matches))[:50]))
+        return answer(matches, reason="resource_alias_unavailable", evidence=evidence)
+
+    def _module_resource_providers(self, logical):
+        """Collect declarations without borrowing accepted endpoints for missing inputs."""
+        providers = {}
         for key, ids in self.modules.items():
-            for mid in ids:
+            for mid in set(ids):
                 md = qml_metadata(self.nodes[mid])
                 prefix = md.get("resource_prefix")
                 if not isinstance(prefix, str):
@@ -137,9 +177,12 @@ class QtProjectIndex:
                 prefix = prefix.rstrip("/")
                 if not md.get("no_resource_target_path"):
                     prefix += "/" + md["uri"].replace(".", "/")
-                for path, sid in self.qml_files.get(key, []):
+                for sid in set(self.sources.get(key, [])):
                     smd = qml_metadata(self.nodes[sid])
-                    if resource_url(prefix, smd.get("value", "")) == logical:
-                        matches.extend(self.module_index.components.get(path, []))
-                        evidence.extend((mid, sid))
-        return answer(matches, reason="resource_alias_unavailable", evidence=evidence)
+                    if smd.get("source_kind") != "qml":
+                        continue
+                    alias = smd.get("resource_alias", smd.get("value", ""))
+                    if isinstance(alias, str) and resource_url(prefix, alias) == logical:
+                        path = literal_path(self.paths[sid], smd.get("value", ""))
+                        providers[mid, sid] = tuple(self.module_index.components.get(path, []))
+        return providers

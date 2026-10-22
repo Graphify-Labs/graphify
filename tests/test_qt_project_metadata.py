@@ -63,7 +63,7 @@ def test_literal_cmake_records_original_bytes_and_transport(tmp_path, newline, b
     ("qt_add_qml_module(app URI Public.Tools SOURCES $<TARGET_OBJECTS:x>)", "conditional_or_expanded_qml_module"),
     ("qt_add_qml_module(app URI Public.Tools VERSION 1.0 IMPORTS TARGET Other)", "target_import_requires_policy_and_target_resolution"),
     ("qt_add_qml_module(app URI Public.Tools UNKNOWN feature)", "unsupported_qml_module_arguments"),
-    ("qt_add_qml_module(app URI Public.Tools VERSION 1.0)\ntarget_sources(app PRIVATE generated.h)", "source_mutation_outside_literal_subset"),
+    ("qt_add_qml_module(app URI Public.Tools VERSION 1.0)\ntarget_sources(app PRIVATE ${generated_header})", "source_mutation_outside_literal_subset"),
 ])
 def test_cmake_conditional_and_expanded_metadata_is_not_authoritative(source, reason):
     result = parse_cmake(source)

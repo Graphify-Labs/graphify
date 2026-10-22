@@ -39,9 +39,18 @@ do not establish semantic acceptance.
 | Loading/creation; REQ-QML-017 | load/loadFromModule/setSource, rootObject/rootObjects, create/createWithInitialProperties, initial properties and literal-URL QQmlComponent construction | Literal engine URL constructors and component loadUrl/create are corrected in INC-QML-20, including declaration-owned engine providers and bounded URL/overload authority. Engine module constructors/loadData, component setData/beginCreate/completeCreate and dynamic source/lifetime remain omitted. |
 | Enums, flags, gadgets and namespaces; candidate exposure scope | Some annotation tokens are normalized; Q_GADGET marks a class | Normalized Q_ENUM/Q_FLAG/Q_ENUM_NS/Q_FLAG_NS are not an enum/namespace API bridge. Q_NAMESPACE/_EXPORT and Q_GADGET_EXPORT recognition is missing. Acceptance is required before adding those capabilities. |
 | Wrappers and ordinary calls; generic profile | Accepted helper contexts include QStringLiteral, QLatin1String, QString, QByteArray, QUrl and fromLocalFile | Support is context-specific; computed/localized strings do not prove literal targets. External SDK declarations and overloads are not automatically admitted. |
-| Build/module/resource metadata; REQ-QML-009/018 | Static literal CMake/qmake, qmldir, qmltypes and qrc with bounded paths/conflict handling | INC-QML-08a accepts bounded current-file literal $$PWD paths and separates tooling/build/analysis roots. Relevant arbitrary expansion, conditions and execution remain excluded. The functions index is not build-hook acceptance. |
+| Build/module/resource metadata; REQ-QML-009/018 | Static literal CMake/qmake, qmldir, qmltypes and qrc with bounded paths/conflict handling. INC-QML-53 adds ordered private C/C++ target additions, separate explicit nonnative tooling and literal target-form PREFIX/FILES resource aliases; source aliases replace physical resource URLs. Native HEADER_FILE_ONLY inputs retain membership; explicit and module resource providers share ambiguity handling. | INC-QML-08a accepts bounded current-file literal $$PWD paths and separates tooling/build/analysis roots. Unknown/duplicate/not-yet-declared module targets, bare QML target-source registration, source-property scope selectors, late property changes, discarded resource content, inferred resource prefixes/options, relevant arbitrary expansion, conditions and execution remain excluded. Literal native RC-only metadata can be ignored only after proving it cannot affect analyzed membership/URLs. The functions index is not build-hook acceptance. |
 | Timers, blockers, deletion and ownership | Generic call/source facts may be visible | singleShot delivery, blockSignals/QSignalBlocker, deleteLater and QML ownership transitions have no runtime model. Separate acceptance is required for an extension. |
 | Other Qt modules and test/platform macros | Generic extraction where supported by the existing source parser | No individually verified API/overload or macro-expansion promise. Graphify does not execute QtTest macros, discover SDK internals or run corpus code. |
+
+The policy-25 RC prerequisite refinement has local source verification under INC-QML-53: only
+literal native-RC source lists with `INCLUDE_DIRECTORIES`/`OBJECT_DEPENDS` qualify
+for the build-only exemption. Include/prerequisite values remain uninterpreted,
+including conditions/computed values; source selectors, mixed/runtime/unknown
+properties and malformed syntax still reject. It adds no QML/C++ provider,
+runtime QRC URL or out-of-corpus admission. The earlier policy-24 table/profile
+does not verify this changed boundary. Current policy-25 source and isolated
+artifact/install cases pass; hosted evidence remains pending.
 
 ## Named macro accountability
 

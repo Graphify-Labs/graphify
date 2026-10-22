@@ -92,6 +92,18 @@ ALWAYS_ON_BLOCKS = {
     "kiro-steering": "_KIRO_STEERING",
 }
 
+# Query-first rule: name the exact moment to query (before the first raw grep,
+# search or read) instead of "for codebase questions", which agents read as
+# optional once they have a specific file in mind.
+_QUERY_FIRST_EDIT = (
+    'For codebase questions, first run `graphify query "<question>"` when '
+    "graphify-out/graph.json exists.",
+    'When graphify-out/graph.json exists, run `graphify query "<question>"` before '
+    "your first grep, search or source-file read for a codebase question, and put "
+    "this rule in every subagent prompt that explores code. Read raw files only for "
+    "lines the graph or an earlier read already located.",
+)
+
 # Sanctioned divergences from the frozen always-on baseline above. The roundtrip
 # guard deliberately does NOT track HEAD, so any *intentional* change to an
 # always-on instruction block must be recorded here as an explicit, reviewable
@@ -99,6 +111,16 @@ ALWAYS_ON_BLOCKS = {
 # to the baseline before the byte-for-byte comparison; anything not covered here
 # still fails the guard, so unrelated drift cannot slip through. Each entry is a
 # one-time, audited edit to the otherwise-immutable v8 baseline.
+_UPDATE_RULE = "run `graphify update .` to keep the graph current (AST-only, no API cost)."
+# A committed graph.json is rewritten whole on every build, so reviewers kept
+# flagging its large PR diffs as churn and proposing to skip the rebuild hooks.
+_GRAPH_DIFF_EDIT = (
+    _UPDATE_RULE,
+    _UPDATE_RULE
+    + "\n- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff"
+    " to it in a pull request is expected. Do not flag it as churn or suggest skipping the"
+    " graph rebuild or its hooks.",
+)
 ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
     # #1530: install guidance must stay host-generic — do not tell agents to
     # invoke a literal `skill` tool with `skill: "graphify"`, which is
@@ -110,7 +132,11 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "When the user types `/graphify`, use the installed graphify skill or instructions "
             "before doing anything else.",
         ),
+        _QUERY_FIRST_EDIT,
+        _GRAPH_DIFF_EDIT,
     ),
+    "_CLAUDE_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
+    "_GEMINI_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
 }
 
 # The full six-value file_type enum (Decision A). Every rendered platform — split
@@ -366,7 +392,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # would drift), the composed body is translated deterministically:
 #
 #   * ```` ```bash ```` fences become ```` ```powershell ```` fences;
-#   * the inline ``$(cat graphify-out/.graphify_python) -c "..."`` python blocks
+#   * the inline ``"$(cat graphify-out/.graphify_python)" -c "..."`` python blocks
 #     become single-quoted here-strings piped to the interpreter's stdin
 #     (``@'...'@ | & (Get-Content graphify-out\.graphify_python) -``). A
 #     single-quoted here-string is verbatim, so the bash ``\"`` escapes are
@@ -381,7 +407,10 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
+# Keep exactly the historical opener as an input alias for callers composing
+# older fragments. Both forms render the same literal PowerShell Python body.
+_PY_INVOKE_POSIX_LEGACY = '$(cat graphify-out/.graphify_python) -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -439,7 +468,7 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
-        elif line == _PY_INVOKE_POSIX:
+        elif line in (_PY_INVOKE_POSIX, _PY_INVOKE_POSIX_LEGACY):
             out.append(_PY_INVOKE_PS_OPEN)
             in_py = True
         elif line == _MKDIR_POSIX:
@@ -511,6 +540,12 @@ def _core_to_powershell(body: str) -> str:
     return translated
 
 
+# Step B3's re-run hints name the agent that can write chunk files. A dispatch
+# variant whose host has no `general-purpose` agent names its own (#4494).
+_DEFAULT_WRITER_AGENT = ("general-purpose agent", '`subagent_type="general-purpose"`')
+_WRITER_AGENT = {"pi-subagents": ("the `delegate` agent", "the `delegate` agent")}
+
+
 def _render_core(platform: Platform) -> str:
     """Fill the shared core template's per-platform slots for this platform.
 
@@ -527,6 +562,7 @@ def _render_core(platform: Platform) -> str:
     interp_guard = _read_fragment(f"shell/interpreter-guard-{platform.shell}.md").rstrip("\n")
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
     query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
+    writer_agent, writer_agent_arg = _WRITER_AGENT.get(platform.dispatch, _DEFAULT_WRITER_AGENT)
 
     if platform.extra_sections:
         extra = "".join(
@@ -541,6 +577,8 @@ def _render_core(platform: Platform) -> str:
         .replace("@@INSTALL@@", install)
         .replace("@@INTERP_GUARD@@", interp_guard)
         .replace("@@DISPATCH@@", dispatch)
+        .replace("@@WRITER_AGENT@@", writer_agent)
+        .replace("@@WRITER_AGENT_ARG@@", writer_agent_arg)
         .replace("@@QUERY_STUB@@", query_stub)
         .replace("@@HOOKS_TARGET@@", platform.hooks_target)
         .replace("@@EXTRA@@", extra)
@@ -1174,7 +1212,7 @@ def _is_watch_injection_fix_line(line: str) -> bool:
     stripped = line.strip()
     return (
         stripped == "python3 -m graphify.watch INPUT_PATH --debounce 3"
-        or stripped == '$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
+        or stripped == '"$(cat graphify-out/.graphify_python)" -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
         or stripped == "Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:"
         or stripped == "This watches the same folder graphify extracted, read from the trusted `graphify-out/.graphify_root` that Step 1 resolved - there is no path to substitute, so a scan root containing shell metacharacters can never be re-interpreted here. Behavior depends on what changed:"
     )
@@ -1206,6 +1244,135 @@ def _is_qt_qml_source_guidance_line(line: str) -> bool:
     }
 
 
+def _is_graph_diff_direction_fix_line(line: str) -> bool:
+    """Whether a line is part of the --update graph-diff direction fix (#4067).
+
+    The diff step loaded the old graph.json with a plain ``node_link_graph``,
+    which drops the stored edge direction, so a reversed call showed as "no
+    changes". It now loads through ``paths.load_node_link_graph`` (#4066). Both
+    the removed import/load lines and the added ones match here.
+    """
+    stripped = line.strip()
+    return stripped in (
+        "from networkx.readwrite import json_graph",
+        "G_old = json_graph.node_link_graph(old_data, edges='links')",
+        "from graphify.paths import load_node_link_graph",
+        "G_old = load_node_link_graph(old_data)",
+    )
+
+
+def _is_persisted_scan_options_fix_line(line: str) -> bool:
+    """Skill scans reuse CLI corpus-shaping options without changing detect defaults (#4240)."""
+    return line.strip() in (
+        "from graphify.paths import out_path",
+        "from graphify.watch import _read_build_excludes, _read_build_gitignore",
+        "result = detect(Path('INPUT_PATH'))",
+        "result = detect_incremental(Path('INPUT_PATH'))",
+        "result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
+        "result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
+    )
+
+
+def _is_worktree_visibility_note_line(line: str) -> bool:
+    """Whether a line is the Step 9 working-tree note (#3941).
+
+    Step 9's report never told the user that ``graphify-out/`` was written into
+    their working tree, so a repository that does not ignore it was left with
+    untracked machine-local files in ``git status`` and no explanation. The report
+    now adds one sentence saying so, with the two ways to handle it.
+    """
+    return "`graphify-out/` was written into the working tree" in line
+
+
+def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
+    """Whether a line is part of the Part-C `_origin` stamping fix (#2843).
+
+    build._is_ast_tier reads ``_origin`` when present and otherwise guesses the
+    tier from the shape of ``source_location`` (``L<line>`` means AST). Part C
+    never stamped the semantic side, so a subagent writing ``L12`` for a doc
+    section made that node read as AST and the next ``graphify update`` deleted
+    it with the re-extracted code file it seemed to belong to. Part C now
+    ``setdefault``s ``_origin: 'semantic'`` on every semantic node and edge
+    before the merge. These are the comment block and the four code lines.
+    """
+    stripped = line.strip()
+    return (
+        stripped in (
+            "for n in sem['nodes']:",
+            "n.setdefault('_origin', 'semantic')",
+            "for e in sem['edges']:",
+            "e.setdefault('_origin', 'semantic')",
+        )
+        or "Stamp tier provenance on the semantic side" in line
+        or "_origin when present and otherwise guesses from the SHAPE of" in line
+        or "source_location ('L<line>' means AST). A subagent that writes 'L12' for a" in line
+        or "doc section therefore made that node read as AST, and the next" in line
+        or "graphify update deleted it along with the re-extracted code file it" in line
+        or "seemed to belong to (#2843). extract() stamps its own items 'ast'; the" in line
+        or "semantic side must say so explicitly." in line
+    )
+
+
+def _is_code_only_fast_path_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin code-only runbook fix (#4447).
+
+    In the two monoliths the Part B fast path was prose only, so Part C's
+    unconditional read of ``.graphify_semantic.json`` raised FileNotFoundError on
+    a code-only build or ``--update``, and the code-only paragraph never named
+    Part C. The fast path now writes an empty semantic file first, the paragraph
+    names Step 3A, the fast path, Part C and then the merge, and aider's
+    only-deletions guard writes the ``.graphify_extract.json`` its merge reads.
+    The first group below is the shell of the added fast-path block (it matches
+    any single copy of those lines); the rest are the old and new lines.
+    """
+    s = line.strip()
+    return (
+        s in (
+            "```",
+            "```bash",
+            'import json',
+            'from pathlib import Path',
+            '"',
+            '"$(cat graphify-out/.graphify_python)" -c "',
+            "if [ ! -f .graphify_extract.json ]; then",
+            "if [ ! -f graphify-out/.graphify_extract.json ]; then",
+        )
+        or (s.startswith("**Fast path:** If detection found zero docs") and (
+            "**First write an empty semantic file**" in s
+            or s.endswith("there is nothing for semantic subagents to do.")))
+        or (s.startswith("If `code_only` is True: print `[graphify update] Code-only changes detected") and (
+            "run Step 3A (AST) on the changed files, then run the Part B fast path" in s
+            or "run only Step 3A (AST) on the changed files, skip Step 3B entirely" in s))
+        or (s.startswith("Path(") and ".graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[]" in s)
+        or (s.startswith("Path(") and ".graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[]" in s)
+    )
+
+
+def _is_update_detect_populate_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin ``--update`` detect block (found while fixing #4447).
+
+    Part A reads ``.graphify_detect.json``, Step 9 deletes it, and the monoliths'
+    ``--update`` section never wrote it again, so Part A raised FileNotFoundError.
+    The section now writes it from ``.graphify_incremental.json``, as the generated
+    ``references/update.md`` does. These are the lead-in sentence and the block's lines.
+    """
+    s = line.strip()
+    return (
+        s.startswith("Then populate `.graphify_detect.json` so Steps 3A")
+        or (s.startswith("r = json.loads(Path(") and s.endswith(".graphify_incremental.json').read_text())"))
+        or (s.startswith("Path(") and s.endswith(".graphify_detect.json').write_text(json.dumps({"))
+        or s in (
+            "'files': r.get('new_files', {}),",
+            "'all_files': r.get('files', {}),",
+            "'total_files': r.get('new_total', 0),",
+            "'total_words': r.get('total_words', 0),",
+            "'skipped_sensitive': r.get('skipped_sensitive', []),",
+            "'needs_graph': True,",
+            "}))",
+        )
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1230,12 +1397,39 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
     _is_qt_qml_source_guidance_line,
+    _is_graph_diff_direction_fix_line,
+    _is_persisted_scan_options_fix_line,
+    _is_worktree_visibility_note_line,
+    _is_semantic_origin_stamp_fix_line,
+    _is_code_only_fast_path_fix_line,
+    _is_update_detect_populate_fix_line,
 )
 
 
 def _is_sanctioned_monolith_diff(line: str) -> bool:
     """Whether a single added/removed monolith line is an allowed change."""
     return not line.strip() or any(pred(line) for pred in _SANCTIONED_MONOLITH_DIFFS)
+
+
+def _consume_interpreter_quote_pairs(added: Counter, removed: Counter) -> None:
+    """Cancel only counted, exact executable-quoting pairs against frozen text.
+
+    Arguments, bodies and multiplicity remain subject to the existing drift
+    checks. This is deliberately a paired transformation, not permission for
+    arbitrary edits on lines that happen to contain an interpreter marker.
+    """
+    marker = '$(cat graphify-out/.graphify_python)'
+    instruction = ('**In every subsequent bash block, replace `python3` with `'
+                   + marker + '` to use the correct interpreter.**')
+    for old, count in list(removed.items()):
+        stripped = old.lstrip()
+        if not (stripped.startswith((marker + ' -c "', marker + ' -m '))
+                or old == instruction):
+            continue
+        new = old.replace(marker, '"' + marker + '"', 1)
+        paired = min(count, added[new])
+        removed[old] -= paired
+        added[new] -= paired
 
 
 def monolith_roundtrip(platform: Platform) -> list[str]:
@@ -1270,6 +1464,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
 
     added = Counter(rendered_lines) - Counter(original_lines)
     removed = Counter(original_lines) - Counter(rendered_lines)
+    _consume_interpreter_quote_pairs(added, removed)
 
     problems: list[str] = []
     for line in list(added.elements()) + list(removed.elements()):
