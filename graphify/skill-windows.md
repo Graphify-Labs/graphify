@@ -207,10 +207,18 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
+[Qt/QML] Install the optional `graphifyy[qml]` extra in the recorded interpreter when the accepted corpus contains QML or `.qmltypes`. Analysis does not require a Qt SDK and never executes project code or build tools.
+
+[Qt/QML] Preserve scoped source identities, evidence and unresolved statuses. Bindings, signal emissions, declared connections and meta-object accesses have different meanings; an emission does not prove a synchronous slot call. QML `id` does not establish C++ `objectName` lookup.
+
+[Qt/QML] The literal CMake/qmake/QRC/type-description subset and its limits are documented in `docs/qt-qml/README.md` when available. Conditional builds, dynamic targets and unsupported syntax cannot become guessed providers. A failed integrity gate preserves prior output; do not force past it.
+
 ```powershell
 @'
 import sys, json
 from graphify.extract import collect_files, extract
+from graphify.qml_safety import require_complete_qml
+from graphify.qt_analysis_state import inspect_qt_analysis
 from pathlib import Path
 import json
 
@@ -220,10 +228,12 @@ for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
 
 if code_files:
-    # root= anchors node ids and source_file on the scan root; cache_root only says
-    # where graphify-out/cache lives. Pass both: without root= the anchor falls back
-    # to cache_root, so pointing the cache elsewhere would rename every node (#3727).
-    result = extract(code_files, cache_root=Path('INPUT_PATH'), root=Path('INPUT_PATH'))
+    scan_root = Path(Path('graphify-out/.graphify_root').read_text(encoding='utf-8').strip()).resolve()
+    scan_root = scan_root.parent if scan_root.is_file() else scan_root
+    qt_state = inspect_qt_analysis(scan_root, Path('graphify-out'), code_files)
+    result = extract(code_files, root=scan_root, cache_root=scan_root,
+                     qml_import_roots=qt_state.import_roots, refresh_native=qt_state.has_qt)
+    require_complete_qml(result, code_files, operation='skill AST', root=scan_root)
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f'AST: {len(result["nodes"])} nodes, {len(result["edges"])} edges')
 else:
@@ -339,24 +349,20 @@ A subagent that only read the first Read call's worth of a long file still write
 @'
 import json, glob
 from pathlib import Path
-
 covered = {}
 for c in sorted(glob.glob('graphify-out/.graphify_chunk_*.json')):
     d = json.loads(Path(c).read_text(encoding="utf-8"))
     for src, n in (d.get('coverage') or {}).items():
         covered[src] = max(covered.get(src, 0), int(n))
-
 partial = []
 for src, n in sorted(covered.items()):
     p = Path(src)
     if not p.is_absolute():
         p = Path('INPUT_PATH') / src
-    if not p.is_file():
-        continue
+    if not p.is_file(): continue
     total = sum(1 for _ in p.open(encoding='utf-8', errors='replace'))
     if total and n < total:
         partial.append((src, n, total))
-
 Path('graphify-out/.graphify_partial.txt').write_text('\n'.join(s for s, _, _ in partial), encoding="utf-8")
 if partial:
     print(f'WARNING: {len(partial)} file(s) were only partly read. They are cached as partial and retried on the next --update:')

@@ -1,0 +1,6 @@
+# Qt 6 metadata forms require their own syntax coverage decision.
+module Example.Widgets
+optional plugin exampleplugin
+import QtQuick auto
+prefer :/qt/qml/Example/Widgets/
+Main Main.qml

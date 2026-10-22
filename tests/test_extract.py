@@ -484,7 +484,7 @@ def test_collect_files_from_dir():
     from graphify.extract import _DISPATCH
     files = collect_files(FIXTURES)
     supported = set(_DISPATCH.keys())
-    assert all(f.suffix in supported for f in files)
+    assert all(f.suffix in supported or f.name in {"qmldir", "CMakeLists.txt"} for f in files)
     assert len(files) > 0
 
 
@@ -561,7 +561,11 @@ def _legacy_collect_files(target, *, root=None):
 
 
 def test_collect_files_parity_with_legacy_on_fixtures():
-    assert collect_files(FIXTURES) == _legacy_collect_files(FIXTURES)
+    files = collect_files(FIXTURES)
+    # The extension-only legacy oracle predates exact-name QML metadata.
+    assert [path for path in files if path.name not in {"qmldir", "CMakeLists.txt"}] == _legacy_collect_files(FIXTURES)
+    assert [path for path in files if path.name == "qmldir"] == [
+        FIXTURES / "qml" / "parser_probe" / "qmldir"]
 
 
 def test_collect_files_parity_with_legacy_synthetic(tmp_path):
@@ -2873,6 +2877,13 @@ _LEXICAL_CALL_SOURCES = {
 }
 
 
+# The integrated C++ producer salts qualified class identity. Fixed fixture IDs
+# retain the upstream lookup assertions while distinguishing an actual nested
+# declaration from an unrelated global/same-named class.
+_CPP_OUTER_INNER = "svc_cppq_ffbf2cdac788966cd04fd930271bc6725e6cfb67bf6c45609217a4ded7585e68_inner"
+_CPP_OUTER_MID_INNER = "svc_cppq_178effeaea260caa09851a7ea59ba3c95859dc6869f8f7558b78c95a8da3c44f_inner"
+
+
 @pytest.mark.parametrize("ext", sorted(_LEXICAL_CALL_SOURCES))
 def test_unqualified_call_binds_to_the_nearest_class_that_declares_it(tmp_path, ext):
     """`b()` in Outer reaches Outer.b and `ping()` the Base it extends, `s()` in the
@@ -2880,14 +2891,15 @@ def test_unqualified_call_binds_to_the_nearest_class_that_declares_it(tmp_path, 
     keeps its own: none of them land on the Other declared last."""
     source = _LEXICAL_CALL_SOURCES[ext]
     calls = _single_file_call_pairs(tmp_path, source, ext)
+    inner = _CPP_OUTER_INNER if ext == "cpp" else "svc_inner"
     assert ("svc_outer_a", "svc_outer_b") in calls
     assert ("svc_outer_a", "svc_base_ping") in calls
-    assert ("svc_inner_c", "svc_inner_b") in calls
-    assert ("svc_inner_c", "svc_outer_s") in calls
+    assert (f"{inner}_c", f"{inner}_b") in calls
+    assert (f"{inner}_c", "svc_outer_s") in calls
     assert ("svc_child_run", "svc_child_ping") in calls
     assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
-    assert ("svc_outer_a", "svc_inner_b") not in calls
-    assert ("svc_inner_c", "svc_outer_b") not in calls
+    assert ("svc_outer_a", f"{inner}_b") not in calls
+    assert (f"{inner}_c", "svc_outer_b") not in calls
     assert ("svc_child_run", "svc_base_ping") not in calls
     # the second run reads the AST cache written by the first
     assert _single_file_call_pairs(tmp_path, source, ext) == calls
@@ -2906,8 +2918,9 @@ def test_nested_class_declared_after_the_method_does_not_capture_the_call(tmp_pa
     """Inner.b is declared after Outer.b, so the file-wide name map handed the
     b() in Outer.a to Inner.b."""
     calls = _single_file_call_pairs(tmp_path, _NESTED_SAME_NAME_SOURCES[ext], ext)
+    inner = _CPP_OUTER_INNER if ext == "cpp" else "svc_inner"
     assert ("svc_outer_a", "svc_outer_b") in calls
-    assert ("svc_outer_a", "svc_inner_b") not in calls
+    assert ("svc_outer_a", f"{inner}_b") not in calls
 
 
 # Each fixture has a method that only one class on the caller's path declares and an
@@ -2940,8 +2953,9 @@ _TWO_LEVELS_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_TWO_LEVELS_SOURCES))
 def test_unqualified_call_walks_out_through_every_enclosing_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _TWO_LEVELS_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_outer_b") in calls
-    assert ("svc_inner_run", "svc_later_b") not in calls
+    inner = _CPP_OUTER_MID_INNER if ext == "cpp" else "svc_inner"
+    assert (f"{inner}_run", "svc_outer_b") in calls
+    assert (f"{inner}_run", "svc_later_b") not in calls
 
 
 _ENCLOSING_BASE_SOURCES = {
@@ -2955,8 +2969,9 @@ _ENCLOSING_BASE_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_ENCLOSING_BASE_SOURCES))
 def test_unqualified_call_reaches_a_base_of_the_enclosing_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _ENCLOSING_BASE_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_ping") in calls
-    assert ("svc_inner_run", "svc_other_ping") not in calls
+    inner = _CPP_OUTER_INNER if ext == "cpp" else "svc_inner"
+    assert (f"{inner}_run", "svc_base_ping") in calls
+    assert (f"{inner}_run", "svc_other_ping") not in calls
 
 
 # Scala 3 rejects this shape (b is defined in Outer and inherited in Inner), so Scala has no fixture.
@@ -2971,9 +2986,10 @@ _OWN_BASE_FIRST_SOURCES = {
 def test_unqualified_call_prefers_the_callers_base_to_the_enclosing_class(tmp_path, ext):
     """Inner inherits b() from Base, which is nearer than the b() of the Outer around it."""
     calls = _single_file_call_pairs(tmp_path, _OWN_BASE_FIRST_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_b") in calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
-    assert ("svc_inner_run", "svc_other_b") not in calls
+    inner = _CPP_OUTER_INNER if ext == "cpp" else "svc_inner"
+    assert (f"{inner}_run", "svc_base_b") in calls
+    assert (f"{inner}_run", "svc_outer_b") not in calls
+    assert (f"{inner}_run", "svc_other_b") not in calls
 
 
 # A base declared further down the file used to be invisible to the lookup, which then
@@ -6245,8 +6261,11 @@ def test_python_external_calls_survive_real_incremental_context(tmp_path):
     (tmp_path / "ext_b.py").write_text("import requests as rq\n\ndef fetch_b():\n    return rq.post('/b')\n")
     (tmp_path / "helper.py").write_text("def other():\n    return 1\n")
     (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    return helper.get()\n")
+    # The native subprocess needs Windows home/system fields; HOME alone is
+    # POSIX-only. Inherit sandboxed paths while keeping provider state excluded.
     env = {k: v for k, v in os.environ.items()
-           if k in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}}
+           if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE",
+                    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "TEMP", "TMP"}}
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
 
     def run():

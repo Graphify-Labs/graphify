@@ -29,6 +29,12 @@ from graphify.extractors.pascal import extract_pascal
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest
 from graphify.extractors.r import extract_r
+from graphify.extractors.qml import extract_qml
+from graphify.extractors.qml_metadata import extract_qmldir
+from graphify.extractors.qml_cmake import extract_cmake
+from graphify.extractors.qml_qmake import extract_qmake
+from graphify.extractors.qml_resources import extract_qrc
+from graphify.extractors.qml_types import extract_qmltypes
 from graphify.extractors.razor import extract_razor
 from graphify.extractors.rust import extract_rust
 from graphify.extractors.sln import extract_sln
@@ -40,6 +46,12 @@ from graphify.extractors.vbnet import extract_vbnet
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
+    "qml": extract_qml,
+    "qmldir": extract_qmldir,
+    "cmake": extract_cmake,
+    "qmake": extract_qmake,
+    "qrc": extract_qrc,
+    "qmltypes": extract_qmltypes,
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,

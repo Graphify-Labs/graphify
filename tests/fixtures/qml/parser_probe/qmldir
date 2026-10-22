@@ -1,0 +1,9 @@
+# Synthetic basic module descriptor.
+module Example.Widgets
+Main 1.0 Main.qml
+singleton Theme 1.0 Theme.qml
+internal Helper Helper.qml
+typeinfo plugins.qmltypes
+plugin exampleplugin
+classname ExamplePlugin
+depends QtQuick.Controls 6.5

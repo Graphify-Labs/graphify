@@ -2917,6 +2917,14 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
     decl = node.child_by_field_name("declarator")
     if decl:
         return _get_cpp_func_name(decl, source)
+    if node.type == "reference_declarator":
+        # tree-sitter-cpp places a reference-return function directly beneath
+        # this wrapper without a declarator field. Only a sole actual function
+        # child can supply the name; unrelated or competing children stay opaque.
+        functions = [child for child in node.children if child.type == "function_declarator"]
+        if len(functions) == 1:
+            return _get_cpp_func_name(functions[0], source)
+        return None
     for child in node.children:
         if child.type == "identifier":
             return _read_text(child, source)
@@ -5837,6 +5845,12 @@ def _extract_generic(
 
     stem = _file_stem(path)
     str_path = str(path)
+    # Exact Qt/C++ identities coexist with upstream GPU qualifier filtering;
+    # dialect hints never replace source-backed declaration ownership.
+    cpp_identity = None
+    if config.ts_module == "tree_sitter_cpp":
+        from graphify.extractors.cpp_identity import CppIdentity
+        cpp_identity = CppIdentity(root, source, stem)
     # GPU C++ dialects (Metal .metal, CUDA .cu/.cuh) route through the C++
     # extractor, but their address-space/execution-space/function qualifiers are
     # not C++ keywords, so tree-sitter-cpp misparses a leading `kernel` /
@@ -6012,7 +6026,13 @@ def _extract_generic(
             edge["metadata"] = sanitize_metadata(metadata)
         edges.append(edge)
 
-    def ensure_named_node(name: str, line: int) -> str:
+    def ensure_named_node(name: str, line: int, syntax=None) -> str:
+        if cpp_identity is not None and syntax is not None:
+            accepted_class = cpp_identity.reference(name, syntax)
+            if accepted_class:
+                # A known later body will materialize during the AST walk;
+                # adding a stub now would hide it through seen_ids.
+                return accepted_class
         nid = _make_id(stem, ".".join(namespace_stack), name)
         if config.ts_module == "tree_sitter_c_sharp":
             nid = _underscore_salted_nid(nid, name, csharp_type_groups)
@@ -6174,6 +6194,9 @@ def _extract_generic(
             elif config.ts_module == "tree_sitter_python":
                 # `Session` / `session()`, `Foo` / `FOO` in one module (#2810).
                 class_nid = _underscore_salted_nid(class_nid, class_name, python_underscore_groups)
+            cpp_record = cpp_identity.record(node) if cpp_identity is not None else None
+            if cpp_record:
+                class_nid = cpp_record["id"]
             line = node.start_point[0] + 1
             metadata = None
             ruby_reopened = (
@@ -6242,6 +6265,12 @@ def _extract_generic(
                         ruby_body, source
                     ):
                         metadata["ruby_lookup_unsafe"] = True
+            if cpp_record and cpp_identity is not None and cpp_identity.preferred(cpp_record) is cpp_record:
+                existing_class = next((item for item in nodes if item["id"] == class_nid), None)
+                if existing_class is not None:
+                    # Preserve one declaration identity while making the exact
+                    # complete body authoritative over an earlier forward.
+                    existing_class["source_location"] = f"L{line}"
             if config.ts_module == "tree_sitter_python":
                 # Only a bare-name base becomes an `inherits` edge (below). A base
                 # the edge list cannot show (`mod.Base`, `Generic[T]`, a call) still
@@ -6946,11 +6975,9 @@ def _extract_generic(
                         if sub.type == "type_identifier":
                             base = _read_text(sub, source)
                         elif sub.type == "qualified_identifier":
-                            # Use the unqualified tail so "std::vector" matches
-                            # a "vector" node id if one exists in the graph;
-                            # fall back to the full qualified text otherwise.
-                            tail = sub.child_by_field_name("name")
-                            base = _read_text(tail, source) if tail else _read_text(sub, source)
+                            # Explicit qualification cannot borrow an unrelated
+                            # local class that merely has the same basename.
+                            base = _read_text(sub, source)
                         elif sub.type == "template_type":
                             tname = sub.child_by_field_name("name")
                             base = _read_text(tname, source) if tname else _read_text(sub, source)
@@ -6964,7 +6991,7 @@ def _extract_generic(
                             continue
                         if not base:
                             continue
-                        base_nid = ensure_named_node(base, line)
+                        base_nid = ensure_named_node(base, line, sub)
                         add_edge(class_nid, base_nid, "inherits", line)
                         # Emit a generic_arg reference for each type argument on the
                         # base (Base<Dep> -> Car references Dep). _cpp_collect_type_refs
@@ -6976,7 +7003,7 @@ def _extract_generic(
                                     _cpp_collect_type_refs(arg, source, True, arg_refs,
                                                            dialect_quals=dialect_type_quals)
                             for ref_name, _role in arg_refs:
-                                target_nid = ensure_named_node(ref_name, line)
+                                target_nid = ensure_named_node(ref_name, line, arg)
                                 if target_nid != class_nid:
                                     add_edge(class_nid, target_nid, "references",
                                              line, context="generic_arg")
@@ -7491,7 +7518,7 @@ def _extract_generic(
                                            dialect_quals=dialect_type_quals)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "field"
-                        target_nid = ensure_named_node(ref_name, line)
+                        target_nid = ensure_named_node(ref_name, line, type_node)
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references",
                                      line, context=ctx)
@@ -7621,6 +7648,10 @@ def _extract_generic(
                     ruby_method_kind = "ambiguous"
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
+                # C++ overload identity belongs to the original constructor
+                # signature before generic deduplication loses occurrence spans.
+                if cpp_identity is not None:
+                    func_nid = cpp_identity.constructor(node, sanitized_name, parent_class_nid)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -7667,6 +7698,9 @@ def _extract_generic(
                     ).append(_csharp_return_info(node, source))
             else:
                 func_nid = _make_id(stem, sanitized_name)
+                if cpp_identity is not None:
+                    from graphify.extractors.cpp_identity import qualified_function_id
+                    func_nid = qualified_function_id(stem, node, sanitized_name, source)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -7956,7 +7990,7 @@ def _extract_generic(
                     collect(return_node, source, False, refs)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
-                        target_nid = ensure_named_node(ref_name, line)
+                        target_nid = ensure_named_node(ref_name, line, return_node)
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
                 # function_declarator may be wrapped in pointer/reference declarators
@@ -10256,6 +10290,13 @@ def _extract_generic(
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_php":
             result["php_type_table"] = {"path": str_path, "table": type_table}
+    # Constructor prototypes use C++ `declaration`, unlike ordinary member fields.
+    # Retain their exact source proof before corpus canonicalization owns the join.
+    if config.ts_module == "tree_sitter_cpp":
+        from graphify.extractors.cpp_constructors import augment_cpp_constructors
+        augment_cpp_constructors(root, source, nodes, clean_edges, path)
+        from graphify.extractors.cpp_member_identity import augment_cpp_members
+        augment_cpp_members(root, source, nodes, path)
     return result
 
 def _ts_mark_public_twins(root, source: bytes, result: dict) -> None:

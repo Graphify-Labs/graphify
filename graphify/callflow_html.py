@@ -572,7 +572,8 @@ def preferred_edges(edges: list, allow_structure: bool = False) -> list:
         if not should_include_edge(edge):
             continue
         relation = edge.get("relation", "")
-        if relation in primary or (allow_structure and relation in secondary):
+        from graphify.qt_relationship_views import relationship_label
+        if relation in primary or relationship_label(edge) or (allow_structure and relation in secondary):
             selected.append(edge)
     if selected:
         return selected
@@ -1245,6 +1246,9 @@ def generate_call_table_rows(
     callers = defaultdict(set)
     callees = defaultdict(set)
     for e in (all_edges if all_edges is not None else section_edges):
+        from graphify.qt_relationship_views import is_event_relationship
+        if is_event_relationship(e):
+            continue
         src = e.get("source", "")
         tgt = e.get("target", "")
         if e.get("relation") in ("calls", "imports", "imports_from", "uses", "method", "indirect_call"):
@@ -1777,6 +1781,9 @@ def write_callflow_html(
 {generate_section_cards(sec, sec_nodes, sec_edges, lang)}
 <hr>
 """)
+
+    from graphify.qt_relationship_views import render_relationship_table
+    html.append(render_relationship_table(nodes, edges, lang))
 
     # ── Section: Hyperedges (if any) ──
     if hyperedges:

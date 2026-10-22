@@ -108,12 +108,12 @@ GRAPHIFY_ROOT_EOF
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
+**In every subsequent bash block, replace `python3` with `"$(cat graphify-out/.graphify_python)"` to use the correct interpreter.**
 
 ### Step 2 - Detect files
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
@@ -179,10 +179,18 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
+[Qt/QML] Install the optional `graphifyy[qml]` extra in the recorded interpreter when the accepted corpus contains QML or `.qmltypes`. Analysis does not require a Qt SDK and never executes project code or build tools.
+
+[Qt/QML] Preserve scoped source identities, evidence and unresolved statuses. Bindings, signal emissions, declared connections and meta-object accesses have different meanings; an emission does not prove a synchronous slot call. QML `id` does not establish C++ `objectName` lookup.
+
+[Qt/QML] The literal CMake/qmake/QRC/type-description subset and its limits are documented in `docs/qt-qml/README.md` when available. Conditional builds, dynamic targets and unsupported syntax cannot become guessed providers. A failed integrity gate preserves prior output; do not force past it.
+
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from graphify.extract import collect_files, extract
+from graphify.qml_safety import require_complete_qml
+from graphify.qt_analysis_state import inspect_qt_analysis
 from pathlib import Path
 import json
 
@@ -192,10 +200,12 @@ for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
 
 if code_files:
-    # root= anchors node ids and source_file on the scan root; cache_root only says
-    # where graphify-out/cache lives. Pass both: without root= the anchor falls back
-    # to cache_root, so pointing the cache elsewhere would rename every node (#3727).
-    result = extract(code_files, cache_root=Path('INPUT_PATH'), root=Path('INPUT_PATH'))
+    scan_root = Path(Path('graphify-out/.graphify_root').read_text(encoding='utf-8').strip()).resolve()
+    scan_root = scan_root.parent if scan_root.is_file() else scan_root
+    qt_state = inspect_qt_analysis(scan_root, Path('graphify-out'), code_files)
+    result = extract(code_files, root=scan_root, cache_root=scan_root,
+                     qml_import_roots=qt_state.import_roots, refresh_native=qt_state.has_qt)
+    require_complete_qml(result, code_files, operation='skill AST', root=scan_root)
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
@@ -209,7 +219,7 @@ else:
 **Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
@@ -231,7 +241,7 @@ Before dispatching any subagents, check which files already have cached extracti
 SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from graphify.cache import check_semantic_cache
 from pathlib import Path
@@ -305,27 +315,23 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 A subagent that only read the first Read call's worth of a long file still writes a well-formed chunk, so "chunk file exists and parses" is not evidence of coverage. Compare each file's self-reported `coverage` against its real length:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, glob
 from pathlib import Path
-
 covered = {}
 for c in sorted(glob.glob('graphify-out/.graphify_chunk_*.json')):
     d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
     for src, n in (d.get('coverage') or {}).items():
         covered[src] = max(covered.get(src, 0), int(n))
-
 partial = []
 for src, n in sorted(covered.items()):
     p = Path(src)
     if not p.is_absolute():
         p = Path('INPUT_PATH') / src
-    if not p.is_file():
-        continue
+    if not p.is_file(): continue
     total = sum(1 for _ in p.open(encoding='utf-8', errors='replace'))
     if total and n < total:
         partial.append((src, n, total))
-
 Path('graphify-out/.graphify_partial.txt').write_text('\n'.join(s for s, _, _ in partial), encoding=\"utf-8\")
 if partial:
     print(f'WARNING: {len(partial)} file(s) were only partly read. They are cached as partial and retried on the next --update:')
@@ -340,7 +346,7 @@ Tell the user which files came up short and what was lost (the line counts are p
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, glob
 from pathlib import Path
 
@@ -364,7 +370,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 
 Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from graphify.cache import save_semantic_cache
 from pathlib import Path
@@ -383,7 +389,7 @@ print(f'Cached {saved} files' + note)
 
 Merge cached + new results into `graphify-out/.graphify_semantic.json`:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 
@@ -416,7 +422,7 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 #### Part C - Merge AST + semantic into final extraction
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from pathlib import Path
 
@@ -465,7 +471,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ```bash
 mkdir -p graphify-out
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
@@ -527,7 +533,7 @@ Replace INPUT_PATH with the actual path.
 A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, and self-loops — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 from graphify.diagnostics import diagnose_extraction, format_diagnostic_report
@@ -555,7 +561,7 @@ Read `graphify-out/.graphify_analysis.json`. For each community key, look at its
 Then regenerate the report and save the labels for the visualizer:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import score_all
@@ -626,7 +632,7 @@ These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json
 from pathlib import Path
 from datetime import datetime, timezone

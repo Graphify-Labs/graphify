@@ -42,7 +42,9 @@ def _undeclared(ids: set[str], links: list[dict]) -> list[tuple[str, str, str]]:
 def test_finalize_raw_graph_endpoints_matches_build_from_json():
     from graphify.build import finalize_raw_graph_endpoints
 
-    stub = {"label": "", "file_type": "concept", "type": "external", "external": True, "source_file": ""}
+    # D30's automatic cleanup requires the actual mint shape, including its
+    # identity label; a blank/custom label is protected as authored data.
+    stub = {"label": "requests", "file_type": "concept", "type": "external", "external": True, "source_file": ""}
     data = {
         "nodes": [{"id": "readme"}, {"id": "app"}, {**stub, "id": "requests"}],
         "edges": [
@@ -61,6 +63,17 @@ def test_finalize_raw_graph_endpoints_matches_build_from_json():
         ("app", "readme"),  # re-pointed by normalization, as build_from_json does
         ("readme", "app"),
     ]
+
+
+def test_finalize_raw_graph_endpoints_preserves_blank_external_label():
+    """An external-looking authored node with a blank label is outside the D30 convention."""
+    from graphify.build import finalize_raw_graph_endpoints
+
+    node = {"id": "requests", "label": "", "file_type": "concept", "type": "external",
+            "external": True, "source_file": "", "_origin": "semantic"}
+    data = {"nodes": [node.copy()], "edges": []}
+    finalize_raw_graph_endpoints(data)
+    assert data["nodes"] == [node]
 
 
 def test_update_no_cluster_writes_no_undeclared_endpoint(tmp_path: Path):
