@@ -3778,7 +3778,7 @@ recorded in D36 and the [contribution guide](../docs/qt-qml/UPSTREAM_CONTRIBUTIO
 | REQ-QML-014-AC03 | Cache/identity/Qt parity selection: 161 passed, 24 skipped (eight Windows symlink and sixteen POSIX traversal cases). Generic language selection: 135 passed, zero skipped. C++/CUDA/Metal/Objective-C/header selection: 66 passed. Independent shared-boundary selections: 824 passed, 13 skipped (twelve filesystem/platform and one GraphML case). These are separate selections, not an additive unique full-suite total. |
 | REQ-QML-014-AC03; REQ-CORE-004-AC02/AC03 | `test_watch_thread_lifecycle.py::test_req_qml014_ac03_original_real_watch_acceptance_joins_before_teardown` audits both original native event tests in child pytest processes before patch teardown; both fail before the scoped lifetime correction. `::test_req_qml014_ac03_scoped_watch_shutdown_restores_clocks_on_every_exit[False/True]` proves joined cleanup and clock restoration on normal/assertion exits. Final `test_watch.py`, `test_watch_clock_isolation.py`, `test_watch_thread_lifecycle.py` order: 203 passed, seven platform skips. Separate lifecycle/clock selection: ten passed, one POSIX skip. `test_ci_windows_tools.py` and `test_ci_source_cases.py`: 33 passed, including actual PowerShell selection and omission/duplicate/skip/failure rejection at the workflow-owned gates. All four new cases are individually required in existing Linux/Windows jobs; native required inventory is 33, retaining the earlier 29. New-source hosted execution remains pending. |
 | REQ-CORE-001-AC01; REQ-QML-015-AC02 | Existing shipped-resource tests exposed a bare recorded-interpreter head in upstream's new coverage command and an 803-line lean core exceeding the retained `<800` assertion. The authoritative fragment quotes the head and compacts formatting without removing the coverage mechanism. Separate `python -m tools.skillgen` and `--bless` invocations write the 134 packaged resources and expected snapshots. All five validators pass when individually invoked: `--check`, `--audit-coverage`, `--schema-singleton`, `--monolith-roundtrip`, `--always-on-roundtrip`. The shipped core is 799 lines. Replay of `test_install_references.py`, `test_skillgen.py` and `test_skillgen_interpreter_identity.py` passes 93 cases; one fallback case is inapplicable because every host now ships a bundle. All seven generated-resource failures from the full run pass in this replay. |
-| REQ-QML-015-AC01/AC03/AC04 | Requirements, D36, design, code reference, increment plan and contribution scope are updated together. New upstream submission, source-matched wheel/consumer evidence and final graph update remain pending. The new proposal explicitly identifies prior PR #4111 and overlapping proposal #1748; neither is automatically closed or merged. |
+| REQ-QML-015-AC01/AC03/AC04 | Requirements, D36, design, code reference, increment plan and contribution scope are updated together. The source-matched wheel/consumer and final repository graph update pass as detailed below. The fresh upstream submission retains distinct source/base/hosted evidence. It explicitly identifies prior PR #4111 and overlapping proposal #1748; neither is automatically closed or merged. |
 
 Focused checks use the repository interpreter with `-X utf8 -m pytest`, explicit
 module selections, `-q --tb=short`, isolated outputs and JUnit receipts. The full
@@ -3800,8 +3800,40 @@ backwards performance counter. An attempted 20-fold explicit-node selection was
 deduplicated by pytest and counts as one actual pass, not twenty. Original
 coverage bytes and installed dependency identities remain unchanged. All eight
 original failed case identities pass in the applicable corrected replays; the
-initial full run itself remains a failed invocation, and final wheel evidence is
-still pending.
+initial full run itself remains a failed invocation. `test_qml_wheel_artifact.py`
+then passes all three cases with the reviewed wheel supplied, clearing three
+previous wheel-input skips. Exact identity union across the full, generated,
+ordered watcher/lifecycle, CI-gate and built-wheel receipts is **12,277 cases:
+12,105 passed, 172 skipped, zero unresolved failures/errors**. This is a union
+of separate executions, not one successful full invocation. The remaining skips
+retain native symlink privilege, POSIX filesystem/child-wait, optional oracle,
+service and profile boundaries; they do not establish execution or acceptance.
+
+The local source-built `graphifyy-0.9.94` wheel has SHA256
+`9ac82e0728a141227319104f26da99bc6216a39fd4f23316a54463d1f460d19f`.
+All **328 package files, including 191 Python files**, match raw committed Git
+blobs; schema 23, Qt policy 26, metadata and entry point match. A fresh offline
+`[qml]` consumer matches every installed byte, passes the committed neutral
+smoke, and exercises public app-only QRC output extraction. Two unsupported
+mutations return failure with `QML_GRAPH_PRESERVED`, retaining graph, manifest,
+Qt-state and seeded report bytes. Corrected retry and no-change graph bytes/mtime
+pass, and temporary corpus/dependency cleanup is confirmed. The report is seeded
+because raw extraction does not generate it. No Qt SDK or native corpus build is
+used; no global or application installation is changed.
+
+Packaging uses the existing Python backend with `python -m build --wheel
+--no-isolation` on committed archive inputs. An initial archive inherited Windows
+CRLF conversion and the raw-byte auditor rejected its wheel before consumer
+installation. The accepted archive uses command-local `core.autocrlf=false` and
+`core.eol=lf`; no repository/user setting or comparison is weakened and no wheel
+bytes are normalized after building. Both candidates' logs are retained. Source
+and installed inventories are audited again against the final contribution head.
+
+The required AST-only repository update exits zero after the watcher/CI changes,
+with **27,747 nodes and 63,702 edges** and a retained pre-update backup. Existing
+malformed/non-symbol fixture warnings remain explicit. This keeps repository
+navigation current and does not prove the graph's correctness or refresh an
+application graph.
 
 Whole-repository `ruff check .` passes. Final Pyright 1.1.409 analyzes 856 files and
 reports **666 errors, zero warnings**: all earlier 651 diagnostics persist and

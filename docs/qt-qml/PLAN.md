@@ -3496,7 +3496,8 @@ remain separate delivery steps.
 
 ## INC-QML-59 — Upstream 0.9.94 contribution integration
 
-Status: **In progress; earlier 0.9.92 validation is historical evidence only**.
+Status: **Implemented and locally checked; upstream review/hosted acceptance pending**.
+Earlier 0.9.92 validation remains historical evidence only.
 Owner: integration maintainer. Source: validated fork merge `f7430ac9`.
 Reviewed incoming upstream base: `c588b72d936927790a87ad009955078ed40562a3`
 (`v8`, 0.9.94). The new contribution uses a separate feature branch in the
@@ -3546,8 +3547,19 @@ live-frame audit before correction. After a scoped stop/join owner replaces
 unmanaged daemon lifetime, the ordered watcher/clock/lifecycle run passes 203
 cases with seven platform skips. A separate lifecycle/clock run passes ten with
 one POSIX skip. Existing Linux/Windows gates require all four lifecycle identities;
-their actual collection/native proof controls pass 33 cases. Packaging and
-upstream delivery remain pending.
+their actual collection/native proof controls pass 33 cases. The source-matched
+0.9.94 wheel and fresh offline QML-only consumer pass raw/installed identity,
+smoke and public rejected-write/recovery/no-change checks. All three built-wheel
+tests pass. Exact-case union across the full run and corrected replays is 12,277
+identities: 12,105 passed, 172 skipped, no unresolved executed failure. This is
+combined evidence, not one green full invocation. New-source hosted validation
+and upstream acceptance remain pending.
 Whole-repository Ruff passes. Pyright reports 666 errors: the earlier 651 plus
 15 diagnostics at unchanged incoming upstream sites. This is a source comparison,
 not an independently executed pristine-upstream type run or a clean type check.
+
+The AST-only repository graph refresh succeeds after the new watcher/CI sources,
+with 27,747 nodes and 63,702 edges; the previous graph is backed up. No application
+installation or graph is refreshed. Exit produces a fresh upstream contribution
+from the reviewed 0.9.94 integration; earlier requests remain separate and no
+automatic upstream merge is authorized by this increment.

@@ -1205,7 +1205,7 @@ belong in design and traceability, respectively.
 
 ## D36 — Upstream 0.9.94 semantic union
 
-Status: **Implemented integration; local verification in progress**.
+Status: **Implemented and locally checked; new upstream hosted acceptance pending**.
 Owners: integration, cache, extractor facade, generic extractor and installer
 maintainers. Applies to INC-QML-59 and REQ-QML-002, REQ-QML-011-AC01/AC03/AC04,
 REQ-QML-014-AC02/AC03/AC04, REQ-QML-015 and REQ-CORE-001/004.

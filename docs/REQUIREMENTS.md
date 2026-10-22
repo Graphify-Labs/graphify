@@ -455,7 +455,9 @@ Public support documentation accurately lists implemented syntax, resolution lim
 
 Delivery status: the 0.9.92 fork source `f7430ac9` has revision-bound hosted and
 isolated-consumer evidence. INC-QML-59 integrates upstream 0.9.94 at `c588b72d`
-for a fresh contribution; that source/base combination is **not yet verified**.
+for a fresh contribution. Its scoped local source, generated-guidance and
+isolated QML-only consumer checks pass as recorded in traceability; new-source
+hosted/platform and release acceptance remain **unverified**.
 Repository renaming changes its discovery URL, not extraction behavior or the
 meaning of prior evidence. Earlier PR #4111 remains a separate review record.
 
