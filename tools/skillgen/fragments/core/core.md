@@ -183,36 +183,13 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 A subagent that only read the first Read call's worth of a long file still writes a well-formed chunk, so "chunk file exists and parses" is not evidence of coverage. Compare each file's self-reported `coverage` against its real length:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json, glob
-from pathlib import Path
-
-covered = {}
-for c in sorted(glob.glob('graphify-out/.graphify_chunk_*.json')):
-    d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
-    for src, n in (d.get('coverage') or {}).items():
-        covered[src] = max(covered.get(src, 0), int(n))
-
-partial = []
-for src, n in sorted(covered.items()):
-    p = Path(src)
-    if not p.is_absolute():
-        p = Path('INPUT_PATH') / src
-    if not p.is_file():
-        continue
-    total = sum(1 for _ in p.open(encoding='utf-8', errors='replace'))
-    if total and n < total:
-        partial.append((src, n, total))
-
-Path('graphify-out/.graphify_partial.txt').write_text('\n'.join(s for s, _, _ in partial), encoding=\"utf-8\")
-if partial:
-    print(f'WARNING: {len(partial)} file(s) were only partly read. They are cached as partial and retried on the next --update:')
-    for src, n, total in partial:
-        print(f'  {src}: read {n} of {total} lines')
-else:
-    print('Coverage OK - every file a subagent reported was read to its last line')
-"
+graphify pipeline check-coverage INPUT_PATH
 ```
+
+Replace INPUT_PATH with the actual path (same value used above). It compares
+each reported coverage count against the file's real length, writes the files
+that came up short to `graphify-out/.graphify_partial.txt`, and prints how many
+lines of each were read.
 
 Tell the user which files came up short and what was lost (the line counts are printed above). The nodes already extracted for those files are kept - they are still true - but the file is cached as partial and left unstamped in the manifest below, so the next `--update` re-dispatches it and replace-on-re-extract swaps the partial node set for a complete one. This is the same mechanism the library path uses for a truncated LLM response (#933, #1950), so both paths now recover instead of silently keeping a half-read file forever. A file a subagent did not report at all is not counted as partial - there is nothing to compare against - which is why the prompt rule in `references/extraction-spec.md` asks for the count in the first place.
 

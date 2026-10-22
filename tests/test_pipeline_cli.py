@@ -233,6 +233,59 @@ def test_merge_chunks_without_any_chunks_writes_an_empty_sidecar(tmp_path: Path)
     assert merged["nodes"] == [] and merged["edges"] == []
 
 
+def test_check_coverage_flags_a_partly_read_file_and_clears_a_complete_one(
+    tmp_path: Path,
+) -> None:
+    """Step B3.5: a file a subagent only partly read is named, a full read is not.
+
+    A well-formed chunk proves nothing about how much of the file was read
+    (#3987), so the coverage check compares each reported count against the
+    file's real length.
+    """
+    work = tmp_path / "work"
+    out = work / "graphify-out"
+    out.mkdir(parents=True)
+
+    doc = work / "big.md"
+    doc.write_text("\n".join(f"line {i}" for i in range(1, 51)), encoding="utf-8")
+    whole = work / "small.md"
+    whole.write_text("\n".join(f"line {i}" for i in range(1, 11)), encoding="utf-8")
+
+    (out / ".graphify_chunk_01.json").write_text(
+        json.dumps({"coverage": {str(doc): 10, str(whole): 10}, "nodes": []}),
+        encoding="utf-8",
+    )
+
+    p = _gx("pipeline", "check-coverage", str(work), cwd=work)
+    assert p.returncode == 0, p.stderr
+    assert "partly read" in p.stdout
+    assert "read 10 of 50 lines" in p.stdout
+    flagged = (out / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines()
+    assert flagged == [str(doc)], f"only the partly-read file may be flagged, got {flagged}"
+
+    # A file read to its end is not flagged, and the warning clears.
+    (out / ".graphify_chunk_01.json").write_text(
+        json.dumps({"coverage": {str(doc): 50, str(whole): 10}, "nodes": []}),
+        encoding="utf-8",
+    )
+    p = _gx("pipeline", "check-coverage", str(work), cwd=work)
+    assert p.returncode == 0, p.stderr
+    assert "Coverage OK" in p.stdout
+    assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
+
+
+def test_check_coverage_skips_a_malformed_chunk_instead_of_aborting(tmp_path: Path) -> None:
+    """A chunk is untrusted subagent output: a bad one is skipped, not fatal."""
+    work = tmp_path / "work"
+    out = work / "graphify-out"
+    out.mkdir(parents=True)
+    (out / ".graphify_chunk_bad.json").write_text("{not json", encoding="utf-8")
+
+    p = _gx("pipeline", "check-coverage", str(work), cwd=work)
+    assert p.returncode == 0, p.stderr
+    assert "Coverage OK" in p.stdout
+
+
 def test_cleanup_removes_sidecars_but_keeps_durable_outputs(corpus: Path, tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()

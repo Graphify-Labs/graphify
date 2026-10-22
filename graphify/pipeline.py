@@ -52,6 +52,7 @@ _CACHED_JSON = ".graphify_cached.json"
 _UNCACHED_TXT = ".graphify_uncached.txt"
 _ANALYSIS_JSON = ".graphify_analysis.json"
 _EXTRACT_JSON = ".graphify_extract.json"
+_PARTIAL_TXT = ".graphify_partial.txt"
 
 def _empty_semantic() -> dict[str, Any]:
     """A fresh empty semantic payload. Returns new lists each call — callers may
@@ -107,6 +108,21 @@ def _load(path: Path, what: str) -> dict:
 def _scan(scan_path: Path | str | None) -> Path:
     """The corpus root, defaulting to cwd when a step doesn't need one."""
     return Path(scan_path) if scan_path is not None else Path(".")
+
+
+def partial_sources(out: Path | str | None = None) -> set[str]:
+    """Files a subagent only partly read, as recorded by the coverage check.
+
+    ``out`` is the base directory the sidecars live under (the same meaning the
+    other steps give it), not the sidecar directory itself.
+
+    Empty when the coverage check never ran (the all-cached path) or found
+    nothing short, so callers can pass it straight through.
+    """
+    p = _out_dir(out) / _PARTIAL_TXT
+    if not p.exists():
+        return set()
+    return {ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()}
 
 
 # --------------------------------------------------------------------------
@@ -292,6 +308,81 @@ def step_cache_check(
 
 
 # --------------------------------------------------------------------------
+# Part B.5 - coverage check
+# --------------------------------------------------------------------------
+
+
+def step_check_coverage(
+    path: str | Path | None = None,
+    *,
+    out: Path | str | None = None,
+    pattern: str = ".graphify_chunk_*.json",
+) -> list[str]:
+    """Check that every file a subagent reported was read to its end.
+
+    A subagent that only read the first Read call's worth of a long file still
+    writes a well-formed chunk, so "the chunk file exists and parses" is not
+    evidence of coverage (#3987). Each file's self-reported ``coverage`` count
+    is compared against its real length, and the files that came up short are
+    written to ``.graphify_partial.txt`` so the cache and the manifest leave
+    them unstamped and the next ``--update`` re-dispatches them (#2225).
+
+    A file a subagent did not report at all is not counted as partial - there
+    is nothing to compare against. Returns the partly-read source files.
+    """
+    out_dir = _out_dir(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    root = _scan(path)
+
+    covered: dict[str, int] = {}
+    for cf in sorted(_glob.glob(str(out_dir / pattern))):
+        try:
+            chunk = _read_json(Path(cf)) or {}
+        except (OSError, ValueError):
+            # A chunk is untrusted subagent output; a malformed one must not abort
+            # the coverage check the way it must not abort the merge (#825).
+            print(
+                f"[graphify pipeline check-coverage] warning: skipping unreadable chunk {cf}"
+            )
+            continue
+        reported = chunk.get("coverage")
+        if not isinstance(reported, dict):
+            continue
+        for src, n in reported.items():
+            try:
+                count = int(n)
+            except (TypeError, ValueError):
+                continue
+            covered[str(src)] = max(covered.get(str(src), 0), count)
+
+    partial: list[tuple[str, int, int]] = []
+    for src, count in sorted(covered.items()):
+        p = Path(src)
+        if not p.is_absolute():
+            p = root / src
+        if not p.is_file():
+            continue
+        with p.open(encoding="utf-8", errors="replace") as fh:
+            total = sum(1 for _ in fh)
+        if total and count < total:
+            partial.append((src, count, total))
+
+    (out_dir / _PARTIAL_TXT).write_text(
+        "\n".join(s for s, _, _ in partial), encoding="utf-8"
+    )
+    if partial:
+        print(
+            f"WARNING: {len(partial)} file(s) were only partly read. "
+            "They are cached as partial and retried on the next --update:"
+        )
+        for src, count, total in partial:
+            print(f"  {src}: read {count} of {total} lines")
+    else:
+        print("Coverage OK - every file a subagent reported was read to its last line")
+    return [s for s, _, _ in partial]
+
+
+# --------------------------------------------------------------------------
 # Part B - collect subagent chunks
 # --------------------------------------------------------------------------
 
@@ -375,6 +466,10 @@ def step_save_cache(
     ``prompt_file`` must be the same extraction prompt Step B0 passed, so an entry
     is attributed to the prompt that produced it and a run under a changed prompt
     re-extracts instead of replaying stale results (#1939).
+
+    A file the coverage check found only partly read is stamped ``partial``, so
+    ``load_cached`` treats it as a miss and the next ``--update`` re-dispatches it
+    instead of serving a truncated extraction forever (#2225).
     """
     from graphify.cache import save_semantic_cache
 
@@ -384,6 +479,7 @@ def step_save_cache(
     uncached = []
     if uncached_path.exists():
         uncached = [ln for ln in uncached_path.read_text(encoding="utf-8").splitlines() if ln]
+    partial = sorted(partial_sources(out))
 
     return save_semantic_cache(
         new.get("nodes", []),
@@ -393,6 +489,7 @@ def step_save_cache(
         allowed_source_files=uncached,
         prompt_file=prompt_file,
         mode=mode,
+        partial_source_files=partial or None,
     )
 
 
@@ -653,6 +750,10 @@ def step_save_manifest(
     of marking it done and losing its content forever (#2015). Files dispatched this
     run but not stamped carry a stale ``semantic_hash``, cleared so
     ``detect_incremental`` re-queues them (#1948).
+
+    A file the coverage check found only partly read DID produce output, but its
+    node set covers just the head of the file, so it stays unstamped too and the
+    next ``--update`` re-dispatches it (#2225).
     """
     from graphify.cli import _stamped_manifest_files
     from graphify.detect import save_manifest
@@ -666,7 +767,9 @@ def step_save_manifest(
     # In --update mode 'all_files' carries the full corpus and 'files' the changed
     # subset; a full rebuild populates only 'files', so the fallback covers both.
     corpus = detect_result.get("all_files") or detect_result["files"]
-    manifest_files = _stamped_manifest_files(corpus, extract_result, scan)
+    manifest_files = _stamped_manifest_files(
+        corpus, extract_result, scan, partial_source_files=partial_sources(out)
+    )
 
     semantic_types = ("document", "paper", "image")
     dispatched = {
@@ -967,6 +1070,7 @@ def step_cleanup(*, out: Path | str | None = None) -> list[str]:
     for name in (
         _DETECT_JSON, _EXTRACT_JSON, _AST_JSON, _SEMANTIC_JSON,
         _ANALYSIS_JSON, _CACHED_JSON, _UNCACHED_TXT, _SEMANTIC_NEW_JSON,
+        _PARTIAL_TXT,
     ):
         p = out_dir / name
         if p.exists():

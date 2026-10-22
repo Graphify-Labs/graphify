@@ -23,6 +23,7 @@ PIPELINE_COMMANDS = [
     "graphify pipeline extract-ast",
     "graphify pipeline empty-semantic",
     "graphify pipeline cache-check",
+    "graphify pipeline check-coverage",
     "graphify pipeline merge-chunks",
     "graphify pipeline save-cache",
     "graphify pipeline merge-semantic",

@@ -8,6 +8,8 @@ lives only in the references, and no reference duplicates core content.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -1213,6 +1215,16 @@ def _write_chunk(out_dir: Path, payload: dict) -> None:
     )
 
 
+def _pipeline_run(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run `graphify pipeline <args>` in `cwd`, with the repo importable."""
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    return subprocess.run(
+        [sys.executable, "-m", "graphify", "pipeline", *args],
+        cwd=cwd, env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+
+
 def test_extraction_specs_demand_complete_reads_and_report_coverage():
     """Every host's subagent prompt states the Read cap and asks for coverage.
 
@@ -1253,12 +1265,13 @@ def test_core_bounds_semantic_chunks_by_lines_as_well_as_file_count():
 
 
 def test_coverage_check_flags_a_partly_read_file_and_clears_a_complete_one(
-    tmp_path, capsys, monkeypatch
+    tmp_path,
 ):
-    """Run the Step B3.5 coverage script: a short read is named, a full read is not."""
-    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
-    core, _ = _platform_artifacts("claude")
-    body = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    """Run the Step B3.5 coverage check: a short read is named, a full read is not.
+
+    With #197 the check is a `graphify pipeline check-coverage` subcommand rather
+    than an inline body, so the shipped command is what gets exercised.
+    """
     out = tmp_path / "graphify-out"
 
     doc = tmp_path / "big.md"
@@ -1268,8 +1281,7 @@ def test_coverage_check_flags_a_partly_read_file_and_clears_a_complete_one(
 
     # big.md was only read to line 10 of 50; small.md was read to its end.
     _write_chunk(out, {"coverage": {str(doc): 10, str(whole): 10}, "nodes": []})
-    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
-    printed = capsys.readouterr().out
+    printed = _pipeline_run(tmp_path, "check-coverage", str(tmp_path)).stdout
     assert "WARNING" in printed and "partly read" in printed, printed
     assert "read 10 of 50 lines" in printed, printed
     flagged = (out / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines()
@@ -1277,14 +1289,13 @@ def test_coverage_check_flags_a_partly_read_file_and_clears_a_complete_one(
 
     # Now report the full length for big.md: nothing is flagged and the warning clears.
     _write_chunk(out, {"coverage": {str(doc): 50, str(whole): 10}, "nodes": []})
-    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
-    printed = capsys.readouterr().out
+    printed = _pipeline_run(tmp_path, "check-coverage", str(tmp_path)).stdout
     assert "Coverage OK" in printed, printed
     assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
 
 
 def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
-    tmp_path, capsys, monkeypatch
+    tmp_path,
 ):
     """The whole point: a flagged file must come BACK as uncached on the next run.
 
@@ -1292,14 +1303,14 @@ def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
     file was served from cache forever. Drive the real cache: save with the flagged
     file named partial, then read it back the way Step B0 does and require it to be
     re-dispatched, while the fully-read file still hits.
+
+    With #197 the cache write is a `graphify pipeline save-cache` subcommand, so
+    the command is what gets exercised.
     """
     import json as _json
 
     from graphify.cache import check_semantic_cache
 
-    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
-    core, _ = _platform_artifacts("claude")
-    body = _substituted(_step_body(core, "partial_source_files=partial"), tmp_path)
     out = tmp_path / "graphify-out"
     out.mkdir(parents=True, exist_ok=True)
 
@@ -1320,13 +1331,16 @@ def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
         }),
         encoding="utf-8",
     )
+    spec = tmp_path / "extraction-spec.md"
+    spec.write_text("extraction prompt fixture\n", encoding="utf-8")
 
-    exec(compile(body, "step-b3-cache", "exec"), {"__name__": "__main__"})
-    assert "1 left partial for retry" in capsys.readouterr().out, (
+    printed = _pipeline_run(
+        tmp_path, "save-cache", str(tmp_path), "--prompt-file", str(spec)
+    ).stdout
+    assert "1 left partial for retry" in printed, (
         "the cache write must report that a file was left partial"
     )
 
-    spec = tmp_path / "extraction-spec.md"
     _, _, _, uncached = check_semantic_cache(
         [str(short), str(whole)], root=tmp_path, prompt_file=spec
     )

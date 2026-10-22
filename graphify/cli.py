@@ -1395,6 +1395,7 @@ _PIPELINE_STEPS: dict[str, str] = {
     "extract-ast": "AST-extract the detected code files into .graphify_ast.json",
     "empty-semantic": "write an empty .graphify_semantic.json (code-only corpora)",
     "cache-check": "split detected content files into cache hits and misses",
+    "check-coverage": "verify each reported file was read to its end",
     "merge-chunks": "merge .graphify_chunk_NN.json into .graphify_semantic_new.json",
     "save-cache": "stamp this run's semantic output into the extraction cache",
     "merge-semantic": "merge cached + new results into .graphify_semantic.json",
@@ -1536,6 +1537,11 @@ def _cmd_pipeline(argv: list[str]) -> None:
             print(f"Cache: {stats['hits']} files hit, {stats['misses']} files need extraction")
             return
 
+        if step == "check-coverage":
+            partial = _pl.step_check_coverage(_scan_path(), out=out)
+            print(f"Coverage check: {len(partial)} file(s) only partly read")
+            return
+
         if step == "merge-chunks":
             merged = _pl.step_merge_chunks(out=out)
             print(
@@ -1550,7 +1556,11 @@ def _cmd_pipeline(argv: list[str]) -> None:
                 prompt_file=opts.get("prompt-file"),
                 mode=opts.get("mode"),
             )
-            print(f"Cached {saved} files")
+            # A file the coverage check found only partly read is cached as a
+            # miss, so the next --update re-dispatches it (#2225). Say so.
+            partial = _pl.partial_sources(out)
+            note = f" ({len(partial)} left partial for retry)" if partial else ""
+            print(f"Cached {saved} files{note}")
             return
 
         if step == "merge-semantic":

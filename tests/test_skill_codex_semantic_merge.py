@@ -41,7 +41,7 @@ def test_codex_b0_b3_part_c_are_pipeline_commands():
     part_c = skill.split("#### Part C", 1)[1].split("\n### ", 1)[0]
 
     assert "graphify pipeline cache-check" in b0
-    assert b3.count("graphify pipeline") == 3  # merge-chunks, save-cache, merge-semantic
+    assert b3.count("graphify pipeline") == 4  # check-coverage, merge-chunks, save-cache, merge-semantic
     assert "graphify pipeline merge-extraction" in part_c
     assert " -c \"" not in b0 + b3 + part_c
 
