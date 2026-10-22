@@ -16,6 +16,7 @@ from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
+from .security import redact_secrets
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
@@ -80,7 +81,7 @@ from graphify.extractors.solidity import (  # noqa: F401
     resolve_solidity_inherited_calls,
     resolve_solidity_type_references,
 )
-from graphify.extractors.sql import extract_sql  # noqa: F401
+from graphify.extractors.sql import _norm_ident as _sql_norm_ident, extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_partial_calls  # noqa: F401
@@ -185,7 +186,7 @@ from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXT
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
-from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa: E402,F401
+from graphify.extractors.objc import _objc_category_base_stem, _objc_local_var_types, extract_objc  # noqa: E402,F401
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
 
@@ -1520,6 +1521,13 @@ _CSHARP_CONFIG = LanguageConfig(
         "enum_declaration",
         "struct_declaration",
         "record_declaration",
+        # A `delegate` is a named type. Without it the declaration was dropped,
+        # yet in-file references to the delegate type (a `BinOp` field/parameter)
+        # still ran through `ensure_named_node` and minted a *sourceless* stub —
+        # a provenance violation (a real in-file type losing to a sourceless god
+        # node). It has a `name` field and no body, so it emits a clean empty
+        # type node that those references bind to.
+        "delegate_declaration",
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
@@ -1535,8 +1543,15 @@ _CSHARP_CONFIG = LanguageConfig(
 )
 
 _KOTLIN_CONFIG = LanguageConfig(
+    # `type_alias` is `typealias ClickHandler = (Int) -> Unit`. Without it the
+    # declaration was dropped, yet an in-file field/parameter typed as the alias
+    # still resolved its name through `ensure_named_node` and minted a
+    # *sourceless* stub — a real in-file type losing to a sourceless god node
+    # (provenance). Scala and TypeScript already model type aliases as nodes; the
+    # alias has an `identifier` name (covered by `name_fallback_child_types`) and
+    # no body, so it emits a clean empty type node those references bind to.
     ts_module="tree_sitter_kotlin",
-    class_types=frozenset({"class_declaration", "object_declaration"}),
+    class_types=frozenset({"class_declaration", "object_declaration", "type_alias"}),
     function_types=frozenset({"function_declaration"}),
     # Grammar 1.1.0 (PyPI tree_sitter_kotlin) names the import node `import`;
     # older forks use `import_header`. Accept both (#2526).
@@ -1701,9 +1716,15 @@ _SWIFT_CONFIG = LanguageConfig(
     # `protocol { ... }`; tree-sitter-swift gives it its own node type rather than
     # reusing `function_declaration`, so without it a protocol's method contract
     # is dropped and the protocol becomes an empty node.
-    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    # `macro_declaration` is the Swift 5.9 `macro stringify(...) = #externalMacro(...)`
+    # form (freestanding or attached). It has no `name` field — the name is a bare
+    # `simple_identifier` child, already covered by `name_fallback_child_types` — so
+    # without it the whole declaration (and its `#name` call sites) was dropped.
+    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration", "macro_declaration"}),
     import_types=frozenset({"import_declaration"}),
-    call_types=frozenset({"call_expression"}),
+    # `macro_invocation` is a freestanding macro call `#stringify(...)`; it is not a
+    # `call_expression`, so it needs its own callee branch in walk_calls.
+    call_types=frozenset({"call_expression", "macro_invocation"}),
     call_function_field="",
     call_accessor_node_types=frozenset({"navigation_expression"}),
     call_accessor_field="",
@@ -1739,6 +1760,9 @@ def _shorten_rationale_label(text: str, width: int = 80) -> str:
     an unbroken URL) -- that would emit a content-free label, so fall back to
     a plain character truncation of the normalized text in that case.
     """
+    # Redact BEFORE shortening: truncating first could cut a token mid-way and
+    # leave an unredactable prefix in the label.
+    text = redact_secrets(text)
     label = textwrap.shorten(text, width=width, placeholder="…")
     if label in ("", "…"):
         flat = " ".join(text.split())
@@ -3803,6 +3827,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
+    ".sql": "sql",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
@@ -3985,6 +4010,24 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         target_id = candidates[0].get("id")
         if isinstance(target_id, str) and target_id and target_id != stub_id:
             remap[stub_id] = target_id
+
+    # SQL: a table no file defines is one table however many files read it, so the
+    # per-file stubs of one name fold into a single node.
+    sql_stubs: dict[str, list[str]] = {}
+    real_by_id = {node.get("id"): node for node in nodes if node.get("source_file")}
+    for stub in stubs:
+        stub_id = str(stub.get("id", ""))
+        if not stub_id or not str(stub.get("origin_file", "")).lower().endswith(".sql"):
+            continue
+        if _lang_family(real_by_id.get(remap.get(stub_id), {}).get("source_file")) not in (None, "sql"):
+            del remap[stub_id]  # a same-named definition in another language is not this table
+        if stub_id not in remap:
+            sql_stubs.setdefault(_sql_norm_ident(str(stub.get("label", ""))), []).append(stub_id)
+    for stub_ids in sql_stubs.values():
+        survivor = min(stub_ids)  # not the first seen: that would follow the file order
+        for stub_id in stub_ids:
+            if stub_id != survivor:
+                remap[stub_id] = survivor
 
     if not remap:
         return
@@ -4510,6 +4553,9 @@ def _park_unresolved_member_call(
     location = raw_call.get("source_location")
     if location:
         entry["line"] = str(location)
+    call_file = raw_call.get("source_file")
+    if call_file:
+        entry["file"] = str(call_file)
     parked.append(entry)
 
 
@@ -4773,14 +4819,18 @@ def _resolve_python_member_calls(
     # join would miss under an explicit cache_root). The `imports` edge's source
     # is the caller's own file node; `contains` maps a file node to its children.
     contains_children: dict[str, dict[str, list[str]]] = {}
+    # The same children by exact name, for a folded key several of them share.
+    contains_exact: dict[tuple[str, str], list[str]] = {}
     file_of_node: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") == "contains":
             src, tgt = e.get("source"), e.get("target")
             tnode = node_by_id.get(tgt)
             if tnode is not None:
+                label = str(tnode.get("label", ""))
                 contains_children.setdefault(src, {}).setdefault(
-                    _key(tnode.get("label", "")), []).append(tgt)
+                    _key(label), []).append(tgt)
+                contains_exact.setdefault((src, label.strip("()").lstrip(".")), []).append(tgt)
                 file_of_node[tgt] = src
     imported_by_filenode: dict[str, set[str]] = {}
     # Local alias bound by `as` on a specific import edge (#2082): `from pkg import
@@ -5057,6 +5107,11 @@ def _resolve_python_member_calls(
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
             children = contains_children[mods[0]].get(_key(callee), [])
+            if len(children) > 1:
+                # The key folds case and drops `_`, so `dataclass_schema()` and
+                # `class DataclassSchema` share it; Python names are exact. Among
+                # them, the one named exactly `callee` is the call's target.
+                children = contains_exact.get((mods[0], callee), [])
             if len(children) != 1:  # absent or ambiguous callable -> bail
                 continue
             _emit_call(caller, children[0], rc)
@@ -6396,6 +6451,40 @@ def _resolve_objc_member_calls(
             return
         _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "objc", rc)
 
+    def _defines_selector(n: dict | None) -> bool:
+        """The node is a method DEFINITION, not just a declaration.
+
+        An @implementation lives in a ``.m``/``.mm``; a merged decl/def node keeps
+        the impl site in ``definition_file`` while its own ``source_file`` is the
+        header. A header-only node is a bare declaration.
+        """
+        if not n:
+            return False
+        if n.get("definition_file"):
+            return True
+        return Path(str(n.get("source_file", ""))).suffix.lower() in (".m", ".mm")
+
+    def _resolve_member_target(type_defs: list[str], callee: str):
+        """Target node + relation for a selector sent to ``type_defs`` (or (None, None)).
+
+        One candidate: the selector's method, else the class node (``references``).
+        Several candidates with the same class name are a class split across
+        directories or categories that ``_merge_decl_def_classes`` left unmerged
+        (its fold is dir-local, #1556). Union their members and bind the selector
+        only when exactly ONE candidate DEFINES it — two unrelated same-named
+        classes that both define it stay ambiguous, so the god-node guard holds.
+        """
+        ck = _key(callee)
+        if len(type_defs) == 1:
+            mnid = method_index.get((type_defs[0], ck))
+            return (mnid, "calls") if mnid else (type_defs[0], "references")
+        defs = {m for t in type_defs
+                if (m := method_index.get((t, ck))) is not None
+                and _defines_selector(node_by_id.get(m))}
+        if len(defs) == 1:
+            return (next(iter(defs)), "calls")
+        return (None, None)
+
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
             continue
@@ -6419,23 +6508,18 @@ def _resolve_objc_member_calls(
             if not type_defs:
                 _park_absent(caller, callee, type_name, rc)
                 continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
             type_qualified = False
         elif receiver in ("self", "super"):
-            type_nid = enclosing_type.get(caller)
-            if not type_nid:
+            enc = enclosing_type.get(caller)
+            if not enc:
                 continue
+            type_defs = [enc]
             type_qualified = True
         elif receiver[:1].isupper():
             type_defs = type_def_nids.get(_key(receiver), [])
             if not type_defs:
                 _park_absent(caller, callee, receiver, rc)
                 continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
             type_qualified = True
         else:
             # Locals shadow fields: the file's `Foo *f` local table first, then the
@@ -6450,13 +6534,10 @@ def _resolve_objc_member_calls(
             if not type_defs:
                 _park_absent(caller, callee, type_name, rc)
                 continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
             type_qualified = False
-        method_nid = method_index.get((type_nid, _key(callee)))
-        target = method_nid or type_nid
-        relation = "calls" if method_nid else "references"
+        target, relation = _resolve_member_target(type_defs, callee)
+        if target is None:
+            continue
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
@@ -8752,10 +8833,12 @@ def _is_objc_header(path: Path) -> bool:
 # `class` stub); routing to extract_cpp recovers the real type. Kept CONSERVATIVE:
 # a plain C header with none of these stays on extract_c. ObjC sniffing keeps
 # priority (an ObjC header can legitimately contain `::`/`class` inside an inline
-# C++ block when compiled as Objective-C++).
+# C++ block when compiled as Objective-C++). `extern "C"` covers the common
+# C-API header guarded by `#ifdef __cplusplus`: the C grammar rejects the
+# linkage block and the whole header extracts zero symbols.
 _CPP_HEADER_MARKERS = (
     b"class ", b"namespace ", b"template", b"::",
-    b"public:", b"private:", b"protected:",
+    b"public:", b"private:", b"protected:", b'extern "C"',
 )
 
 
@@ -9366,6 +9449,12 @@ def extract(
     # (or the transient failure self-heals) without deleting graphify-out/.
     _failed_sources: list[str] = []
     _failed_seen: set[str] = set()
+    # A file the extractor declined by design is stamped (not a failure) yet has
+    # zero nodes in the graph, which is exactly the shape the #2543 heal re-queues
+    # forever (#2879 fixed only the failed-source path). Record them so the
+    # manifest can mark the emptiness intentional and the heal can leave them be.
+    _skipped_sources: list[str] = []
+    _skipped_seen: set[str] = set()
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
         _key = str(_p)
@@ -9379,6 +9468,9 @@ def extract(
             # zero nodes is the intended outcome rather than a failure. Marking
             # it failed keeps it out of the incremental manifest and re-queues
             # it on every subsequent run, forever (#2879).
+            if _key not in _skipped_seen:
+                _skipped_sources.append(_key)
+                _skipped_seen.add(_key)
             continue
         if (not _res.get("nodes")) and _get_extractor(_p) is not None:
             if _key not in _failed_seen:
@@ -9776,6 +9868,20 @@ def extract(
         old_pref_abs = _file_node_id(path_abs)
         if old_pref_abs != new_id and old_pref_abs != old_pref:
             old_prefs.append((old_pref_abs, new_id))
+        # An ObjC category (`Foo+Cat.h`) keys its class node and methods off the
+        # BASE stem `Foo`, so they fold into `Foo.h`'s class (#1556). Those ids
+        # start with the base stem's prefix, not this file's, so register it as
+        # well, after the file's own prefixes, or they keep the absolute-path form
+        # and the checkout location leaks into the graph (#502).
+        if "+" in rel.name:
+            rel_stem = _file_stem(rel)
+            base_rel = _objc_category_base_stem(rel_stem)
+            if base_rel != rel_stem:
+                new_base = _make_id(base_rel)
+                for _form in (path, path_abs):
+                    old_base = _make_id(_objc_category_base_stem(_file_stem(_form)))
+                    if old_base != new_base and (old_base, new_base) not in old_prefs:
+                        old_prefs.append((old_base, new_base))
         # Bash entrypoint node ids append "__entry" to the file-level id
         # (extractors/bash.py), so a script-invocation edge endpoint minted
         # from an out-of-batch target path keeps a suffixed absolute-derived
@@ -10873,6 +10979,18 @@ def extract(
             if df_path.is_absolute():
                 new_df, _, _ = _sf_entry(str(df), df_path)
                 item["definition_file"] = new_df
+        # A parked member call records the call-SITE file (the .m), which differs
+        # from the caller node's own source_file (often the .h) and so is not
+        # relativized by the source_file arm above. Left absolute it leaks the
+        # checkout path into graph.json and into the cross-repo edge built from it
+        # (#3152 parking carries names only for the same reason). Relativize it
+        # here, where the canonical source_file form is already computed.
+        md = item.get("metadata")
+        if isinstance(md, dict):
+            for _pc in md.get(UNRESOLVED_CALLS_KEY) or ():
+                _pf = isinstance(_pc, dict) and _pc.get("file")
+                if _pf and Path(_pf).is_absolute():
+                    _pc["file"], _, _ = _sf_entry(str(_pf), Path(_pf))
 
     if ext_id_remap:
         # Bash entrypoint ids are the file-level id + "__entry"
@@ -10990,6 +11108,10 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        # Surfaces files the extractor declined by design (zero nodes but not a
+        # failure) so the manifest can mark the emptiness intentional and the
+        # #2543 heal stops re-queuing them every incremental (#2879).
+        "skipped_sources": _skipped_sources,
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
@@ -11002,7 +11124,7 @@ def extract(
 # raw extraction as graph.json (--no-cluster) must leave them out: they put the
 # checkout path and OS username into the graph, and differ between the first
 # build and a rebuild of the same tree.
-RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources"})
+RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources", "skipped_sources"})
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:

@@ -1067,8 +1067,8 @@ def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
         "END;\n"
     )
     r = extract_sql(p)
-    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[usp_LoadDebtors]()"], routine
+    routine = [n["label"] for n in r["nodes"] if n["label"].endswith("()")]
+    assert routine == ["dbo.usp_LoadDebtors()"], routine
 
 
 def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
@@ -1082,7 +1082,7 @@ def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
+    assert labels == ["Utils.ValidateSourceView()", "usp_Bare()"], labels
 
 
 def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
@@ -1095,7 +1095,7 @@ def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
     p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[a]]b]()"], routine
+    assert routine == ["dbo.a]b()"], routine
 
 
 def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
@@ -1113,7 +1113,7 @@ def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
     p.write_text("CREATE PROCEDURE dbo.[usp_Mixed] AS\nBEGIN\n SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["dbo.[usp_Mixed]()"], routine
+    assert routine == ["dbo.usp_Mixed()"], routine
 
 
 def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
@@ -1128,7 +1128,7 @@ def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[dbo].[usp_Short]()", "usp_BareShort()"], labels
+    assert labels == ["dbo.usp_Short()", "usp_BareShort()"], labels
 
 
 def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
@@ -1151,7 +1151,7 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     assert not any("Comment" in l for l in labels), (
         f"commented-out DDL fabricated a node: {labels}"
     )
@@ -1184,8 +1184,8 @@ def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "strings.sql"]
-    assert "[dbo].[usp_AfterLineString]()" in labels, labels
-    assert "[dbo].[usp_AfterBlockString]()" in labels, labels
+    assert "dbo.usp_AfterLineString()" in labels, labels
+    assert "dbo.usp_AfterBlockString()" in labels, labels
 
 
 def test_mask_sql_comments_literal_and_comment_handling():
@@ -1505,7 +1505,7 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     fabricated = [
         label for label in labels
         if any(k in label for k in ("Dynamic", "Nested", "Bracketed", "Unterminated"))
@@ -1532,7 +1532,7 @@ def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "alias.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
@@ -1551,7 +1551,7 @@ def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "bare.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):

@@ -262,7 +262,12 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 context="cross_repo",
                 confidence="INFERRED",
                 confidence_score=0.85,
-                source_file=str(caller_data.get("source_file") or ""),
+                # The parked call-site file (the .m), not the caller node's own
+                # source_file (often the .h where the method is declared): the
+                # location below is the call-site line, so pairing it with the
+                # .h would point past the end of an unrelated file. Pre-#3152
+                # graphs have no `file`, so fall back to the caller's file.
+                source_file=str(entry.get("file") or caller_data.get("source_file") or ""),
                 source_location=entry.get("line"),
                 weight=1.0,
                 _src=caller,

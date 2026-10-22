@@ -107,6 +107,35 @@ def test_a_parked_call_binds_to_the_one_declaration_in_another_repo():
     assert data["source_location"] == "L10"
 
 
+def test_edge_source_file_is_the_parked_call_site_not_the_caller_node_file():
+    # The caller node's source_file is the declaration file (an ObjC caller lives
+    # in its `.h`); the call happens in the `.m`. Pairing the call-site line with
+    # the `.h` points past the end of an unrelated file (#3152 issue 3). The parked
+    # `file` carries the call-site, relativized at extract time.
+    parked = [{"callee": "greet", "receiver_type": "Greeter", "lang": "java",
+               "line": "L10", "file": "src/App.m"}]
+    G = _graph(
+        caller=_caller("a", parked, source_file="src/App.h"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    data = G.edges["a::app_run", "b::greeter_greet"]
+    assert data["source_file"] == "src/App.m"
+    assert data["source_location"] == "L10"
+
+
+def test_a_pre_3152_parked_entry_without_file_falls_back_to_the_caller_file():
+    # Graphs built before the call-site `file` was parked still merge: the edge
+    # falls back to the caller node's own source_file, the pre-fix behavior.
+    G = _graph(
+        caller=_caller("a", PARKED_GREET, source_file="src/App.h"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    data = G.edges["a::app_run", "b::greeter_greet"]
+    assert data["source_file"] == "src/App.h"
+
+
 def test_two_repos_declaring_the_same_name_bind_nothing():
     # The single-definition guard the single-repo resolvers apply. Two `Greeter`
     # declarations mean the call is ambiguous, and guessing one is worse than

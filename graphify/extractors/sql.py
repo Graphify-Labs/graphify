@@ -263,9 +263,153 @@ def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
     return "".join(out), ident_spans
 
 
+# A procedure body is read as TEXT, not from the tree: tree-sitter-sql has no
+# procedure production, and without `;` it merges the body's statements into
+# one malformed expression. The body of a recovered routine runs from the end
+# of its name to the next CREATE/ALTER at the start of a line (`CREATE TABLE
+# #tmp` / `@tbl` inside a body does not end it), a line holding only `GO [n]`,
+# or EOF. Run over the comment- and string-masked text from _scan_sql.
+_BODY_END_RX = re.compile(
+    r"^[ \t]*(?:GO(?:[ \t]+\d+)?[ \t\r]*;?[ \t\r]*$|(?:CREATE|ALTER)\b(?!\s+TABLE\s+[#@]))",
+    re.IGNORECASE | re.MULTILINE,
+)
+# `(?![\w$]|\s*\.)` stops the identifier atom from backtracking to a prefix of
+# a longer name (`tempdb..#x`, `dbo.fn(`) and matching that instead.
+_BODY_TAIL = r"(?![\w$]|\s*\.)"
+_BODY_READ_RX = re.compile(r"\b(?:FROM|JOIN)\s+(" + _TRIGGER_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
+_BODY_WRITE_RX = re.compile(
+    r"\b(INSERT(?:\s+INTO)?|UPDATE(?:\s+TOP\s*\([^)]*\))?|DELETE(?:\s+TOP\s*\([^)]*\))?(?:\s+FROM)?"
+    r"|MERGE(?:\s+INTO)?|INTO)\s+(" + _TRIGGER_IDENT + r")" + _BODY_TAIL,
+    re.IGNORECASE,
+)
+_BODY_ALIAS_RX = re.compile(r"\s+(?:AS\s+)?([A-Za-z_][\w$]*)", re.IGNORECASE)
+_BODY_CTE_RX = re.compile(r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([\w$]+)\s*(?:\([^()]*\))?\s+AS\s*\(", re.IGNORECASE)
+# `ON DELETE`, `FOR UPDATE`, `AFTER INSERT, UPDATE`: an event or lock clause, not a statement.
+_BODY_EVENT_RX = re.compile(r"(?:\b(?:ON|FOR|AFTER|BEFORE|OF)|,)\s*$", re.IGNORECASE)
+# `EXTRACT(year FROM d)`, `TRIM(x FROM y)` and `FETCH NEXT FROM cur`: a FROM that names no table.
+_BODY_FROM_NOT_TABLE_RX = re.compile(
+    r"(?:\b(?:EXTRACT|TRIM|SUBSTRING|OVERLAY|POSITION)\s*\([^()]*|\bDISTINCT\s+"
+    r"|\bFETCH\s+(?:NEXT|PRIOR|FIRST|LAST|(?:ABSOLUTE|RELATIVE)\s+\S+)\s+)$",
+    re.IGNORECASE,
+)
+# Words that can follow FROM/JOIN/INTO/UPDATE/... without naming a table, and
+# words that cannot be an alias.
+_BODY_NON_TABLES = frozenset({
+    "select", "where", "set", "dual", "null", "true", "false", "first", "skip",
+    "rows", "next", "only", "lateral", "values", "when", "then", "output", "default",
+    "cascade", "with", "top", "statistics", "into", "as", "on", "using", "not",
+    "exists", "inserted", "deleted", "openquery", "openrowset", "opendatasource",
+    "inner", "left", "right", "full", "cross", "outer", "join", "group", "order",
+    "having", "union", "except", "intersect", "option", "for", "from", "where",
+    "pivot", "unpivot", "tablesample", "natural", "apply",
+})
+
+
+def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
+    """(relation, table name as written, offset) for each table a masked
+    routine body reads (`FROM`/`JOIN`) or writes (`INSERT`/`UPDATE`/`DELETE`/
+    `MERGE`/`SELECT ... INTO`), in source order. Temp tables and variables never
+    match the identifier atom; CTE names and keywords are dropped; the target of
+    `UPDATE o ... FROM dbo.Orders o` is resolved through the alias."""
+    non_tables = set(_BODY_NON_TABLES)
+    for cm in _BODY_CTE_RX.finditer(masked):
+        non_tables.add(_norm_ident(cm.group(1)))
+
+    def _usable(name: str) -> bool:
+        return _norm_ident(name) not in non_tables
+
+    writes: list[tuple[int, int, str, str]] = []  # (start, end, relation, name)
+    for m in _BODY_WRITE_RX.finditer(masked):
+        if m.group(1).upper() != "INTO" and _BODY_EVENT_RX.search(masked[max(0, m.start() - 30):m.start()]):
+            continue
+        if _usable(m.group(2)):
+            writes.append((m.start(), m.end(), "writes_to", m.group(2)))
+
+    reads: list[tuple[int, str]] = []
+    aliases: dict[str, str] = {}
+    for m in _BODY_READ_RX.finditer(masked):
+        if any(s <= m.start() < e for s, e, _r, _n in writes):
+            continue  # the FROM directly after DELETE names the write target
+        if _BODY_FROM_NOT_TABLE_RX.search(masked[max(0, m.start() - 200):m.start()]):
+            continue
+        # `FROM dbo.fn_split(@x)` calls a table-valued function: not a table.
+        if not _usable(m.group(1)) or masked[m.end():].lstrip().startswith("("):
+            continue
+        reads.append((m.start(), m.group(1)))
+        am = _BODY_ALIAS_RX.match(masked, m.end())
+        if am and am.group(1).lower() not in non_tables:
+            aliases.setdefault(am.group(1).lower(), m.group(1))
+
+    refs = [(pos, "reads_from", name) for pos, name in reads]
+    for pos, _end, relation, name in writes:
+        if "." not in name:
+            name = aliases.get(name.lower(), name)
+        refs.append((pos, relation, name))
+    return [(relation, name, pos) for pos, relation, name in sorted(refs)]
+
+
+# A `GO` batch separator is a client-tool command, not SQL: tree-sitter-sql reads it as an
+# identifier, so without a `;` before it the next statement is swallowed into an ERROR node.
+# Found on the masked text (comments and strings blanked), alone on its line, optionally
+# followed by a repeat count.
+_GO_LINE_RX = re.compile(r"^[ \t]*(GO(?:[ \t]+\d+)?)[ \t\r]*;?[ \t\r]*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _go_separators(source: bytes) -> list[tuple[int, int]]:
+    """Byte spans of the `GO [n]` batch-separator lines in a T-SQL script.
+
+    A bare `go` on its own line is a column or alias, not a separator, only when the last
+    non-blank character before it is a comma or the first one after it is a comma or `)`.
+    Any keyword may precede a real separator (`SET NOCOUNT ON` / `GO`), so none is consulted.
+    """
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    masked = _scan_sql(text)[0]
+    spans: list[tuple[int, int]] = []
+    size = len(masked)
+    char_pos = byte_pos = 0  # a character offset and its byte offset, advanced as matches are met
+    for m in _GO_LINE_RX.finditer(masked):
+        before, after = m.start() - 1, m.end()
+        while before >= 0 and masked[before].isspace():
+            before -= 1
+        while after < size and masked[after].isspace():
+            after += 1
+        start, end = m.start(1), m.end(1)
+        byte_start = byte_pos + len(text[char_pos:start].encode("utf-8"))
+        byte_end = byte_start + len(text[start:end].encode("utf-8"))
+        char_pos, byte_pos = end, byte_end
+        if (before >= 0 and masked[before] == ",") or (after < size and masked[after] in ",)"):
+            continue
+        spans.append((byte_start, byte_end))
+    return spans
+
+
 def _mask_sql_comments(text: str) -> str:
     """Masked text only — see _scan_sql for the span-reporting form."""
     return _scan_sql(text)[0]
+
+
+def _clean_part(part: str) -> str:
+    """One name part without T-SQL brackets. The parser hands over `dbo].[Orders`
+    for `[dbo].[Orders]`, so a part may keep only one of its two brackets; `]]`
+    inside a bracketed name is an escaped `]`."""
+    return part.removeprefix("[").removesuffix("]").replace("]]", "]")
+
+
+def _clean_ident(name: str) -> str:
+    """Display form of an object name: T-SQL brackets removed, schema kept.
+
+    `[dbo].[Orders]` and the parser's `dbo].[Orders` both give `dbo.Orders`.
+    Double-quoted parts keep their quotes. Labels only: node ids come from the
+    text as written and are not touched.
+    """
+    if "[" not in name and "]" not in name:
+        return name
+    return ".".join(
+        p if p.startswith('"') else _clean_part(p) for p in (part.strip() for part in name.split("."))
+    )
 
 
 def _norm_ident(name: str) -> str:
@@ -274,16 +418,18 @@ def _norm_ident(name: str) -> str:
     Splits on `.`, strips one pair of surrounding delimiters from each part
     (double quotes for Postgres/ANSI, backticks for MySQL, brackets for
     T-SQL), lowercases, and rejoins. So `"public"."users"`, `public.users`,
-    and `PUBLIC.USERS` all normalize to `public.users`. Used ONLY for
+    and `PUBLIC.USERS` all normalize to `public.users`, and `[dbo].[Orders]`,
+    the parser's `dbo].[Orders` and `dbo.Orders` to `dbo.orders`. Used ONLY for
     `table_nids` keys and lookups — node ids and display labels keep the
     original text.
     """
     parts = []
     for part in name.split("."):
         p = part.strip()
-        if len(p) >= 2 and ((p[0] == p[-1] and p[0] in ('"', "`"))
-                            or (p[0] == "[" and p[-1] == "]")):
+        if len(p) >= 2 and p[0] == p[-1] and p[0] in ('"', "`"):
             p = p[1:-1]
+        else:
+            p = _clean_part(p)
         parts.append(p.lower())
     return ".".join(parts)
 
@@ -314,7 +460,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             else content if content is not None
             else _read_source_bytes(path)
         )
-        tree = parser.parse(source)
+        # `GO` is not SQL; as `;` (same length, so offsets and lines hold) it ends the statement.
+        patched = bytearray(source)
+        for start, end in _go_separators(source):
+            patched[start:end] = b";" + b" " * (end - start - 1)
+        tree = parser.parse(bytes(patched))
         root = tree.root_node
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
@@ -371,7 +521,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         nid = _make_id(name)
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": name, "file_type": "code",
+            nodes.append({"id": nid, "label": _clean_ident(name), "file_type": "code",
                            "source_file": "", "source_location": "",
                            "origin_file": str_path})
         return nid
@@ -384,7 +534,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
-                _add_node(nid, name, line)
+                _add_node(nid, _clean_ident(name), line)
                 table_nids[_norm_ident(name)] = nid
                 # Foreign key REFERENCES
                 for col in node.children:
@@ -439,7 +589,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
-                _add_node(nid, name, line)
+                _add_node(nid, _clean_ident(name), line)
                 table_nids[_norm_ident(name)] = nid
                 # FROM/JOIN table references inside view body
                 _walk_from_refs(node, nid, line)
@@ -448,7 +598,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
-                _add_node(nid, f"{name}()", line)
+                _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
                 _walk_from_refs(node, nid, line)
 
@@ -456,7 +606,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
-                _add_node(nid, f"{name}()", line)
+                _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
                 _walk_from_refs(node, nid, line)
 
@@ -765,7 +915,21 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 continue
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
-            _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+            fn_nid = _make_id(stem, fn_name)
+            # A routine the tree already produced (a cleanly parsed function)
+            # keeps its tree-based reads_from; scanning it too would double them.
+            from_tree = fn_nid in seen_ids
+            _add_node(fn_nid, f"{_clean_ident(fn_name)}()", fn_line)
+            if from_tree:
+                continue
+            end = _BODY_END_RX.search(masked_src, m.end())
+            seen_refs: set[tuple[str, str]] = set()
+            for relation, tbl, pos in _routine_body_refs(masked_src[m.end():end.start() if end else len(masked_src)]):
+                tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                if (relation, tbl_nid) in seen_refs:
+                    continue
+                seen_refs.add((relation, tbl_nid))
+                _add_edge(fn_nid, tbl_nid, relation, masked_src.count("\n", 0, m.end() + pos) + 1)
 
         for m in _TRIGGER_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):

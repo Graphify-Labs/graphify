@@ -75,6 +75,29 @@ def test_pom_parses_artifact_and_deps(tmp_path):
     assert any(e["target"] == "pkg_org_lib_core" for e in r["edges"])
 
 
+
+def test_pom_deps_exclude_managed_and_plugin_dependencies(tmp_path):
+    # <dependencyManagement> only pins versions and a plugin's <dependencies> are
+    # the build tool's; neither is a dependency of the project. Profile
+    # dependencies are.
+    dep = "<dependency><groupId>{}</groupId><artifactId>{}</artifactId></dependency>"
+    p = _write(tmp_path / "pom.xml",
+               '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+               '  <groupId>com.acme</groupId><artifactId>service</artifactId><version>1.0</version>\n'
+               f'  <dependencyManagement><dependencies>{dep.format("com.google.guava", "guava")}'
+               '</dependencies></dependencyManagement>\n'
+               f'  <dependencies>{dep.format("org.slf4j", "slf4j-api")}</dependencies>\n'
+               '  <build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>\n'
+               f'    <dependencies>{dep.format("org.junit.platform", "junit-platform-surefire-provider")}</dependencies>\n'
+               '  </plugin></plugins></build>\n'
+               f'  <profiles><profile><id>pg</id><dependencies>{dep.format("org.postgresql", "postgresql")}'
+               '</dependencies></profile></profiles>\n'
+               '</project>\n')
+    r = extract_package_manifest(p)
+    assert {e["target"] for e in r["edges"] if e["relation"] == "depends_on"} == {
+        "pkg_org_slf4j_slf4j_api", "pkg_org_postgresql_postgresql",
+    }
+
 # ── #1377: a package referenced by N manifests is ONE node ───────────────────
 
 def test_apm_dependency_collapses_to_single_canonical_node(tmp_path):
