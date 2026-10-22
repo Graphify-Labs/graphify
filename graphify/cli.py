@@ -1854,6 +1854,12 @@ def dispatch_command(cmd: str) -> None:
             else:
                 i += 1
 
+        def _log(msg: str):
+            if as_json:
+                print(msg, file=sys.stderr)
+            else:
+                print(msg)
+
         from graphify.heal.engine import (
             execute_and_capture_test_failure,
             build_nx_graph_from_graphify,
@@ -1864,10 +1870,13 @@ def dispatch_command(cmd: str) -> None:
         )
         from graphify.llm import detect_backend, _call_llm
 
-        print(f"Running test suite: {test_cmd}...")
+        _log(f"Running test suite: {test_cmd}...")
         failures = execute_and_capture_test_failure(test_cmd)
         if not failures:
-            print("All tests passed! Nothing to heal.")
+            if as_json:
+                print(json.dumps({"status": "clean", "failures": []}))
+            else:
+                print("All tests passed! Nothing to heal.")
             sys.exit(0)
 
         gp = Path(graph_path).resolve()
@@ -1875,7 +1884,7 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file not found: {gp}", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Detected {len(failures)} test failure(s). Ingesting graph: {gp.name}...")
+        _log(f"Detected {len(failures)} test failure(s). Ingesting graph: {gp.name}...")
         G = build_nx_graph_from_graphify(gp)
 
         triage_results = []
@@ -1899,7 +1908,7 @@ def dispatch_command(cmd: str) -> None:
                 print(f"  Blast Radius: {item["blast_radius_nodes"]} nodes, {item["blast_radius_edges"]} relationships")
 
         if dry_run:
-            print("\nDry-run active: diagnostic graph slice complete.")
+            _log("\nDry-run active: diagnostic graph slice complete.")
             sys.exit(0)
 
         selected_backend = backend_arg or detect_backend()
@@ -1907,7 +1916,7 @@ def dispatch_command(cmd: str) -> None:
             print("error: no LLM backend configured. Provide --backend or set an API key.", file=sys.stderr)
             sys.exit(1)
 
-        print(f"\nInitiating active healing loop with backend: {selected_backend} (max {max_iters} iterations)")
+        _log(f"\nInitiating active healing loop with backend: {selected_backend} (max {max_iters} iterations)")
         for iteration in range(1, max_iters + 1):
             target_fail = failures[0]
             target_path = Path(target_fail.test_file).resolve()
@@ -1919,7 +1928,7 @@ def dispatch_command(cmd: str) -> None:
             blast_slice = extract_blast_radius_subgraph(G, target_fail.test_file, depth=depth)
             prompt = build_healing_prompt(target_fail, blast_slice, source_code)
 
-            print(f"Iteration {iteration}/{max_iters}: Querying {selected_backend} for code patch...")
+            _log(f"Iteration {iteration}/{max_iters}: Querying {selected_backend} for code patch...")
             try:
                 response = _call_llm(
                     prompt,
@@ -1933,13 +1942,13 @@ def dispatch_command(cmd: str) -> None:
 
             patch = extract_code_patch(response)
             apply_patch_to_file(target_path, patch)
-            print(f"Patch applied to {target_fail.test_file}. Re-running test suite...")
+            _log(f"Patch applied to {target_fail.test_file}. Re-running test suite...")
 
             failures = execute_and_capture_test_failure(test_cmd)
             if not failures:
-                print(f"\n[SUCCESS] Suite fully healed after {iteration} iteration(s)!")
+                _log(f"\n[SUCCESS] Suite fully healed after {iteration} iteration(s)!")
                 sys.exit(0)
-            print(f"Iteration {iteration} incomplete: {len(failures)} failure(s) remain.")
+            _log(f"Iteration {iteration} incomplete: {len(failures)} failure(s) remain.")
 
         print(f"\nHealing loop exhausted after {max_iters} attempts.", file=sys.stderr)
         sys.exit(1)

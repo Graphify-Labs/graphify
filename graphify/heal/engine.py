@@ -48,11 +48,22 @@ def extract_blast_radius_subgraph(
     target_file: str,
     depth: int = 2
 ) -> Dict:
-    """Slices a 2-hop neighborhood around the affected source file."""
-    seed_nodes = [
-        n for n, attrs in G.nodes(data=True)
-        if attrs.get("source_file") == target_file or target_file in str(n)
-    ]
+    """Slices an ego-subgraph around the affected source file with path normalization."""
+    target_p = Path(target_file).resolve()
+    target_name = target_p.name
+
+    seed_nodes = []
+    for n, attrs in G.nodes(data=True):
+        src_attr = attrs.get("source_file", "")
+        if src_attr:
+            src_p = Path(src_attr).resolve()
+            if src_p == target_p or src_p.name == target_name:
+                seed_nodes.append(n)
+                continue
+        node_str = str(n)
+        if str(target_p) in node_str or target_name in node_str:
+            seed_nodes.append(n)
+
     if not seed_nodes:
         return {}
 
