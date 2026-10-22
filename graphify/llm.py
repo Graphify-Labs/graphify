@@ -148,6 +148,29 @@ BACKENDS: dict[str, dict] = {
         "temperature": None,  # kimi-k2.6 enforces its own fixed temperature; sending any value raises 400
         "max_tokens": 16384,
     },
+    "minimax": {
+        # MINIMAX_BASE_URL selects the regional OpenAI-compatible endpoint.
+        "base_url": os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+        "default_model": os.environ.get("MINIMAX_MODEL", "MiniMax-M3.1-Flash"),
+        "env_key": "MINIMAX_API_KEY",
+        "model_env_key": "GRAPHIFY_MINIMAX_MODEL",
+        "pricing": {"input": 0.15, "output": 0.60},  # USD per 1M tokens
+        "model_pricing": {
+            "MiniMax-M3.1-Flash": {"input": 0.15, "output": 0.60},
+            # Conservative M3 long-context rates: totals may span several requests.
+            "MiniMax-M3": {"input": 0.60, "output": 2.40},
+            # Preserve estimates for explicitly configured legacy models.
+            "MiniMax-M2.7": {"input": 0.30, "output": 1.20},
+        },
+        "temperature": 0,
+        "max_tokens": 16384,
+        "vision": True,
+        "model_vision": {
+            "MiniMax-M3.1-Flash": True,
+            "MiniMax-M3": True,
+            "MiniMax-M2.7": False,
+        },
+    },
     "ollama": {
         "base_url": _resolve_ollama_base_url("http://localhost:11434/v1"),
         "default_model": os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"),
@@ -924,7 +947,7 @@ def _strip_pixels(refs: list[_ImageRef]) -> list[_ImageRef]:
     return [replace(r, raw=None) for r in refs]
 
 
-def _backend_supports_vision(backend: str) -> bool:
+def _backend_supports_vision(backend: str, model: str | None = None) -> bool:
     """Whether `backend`'s configured model can see images.
 
     Ollama is special-cased: its default model is text-only, so vision is
@@ -933,7 +956,13 @@ def _backend_supports_vision(backend: str) -> bool:
     """
     if backend == "ollama":
         return os.environ.get("GRAPHIFY_OLLAMA_VISION", "").strip() == "1"
-    return bool(BACKENDS.get(backend, {}).get("vision", False))
+    cfg = BACKENDS.get(backend, {})
+    model_vision = cfg.get("model_vision", {})
+    if model_vision:
+        model = model or _default_model_for_backend(backend)
+        if model in model_vision:
+            return bool(model_vision[model])
+    return bool(cfg.get("vision", False))
 
 
 def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
@@ -1572,6 +1601,9 @@ def _call_openai_compat(
     # Kimi-k2.6 is a reasoning model — disable thinking so content isn't empty
     elif "moonshot" in base_url:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # Flash and legacy M2.7 always reason; Flash rejects the global opt-out.
+    elif backend == "minimax" and model in ("MiniMax-M3.1-Flash", "MiniMax-M2.7"):
+        pass
     # Opt-in only: disable thinking for reasoning models like deepseek-v4-flash
     # (#1621). Not a default — see _thinking_disabled_via_env for the tradeoff.
     elif _thinking_disabled_via_env():
@@ -2095,7 +2127,7 @@ def extract_files_direct(
         if backend is None:
             raise ValueError(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
-                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
+                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, MINIMAX_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
                 "or AWS credentials. Pass backend= explicitly to select a provider."
             )
@@ -2128,7 +2160,7 @@ def extract_files_direct(
     # (vision backends) or as a text reference node (everything else).
     text_files, image_files = _partition_semantic_files(files)
     user_msg = _read_files(text_files, root)
-    vision = _backend_supports_vision(backend)
+    vision = _backend_supports_vision(backend, mdl)
     # Only base64 (inline) vision backends need the bytes loaded + size-capped;
     # path-based backends (claude-cli) and non-vision backends do not.
     read_bytes = vision and backend not in _PATH_IMAGE_BACKENDS
@@ -3229,6 +3261,9 @@ def _call_llm(
         kwargs["extra_body"] = cfg["extra_body"]
     elif "moonshot" in cfg["base_url"]:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # Flash and legacy M2.7 always reason; Flash rejects the global opt-out.
+    elif backend == "minimax" and mdl in ("MiniMax-M3.1-Flash", "MiniMax-M2.7"):
+        pass
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     # Community-labeling batches are sized for a 16k context, so without this
@@ -3252,11 +3287,19 @@ def _call_llm(
     return resp.choices[0].message.content or ""
 
 
-def estimate_cost(backend: str, input_tokens: int, output_tokens: int) -> float:
+def estimate_cost(
+    backend: str,
+    input_tokens: int,
+    output_tokens: int,
+    model: str | None = None,
+) -> float:
     """Estimate USD cost for a given token count using published pricing."""
     if backend not in BACKENDS:
         return 0.0
-    p = BACKENDS[backend]["pricing"]
+    cfg = BACKENDS[backend]
+    model_pricing = cfg.get("model_pricing", {})
+    selected_model = model or _default_model_for_backend(backend)
+    p = model_pricing.get(selected_model, cfg["pricing"])
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
 
 
@@ -3405,7 +3448,7 @@ def detect_backend_with_source() -> "tuple[str | None, str]":
     An explicit ``GRAPHIFY_BACKEND`` wins — a backend name selects it, a disable
     sentinel returns ``None``. Otherwise the ambient environment is probed, in
     priority order: gemini → kimi → claude → openai → deepseek → azure → bedrock
-    → ollama (last, opt-in), then any custom registered backend.
+    → minimax → ollama (last, opt-in), then any custom registered backend.
 
     Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
     is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
@@ -3426,6 +3469,8 @@ def detect_backend_with_source() -> "tuple[str | None, str]":
         return "azure", "auto-detected from AZURE_OPENAI_ENDPOINT"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock", "auto-detected from AWS credentials"
+    if _get_backend_api_key("minimax"):
+        return "minimax", "auto-detected from MINIMAX_API_KEY"
     # Honor Ollama's own OLLAMA_HOST here too, not just OLLAMA_BASE_URL (#1940) —
     # otherwise a user who set the standard Ollama var but no --backend still
     # gets "no LLM API key found". Empty default -> falsy when neither is set,
@@ -3435,7 +3480,7 @@ def detect_backend_with_source() -> "tuple[str | None, str]":
         _validate_ollama_base_url(ollama_url)
         return "ollama", "auto-detected from Ollama configuration"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "minimax", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
             if _get_backend_api_key(name):
                 env = _first_set_env(_backend_env_keys(name)) or name
                 return name, f"auto-detected from {env}"

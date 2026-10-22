@@ -19,6 +19,10 @@ def _clear_backend_env(monkeypatch):
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "MOONSHOT_API_KEY",
+        "MINIMAX_API_KEY",
+        "MINIMAX_BASE_URL",
+        "MINIMAX_MODEL",
+        "GRAPHIFY_MINIMAX_MODEL",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "DEEPSEEK_API_KEY",
@@ -70,6 +74,39 @@ def test_gemini_accepts_google_api_key(monkeypatch):
 
     assert llm.detect_backend() == "gemini"
     assert llm._get_backend_api_key("gemini") == "google-key"
+
+
+def test_minimax_backend_detected(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "minimax"
+    assert llm._get_backend_api_key("minimax") == "minimax-key"
+    assert llm._default_model_for_backend("minimax") == "MiniMax-M3.1-Flash"
+
+
+def test_minimax_model_override(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_MINIMAX_MODEL", "MiniMax-M2.7")
+
+    assert llm._default_model_for_backend("minimax") == "MiniMax-M2.7"
+
+
+def test_minimax_backend_capabilities_are_model_specific():
+    assert llm._backend_supports_vision("minimax", "MiniMax-M3") is True
+    assert llm._backend_supports_vision("minimax", "MiniMax-M2.7") is False
+
+
+def test_minimax_model_pricing(monkeypatch):
+    assert llm.estimate_cost(
+        "minimax", 1_000_000, 500_000, model="MiniMax-M2.7"
+    ) == pytest.approx(0.90)
+    assert llm.estimate_cost(
+        "minimax", 1_000_000, 500_000, model="MiniMax-M3"
+    ) == pytest.approx(1.80)
+
+    monkeypatch.setenv("GRAPHIFY_MINIMAX_MODEL", "MiniMax-M2.7")
+    assert llm.estimate_cost("minimax", 1_000_000, 500_000) == pytest.approx(0.90)
 
 
 def test_backend_detection_prefers_gemini(monkeypatch):
@@ -1008,6 +1045,28 @@ def test_deepseek_thinking_disabled_via_env(monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+def test_minimax_m27_thinking_cannot_be_disabled(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.minimax.io/v1", "sk", "MiniMax-M2.7",
+        "u", temperature=0, max_completion_tokens=8192, backend="minimax",
+    )
+
+    assert "extra_body" not in captured
+
+
+def test_minimax_m27_call_llm_thinking_cannot_be_disabled(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "sk")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_llm("u", backend="minimax", model="MiniMax-M2.7")
+
+    assert "extra_body" not in captured
+
+
 def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
     # A provider-supplied extra_body is an explicit request-shape choice and must
     # take precedence over the env toggle.
@@ -1394,7 +1453,7 @@ def test_native_extraction_prompt_shares_skill_spec_source_file_rule_heading():
     assert shared in native, "native prompt lacks the skill's source_file rule heading"
 
 
-# --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
+# --- *_BASE_URL env overrides for OpenAI-compatible backends (#1458) -----------
 # BACKENDS reads the env at import time, so each case runs in a fresh interpreter
 # (subprocess) to avoid reload contamination of the test session.
 import subprocess
@@ -1415,6 +1474,7 @@ import os  # noqa: E402
 
 @pytest.mark.parametrize("backend,env_var,override", [
     ("kimi", "KIMI_BASE_URL", "https://proxy.example/kimi/v1"),
+    ("minimax", "MINIMAX_BASE_URL", "https://proxy.example/minimax/v1"),
     ("gemini", "GEMINI_BASE_URL", "https://proxy.example/gemini"),
     ("deepseek", "DEEPSEEK_BASE_URL", "https://proxy.example/deepseek"),
 ])
@@ -1424,12 +1484,13 @@ def test_base_url_env_overrides(backend, env_var, override):
 
 @pytest.mark.parametrize("backend,default", [
     ("kimi", "https://api.moonshot.ai/v1"),
+    ("minimax", "https://api.minimax.io/v1"),
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
     ("deepseek", "https://api.deepseek.com"),
 ])
 def test_base_url_defaults_without_env(backend, default):
     # Ensure the override env vars are unset so the hardcoded default is used.
-    cleared = {k: "" for k in ("KIMI_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
+    cleared = {k: "" for k in ("KIMI_BASE_URL", "MINIMAX_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
     # empty string would be falsy-but-set; delete instead by reconstructing env without them
     env = {k: v for k, v in os.environ.items() if k not in cleared}
     out = subprocess.run(

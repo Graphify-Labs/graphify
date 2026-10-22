@@ -410,14 +410,25 @@ Beyond your AI assistant, query `graph.json` straight from the CLI with `graphif
 
 Backends, API keys, hook behavior, and tuning are controlled by environment variables. Full table: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+For MiniMax, install `graphifyy[openai]`, set `MINIMAX_API_KEY`, and run
+`graphify extract ./docs --backend minimax`. The default is `MiniMax-M3.1-Flash`;
+select `MiniMax-M3` with `--model MiniMax-M3`. `GRAPHIFY_MINIMAX_MODEL` overrides
+`MINIMAX_MODEL`, and an explicit `--model` wins over both, including saved legacy
+or custom model IDs. `MINIMAX_BASE_URL` defaults to `https://api.minimax.io/v1`;
+set it to `https://api.minimaxi.com/v1` for the China endpoint or to your proxy URL.
+Flash always reasons (the global `GRAPHIFY_DISABLE_THINKING` opt-out is ignored
+for Flash); M3 still honors that opt-out. Flash uses the API's default `max`
+reasoning effort. Cost estimates exclude cache discounts; M3 estimates use the
+conservative long-context rate because totals can span multiple requests.
+
 ---
 
 ## Privacy
 
 - **Code files**: processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key: `graphify extract` runs fully offline. On a mixed repo, add `--code-only` to index just the code and skip the docs/PDFs/images that would otherwise need an LLM.
 - **Video / audio**: transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images**: sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
-- **Data residency**: `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). When it auto-detects, it prints the exact environment variable that chose the provider, so a run is never a surprise. To choose explicitly, pass `--backend`, or set `GRAPHIFY_BACKEND=<name>`; set `GRAPHIFY_BACKEND=none` to disable all LLM backends (semantic extraction and the `claude -p` labeling fallback) and keep a code-only graph. For code with data-residency requirements, use `GRAPHIFY_BACKEND=ollama` / `--backend ollama` (fully local). Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
+- **Docs, PDFs, images**: sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), `MINIMAX_API_KEY` (MiniMax), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Data residency**: `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → MiniMax → Ollama). When it auto-detects, it prints the exact environment variable that chose the provider, so a run is never a surprise. To choose explicitly, pass `--backend`, or set `GRAPHIFY_BACKEND=<name>`; set `GRAPHIFY_BACKEND=none` to disable all LLM backends (semantic extraction and the `claude -p` labeling fallback) and keep a code-only graph. For code with data-residency requirements, use `GRAPHIFY_BACKEND=ollama` / `--backend ollama` (fully local). Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
 - **No telemetry**, no usage tracking, no analytics.
 - **Query logging**: every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 

@@ -153,8 +153,8 @@ def test_detect_backend_custom_provider_after_builtins(monkeypatch):
         }
     })
     monkeypatch.setenv("MY_CUSTOM_KEY", "test-key")
-    for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "MOONSHOT_API_KEY", "ANTHROPIC_API_KEY",
-                 "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_BASE_URL"):
+    for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "MOONSHOT_API_KEY", "MINIMAX_API_KEY",
+                 "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_BASE_URL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
