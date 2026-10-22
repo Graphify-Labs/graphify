@@ -1139,6 +1139,7 @@ def test_hooks_honor_skip_env(name, script):
     )
 
 
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run the emitted checkout script")
 def test_checkout_hook_skips_same_head_noop_at_runtime():
     """`git checkout -b` with no start point reports a branch switch (flag=1) but
     passes identical PREV/NEW heads, so the rebuild must short-circuit (#2421).
@@ -1183,6 +1184,7 @@ def _worktree_guard_snippet() -> str:
     return _WORKTREE_GUARD + "echo RAN\n"
 
 
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run the emitted worktree guard")
 def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
     """End-to-end against a real `git worktree`: the guard falls through on the
     primary checkout and exits early inside a linked worktree (#1809, #1806)."""
@@ -1430,6 +1432,7 @@ def test_config_baked_into_generated_hook(tmp_path):
     assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in checkout_hook
 
 
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to eval the emitted limit snippet")
 def test_baked_viz_limit_yields_to_an_explicit_per_run_override(tmp_path):
     """Persisting the project default must not clobber an explicit per-run
     GRAPHIFY_VIZ_NODE_LIMIT: the baked line uses the `${VAR:-<n>}` default form,
