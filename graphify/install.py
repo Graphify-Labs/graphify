@@ -1849,6 +1849,12 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     existing = _read_settings_for_merge(hooks_path)
 
     graphify_exe = _resolve_graphify_exe(project=project)
+    if " " in graphify_exe and not graphify_exe.startswith('"'):
+        # Mirror _claude_pretooluse_hooks/_gemini_hook: a resolved path with
+        # spaces must be quoted, or every shell that runs the hook command
+        # (Git Bash, cmd.exe, sh) word-splits it at the first space and the
+        # hook can never fire.
+        graphify_exe = f'"{graphify_exe}"'
     hook_entry = {
         "hooks": {
             "PreToolUse": [
