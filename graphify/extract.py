@@ -186,7 +186,11 @@ from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXT
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
-from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa: E402,F401
+from graphify.extractors.objc import (  # noqa: E402,F401
+    _objc_category_base_stem,
+    _objc_local_var_types,
+    extract_objc,
+)
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
 
@@ -9811,6 +9815,21 @@ def extract(
         old_pref_abs = _file_node_id(path_abs)
         if old_pref_abs != new_id and old_pref_abs != old_pref:
             old_prefs.append((old_pref_abs, new_id))
+        # ObjC category/extension files mint their class and method node ids from the
+        # base-class stem (`Foo+Ext` -> `Foo`, #1556), so those ids carry the base
+        # stem as prefix, not this file's own stem. The prefix pass keys only on the
+        # file stem, so without the base-stem prefix it leaves the absolute checkout
+        # path in a category node's id. Registering it is safe: the pass is
+        # source_file-gated to this file and the base stem only matches ids actually
+        # built from it, which relativize to the same new prefix either way.
+        if path.suffix.lower() in (".h", ".m", ".mm"):
+            base_stem = _objc_category_base_stem(_file_stem(path))
+            if base_stem != _file_stem(path):
+                new_base = _make_id(_objc_category_base_stem(_file_stem(rel)))
+                for _bp in (_make_id(base_stem),
+                            _make_id(_objc_category_base_stem(_file_stem(path_abs)))):
+                    if _bp != new_base and (_bp, new_base) not in old_prefs:
+                        old_prefs.append((_bp, new_base))
         # Bash entrypoint node ids append "__entry" to the file-level id
         # (extractors/bash.py), so a script-invocation edge endpoint minted
         # from an out-of-batch target path keeps a suffixed absolute-derived
