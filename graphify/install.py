@@ -193,6 +193,14 @@ def _always_on(basename: str) -> str:
         ) from exc
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
+    if platform_name == "dsh":
+        # DSH's filesystem skill provider reads <DSH_HOME>/skills, and DSH_HOME
+        # relocates that root exactly as it relocates the patch layer. Project
+        # scope is the project's own .dsh/skills (rank 100 in DSH's scan order).
+        if project:
+            return (project_dir or Path(".")) / ".dsh" / "skills" / "graphify" / "SKILL.md"
+        return _dsh_home() / "skills" / "graphify" / "SKILL.md"
+
     if platform_name == "gemini":
         if project:
             return (project_dir or Path(".")) / ".gemini" / "skills" / "graphify" / "SKILL.md"
@@ -737,6 +745,18 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "agents",
     },
+    "dsh": {
+        # DeepSeek Harness (DSH). The skill lands in DSH's user-wide skill root
+        # (~/.dsh/skills, scanned by dsh-skill-filesystem) or the project root
+        # (./.dsh/skills); the MCP bridge registration lives in DSH's own
+        # $DSH_HOME/cordis.patch.yml (see _dsh_write_mcp_config). DSH's skill
+        # provider needs the standard name/description frontmatter, which the
+        # generic agents bundle already carries.
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".dsh") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
@@ -748,11 +768,181 @@ _PLATFORM_CONFIG: dict[str, dict] = {
 }
 # CLI-only platform aliases, resolved to a real _PLATFORM_CONFIG key before
 # dispatch. `skills` is the friendly alias for the generic `agents` platform
-# (the Agent-Skills ecosystem calls them "skills").
-_PLATFORM_ALIASES: dict[str, str] = {"skills": "agents"}
+# (the Agent-Skills ecosystem calls them "skills"), and the two DeepSeek
+# spellings reach the `dsh` target.
+_PLATFORM_ALIASES: dict[str, str] = {
+    "skills": "agents",
+    "deepseek": "dsh",
+    "deepseek-harness": "dsh",
+}
 def _canonical_platform(platform_name: str) -> str:
     """Resolve a CLI platform alias to its real _PLATFORM_CONFIG key."""
     return _PLATFORM_ALIASES.get(platform_name, platform_name)
+
+
+# --- DeepSeek Harness (DSH) ---------------------------------------------------
+# DSH composes its plugin tree from each bundle's patch, then the profile's
+# cordis.patch.yml, then the user-global $DSH_HOME/cordis.patch.yml. Its MCP
+# bridge (`@deepseek-ai/dsh-mcp-client`) is an ordinary loader entry, so the
+# graph server is registered in that user-global layer: DSH has no
+# project-scoped configuration layer. The block below is graphify-owned and is
+# replaced idempotently on every install, leaving every other entry untouched.
+_DSH_MCP_MARKER_BEGIN = "# >>> graphify MCP (managed by `graphify install --platform dsh`) >>>"
+_DSH_MCP_MARKER_END = "# <<< graphify MCP <<<"
+_DSH_MCP_PLUGIN = "@deepseek-ai/dsh-mcp-client"
+_DSH_MCP_SERVER_NAME = "graphify"
+# Lines that by themselves make a YAML document empty. Dropped before our
+# sequence item is appended, so a patch file holding only `[]` (the shipped
+# empty-layer form) cannot turn into an invalid two-document stream.
+_DSH_EMPTY_DOC_LINES = frozenset({"[]", "---", "...", "null", "~"})
+
+
+def _dsh_home() -> Path:
+    """The DSH configuration root: ``$DSH_HOME``, else ``~/.dsh`` (as the harness resolves it)."""
+    configured = os.environ.get("DSH_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".dsh"
+
+
+def _dsh_patch_path() -> Path:
+    """DSH's user-global loader patch layer, applied after the profile patch."""
+    return _dsh_home() / "cordis.patch.yml"
+
+
+def _dsh_graph_json(project_dir: Path) -> Path:
+    """Absolute ``graph.json`` the MCP server should serve, honouring GRAPHIFY_OUT."""
+    graph_json = Path(_GRAPHIFY_OUT, "graph.json")
+    if not graph_json.is_absolute():
+        graph_json = project_dir / graph_json
+    return graph_json.resolve()
+
+
+def _yaml_quote(value: str) -> str:
+    """Single-quote a YAML scalar (doubling embedded quotes) so paths stay literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _dsh_mcp_block(graph_json: Path) -> str:
+    """Render the graphify-owned patch entry that registers the DSH MCP bridge."""
+    return "\n".join(
+        [
+            _DSH_MCP_MARKER_BEGIN,
+            "- insert:",
+            "    - id: mcp-graphify",
+            f"      name: {_yaml_quote(_DSH_MCP_PLUGIN)}",
+            "      config:",
+            f"        serverName: {_DSH_MCP_SERVER_NAME}",
+            "        transport: stdio",
+            f"        command: {_yaml_quote(sys.executable)}",
+            "        args:",
+            "          - '-m'",
+            "          - 'graphify.serve'",
+            f"          - {_yaml_quote(str(graph_json))}",
+            _DSH_MCP_MARKER_END,
+            "",
+        ]
+    )
+
+
+def _dsh_strip_mcp_block(text: str) -> "str | None":
+    """Remove graphify's managed block; ``None`` when the text has no block."""
+    if _DSH_MCP_MARKER_BEGIN not in text:
+        return None
+    kept: "list[str]" = []
+    inside = False
+    for line in text.splitlines():
+        if line.strip() == _DSH_MCP_MARKER_BEGIN:
+            inside = True
+            continue
+        if inside:
+            if line.strip() == _DSH_MCP_MARKER_END:
+                inside = False
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _dsh_kept_lines(text: str) -> "list[str]":
+    """Patch lines without the empty-document placeholders; comments are kept."""
+    return [line for line in text.splitlines() if line.strip() not in _DSH_EMPTY_DOC_LINES]
+
+
+def _dsh_has_entries(lines: "list[str]") -> bool:
+    """True when the lines still hold at least one real YAML entry."""
+    return any(line.strip() and not line.lstrip().startswith("#") for line in lines)
+
+
+def _dsh_mcp_runtime_available() -> bool:
+    """Whether this interpreter can import the MCP transport ``serve.py`` needs."""
+    try:
+        import mcp  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _dsh_write_mcp_config(project_dir: "Path | None" = None) -> None:
+    """Register (or repoint) graphify's MCP server in ``$DSH_HOME/cordis.patch.yml``."""
+    project_dir = (project_dir or Path(".")).resolve()
+    graph_json = _dsh_graph_json(project_dir)
+    block = _dsh_mcp_block(graph_json)
+    patch = _dsh_patch_path()
+    original = patch.read_text(encoding="utf-8") if patch.exists() else ""
+    stripped = _dsh_strip_mcp_block(original)
+    head = "\n".join(_dsh_kept_lines(original if stripped is None else stripped)).strip("\n")
+    content = f"{head}\n\n{block}" if head.strip() else block
+    if content == original:
+        print(
+            f"  {patch}  ->  MCP server '{_DSH_MCP_SERVER_NAME}' already registered (no change)"
+        )
+        return
+    patch.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_atomic(patch, content)
+    print(
+        f"  {patch}  ->  MCP server '{_DSH_MCP_SERVER_NAME}' registered "
+        f"(tools: mcp__{_DSH_MCP_SERVER_NAME}__*)"
+    )
+    print(f"  graph served    ->  {graph_json}")
+    if not graph_json.exists():
+        print(
+            f"  note: {graph_json} does not exist yet - build it first "
+            "(`/graphify .` in DSH, or `graphify extract .`)"
+        )
+    if not _dsh_mcp_runtime_available():
+        print(
+            "  note: the 'mcp' package is not importable by this interpreter, so DSH "
+            "cannot start the graph server.",
+            file=sys.stderr,
+        )
+        print(
+            "  fix: uv tool install 'graphifyy[mcp]' (or pip install 'graphifyy[mcp]') "
+            "and re-run this install.",
+            file=sys.stderr,
+        )
+
+
+def _dsh_remove_mcp_config() -> bool:
+    """Remove graphify's MCP entry from ``$DSH_HOME/cordis.patch.yml``."""
+    patch = _dsh_patch_path()
+    if not patch.exists():
+        return False
+    stripped = _dsh_strip_mcp_block(patch.read_text(encoding="utf-8"))
+    if stripped is None:
+        return False
+    kept = _dsh_kept_lines(stripped)
+    if _dsh_has_entries(kept):
+        _write_text_atomic(patch, "\n".join(kept).strip("\n") + "\n")
+    else:
+        comments = [line for line in kept if line.lstrip().startswith("#")]
+        if comments:
+            _write_text_atomic(patch, "\n".join(comments) + "\n[]\n")
+        else:
+            patch.unlink()
+    print(f"  {patch}  ->  MCP server '{_DSH_MCP_SERVER_NAME}' removed")
+    return True
+
+
 def _replace_or_append_section(
     content: str, marker: str, new_section: str, boundary_prefix: str = "## "
 ) -> str:
@@ -981,8 +1171,21 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
 
+    if platform == "dsh":
+        # DSH reads MCP servers from its user-global patch layer, so the graph
+        # server is registered next to the skill; DSH has no project-level
+        # configuration layer (a --project install writes only the skill).
+        _dsh_write_mcp_config(project_dir if project else Path("."))
+
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
+
+    if platform == "dsh":
+        print()
+        print("DeepSeek Harness now has graphify two ways:")
+        print("  /graphify         ->  the installed skill (also in the agent's skill catalog)")
+        print("  mcp__graphify__*  ->  graph tools served by the registered MCP server")
+        print("Restart DSH (or let it reload its patch layer) to connect the MCP server.")
 
     print()
     print("Done. Open your AI coding assistant and type:")
@@ -998,6 +1201,8 @@ def _print_install_usage() -> None:
     print(f"Platforms: {platforms}")
     print("  --strict  block the first raw file read per session until one "
           "`graphify query` runs (Claude Code project hook only; needs --project)")
+    print("  dsh       also registers the graph as an MCP server in "
+          "$DSH_HOME/cordis.patch.yml (DeepSeek Harness)")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -2013,6 +2218,15 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
+    elif platform_name == "dsh":
+        # DSH discovers project skills in ./.dsh/skills. Its MCP registration is
+        # user-global, so a project install writes only the skill and points at
+        # the user-scope command for the graph server.
+        skill_dst = _copy_skill_file("dsh", project=True, project_dir=project_dir)
+        _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
+        print()
+        print("note: DSH reads MCP servers from its user-global patch layer; run")
+        print("`graphify dsh install` (without --project) to register the graph server.")
     else:
         install(platform=platform_name, project=True, project_dir=project_dir)
 def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> None:
@@ -2041,7 +2255,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "dsh"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -2267,6 +2481,11 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # DeepSeek Harness: the skill lives at ~/.dsh/skills and the MCP registration
+    # in the user-global $DSH_HOME/cordis.patch.yml, neither of which the
+    # AGENTS.md/skill cleanups above reach.
+    _remove_skill_file("dsh")
+    _dsh_remove_mcp_config()
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2471,6 +2690,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "cursor",
     "devin",
     "droid",
+    "dsh",
     "gemini",
     "hermes",
     "install",
@@ -2683,6 +2903,24 @@ def dispatch_install_cli(cmd: str) -> bool:
                 print("skill removed" if removed else "nothing to remove")
         else:
             print("Usage: graphify devin [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "dsh":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("dsh", Path("."))
+            else:
+                install(platform="dsh")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("dsh", Path("."))
+            else:
+                removed = _remove_skill_file("dsh")
+                unregistered = _dsh_remove_mcp_config()
+                if not removed and not unregistered:
+                    print("nothing to remove")
+        else:
+            print("Usage: graphify dsh [install|uninstall] [--project]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "pi":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

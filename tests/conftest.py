@@ -61,6 +61,10 @@ def _sandbox_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)     # escape hatch that bypasses Path.home
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    # DSH_HOME is the DeepSeek Harness counterpart of HOME: the `dsh` installer
+    # writes its MCP registration into $DSH_HOME/cordis.patch.yml, so a
+    # developer running tests inside DSH must not have that patch file touched.
+    monkeypatch.delenv("DSH_HOME", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
 
