@@ -54,6 +54,35 @@ def test_validate_url_rejects_empty_scheme():
     with pytest.raises(ValueError):
         validate_url("//no-scheme.example.com")
 
+@pytest.mark.parametrize("url", [
+    "http://",
+    "https://",
+    "http:///etc/passwd",
+    "https:///example.com/path",
+])
+def test_validate_url_rejects_missing_hostname(url):
+    with pytest.raises(ValueError, match="without a hostname"):
+        validate_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com:abc/path",
+    "https://example.com:65536/path",
+    "http://example.com:0/path",
+])
+def test_validate_url_rejects_invalid_port(url):
+    with pytest.raises(ValueError, match="port"):
+        validate_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:secret@example.com/path",
+    "https://user@example.com/path",
+])
+def test_validate_url_rejects_embedded_credentials(url):
+    with pytest.raises(ValueError, match="embedded credentials"):
+        validate_url(url)
+
 
 # ---------------------------------------------------------------------------
 # safe_fetch - scheme and redirect guards (mocked network)
@@ -461,3 +490,54 @@ def test_sanitize_metadata_bool_not_coerced_to_int():
     assert out["flag_t"] is True
     assert out["flag_f"] is False
     assert out["num"] == 1
+
+
+# ── redact_secrets ────────────────────────────────────────────────────────────
+
+def test_redact_secrets_shapes():
+    from graphify.security import redact_secrets
+    cases = [
+        "ghp_" + "a" * 36,
+        "AKIA" + "IOSFODNN7EXAMPLE",
+        "sk_live_" + "x" * 24,
+        "xoxb-1234567890-abcdefghij",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijk",
+    ]
+    for secret in cases:
+        out = redact_secrets(f"see {secret} here")
+        assert secret not in out and "[redacted]" in out, secret
+
+
+def test_redact_secrets_url_password_keeps_host():
+    from graphify.security import redact_secrets
+    assert redact_secrets("postgres://svc:hunter2@db.internal/app") == "postgres://[redacted]@db.internal/app"
+
+
+def test_redact_secrets_leaves_plain_text_and_none():
+    from graphify.security import redact_secrets
+    assert redact_secrets("use chunked processing; see https://example.com/a/b") == "use chunked processing; see https://example.com/a/b"
+    assert redact_secrets(None) == ""
+    assert redact_secrets("") == ""
+
+
+def test_redact_secrets_opaque_bearer_token():
+    # An opaque (non-JWT) Bearer token is redacted; the word "Bearer" is kept.
+    from graphify.security import redact_secrets
+    out = redact_secrets("Authorization: Bearer abcDEF123456ghiJKL789mnop")
+    assert "abcDEF123456ghiJKL789mnop" not in out
+    assert out == "Authorization: Bearer [redacted]"
+
+
+def test_redact_secrets_does_not_mangle_hashes_and_ids():
+    # Over-redaction guard: a credential-redactor that mangled ordinary
+    # high-entropy identifiers would corrupt real rationale labels. A git SHA,
+    # a sha256 digest and a UUID must pass through untouched.
+    from graphify.security import redact_secrets
+    for benign in (
+        "see commit 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b for context",
+        "digest sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "run id 550e8400-e29b-41d4-a716-446655440000 completed",
+        "class AkiaConfigProvider implements Provider",
+    ):
+        assert redact_secrets(benign) == benign, benign

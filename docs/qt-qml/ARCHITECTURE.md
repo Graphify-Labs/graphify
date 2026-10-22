@@ -1202,3 +1202,54 @@ retains failed candidate products. No new persistence layer or runtime dependenc
 is introduced. Qt analysis policy 26 retires prior context; AST cache schema 18
 is unchanged because Qt metadata bypasses that cache. Exact profile and evidence
 belong in design and traceability, respectively.
+
+## D36 — Upstream 0.9.94 semantic union
+
+Status: **Implemented integration; local verification in progress**.
+Owners: integration, cache, extractor facade, generic extractor and installer
+maintainers. Applies to INC-QML-59 and REQ-QML-002, REQ-QML-011-AC01/AC03/AC04,
+REQ-QML-014-AC02/AC03/AC04, REQ-QML-015 and REQ-CORE-001/004.
+
+Combine validated fork source `f7430ac9` with upstream `v8` at
+`c588b72d936927790a87ad009955078ed40562a3`. Preserve current upstream fixes and
+Qt/QML contracts at their existing owners. Restoring either predecessor's whole
+shared function would discard accepted behavior; unrelated refactoring would
+obscure this integration. Six conflicting files therefore use reviewed semantic
+unions, supported by both inherited regressions and focused mixed-contract tests.
+
+The authoritative AST cache schema becomes **23**, rejecting both fork schema 18
+and incoming schema 22. Qt metadata policy remains **26** under its separate
+configuration owner. Visible `extern "C"` header linkage is recognized by the
+lexical header classifier without admitting inert comment/string markers or
+overriding Objective-C evidence. Upstream intentional-empty source results and
+Qt failure/provenance outcomes retain distinct transport fields.
+
+Manifest persistence records intentional-empty inputs before accepted Qt context
+is committed. A manifest write rejection cannot advance that later context;
+configuration-change recovery and raw/clustered no-change repeats exercise the
+actual CLI. The existing native hook owner handles recorded-interpreter quoting
+and Windows encoded transport; an additional installer quoting layer is not
+introduced. New upstream coverage-check runbook commands must obey the same
+recorded-interpreter identity contract. Skillgen remains the sole generated-file
+writer, and the installed progressive core retains its existing 800-line bound.
+
+Package and lock root metadata advance together to 0.9.94 without dependency
+version changes. New contribution evidence names the exact current base and
+source; earlier 0.9.92 fork/synthetic/resulting-SHA evidence remains historical.
+Repository renaming preserves identity, upstream attribution and protection;
+it does not make the pending upstream contribution a merged release. Existing
+requests #4111 and #1748 retain their own state and review evidence.
+
+This integration does not execute analyzed projects, add a Qt SDK dependency,
+expand CMake evaluation, bypass graph integrity or change application outputs.
+Measured source ceilings and characterized extraction exits remain in the code
+reference. Exact commands, failure classifications, skips and release limitations
+belong in traceability and the new pull request.
+
+Full-suite validation also exposed two inherited native watcher tests that start
+daemon watchers without shutdown/join ownership. A surviving watcher can consume
+a later fixture's module-scoped event pump. This is a test-resource lifetime
+defect, not evidence for a parser/cache correction or a backwards system clock.
+The native-test fixture must finish owned watcher/observer cleanup before clock
+patch restoration on both success and failure. No new production stop API or
+process-wide clock replacement is introduced; existing event assertions remain.

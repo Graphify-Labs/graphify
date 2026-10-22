@@ -6,14 +6,26 @@ import re
 
 _DECLARATION = re.compile(
     rb"\b(?:class|namespace)\s+[A-Za-z_]\w*|\btemplate\s*<|::|"
-    rb"\b(?:public|private|protected)\s*:|\b(?:struct|union)\s+[A-Za-z_]\w*\s+final\b"
+    rb"\b(?:public|private|protected)\s*:|\b(?:struct|union)\s+[A-Za-z_]\w*\s+final\b|"
+    rb'\bextern\s*"C"'
 )
 _NUMBER = re.compile(rb"(?:[0-9]|\.[0-9])(?:[A-Za-z0-9_.]|'[A-Za-z0-9_])*")
 _RAW = re.compile(rb'(?:u8|u|U|L)?R"([^\s()\\]{0,16})\(')
 
 
+def _extern_prefix(code: bytearray, offset: int) -> bool:
+    """Recognize the previous visible token without rescanning every prefix."""
+    while offset and code[offset - 1] in b" \t\n\r\v\f":
+        offset -= 1
+    if offset < 6 or code[offset - 6:offset] != b"extern":
+        return False
+    preceding = code[offset - 7] if offset > 6 else 0
+    return not (65 <= preceding <= 90 or 97 <= preceding <= 122
+                or 48 <= preceding <= 57 or preceding == 95)
+
+
 def _code(source: bytes) -> bytes:
-    """Hide inert tokens while preserving separation, continuation and literal bounds."""
+    """Hide inert tokens while retaining the exact visible C linkage declaration."""
     result, offset = bytearray(source), 0
     while offset < len(source):
         number = _NUMBER.match(source, offset)
@@ -48,7 +60,11 @@ def _code(source: bytes) -> bytes:
                         end += 1
         if end > offset:
             end = min(end, len(source))
-            result[offset:end] = b" " * (end - offset)
+            # A linkage specification owns one meaningful literal. Comments and
+            # raw/ordinary strings are already skipped atomically, so text inside
+            # them cannot supply the preceding extern token or this exact "C".
+            if source[offset:end] != b'"C"' or not _extern_prefix(result, offset):
+                result[offset:end] = b" " * (end - offset)
             offset = end
         else:
             offset += 1

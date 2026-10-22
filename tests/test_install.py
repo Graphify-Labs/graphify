@@ -1706,6 +1706,71 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path, monkeypatch):
         )
 
 
+@pytest.mark.parametrize("native_codex", [False, True])
+def test_hook_commands_quote_a_spaced_resolved_exe(tmp_path, monkeypatch, native_codex):
+    """Every hook preserves the selected spaced launcher and cleanup ownership.
+
+    Direct shell commands must parse into one executable token (#522/#1987).
+    Native Codex instead carries that exact literal in its encoded transport;
+    separate native execution regressions exercise Cmd/PowerShell consumers.
+    Both serialization profiles run on every host without executing a fake OS
+    shell. The control proves an unquoted direct command splits the identity.
+    """
+    import base64
+    import json
+    import shlex
+
+    import graphify.codex_hook_command as transport
+    from graphify.install import (
+        _claude_pretooluse_hooks,
+        _gemini_hook,
+        _install_codex_hook,
+        _is_graphify_hook_entry,
+    )
+
+    spaced_exe = "C:/Program Files/Graphify/graphify.EXE"
+    monkeypatch.setattr(
+        "graphify.install._resolve_graphify_exe", lambda project=False: spaced_exe
+    )
+    monkeypatch.setattr(transport, "_windows_powershell_exe", lambda:
+                        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    monkeypatch.setattr("graphify.install.codex_hook_command", lambda executable, **_kwargs:
+                        transport.codex_hook_command(executable, windows=native_codex))
+
+    _install_codex_hook(tmp_path)
+    codex_doc = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    entries = [
+        h
+        for group in (
+            _claude_pretooluse_hooks()
+            + [_gemini_hook()]
+            + codex_doc["hooks"]["PreToolUse"]
+        )
+        for h in group["hooks"]
+    ]
+
+    assert entries, "no hook command resolved"
+    assert shlex.split(f"{spaced_exe} hook-check")[0] != spaced_exe
+    for entry in entries:
+        command = entry["command"]
+        argv = shlex.split(command)
+        if "-EncodedCommand" in argv:
+            assert native_codex and entry["statusMessage"] == "graphify hook-check"
+            payload = base64.b64decode(argv[-1], validate=True).decode("utf-16-le")
+            assert f"& '{spaced_exe}' hook-check;" in payload
+            assert transport.is_encoded_codex_hook(command)
+            assert _is_graphify_hook_entry(entry)
+            continue
+        assert argv[0] == spaced_exe, (
+            f"spaced exe must survive quoting as one first word, got argv[0]={argv[0]!r} "
+            f"from {command!r}"
+        )
+        assert argv[1] in ("hook-guard", "hook-check"), argv
+        # a quoted command must still be recognized as graphify's own, or an
+        # uninstall/reinstall cycle on a spaced path would strand the entry.
+        assert _is_graphify_hook_entry(entry), command
+
+
 # --- #3129: project-scoped installs must not embed a machine-absolute path ----
 #
 # `--project` writes hook config that the installer then tells the user to

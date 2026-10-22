@@ -9,6 +9,14 @@ Output ONLY valid JSON matching the schema below - no explanation, no markdown f
 Files (chunk CHUNK_NUM of TOTAL_CHUNKS):
 FILE_LIST
 
+Read every file COMPLETELY before extracting from it. The Read tool returns at most 2000 lines per
+call and reports NO error when it truncates, so a long file silently yields a partial extraction.
+Page with offset/limit until you have seen the last line; never emit nodes for a partly-read file -
+replace-on-re-extract drops that file's existing nodes and re-adds only what you saw, so the unread
+tail is lost and the file is never retried (#2225). Report what you read in a top-level
+"coverage" object mapping each FILE_LIST path to its line count, e.g.
+{"coverage": {"docs/plan.md": 452}} - a short count is caught and retried, a missing one is not.
+
 Rules:
 - EXTRACTED: relationship explicit in source (import, call, citation)
 - INFERRED: reasonable inference (shared structure, implied dependency)
@@ -28,7 +36,7 @@ Node ID format: lowercase, only `[a-z0-9_]`, no dots or slashes. Format `{stem}_
 [Qt/QML] Reuse existing Qt/QML AST IDs verbatim when referencing those facts. Their component/member scope and exact source identity are already encoded; never replace them with a label-only ID or create a duplicate fact to satisfy the generic ID guidance above.
 
 Output exactly this JSON (no other text):
-{"nodes":[{"id":"auth_session_validatetoken","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"<FILE_LIST path verbatim>","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"<FILE_LIST path verbatim>","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"<FILE_LIST path verbatim>"}],"input_tokens":0,"output_tokens":0}
+{"nodes":[{"id":"auth_session_validatetoken","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"<FILE_LIST path verbatim>","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"<FILE_LIST path verbatim>","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"<FILE_LIST path verbatim>"}],"input_tokens":0,"output_tokens":0,"coverage":{"<FILE_LIST path verbatim>":0}}
 
 source_file RULE: set source_file to the FILE_LIST path for that file VERBATIM (absolute, no shortening to basename, no re-relativizing, no separator change). Keeps full build and --update on one base so build_merge's replace matches instead of duplicating.
 ```

@@ -2127,3 +2127,137 @@ the existing graph/manifest/report/Qt-state cohort contract. Unit, facade,
 serialized graph, actual app-only CLI and metadata/QRC-only update regressions
 supply the bounded evidence; actual native builds and complete variable expansion
 remain outside this profile.
+
+## Upstream 0.9.94 semantic union — INC-QML-59
+
+Status: **Implemented source union with focused local evidence; integration-wide
+and new-head hosted acceptance remain separate**. D36 in the
+[extension architecture](ARCHITECTURE.md) owns the compatibility decision.
+The inspected predecessors are fork `f7430ac9` and upstream `v8` at
+`c588b72d936927790a87ad009955078ed40562a3` (0.9.94). Their combination preserves
+both producers' accepted mechanisms at the existing owners. This is an
+intentional semantic integration, not a mechanical extractor move or permission
+to restore older shared function bodies wholesale.
+
+### Extraction and cache ownership
+
+`cache.py` owns AST schema **23**. Upstream schema 22 includes SQL batch/routine
+facts, CommonJS binding corrections and earlier generic-language changes; fork
+schema 18 includes original-byte native metadata, exact callable identity and
+nested-reference contracts. Neither predecessor proves the combined producer.
+Same-version cache entries from both namespaces must miss and retire through the
+existing AST cleanup path. Current-schema facts remain reusable under the
+package, grammar-fingerprint and language-override key contract. Prompt-owned
+semantic entries retain their independent lifetime and must remain byte-identical
+through AST retirement.
+
+Qt analysis policy remains **26**. The policy, grammar fingerprint and AST schema
+have distinct owners; a new AST producer namespace does not justify changing the
+Qt policy or republishing accepted products before extraction succeeds. Existing
+cache-write failure, publication rollback and corrected retry ordering remain
+authoritative. There is no cache-format migration or general source evaluator.
+
+The facade retains canonical source normalization, original spans and Qt failure
+and diagnostic collections while exposing upstream `skipped_sources` alongside
+`failed_sources`. A deliberate extractor decline is distinct from an unavailable
+parser, malformed source or incomplete Qt/QML result. The skipped-source list is
+run-local control data, excluded from raw public extraction products through
+`RUN_ONLY_EXTRACTION_KEYS`. Generic type declarations, receiver/member-call
+resolution, Objective-C category/source identities and SQL changes remain at
+their upstream owners. `engine.py` retains exact `CppIdentity` production while
+applying Metal/CUDA qualifier filtering only to the corresponding dialect
+extensions; ordinary C++ identifiers keep their existing meaning.
+
+### Header admission and accepted-product ordering
+
+`cpp_header.py` remains the sole lexical C++ header classifier. Its bounded source
+prefix masks comments and ordinary/raw literals, with one deliberate exception:
+an exact `"C"` literal immediately following a visible `extern` token is retained
+as linkage evidence. Whitespace and masked comments may separate those tokens.
+Embedded spellings, malformed strings, longer identifiers and other linkage
+literals do not establish this admission rule. Objective-C dispatch and explicit
+language overrides retain priority at the facade. Header admission selects a
+parser; it grants no QObject, SDK, provider or member-resolution authority.
+
+Manual extraction passes deliberate declines to the existing manifest writer as
+`ast_empty`, preserving intentional zero-node rows instead of repeatedly healing
+them as failures. Applicable no-change, raw and clustered completion paths finish
+the manifest write before committing accepted Qt analysis state; failed AST
+sources still prevent that state advance. The extract-path fault regression
+proves Qt-state retention and recovery only: extraction can already have written
+its graph and reports a manifest exception as a warning. It does not establish
+whole-product rollback or a failed command exit for that path. The existing
+update/watch accepted-product cohort has its separate persistence tests; this
+integration establishes neither extract cohort atomicity nor new watcher
+`ast_empty` propagation.
+
+### Installed hook identity
+
+The installer continues to decide ownership per hook entry. An encoded native
+Codex invocation requires both the owned status marker and the exact bounded
+static-wrapper recognition in `codex_hook_command.py`; neither a copied label nor
+an altered encoded command authorizes removal. Ordinary shell commands retain
+the upstream command-scoped current/legacy ownership checks. Reinstall and
+uninstall preserve foreign entries, non-command siblings and unrelated group
+metadata. Recognition does not execute the supplied command or introduce a
+second configuration/persistence owner.
+
+### Generated interpreter identity and lean-core budget
+
+Authoritative skill fragments quote the entire recorded POSIX interpreter
+substitution when invoking Python, including the new semantic coverage block:
+`"$(cat graphify-out/.graphify_python)" -c ...`. The executable path remains one
+shell word when it contains spaces. Arguments, script body, working directory
+and execution order retain their meaning; no ambient-shell/interpreter fallback
+is introduced. Existing shipped-resource actual-shell regressions protect this
+production transport boundary, rather than only checking generated text.
+
+The progressive core retains its existing strict **fewer than 800 lines** budget.
+The combined upstream/Qt content initially exceeded it at 803 lines. Removing
+nonsemantic blank lines and compacting a simple non-file guard within the new
+coverage Python block produces 799 lines while preserving the coverage algorithm,
+required paragraphs and the unchanged budget assertion. Generator output comes
+from authoritative fragments via `python -m tools.skillgen`; `--bless` separately
+updates expected snapshots. The 134-resource generation, snapshot update and all
+five separately invoked validators pass. Shipped-resource replay passes 93 cases
+with one inapplicable fallback skip. The full suite's separate outcomes and
+watcher correction are recorded in traceability.
+
+### Native watcher test lifetime
+
+`tests/watch_thread_lifecycle.py::running_watch` owns the real watch thread
+through readiness, normal test assertions, stop and bounded join. A scoped
+watch-module clock proxy makes only that worker's direct loop wait interruptible;
+dependency waits and standard-library sleep/monotonic retain their identities.
+The watcher's existing `finally` owns observer stop/join. The fixture restores its
+proxy only after attempting worker shutdown, and rejects unconfirmed cleanup;
+it adds no production stop API. Assertions escaping the test body still trigger
+the same cleanup path before the caller's monkeypatch teardown.
+
+Both inherited native event tests retain real watchdog delivery, debounce and
+their original event/count assertions. A separate child-process audit inspects
+live watch frames immediately after each acceptance body, detecting the old
+leaked loops before patch restoration. Success/body-assertion controls prove
+joined worker and clock restoration. All four identities are mandatory in the
+existing Linux source and Windows native evidence gates; missing, duplicate,
+skipped or failed cases reject. The native inventory grows from 29 to 33 without
+removing an earlier case, platform, dependency or trigger. Test-only bounded
+assertions report failed readiness/shutdown; no new runtime diagnostic contract
+is introduced.
+
+### Verification boundary
+
+`test_qt_upstream094_cache_contract.py` exercises both predecessor namespaces,
+semantic retention, current warm reuse, mixed Qt/generic declined-source facts,
+directed serialization and actual header facade dispatch. Four accepted-linkage
+cases fail before the classifier correction; negative controls preserve inert
+text and Objective-C priority. Existing source-identity, qualified C++, native
+dialect, generic-language and Qt cold/warm/manual/watch tests cover the adjacent
+producer contracts. Exact commands, criterion assignments, failures and platform
+exclusions belong in [traceability](../../tests/TRACEABILITY.md).
+
+These are source-checkout local controls. They do not establish a complete clean
+suite, global installation, application graph refresh, native Qt execution or
+new upstream-event acceptance. New source or base revisions require applicable
+proof; earlier fork/synthetic/exact-merge runs remain historical evidence for
+their own revisions.

@@ -3493,3 +3493,61 @@ commands, source-matched wheel evidence and limitations are in
 The repository-only AST graph refresh exits zero with 27,394 nodes and 64,252
 edges; application installation/graph refresh, hosted validation and merging
 remain separate delivery steps.
+
+## INC-QML-59 — Upstream 0.9.94 contribution integration
+
+Status: **In progress; earlier 0.9.92 validation is historical evidence only**.
+Owner: integration maintainer. Source: validated fork merge `f7430ac9`.
+Reviewed incoming upstream base: `c588b72d936927790a87ad009955078ed40562a3`
+(`v8`, 0.9.94). The new contribution uses a separate feature branch in the
+canonical workspace; the earlier upstream request and fork stack retain their
+identities. Repository rename preserves the fork identity and protection.
+
+| Acceptance IDs | Preimplementation acceptance and boundary matrix |
+| --- | --- |
+| REQ-QML-014-AC03; REQ-QML-015-AC03 | Resolve the six overlapping cache, CLI, extraction-engine and installer files by retaining both upstream generic-language corrections and Qt/QML provenance, guarded publication and native interpreter contracts. Inspect automatically merged shared boundaries; do not restore older upstream function bodies wholesale. |
+| REQ-QML-011-AC01/AC03/AC04; REQ-QML-014-AC03 | Retire incompatible cached facts from both predecessors through the authoritative AST schema owner. Characterize an old-schema rejection, successful current cache reuse and actual mixed-language cold/warm/update outcomes. Qt metadata policy retains its separate owner. |
+| REQ-QML-014-AC02/AC03/AC04; REQ-CORE-004-AC02 | Preserve upstream no-auto-refresh help/version behavior, complete platform help inventory and spaced executable handling alongside actual Windows shell/interpreter evidence. Do not weaken retained assertions or platform selection. |
+| REQ-QML-015-AC01/AC02/AC03/AC04 | Requirements, design and traceability name the new base and exact commands. Regenerate assistant artifacts from fragments, run focused shared/Qt regressions and proportionate full/static/packaging checks, then open a fresh upstream PR. Prior PR #4111 and proposal #1748 remain explicit overlap; no automatic upstream merge or reviewer messaging. New upstream-event validation remains separate from old fork/synthetic/exact-merge proof. |
+
+Diagnostic impact: successful integration adds no new runtime diagnostic. Parser,
+unsupported-source, cache, publication and rollback failures retain their owning
+contracts. Prior graph/cache products and unrelated local evidence remain intact.
+Any newly exposed failure creates a focused regression obligation before its
+correction. Baseline type/security findings and platform skips remain visible.
+
+Exit review must record exact resolved owners, schema compatibility, focused and
+full outcomes, generated artifacts, the new PR head/base and remaining hosted
+approval or execution gaps. General CMake evaluation and unverified Qt runtime
+behavior remain outside scope.
+
+Integration characterization exposed two corrections within this scope: visible
+C++ linkage in headers must retain lexical false-positive rejection and Objective-C
+priority; the new generated coverage command must quote the recorded interpreter
+path and retain the existing lean-core size bound. The authoritative fragment
+owns the generated correction. A separate mixed-source CLI regression proves
+that declined-source manifest evidence persists before accepted Qt context, and
+that a real manifest-write failure retains the previous context until recovery.
+
+Local focused results and exact acceptance mappings are recorded in
+[traceability](../../tests/TRACEABILITY.md#upstream-094-integration--inc-qml-59).
+The initial full Windows suite ends with 12,090 passes, eight failures and 175
+skips. Seven failures concern stale shipped guidance; after authoritative
+generation, the 93-case resource replay passes with one inapplicable fallback
+skip, and all five separately invoked validators pass. The watcher failure passes
+alone and in an ordered 199-case replay, but a traced ordered replay reproduces
+the sibling failure and reports a surviving earlier watcher consuming a later
+fixture's event pump. Two native tests lack shutdown/join. Their scoped lifetime
+correction must preserve original real-event assertions, prove cleanup through
+success and assertion failure, and pass the ordered watcher/clock selection.
+This extends REQ-QML-014-AC03's acceptance matrix; it adds no product stop API or
+process-wide clock replacement. The two original acceptance cases fail the new
+live-frame audit before correction. After a scoped stop/join owner replaces
+unmanaged daemon lifetime, the ordered watcher/clock/lifecycle run passes 203
+cases with seven platform skips. A separate lifecycle/clock run passes ten with
+one POSIX skip. Existing Linux/Windows gates require all four lifecycle identities;
+their actual collection/native proof controls pass 33 cases. Packaging and
+upstream delivery remain pending.
+Whole-repository Ruff passes. Pyright reports 666 errors: the earlier 651 plus
+15 diagnostics at unchanged incoming upstream sites. This is a source comparison,
+not an independently executed pristine-upstream type run or a clean type check.

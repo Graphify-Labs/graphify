@@ -336,6 +336,29 @@ def test_cuda_host_call_edges():
     assert ("main()", "host_norm()") in calls
 
 
+def test_cuda_execution_space_qualifiers_do_not_mint_sourceless_god_nodes():
+    """CUDA's `__global__`/`__device__`/`__host__` are execution-space
+    qualifiers, not C++ types. tree-sitter-cpp parses the leading qualifier as
+    the declaration's `type_identifier`; before the fix each became a sourceless
+    corpus-shared god node (ids `global`/`device`/`host`) that every kernel
+    `references` — a provenance violation. The real struct `Vec3` still resolves.
+    """
+    r = extract_cpp(FIXTURES / "sample.cu")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    for qualifier in ("__global__", "__device__", "__host__"):
+        assert qualifier not in sourceless, (
+            f"CUDA qualifier {qualifier!r} leaked as a sourceless god node"
+        )
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    referenced = {
+        id_to_label.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert referenced.isdisjoint({"__global__", "__device__", "__host__"})
+    assert "Vec3" in referenced
+
+
 # Metal Shading Language is a C++14-derived language, so .metal files route
 # through the C++ extractor just like CUDA does.
 
@@ -355,6 +378,32 @@ def test_metal_finds_kernel_function_and_struct():
     assert any("Vec3" in l for l in labels)
     assert any("dot3" in l for l in labels)
     assert any("saxpy" in l for l in labels)
+
+
+def test_metal_qualifiers_do_not_mint_sourceless_god_nodes():
+    """Metal's `kernel`/`device`/`constant` qualifiers are not C++ types.
+
+    tree-sitter-cpp has no grammar for them, so it parses the leading qualifier
+    as the declaration's `type_identifier`. Before the fix each one became a
+    sourceless, corpus-shared god node that every shader `references` — a
+    provenance violation (a node with no source_file). The real user type (the
+    `Vec3` struct) must still resolve.
+    """
+    r = extract_cpp(FIXTURES / "sample.metal")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    for qualifier in ("kernel", "device", "constant"):
+        assert qualifier not in sourceless, (
+            f"Metal qualifier {qualifier!r} leaked as a sourceless god node"
+        )
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    referenced = {
+        id_to_label.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert referenced.isdisjoint({"kernel", "device", "constant"})
+    # The genuine user-defined struct reference is preserved.
+    assert "Vec3" in referenced
 
 
 # ── Ruby ─────────────────────────────────────────────────────────────────────
@@ -3723,6 +3772,35 @@ def test_markdown_wikilink_fallback_path_qualified(tmp_path):
                for e in refs), f"path-qualified vault link lost: {refs}"
 
 
+def test_markdown_wikilink_vault_relative_to_a_scan_root_below_the_vault(tmp_path):
+    """Obsidian writes vault-relative paths, so scanning a folder below the
+    vault meets links that start with that folder's own path (#4559)."""
+    corp = tmp_path / "Vault" / "Projects" / "Corp"
+    (corp / "wiki").mkdir(parents=True)
+    for name in ("Charlie", "Delta", "Fox"):
+        (corp / "wiki" / f"{name}.md").write_text(f"# {name}\n")
+    (corp / "Alpha.md").write_text(
+        "[[wiki/Charlie]] [[Corp/wiki/Delta|alias]] [[Projects/Corp/wiki/Fox]]\n")
+    pages = [corp / "Alpha.md", *(corp / "wiki").iterdir()]
+    _, refs, page_id = _vault_extract(corp, pages)
+    alpha = page_id(corp / "Alpha.md")
+    assert {e["target"] for e in refs if e["source"] == alpha} == {
+        page_id(corp / "wiki" / f"{name}.md") for name in ("Charlie", "Delta", "Fox")}
+
+
+def test_markdown_wikilink_scan_root_prefix_still_needs_the_exact_path(tmp_path):
+    """Once the scan root's folder is dropped the rest is a path from the
+    root, not a suffix: [[Corp/Fox]] does not reach Corp/wiki/Fox.md."""
+    corp = tmp_path / "Corp"
+    (corp / "wiki").mkdir(parents=True)
+    (corp / "wiki" / "Fox.md").write_text("# Fox\n")
+    (corp / "Alpha.md").write_text("[[Corp/Fox]]\n")
+    _, refs, page_id = _vault_extract(corp, [corp / "Alpha.md", corp / "wiki" / "Fox.md"])
+    alpha = page_id(corp / "Alpha.md")
+    fox = page_id(corp / "wiki" / "Fox.md")
+    assert fox not in {e["target"] for e in refs if e["source"] == alpha}
+
+
 def test_markdown_wikilink_fallback_root_wins(tmp_path):
     """On a bare-name collision the shallowest match wins — Obsidian resolves
     a bare wikilink to the root-level file over a same-named subfolder file."""
@@ -4626,6 +4704,23 @@ def test_plain_c_header_stays_on_c_extractor():
     p = (FIXTURES / "cpp_samedir" / "plain.h").resolve()
     assert not _is_cpp_header(p)
     assert _get_extractor(p).__name__ == "extract_c"
+
+
+def test_extern_c_header_routes_to_cpp_extractor(tmp_path):
+    """A C-API header wrapped in `#ifdef __cplusplus extern "C" {` must route to
+    extract_cpp: the C grammar rejects the linkage block and extracts nothing."""
+    p = tmp_path / "api.h"
+    p.write_text(
+        '#ifdef __cplusplus\nextern "C" {\n#endif\n\n'
+        "struct api_ctx;\nstruct api_ctx * api_init(const char * path);\n"
+        "void api_free(struct api_ctx * ctx);\n\n"
+        "#ifdef __cplusplus\n}\n#endif\n",
+        encoding="utf-8",
+    )
+    assert _is_cpp_header(p)
+    assert _get_extractor(p).__name__ == "extract_cpp"
+    labels = {n["label"] for n in _get_extractor(p)(p)["nodes"]}
+    assert "api_ctx" in labels, labels
 
 
 def test_cpp_paired_single_class_node():

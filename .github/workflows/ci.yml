@@ -218,6 +218,14 @@ jobs:
           # Joint producer/consumer cases must execute, not merely collect;
           # retained JUnit binds their complete reviewed matrix to this checkout.
           integrated = {
+              # Native watcher fixtures must release threads before a later
+              # test installs its event pump; skips cannot establish cleanup.
+              'tests.test_watch_thread_lifecycle': {
+                  'test_req_qml014_ac03_original_real_watch_acceptance_joins_before_teardown[test_watch_handler_honors_graphifyignore]',
+                  'test_req_qml014_ac03_original_real_watch_acceptance_joins_before_teardown[test_watch_loads_graphifyignore_once]',
+                  'test_req_qml014_ac03_scoped_watch_shutdown_restores_clocks_on_every_exit[False]',
+                  'test_req_qml014_ac03_scoped_watch_shutdown_restores_clocks_on_every_exit[True]',
+              },
               'tests.test_upstream_qt_cache_integration': {
                   'test_req_qml003_ac04_qml018_ac05_mixed_cold_warm_serialized_facts',
                   'test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh[0.9.74-12]',
@@ -464,7 +472,8 @@ jobs:
             'tests/test_skill_auto_refresh.py', 'tests/test_uninstall_scope.py', 'tests/test_settings_merge.py',
             'tests/test_hooks.py', 'tests/test_skillgen_input_path_injection.py', 'tests/test_shell_portability_helpers.py',
             'tests/test_html_community_links.py', 'tests/test_html_initial_view.py', 'tests/test_html_middle_pan.py',
-            'tests/test_watch.py', 'tests/test_source_alias_provenance.py', 'tests/test_qt_update_discovery_profile.py', 'tests/test_watch_physical_coowners.py', 'tests/test_watch_coowner_admission.py', 'tests/test_non_regular_files.py', 'tests/test_terraform.py',
+            'tests/test_watch.py', 'tests/test_watch_thread_lifecycle.py',
+            'tests/test_source_alias_provenance.py', 'tests/test_qt_update_discovery_profile.py', 'tests/test_watch_physical_coowners.py', 'tests/test_watch_coowner_admission.py', 'tests/test_non_regular_files.py', 'tests/test_terraform.py',
             'tests/test_terraform_modules.py', 'tests/test_extractors_registry.py::test_terraform_migrated', 'tests/test_ci_windows_tools.py'
             # The merged upstream cache/discovery/consumer contracts also run
             # under this admitted native interpreter, with retained case proof.
@@ -495,6 +504,13 @@ jobs:
           # Exact source-declared cases bind native acceptance; unrelated platform skips
           # remain separate. Missing, duplicated or skipped critical cases cannot pass.
           required = {
+              # Require real joined cleanup, including failed assertion exits.
+              'tests.test_watch_thread_lifecycle': [
+                  'test_req_qml014_ac03_original_real_watch_acceptance_joins_before_teardown[test_watch_handler_honors_graphifyignore]',
+                  'test_req_qml014_ac03_original_real_watch_acceptance_joins_before_teardown[test_watch_loads_graphifyignore_once]',
+                  'test_req_qml014_ac03_scoped_watch_shutdown_restores_clocks_on_every_exit[False]',
+                  'test_req_qml014_ac03_scoped_watch_shutdown_restores_clocks_on_every_exit[True]'
+              ],
               'tests.test_atomic_writes': [
                   'test_os_replace_with_fallback_still_replaces_a_readonly_destination',
                   'test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp'

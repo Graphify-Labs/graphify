@@ -212,6 +212,17 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
         if c[1] == suffix or c[1].endswith("/" + suffix)
     ]
     if not matches:
+        # Obsidian writes vault-relative paths, so scanning a folder below the
+        # vault root meets links that start with that folder's own path
+        # ([[Corp/wiki/Fox]] from inside Corp/, #4559). Drop the longest such
+        # leading run and match the rest from the scan root.
+        root_parts = [_nfc(p) for p in Path(root).parts]
+        for k in range(len(parts) - 1, 0, -1):
+            if parts[:k] == root_parts[-k:]:
+                rest = "/".join(parts[k:])
+                matches = [c for c in candidates if c[1] == rest]
+                break
+    if not matches:
         return None
     return min(matches)[2]
 

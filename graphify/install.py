@@ -1854,6 +1854,8 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     """
     # Validate native transport before touching settings. A missing OS consumer
     # must retain the prior hook JSON rather than publish an ambiguous fallback.
+    # The transport owner also quotes spaced POSIX launchers; do not add another
+    # shell-quoting layer around the native Windows encoded invocation.
     try:
         command = codex_hook_command(_resolve_graphify_exe(project=project), windows=os.name == "nt")
     except HookCommandError as error:

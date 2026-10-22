@@ -857,3 +857,74 @@ unchanged-baseline typing comparison, artifact checks and AST-only repository
 refresh are complete. Traceability records the separate full-suite and
 process-local environment recovery results, retained Windows/optional skips and
 unexecuted new-head hosted/non-Windows proof.
+
+## Upstream 0.9.94 integration owners — INC-QML-59
+
+[D36](ARCHITECTURE.md) and the
+[semantic-union design](DESIGN.md#upstream-0994-semantic-union--inc-qml-59)
+describe the combined fork `f7430ac9` / upstream `c588b72d` producer. The following
+ownership is current for this integration; earlier increment measurements above
+remain historical snapshots.
+
+| Owner and boundary | Combined responsibility |
+| --- | --- |
+| Cache maintainer: `cache.py` | AST schema 23 retires predecessor 18/22 facts through existing namespace cleanup. Package/grammar/override keying and independent semantic-cache lifetime remain authoritative; Qt policy stays 26 at its separate owner. |
+| Extractor facade maintainer: `extract.py` | Retain canonical source/provenance and Qt failure/diagnostic collections while exposing deliberate `skipped_sources`; preserve upstream generic declarations, receiver joins, Objective-C category/site normalization and SQL relationships. Run-local source controls stay out of public raw products. |
+| Generic extractor maintainer: `extractors/engine.py` | Preserve `CppIdentity` alongside extension-scoped Metal/CUDA qualifier filtering and current upstream generic call/type mechanisms. No new facade import from an extractor child is introduced. |
+| Header admission maintainer: `cpp_header.py` | Recognize visible exact `extern "C"` linkage within the bounded lexical classifier; comments/strings cannot manufacture admission. The facade retains Objective-C and explicit-override priority. Admission supplies no native endpoint authority. |
+| CLI/publication maintainer: `cli.py` | Forward deliberate declines to the manifest's `ast_empty` contract before accepted Qt-state stamping. Retain failure gating, source-root identity and existing graph/product persistence owners. |
+| Installer maintainer: `install.py`, `codex_hook_command.py` | Require the native status marker plus exact encoded-wrapper identity for an owned encoded entry, preserving upstream command-scoped legacy recognition and unrelated entries/group metadata. |
+| Generated-guidance maintainer: authoritative `tools/skillgen/fragments/core/core.md`, generator and shipped-resource transport tests | Quote the complete recorded interpreter substitution in the semantic coverage invocation; retain argument/body/cwd identity and existing shell execution regression. Preserve the strict progressive-core budget below 800 lines through nonsemantic layout and equivalent guard compaction, not an assertion change. Write outputs through `python -m tools.skillgen` and update expected snapshots separately with `--bless`. |
+| Extraction regression maintainer: `tests/test_qt_upstream094_cache_contract.py` | Real predecessor cache writes/misses, semantic retention, warm reuse, mixed Qt/declined-source transport, serialization and facade linkage/inert/Objective-C controls. |
+| Native-test maintainer: `tests/watch_thread_lifecycle.py`, `tests/test_watch_thread_lifecycle.py` | Own real watcher readiness, bounded stop/join and scoped clock restoration before caller teardown. Child-process live-frame audits retain original event assertions and reject escaped loops; normal and body-failure exits preserve the standard-library clock. |
+| Compatibility maintainer: `.github/workflows/ci.yml`, `test_ci_windows_tools.py`, `test_ci_source_cases.py` | Admit the same four exact lifecycle cases in existing source/native jobs; preserve previous required identities, omission/duplicate/skip/failure rejection, platforms and triggers. |
+
+Focused source tests pass locally; exact outcomes and unavailable platform
+profiles are recorded in traceability. These owner assignments establish no new
+hosted, installed-global, application-refresh or native Qt execution proof.
+The authoritative fragment generates 134 resources and a 799-line progressive
+core against its unchanged strict limit. Generation, snapshot update and all five
+individually invoked validators pass; resource replay passes 93 cases with one
+inapplicable fallback skip. Full-suite outcomes and the separate watcher
+correction remain in traceability. These local checks establish no new hosted
+revision.
+
+### Current integration-only cohesion allowances
+
+The inherited owners below supersede their earlier measured allowances for
+INC-QML-59 only. The cache ceiling is retained; the others account for the
+reviewed incoming mechanisms and focused semantic reconciliation. They permit no
+unrelated growth or mechanical migration during the merge.
+
+| Owner | File | Measured physical lines / permitted ceiling |
+| --- | --- | --- |
+| Cache maintainer | `graphify/cache.py` | 1,943 / 1,950 |
+| Extractor facade maintainer | `graphify/extract.py` | 11,293 / 11,300 |
+| Generic extractor maintainer | `graphify/extractors/engine.py` | 10,485 / 10,500 |
+| CLI/publication maintainer | `graphify/cli.py` | 5,476 / 5,500 |
+| Installer maintainer | `graphify/install.py` | 2,796 / 2,800 |
+| Install-fixture maintainer | `tests/test_install.py` | 1,901 / 1,920 |
+| Native-test maintainer | `tests/test_watch.py` | 5,590 / 5,600 |
+| Compatibility maintainer | `.github/workflows/ci.yml` | 648 / 660 |
+
+The facade and engine retain the upstream migration playbook's characterized,
+one-responsibility extraction exit and facade/child dependency direction. Cache
+splitting remains the cache maintainer's separately characterized responsibility;
+CLI persistence/manifest staging remains with its existing publication owner.
+Installer and fixture extraction must preserve entry-scoped identity, group
+metadata, replacement ordering and platform consumers before moving code. File
+size alone does not justify a new forwarding layer or an unrelated extraction.
+
+The native-test allowance covers only replacing two unowned daemon lifetimes;
+the helper and new regression own 57 and 90 lines respectively. Further native
+watch test extraction must first characterize real observer/event ordering and
+cleanup, with the native-test maintainer as owner. The workflow allowance covers
+four-case admission at existing evidence owners, not a new workflow abstraction;
+its exit is a separately characterized evidence-owner extraction under the
+compatibility maintainer. Both allowances preserve a cohesive correction without
+an unrelated mechanical split.
+
+The header helper measures 85 physical lines and its new cache/header regression
+module 136. New handwritten production/test modules retain the ordinary 300-line
+ceiling. Final source measurements and integration-wide verification are checked
+at handoff; the allowances do not turn skipped or unexecuted checks into passes.

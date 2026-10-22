@@ -119,6 +119,7 @@ REQUIRED_NATIVE_MODULES = (
     "tests/test_atomic_writes.py", "tests/test_atomic_replace_retention.py",
     "tests/test_owned_readonly_replacement.py", "tests/test_graphml_owned_replacement.py",
     "tests/test_skillgen_interpreter_identity.py", "tests/test_native_newline_cli.py",
+    "tests/test_watch_thread_lifecycle.py",
 )
 
 
@@ -171,7 +172,7 @@ def required_cases():
                 and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)]
     required = ast.literal_eval(value)
     assert set(required) == {path[:-3].replace("/", ".") for path in REQUIRED_NATIVE_MODULES}
-    assert sum(map(len, required.values())) == 29
+    assert sum(map(len, required.values())) == 33
     for module, names in required.items():
         assert names == sorted(set(names))
         wanted = {name.split("[", 1)[0] for name in names}
@@ -263,7 +264,7 @@ def test_req_core004_ac03_actual_junit_proof_requires_each_native_case(tmp_path,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == (0 if failure is None else 1)
     evidence = json.loads(result.stdout)
-    assert evidence["required_native_cases"] == 29
+    assert evidence["required_native_cases"] == 33
     assert evidence["required_native_cases_passed"] is (failure is None)
     assert not result.stderr
 

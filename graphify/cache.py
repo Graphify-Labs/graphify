@@ -37,10 +37,11 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-# Schema 18 joins upstream grammar/override-sensitive facts with the Qt
-# original-byte, callable and nested-reference contracts. Neither upstream 17
-# nor the Qt fork's 13 cache proves this combined producer contract.
-_AST_CACHE_SCHEMA = 18
+# Schema 23 combines upstream 22 (SQL batch/routine facts and prior generic
+# language corrections) with the Qt original-byte, callable and nested-reference
+# contracts. Neither upstream 22 nor the Qt fork's 18 proves this combined
+# producer contract; both predecessor namespaces must be retired.
+_AST_CACHE_SCHEMA = 23
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is

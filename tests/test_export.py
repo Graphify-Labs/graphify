@@ -282,6 +282,30 @@ def test_to_graphml_tolerates_dict_and_list_attribute_values():
         assert not (Path(tmp) / "graph.graphml.tmp").exists()
 
 
+def test_to_graphml_exports_multigraph_parallel_edges():
+    """graph.json is loaded as a MultiGraph when it carries parallel edges
+    (#4500), e.g. `imports` and `calls` between the same two nodes. The edge
+    coercion loop indexed H.edges[u, v], which needs a key on a MultiGraph, so
+    the export crashed; every parallel edge must reach the file, coerced."""
+    import networkx as nx
+    G = nx.MultiGraph()
+    G.add_node("a", label="A")
+    G.add_node("b", label="B")
+    G.add_edge("a", "b", relation="imports", confidence="EXTRACTED", note=None)
+    G.add_edge("a", "b", relation="calls", confidence="INFERRED", ctx={"k": "v"})
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "g.graphml"
+        to_graphml(G, {0: ["a", "b"]}, str(out))
+        H = nx.read_graphml(str(out))
+        assert H.number_of_edges() == 2
+        edges = [d for _, _, d in H.edges(data=True)]
+        assert sorted(d["relation"] for d in edges) == ["calls", "imports"]
+        calls = next(d for d in edges if d["relation"] == "calls")
+        imports = next(d for d in edges if d["relation"] == "imports")
+        assert json.loads(calls["ctx"]) == {"k": "v"}
+        assert imports["note"] == ""
+
+
 def test_to_graphml_preserves_native_scalar_types():
     """Coercion must leave GraphML-native scalars (int/float/bool/str) untouched,
     only stringifying non-scalars (#1831)."""

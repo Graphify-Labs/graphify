@@ -1206,7 +1206,9 @@ def _is_type_like_definition(node: dict) -> bool:
         return False
     if label.endswith(")") or label.startswith("."):
         return False
-    if "." in label:
+    # A dotted label names a namespace or module in most languages, but a SQL
+    # table is `schema.name`: it is a type-like definition a reference can bind to.
+    if "." in label and not str(node.get("source_file", "")).lower().endswith(".sql"):
         return False
     return node.get("file_type") == "code"
 

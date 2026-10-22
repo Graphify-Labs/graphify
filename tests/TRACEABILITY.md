@@ -3759,3 +3759,58 @@ coverage hash is unchanged. Independent production and public-document review
 finds no blocker. Increment exit adds no further product increment for this
 bounded form; broader CMake evaluation requires its own accepted profile. Local
 commit review, hosted validation, merging and application adoption remain distinct.
+
+## Upstream 094 integration — INC-QML-59
+
+The integration combines validated fork source `f7430ac9` with upstream
+`c588b72d936927790a87ad009955078ed40562a3` (0.9.94). Earlier 0.9.92 hosted
+results retain their original source/base/checkout identities and cannot establish
+acceptance for this merged source. Source owners and compatibility decisions are
+recorded in D36 and the [contribution guide](../docs/qt-qml/UPSTREAM_CONTRIBUTION.md).
+
+| Acceptance criteria | Exact executable protection and local outcome |
+| --- | --- |
+| REQ-QML-002-AC01; REQ-QML-014-AC03 | `test_qt_upstream094_cache_contract.py::test_req_qml002_ac01_qml014_ac03_extern_c_header_uses_cpp`, `::test_req_qml002_ac03_inert_linkage_does_not_select_cpp` and `::test_req_qml002_ac03_objc_priority_survives_c_linkage` exercise actual header classification/extraction, inert spelling and Objective-C priority. The latter test-name AC03 labels describe rejection probes; their canonical requirement mapping here is AC01. Four positive cases failed before the lexical union correction; the module's final 16 cases pass. |
+| REQ-QML-011-AC01/AC03/AC04; REQ-QML-014-AC03 | The same module's `::test_req_qml011_ac01_ac03_ac04_predecessor_ast_misses_semantic_survives` rejects both predecessor AST schemas while retaining independently owned semantic entries; `::test_req_qml014_ac03_mixed_cold_warm_skip_and_qt_failures` preserves intentional-empty and Qt failure metadata. `test_upstream_qt_cache_integration.py` now checks schema 23 and retains its real replacement-failure injection. |
+| REQ-QML-011-AC04 | `test_qt_upstream094_cli.py::test_req_qml011_ac04_declined_sources_preserve_accepted_qt_context` covers raw and clustered public CLI graphs, persisted declined-source evidence, accepted Qt state and unchanged-input extractor reuse. |
+| REQ-QML-012-AC02 (Qt-state sub-boundary only) | `test_qt_upstream094_cli.py::test_req_qml012_ac02_manifest_failure_does_not_advance_accepted_qt_context` forces the real manifest persistence owner to fail, verifies prior Qt state retention, then proves configuration-change recovery. Together with the existing cache integration module, the final CLI selection passes 17 cases with zero skips. Extraction still reports that exception as a warning after graph writing; this test does not establish extract-wide atomic rollback, failure exit or the whole acceptance criterion. Update/watch cohort evidence remains separately assigned. |
+| REQ-CORE-001-AC01/AC05; REQ-QML-014-AC02/AC03 | `test_install.py` retains the upstream spaced-path case with explicit POSIX/Windows serialization profiles, exercising the authoritative native literal-identity transport. The owned installer/native-hook selection passes 175 cases and retains three Windows symlink-privilege skips. The installed runtime AST is unchanged from the validated predecessor; no platform guard is weakened. |
+| REQ-QML-014-AC03 | Cache/identity/Qt parity selection: 161 passed, 24 skipped (eight Windows symlink and sixteen POSIX traversal cases). Generic language selection: 135 passed, zero skipped. C++/CUDA/Metal/Objective-C/header selection: 66 passed. Independent shared-boundary selections: 824 passed, 13 skipped (twelve filesystem/platform and one GraphML case). These are separate selections, not an additive unique full-suite total. |
+| REQ-QML-014-AC03; REQ-CORE-004-AC02/AC03 | `test_watch_thread_lifecycle.py::test_req_qml014_ac03_original_real_watch_acceptance_joins_before_teardown` audits both original native event tests in child pytest processes before patch teardown; both fail before the scoped lifetime correction. `::test_req_qml014_ac03_scoped_watch_shutdown_restores_clocks_on_every_exit[False/True]` proves joined cleanup and clock restoration on normal/assertion exits. Final `test_watch.py`, `test_watch_clock_isolation.py`, `test_watch_thread_lifecycle.py` order: 203 passed, seven platform skips. Separate lifecycle/clock selection: ten passed, one POSIX skip. `test_ci_windows_tools.py` and `test_ci_source_cases.py`: 33 passed, including actual PowerShell selection and omission/duplicate/skip/failure rejection at the workflow-owned gates. All four new cases are individually required in existing Linux/Windows jobs; native required inventory is 33, retaining the earlier 29. New-source hosted execution remains pending. |
+| REQ-CORE-001-AC01; REQ-QML-015-AC02 | Existing shipped-resource tests exposed a bare recorded-interpreter head in upstream's new coverage command and an 803-line lean core exceeding the retained `<800` assertion. The authoritative fragment quotes the head and compacts formatting without removing the coverage mechanism. Separate `python -m tools.skillgen` and `--bless` invocations write the 134 packaged resources and expected snapshots. All five validators pass when individually invoked: `--check`, `--audit-coverage`, `--schema-singleton`, `--monolith-roundtrip`, `--always-on-roundtrip`. The shipped core is 799 lines. Replay of `test_install_references.py`, `test_skillgen.py` and `test_skillgen_interpreter_identity.py` passes 93 cases; one fallback case is inapplicable because every host now ships a bundle. All seven generated-resource failures from the full run pass in this replay. |
+| REQ-QML-015-AC01/AC03/AC04 | Requirements, D36, design, code reference, increment plan and contribution scope are updated together. New upstream submission, source-matched wheel/consumer evidence and final graph update remain pending. The new proposal explicitly identifies prior PR #4111 and overlapping proposal #1748; neither is automatically closed or merged. |
+
+Focused checks use the repository interpreter with `-X utf8 -m pytest`, explicit
+module selections, `-q --tb=short`, isolated outputs and JUnit receipts. The full
+local command is `python -X utf8 -m pytest tests/ -q --tb=short -rs -p
+no:cacheprovider --junitxml=<isolated-output>/full.xml`. It uses an explicit
+existing Git Bash/sh, selected Python and Node, an offline non-installing Python
+consumer shim and isolated tool destinations. It ends with **12,090 passed,
+eight failed, 175 skipped**. Seven stale generated-output failures pass after
+generation in the separate 93-case replay above. The eighth case,
+`test_watch_clock_isolation.py::test_req_qml014_ac03_nested_dependency_sleep_keeps_original_config_acceptance[False]`,
+produces no graph or rebuild message in the full run. Isolated and ordered
+uninstrumented replays initially pass. A traced ordered replay reproduces the
+sibling failure and an unhandled exception from an older watcher consuming the
+current event pump. Two original native tests start daemon loops without
+shutdown/join. Their live-frame lifecycle audits fail before correction, then
+all four controls and the ordered 203-case selection pass after joining cleanup.
+The diagnostic trace preserves stdlib clock identity; it does not establish a
+backwards performance counter. An attempted 20-fold explicit-node selection was
+deduplicated by pytest and counts as one actual pass, not twenty. Original
+coverage bytes and installed dependency identities remain unchanged. All eight
+original failed case identities pass in the applicable corrected replays; the
+initial full run itself remains a failed invocation, and final wheel evidence is
+still pending.
+
+Whole-repository `ruff check .` passes. Final Pyright 1.1.409 analyzes 856 files and
+reports **666 errors, zero warnings**: all earlier 651 diagnostics persist and
+15 additional diagnostics occur at unchanged incoming upstream sites (three
+production, twelve test diagnostics). Exact file/rule/severity/message comparison
+finds no additional merge-owned diagnostic. This is source attribution, not an
+executed pristine-upstream baseline or a clean type result. The final explicit
+`--pythonpath` run has the same complete diagnostic multiset as the 854-file
+pre-lifecycle run; neither new helper adds a diagnostic. A preliminary repeat
+without selected interpreter discovery hit the Windows Store alias and is
+retained as invalid-profile evidence rather than product type evidence. New-source hosted
+platform execution and upstream maintainer approval remain unverified.

@@ -10,6 +10,11 @@ Shared compatibility requirements use `REQ-CORE-NNN` and criteria
 preserve every Qt/QML identity. The [compatibility plan](COMPATIBILITY.md)
 defines their scope and evidence boundaries.
 
+Current integration checkpoint: INC-QML-59 combines upstream 0.9.94 with the
+validated Qt/QML fork. AST schema 23 and Qt policy 26 apply to this source.
+Earlier verified checkpoints below remain revision-bound historical evidence;
+they do not establish full or hosted acceptance of the new integration.
+
 The Qt/QML catalog contains twenty-one requirements and eighty-five stable acceptance
 criteria. INC-QML-00–07 evidence describes the original bounded Qt 6/QML profile;
 later corrections and adoption extend that profile without renumbering it.
@@ -160,7 +165,7 @@ Full detection and update agree on inclusion of `.qml`, `.ui.qml`, and supported
 
 **Acceptance Criteria**
 
-1 - Full detection, code-only collection, direct supported-file extraction, manual update and watch admit `.qml` and `.ui.qml`; each path selects the same intended extractor. An explicit supported language override away from C++ takes precedence over a physical native Qt suffix; selecting another language cannot invoke native Qt collectors or mint their providers solely from that suffix. (`REQ-QML-002-AC01`)
+1 - Full detection, code-only collection, direct supported-file extraction, manual update and watch admit `.qml` and `.ui.qml`; each path selects the same intended extractor. Visible `extern "C"` linkage in a header selects the C++ producer without treating comment, ordinary-string or raw-string text as linkage, and without overriding accepted Objective-C evidence. An explicit supported language override away from C++ takes precedence over a physical native Qt suffix; selecting another language cannot invoke native Qt collectors or mint their providers solely from that suffix. (`REQ-QML-002-AC01`)
 
 2 - Each delivered metadata format, including exact-name `qmldir` and `CMakeLists.txt`, is admitted consistently by its applicable entry points; unrelated extensionless files remain excluded. (`REQ-QML-002-AC02`)
 
@@ -438,7 +443,7 @@ Supported Python/OS targets have install and behavior evidence. Mixed C++/JS and
 
 2 - Windows path, Unicode, same-stem, relocated-root and optional-parser-absence fixtures pass the same observable contracts as supported POSIX lanes. (`REQ-QML-014-AC02`)
 
-3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. Aggregate newline validation preserves exact bytes of native inputs that own byte-based metadata regardless of fixture directory, while transforming non-native text exactly; strict graph identities/attributes and dedicated real native LF/CRLF span/topology coverage remain mandatory. Deterministic watch-event harnesses isolate their event clock without replacing the process-wide standard-library clock; nested real rebuild/subprocess waits must not consume synthetic watch events. (`REQ-QML-014-AC03`)
+3 - Relevant generic C++/JS, discovery, graph, cache, update and consumer regressions introduce no unexplained new failures relative to the recorded baseline. Aggregate newline validation preserves exact bytes of native inputs that own byte-based metadata regardless of fixture directory, while transforming non-native text exactly; strict graph identities/attributes and dedicated real native LF/CRLF span/topology coverage remain mandatory. Deterministic watch-event harnesses isolate their event clock without replacing the process-wide standard-library clock; nested real rebuild/subprocess waits must not consume synthetic watch events. Native watcher tests stop and join their owned watcher and observer threads before restoring patched state, including assertion/failure exits; unconfirmed shutdown must fail within a bounded time and cannot establish cleanup acceptance. (`REQ-QML-014-AC03`)
 
 4 - Skips, baseline portability defects, unavailable optional dependencies and type-check failures remain separately reported; a skipped or unrun lane cannot count as passing support evidence. (`REQ-QML-014-AC04`)
 
@@ -447,6 +452,12 @@ Supported Python/OS targets have install and behavior evidence. Mixed C++/JS and
 ### REQ-QML-015 — Documentation and upstream delivery
 
 Public support documentation accurately lists implemented syntax, resolution limits, and optional dependencies. Generated assistant instructions are updated through their source fragments. Each increment has a reviewable PR, matching tests, and verified upstream-base compatibility before release.
+
+Delivery status: the 0.9.92 fork source `f7430ac9` has revision-bound hosted and
+isolated-consumer evidence. INC-QML-59 integrates upstream 0.9.94 at `c588b72d`
+for a fresh contribution; that source/base combination is **not yet verified**.
+Repository renaming changes its discovery URL, not extraction behavior or the
+meaning of prior evidence. Earlier PR #4111 remains a separate review record.
 
 **Acceptance Criteria**
 

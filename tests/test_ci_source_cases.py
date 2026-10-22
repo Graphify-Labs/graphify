@@ -15,6 +15,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = (
+    "tests.test_watch_thread_lifecycle",
     "tests.test_upstream_qt_cache_integration",
     "tests.test_upstream_qt_discovery_integration",
     "tests.test_upstream_qt_export_integration",
