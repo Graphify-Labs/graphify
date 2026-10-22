@@ -791,9 +791,11 @@ _DSH_MCP_MARKER_BEGIN = "# >>> graphify MCP (managed by `graphify install --plat
 _DSH_MCP_MARKER_END = "# <<< graphify MCP <<<"
 _DSH_MCP_PLUGIN = "@deepseek-ai/dsh-mcp-client"
 _DSH_MCP_SERVER_NAME = "graphify"
-# Lines that by themselves make a YAML document empty. Dropped before our
-# sequence item is appended, so a patch file holding only `[]` (the shipped
-# empty-layer form) cannot turn into an invalid two-document stream.
+# Lines that by themselves make a YAML document empty. Only removed when the
+# WHOLE document is empty: the shipped empty-layer form is a patch file holding
+# just `[]`. Appending our block sequence after `[]` would make an invalid
+# two-document stream, so the placeholder is dropped first. A line like this
+# anywhere among real entries is user content and is kept verbatim.
 _DSH_EMPTY_DOC_LINES = frozenset({"[]", "---", "...", "null", "~"})
 
 
@@ -819,8 +821,18 @@ def _dsh_graph_json(project_dir: Path) -> Path:
 
 
 def _yaml_quote(value: str) -> str:
-    """Single-quote a YAML scalar (doubling embedded quotes) so paths stay literal."""
-    return "'" + value.replace("'", "''") + "'"
+    """Quote a YAML scalar so an arbitrary path stays one literal string.
+
+    Single quotes are the readable form (YAML only escapes a quote by doubling
+    it), but a value holding a newline, a carriage return, or another control
+    character cannot live on one single-quoted line: JSON encoding is a valid
+    YAML double-quoted scalar and escapes every one of them, so such a value
+    switches to it. The result is always exactly one line of YAML.
+    """
+    text = str(value)
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
+        return json.dumps(text)
+    return "'" + text.replace("'", "''") + "'"
 
 
 def _dsh_mcp_block(graph_json: Path) -> str:
@@ -845,27 +857,52 @@ def _dsh_mcp_block(graph_json: Path) -> str:
     )
 
 
+def _dsh_scan_block(text: str) -> "tuple[bool, int | None, int | None]":
+    """Locate graphify's managed block, tolerating a truncated file.
+
+    Returns ``(seen_begin, start, end)`` with ``start``/``end`` as line indexes:
+    ``start`` is the first begin-marker line and ``end`` the first end-marker
+    line after it. ``seen_begin=False`` means graphify owns nothing here.
+    ``end is None`` with ``seen_begin=True`` means the closing marker is
+    missing - the file was truncated inside our block. The caller must then
+    treat everything from ``start`` to EOF as ours: our block is written last
+    and has a fixed tail, so a missing close marker can only mean the write was
+    cut short, never that user content follows.
+    """
+    lines = text.splitlines()
+    start: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if start is None:
+            if stripped == _DSH_MCP_MARKER_BEGIN:
+                start = index
+        elif stripped == _DSH_MCP_MARKER_END:
+            return True, start, index
+    return start is not None, start, None
+
+
 def _dsh_strip_mcp_block(text: str) -> "str | None":
     """Remove graphify's managed block; ``None`` when the text has no block."""
-    if _DSH_MCP_MARKER_BEGIN not in text:
+    seen_begin, start, end = _dsh_scan_block(text)
+    if not seen_begin or start is None:
         return None
-    kept: "list[str]" = []
-    inside = False
-    for line in text.splitlines():
-        if line.strip() == _DSH_MCP_MARKER_BEGIN:
-            inside = True
-            continue
-        if inside:
-            if line.strip() == _DSH_MCP_MARKER_END:
-                inside = False
-            continue
-        kept.append(line)
+    lines = text.splitlines()
+    keep_end = len(lines) if end is None else end + 1
+    return "\n".join(lines[:start] + lines[keep_end:])
+
+
+def _dsh_drop_empty_document(text: str) -> str:
+    """Drop empty-document placeholders only when they ARE the whole document.
+
+    A patch file holding just ``[]`` (the shipped empty-layer form) must yield
+    to our block sequence; a ``---``, ``null``, or ``~`` among real entries is
+    the user's own content and stays byte for byte.
+    """
+    lines = text.splitlines()
+    if any(line.strip() and line.strip() not in _DSH_EMPTY_DOC_LINES for line in lines):
+        return text
+    kept = [line for line in lines if line.strip() not in _DSH_EMPTY_DOC_LINES]
     return "\n".join(kept)
-
-
-def _dsh_kept_lines(text: str) -> "list[str]":
-    """Patch lines without the empty-document placeholders; comments are kept."""
-    return [line for line in text.splitlines() if line.strip() not in _DSH_EMPTY_DOC_LINES]
 
 
 def _dsh_has_entries(lines: "list[str]") -> bool:
@@ -890,7 +927,7 @@ def _dsh_write_mcp_config(project_dir: "Path | None" = None) -> None:
     patch = _dsh_patch_path()
     original = patch.read_text(encoding="utf-8") if patch.exists() else ""
     stripped = _dsh_strip_mcp_block(original)
-    head = "\n".join(_dsh_kept_lines(original if stripped is None else stripped)).strip("\n")
+    head = _dsh_drop_empty_document(original if stripped is None else stripped).strip("\n")
     content = f"{head}\n\n{block}" if head.strip() else block
     if content == original:
         print(
@@ -927,14 +964,16 @@ def _dsh_remove_mcp_config() -> bool:
     patch = _dsh_patch_path()
     if not patch.exists():
         return False
-    stripped = _dsh_strip_mcp_block(patch.read_text(encoding="utf-8"))
+    original = patch.read_text(encoding="utf-8")
+    stripped = _dsh_strip_mcp_block(original)
     if stripped is None:
         return False
-    kept = _dsh_kept_lines(stripped)
-    if _dsh_has_entries(kept):
-        _write_text_atomic(patch, "\n".join(kept).strip("\n") + "\n")
+    # Only a patch file that goes empty may lose its empty-document shape.
+    kept = stripped if _dsh_has_entries(stripped.splitlines()) else _dsh_drop_empty_document(stripped)
+    if _dsh_has_entries(kept.splitlines()):
+        _write_text_atomic(patch, kept.strip("\n") + "\n")
     else:
-        comments = [line for line in kept if line.lstrip().startswith("#")]
+        comments = [line for line in kept.splitlines() if line.lstrip().startswith("#")]
         if comments:
             _write_text_atomic(patch, "\n".join(comments) + "\n[]\n")
         else:
