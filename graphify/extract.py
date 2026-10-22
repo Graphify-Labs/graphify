@@ -9401,6 +9401,12 @@ def extract(
     # (or the transient failure self-heals) without deleting graphify-out/.
     _failed_sources: list[str] = []
     _failed_seen: set[str] = set()
+    # A file the extractor declined by design is stamped (not a failure) yet has
+    # zero nodes in the graph, which is exactly the shape the #2543 heal re-queues
+    # forever (#2879 fixed only the failed-source path). Record them so the
+    # manifest can mark the emptiness intentional and the heal can leave them be.
+    _skipped_sources: list[str] = []
+    _skipped_seen: set[str] = set()
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
         _key = str(_p)
@@ -9414,6 +9420,9 @@ def extract(
             # zero nodes is the intended outcome rather than a failure. Marking
             # it failed keeps it out of the incremental manifest and re-queues
             # it on every subsequent run, forever (#2879).
+            if _key not in _skipped_seen:
+                _skipped_sources.append(_key)
+                _skipped_seen.add(_key)
             continue
         if (not _res.get("nodes")) and _get_extractor(_p) is not None:
             if _key not in _failed_seen:
@@ -11025,6 +11034,10 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        # Surfaces files the extractor declined by design (zero nodes but not a
+        # failure) so the manifest can mark the emptiness intentional and the
+        # #2543 heal stops re-queuing them every incremental (#2879).
+        "skipped_sources": _skipped_sources,
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
@@ -11037,7 +11050,7 @@ def extract(
 # raw extraction as graph.json (--no-cluster) must leave them out: they put the
 # checkout path and OS username into the graph, and differ between the first
 # build and a rebuild of the same tree.
-RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources"})
+RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources", "skipped_sources"})
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
