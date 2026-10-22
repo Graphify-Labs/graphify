@@ -2372,11 +2372,16 @@ def dispatch_command(cmd: str) -> None:
         # so `is not None` already means "explicitly passed" for those.)
         label_max_concurrency_explicit = False
         label_batch_size_explicit = False
+        from_labels_file: Path | None = None
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
             if a == "--graph" and i_arg + 1 < len(args):
                 graph_override = Path(args[i_arg + 1]); i_arg += 2
+            elif a == "--from" and i_arg + 1 < len(args):
+                from_labels_file = Path(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--from="):
+                from_labels_file = Path(a.split("=", 1)[1]); i_arg += 1
             elif a == "--backend" and i_arg + 1 < len(args):
                 label_backend = args[i_arg + 1]; i_arg += 2
             elif a.startswith("--backend="):
@@ -2504,7 +2509,65 @@ def dispatch_command(cmd: str) -> None:
         # Persisting them (plus a matching .sig) made the reuse branch treat them
         # as fresh forever, permanently blocking real labeling on later runs.
         placeholder_only = False
-        if labels_path.exists() and not force_relabel:
+        if from_labels_file is not None:
+            # #3808: an external tool that names communities itself (no LLM key,
+            # its own hub/candidate heuristic) had to reimplement
+            # community_member_sigs byte-for-byte to produce a .sig cluster-only
+            # would trust later — any drift in that hash silently turned every
+            # external name back into a hub name, with no error. This writes the
+            # one true .sig itself, so outside tools only ever hand over names.
+            try:
+                _from_raw = json.loads(from_labels_file.read_text(encoding="utf-8"))
+            except OSError as exc:
+                print(f"error: could not read --from {from_labels_file}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            except json.JSONDecodeError as exc:
+                print(f"error: --from {from_labels_file} is not valid JSON: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if not isinstance(_from_raw, dict):
+                print(
+                    f"error: --from payload must be a JSON object mapping community id "
+                    f"to name, not {type(_from_raw).__name__}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            external_labels: dict[int, str] = {}
+            for _k, _v in _from_raw.items():
+                try:
+                    _cid = int(_k)
+                except (TypeError, ValueError):
+                    print(f"error: --from key {_k!r} is not a valid community id", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(_v, str) or not _v.strip():
+                    print(
+                        f"error: --from value for community {_k} must be a non-empty "
+                        f"string, not {_v!r}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                external_labels[_cid] = _v
+            _unknown = sorted(set(external_labels) - set(communities))
+            if _unknown:
+                print(
+                    f"warning: --from names community id(s) {_unknown}, which do not "
+                    f"match any current community (graph re-clustered since they were "
+                    f"named?); ignored",
+                    file=sys.stderr,
+                )
+            from graphify.cluster import label_communities_by_hub
+            hub_labels = label_communities_by_hub(G, communities)
+            labels = {
+                cid: external_labels[cid] if cid in external_labels else hub_labels[cid]
+                for cid in communities
+            }
+            _missing = sorted(set(communities) - set(external_labels))
+            if _missing:
+                print(
+                    f"[graphify] community id(s) {_missing} not named in "
+                    f"{from_labels_file}; using hub label instead.",
+                    file=sys.stderr,
+                )
+        elif labels_path.exists() and not force_relabel:
             # #2534: this branch never calls the LLM, so labeling flags would be
             # silently ignored. Reuse is still the correct (exit 0) outcome — but
             # say so, instead of letting `--backend openai` look like it relabeled.
