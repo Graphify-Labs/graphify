@@ -278,6 +278,7 @@ Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native P
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
+| `litellm` | Any LiteLLM model string (`bedrock/`, `vertex_ai/`, `azure/`, `ollama/`, ...) via `--backend litellm` and `GRAPHIFY_LITELLM_MODEL` | `uv tool install "graphifyy[litellm]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
 | `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
@@ -410,14 +411,24 @@ Beyond your AI assistant, query `graph.json` straight from the CLI with `graphif
 
 Backends, API keys, hook behavior, and tuning are controlled by environment variables. Full table: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+To reach a provider graphify has no dedicated backend for (Vertex AI, Mistral, Groq, OpenRouter, and so on), install the `litellm` extra and pass a [LiteLLM model string](https://docs.litellm.ai/docs/providers):
+
+```bash
+uv tool install "graphifyy[litellm]"
+export GRAPHIFY_LITELLM_MODEL="vertex_ai/gemini-2.0-flash"   # or bedrock/..., azure/<deployment>, ollama/llama3.1
+graphify extract .                                           # or: graphify extract . --backend litellm --model <string>
+```
+
+Credentials are the ones the routed provider already uses (`AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_API_KEY`, `OPENROUTER_API_KEY`, ...), so graphify needs no key of its own. When `GRAPHIFY_LITELLM_MODEL` is set it takes priority over auto-detection, so an unrelated API key in your environment cannot redirect the corpus to a different provider. Images are not sent to this backend.
+
 ---
 
 ## Privacy
 
 - **Code files**: processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key: `graphify extract` runs fully offline. On a mixed repo, add `--code-only` to index just the code and skip the docs/PDFs/images that would otherwise need an LLM.
 - **Video / audio**: transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images**: sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
-- **Data residency**: `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). When it auto-detects, it prints the exact environment variable that chose the provider, so a run is never a surprise. To choose explicitly, pass `--backend`, or set `GRAPHIFY_BACKEND=<name>`; set `GRAPHIFY_BACKEND=none` to disable all LLM backends (semantic extraction and the `claude -p` labeling fallback) and keep a code-only graph. For code with data-residency requirements, use `GRAPHIFY_BACKEND=ollama` / `--backend ollama` (fully local). Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
+- **Docs, PDFs, images**: sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription), or `GRAPHIFY_LITELLM_MODEL` with the `litellm` extra (any LiteLLM-supported provider, using that provider's own credentials). The `--dedup-llm` flag uses the same key.
+- **Data residency**: `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama, except that `GRAPHIFY_LITELLM_MODEL`, when set, wins over the API keys). When it auto-detects, it prints the exact environment variable that chose the provider, so a run is never a surprise. To choose explicitly, pass `--backend`, or set `GRAPHIFY_BACKEND=<name>`; set `GRAPHIFY_BACKEND=none` to disable all LLM backends (semantic extraction and the `claude -p` labeling fallback) and keep a code-only graph. For code with data-residency requirements, use `GRAPHIFY_BACKEND=ollama` / `--backend ollama` (fully local). Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
 - **No telemetry**, no usage tracking, no analytics.
 - **Query logging**: every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
