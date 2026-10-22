@@ -49,7 +49,7 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     Returns the backup folder path, or None if skipped, failed, or incomplete.
     Incomplete attempts may leave a mixture of old and newly copied files.
     The dated folder's existence alone does not indicate a completed backup.
-    Never raises — backup failure prints a warning but never blocks the write.
+    Never raises — backup failure attempts to print a warning but never blocks the write.
     Set GRAPHIFY_NO_BACKUP=1 to disable.
     """
     if os.environ.get("GRAPHIFY_NO_BACKUP"):
