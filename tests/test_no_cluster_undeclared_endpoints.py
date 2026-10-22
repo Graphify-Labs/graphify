@@ -98,6 +98,47 @@ def test_extract_no_cluster_writes_no_undeclared_endpoint(tmp_path: Path):
     assert any(e["relation"] == "imports" and e["target"] == "os" for e in links)
 
 
+def test_no_cluster_resolves_a_header_import_like_the_clustered_path(tmp_path: Path):
+    """#4670: an `#import <Kit/ToolEvent.h>` the clustered path attaches to the real
+    file node landed on an external stub under `--no-cluster`, because the raw
+    path resolved endpoints by normalization alone and `toolevent` is not
+    normalization-equivalent to `kit_event_toolevent`."""
+    root = tmp_path / "proj"
+    (root / "Kit" / "Event").mkdir(parents=True)
+    (root / "Kit" / "Event" / "ToolEvent.h").write_text(
+        "#import <Foundation/Foundation.h>\n@interface ToolEvent : NSObject\n@end\n",
+        encoding="utf-8",
+    )
+    (root / "Kit" / "Holder.h").write_text(
+        "#import <Kit/ToolEvent.h>\n@interface Holder : NSObject\n@end\n",
+        encoding="utf-8",
+    )
+
+    def run(*flags: str) -> tuple[set[str], list[dict], set[str]]:
+        r = subprocess.run(
+            [PYTHON, "-m", "graphify", "extract", ".", "--code-only", *flags],
+            cwd=root, capture_output=True, text=True,
+        )
+        assert r.returncode == 0, r.stderr
+        ids, links = _graph(root)
+        data = json.loads((root / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+        return ids, links, {n["id"] for n in data["nodes"] if n.get("external")}
+
+    raw_ids, raw_links, raw_externals = run("--no-cluster")
+    clu_ids, clu_links, clu_externals = run()
+
+    def imports(links: list[dict]) -> set[tuple[str, str]]:
+        return {(e["source"], e["target"]) for e in links if e["relation"] == "imports"}
+
+    # The header import binds to the real file node on both paths; only the
+    # genuinely external Foundation import gets a stub.
+    assert imports(raw_links) == imports(clu_links)
+    assert ("kit_holder", "kit_event_toolevent") in imports(raw_links)
+    assert "toolevent" not in raw_externals
+    assert raw_externals == clu_externals == {"foundation"}
+    assert _undeclared(raw_ids, raw_links) == []
+    assert _undeclared(clu_ids, clu_links) == []
+
 def test_extract_no_cluster_drops_stub_of_a_removed_import(tmp_path: Path):
     root = tmp_path / "proj"
     root.mkdir()

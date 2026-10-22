@@ -263,6 +263,72 @@ def mint_external_stubs_in_data(data: dict) -> None:
             minted.add(tgt)
 
 
+def _endpoint_alias_index(node_attrs: dict) -> dict[str, str]:
+    """Map pre-migration ID forms of declared nodes onto their canonical ids.
+
+    Shared by :func:`build_from_json` and :func:`finalize_raw_graph_endpoints`,
+    which must agree on endpoint resolution or the two write paths disagree
+    (#4670). A file node's old-stem form drops the extension and every directory
+    but the immediate parent (#1504/#1509), so `Kit/Event/ToolEvent.h` is also
+    reachable as `toolevent`. That is what lets an import target spelled as a
+    bare header basename bind to the real file node rather than a stub.
+
+    Aliases are collected for EVERY candidate before any is committed, and only
+    an alias claimed by exactly one node is registered: `ping.h` and `ping.php`
+    in different directories both collapse to `ping`, and the C/C++ extractor's
+    last-resort `#include` fallback must not ride that onto an unrelated file.
+
+    The file node is detected by LABEL (its own basename), not by id shape:
+    a colliding `.h`/`.cpp` pair gets salted ids that no longer prefix-match the
+    canonical stem, and it must still take part in the ambiguity race.
+    """
+    from graphify.extractors.base import _file_stem as _fs
+    from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
+
+    candidates: dict[str, set[str]] = {}
+    for nid, attrs in node_attrs.items():
+        sf = attrs.get("source_file")
+        if not sf or _is_abs(str(sf)):
+            continue
+        rel = Path(str(sf))
+        new_stem = make_id(_fs(rel))
+        # A Python module whose bare stem is a stdlib name (e.g.
+        # `scripts/logging.py`) must not claim the collapsed bare-stem alias
+        # ("logging"): it would capture a genuine external `import logging` edge
+        # and bind it to this same-named local file (#4261). The
+        # directory-scoped form ("scripts_logging") is still registered.
+        is_py_stdlib_stem = (
+            rel.suffix.lower() in (".py", ".pyi")
+            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
+        )
+        if str(attrs.get("label", "")) == rel.name:
+            suffix = ""  # this node IS the file, whatever its (possibly salted) id
+        elif _normalize_id(nid).startswith(new_stem):
+            suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
+        else:
+            suffix = ""
+        for old_stem in _old_file_stems(rel):
+            if old_stem == new_stem:
+                continue
+            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
+                continue
+            alias = old_stem + suffix
+            candidates.setdefault(_normalize_id(alias), set()).add(nid)
+            candidates.setdefault(alias, set()).add(nid)
+        if attrs.get("_origin") == "ast" and str(attrs.get("label", "")).startswith("."):
+            m_name = make_id(
+                str(attrs.get("label", "")).strip().removeprefix(".").removesuffix("()")
+            )
+            m_alias = f"{new_stem}_{m_name}"
+            if _normalize_id(nid) != _normalize_id(m_alias):
+                candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
+                candidates.setdefault(m_alias, set()).add(nid)
+    return {
+        alias: next(iter(nodes))
+        for alias, nodes in candidates.items()
+        if len(nodes) == 1
+    }
+
 def finalize_raw_graph_endpoints(data: dict) -> None:
     """Apply build_from_json's endpoint rules to a raw (``--no-cluster``) graph.
 
@@ -275,39 +341,77 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     to a missing markdown document kept the target id the extractor built from
     the absolute checkout path.
 
+    Endpoint resolution mirrors :func:`build_from_json`'s pre-migration alias
+    index (see :func:`_endpoint_alias_index`): a bare fallback id such as
+    ``toolevent`` re-points onto the real file node (``kit_event_toolevent``)
+    instead of being minted as an external stub (#4670). Only targets still
+    undeclared after that resolution get a stub (#2873).
+
     A stub is derived from the import edges that point at it, so a stub carried
     over from an earlier graph that no edge references any more is dropped too;
     a fresh build of the same tree would not have it.
     """
-    mint_external_stubs_in_data(data)
     nodes = data.get("nodes")
     key = "links" if isinstance(data.get("links"), list) else "edges"
     links = data.get(key)
     if not isinstance(nodes, list) or not isinstance(links, list):
         return
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
-    norm_to_id = {_normalize_id(nid): nid for nid in declared if isinstance(nid, str)}
+    node_attrs = {
+        n["id"]: n
+        for n in nodes
+        if isinstance(n, dict) and isinstance(n.get("id"), str)
+    }
+    # Same two-layer map build_from_json uses: plain normalization, then the
+    # pre-migration old-stem aliases — the layer that re-points a bare fallback
+    # id (`toolevent`) onto the real file node (`kit_event_toolevent`) instead
+    # of leaving it to be stubbed as external (#4670).
+    norm_to_id: dict[str, str] = {
+        _normalize_id(nid): nid for nid in declared if isinstance(nid, str)
+    }
+    for alias_key, canonical in _endpoint_alias_index(node_attrs).items():
+        norm_to_id.setdefault(alias_key, canonical)
     kept: list = []
     referenced: set = set()
     for e in links:
         if not isinstance(e, dict):
             kept.append(e)
             continue
-        attached = True
-        for primary, alias in (("source", "from"), ("target", "to")):
-            field = primary if primary in e else alias
-            endpoint = e.get(field)
-            if isinstance(endpoint, str) and endpoint in declared:
+        src_field = "source" if "source" in e else "from"
+        tgt_field = "target" if "target" in e else "to"
+        src, tgt = e.get(src_field), e.get(tgt_field)
+        if isinstance(src, str) and src not in declared:
+            src = norm_to_id.get(_normalize_id(src), src)
+            if src in declared:
+                e[src_field] = src
+        if isinstance(tgt, str) and tgt not in declared:
+            tgt = norm_to_id.get(_normalize_id(tgt), tgt)
+            if tgt in declared:
+                e[tgt_field] = tgt
+        if not isinstance(src, str) or src not in declared:
+            continue  # dangling source: dropped, as build_from_json does
+        if not isinstance(tgt, str):
+            continue
+        if tgt not in declared:
+            # Only an import-family target that resolves to no declared node is
+            # a genuinely external module; it gets a typed stub (#2873). Every
+            # other dangling target still drops the edge (#3156).
+            if e.get("relation") not in _EXTERNAL_STUB_RELATIONS:
                 continue
-            canonical = norm_to_id.get(_normalize_id(endpoint)) if isinstance(endpoint, str) else None
-            if canonical is None:
-                attached = False
-                break
-            e[field] = canonical
-        if attached:
-            kept.append(e)
-            referenced.add(e.get("source", e.get("from")))
-            referenced.add(e.get("target", e.get("to")))
+            nodes.append({
+                "id": tgt,
+                "label": tgt,
+                "file_type": "concept",
+                "type": "external",
+                "external": True,
+                "source_file": "",
+            })
+            declared.add(tgt)
+            node_attrs[tgt] = nodes[-1]
+            norm_to_id.setdefault(_normalize_id(tgt), tgt)
+        kept.append(e)
+        referenced.add(src)
+        referenced.add(tgt)
     links[:] = kept
     for hyperedge in data.get("hyperedges", []) or []:
         if isinstance(hyperedge, dict):
@@ -1508,76 +1612,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # forms as aliases so a stale-id edge endpoint coming from an un-re-keyed
     # fragment (e.g. an incremental update whose fragment references a symbol in a
     # file that was NOT re-extracted) still resolves to the migrated node instead
-    # of dangling. Only fills gaps — never overrides a real node id.
-    #
-    # The old-stem form drops the extension and (for the file node itself) every
-    # directory but the immediate parent, so it collapses easily: "ping.h" and
-    # "ping.php" in different directories both alias to bare "ping". Collecting
-    # every candidate for an alias BEFORE committing any of them — and only
-    # committing when exactly one candidate claims it — keeps this a precise
-    # re-keying aid instead of a silent cross-file (and cross-language) merge.
-    # Without this, a dangling edge to a bare, deliberately-unscoped fallback id
-    # (e.g. the C/C++ extractor's last-resort target for an #include it couldn't
-    # resolve to a real path) could ride this alias onto whichever unrelated
-    # same-stem file happened to be inserted first into ``node_set`` — a Python
-    # set, so "first" is hash-order, not anything meaningful.
-    #
-    # A file node's OWN id is not always a clean ``new_stem`` prefix: when a
-    # same-directory ``.h``/``.cpp`` pair collides on their shared pre-extension
-    # id, _disambiguate_colliding_node_ids salts both apart into ids like
-    # ``tools_aolserver_utility_h_tools_aolserver_utility`` — which no longer
-    # string-prefixes cleanly for the suffix math below. Detecting "this IS the
-    # file node" by label (every file node's label is its own basename,
-    # regardless of id mangling) instead of by id shape keeps a salted file node
-    # in the alias competition, so a genuine collision (a C header AND an
-    # unrelated same-named PHP script) is still caught as ambiguous instead of
-    # the header silently dropping out of the race and leaving the PHP file as
-    # the lone (wrong) "unambiguous" winner.
-    from graphify.extractors.base import _file_stem as _fs
-    from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
-    _alias_candidates: dict[str, set[str]] = {}
-    for nid in node_set:
-        attrs = G.nodes[nid]
-        sf = attrs.get("source_file")
-        if not sf:
-            continue
-        rel = Path(str(sf))
-        if _is_abs(str(sf)):
-            continue
-        new_stem = make_id(_fs(rel))
-        # A Python module whose bare stem is a stdlib name (e.g. `scripts/logging.py`)
-        # must not claim the collapsed bare-stem alias ("logging"): that alias would
-        # capture a genuine external `import logging` / `logging.getLogger()` edge
-        # and bind it to this same-named local file (#4261). The directory-scoped
-        # alias form ("scripts_logging") is still registered, so a real stale-id
-        # reference to this file keeps healing.
-        is_py_stdlib_stem = (
-            rel.suffix.lower() in (".py", ".pyi")
-            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
-        )
-        if str(attrs.get("label", "")) == rel.name:
-            suffix = ""  # this node IS the file, whatever its (possibly salted) id
-        else:
-            suffix = ""
-            if _normalize_id(nid).startswith(new_stem):
-                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
-        for old_stem in _old_file_stems(rel):
-            if old_stem == new_stem:
-                continue
-            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
-                continue
-            alias = old_stem + suffix
-            _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
-            _alias_candidates.setdefault(alias, set()).add(nid)
-        if attrs.get("_origin") == "ast" and str(attrs.get("label", "")).startswith("."):
-            m_name = make_id(str(attrs.get("label", "")).strip().removeprefix(".").removesuffix("()"))
-            m_alias = f"{new_stem}_{m_name}"
-            if _normalize_id(nid) != _normalize_id(m_alias):
-                _alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
-                _alias_candidates.setdefault(m_alias, set()).add(nid)
-    for alias_key, candidates in _alias_candidates.items():
-        if len(candidates) == 1:
-            norm_to_id.setdefault(alias_key, next(iter(candidates)))
+    # of dangling. Only fills gaps — never overrides a real node id. The index is
+    # shared with finalize_raw_graph_endpoints so both write paths resolve
+    # endpoints identically (#4670).
+    for alias_key, canonical in _endpoint_alias_index(
+        {nid: G.nodes[nid] for nid in node_set}
+    ).items():
+        norm_to_id.setdefault(alias_key, canonical)
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
