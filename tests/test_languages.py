@@ -1636,6 +1636,52 @@ def test_swift_enum_associated_value_type_emits_references():
     r = extract_swift(FIXTURES / "sample.swift")
     assert ("NetworkError", "Config") in _edge_labels(r, "references", "type")
 
+def test_swift_same_named_nested_types_under_different_outers_stay_apart(tmp_path):
+    # #4575: two structs in one file each declaring their own `CodingKeys`
+    # enum used to mint the same id, since it omitted the enclosing type, so
+    # the second one's cases and the first one's cases ended up on a single
+    # shared node contained by both structs.
+    f = tmp_path / "models.swift"
+    f.write_text(
+        "struct Person: Codable {\n"
+        "    let name: String\n"
+        "    enum CodingKeys: String, CodingKey { case name = \"full_name\" }\n"
+        "}\n"
+        "struct Place: Codable {\n"
+        "    let title: String\n"
+        "    enum CodingKeys: String, CodingKey { case title = \"place_title\" }\n"
+        "}\n"
+    )
+    r = extract_swift(f)
+    coding_keys = [n for n in r["nodes"] if n["label"] == "CodingKeys"]
+    assert len(coding_keys) == 2
+    assert coding_keys[0]["id"] != coding_keys[1]["id"]
+    by_id = {n["id"]: n for n in r["nodes"]}
+    person = next(n for n in r["nodes"] if n["label"] == "Person")
+    place = next(n for n in r["nodes"] if n["label"] == "Place")
+    person_contains = {e["target"] for e in r["edges"]
+                        if e["source"] == person["id"] and e["relation"] == "contains"}
+    place_contains = {e["target"] for e in r["edges"]
+                       if e["source"] == place["id"] and e["relation"] == "contains"}
+    assert len(person_contains & {n["id"] for n in coding_keys}) == 1
+    assert len(place_contains & {n["id"] for n in coding_keys}) == 1
+    assert (person_contains & {n["id"] for n in coding_keys}) != (
+        place_contains & {n["id"] for n in coding_keys}
+    )
+    # Each enum keeps only its own case, not the union of both.
+    for ck in coding_keys:
+        cases = {by_id[e["target"]]["label"] for e in r["edges"]
+                  if e["source"] == ck["id"] and e["relation"] == "case_of"}
+        assert len(cases) == 1
+
+def test_swift_top_level_type_id_is_unaffected_by_the_nested_fix():
+    # A type with no enclosing type (parent_class_nid is None) never takes
+    # the new branch, so its id keeps the exact shape it always had: the
+    # file stem followed by the bare name, with no enclosing segment.
+    r = extract_swift(FIXTURES / "sample.swift")
+    config = next(n for n in r["nodes"] if n["label"] == "Config")
+    assert config["id"].endswith("sample_config")
+
 def test_swift_finds_deinit():
     r = extract_swift(FIXTURES / "sample.swift")
     assert any("deinit" in l for l in _labels(r))

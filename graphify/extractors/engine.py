@@ -6381,6 +6381,14 @@ def _extract_generic(
             elif config.ts_module == "tree_sitter_python":
                 # `Session` / `session()`, `Foo` / `FOO` in one module (#2810).
                 class_nid = _underscore_salted_nid(class_nid, class_name, python_underscore_groups)
+            if config.ts_module == "tree_sitter_swift" and parent_class_nid:
+                # Two same-named nested types under different outers in one
+                # file (`struct Person { enum CodingKeys }` next to `struct
+                # Place { enum CodingKeys }`) otherwise mint the same id, since
+                # it omits the enclosing type the way the Python id used to
+                # (#4575). Folding the immediate parent in keeps each one
+                # distinct; a top-level type (parent None) is unaffected.
+                class_nid = _make_id(parent_class_nid, class_name)
             line = node.start_point[0] + 1
             metadata = None
             ruby_reopened = (
