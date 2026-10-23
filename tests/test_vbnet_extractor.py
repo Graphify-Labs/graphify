@@ -223,6 +223,47 @@ def test_vbnet_imported_namespaces_are_valid_global_stubs(tmp_path):
 
 
 @_needs_vbnet
+def test_vbnet_pre_fix_ast_cache_is_not_served(tmp_path, monkeypatch):
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+    from graphify.extract import cache_salt
+    from graphify.extractors.vbnet import extract_vbnet
+
+    source = tmp_path / "Caller.vb"
+    source.write_text(
+        "Imports System.Text\nPublic Class Caller\nEnd Class\n",
+        encoding="utf-8",
+    )
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 25)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    stale = extract_vbnet(source)
+    for node in stale["nodes"]:
+        if node.get("metadata", {}).get("kind") == "external_namespace":
+            node.pop("source_file", None)
+            node.pop("source_location", None)
+    save_cached(
+        source,
+        stale,
+        root=tmp_path,
+        cache_root=tmp_path,
+        kind="ast",
+        salt=cache_salt(source),
+    )
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    result = extract(
+        [source], root=tmp_path, cache_root=tmp_path, parallel=False
+    )
+
+    assert validate_extraction(result) == []
+    namespace = next(node for node in result["nodes"] if node["label"] == "System.Text")
+    assert namespace["source_file"] == ""
+    assert namespace["source_location"] == ""
+
+
+@_needs_vbnet
 def test_vbnet_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
 
