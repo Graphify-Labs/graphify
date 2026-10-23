@@ -123,3 +123,39 @@ def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "exceeds" in err
     assert "byte cap" in err
+
+
+def test_query_cli_rationale_flag(monkeypatch, tmp_path, capsys):
+    G = nx.Graph()
+    G.add_node(
+        "auth_node",
+        label="authenticate",
+        source_file="auth.py",
+        source_location="L10",
+        community=0,
+        rationale="Decision: Argon2id hashing.\n\nWHY: Resistant to GPU cracking.",
+    )
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    # Without --rationale
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "authenticate", "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    out_default = capsys.readouterr().out
+    assert "WHY" not in out_default
+
+    # With --rationale
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "authenticate", "--graph", str(graph_path), "--rationale"],
+    )
+    mainmod.main()
+    out_rat = capsys.readouterr().out
+    assert "WHY Decision: Argon2id hashing. WHY: Resistant to GPU cracking." in out_rat

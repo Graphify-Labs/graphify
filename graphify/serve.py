@@ -13,7 +13,15 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
+from graphify.security import (
+    sanitize_label,
+    check_graph_file_size_cap,
+    sanitize_rationale,
+    indent_continuation,
+    MAX_QUERY_RATIONALE_CHARS,
+    MAX_DETAIL_RATIONALE_CHARS,
+    _CONTROL_CHAR_RE,
+)
 from graphify.build import edge_datas, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
 
@@ -1117,7 +1125,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None, include_rationale: bool = False) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
@@ -1197,6 +1205,15 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             if len(attrs_summary) > 200:
                 attrs_summary = attrs_summary[:197] + "..."
             attrs_suffix = f" attrs={{{sanitize_label(attrs_summary)}}}"
+        why_suffix = ""
+        if include_rationale:
+            rationale_text = sanitize_rationale(
+                d.get("rationale"),
+                single_line=True,
+                max_chars=MAX_QUERY_RATIONALE_CHARS,
+            )
+            if rationale_text:
+                why_suffix = f" WHY {rationale_text}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
@@ -1204,6 +1221,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}"
             f"{attrs_suffix}]"
+            f"{why_suffix}"
         )
         lines.append(line)
     for u, v in edges:
@@ -1421,6 +1439,7 @@ def _query_graph_text(
     graph_path: str | None = None,
     seeds: list[str] | None = None,
     seed_root: Path | None = None,
+    include_rationale: bool = False,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1452,7 +1471,8 @@ def _query_graph_text(
                 return "\n".join(ambiguous_refusals)
             return "No unique node match for --seed: " + ", ".join(seeds)
         return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                             context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
+                             context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved,
+                             include_rationale=include_rationale)
     # A question that is itself the exact name of several nodes is refused,
     # matching `explain` and `path` (#4511). A sentence, or a bare keyword that
     # only prefix/substring-matches labels, is not an ambiguous node name and
@@ -1485,7 +1505,8 @@ def _query_graph_text(
     if not start_nodes:
         return _QUERY_NO_MATCH
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                         context_filters=context_filters, graph_path=graph_path)
+                         context_filters=context_filters, graph_path=graph_path,
+                         include_rationale=include_rationale)
 
 
 def _render_query(
@@ -1500,6 +1521,7 @@ def _render_query(
     graph_path: str | None,
     given: bool = False,
     unresolved: list[str] | None = None,
+    include_rationale: bool = False,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
@@ -1528,7 +1550,14 @@ def _render_query(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + _subgraph_to_text(
+        traversal_graph,
+        nodes,
+        edges,
+        token_budget,
+        seeds=start_nodes,
+        include_rationale=include_rationale,
+    )
 
 
 def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
@@ -2315,6 +2344,11 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "include_rationale": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include WHY rationale on nodes when available",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -2327,6 +2361,11 @@ def _build_server(graph_path: str):
                     "properties": {
                         "label": {"type": "string", "description": "Node label or ID to look up"},
                         "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                        "include_rationale": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include node rationale if available",
+                        },
                     },
                 },
             ),
@@ -2462,6 +2501,7 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        include_rationale = arguments.get("include_rationale") is True
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -2471,6 +2511,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            include_rationale=include_rationale,
         )
         querylog.log_query(
             kind="mcp_query",
@@ -2489,6 +2530,7 @@ def _build_server(graph_path: str):
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
         label = raw.lower()
+        include_rationale = arguments.get("include_rationale") is True
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
@@ -2501,7 +2543,7 @@ def _build_server(graph_path: str):
                 raw_attrs = raw_attrs[:997] + "..."
             attrs_line = [f"  Attributes: {_CONTROL_CHAR_RE.sub('', raw_attrs)}"]
         # Sanitise every LLM-derived field before concatenation (F-010).
-        return "\n".join([
+        lines = [
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
@@ -2513,9 +2555,18 @@ def _build_server(graph_path: str):
               if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
-            f"  Degree: {G.degree(nid)}",
-            *attrs_line,
-        ])
+        ]
+        if include_rationale:
+            rat = sanitize_rationale(
+                d.get("rationale"),
+                single_line=False,
+                max_chars=MAX_DETAIL_RATIONALE_CHARS,
+            )
+            if rat:
+                lines.append("  Rationale: " + indent_continuation(rat))
+        lines.append(f"  Degree: {G.degree(nid)}")
+        lines.extend(attrs_line)
+        return "\n".join(lines)
 
     def _tool_get_neighbors(arguments: dict) -> str:
         raw = _node_arg(arguments)

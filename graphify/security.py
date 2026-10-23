@@ -452,6 +452,64 @@ def sanitize_label(text: str | None) -> str:
     return text
 
 
+MAX_QUERY_RATIONALE_CHARS = 512
+MAX_DETAIL_RATIONALE_CHARS = 2048
+
+_CONTROL_CHAR_NO_NL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_INVISIBLE_CHAR_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_LINE_BREAK_RE = re.compile("[\u2028\u2029\x85]")
+
+
+def _cap_rationale(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = "..."
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    return text[: max_chars - len(marker)].rstrip() + marker
+
+
+def indent_continuation(text: str, prefix: str = "    ") -> str:
+    """Indent every non-empty line after the first so a multi-line value cannot pose as a sibling field."""
+    first, *rest = text.split("\n")
+    return "\n".join([first, *(prefix + line if line else line for line in rest)])
+
+
+def sanitize_rationale(
+    text: str | None,
+    *,
+    single_line: bool = False,
+    max_chars: int | None = None,
+) -> str:
+    """Sanitize and optionally truncate a node rationale string.
+
+    In compact (single-line) mode:
+    - Normalizes all whitespace runs (newlines, tabs, spaces) to single spaces
+    - Strips control, bidi-override and zero-width characters
+    - Caps output at `max_chars` (default MAX_QUERY_RATIONALE_CHARS = 512)
+    - Adds an explicit '...' truncation marker when capped
+
+    In detail mode:
+    - Preserves newlines/paragraphs while stripping unsafe characters
+    - Caps output at `max_chars` (default MAX_DETAIL_RATIONALE_CHARS = 2048)
+    - Adds an explicit '...' truncation marker when capped
+
+    Returns empty string if text is not a string, empty, or whitespace-only.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ""
+
+    if max_chars is None:
+        max_chars = MAX_QUERY_RATIONALE_CHARS if single_line else MAX_DETAIL_RATIONALE_CHARS
+    max_chars = max(0, max_chars)
+
+    normalized = _LINE_BREAK_RE.sub("\n", text.replace("\r\n", "\n").replace("\r", "\n"))
+    cleaned = _INVISIBLE_CHAR_RE.sub("", _CONTROL_CHAR_NO_NL_RE.sub("", normalized))
+    if single_line:
+        cleaned = " ".join(cleaned.split())
+    return _cap_rationale(cleaned.strip(), max_chars)
+
+
 # ---------------------------------------------------------------------------
 # Metadata sanitisation (recursive, bounded, HTML-safe)
 # ---------------------------------------------------------------------------
