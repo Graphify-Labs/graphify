@@ -1232,6 +1232,57 @@ def _is_graph_diff_direction_fix_line(line: str) -> bool:
     )
 
 
+def _is_explain_direction_fix_line(line: str) -> bool:
+    """Whether a line is part of the shared explain fallback's direction and
+    parallel-relation fix (#4471).
+
+    The fallback loaded ``graph.json`` however its own ``directed`` flag said
+    and walked plain ``G.neighbors()``, so a canonical (``directed: false``)
+    export printed every connection as outgoing and kept only the first of
+    several parallel relations between the same pair. It now forces
+    ``directed=True`` on load (recovering the stored arc, with ``_src``
+    breaking the tie when undirected storage canonicalized its endpoint
+    order), walks successors and predecessors separately, keeps every
+    parallel edge instead of just the first, counts a self loop once, and
+    prints the edge's own location instead of the neighbor's file. Matches
+    both the old, removed lines and the new, added ones.
+    """
+    stripped = line.strip()
+    if stripped in (
+        "if 'links' not in data and 'edges' in data:",
+        "data = dict(data, links=data['edges'])",
+        "def _parallel_edges(u, v):",
+        "raw = G[u][v]",
+        "return list(raw.values()) if isinstance(G, nx.MultiDiGraph) else [raw]",
+        "conns = []",
+        "loop_seen = False",
+        "for nb in G.successors(nid):",
+        "for nb in G.predecessors(nid):",
+        "for direction, nb, edge in conns:",
+        "loop_seen = loop_seen or nb == nid",
+        "if nb == nid and loop_seen:",
+        "continue  # the self loop was already recorded from the successors pass above",
+        "for neighbor in G.neighbors(nid):",
+    ):
+        return True
+    return any(marker in line for marker in (
+        "data = dict(data, directed=True)",
+        "_parallel_edges(nid, nb)",
+        "_parallel_edges(nb, nid)",
+        "conns.append((",
+        "nlabel = G.nodes[nb].get('label', nb)",
+        "nlabel = G.nodes[neighbor].get('label', neighbor)",
+        "loc = edge.get('source_location')",
+        "sfile = edge.get('source_file')",
+        "at = f' ({sfile}",
+        "src_file = G.nodes[neighbor].get('source_file', '')",
+        "arrow = f'--{rel}-->' if direction == 'out' else",
+        "print(f'  {arrow} {nlabel} [{conf}]{at}')",
+        "print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')",
+        "_raw = G[nid][neighbor]; edge = next(iter(_raw.values())",
+    ))
+
+
 def _is_persisted_scan_options_fix_line(line: str) -> bool:
     """Skill scans reuse CLI corpus-shaping options without changing detect defaults (#4240)."""
     return line.strip() in (
@@ -1368,6 +1419,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
+    _is_explain_direction_fix_line,
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
