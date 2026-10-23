@@ -162,3 +162,50 @@ def test_external_require_new_matches_esm_no_calls_edge(tmp_path: Path):
         assert _calls_targets(result, "cfg()") == [], path.name
         assert _inherits_targets(result, "A") == [], path.name
         assert _make_id(path.stem, "Plugin") not in {n["id"] for n in result["nodes"]}
+
+
+def test_bare_exports_assignment_is_not_a_default_export(tmp_path: Path):
+    """Bare `exports = X` does not change what require() returns (#4700 review)."""
+    lib = _write(
+        tmp_path / "lib.js",
+        "class Decoy {}\n"
+        "class Real {}\n"
+        "exports = Decoy;\n"
+        "module.exports = Real;\n",
+    )
+    use = _write(
+        tmp_path / "use.js",
+        "const X = require('./lib');\n"
+        "class A extends X {}\n",
+    )
+    result = extract([lib, use], cache_root=tmp_path / "_cache", root=tmp_path)
+    assert _inherits_targets(result, "A") == [("Real", "lib.js")]
+
+
+def test_bare_exports_only_does_not_export_a_default(tmp_path: Path):
+    """`exports = Decoy` alone must not mint a default export for require()."""
+    lib = _write(tmp_path / "lib.js", "class Decoy {}\nexports = Decoy;\n")
+    use = _write(
+        tmp_path / "use.js",
+        "const X = require('./lib');\n"
+        "class A extends X {}\n",
+    )
+    result = extract([lib, use], cache_root=tmp_path / "_cache", root=tmp_path)
+    assert _inherits_targets(result, "A") == []
+    assert _make_id("use", "X") not in {n["id"] for n in result["nodes"]}
+
+
+def test_chained_module_exports_exports_equals_uses_final_rhs(tmp_path: Path):
+    """`module.exports = exports = Foo` must export Foo, not the name `exports`."""
+    lib = _write(
+        tmp_path / "lib.js",
+        "class Foo { run() {} }\n"
+        "module.exports = exports = Foo;\n",
+    )
+    use = _write(
+        tmp_path / "use.js",
+        "const X = require('./lib');\n"
+        "class A extends X {}\n",
+    )
+    result = extract([lib, use], cache_root=tmp_path / "_cache", root=tmp_path)
+    assert _inherits_targets(result, "A") == [("Foo", "lib.js")]

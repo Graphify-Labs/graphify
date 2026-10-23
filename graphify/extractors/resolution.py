@@ -2265,12 +2265,13 @@ def _js_cjs_require_bindings(declarator, source: bytes) -> list[tuple[str, str]]
 
 
 def _js_cjs_default_export_local(right, source: bytes) -> str | None:
-    """Local name of a ``module.exports = <expr>`` RHS, if resolvable."""
+    """Local name of a ``module.exports = <expr>`` RHS, if resolvable.
+
+    Walks through chained assignments (``module.exports = exports = Foo``) to the
+    final RHS — an intermediate ``exports = …`` left is not the exported binding.
+    """
     node = right
     while node is not None and node.type == "assignment_expression":
-        left = node.child_by_field_name("left")
-        if left is not None and left.type == "identifier":
-            return _read_text(left, source) or None
         node = node.child_by_field_name("right")
     if node is None:
         return None
@@ -2289,10 +2290,14 @@ def _js_cjs_default_export_local(right, source: bytes) -> str | None:
 def _js_cjs_export_facts(node, source: bytes, path: Path) -> list[_SymbolExportFact]:
     """Export facts for CommonJS ``module.exports`` / ``exports.X`` assignments.
 
-    Whole-module ``module.exports = Name`` (and ``exports = Name``) is recorded as
-    a default export so a ``const X = require('./m')`` import resolves through the
-    same alias path as ESM ``import X from './m'`` (#4688). Named property
-    assignments become named exports.
+    Whole-module ``module.exports = Name`` is recorded as a default export so a
+    ``const X = require('./m')`` import resolves through the same alias path as
+    ESM ``import X from './m'`` (#4688). Named property assignments
+    (``exports.Foo = …`` / ``module.exports.Foo = …``) become named exports.
+
+    Bare ``exports = Name`` is intentionally ignored: in CommonJS that only
+    rebinds the local ``exports`` binding and does not change what ``require()``
+    returns (unlike ``module.exports = Name``).
     """
     if node.type != "expression_statement":
         return []
@@ -2306,7 +2311,7 @@ def _js_cjs_export_facts(node, source: bytes, path: Path) -> list[_SymbolExportF
     line = node.start_point[0] + 1
     left_str = _read_text(left, source)
     out: list[_SymbolExportFact] = []
-    if left_str in ("module.exports", "exports"):
+    if left_str == "module.exports":
         local = _js_cjs_default_export_local(right, source)
         if local:
             out.append(
