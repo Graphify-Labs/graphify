@@ -447,6 +447,8 @@ Common install and extraction issues and their fixes: **[Troubleshooting](https:
 
 Every command and flag, with examples: **[CLI reference](https://docs.graphify.com/reference/overview)**.
 
+Use `graphify label --force` to explicitly replace a graph that grew while labels were being generated. Without this flag, labeling preserves the larger saved graph.
+
 ---
 
 ## Learn more

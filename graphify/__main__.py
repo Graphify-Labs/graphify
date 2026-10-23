@@ -913,6 +913,7 @@ def _run_cli() -> None:
         print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
         print("    --batch-size=N          communities per labeling LLM call (default 100, sized for ~16k context; use 40 for 8k)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
+        print("    --force                overwrite graph.json even if another writer grew it during labeling")
         print("    --missing-only         keep existing labels and only name missing/placeholder communities")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
         print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
