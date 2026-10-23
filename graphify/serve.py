@@ -344,6 +344,16 @@ _SOURCE_MATCH_BONUS = 0.5
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
 _ATTRIBUTE_MATCH_BONUS = 0.75
+# A doc/paper/image node's label is often a verbose, human written caption or
+# summary, so it tends to contain more of a query's literal words than a code
+# symbol's short, precise name ever would (#445). None of the tiers above
+# scale by file type, so on a code centric question those nodes could still
+# outscore the actual code sites purely by matching more words, not by being
+# more relevant. This down weights the final score for the file types prone
+# to that (document/paper/image), leaving code, concept and rationale nodes
+# at their existing score so an actual search for a document/paper/image by
+# name is unaffected whenever nothing else matches as well.
+_FILE_TYPE_WEIGHT = {"document": 0.7, "paper": 0.7, "image": 0.4}
 
 
 def _flatten_attr_text(val, parts: list[str]) -> None:
@@ -633,6 +643,7 @@ def _score_query(
         {} if collect_per_term_seeds else None
     )
     for nid, data in node_iter:
+        type_weight = _FILE_TYPE_WEIGHT.get(data.get("file_type") or "", 1.0)
         norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
         # Tokenized form of the label (punctuation stripped, same transform as the
@@ -733,6 +744,7 @@ def _score_query(
                 else:
                     singleton = 0.0
                 singleton += tier_value + substr_value + source_value + rationale_value + attr_value
+                singleton *= type_weight
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -744,6 +756,7 @@ def _score_query(
                         best_by_term[t] = (key, nid)
         if tiered:
             score += tiered * (matched / n_terms) ** 2
+        score *= type_weight
         if score > 0:
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
