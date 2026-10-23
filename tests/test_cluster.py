@@ -231,3 +231,51 @@ def test_partition_is_invariant_to_edge_endpoint_orientation():
     assert _grouping(_partition(forward, 1.0)) == _grouping(_partition(flipped, 1.0)), (
         "partition drifted with edge-endpoint orientation / insertion order"
     )
+
+
+_CROSS_SEED_CLUSTER_SCRIPT = r"""
+import hashlib, json, random
+import networkx as nx
+from graphify.cluster import cluster
+
+rng = random.Random(7)
+blocks = {b: [f"mod{b}.fn_{i:03d}" for i in range(rng.randint(40, 120))] for b in range(10)}
+names = [n for ns in blocks.values() for n in ns]
+pairs = set()
+for u in names:
+    for _ in range(3):
+        pool = names if rng.random() < 0.15 else blocks[int(u.split(".")[0][3:])]
+        v = rng.choice(pool)
+        if u != v:
+            pairs.add((u, v))
+# A doc hub bridging unrelated blocks drives the cohesion re-split pass.
+pairs.update(("README.md", n) for n in rng.sample(names, 300))
+
+# Iterate a set of str tuples so node/edge insertion order - and the endpoint
+# orientation networkx yields - follows this process's string-hash order, the
+# way real extraction pipelines build the graph.
+G = nx.Graph()
+for u, v in pairs:
+    G.add_edge(u, v)
+print(hashlib.sha256(json.dumps(cluster(G), sort_keys=True).encode()).hexdigest())
+"""
+
+
+def test_cluster_is_identical_across_python_hash_seeds():
+    """#2817: _partition alone was hash-seed stable, but cluster()'s oversize and
+    cohesion split passes re-partition subgraphs, and there the output moved with
+    PYTHONHASHSEED (same corpus: 273 vs 508 communities). The whole cluster()
+    result - both split passes included - must be byte-identical across seeds."""
+    import os
+    import subprocess
+
+    digests = set()
+    for seed in ("0", "1", "2", "3"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        r = subprocess.run(
+            [sys.executable, "-c", _CROSS_SEED_CLUSTER_SCRIPT],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+        assert r.returncode == 0, r.stderr
+        digests.add(r.stdout.strip())
+    assert len(digests) == 1, f"cluster() output varied across PYTHONHASHSEED: {digests}"
