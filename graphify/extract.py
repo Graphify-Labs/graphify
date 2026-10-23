@@ -10714,7 +10714,11 @@ def extract(
                 ]
                 if len(module_matches) == 1:
                     tgt = module_matches[0]
-                    has_import_evidence = True
+                    # Module-level import evidence only proves the caller pulled in
+                    # the callee's source file, not that it imported this specific
+                    # symbol. Promoting to EXTRACTED here falsely certifies a
+                    # same-named symbol that was never actually imported (#2945).
+                    has_import_evidence = False
                 else:
                     # No unique import evidence. Instead of dropping the edge
                     # outright (which let a single same-named test mock erase the
