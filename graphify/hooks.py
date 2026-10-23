@@ -413,6 +413,29 @@ fi
 """
 
 
+# Run the rest of each hook from the checkout's top level, shared by all hooks
+# and placed right after _WORKTREE_GUARD (it reuses _GFY_GITDIR/_GFY_COMMONDIR).
+# The rebuild reads graphify-out/ and its .graphify_root relative to the cwd,
+# but git does not always start hooks at the top: with GIT_DIR exported and no
+# GIT_WORK_TREE (a nested git call from another hook or tool), git takes the
+# caller's cwd as the work tree, and `--show-toplevel` echoes that same
+# subdirectory. A stray graphify-out/ left there by an earlier run then roots the
+# rebuild at the subdirectory - for .claude/worktrees/ that is every linked
+# worktree (#3258). In the standard layout the work tree is the parent of the
+# common .git dir; GIT_WORK_TREE and --separate-git-dir layouts keep git's own
+# answer. GIT_DIR is rewritten to its absolute form (not newly exported) so the
+# git calls below still resolve after the cd.
+_TOPLEVEL_ANCHOR = """\
+if [ -z "${GIT_WORK_TREE:-}" ] && [ "${_GFY_COMMONDIR##*/}" = ".git" ]; then
+    _GFY_TOP=${_GFY_COMMONDIR%/*}
+else
+    _GFY_TOP=$(git rev-parse --show-toplevel 2>/dev/null)
+fi
+[ -n "$_GFY_TOP" ] && cd "$_GFY_TOP" || exit 0
+[ -n "$_GFY_GITDIR" ] && GIT_DIR=$_GFY_GITDIR
+"""
+
+
 # Both hook bodies run inside a subshell `( ... )`. The generated block is
 # appended to whatever post-commit / post-checkout already exists, and other
 # tools chain their own logic after it; every skip condition in the block is a
@@ -449,7 +472,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
-""" + _WORKTREE_GUARD + """
+""" + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + """
 # CHERRY_PICK_HEAD can't be the skip signal: git leaves it on disk while post-commit
 # runs, so every pick was silenced (#4490, same trap as MERGE_HEAD in #4463). For a
 # range pick or revert, skip every step but the last and rebuild once from
@@ -579,7 +602,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 # suppressed commit-triggered rebuilds but not branch-switch ones (#1809).
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
-""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
+""" + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + _PYTHON_DETECT + """
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
@@ -632,7 +655,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 # Honor the same opt out the commit and checkout hooks already respect.
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
-""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
+""" + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + _PYTHON_DETECT + """
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
@@ -684,7 +707,7 @@ fi
 # Honor the same opt out the commit and checkout hooks already respect.
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
-""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
+""" + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + _PYTHON_DETECT + """
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
