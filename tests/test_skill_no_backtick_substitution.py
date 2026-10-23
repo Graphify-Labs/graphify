@@ -173,19 +173,22 @@ def run_statements(
     (tmp_path / "graphify-out").mkdir()
     (tmp_path / "graphify-out" / ".graphify_python").write_text(str(stub))
     bad_exits = []
+    stderr_trace = []
     for stmt in stmts:
         script = f"exec 9>>{trace}\nBASH_XTRACEFD=9\nPS4='+T '\nset -x\n{stmt}\n"
         r = subprocess.run(
             [BASH, "-c", script], cwd=tmp_path, env={"PATH": str(bin_)},
             capture_output=True, text=True, timeout=30,
         )
+        stderr_trace.extend(r.stderr.splitlines())  # Bash 3.2 traces substitutions here.
         if r.returncode != 0:
             bad_exits.append((r.returncode, stmt.splitlines()[0]))
     allowed = (
         re.compile(r"^\+\+T cat graphify-out/\.graphify_python$"),
         re.compile(rf"^\+T {re.escape(str(stub))} -c "),
     )
-    traced = [ln for ln in trace.read_text().splitlines() if re.match(r"^\++T ", ln)]
+    traced = [ln for ln in (*trace.read_text().splitlines(), *stderr_trace)
+              if re.match(r"^\++T ", ln)]
     other = [ln for ln in traced if not any(a.match(ln) for a in allowed)]
     return log.read_text().splitlines(), other, bad_exits
 
