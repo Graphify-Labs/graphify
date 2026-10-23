@@ -820,7 +820,8 @@ def to_obsidian(
 
     # Cap stems against THIS vault's path, not just NAME_MAX: on Windows the
     # 200-byte default plus an ordinary vault directory overruns MAX_PATH and
-    # every note write raises FileNotFoundError (#2655). No-op on POSIX.
+    # every note write raises FileNotFoundError (#2655). On POSIX it only
+    # tightens where the vault's filesystem has a NAME_MAX below 255 (#2109).
     _stem_limit = stem_filename_budget(out, reserve=_DEDUP_SUFFIX_RESERVE)
 
     # Map node_id → safe filename so wikilinks stay consistent.
