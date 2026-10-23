@@ -137,3 +137,17 @@ When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
 underscore separators cannot collide with an ordinary normalized binding ID. Local
 call resolution stops if malformed scope metadata cycles.
+
+PHP enum cases (`case_of` targets) are excluded from the cross-file call-resolution
+indexes, including the case-folded one PHP functions use: cases are case-sensitive
+constants and never call targets, so a global helper such as `app()` cannot bind to
+`Enum::APP`. Incremental rebuilds forward `case_of` context edges so unchanged enum
+files are excluded the same way. Other languages are unchanged (Swift payload cases
+and Rust variants are callable).
+
+PHP methods (`method` targets) are left out of those indexes too: a plain function
+call needs a function, and a method call carries a receiver (`$this->`, `Foo::`)
+that the member-call resolvers handle. A global helper with no definition in the
+corpus (`dispatch(new X)`) therefore no longer binds to an in-corpus static method
+of the same name. Both are resolution-time changes; per-file extraction output is
+unchanged.
