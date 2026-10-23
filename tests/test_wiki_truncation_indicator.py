@@ -1,4 +1,4 @@
-"""A god-node article says when a relation group was cut (#3127).
+"""Wiki articles say when a bounded relationship list was cut.
 
 `_god_node_article` caps each relation-type group at 20 entries. The header
 still reported the full degree, but the body silently dropped everything past
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from graphify.wiki import _god_node_article
+from graphify.wiki import _community_article, _god_node_article
 
 
 def _star(n_refs: int, n_other: int = 0):
@@ -22,6 +22,34 @@ def _star(n_refs: int, n_other: int = 0):
         G.add_node(f"s{i}", label=f"Share{i}", source_file="src/s.py")
         G.add_edge("hub", f"s{i}", relation="shares_data_with", confidence="EXTRACTED")
     return G
+
+
+def _community_with_cross_links(n_communities: int) -> tuple[nx.Graph, dict[int, str], dict[str, int]]:
+    G = nx.Graph()
+    G.add_node("hub", label="Hub", source_file="src/hub.py")
+    labels = {0: "Core"}
+    node_community = {"hub": 0}
+    for i in range(n_communities):
+        nid = f"external-{i:02d}"
+        cid = i + 1
+        G.add_node(nid, label=f"External {i:02d}", source_file=f"src/external_{i:02d}.py")
+        G.add_edge("hub", nid, relation="references", confidence="EXTRACTED")
+        labels[cid] = f"Community {i:02d}"
+        node_community[nid] = cid
+    return G, labels, node_community
+
+
+def _community_text(n_communities: int) -> str:
+    G, labels, node_community = _community_with_cross_links(n_communities)
+    return _community_article(
+        G,
+        0,
+        ["hub"],
+        "Core",
+        labels,
+        cohesion=None,
+        node_community=node_community,
+    )
 
 
 def test_an_over_cap_group_names_how_much_was_cut():
@@ -43,3 +71,27 @@ def test_a_group_at_or_under_the_cap_has_no_indicator():
     for n in (20, 5):
         text = _god_node_article(_star(n), "hub", labels={})
         assert "not listed" not in text
+
+
+def test_an_over_cap_community_names_how_many_connected_communities_were_cut():
+    text = _community_text(13)
+    relationships = text.split("## Relationships", 1)[1].split("## Source Files", 1)[0]
+
+    assert relationships.count("shared connections") == 12
+    assert "Community 11" in relationships
+    assert "Community 12" not in relationships
+    assert "and 1 more connected community not listed" in relationships
+
+
+def test_an_over_cap_community_pluralizes_the_indicator():
+    text = _community_text(14)
+
+    assert "and 2 more connected communities not listed" in text
+
+
+def test_a_community_at_the_relationship_cap_has_no_indicator():
+    text = _community_text(12)
+    relationships = text.split("## Relationships", 1)[1].split("## Source Files", 1)[0]
+
+    assert relationships.count("shared connections") == 12
+    assert "more connected communit" not in relationships
