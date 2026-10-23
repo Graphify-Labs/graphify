@@ -1545,7 +1545,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--learned] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text
         from graphify.security import sanitize_label
@@ -1554,6 +1554,7 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        learned = "--learned" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
@@ -1651,6 +1652,11 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        if learned:
+            # The work-memory overlay from `graphify reflect`, read only when asked
+            # for, so a default query's output is unchanged.
+            from graphify.reflect import load_learning_overlay as _llo
+            G.graph["_learning_overlay"] = _llo(gp)
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
@@ -1665,6 +1671,7 @@ def dispatch_command(cmd: str) -> None:
             seeds=seeds or None,
             # Same root derivation as `affected` (#2706): <root>/graphify-out/graph.json.
             seed_root=_graph_root_for(gp),
+            learned=learned,
         )
         querylog.log_query(
             kind="query",

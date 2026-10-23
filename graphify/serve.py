@@ -137,6 +137,16 @@ def _max_server_contexts() -> int:
         return 8
 
 
+def _learning_sidecar_key(graph_path: str) -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` of the work-memory sidecar next to ``graph_path``, or None when there is none."""
+    from graphify.reflect import LEARNING_SIDECAR_NAME
+    try:
+        st = (Path(graph_path).parent / LEARNING_SIDECAR_NAME).stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 class _GraphContextCache:
     """Thread-safe graph contexts: one pinned default plus an LRU of projects."""
 
@@ -184,13 +194,24 @@ class _GraphContextCache:
                 raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
             key = (stat_result.st_mtime_ns, stat_result.st_size)
             entries = self._pinned if pinned else self._entries
+            memory_key = _learning_sidecar_key(resolved_path)
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
+                if entry.get("memory_key") != memory_key:
+                    # `graphify reflect` rewrote the work-memory sidecar while the
+                    # server ran: re-read the overlay only, not the whole graph.
+                    try:
+                        from graphify.reflect import load_learning_overlay
+                        entry["G"].graph["_learning_overlay"] = load_learning_overlay(Path(resolved_path))
+                    except Exception:
+                        entry["G"].graph["_learning_overlay"] = {}
+                    entry["memory_key"] = memory_key
                 if not pinned:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
             entry = self._load_entry(resolved_path, key)
+            entry["memory_key"] = memory_key
             entries[resolved_path] = entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
@@ -1308,6 +1329,49 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     return output
 
 
+# A past question counts for a new one when the new question covers at least
+# this share of its query terms. Measured on SWE-bench Lite (title taught, body
+# asked): the same issue in other words covers a median 0.44-0.50 of the taught
+# question's terms, a different issue 0.20-0.25.
+_LEARNED_MIN_OVERLAP = 0.4
+_LEARNED_MAX_SEEDS = 3
+
+
+def _learned_seeds(G: nx.Graph, question: str, *, min_overlap: float = _LEARNED_MIN_OVERLAP,
+                   max_k: int = _LEARNED_MAX_SEEDS) -> list[str]:
+    """Nodes that past ``useful`` answers to a question like this one cited.
+
+    Reads the work-memory overlay (`graphify reflect`'s sidecar, attached to the
+    graph as ``_learning_overlay``). A node qualifies when it is preferred or
+    tentative, its lesson is not stale (the code it was learned on is unchanged),
+    and one of its useful provenance questions has at least ``min_overlap`` of
+    its query terms covered by ``question``, sharing at least two terms (or all
+    of a shorter past question's). Ranked by that coverage, then by the number
+    of shared terms, then by the lesson's score, then by node id;
+    deterministic. No embeddings: the terms are `_query_terms`, the same ones
+    keyword seeding uses.
+    """
+    overlay = getattr(G, "graph", {}).get("_learning_overlay") or {}
+    terms = set(_query_terms(question))
+    if not overlay or not terms:
+        return []
+    scored = []
+    for nid, entry in overlay.items():
+        if nid not in G or entry.get("status") not in ("preferred", "tentative") or entry.get("stale"):
+            continue
+        best = (0.0, 0)
+        for event in entry.get("provenance") or []:
+            if event.get("outcome") != "useful":
+                continue
+            past = set(_query_terms(str(event.get("q", ""))))
+            shared = len(terms & past)
+            if past and shared >= min(2, len(past)):
+                best = max(best, (shared / len(past), shared))
+        if best[0] >= min_overlap:
+            scored.append((-best[0], -best[1], -float(entry.get("score") or 0), str(nid)))
+    return [nid for *_, nid in sorted(scored)[:max_k]]
+
+
 def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
     """Render pre-built lines under the same ~3-chars/token budget rule as
     _subgraph_to_text; over-budget output is cut at a line boundary with a count and a
@@ -1421,6 +1485,7 @@ def _query_graph_text(
     graph_path: str | None = None,
     seeds: list[str] | None = None,
     seed_root: Path | None = None,
+    learned: bool = False,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1482,10 +1547,16 @@ def _query_graph_text(
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term, term_order=qs.term_order)
+    # Learned start nodes (opt-in): nodes that past useful answers to a question
+    # like this one cited, ahead of the keyword seeds, so the answer they found is
+    # rendered first. Explicit --seed values above are never overridden.
+    learned_nodes = _learned_seeds(G, question) if learned else []
+    if learned_nodes:
+        start_nodes = learned_nodes + [n for n in start_nodes if n not in learned_nodes]
     if not start_nodes:
         return _QUERY_NO_MATCH
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                         context_filters=context_filters, graph_path=graph_path)
+                         context_filters=context_filters, graph_path=graph_path, learned=learned_nodes)
 
 
 def _render_query(
@@ -1500,6 +1571,7 @@ def _render_query(
     graph_path: str | None,
     given: bool = False,
     unresolved: list[str] | None = None,
+    learned: list[str] | None = None,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
@@ -1510,6 +1582,8 @@ def _render_query(
     ]
     if unresolved:
         header_parts.append(f"Unresolved seeds (skipped): {unresolved}")
+    if learned:
+        header_parts.append(f"Learned (past useful answers): {[G.nodes[n].get('label', n) for n in learned]}")
     # Name the graph this answer came from. `graphify-out/` resolves against the
     # CWD, so running a query from a parent project while thinking about a
     # vendored subproject silently answers from the wrong corpus — the output is
@@ -2315,6 +2389,9 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "learned": {"type": "boolean", "default": False,
+                                    "description": "Also start from nodes that past useful answers to a similar "
+                                                   "question cited (from `graphify reflect`)"},
                     },
                     "required": ["question"],
                 },
@@ -2462,6 +2539,7 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        learned = bool(arguments.get("learned", False))
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -2471,6 +2549,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            learned=learned,
         )
         querylog.log_query(
             kind="mcp_query",
