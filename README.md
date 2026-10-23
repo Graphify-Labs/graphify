@@ -398,6 +398,11 @@ The declaration flows through classification, extractor selection, grammar and r
 
 Commit or share the graph so your whole team queries the same context, and review pull requests with graph context. See **[Share context with your team](https://docs.graphify.com/guides/team-workflows)** and **[Review pull requests](https://docs.graphify.com/guides/pull-requests)**.
 
+A started `graphify extract` also writes `graphify-out/last_run.json`, a
+machine-readable summary of the latest run. Check its `ok` field and
+`wrote_graph`/`refused_reason` fields in automation instead of scraping extraction
+logs; `ok` is false when content was missing even if a partial graph was written.
+
 ---
 
 ## Using the graph directly
