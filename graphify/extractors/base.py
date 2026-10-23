@@ -24,6 +24,15 @@ from graphify.ids import make_id
 # set after extract() returns (#4602). ContextVar gives every thread (and
 # async task) its own value, so save/restore pairs nest correctly without a
 # lock.
+#
+# Semantic note: because the value is context-local, a root set on one
+# thread is NOT visible to worker threads spawned mid-extraction. Every
+# real call path sets and reads the root inside the same pool worker
+# (_safe_extract_with_xaml_root runs inside the worker; the scan root also
+# travels to workers as an explicit `root` parameter, not via this
+# global), so no production path crosses the boundary. If a future
+# extractor needs cross-thread visibility, propagate explicitly with
+# contextvars.copy_context() at the dispatch site.
 _ACTIVE_SCAN_ROOT: "ContextVar[Path | None]" = ContextVar(
     "_ACTIVE_SCAN_ROOT", default=None
 )
