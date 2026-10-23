@@ -2925,6 +2925,41 @@ def _js_external_import_names(root, source: bytes, str_path: str) -> set[str]:
     return bound
 
 
+def _js_relative_import_bindings(root, source: bytes, str_path: str) -> dict[str, tuple[str, str]]:
+    """Local name -> (resolved module path, imported name) for the imports of a
+    corpus file: `import * as ns from './m'` binds (m, "*"), and
+    `import { a as b } from './m'` binds b to (m, "a"). Type-only imports bind
+    no value and an import that does not resolve to a corpus file (an external
+    package) is left out."""
+    bound: dict[str, tuple[str, str]] = {}
+    for node in root.children:
+        if node.type != "import_statement":
+            continue
+        if any(c.type == "type" and not c.is_named for c in node.children):
+            continue
+        src_node = node.child_by_field_name("source")
+        if src_node is None:
+            continue
+        resolved = _resolve_js_import_target(_read_text(src_node, source).strip("\"'`"), str_path)
+        if resolved is None or resolved[1] is None or "node_modules" in resolved[1].parts:
+            continue
+        module = str(resolved[1])
+        for clause in node.children:
+            if clause.type != "import_clause":
+                continue
+            for c in clause.children:
+                if c.type == "namespace_import":
+                    for ident in c.children:
+                        if ident.type == "identifier":
+                            bound[_read_text(ident, source)] = (module, "*")
+                elif c.type == "named_imports":
+                    for spec in c.children:
+                        idents = [g for g in spec.children if g.type == "identifier"]
+                        if spec.type == "import_specifier" and idents:
+                            bound[_read_text(idents[-1], source)] = (module, _read_text(idents[0], source))
+    return bound
+
+
 def _js_dispatch_value_idents(coll_node):
     """Yield identifier value-nodes of a JS/TS object/array literal that are
     function-reference candidates: object property VALUES and shorthand properties
@@ -6056,6 +6091,11 @@ def _extract_generic(
         _js_external_import_names(root, source, str_path)
         if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
         else set()
+    )
+    js_import_bindings: dict[str, tuple[str, str]] = (
+        _js_relative_import_bindings(root, source, str_path)
+        if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+        else {}
     )
     python_receiver_shadowed = (
         _python_receiver_shadow_checker(root, source)
@@ -9693,6 +9733,15 @@ def _extract_generic(
                     and is_member_call
                     and not lua_self_qualified
                 )
+                # `ns.fn()` on a namespace import is the imported module's `fn`;
+                # a same-named function in this file must not take the call.
+                _js_import_binding = (
+                    js_import_bindings.get(member_receiver or "")
+                    if is_member_call and member_receiver not in (
+                        local_bound_names.get(caller_nid, frozenset()) | extra_locals
+                    ) else None
+                )
+                _js_namespace_defer = _js_import_binding is not None and _js_import_binding[1] == "*"
                 # JS/TS: a member call whose receiver is not this/self (that
                 # case is `self_receiver`, resolved below through the caller's
                 # own class, unaffected here) must not fall back to the
@@ -9730,7 +9779,7 @@ def _extract_generic(
                     and not self_receiver
                     and not _js_factory_sibling_call
                 )
-                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _js_namespace_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -9892,6 +9941,10 @@ def _extract_generic(
                             _sargs = _sobj.child_by_field_name("arguments") if _sobj is not None else None
                             if _sargs is not None and any(c.is_named for c in _sargs.children):
                                 rc_entry["_python_super_args"] = True
+                        # TS/JS `ns.m()`: the receiver is bound by an import of a corpus
+                        # module, which the cross-file pass reads `m` from.
+                        if _js_import_binding is not None:
+                            rc_entry["ts_import_module"], rc_entry["ts_import_name"] = _js_import_binding
                         # TS/JS `this.x.m()`: the receiver is a field of the caller's
                         # own class, which the per-class field table types.
                         if is_this_field_call and config.ts_module in (
