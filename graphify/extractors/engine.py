@@ -6495,6 +6495,18 @@ def _extract_generic(
                 c.type == "extension" for c in node.children
             ):
                 swift_extensions.append({"nid": class_nid, "label": class_name})
+                # #4574: a node still carrying this marker survived
+                # `_merge_swift_extensions` untouched, which only happens for
+                # an extension of a type outside the corpus (or an ambiguous
+                # label the merge refused to guess at) -- never a genuine sole
+                # declaration of its label. The generic by label stub rewire
+                # must not treat it as one, or every bare reference to that
+                # same name anywhere in the corpus (including a builtin like
+                # String) binds onto this one file's extension.
+                ext_node = next(n for n in nodes if n["id"] == class_nid)
+                ext_metadata = dict(ext_node.get("metadata") or {})
+                ext_metadata["swift_extension"] = True
+                ext_node["metadata"] = sanitize_metadata(ext_metadata)
 
             # Python-specific: inheritance
             if config.ts_module == "tree_sitter_python":
