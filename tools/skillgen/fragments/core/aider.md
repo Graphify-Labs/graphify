@@ -135,7 +135,32 @@ Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
 - If `skipped_sensitive` is non-empty: report the count and list the skipped file names, so a wrongly-flagged source or doc is visible and can be renamed or moved (#2106).
 - If `total_words` > 2,000,000 OR `total_files` > 200: show the warning and the top 5 subdirectories by file count, then ask which subfolder to run on. Wait for the user's answer before proceeding.
-- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
+- Otherwise: proceed directly to Step 2a.
+
+### Step 2a - Offer to exclude committed bundles (#4425)
+
+`detect()` already prunes `dist/`/`build/`/`target/` by name, but a bundle committed elsewhere still gets extracted, minting a duplicate node for every function it bundles (mirror communities, a duplicate god node).
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+d = json.loads(Path('.graphify_detect.json').read_text(encoding='utf-8'))
+marks = ('webpackBootstrap', '__webpack_require__', 'System.register(', 'For license information')
+hits = []
+for rel in d['files'].get('code', []):
+    p = Path(rel)
+    reasons = []
+    if '.min.' in p.name: reasons.append('minified filename')
+    size = p.stat().st_size if p.exists() else 0
+    if size > 300_000 and p.suffix in ('.js', '.mjs', '.cjs'): reasons.append(f'{size:,} bytes')
+    if (not reasons or size > 300_000) and any(m in p.read_text(encoding='utf-8', errors='ignore')[:4000] for m in marks): reasons.append('bundler banner')
+    if reasons: hits.append({'path': rel, 'reasons': reasons})
+print(json.dumps(hits))
+" > .graphify_bundle_candidates.json
+```
+
+Read `.graphify_bundle_candidates.json` silently. If empty, continue unchanged. Otherwise list each path with its reason(s) and ask: "These look like committed build output rather than source, which tends to produce mirror communities and a duplicate god node. Exclude before extraction?" If yes, append the confirmed paths to `.graphifyignore` at the scan root (create it if needed) and re-run Step 2's detection. If no, continue with them in scope.
 
 ### Step 2.5 - Transcribe video / audio files (only if video files detected)
 
