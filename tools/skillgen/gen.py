@@ -1344,6 +1344,25 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+def _is_graph_diff_backup_order_fix_line(line: str) -> bool:
+    """Whether a line is part of the --update graph-diff backup-order fix (#4539).
+
+    The instruction to back up graph.json to ``.graphify_old.json`` sat after the
+    diff block, so an agent reading top to bottom took the backup only once Step 4
+    had rewritten graph.json, and the diff printed nothing. The backup sentence now
+    leads the merge block and the diff block reports a missing backup. aider keeps
+    the backup in the project root, devin under graphify-out/; both forms match.
+    """
+    s = line.strip()
+    return (
+        s.startswith("Before the merge step, save the old graph: `cp graphify-out/graph.json ")
+        or s.startswith("Before the merge, save the current graph so the diff after Step 4 ")
+        or (s.startswith("Clean up after") and s.endswith(".graphify_old.json`"))
+        or (s.startswith("print('No pre-update backup at ") and s.endswith(" - graph diff skipped.')"))
+        or s == "else:"
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1373,6 +1392,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_graph_diff_backup_order_fix_line,
 )
 
 
