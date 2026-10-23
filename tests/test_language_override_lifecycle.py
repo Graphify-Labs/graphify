@@ -186,7 +186,7 @@ def test_watch_declared_code_updates_graph_on_observer_thread(tmp_path, monkeypa
 
 def test_watch_document_override_marks_semantic_work_instead_of_rebuilding(tmp_path, monkeypatch):
     events = pytest.importorskip("watchdog.events")
-    (tmp_path / ".graphifyrc").write_text("language.tpl=md\n")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=markdown\n")
     source = tmp_path / "notes.tpl"
 
     def change():
