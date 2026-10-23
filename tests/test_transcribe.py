@@ -145,3 +145,62 @@ def test_transcribe_all_skips_failed(tmp_path):
         results = transcribe_all([str(video)], output_dir=tmp_path / "out")
 
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _ytdlp_env_opts — cookies / JS-runtime pass-through (GRAPHIFY_YTDLP_*)
+# ---------------------------------------------------------------------------
+
+def test_ytdlp_env_opts_empty_by_default(monkeypatch):
+    """No env vars set -> no extra yt-dlp options (behaviour unchanged)."""
+    from graphify.transcribe import _ytdlp_env_opts
+    monkeypatch.delenv("GRAPHIFY_YTDLP_COOKIES", raising=False)
+    monkeypatch.delenv("GRAPHIFY_YTDLP_JS_RUNTIMES", raising=False)
+    assert _ytdlp_env_opts() == {}
+
+
+def test_ytdlp_env_opts_cookies(monkeypatch):
+    """GRAPHIFY_YTDLP_COOKIES maps to yt-dlp's cookiefile option."""
+    from graphify.transcribe import _ytdlp_env_opts
+    monkeypatch.setenv("GRAPHIFY_YTDLP_COOKIES", "/home/user/cookies.txt")
+    monkeypatch.delenv("GRAPHIFY_YTDLP_JS_RUNTIMES", raising=False)
+    assert _ytdlp_env_opts() == {"cookiefile": "/home/user/cookies.txt"}
+
+
+def test_ytdlp_env_opts_js_runtimes(monkeypatch):
+    """GRAPHIFY_YTDLP_JS_RUNTIMES maps to yt-dlp's js_runtimes dict."""
+    from graphify.transcribe import _ytdlp_env_opts
+    monkeypatch.delenv("GRAPHIFY_YTDLP_COOKIES", raising=False)
+    monkeypatch.setenv("GRAPHIFY_YTDLP_JS_RUNTIMES", "node, deno")
+    assert _ytdlp_env_opts() == {
+        "js_runtimes": {"node": {"path": None}, "deno": {"path": None}},
+    }
+
+
+def test_download_audio_applies_env_opts(monkeypatch, tmp_path):
+    """download_audio() forwards the env-derived options into YoutubeDL."""
+    from graphify import transcribe as tr
+
+    monkeypatch.setenv("GRAPHIFY_YTDLP_COOKIES", str(tmp_path / "c.txt"))
+    monkeypatch.setenv("GRAPHIFY_YTDLP_JS_RUNTIMES", "node")
+
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured.update(opts)
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def extract_info(self, url, download=True):
+            return {"ext": "m4a"}
+
+    fake_mod = MagicMock()
+    fake_mod.YoutubeDL = FakeYDL
+    with patch("graphify.transcribe._get_yt_dlp", return_value=fake_mod):
+        tr.download_audio("https://www.youtube.com/watch?v=x", tmp_path / "dl")
+
+    assert captured["cookiefile"] == str(tmp_path / "c.txt")
+    assert captured["js_runtimes"] == {"node": {"path": None}}
+    assert captured["noplaylist"] is True  # base options still intact
