@@ -48,6 +48,15 @@ _MD_PATH_MENTION_RE = re.compile(
 _MD_BARE_MENTION_RE = re.compile(
     r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
 )
+# The namespace/member chain the other languages' docs write: ``App\Services\Mailer``
+# (PHP namespaces) and ``Mailer::send()`` (PHP, Rust, C++ type-qualified members).
+# Each segment is a plain identifier; the separators are ``\`` and ``::`` (#4610).
+_MD_NS_MENTION_RE = re.compile(
+    r'^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$'
+)
+# ``Foo::CONST`` names a constant and ``Foo::class`` a keyword: neither has a
+# node to land on, so the chain is not a mention.
+_MD_NS_NON_SYMBOL_RE = re.compile(r'^(?:class|[A-Z][A-Z0-9_]*)$')
 
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
@@ -352,18 +361,28 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
     if m:
         return m.group(1), m.group(2).split("::")
     m = _MD_BARE_MENTION_RE.match(text)
-    if not m:
-        return None
-    if "." in text:
-        # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
-        # are files. A dotted span whose last segment is a code or document
-        # extension is the latter. Other file-like spans (``pyproject.toml``)
-        # classify as a mention and are rejected at resolution, where the
-        # qualifier ``pyproject`` matches no callable's file or owner.
-        if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
+    if m:
+        if "." in text:
+            # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
+            # are files. A dotted span whose last segment is a code or document
+            # extension is the latter. Other file-like spans (``pyproject.toml``)
+            # classify as a mention and are rejected at resolution, where the
+            # qualifier ``pyproject`` matches no callable's file or owner.
+            if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
+                return None
+            return None, text.rstrip("()").split(".")
+        return None, [m.group(1)]
+    # ``App\Services\Mailer`` and ``Mailer::send()``: a namespace/member chain,
+    # split on ``\`` and ``::`` the way the dotted form splits on ``.``. A span
+    # that is only a namespace root (``App\``) is dropped: it names no symbol.
+    m = _MD_NS_MENTION_RE.match(text)
+    if m:
+        body = text[:-2] if text.endswith("()") else text
+        parts = re.split(r"::|\\", body)
+        if _MD_NS_NON_SYMBOL_RE.match(parts[-1]):
             return None
-        return None, text.rstrip("()").split(".")
-    return None, [m.group(1)]
+        return None, parts
+    return None
 
 
 def extract_markdown(path: Path) -> dict:
@@ -454,6 +473,12 @@ def extract_markdown(path: Path) -> dict:
             raw_call["path"] = cited_path
         if len(names) > 1:
             raw_call["qualifiers"] = names[:-1]
+        if cited_path is None and _MD_NS_MENTION_RE.match(span.strip()):
+            # A `\`/`::` chain carries its namespace root as a qualifier the way
+            # a dotted mention does, but a PSR-4 root (`App\`) maps to the scan
+            # directory and has no path segment: the resolver may drop leading
+            # qualifiers a candidate cannot account for (#4610).
+            raw_call["ns_qualified"] = True
         raw_calls.append(raw_call)
 
     def add_node(nid: str, label: str, line: int, file_type: str = "document",
