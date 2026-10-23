@@ -16,7 +16,7 @@ def _scan_blocks():
     found = []
     for art in gen.render_all(gen.load_platforms()):
         for block in re.findall(r'```bash\n(.*?)```', art.content, re.S):
-            if "result = detect(Path('INPUT_PATH')" not in block and "result = detect_incremental(Path('INPUT_PATH')" not in block:
+            if "result = detect(read_scan_root()" not in block and "result = detect_incremental(read_scan_root()" not in block:
                 continue
             m = re.search(r' -c "\n(.*)\n"', block, re.S)
             if m:
@@ -47,7 +47,7 @@ def test_skill_scan_honors_persisted_options(tmp_path, monkeypatch, art, source)
     # Only exercise the scan contract, not subsequent sidecar/report steps.
     src = source.split('result = ', 1)[0] + 'result = ' + source.split('result = ', 1)[1].split('\n', 1)[0]
     src += '\nprint(json.dumps(result))\n'
-    src = src.replace('INPUT_PATH', corpus.as_posix())
+    (out / '.graphify_root').write_text(corpus.as_posix(), encoding='utf-8')
     result = subprocess.run([sys.executable, '-c', src], cwd=tmp_path, check=True, capture_output=True, text=True)
     data = json.loads(result.stdout)
     actual = {Path(f).relative_to(corpus).as_posix() for files in data['files'].values() for f in files}
