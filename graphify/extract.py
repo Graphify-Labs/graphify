@@ -3948,6 +3948,60 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             continue
         stubs.append(node)
 
+    # Module-qualified Python bases are emitted as stubs during per-file extraction.
+    # Resolve them only through the matching import edge and a class contained by the
+    # imported file. A global label match would bind an external module to an
+    # unrelated local class. Unresolved qualified bases are protected from generic
+    # stub rewiring and later drop as dangling edges.
+    node_by_id = {str(node.get("id", "")): node for node in nodes}
+    parent_of: dict[str, str] = {}
+    children_of: dict[str, list[str]] = {}
+    for edge in edges:
+        if edge.get("relation") == "contains":
+            source = edge.get("source")
+            target = edge.get("target")
+            if isinstance(source, str) and isinstance(target, str):
+                parent_of[target] = source
+                children_of.setdefault(source, []).append(target)
+
+    protected_qualified_stubs: set[str] = set()
+    for edge in edges:
+        metadata = edge.get("metadata")
+        module = metadata.get("python_base_module") if isinstance(metadata, dict) else None
+        if edge.get("relation") != "inherits" or not isinstance(module, str):
+            continue
+        source = edge.get("source")
+        target = edge.get("target")
+        importer = parent_of.get(source) if isinstance(source, str) else None
+        if not importer or not isinstance(target, str):
+            protected_qualified_stubs.add(target)
+            continue
+        imported_files: list[str] = []
+        for import_edge in edges:
+            if import_edge.get("relation") != "imports" or import_edge.get("source") != importer:
+                continue
+            imported = import_edge.get("target")
+            if not isinstance(imported, str):
+                continue
+            alias = import_edge.get("local_alias")
+            imported_node = node_by_id.get(imported, {})
+            imported_stem = Path(str(imported_node.get("source_file", ""))).stem
+            if alias == module or (not alias and imported_stem == module):
+                imported_files.append(imported)
+        candidates = [
+            child
+            for imported in imported_files
+            for child in children_of.get(imported, [])
+            if node_by_id.get(child, {}).get("label") == node_by_id.get(target, {}).get("label")
+        ]
+        if len(candidates) == 1:
+            edge["target"] = candidates[0]
+            metadata.pop("python_base_module", None)
+            if not metadata:
+                edge.pop("metadata", None)
+        else:
+            protected_qualified_stubs.add(target)
+
     # Language families referencing each stub, for the function-merge guard (#1781):
     # a cross-module `references` edge to a function used to dangle on a sourceless
     # name-only stub because functions were excluded as rewire targets. We now allow
@@ -3974,7 +4028,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     remap: dict[str, str] = {}
     for stub in stubs:
         stub_id = str(stub.get("id", ""))
-        if not stub_id:
+        if not stub_id or stub_id in protected_qualified_stubs:
             continue
         candidates = real_by_label.get(_node_label_key(stub), [])
         if len(candidates) > 1 and all(
