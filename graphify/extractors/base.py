@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 from graphify.ids import make_id
@@ -15,24 +16,34 @@ from graphify.ids import make_id
 # function-local `import graphify.extract` + getattr(..., None) was a package ->
 # parent dependency that also failed silently if the module global were renamed
 # (#3666). None outside extract().
-_ACTIVE_SCAN_ROOT: "Path | None" = None
+#
+# Thread local, not a bare module global (#4602): a real extract() run never
+# shares this across threads (each ProcessPoolExecutor worker gets its own
+# copy by forking/spawning), but anything that does call extract() from more
+# than one thread in the same process — including a test harness that swaps
+# in a ThreadPoolExecutor — would otherwise have one thread's save/restore
+# clobber another's, since the save/restore pattern below only guards against
+# nested re-entry on the SAME thread (a XAML shard re-entering extract()), not
+# against a second thread setting the root in between.
+_active_scan_root_local = threading.local()
 
 
 def set_active_scan_root(root: "Path | None") -> "Path | None":
-    """Set the in-flight scan root, returning the previous value so the caller
-    can restore it — extraction nests (a XAML shard re-enters extract())."""
-    global _ACTIVE_SCAN_ROOT
-    previous = _ACTIVE_SCAN_ROOT
-    _ACTIVE_SCAN_ROOT = root
+    """Set the in-flight scan root for the CURRENT thread, returning the
+    previous value so the caller can restore it — extraction nests (a XAML
+    shard re-enters extract()) on the same thread."""
+    previous = getattr(_active_scan_root_local, "value", None)
+    _active_scan_root_local.value = root
     return previous
 
 
 def active_scan_root() -> "Path | None":
-    """The scan root of the extraction in flight, or None outside extract().
+    """The scan root of the extraction in flight on the CURRENT thread, or
+    None outside extract().
 
     A direct ``extract_markdown()`` / ``extract_xaml()`` call (no surrounding
     ``extract()``) sees None and the root-dependent behavior stays off."""
-    return _ACTIVE_SCAN_ROOT
+    return getattr(_active_scan_root_local, "value", None)
 
 # Language built-in globals that AST may classify as call targets when used as
 # constructors or coercion functions (e.g. String(x), Number(x), Boolean(x)).

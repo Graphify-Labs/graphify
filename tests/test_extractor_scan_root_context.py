@@ -3,6 +3,7 @@ back into graphify.extract — MIGRATION.md invariant #4 (#3666)."""
 from __future__ import annotations
 
 import ast
+import threading
 from pathlib import Path
 
 from graphify.extractors import base as base_mod
@@ -64,6 +65,45 @@ def test_active_scan_root_set_get_restore_nested():
     finally:
         base_mod.set_active_scan_root(prev_outer)
 
+    assert base_mod.active_scan_root() is None
+
+
+def test_active_scan_root_is_thread_local():
+    """#4602: two threads racing set/restore must not clobber each other's
+    value. Forced to the exact bad interleaving a shared module global
+    produced (thread B's "previous" is thread A's root, so B's restore left
+    the global set after both finished) via explicit synchronization, rather
+    than relying on timing luck."""
+    assert base_mod.active_scan_root() is None
+
+    a_set = threading.Event()
+    a_restored = threading.Event()
+    seen_by_b = {}
+
+    def thread_a():
+        previous = base_mod.set_active_scan_root(Path("/repo/a").resolve())
+        a_set.set()
+        a_restored.wait()
+        base_mod.set_active_scan_root(previous)
+
+    def thread_b():
+        a_set.wait()
+        previous = base_mod.set_active_scan_root(Path("/repo/b").resolve())
+        seen_by_b["previous"] = previous
+        a_restored.set()
+        a_restored.wait()  # already set; keeps symmetry with thread_a's wait
+        base_mod.set_active_scan_root(previous)
+
+    t_a = threading.Thread(target=thread_a)
+    t_b = threading.Thread(target=thread_b)
+    t_a.start()
+    t_b.start()
+    t_a.join()
+    t_b.join()
+
+    # Each thread only ever observed its OWN previous value (None), never the
+    # other thread's root — the whole point of a thread-local value.
+    assert seen_by_b["previous"] is None
     assert base_mod.active_scan_root() is None
 
 
