@@ -4116,6 +4116,12 @@ def dispatch_command(cmd: str) -> None:
                 f"[graphify extract] {len(_unclassified)} file(s) not classified "
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
+        # #2942: a plain count reads as routine noise even when it is most of
+        # the corpus; say plainly that the graph is missing a structurally
+        # significant part of the codebase when that is actually the case.
+        _unclassified_warning = detection.get("unclassified_warning") if isinstance(detection, dict) else None
+        if _unclassified_warning:
+            print(f"[graphify extract] warning: {_unclassified_warning}")
         # Name the files dropped by the sensitive-file filter so a wrongly-flagged
         # source/doc is visible, not just a count (#2106). Operational skips
         # (symlink/office/Workspace) carry a " [reason]" suffix; exclude those here
