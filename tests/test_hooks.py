@@ -2108,3 +2108,100 @@ def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
     got = [_unquote_git_path(l) for l in raw]
     assert sorted(got) == sorted(names)
     assert all((tmp_path / g).is_file() for g in got)
+
+
+# ── #4563: the last-resort probe must not run the Microsoft Store python3 alias first on Windows ──
+
+def _last_resort_run(tmp_path, env_extra=None, python3="stub", python="real"):
+    """Run the emitted _PYTHON_DETECT under a real sh on a machine where probes 1-4 all
+    miss (temp HOME, dead pin, no launcher) and only `python3` / `python` on PATH remain.
+
+    PATH holds nothing but the two fake dirs, so no real interpreter can be found by
+    accident. python3 / python are each one of: "stub" (the Store alias: logs its call,
+    exits 9009), "real" (logs, then execs the interpreter running this test, so the
+    find_spec probe passes), "none" (cannot import graphify), or None (not on PATH).
+    Returns (CompletedProcess, [names called, in order])."""
+    import graphify
+    from graphify.hooks import _PYTHON_DETECT
+
+    home = tmp_path / "home"
+    home.mkdir()
+    calls = tmp_path / "calls.log"
+    store, bindir = tmp_path / "WindowsApps", tmp_path / "bin"
+    store.mkdir()
+    bindir.mkdir()
+
+    def fake(directory, name, kind):
+        if kind is None:
+            return
+        body = {
+            "stub": "exit 9009\n",
+            "real": f'exec "{sys.executable}" "$@"\n',
+            "none": "exit 1\n",
+        }[kind]
+        py = directory / name
+        py.write_text(f'#!/bin/sh\necho {name} >> "$GFY_CALLS"\n{body}', encoding="utf-8", newline="\n")
+        py.chmod(0o755)
+
+    fake(store, "python3", python3)  # the stub sits first on PATH, as WindowsApps does
+    fake(bindir, "python", python)
+    script = tmp_path / "detect_run.sh"
+    script.write_text(_PYTHON_DETECT + '\necho "RESOLVED=$GRAPHIFY_PYTHON"\n', encoding="utf-8", newline="\n")
+    env = {k: v for k, v in os.environ.items() if k not in ("WINDIR", "MSYSTEM", "UV_TOOL_DIR")}
+    env.update(HOME=str(home), GFY_CALLS=str(calls), PATH=os.pathsep.join([str(store), str(bindir)]),
+               PYTHONPATH=str(Path(graphify.__file__).resolve().parent.parent))
+    env.update(env_extra or {})
+    res = subprocess.run([shutil.which("sh"), script.name], capture_output=True, text=True,
+                         cwd=str(tmp_path), env=env)
+    return res, (calls.read_text(encoding="utf-8").split() if calls.exists() else [])
+
+
+_NEEDS_SH = pytest.mark.skipif(shutil.which("sh") is None or os.name == "nt",
+                               reason="runs the emitted probe chain under a POSIX sh with sh-script fakes")
+
+
+@_NEEDS_SH
+@pytest.mark.parametrize("env", [{"MSYSTEM": "MINGW64"}, {"WINDIR": "C:\\Windows"}], ids=["msystem", "windir"])
+def test_windows_never_runs_the_store_python3_alias_when_python_works(tmp_path, env):
+    """#4563: on Windows `python3` is usually the Microsoft Store App Execution Alias
+    (no python3.exe ships with python.org's installer). Running it flashes a console
+    window for ~1s and exits 9009, on every commit, checkout and merge. Under Git for
+    Windows `python` is tried first, so the stub is never reached."""
+    res, calls = _last_resort_run(tmp_path, env)
+    assert res.returncode == 0, res.stderr
+    assert "RESOLVED=python\n" in res.stdout, res.stdout + res.stderr
+    assert calls == ["python"], f"the Store alias was run: {calls}"
+
+
+@_NEEDS_SH
+def test_outside_windows_python3_is_still_tried_first(tmp_path):
+    """Linux and macOS keep the order they had: python3, then python."""
+    res, calls = _last_resort_run(tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert "RESOLVED=python\n" in res.stdout, res.stdout + res.stderr
+    assert calls == ["python3", "python"]
+
+
+@_NEEDS_SH
+def test_windows_falls_back_to_python3_when_python_lacks_graphify(tmp_path):
+    res, calls = _last_resort_run(tmp_path, {"MSYSTEM": "MINGW64"}, python3="real", python="none")
+    assert res.returncode == 0, res.stderr
+    assert "RESOLVED=python3\n" in res.stdout, res.stdout + res.stderr
+    assert calls == ["python", "python3"], f"python is tried first, python3 after it: {calls}"
+
+
+@_NEEDS_SH
+def test_windows_with_no_working_python_still_fails_loudly_and_exits_zero(tmp_path):
+    res, calls = _last_resort_run(tmp_path, {"MSYSTEM": "MINGW64"}, python="none")
+    assert res.returncode == 0, res.stderr
+    assert "could not locate a Python" in res.stderr
+    assert res.stdout == "", "the chain must stop at the warning"
+    assert sorted(calls) == ["python", "python3"]
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS, ids=[n for n, _ in _HOOK_SCRIPTS])
+def test_every_hook_embeds_the_probe_chain_unchanged(name, script):
+    """All four generated hooks splice in the same _PYTHON_DETECT, so the behavioural
+    tests above are the behaviour of the real hooks (#4563)."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert _PYTHON_DETECT in script, f"{name} does not embed _PYTHON_DETECT"
