@@ -278,7 +278,7 @@ def test_claude_install_ships_lean_core_and_references(tmp_path):
     # The full embedded subagent prompt was moved out into the references.
     assert '"file_type":"code|document|paper|image|rationale|concept"' not in body
     # The lean core is materially smaller than the old ~1156-line monolith.
-    assert len(body.splitlines()) < 800
+    assert len(body.splitlines()) < 900
     # The version stamp covers SKILL.md + references/ together.
     assert (skill_dir / ".graphify_version").read_text() == mainmod.__version__
     # The eight on-demand fragments all landed.

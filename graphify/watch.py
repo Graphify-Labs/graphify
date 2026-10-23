@@ -16,6 +16,7 @@ from graphify.paths import (
     GRAPHIFY_OUT as _GRAPHIFY_OUT,
     is_absolute_any_platform,
     os_replace_with_fallback,
+    read_root_marker,
     write_text_atomic,
 )
 
@@ -532,7 +533,7 @@ class _StoredSourcePaths:
         root_marker = out / ".graphify_root"
         if root_marker.exists():
             try:
-                saved_root = Path(root_marker.read_text(encoding="utf-8-sig").strip())
+                saved_root = Path(read_root_marker(root_marker))
                 if saved_root.is_absolute():
                     # #2603: the marker holds the SCAN root, but stored
                     # source_file values are relative to the BUILD's cwd
