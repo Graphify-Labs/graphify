@@ -9541,7 +9541,7 @@ def extract(
     # syntax the Lua grammar can't parse, #2520) extracts partially — sometimes
     # to nothing but the file node — with no other signal. Neither warning
     # above fires (nodes exist, no error marker), so surface it explicitly,
-    # naming the first error line so the user can find the construct.
+    # naming the error region's line so the user can find the construct.
     _syntax_error_files: list[tuple[str, int | None]] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
@@ -9569,10 +9569,11 @@ def extract(
             # one that yielded most of its symbols and lost an ERROR region is
             # partial. "May be partially extracted" rendered both identically.
             _kept = max(len(_res.get("nodes", [])) - 1, 0)
-            _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept))
+            _line = _pe.get("lossy_error_line") or _pe.get("first_error_line")
+            _syntax_error_files.append((_rel, _line, _kept))
     if _syntax_error_files:
         def _describe_syntax_error(rel: str, line: "int | None", kept: int) -> str:
-            _where = f"first error at line {line}" if line else "syntax error"
+            _where = f"error region at line {line}" if line else "syntax error"
             _got = "no symbols extracted" if kept == 0 else f"{kept} symbol(s) extracted"
             return f"{rel} ({_where}, {_got})"
 

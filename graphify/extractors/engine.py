@@ -4976,6 +4976,28 @@ def _first_parse_error_line(root) -> int:
         node = child
 
 
+def _first_multiline_error_line(root) -> int:
+    """1-based line of the first ERROR that spans more than one line.
+
+    The #2551 warning gate selects on a multiline region (or a total loss), so
+    that region is the actionable location. Earlier single-line recoveries can
+    sit far above it: in a decorator-heavy TS file, `@(Link().toMany())` errors
+    on line 14 but keeps every symbol, while the multiline chain on line 33 is
+    the one the reader needs (#4711).
+    """
+    best = None
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "ERROR" and n.end_point[0] > n.start_point[0]:
+            if best is None or n.start_byte < best.start_byte:
+                best = n
+        stack.extend(c for c in n.children if c.has_error)
+    if best is None:
+        return _first_parse_error_line(root)
+    return best.start_point[0] + 1
+
+
 def _has_multiline_error(root) -> bool:
     """True if any materialized ERROR node spans more than one line (a
     recovery region large enough to plausibly drop symbols, vs a tiny
@@ -10199,10 +10221,15 @@ def _extract_generic(
     # error's line so extract() can warn instead of reporting silent success.
     # Rides on the result dict, so it survives the per-file AST cache.
     if root.has_error:
+        _multiline = _has_multiline_error(root)
         result["parse_errors"] = {
             "first_error_line": _first_parse_error_line(root),
-            "multiline_error": _has_multiline_error(root),
+            "multiline_error": _multiline,
         }
+        if _multiline:
+            # Report the region the warning gate selected on, not an earlier
+            # fully-recovered one that would send the reader elsewhere (#4711).
+            result["parse_errors"]["lossy_error_line"] = _first_multiline_error_line(root)
     # Kotlin (#2526/#2550): the declared package qualifies every node in the
     # file; the import-target and qualified-call resolvers key their per-package
     # symbol indexes off it.
@@ -10328,26 +10355,60 @@ def _python_decorator_name(deco_node, source: bytes) -> str | None:
         return None
     return None
 
+def _ts_decorator_target_name(expr, source: bytes) -> str | None:
+    """The symbol a decorator expression applies: the outermost call's name.
+
+    `f` -> f; `f()` / `x.f()` -> f; `@Component({...})` -> Component. A
+    parenthesized decorator is unwrapped first. tree-sitter-typescript 0.23.2
+    cannot parse a call chain in decorator position (`@(Link().toMany())`): it
+    wraps `Link().` in an ERROR and parses `toMany()` as a SIBLING of the ERROR
+    inside the parentheses. The applied decorator is still that outermost call,
+    which is the last named call child, never the one buried in the ERROR
+    (#4711). Without this the whole parenthesized decorator contributed no edge,
+    though most of its expression parsed.
+    """
+    if expr is None:
+        return None
+    if expr.type == "parenthesized_expression":
+        calls = [c for c in expr.named_children if c.type == "call_expression"]
+        if calls:
+            return _ts_decorator_target_name(calls[-1], source)
+        # A recovered non-call expression (an invalid `@(A, B)` sequence lands
+        # here as ERROR + `B`) is not a decorator name: do not guess one.
+        if any(c.type == "ERROR" for c in expr.named_children):
+            return None
+        named = [c for c in expr.named_children if c.type != "ERROR"]
+        return _ts_decorator_target_name(named[0], source) if named else None
+    if expr.type == "call_expression":
+        fn = expr.child_by_field_name("function")
+        if fn is None:
+            return None
+        if fn.type == "member_expression":
+            prop = fn.child_by_field_name("property")
+            return _read_text(prop, source) if prop else None
+        if fn.type == "identifier":
+            return _read_text(fn, source)
+        return None
+    if expr.type == "member_expression":
+        prop = expr.child_by_field_name("property")
+        return _read_text(prop, source) if prop else None
+    if expr.type == "identifier":
+        return _read_text(expr, source)
+    return None
+
+
 def _ts_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a TS `decorator` node.
 
     `@Injectable` -> the identifier; `@Component({...})` / `@Input()` -> the
     `function` of the call_expression; `@ng.Component()` / `@core.Injectable` ->
     the `property` of the member_expression (the imported symbol, not the
-    namespace alias).
+    namespace alias); `@(Link().toMany())` -> the outermost call, `toMany`.
     """
     for child in deco_node.children:
         if not child.is_named:
             continue
-        target = child
-        if target.type == "call_expression":
-            target = target.child_by_field_name("function") or target
-        if target.type == "member_expression":
-            prop = target.child_by_field_name("property")
-            return _read_text(prop, source) if prop else None
-        if target.type == "identifier":
-            return _read_text(target, source)
-        return None
+        return _ts_decorator_target_name(child, source)
     return None
 
 def _ts_method_name(method_node, source: bytes) -> str | None:
