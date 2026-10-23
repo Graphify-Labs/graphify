@@ -3653,22 +3653,35 @@ def dispatch_command(cmd: str) -> None:
             global_remove as _global_remove,
             global_list as _global_list,
             global_path as _global_path,
+            global_status as _global_status,
+            global_sync as _global_sync,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [--as <tag>]
+            # graphify global add <graph.json> [--as <tag>] [--settle <seconds>]
             args = sys.argv[3:]
             source = None
             tag = None
+            settle_s = 0.0
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
                     tag = args[i + 1]; i += 2
+                elif args[i] == "--settle" and i + 1 < len(args):
+                    try:
+                        settle_s = float(args[i + 1])
+                    except ValueError:
+                        print(f"error: invalid --settle value: {args[i + 1]!r}", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
                 elif not source:
                     source = Path(args[i]); i += 1
                 else:
                     i += 1
             if not source:
-                print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
+                print(
+                    "Usage: graphify global add <graph.json> [--as <repo-tag>] [--settle <seconds>]",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             if not tag:
                 # Inferred through merge-graphs' own helper, which degrades to "repo"
@@ -3677,8 +3690,14 @@ def dispatch_command(cmd: str) -> None:
                 from graphify.build import distinct_repo_tags
                 tag = distinct_repo_tags([source.absolute()])[0]
             try:
-                result = _global_add(source, tag)
-                if result["skipped"]:
+                result = _global_add(source, tag, settle_s=settle_s)
+                if result.get("unsettled"):
+                    print(
+                        f"'{tag}' skipped - {source} is still being written after {settle_s:g}s.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                elif result["skipped"]:
                     print(f"'{tag}' unchanged since last add - global graph not modified.")
                 else:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
@@ -3707,10 +3726,104 @@ def dispatch_command(cmd: str) -> None:
                 print(f"Global graph: {_global_path()}")
                 for tag, info in repos.items():
                     print(f"  {tag}: {info.get('node_count', '?')} nodes, added {info.get('added_at', '?')[:10]}")
+        elif subcmd == "status":
+            args = sys.argv[3:]
+            strict = False
+            as_json = False
+            only_filter: str | None = None
+            i = 0
+            while i < len(args):
+                if args[i] == "--strict":
+                    strict = True; i += 1
+                elif args[i] == "--json":
+                    as_json = True; i += 1
+                elif args[i] == "--only" and i + 1 < len(args):
+                    only_filter = args[i + 1]; i += 2
+                else:
+                    print(
+                        "Usage: graphify global status [--strict] [--json] [--only <substr>]",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            try:
+                status_report = _global_status(only=only_filter)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr); sys.exit(2)
+            if as_json:
+                print(json.dumps(status_report, indent=2, sort_keys=True))
+            else:
+                repos = status_report["repos"]
+                if not repos:
+                    print("Global graph is empty. Use 'graphify global add' to add a project.")
+                else:
+                    print(f"Global graph: {status_report['global_path']}")
+                    for tag, r in repos.items():
+                        commit_str = (
+                            r.get("built_at_commit")
+                            or r.get("head_at_merge")
+                            or "?"
+                        )[:7]
+                        basis = r.get("commit_basis") or "none"
+                        behind = r.get("commits_behind")
+                        behind_str = f"{behind} behind HEAD" if behind is not None else "no git HEAD"
+                        sync_str = "ok" if not r["stale"] else "STALE"
+                        print(
+                            f"  {tag}: {r.get('node_count', '?')} nodes, "
+                            f"commit {commit_str} ({basis}, {behind_str}), "
+                            f"hash_sync={'yes' if r['hash_in_sync'] else 'no'}, "
+                            f"status={sync_str}"
+                        )
+            if strict and (not status_report["repos"] or not status_report["all_in_sync"]):
+                sys.exit(1)
+        elif subcmd == "sync":
+            args = sys.argv[3:]
+            only_filter = None
+            settle_s = 0.0
+            i = 0
+            while i < len(args):
+                if args[i] == "--only" and i + 1 < len(args):
+                    only_filter = args[i + 1]; i += 2
+                elif args[i] == "--settle" and i + 1 < len(args):
+                    try:
+                        settle_s = float(args[i + 1])
+                    except ValueError:
+                        print(f"error: invalid --settle value: {args[i + 1]!r}", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                else:
+                    print(
+                        "Usage: graphify global sync [--only <substr>] [--settle <seconds>]",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            try:
+                sync_report = _global_sync(only=only_filter, settle_s=settle_s)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr); sys.exit(2)
+            for tag in sync_report["updated"]:
+                res = sync_report["results"][tag]
+                print(
+                    f"Synced '{tag}': +{res['nodes_added']} nodes, "
+                    f"-{res['nodes_removed']} pruned."
+                )
+            for tag in sync_report["skipped"]:
+                print(f"'{tag}' unchanged since last add - skipped.")
+            for tag in sync_report["unsettled"]:
+                print(
+                    f"'{tag}' skipped - source graph still being written after {settle_s:g}s.",
+                    file=sys.stderr,
+                )
+            for tag in sync_report["missing"]:
+                print(
+                    f"'{tag}' failed - registered source_path does not exist.",
+                    file=sys.stderr,
+                )
+            if sync_report["unsettled"] or sync_report["missing"]:
+                sys.exit(1)
         elif subcmd == "path":
             print(_global_path())
         else:
-            print("Usage: graphify global [add|remove|list|path]", file=sys.stderr); sys.exit(1)
+            print("Usage: graphify global [add|remove|list|status|sync|path]", file=sys.stderr); sys.exit(1)
 
     elif cmd == "extract":
         # Headless full-pipeline extraction for CI / scripts (#698).
