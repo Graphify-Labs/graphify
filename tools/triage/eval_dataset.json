@@ -1,0 +1,228 @@
+{
+  "description": "Labeled real Graphify issues for the System One (Jev) triage evaluation. Ground truth is a careful manual read of each issue (title + body), not a gold-standard human panel; treat agreement as a signal, not proof.",
+  "source": "https://github.com/Graphify-Labs/graphify issues, read 2026-10-18",
+  "cases": [
+    {
+      "number": 4341,
+      "title": "[Feature]: `graphify benchmark` measures answer size but never whether the answer is right",
+      "body": "### Problem or use case `graphify benchmark` reports how many tokens a query costs versus reading the corpus. Nothing measures whether the answer contains what the question needed, so a change to query scoring, seeding or rendering can make answers smaller and worse and the benchmark calls it a win. Twenty-odd open PRs change how `query` ranks or renders (#2403, #3284, #3417, #3636, ...), and there is no shared number to compare them by. I built such a number from a public set with known answers: the 177 SWE-bench Lite issues of django, pytest, sphinx, requests, flask, pylint, seaborn, xarray and astropy, each repo built at the commit its issues were filed against, the issue title as the question and the files the real fix changed as the right answer. `query_graph` with the MCP defaults (BFS, depth 3, ~2000 tokens), graphify 0.9.85: | | right file is the first file shown | in the first 3 | in the first 5 | anywhere in the answer | |---|---|---|---|---| | `query_graph` | 25% | 34% | 38% | 62% | | BM25 over the repo's .py files (reference) | 32% | 56% | 64% | 92% in the top 50 | The same set run against some open query PRs (each applied on its own base, same graphs): | | first 5 | answers carrying \"Complete answer over budget\" (full issue text as the question) | |---|---|---| | 0.9.85 | 38% | 55 of 177 | | #2403 (no test-path seeds) | 51% | 38 | | #3417 (ranking rewrite) | 51% | 146 | | #3284 | 39% | 61 | | #3636 | 38% | 55 | ### Proposed solution `graphify benchmark --questions FILE`: a JSON list or JSON Lines of `{\"question\": ..., \"files\": [...]}`. Each question goes throug",
+      "existing_labels": [
+        "enhancement"
+      ],
+      "expected": {
+        "area": "area/query",
+        "kind": "kind/feature",
+        "good_first_issue": false
+      },
+      "note": "`graphify benchmark` only measures answer size; asks for an accuracy metric. Query-quality tooling."
+    },
+    {
+      "number": 4361,
+      "title": "Semantic extraction and labeling pick a cloud backend from ambient API keys (and `claude -p` as a fallback) without an explicit opt-in",
+      "body": "**Summary** When the headless CLI needs semantic extraction, community labeling or `--dedup-llm` and no backend was supplied, graphify auto-detects one from environment settings, checking the built-in cloud providers before Ollama. If labeling finds no backend, it falls back to the `claude` CLI when that is on `PATH`. The README documents the order, but there is no general switch that requires a cloud backend to be named explicitly. #3300 / #3305 raise this for Bedrock only; this issue is the general case. **Where** - `graphify/llm.py` L3190-L3220 `detect_backend()`: gemini -> kimi -> claude -> openai -> deepseek -> azure -> bedrock (selected by the presence of `AWS_PROFILE` / `AWS_REGION` / `AWS_DEFAULT_REGION`) -> ollama; custom registered backends are checked after Ollama. - Callers that use it when no backend is given: `graphify/cli.py` L3869-L3871 (`extract`), `graphify/llm.py` L1970 (library `extract_files_direct`), L3548 (labels). - `graphify/llm.py` L3551-L3559: `if not backend and _claude_cli_available(): backend = \"claude-cli\"`, which runs `claude -p` with the prompt on stdin (L2947-L2974). - README \"Data residency\" (L613) describes the order. - Permalink: https://github.com/Graphify-Labs/graphify/blob/2cb81c6fd5ec0758453606a3a76e516e893199b4/graphify/llm.py#L3190-L3220 **Why it matters** API keys in a developer environment are often there for other tools (a coding assistant, a notebook, CI). A user who runs `graphify extract .` without `--backend`, expecting a local run, can send the content of uncached documents (and image data where the backend supports it) to ",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/llm",
+        "kind": "kind/bug",
+        "good_first_issue": false
+      },
+      "note": "llm.py auto-detects a cloud backend without an explicit opt-in; a behaviour defect in backend selection."
+    },
+    {
+      "number": 4379,
+      "title": "[Bug]: Solidity: calls, `super` calls and modifiers inherited from a base contract get no edge",
+      "body": "### Pre-flight checks - [x] I have checked the Troubleshooting section in the README ### What happened? The Solidity extractor binds a bare call `f()` and a modifier `onlyX` only to members of the contract that makes the call. Almost every real contract calls into its bases (`_msgSender()` from `Context`, `onlyOwner` from `Ownable`, `super.supportsInterface()`), and those calls get no edge, so `explain` / `affected` on a base-contract function miss every derived contract that uses it. ```solidity // Ownable.sol import {Context} from \"./Context.sol\"; abstract contract Ownable is Context { modifier onlyOwner() { _checkOwner(); _; } function _checkOwner() internal view { require(owner() == _msgSender()); } // _msgSender: no edge } // Vault.sol import {Ownable} from \"./Ownable.sol\"; contract Vault is Ownable { function sweep() external onlyOwner { } // onlyOwner: no edge } ``` `super.f()` is lost twice over: it is never resolved, and tree-sitter-solidity parses `x || super.f(y)` (the usual `supportsInterface` shape) as a call of `(x || super).f`. **Expected:** Each such call or modifier links to the member solc resolves it to: the first declaration in the caller contract's C3 linearization (for `super.f()`, the first one after the caller's own contract). ### Steps to reproduce ```shell Save the two files above (plus a `Context.sol` declaring `_msgSender()`), run `graphify update . --no-cluster`, and look for `calls` / `uses` edges out of `_checkOwner()` and `sweep()`. ``` ### Error output or graph output ```text Answer key: solc's AST (`referencedDeclaration` of every call, mod",
+      "existing_labels": [
+        "bug"
+      ],
+      "expected": {
+        "area": "area/extract",
+        "kind": "kind/bug",
+        "good_first_issue": false
+      },
+      "note": "Solidity resolver binds calls only to the calling contract; language extractor."
+    },
+    {
+      "number": 4398,
+      "title": "Release commits since 0.9.85 bump `pyproject.toml` but don't refresh `uv.lock` (`uv lock --check` fails on tags v0.9.85–v0.9.88)",
+      "body": "## Summary `RELEASING.md` step 3 says to run `uv lock` so `uv.lock` records the new version, and step 5 says to commit the version, changelog and lock together. Releases up to 0.9.84 did this; from 0.9.85 on, the release commits change `pyproject.toml` and `CHANGELOG.md` but leave `uv.lock` untouched. ## Reproduction On a clean checkout of each tag: ```bash git worktree add --detach /tmp/chk vX.Y.Z && cd /tmp/chk && uv lock --check; echo $? ``` | tag | `uv lock --check` | |---|---| | v0.9.84 | 0 | | v0.9.85 | 1 | | v0.9.86 | 1 | | v0.9.87 | 1 | | v0.9.88 | 1 | On v0.9.88 the `graphifyy` entry in `uv.lock` still reads `version = \"0.9.84\"`. The last commits that touched `uv.lock` are the 0.9.81–0.9.84 release commits (`622474b8`, `5b74d7d7`, `89db9350`, `effee34d`). Running `uv lock` on the clean v0.9.88 tag rewrites 108 lines of `uv.lock` (version bump plus a re-resolution of some dependency markers and extras entries). ## Impact Small. CI isn't affected, since `.github/workflows/ci.yml` uses `uv sync --frozen` / `uv run --frozen`. It does bite anyone who runs a plain `uv sync` on a checkout: uv notices the stale lock, rewrites it, and leaves the working tree dirty. In my case that blocked the next `git rebase` of a local branch until I reverted `uv.lock` by hand, on every release. ## Suggested fix Either of these would do, and they aren't exclusive: - Run `uv lock` as part of the release commit again, as `RELEASING.md` already describes. - Add `uv lock --check` to CI, so a release commit that forgets the lock fails instead of shipping a stale one.",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/ci",
+        "kind": "kind/bug",
+        "good_first_issue": true
+      },
+      "note": "Release commits drift from uv.lock; release/CI tooling. Fix is a release-script step with a clear check (`uv lock --check`)."
+    },
+    {
+      "number": 4413,
+      "title": "[Bug]: Ollama ignores graphify's context size, so docs come back empty",
+      "body": "## What's happening I tried `graphify extract --backend ollama` with qwen2.5:14b on a few docs, and none of them made it into the graph. Every try, the model wrote a plain summary of the docs instead of JSON, and graphify gave up after 3 retries. graphify works out a context size for each chunk and sends it to Ollama as `num_ctx`. But it sends it to Ollama's `/v1` address, and that address ignores it. So Ollama just uses its own default, which is 4096 on my machine, and cuts off the rest of the prompt. That cuts off the part asking for JSON, so the model answers in plain text. You can see it in graphify's own output. It says `tokens: 4,096 in` even though the docs were a lot bigger than that. ## How to see it for yourself This sends the same long prompt with `num_ctx` set to 20000, once to `/v1` like graphify does and once to Ollama's own `/api/chat`: ```bash python3 - <<'EOF' import json, urllib.request long = \"word \" * 12000 def post(path, body): r = urllib.request.Request(\"http://localhost:11434\" + path, json.dumps(body).encode(), {\"Content-Type\": \"application/json\"}) return json.load(urllib.request.urlopen(r)) m = \"qwen2.5:14b\" a = post(\"/v1/chat/completions\", {\"model\": m, \"messages\": [{\"role\": \"user\", \"content\": long}], \"max_tokens\": 10, \"options\": {\"num_ctx\": 20000}}) print(\"/v1:\", a[\"usage\"][\"prompt_tokens\"]) b = post(\"/api/chat\", {\"model\": m, \"messages\": [{\"role\": \"user\", \"content\": long}], \"stream\": False, \"options\": {\"num_ctx\": 20000, \"num_predict\": 10}}) print(\"/api/chat:\", b[\"prompt_eval_count\"]) EOF ``` I got `/v1: 4096` and `/api/chat: 12030`. ## Proof it's th",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/llm",
+        "kind": "kind/bug",
+        "good_first_issue": false
+      },
+      "note": "Ollama ignores num_ctx because graphify sends it to the /v1 address; LLM backend."
+    },
+    {
+      "number": 4439,
+      "title": "[Bug]: Rust: `use` edges target a bare name, and since 0.9.63 the stub they leave makes `affected`/`explain` ambiguous",
+      "body": "### Pre-flight checks - [x] I have checked the Troubleshooting section in the README ### What happened? A Rust `use` adds an `imports_from` edge whose target is the bare, case-folded name it imports (`invoice` for `use crate::model::Invoice;`), not the declaration's id. Nothing resolves that target directly. It reaches the declaration only when a sourceless node with the same id exists for `_rewire_unique_stub_nodes` to remap, which is what an unresolved type annotation such as `fn f(i: &Invoice)` creates. When the type is only constructed, called or not used at all, or when its annotations resolve straight to the declaration, no such node exists and the edge dangles. Up to 0.9.62 the dangling edge was dropped, so the import was silently lost. Since 0.9.63 (#2873) its target is minted as an `external` stub labelled `invoice`, which ties with the real `Invoice` in name lookups: `graphify affected Invoice` prints `No unique node match for Invoice` and exits 0, and `graphify explain Invoice` reports `Ambiguous: 'Invoice' matches 2 nodes in different files.` Expected: the edge lands on `Invoice` in `src/model.rs`, no stub is minted, and both commands resolve the name. ### Steps to reproduce ```toml # Cargo.toml [package] name = \"repro\" version = \"0.1.0\" edition = \"2021\" ``` ```rust // src/lib.rs pub mod billing; pub mod model; // src/model.rs pub struct Invoice(pub u64); // src/billing.rs use crate::model::Invoice; pub fn make() -> u64 { Invoice(1).0 } ``` ```sh graphify extract . --code-only --cargo --force graphify cluster-only . --no-viz --no-label graphify affected Invoice ",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/extract",
+        "kind": "kind/bug",
+        "good_first_issue": false
+      },
+      "note": "Rust `use` edges target a bare name that nothing resolves; extractor/resolver."
+    },
+    {
+      "number": 4444,
+      "title": "[Bug]: Ignore patterns leak from home directory when an invalid .git marker is present",
+      "body": "Description Graphify can discover ignore patterns from a user's home directory when scanning a temporary project that is not inside a valid Git repository. On Windows, my home directory (C:\\Users\\vishn) contains a .git directory that Git does not recognize as a valid repository. However, _find_vcs_root() in graphify/detect.py treats the presence of this directory as a VCS root. My home-level .gitignore contains node_modules. When Graphify scans a pytest temporary directory, this unrelated ignore pattern is loaded, causing the ignore-pattern count to be incorrect. Steps to reproduce Use Windows with Python and pytest. Have a home directory containing an invalid or incomplete .git directory. Add node_modules to the home-level .gitignore. Run: uv run pytest tests/test_detect.py::test_graphifyignore_excludes_file -vv Observe the assertion failure. Expected behavior Graphify should not load unrelated ignore patterns from a home directory that is not a valid VCS repository. The test should count only the two patterns declared in the temporary project's .graphifyignore. Actual behavior The test expects graphifyignore_patterns == 2, but receives 3. The additional pattern is node_modules, inherited from the home-level .gitignore. Environment OS: Windows Python: 3.11.9 Test framework: pytest Affected code: graphify/detect.py, _find_vcs_root() and ignore-pattern discovery Suggested direction Consider how VCS root discovery should handle invalid or incomplete repository markers, while preserving support for legitimate repositories and the existing VCS-boundary tests.",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/extract",
+        "kind": "kind/bug",
+        "good_first_issue": true
+      },
+      "note": "detect.py treats an invalid home .git as a VCS root and leaks home ignore patterns. One function, clear repro."
+    },
+    {
+      "number": 4454,
+      "title": "[Feature]: Add Support for the Latest OpenCode Version",
+      "body": "### Problem or use case ## Description The latest version of OpenCode introduces changes that appear to affect compatibility with the current integration. It would be great to update the integration to support the newest OpenCode release and ensure that all existing features continue to work as expected. ## Expected Behavior The integration should work seamlessly with the latest version of OpenCode without compatibility issues. ## Actual Behavior The current integration appears to have compatibility issues with the new OpenCode version. ## Additional Context See the attached screenshots for reference. <img width=\"494\" height=\"110\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/a37371d6-dac9-46f9-b661-c40618895247\" /> <img width=\"653\" height=\"150\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/62d13332-240d-4dda-a3fe-f6922b1c79a6\" /> ### Proposed solution Update the integration to support the latest OpenCode version, ensuring compatibility with its updated APIs, commands, and workflows. The integration should automatically detect the installed OpenCode version and use the appropriate implementation to maintain backward compatibility with older releases. All existing functionality should continue working without requiring users to downgrade OpenCode or make manual configuration changes. ### Alternatives considered _No response_ ### Area Extraction or language support ### Are you willing to submit a PR? Yes, but I will need guidance ### Compatibility / behavior impact The proposed change should primarily affect OpenCode integration compatibility, with",
+      "existing_labels": [
+        "enhancement"
+      ],
+      "expected": {
+        "area": "area/install",
+        "kind": "kind/feature",
+        "good_first_issue": false
+      },
+      "note": "Support the latest OpenCode version in the integration/skill."
+    },
+    {
+      "number": 4469,
+      "title": "query answers repeat each node's file path; a compact form gives the same answer in ~1.7x fewer tokens",
+      "body": "## What happens Every `NODE` line in a `graphify query` answer repeats the node's full source path. On a graph built without clustering, it also carries an empty `community=`. Measured on SWE-bench Lite answers (12 repos, AST-only graphs, default BFS and 2,000-token budget): | part of an answer | share of its characters | |---|---| | NODE lines | 87% | | the repeated `src=` paths | 36% | | empty `community=` | 12% | | EDGE lines | 3% | A file with five nodes in the answer pays for its path five times. Agents read these answers on every query, so the repetition is spent over and over. ## Proposal Add an opt-in compact form of the same answer. Write each file once, in the order of its first node, with its nodes beneath it in their original order. Leave out empty fields. Change nothing else: the budget cut, the notices and the order. ``` FILE django/db/models/query.py QuerySet L280 filter() L1203 FILE django/db/models/sql/where.py WhereNode L14 ``` On 600 answers (300 SWE-bench Lite issues x 2 queries), this gives the same files in the same order in 600 of 600, at 1.74x fewer tokens. A PR follows.",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/query",
+        "kind": "kind/performance",
+        "good_first_issue": false
+      },
+      "note": "Query answers repeat each node's source path; render more compactly for fewer tokens."
+    },
+    {
+      "number": 4480,
+      "title": "[Feature]: query: lead with the file that matches a natural-language question best, not the single best-scoring node",
+      "body": "### Problem or use case On a natural-language question, `graphify query` starts from the single best-scoring node, and the renderer prints the start nodes first. On a question of three or more words, that node is often a test, whose name repeats the words of the bug report, or a same-named helper in another file. The file the question is about usually matches through several of its nodes at once, each scoring a little lower, so it ends up behind them. An agent reading the answer starts in the wrong file. Measured on SWE-bench Lite: 285 issues across 12 repos, graphs from `graphify update`, default BFS depth 2, 2,000-token budget, with the fix's changed files as the key. - Asked by the issue title, the fixed file is printed first for 78 of 285. - Of the 207 misses, the first file is a test 58 times, a file in the same folder 41 times, and a file elsewhere 108 times. - The fixed file is among the 50 best-scored nodes in 113 of those 207, so the ranking already holds it; it just doesn't lead. ### Proposed solution For a question of three or more terms: - sum the scores of the 50 best-scored candidates per file; - put the best node of the best file first among the start nodes, and keep the other seeds in their order behind it; - let a test file lead only when the question names tests, or when nothing else matches. Short queries (identifier lookups) keep their exact match first. Explicit `--seed` values are untouched. Fixed file printed first / in the first 3 / in the first 5 files, out of 285: | | by title | by title + 400 characters | |---|---|---| | v8 today | 78 / 115 / 131 ",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/query",
+        "kind": "kind/feature",
+        "good_first_issue": false
+      },
+      "note": "Query should lead with the best-matching file, not the single best-scoring node."
+    },
+    {
+      "number": 4494,
+      "title": "[Bug] Pi skill uses unsupported general-purpose subagent instead of delegate",
+      "body": "**Environment**: - Graphify: 0.9.90, installed via uv tool - Host: Pi coding agent - Subagent extension: nicobailon/pi-subagents **Problem** Graphify's Pi-specific skill hardcodes the Claude Code agent type general-purpose during semantic extraction (Step B2). However, native pi-subagents does not provide a built-in agent with this name. Its equivalent is delegate, which already has the required read, bash, and write tools. The resulting error is: ```text Semantic extraction could not start: pi-subagents rejected requested general-purpose agent as unknown. Graph merge and output refresh did not run; existing graph remains unmodified. ``` **Expected behavior** When installed with `graphify install --platform pi`, Graphify should use native Pi agent names and dispatch semantics. The default semantic extraction agent should be delegate, or another available agent with the required read/write capabilities. **Suggested fix**: 1. Update graphify/skill-pi.md to use native pi-subagents dispatch with delegate. 2. Replace hardcoded general-purpose references in Step B2 and recovery instructions in Step B3. 3. Preserve the existing requirement to write and validate extraction chunk files. 4. Add a Pi-specific regression test to prevent unsupported agent names from being introduced again. **Workaround** - Manually create ~/.pi/agent/agents/general-purpose.md with the appropriate tool permissions. - This avoids the unknown-agent error but requires unnecessary compatibility configuration. **Related issues** - #2525: Hardcoded general-purpose dispatch under restricted host policies. - #24",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/install",
+        "kind": "kind/bug",
+        "good_first_issue": true
+      },
+      "note": "Pi skill hardcodes the Claude Code `general-purpose` agent; pi-subagents uses `delegate`. One-line skill fix."
+    },
+    {
+      "number": 4508,
+      "title": "export wiki: a community relabelled only by case loses its article on case-insensitive filesystems (orphan sweep compares names case-sensitively)",
+      "body": "### What happened? On a case-insensitive filesystem (the macOS APFS default; also NTFS), `to_wiki` deletes a community's article when the community's label changes only in letter case between two exports, for example `groups` → `Groups`. `index.md` still links to `Groups.md`, which no longer exists. The cause is the end-of-run orphan sweep in `graphify/wiki.py` (`to_wiki`, around line 451): ```python for old_article in out.glob(\"*.md\"): if old_article.name not in produced: old_article.unlink() ``` `produced` contains `Groups.md`. On a case-preserving, case-insensitive filesystem, the existing directory entry keeps its old name, `groups.md`: the atomic write replaces the file's contents but not the name's case. `\"groups.md\" not in {\"Groups.md\"}` is true, so the sweep unlinks `groups.md`, which is the very file this run just wrote. **Expected:** the article survives, ideally under the new case, and the link in `index.md` resolves. `_unique_slug` already folds case when it checks for collisions, so the sweep looks like the one remaining case-sensitive comparison. Possible fixes: - compare folded names, e.g. `old_article.name.casefold() not in {p.casefold() for p in produced}`; - or skip any path that `os.path.samefile`s a produced one. To get the new case onto disk as well, rename case-only changes before writing. The end-of-run sweep arrived with the #3060 fix. The earlier up-front unlink, as I understand it, didn't have this problem. ### Steps to reproduce ```python import pathlib, tempfile import networkx as nx from graphify.wiki import to_wiki G = nx.Graph() G.add_node(\"a\"",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/export",
+        "kind": "kind/bug",
+        "good_first_issue": true
+      },
+      "note": "wiki.py orphan sweep is case-sensitive, so a case-only relabel deletes an article on case-insensitive filesystems."
+    },
+    {
+      "number": 4510,
+      "title": "Protocol Buffers (.proto) files are not extracted",
+      "body": "## Problem `.proto` files are not in `CODE_EXTENSIONS`, so Protocol Buffers schemas are skipped silently. In a repo that defines its service contracts in protobuf (gRPC services, or message schemas shared over a message bus), the contracts are absent from the graph: - `explain \"OrderRequest\"` finds nothing, and there is no node that a producer's or consumer's code could be traced through ## Proposed behavior Extract `.proto` files (proto2, proto3, editions) as code: - **Nodes:** the file, messages (nested), proto2 groups, enums and their values, services, rpcs and extension fields. The fully qualified protobuf name goes in `metadata.fqn`. - **Edges:** `contains` / `method` for structure; `references` for field, `map`, `oneof`, group and `extend` types and rpc request/response types; `references` from a declaration to the extension behind each custom `(option)` it sets; `imports` for `import` / `import public`. - **Doc comments:** leading doc comments become `rationale` nodes, attached the way protoc's `SourceCodeInfo` attaches them. - **Metadata:** `deprecated`, enum value numbers, rpc streaming and `google.api.http` bindings. On the file node, `syntax` / `edition`, `package`, and the code-generation options (`java_package`, `go_package`, `csharp_namespace`, ...). - **Resolution:** names resolve with protobuf's own scoping rule, in-file during extraction and across files in a language resolver. As with protoc, only imported files are in scope, and ambiguous references stay unbound rather than guessed. ## Alternatives considered - There is no tree-sitter grammar for protobuf",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/extract",
+        "kind": "kind/feature",
+        "good_first_issue": false
+      },
+      "note": "Add Protocol Buffers (.proto) extraction; a whole new language extractor."
+    },
+    {
+      "number": 4527,
+      "title": "extract_pdf_text returns \"\" silently on extraction failure (indistinguishable from an empty PDF)",
+      "body": "`extract_pdf_text` wraps its entire `PdfReader` loop in `except Exception: return \"\"`, so a malformed, encrypted, or otherwise unreadable PDF is **indistinguishable from a PDF with no text**. Downstream consumers (knowledge-graph builders, RAG indexers) count the document as \"empty\" rather than \"failed\" — in our pipeline this was a coverage-audit blind spot: files producing zero nodes with no trace anywhere, undetectable without re-running extraction manually. **Suggested shape:** a warning to stderr naming the file and the exception class before returning (or a distinct sentinel), and a separate warning when the result is near-empty (so scanned/image-only PDFs are visible in logs rather than silently skipped — related: the OCR gap in #181). We implemented both locally (a warning on failure; a near-empty-result warning; an optional OCR fallback for the latter case) and they turned silent data loss into visible, countable events. Small patch, happy to PR. Environment: graphifyy 0.9.92, Python 3.13, pypdf (pdf extra).",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/extract",
+        "kind": "kind/bug",
+        "good_first_issue": true
+      },
+      "note": "extract_pdf_text swallows every error and returns \"\"; small, self-contained error-handling fix."
+    },
+    {
+      "number": 4529,
+      "title": "Node confidence is not normalized by the build (edges and hyperedges are)",
+      "body": "A consistency gap in the confidence handling: `_fold_confidence` normalizes the `confidence`/`confidence_score` pair on **edges** (build.py ~L540) and **hyperedges** (~L1223), but **nodes** get no equivalent fold. Node dicts pass through the build verbatim (validate.py checks only {id, label, file_type, source_file}; unknown fields are preserved), so when a prompt schema emits per-node confidence (as ours now does) the values reach graph.json unnormalized: a model emitting \"extracted\" (lowercase), a bare float, or a drifted string lands as-is, while the same drift on an edge is folded to the enum + score. Suggested shape: fold nodes in the same place node aliases are folded (`_fold_node_aliases`), so nodes and edges share one normalization contract. No behavior change for graphs without node confidence. Environment: graphifyy 0.9.92, Python 3.13. Found wiring node-level confidence through an extraction pipeline; our extractor carries a local backstop fold meanwhile.",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/build",
+        "kind": "kind/bug",
+        "good_first_issue": false
+      },
+      "note": "Nodes are not confidence-folded the way edges/hyperedges are; touches the build's graph.json shape."
+    },
+    {
+      "number": 1843,
+      "title": "README troubleshooting recommends .claudeignore, which Claude Code does not support",
+      "body": "The v8 README's Troubleshooting section ('Claude Code prompt cache invalidated after every graphify extract') tells users to add graph.json and graphify-out/ to a .claudeignore file. Claude Code has no .claudeignore support. Evidence: - The official docs (code.claude.com/docs, settings page, 'Exclude sensitive files') document permissions.deny Read rules as the mechanism, replacing the deprecated ignorePatterns. No page mentions .claudeignore. - anthropics/claude-code#579 (the original .claudeignore feature request) was closed with 'You can do this now with deny permission rules!' — no .claudeignore file was ever shipped. - A long tail of user bug reports confirms the file silently does nothing: anthropics/claude-code#36163, #16704, #46699, #56997 ('.claudeignore is silently ignored'), #65812. So the README's remedy is a no-op: users create the file, nothing changes, and the prompt-cache symptom persists. Suggest either removing the entry or replacing it with the supported equivalent, e.g.: // .claude/settings.json { \"permissions\": { \"deny\": [\"Read(./graphify-out/**)\", \"Read(./graph.json)\"] } } (with the caveat that deny rules gate *access*, which also breaks 'graphify-out/wiki as navigation' workflows — the two goals conflict, which is worth a sentence in the docs). Found while acting on the same install that produced #1840. Local setup: graphifyy 0.9.13, Claude Code on Linux.",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/docs",
+        "kind": "kind/docs",
+        "good_first_issue": true
+      },
+      "note": "README troubleshooting recommends .claudeignore, which Claude Code does not support. One file."
+    },
+    {
+      "number": 525,
+      "title": "Docs inconsistency: is --wiki supported outside Claude Code?",
+      "body": "## Problem `--wiki` is documented in the main Claude-oriented skill file, but it does not appear in the non-Claude platform skill files. From what I can see in `v4`: - `graphify/skill.md` documents `/graphify <path> --wiki` in the Usage section as `build agent-crawlable wiki (index.md + one article per community)`. - The same file also has a dedicated `Step 6b - Wiki (only if --wiki flag)` section. - But platform-specific skill files such as `graphify/skill-codex.md` and `graphify/skill-opencode.md` do not list `--wiki` in their Usage sections. - The README presents graphify as working across multiple assistants/platforms, so this ends up being unclear from a user perspective. ## Question Is `--wiki` currently intended to be: 1. supported on all platforms, and just missing from the non-Claude skill docs 2. supported only on Claude Code right now 3. supported on some subset of platforms only ## Why this is confusing If I compare the docs, the current impression is that only the main `skill.md` exposes `--wiki`, while other platform skill variants do not. That makes it hard to tell whether: - the flag is actually unsupported outside Claude Code - the support exists but the platform-specific skill docs are stale/incomplete - there are platform-specific caveats that are not documented ## Request Could you clarify the support status of `--wiki` for platforms other than Claude Code, such as Codex / OpenCode / Cursor / Aider / OpenClaw / others? If `--wiki` is supported more broadly, it would help to update the platform-specific skill files so they stay aligned with `graphify/skil",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/docs",
+        "kind": "kind/docs",
+        "good_first_issue": false
+      },
+      "note": "Platform skill files disagree about whether --wiki is supported; resolving it needs a support decision."
+    },
+    {
+      "number": 1177,
+      "title": "how to integrate with multi repo project",
+      "body": "what is the best practice to integrate it with vscode when working on a project with following structure and always opening vscode in project-root: project-root (no git repo) --docs git repo --backend git repo --modules ----module1 git repo ----module2 git repo --frontend git repo i need to ask a question and it checks backend, frontend, modules... automatically. also is it possible to integrate context-mode? is ther any integration with graphify? or combine benefit?",
+      "existing_labels": [],
+      "expected": {
+        "area": "area/docs",
+        "kind": "kind/question",
+        "good_first_issue": false
+      },
+      "note": "A user asks how to use graphify across a multi-repo workspace; a support/usage question."
+    }
+  ]
+}
