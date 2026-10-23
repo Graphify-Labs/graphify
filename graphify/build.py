@@ -1771,9 +1771,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if _edge_rel == "calls":
                 # Unchanged #1547/#1556 behavior: only INFERRED calls, and drop as
                 # soon as either family differs (an unknown ext counts as different).
+                # A VB call the VB resolver bound to one C# target is not a name
+                # match; a C# bare name matched to a VB Module member still is (#4570).
                 if (
                     attrs.get("confidence") == "INFERRED"
                     and src_ext and tgt_ext and src_fam != tgt_fam
+                    and not attrs.get("_vbnet_resolved")
                 ):
                     continue
             else:

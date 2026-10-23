@@ -85,7 +85,7 @@ from graphify.extractors.solidity import (  # noqa: F401
 from graphify.extractors.sql import _norm_ident as _sql_norm_ident, extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
-from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_partial_calls  # noqa: F401
+from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_calls, resolve_vbnet_partial_calls  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
@@ -7551,7 +7551,7 @@ register_language_resolver(
     LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("vbnet_partial_calls", frozenset({".vb"}), resolve_vbnet_partial_calls)
+    LanguageResolver("vbnet_partial_calls", frozenset({".vb"}), resolve_vbnet_calls)
 )
 register_language_resolver(
     LanguageResolver("r_sourced_calls", frozenset({".r", ".R"}), resolve_r_sourced_calls)
