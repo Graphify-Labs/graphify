@@ -319,7 +319,8 @@ def extract_commonlisp(path: Path) -> dict:
                             syms = [c for c in param.children if c.type == "sym_lit"]
                             if len(syms) >= 2:
                                 specializer_name = _text(syms[1])
-                                spec_nid = _cl_id(stem, specializer_name)
+                                spec_nid = ensure_class_ref(
+                                    specializer_name, param.start_point[0] + 1)
                                 add_edge(func_nid, spec_nid, "specializes",
                                          param.start_point[0] + 1)
                     break
