@@ -410,6 +410,8 @@ Beyond your AI assistant, query `graph.json` straight from the CLI with `graphif
 
 Backends, API keys, hook behavior, and tuning are controlled by environment variables. Full table: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+- **Claude CLI model**: `GRAPHIFY_CLAUDE_CLI_MODEL` overrides the model for the `claude-cli` backend (default: Opus). `haiku` or `sonnet` are usually enough for community naming; the semantic extraction pass benefits from a larger model.
+
 ---
 
 ## Privacy
