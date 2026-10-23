@@ -10419,8 +10419,20 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    # A PHP enum case is a case-SENSITIVE constant and never a call target. PHP
+    # function names are case-insensitive, so the folded index below would let
+    # an unresolved global helper `app()` bind to `TargetAddressType::APP`.
+    # (Other languages' enum members can be callable constructors - Swift
+    # payload cases, Rust variants - so this stays PHP-only.)
+    _php_case_nids = {
+        e.get("target")
+        for e in (*all_edges, *(resolution_context_edges or ()))
+        if e.get("relation") == "case_of"
+    }
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
+            continue
+        if n.get("id") in _php_case_nids and _lang_family(n.get("source_file")) == "php":
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")

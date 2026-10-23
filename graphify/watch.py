@@ -2080,7 +2080,8 @@ def _rebuild_code(
                 # typed by that file's imports, as in a full build.
                 for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
                     if edge.get("relation") not in (
-                        "contains", "method", "inherits", "imports", "imports_from"
+                        "contains", "method", "inherits", "imports", "imports_from",
+                        "case_of",
                     ):
                         continue
                     if not _is_ast_tier(edge):
