@@ -150,7 +150,11 @@ Then act on it:
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
   - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
   - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
-- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
+- Otherwise: proceed directly to Step 2a.
+
+### Step 2a - Offer to exclude committed bundles (#4425)
+
+See `references/bundle-exclusion.md` for the check and how to offer excluding a match before extraction.
 
 ### Step 2.5 - Video and audio (only if video files detected)
 
