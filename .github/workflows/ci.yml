@@ -50,7 +50,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12", "3.13", "3.14"]
+        # 3.10 is not in the matrix: the uv.lock (see issue #4693) only covers
+        # python_full_version >= '3.11', so `uv sync --frozen` cannot install
+        # there. Python 3.10 stays supported for installs that don't use the
+        # lock; a bare-pip 3.10 user of the svg/all/leiden extras still gets
+        # unpatched pillow.
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v6

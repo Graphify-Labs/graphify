@@ -153,6 +153,12 @@ dev = [
 ]
 
 [tool.uv]
+# pillow 13.x is the first release with fixes for every open advisory against
+# 12.3.0 (#4693) and needs Python >=3.11, so keep the lock on the 3.11+ branch.
+# Python 3.10 installs of the svg/all/leiden extras still resolve vulnerable
+# pillow outside this lock; 3.10 remains supported for installs without them.
+environments = ["python_full_version >= '3.11'"]
+
 # Install via: uv tool install graphifyy
 # Run without installing: uvx graphifyy install
 package = true
