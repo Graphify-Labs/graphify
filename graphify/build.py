@@ -1236,6 +1236,46 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if isinstance(edge, dict):
             _fold_edge_aliases(edge)
 
+    # Older graph.json files can contain semantic concept nodes without the
+    # schema-required source_file even though their incident edges retain the
+    # originating file. Preserve those nodes during an incremental rebuild,
+    # but restore auditable provenance deterministically from the edge evidence
+    # before validation. Do not invent a path when no incident edge proves one.
+    # Distinguish legacy semantic concept nodes from external code stubs and
+    # sourceless placeholders: code sources and non-concept nodes must NOT bind
+    # a sourceless node to a code/re-extracted file (#3155, #4399).
+    code_sources: set[str] = {
+        sf for n in extraction.get("nodes", [])
+        if isinstance(n, dict) and n.get("file_type") == "code"
+        and isinstance((sf := n.get("source_file")), str) and sf.strip()
+    }
+    incident_sources: dict[object, set[str]] = {}
+    for edge in extraction.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        source_file = edge.get("source_file")
+        if not isinstance(source_file, str) or not source_file.strip():
+            continue
+        if source_file in code_sources:
+            continue
+        for endpoint in (edge.get("source", edge.get("from")), edge.get("target", edge.get("to"))):
+            try:
+                incident_sources.setdefault(endpoint, set()).add(source_file)
+            except TypeError:
+                # The validator reports malformed, non-hashable endpoints.
+                continue
+    for node in extraction.get("nodes", []):
+        if not isinstance(node, dict) or "source_file" in node:
+            continue
+        if node.get("file_type") != "concept" or node.get("external") or node.get("type") == "external":
+            continue
+        try:
+            candidates = incident_sources.get(node.get("id"), set())
+        except TypeError:
+            continue
+        if candidates:
+            node["source_file"] = min(candidates, key=lambda value: (value.casefold(), value))
+
     errors = validate_extraction(extraction)
     # Dangling edges (stdlib/external imports) are expected - only warn about real schema errors.
     real_errors = [e for e in errors if "does not match any node id" not in e]

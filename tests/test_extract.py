@@ -5108,22 +5108,48 @@ def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
     assert extends_targets == {"./tsconfig.base.json"}
 
 
+def test_extract_json_nonexistent_file_returns_no_nodes(tmp_path):
+    """A nonexistent path must NOT emit a file node or claim relationships (#3155)."""
+    missing = tmp_path / "nonexistent" / "data.json"
+    result = extract_json(missing)
+    assert result["nodes"] == []
+    assert result["edges"] == []
+    assert "error" in result
+
+
 def test_extract_json_large_file_skipped(tmp_path):
     big = tmp_path / "big.json"
     # Write a JSON file just over 1 MiB
     big.write_bytes(b'{"x": "' + b"a" * (1_048_576) + b'"}')
     result = extract_json(big)
-    assert "error" in result
-    assert result["nodes"] == []
+    assert "skipped" in result
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(big)
+    assert result["nodes"][0]["status"] == "skipped"
 
 
 def test_extract_json_handles_invalid_json(tmp_path):
     bad = tmp_path / "broken.json"
     bad.write_text("{this is not: valid json!!!")
     result = extract_json(bad)
-    # Should not crash — returns empty or error result
+    # Should not crash — returns result retaining file identity
     assert isinstance(result, dict)
-    assert "nodes" in result
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(bad)
+
+
+def test_extract_json_unreadable_existing_file_retains_error_file_node(tmp_path, monkeypatch):
+    """An existing file that cannot be read retains its file node with error status (#3155)."""
+    p = tmp_path / "locked.json"
+    p.write_text('{"a": 1}')
+    def mock_open(*a, **kw):
+        raise PermissionError("Access denied")
+    monkeypatch.setattr(Path, "open", mock_open)
+    result = extract_json(p)
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["status"] == "error"
+    assert "Access denied" in result["nodes"][0]["error"]
+    assert "error" in result
 
 
 def test_extract_json_no_self_loops():
@@ -5137,7 +5163,7 @@ def test_extract_json_no_self_loops():
 # ---------------------------------------------------------------------------
 
 def test_extract_json_data_file_skipped(tmp_path):
-    """A data-shaped .json (eval fixture / dataset) must NOT emit per-key nodes."""
+    """Data JSON emits its file identity but no per-key nodes."""
     data = tmp_path / "cases.json"
     data.write_text(json.dumps({
         "generation": {"target": "gpt-4", "cases_file": "c.json", "num_cases": 12},
@@ -5145,7 +5171,9 @@ def test_extract_json_data_file_skipped(tmp_path):
         "suite": [{"name": "x"}, {"name": "y"}],
     }))
     result = extract_json(data)
-    assert result["nodes"] == []
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(data)
+    assert result["nodes"][0]["status"] == "skipped"
     assert result["edges"] == []
     assert "skipped" in result
 
@@ -5155,7 +5183,9 @@ def test_extract_json_top_level_array_skipped(tmp_path):
     data = tmp_path / "records.json"
     data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
     result = extract_json(data)
-    assert result["nodes"] == []
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(data)
+    assert result["nodes"][0]["status"] == "skipped"
     assert result["edges"] == []
 
 
