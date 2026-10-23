@@ -21,7 +21,7 @@ def _scan_blocks():
             m = re.search(r' -c "\n(.*)\n"', block, re.S)
             if m:
                 found.append((art.path, m.group(1).replace('\\"', '"')))
-    assert len(found) == 31
+    assert len(found) == 34
     return found
 
 
