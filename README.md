@@ -268,6 +268,7 @@ Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native P
 | `google` | Google Sheets rendering | `uv tool install "graphifyy[google]"` |
 | `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
 | `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
+| `watch` | Auto-rebuild on file changes (`graphify watch`) | `uv tool install "graphifyy[watch]"` |
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
