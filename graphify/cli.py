@@ -1864,6 +1864,7 @@ def dispatch_command(cmd: str) -> None:
             execute_and_capture_test_failure,
             build_nx_graph_from_graphify,
             extract_blast_radius_subgraph,
+            resolve_remediation_target,
             build_healing_prompt,
             extract_code_patch,
             apply_patch_to_file,
@@ -1890,9 +1891,10 @@ def dispatch_command(cmd: str) -> None:
         triage_results = []
         for fail in failures:
             blast_slice = extract_blast_radius_subgraph(G, fail.test_file, depth=depth)
+            target_to_patch = resolve_remediation_target(fail, blast_slice)
             triage_results.append({
                 "test": f"{fail.test_file}::{fail.test_node}",
-                "target_file": fail.test_file,
+                "target_file": str(target_to_patch),
                 "error": fail.error_message,
                 "blast_radius_nodes": len(blast_slice.get("nodes", [])),
                 "blast_radius_edges": len(blast_slice.get("relationships", [])),
@@ -1903,9 +1905,15 @@ def dispatch_command(cmd: str) -> None:
             print(json.dumps(triage_results, indent=2))
         else:
             for item in triage_results:
-                print(f"\n[Failure] {item["test"]}")
-                print(f"  Reason: {item["error"]}")
-                print(f"  Blast Radius: {item["blast_radius_nodes"]} nodes, {item["blast_radius_edges"]} relationships")
+                test_label = item["test"]
+                error_label = item["error"]
+                n_nodes = item["blast_radius_nodes"]
+                n_edges = item["blast_radius_edges"]
+                target_f = item["target_file"]
+                print(f"\n[Failure] {test_label}")
+                print(f"  Reason: {error_label}")
+                print(f"  Target for remediation: {target_f}")
+                print(f"  Blast Radius: {n_nodes} nodes, {n_edges} relationships")
 
         if dry_run:
             _log("\nDry-run active: diagnostic graph slice complete.")
@@ -1919,16 +1927,16 @@ def dispatch_command(cmd: str) -> None:
         _log(f"\nInitiating active healing loop with backend: {selected_backend} (max {max_iters} iterations)")
         for iteration in range(1, max_iters + 1):
             target_fail = failures[0]
-            target_path = Path(target_fail.test_file).resolve()
+            blast_slice = extract_blast_radius_subgraph(G, target_fail.test_file, depth=depth)
+            target_path = resolve_remediation_target(target_fail, blast_slice)
             if not target_path.exists():
-                print(f"error: target source file {target_path} not found", file=sys.stderr)
+                print(f"error: target file {target_path} not found", file=sys.stderr)
                 sys.exit(1)
 
             source_code = target_path.read_text(encoding="utf-8")
-            blast_slice = extract_blast_radius_subgraph(G, target_fail.test_file, depth=depth)
-            prompt = build_healing_prompt(target_fail, blast_slice, source_code)
+            prompt = build_healing_prompt(target_fail, blast_slice, source_code, target_path.name)
 
-            _log(f"Iteration {iteration}/{max_iters}: Querying {selected_backend} for code patch...")
+            _log(f"Iteration {iteration}/{max_iters}: Querying {selected_backend} for code patch to {target_path.name}...")
             try:
                 response = _call_llm(
                     prompt,
@@ -1936,13 +1944,13 @@ def dispatch_command(cmd: str) -> None:
                     model=model_arg,
                     max_tokens=4096,
                 )
+                patch = extract_code_patch(response)
             except Exception as e:
-                print(f"error: LLM patch synthesis failed: {e}", file=sys.stderr)
+                print(f"error: LLM patch synthesis rejected or failed: {e}", file=sys.stderr)
                 sys.exit(1)
 
-            patch = extract_code_patch(response)
             apply_patch_to_file(target_path, patch)
-            _log(f"Patch applied to {target_fail.test_file}. Re-running test suite...")
+            _log(f"Patch applied to {target_path.name}. Re-running test suite...")
 
             failures = execute_and_capture_test_failure(test_cmd)
             if not failures:
