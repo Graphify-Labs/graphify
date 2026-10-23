@@ -3956,6 +3956,8 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
+                # Preserve semantic re-queuing even if detect_incremental's default changes.
+                kind="semantic",
                 cache_root=out_root,
             )
             files_by_type = detection.get("files", {})
