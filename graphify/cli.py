@@ -2187,7 +2187,15 @@ def dispatch_command(cmd: str) -> None:
                 print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
             if len(connections) > len(shown):
                 remainder = connections[len(shown):]
-                print(f"  ... and {len(remainder)} more (--all lists all {len(connections)})")
+                # #2420: agents often treat the visible slice as the full answer.
+                # Point them at `affected`, which returns the uncapped reverse
+                # blast-radius (imports_from / calls / ...); `--all` lists the
+                # full forward connection set inline.
+                print(
+                    f"  ... and {len(remainder)} more "
+                    f"(run 'graphify affected \"{label}\" --depth 1' "
+                    f"for the full reverse blast-radius; --all lists all {len(connections)})"
+                )
                 # #2009: a bare count silently hides the answer on high-degree
                 # nodes ("who calls this, what's the impact?"). Group the cut
                 # connections by direction + file so their shape is visible
