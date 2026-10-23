@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
 from graphify.ids import make_id
@@ -15,15 +16,24 @@ from graphify.ids import make_id
 # function-local `import graphify.extract` + getattr(..., None) was a package ->
 # parent dependency that also failed silently if the module global were renamed
 # (#3666). None outside extract().
-_ACTIVE_SCAN_ROOT: "Path | None" = None
+#
+# A ContextVar rather than a module global: extraction runs concurrently
+# (ThreadPoolExecutor in tests, process pools in production), and a plain
+# global lets overlapping save/restore pairs interleave — the second call
+# saves the first one's root and restores it last, leaving the ambient root
+# set after extract() returns (#4602). ContextVar gives every thread (and
+# async task) its own value, so save/restore pairs nest correctly without a
+# lock.
+_ACTIVE_SCAN_ROOT: "ContextVar[Path | None]" = ContextVar(
+    "_ACTIVE_SCAN_ROOT", default=None
+)
 
 
 def set_active_scan_root(root: "Path | None") -> "Path | None":
     """Set the in-flight scan root, returning the previous value so the caller
     can restore it — extraction nests (a XAML shard re-enters extract())."""
-    global _ACTIVE_SCAN_ROOT
-    previous = _ACTIVE_SCAN_ROOT
-    _ACTIVE_SCAN_ROOT = root
+    previous = _ACTIVE_SCAN_ROOT.get()
+    _ACTIVE_SCAN_ROOT.set(root)
     return previous
 
 
@@ -32,7 +42,7 @@ def active_scan_root() -> "Path | None":
 
     A direct ``extract_markdown()`` / ``extract_xaml()`` call (no surrounding
     ``extract()``) sees None and the root-dependent behavior stays off."""
-    return _ACTIVE_SCAN_ROOT
+    return _ACTIVE_SCAN_ROOT.get()
 
 # Language built-in globals that AST may classify as call targets when used as
 # constructors or coercion functions (e.g. String(x), Number(x), Boolean(x)).
