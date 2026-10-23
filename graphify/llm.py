@@ -537,8 +537,14 @@ Edge direction rule — source is always the ACTOR, target is the ACTED-UPON:
 
 Hyperedges: if 3 or more nodes clearly participate together in a shared concept, flow, or pattern that is not captured by pairwise edges alone, add a hyperedge to the top-level `hyperedges` array (e.g. all classes implementing one protocol, all functions in one auth flow even if they don't all call each other, all concepts from a paper section forming one coherent idea). Use sparingly — only when the group relationship adds information beyond the pairwise edges. Maximum 3 hyperedges per chunk.
 
+files RULE: list EVERY input file of this chunk once in the top-level `files` array,
+with `path` copied character-for-character from its <untrusted_source> block and
+`entities` set to the number of nodes you attributed to it. A file that is empty or
+holds nothing worth extracting (a robots.txt, an empty index.html) still gets an entry,
+with `entities` 0. Never leave a file out.
+
 Output exactly this schema:
-{"nodes":[{"id":"stem_entity","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null,"rationale":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":0,"output_tokens":0}
+{"nodes":[{"id":"stem_entity","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null,"rationale":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"files":[{"path":"relative/path","entities":0}],"input_tokens":0,"output_tokens":0}
 """
 
 _DEEP_EXTRACTION_SUFFIX = """\
@@ -1045,6 +1051,11 @@ def _sanitize_fragment(parsed: dict) -> dict:
             parsed[key] = []
             continue
         parsed[key] = [entry for entry in value if isinstance(entry, dict)]
+    # `files` is the per-file acknowledgement list (#4547); anything but a list of
+    # objects is noise and is dropped rather than trusted.
+    if "files" in parsed:
+        value = parsed["files"]
+        parsed["files"] = [e for e in value if isinstance(e, dict)] if isinstance(value, list) else []
     # Coerce hyperedge member refs to hashable scalar ids (#2486): a model can
     # emit a member as an object ({"id": "a_ts"}) instead of a bare id. The
     # per-entry filter above only checks the hyperedge dicts themselves, so the
@@ -1284,6 +1295,22 @@ def _bedrock_response_text(resp: dict, default: str = "") -> str:
     return default
 
 
+def _file_acks(parsed: dict) -> list[tuple[str, int]]:
+    """The well-formed ``files`` acknowledgements of a response, as ``(path, entities)``.
+
+    Entries with a missing path or a non-integer ``entities`` (a bool is not a
+    count) are dropped; the model's claim is only usable when it is unambiguous
+    (#4547)."""
+    out: list[tuple[str, int]] = []
+    for entry in parsed.get("files") or []:
+        if not isinstance(entry, dict):
+            continue
+        path, count = entry.get("path"), entry.get("entities")
+        if isinstance(path, str) and path and isinstance(count, int) and not isinstance(count, bool):
+            out.append((path, count))
+    return out
+
+
 def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     """Detect a successful HTTP response that yielded no usable extraction.
 
@@ -1300,7 +1327,13 @@ def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     nodes = parsed.get("nodes")
     edges = parsed.get("edges")
     hyperedges = parsed.get("hyperedges")
-    return not nodes and not edges and not hyperedges
+    if nodes or edges or hyperedges:
+        return False
+    # No items, but every file acknowledged as empty (#4547): a real answer for a
+    # chunk of empty files. Whether it covers the WHOLE chunk is checked where the
+    # chunk is known (_extract_with_adaptive_retry).
+    acks = _file_acks(parsed)
+    return not (acks and all(count == 0 for _, count in acks))
 
 
 # Backoff between same-chunk retries of a hollow response (#2880). Two entries
@@ -2414,6 +2447,14 @@ def _merged_partial_files(*results: dict) -> list[str]:
     return sorted(out)
 
 
+def _merged_empty_files(*results: dict) -> list[str]:
+    """Union of the ``_empty_files`` carried by each result (survives merges)."""
+    out: set[str] = set()
+    for r in results:
+        out.update(r.get("_empty_files", []) or [])
+    return sorted(out)
+
+
 def _partial_source_files(result: dict) -> list[str]:
     """Source files known partial: those carrying a ``_partial`` item marker, plus
     any recorded in ``_partial_files`` (a chunk that truncated to an empty parse
@@ -2510,6 +2551,7 @@ def _extract_with_adaptive_retry(
             "model": model,
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
+            "_empty_files": _merged_empty_files(left, right),
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
@@ -2519,10 +2561,45 @@ def _extract_with_adaptive_retry(
             return bisect_slice(chunk[0])
         return None
 
+    def _resolve_sent(value: "str | Path") -> Path:
+        p = Path(value)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            return p.resolve()
+        except (OSError, RuntimeError):
+            return p
+
+    def _take_acks(result: dict) -> None:
+        # Record which files of THIS chunk the model read and found empty (#4547),
+        # then drop the raw `files` list. An acknowledgement for a path that was
+        # not sent in this chunk is ignored.
+        sent = {_resolve_sent(unit_path(u)) for u in chunk}
+        acks = _file_acks(result)
+        empty = {_resolve_sent(path) for path, count in acks if count == 0} & sent
+        result.pop("files", None)
+        result["_empty_files"] = sorted(str(p) for p in empty)
+        # A response that is only acknowledgements passed the hollow check
+        # because every file it named was empty. If the chunk holds files it did
+        # not name, it is a lazy answer, not an empty chunk: retry it as hollow.
+        if (
+            acks
+            and empty != sent
+            and result.get("finish_reason") not in ("hollow", "length")
+            and not (result.get("nodes") or result.get("edges") or result.get("hyperedges"))
+        ):
+            print(
+                f"[graphify] response acknowledged only {len(empty)} of {len(sent)} "
+                "file(s) and returned no nodes; treating it as hollow.",
+                file=sys.stderr,
+            )
+            result["finish_reason"] = "hollow"
+
     try:
         result = extract_files_direct(
             chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
         )
+        _take_acks(result)
         # A hollow response is retried as-is, with backoff — see _mark_hollow.
         # Bounded by a fixed number of attempts, so one misbehaving backend
         # costs at most _HOLLOW_BACKOFF_S + 1 calls per chunk instead of the
@@ -2544,6 +2621,7 @@ def _extract_with_adaptive_retry(
             result = extract_files_direct(
                 chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
             )
+            _take_acks(result)
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow or timeout
         is_timeout = _looks_like_timeout(exc)
         if not (_looks_like_context_exceeded(exc) or is_timeout):
@@ -2594,6 +2672,7 @@ def _extract_with_adaptive_retry(
             "model": model,
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
+            "_empty_files": _merged_empty_files(left, right),
         }
 
     if result.get("finish_reason") == "hollow":
@@ -2686,6 +2765,7 @@ def _extract_with_adaptive_retry(
         # logical unit.
         "finish_reason": "stop",
         "_partial_files": _merged_partial_files(left, right),
+        "_empty_files": _merged_empty_files(left, right),
     }
 
 
@@ -2985,19 +3065,40 @@ def extract_corpus_parallel(
         if sf:
             p = Path(sf)
             covered.add(p if p.is_absolute() else (root / p))
+    covered_resolved = {c.resolve() for c in covered}
+    # Files the model read and acknowledged as empty (#4547). A file in a
+    # truncated or hollow chunk is partial whatever it acknowledged, so it stays
+    # uncovered and keeps the shrink guard armed.
+    _partial_resolved = {_resolve_against_root(p) for p in _partial_source_files(merged)}
+    _acked_empty = {
+        _resolve_against_root(p) for p in merged.pop("_empty_files", []) or []
+    } - _partial_resolved
     uncovered = sorted(
         p for p in dispatched
-        if p.resolve() not in {c.resolve() for c in covered}
+        if p.resolve() not in covered_resolved and p.resolve() not in _acked_empty
+    )
+    empty_files = sorted(
+        p for p in dispatched
+        if p.resolve() not in covered_resolved and p.resolve() in _acked_empty
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
+    merged["empty_files"] = [str(p) for p in empty_files]
     _stamp_semantic_origin(merged)
+    if empty_files:
+        print(
+            f"[graphify] {len(empty_files)} dispatched file(s) were read and have no "
+            f"extractable content: {', '.join(p.name for p in empty_files[:5])}"
+            f"{f' (+{len(empty_files) - 5} more)' if len(empty_files) > 5 else ''}.",
+            file=sys.stderr,
+        )
     if uncovered:
         shown = ", ".join(p.name for p in uncovered[:5])
         more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
         print(
             f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
             f"produced no nodes and are absent from the graph: {shown}{more}. The model "
-            "returned a response but omitted them; a re-run will retry them.",
+            "returned a response but did not cover them. They are re-sent on every run, "
+            "but with the same --token-budget the model will likely skip them again.",
             file=sys.stderr,
         )
     return merged
@@ -3036,6 +3137,9 @@ def _merge_into(merged: dict, result: dict) -> None:
         merged["_partial_files"] = sorted(
             set(merged.get("_partial_files", []) or []) | set(incoming)
         )
+    # Files this chunk read and found empty (#4547).
+    if result.get("_empty_files"):
+        merged["_empty_files"] = _merged_empty_files(merged, result)
 
 
 def _call_llm(

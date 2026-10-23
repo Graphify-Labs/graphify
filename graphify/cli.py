@@ -4465,6 +4465,10 @@ def dispatch_command(cmd: str) -> None:
         # the same prompt, or the write lands where the next read won't look.
         from graphify.llm import _extraction_system as _sem_prompt_for
         sem_prompt = _sem_prompt_for(deep=deep_mode)
+        # The full list of files the model did not cover, for CI to read; a stale
+        # copy from an earlier run must not outlive it (#4547).
+        _uncovered_listing = graphify_out / "uncovered_files.txt"
+        _uncovered_listing.unlink(missing_ok=True)
         if semantic_files:
             sem_paths_str = [str(p) for p in semantic_files]
             if force:
@@ -4587,6 +4591,18 @@ def dispatch_command(cmd: str) -> None:
                 # fraction of the graph, so it must arm the guard exactly like a
                 # crashed chunk does. --allow-partial still overrides.
                 _omitted_files = list(fresh.get("uncovered_files") or [])
+                _listing_note = ""
+                if _omitted_files:
+                    def _rel_to_corpus(p: str) -> str:
+                        try:
+                            return Path(p).relative_to(target).as_posix()
+                        except ValueError:
+                            return Path(p).as_posix()
+                    _uncovered_listing.write_text(
+                        "".join(f"{_rel_to_corpus(p)}\n" for p in sorted(_omitted_files)),
+                        encoding="utf-8",
+                    )
+                    _listing_note = f" The full list is in {_uncovered_listing}."
                 if _omitted_files or _partial_semantic_files:
                     _extraction_incomplete = True
                     _coverage_note = ""
@@ -4613,7 +4629,7 @@ def dispatch_command(cmd: str) -> None:
                         f"[graphify extract] semantic extraction is incomplete: "
                         f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
                         f"{len(_partial_semantic_files)} came back truncated or hollow."
-                        f"{_coverage_note} The shrink guard stays armed for this write; "
+                        f"{_listing_note}{_coverage_note} The shrink guard stays armed for this write; "
                         f"pass --allow-partial to overwrite a larger existing graph anyway.",
                         file=sys.stderr,
                     )
