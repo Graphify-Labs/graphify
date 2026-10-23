@@ -2,10 +2,11 @@
 # Converts video/audio files to text transcripts for graph extraction
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-from graphify.paths import out_path as _out_path
+from graphify.paths import out_path as _out_path, write_json_atomic
 
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
@@ -184,3 +185,102 @@ def transcribe_all(
         except Exception as exc:
             print(f"  warning: could not transcribe {vf}: {exc}")
     return transcript_paths
+
+
+def update_detect_with_transcripts(
+    detect_path: Path | str,
+    transcript_manifest_path: Path | str,
+    transcript_paths: list[str],
+    *,
+    transcripts_dir: Path | str | None = None,
+) -> list[str]:
+    """Add this run's valid transcript files to the detection document inventory.
+
+    ``transcript_paths`` must come from the current :func:`transcribe_all` call.
+    Only existing ``.txt`` files contained by the transcript output directory are
+    recorded. The transcript manifest is replaced on every call, including an
+    empty or fully failed run, so paths from an earlier run cannot leak forward.
+    Existing source documents and all other detection metadata are preserved;
+    prior generated transcript entries are removed before current results are added.
+
+    Returned and recorded transcript paths are absolute, matching ``detect()``'s
+    file inventory and ``check_semantic_cache()``'s input contract.
+    """
+    detection_file = Path(detect_path)
+    detection = json.loads(detection_file.read_text(encoding="utf-8"))
+    if not isinstance(detection, dict) or not isinstance(detection.get("files"), dict):
+        raise ValueError("detection sidecar must contain a files object")
+
+    files = detection["files"]
+    documents = files.setdefault("document", [])
+    if not isinstance(documents, list) or any(not isinstance(path, str) for path in documents):
+        raise ValueError("detection files.document must be a list of paths")
+
+    root_value = detection.get("scan_root")
+    scan_root = Path(root_value) if isinstance(root_value, str) and root_value else None
+    transcript_root = Path(transcripts_dir) if transcripts_dir is not None else Path(_TRANSCRIPTS_DIR)
+    transcript_root = transcript_root.resolve()
+
+    def path_key(value: str, *, base: Path | None = None) -> str:
+        candidate = Path(value)
+        if not candidate.is_absolute() and base is not None:
+            candidate = base / candidate
+        try:
+            canonical = candidate.resolve(strict=False)
+        except (OSError, RuntimeError):
+            canonical = candidate.absolute()
+        return os.path.normcase(os.path.normpath(os.fspath(canonical)))
+
+    # Transcripts are generated artifacts below the output directory and are not
+    # discovered by a normal scan. Remove any prior generated entries so a repeat
+    # call cannot carry a transcript from an earlier run into B0.
+    documents[:] = [
+        path for path in documents
+        if not _is_within(Path(path), transcript_root, base=scan_root)
+    ]
+
+    document_keys = {path_key(path, base=scan_root) for path in documents}
+    transcript_keys: set[str] = set()
+    valid_paths: list[str] = []
+    for raw_path in transcript_paths:
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        try:
+            resolved = Path(raw_path).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not resolved.is_file() or resolved.suffix.lower() != ".txt":
+            continue
+        try:
+            resolved.relative_to(transcript_root)
+        except ValueError:
+            continue
+
+        value = os.fspath(resolved)
+        key = path_key(value)
+        if key in transcript_keys:
+            continue
+        transcript_keys.add(key)
+        valid_paths.append(value)
+        if key not in document_keys:
+            documents.append(value)
+            document_keys.add(key)
+
+    # Write the current manifest even when no transcript succeeded; never read or
+    # merge an old manifest here. If either write fails, propagate the error so the
+    # workflow does not silently continue with a partial document inventory.
+    write_json_atomic(transcript_manifest_path, valid_paths, ensure_ascii=False)
+    write_json_atomic(detection_file, detection, indent=2, ensure_ascii=False)
+    return valid_paths
+
+
+def _is_within(path: Path, root: Path, *, base: Path | None = None) -> bool:
+    """Return whether a possibly relative path resolves below ``root``."""
+    candidate = path
+    if not candidate.is_absolute() and base is not None:
+        candidate = base / candidate
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
