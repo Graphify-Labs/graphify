@@ -1,7 +1,9 @@
 from __future__ import annotations
 import json
 import hashlib
+import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import networkx as nx
@@ -76,17 +78,131 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def global_add(source_path: Path, repo_tag: str) -> dict:
+def _resolve_repo_root(source_path: Path) -> Path:
+    """Resolve the repository root corresponding to a graph.json path.
+
+    Prefers the explicit `.graphify_root` marker written alongside `graph.json`
+    (which preserves the scan root even under a custom `--out`), falling back to
+    the parent of `graphify-out/` or the file's immediate parent directory.
+    """
+    resolved = source_path.resolve()
+    root_marker = resolved.parent / ".graphify_root"
+    if root_marker.exists():
+        try:
+            candidate = Path(root_marker.read_text(encoding="utf-8").strip())
+            if candidate.is_dir():
+                return candidate.resolve()
+        except OSError:
+            pass
+    if resolved.parent.name == "graphify-out":
+        return resolved.parent.parent
+    return resolved.parent
+
+
+def _extract_built_at_commit(data: dict) -> str | None:
+    """Extract a non-empty built_at_commit stamp from loaded graph JSON data."""
+    raw = data.get("built_at_commit")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    graph_meta = data.get("graph")
+    if isinstance(graph_meta, dict):
+        nested = graph_meta.get("built_at_commit")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return None
+
+
+def _commits_between(
+    repo_root: Path,
+    base_commit: str | None,
+    head_commit: str | None,
+) -> int | None:
+    """Return the number of commits in `base_commit..head_commit`, or None if unavailable."""
+    if not base_commit or not head_commit:
+        return None
+    if base_commit == head_commit or head_commit.startswith(base_commit) or base_commit.startswith(head_commit):
+        return 0
+    try:
+        res = subprocess.run(
+            ["git", "rev-list", "--count", f"{base_commit}..{head_commit}"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if res.returncode == 0:
+            return int(res.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return None
+
+
+def settled(
+    source_path: Path,
+    budget_s: float,
+    *,
+    quiet_s: float = 2.0,
+    poll_interval_s: float = 0.4,
+) -> bool:
+    """Return True once `source_path` is not actively being written, or False on timeout.
+
+    Background `post-commit` / `post-checkout` hooks rebuild `graph.json`
+    asynchronously. Merging while a rebuild is mid-write can either fail JSON
+    parsing or stamp current git HEAD over older graph content.
+
+    When `budget_s <= 0` or the file has been untouched for longer than `quiet_s`,
+    this returns immediately without sleeping. Otherwise it polls `(st_size, st_mtime_ns)`
+    until two consecutive samples match or `budget_s` expires.
+    """
+    if budget_s <= 0 or not source_path.exists():
+        return True
+    try:
+        st = source_path.stat()
+    except OSError:
+        return False
+    if (time.time() - st.st_mtime) > quiet_s:
+        return True
+
+    waited = 0.0
+    last = (st.st_size, st.st_mtime_ns)
+    while waited < budget_s:
+        step = min(poll_interval_s, max(0.01, budget_s - waited))
+        time.sleep(step)
+        waited += step
+        try:
+            st = source_path.stat()
+        except OSError:
+            return False
+        stamp = (st.st_size, st.st_mtime_ns)
+        if stamp == last:
+            return True
+        last = stamp
+    return False
+
+
+def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> dict:
     """Add or update a project graph in the global graph.
 
     Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped,
-    cross_repo_calls.
-    Skipped=True means the source graph hasn't changed since last add.
+    unsettled, cross_repo_calls.
+    Skipped=True means the source graph hasn't changed since last add (or was
+    still being written when `unsettled=True`).
     """
     from graphify.build import prefix_graph_for_global, prune_repo_from_graph
 
     if not source_path.exists():
         raise FileNotFoundError(f"graph not found: {source_path}")
+
+    if settle_s > 0 and not settled(source_path, settle_s):
+        return {
+            "repo_tag": repo_tag,
+            "nodes_added": 0,
+            "nodes_removed": 0,
+            "skipped": True,
+            "unsettled": True,
+            "cross_repo_calls": 0,
+        }
 
     manifest = _load_manifest()
     src_hash = _file_hash(source_path)
@@ -101,13 +217,20 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             file=sys.stderr,
         )
     if existing.get("source_hash") == src_hash:
-        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
-                "cross_repo_calls": 0}
+        return {
+            "repo_tag": repo_tag,
+            "nodes_added": 0,
+            "nodes_removed": 0,
+            "skipped": True,
+            "unsettled": False,
+            "cross_repo_calls": 0,
+        }
 
     # Load source graph
     from graphify.security import check_graph_file_size_cap
     check_graph_file_size_cap(source_path)
     data = json.loads(source_path.read_text(encoding="utf-8"))
+    built_at_commit = _extract_built_at_commit(data)
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     from graphify.paths import restore_arc_direction
@@ -133,24 +256,24 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     # Map each deduplicated external onto the existing global node so that
     # edges incident to it can be rewired instead of dropped.
     remap = {}
-    for node, data in prefixed.nodes(data=True):
-        if not data.get("source_file") and data.get("label") in external_labels:
-            remap[node] = external_labels[data["label"]]
+    for node, node_data in prefixed.nodes(data=True):
+        if not node_data.get("source_file") and node_data.get("label") in external_labels:
+            remap[node] = external_labels[node_data["label"]]
 
     # Compose: add prefixed nodes (except deduplicated externals) into global graph
-    for node, data in prefixed.nodes(data=True):
+    for node, node_data in prefixed.nodes(data=True):
         if node not in remap:
-            G.add_node(node, **data)
-    for u, v, data in prefixed.edges(data=True):
+            G.add_node(node, **node_data)
+    for u, v, edge_data in prefixed.edges(data=True):
         u = remap.get(u, u)
         v = remap.get(v, v)
         # The direction markers name endpoints too; rewire them with u/v so
         # they never point at a deduplicated (absent) external node.
         for key in ("_src", "_tgt"):
-            if data.get(key) in remap:
-                data = {**data, key: remap[data[key]]}
+            if edge_data.get(key) in remap:
+                edge_data = {**edge_data, key: remap[edge_data[key]]}
         if u != v:  # don't introduce self-loops via remapping
-            G.add_edge(u, v, **data)
+            G.add_edge(u, v, **edge_data)
 
     added = prefixed.number_of_nodes() - len(remap)
     # A member call parked on a caller node (#3152) may be answered by a repo
@@ -162,17 +285,169 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     cross_repo_calls = link_cross_repo_member_calls(G)
     _save_global_graph(G)
 
+    from graphify.watch import _git_head
+    repo_root = _resolve_repo_root(source_path)
+    head_at_merge = _git_head(cwd=repo_root)
+    commit_basis: str | None = (
+        "built_at_commit"
+        if built_at_commit
+        else ("head_at_merge" if head_at_merge else None)
+    )
+
     manifest["repos"][repo_tag] = {
         "added_at": datetime.now(timezone.utc).isoformat(),
         "source_path": str(source_path.resolve()),
         "node_count": added,
         "edge_count": prefixed.number_of_edges(),
         "source_hash": src_hash,
+        "built_at_commit": built_at_commit,
+        "head_at_merge": head_at_merge,
+        "commit_basis": commit_basis,
     }
     _save_manifest(manifest)
 
-    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
-            "skipped": False, "cross_repo_calls": cross_repo_calls}
+    return {
+        "repo_tag": repo_tag,
+        "nodes_added": added,
+        "nodes_removed": removed,
+        "skipped": False,
+        "unsettled": False,
+        "cross_repo_calls": cross_repo_calls,
+    }
+
+
+def global_status(*, only: str | None = None) -> dict:
+    """Inspect staleness and union sync status for all registered repositories.
+
+    Compares each registered repo's manifest entry against its on-disk
+    `source_path` hash and its git repository `HEAD`, keeping extracted commit
+    provenance (`built_at_commit`) visibly separate from fallback git `HEAD`
+    (`head_at_merge`).
+    """
+    from graphify.watch import _git_head
+
+    repos = _load_manifest().get("repos", {})
+    if only:
+        targets = {t: info for t, info in repos.items() if only in t}
+        if repos and not targets:
+            raise ValueError(
+                f"--only {only!r} matched no registered repo of {sorted(repos)}"
+            )
+    else:
+        targets = dict(repos)
+
+    report_repos: dict[str, dict] = {}
+    for tag, info in targets.items():
+        src_str = info.get("source_path", "")
+        src_path = Path(src_str) if src_str else Path()
+        exists = bool(src_str) and src_path.is_file()
+
+        current_hash: str | None = None
+        hash_in_sync = False
+        source_built_at_commit: str | None = None
+        current_head: str | None = None
+        commits_behind: int | None = None
+
+        if exists:
+            try:
+                current_hash = _file_hash(src_path)
+                hash_in_sync = current_hash == info.get("source_hash")
+            except OSError:
+                hash_in_sync = False
+
+            try:
+                raw_data = json.loads(src_path.read_text(encoding="utf-8"))
+                if isinstance(raw_data, dict):
+                    source_built_at_commit = _extract_built_at_commit(raw_data)
+            except (OSError, json.JSONDecodeError, ValueError):
+                source_built_at_commit = None
+
+            repo_root = _resolve_repo_root(src_path)
+            current_head = _git_head(cwd=repo_root)
+            merged_commit = (
+                info.get("built_at_commit")
+                or info.get("head_at_merge")
+                or source_built_at_commit
+            )
+            commits_behind = _commits_between(repo_root, merged_commit, current_head)
+
+        stale = (
+            (not exists)
+            or (not hash_in_sync)
+            or (commits_behind is not None and commits_behind > 0)
+        )
+        report_repos[tag] = {
+            "source_path": src_str,
+            "source_exists": exists,
+            "node_count": info.get("node_count", 0),
+            "edge_count": info.get("edge_count", 0),
+            "added_at": info.get("added_at"),
+            "manifest_hash": info.get("source_hash"),
+            "current_hash": current_hash,
+            "hash_in_sync": hash_in_sync,
+            "built_at_commit": info.get("built_at_commit"),
+            "head_at_merge": info.get("head_at_merge"),
+            "commit_basis": info.get("commit_basis"),
+            "source_built_at_commit": source_built_at_commit,
+            "current_head": current_head,
+            "commits_behind": commits_behind,
+            "stale": stale,
+        }
+
+    all_in_sync = bool(report_repos) and not any(
+        r["stale"] for r in report_repos.values()
+    ) if report_repos else True
+    return {
+        "global_path": str(_GLOBAL_GRAPH),
+        "repos": report_repos,
+        "all_in_sync": all_in_sync,
+    }
+
+
+def global_sync(*, only: str | None = None, settle_s: float = 0.0) -> dict:
+    """Re-merge all repositories already registered in global-manifest.json.
+
+    Returns a summary dict with `updated`, `skipped`, `unsettled`, `missing`,
+    and per-repo `results`.
+    """
+    repos = _load_manifest().get("repos", {})
+    if only:
+        targets = {t: info for t, info in repos.items() if only in t}
+        if repos and not targets:
+            raise ValueError(
+                f"--only {only!r} matched no registered repo of {sorted(repos)}"
+            )
+    else:
+        targets = dict(repos)
+
+    updated: list[str] = []
+    skipped: list[str] = []
+    unsettled: list[str] = []
+    missing: list[str] = []
+    results: dict[str, dict] = {}
+
+    for tag, info in targets.items():
+        src_str = info.get("source_path", "")
+        src_path = Path(src_str) if src_str else Path()
+        if not src_str or not src_path.is_file():
+            missing.append(tag)
+            continue
+        res = global_add(src_path, tag, settle_s=settle_s)
+        results[tag] = res
+        if res.get("unsettled"):
+            unsettled.append(tag)
+        elif res.get("skipped"):
+            skipped.append(tag)
+        else:
+            updated.append(tag)
+
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "unsettled": unsettled,
+        "missing": missing,
+        "results": results,
+    }
 
 
 def global_remove(repo_tag: str) -> int:
