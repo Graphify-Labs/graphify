@@ -647,7 +647,6 @@ def test_probe_edge_confidence_of_each_cross_file_form(tmp_path, form):
 
 # P5 (added) -- a C# call to an overloaded VB Module Sub reaches the overload with the call's arity
 @_needs_vbnet
-@pytest.mark.xfail(strict=True, reason="separate bug: C# member resolver ignores arity")
 def test_probe_a_csharp_call_to_an_overloaded_vb_module_sub_reaches_the_overload_with_its_arity(tmp_path):
     module = ("Public Module Helpers\n Public Sub LogIt(a As String)\n End Sub\n"
               " Public Sub LogIt(a As String, n As Integer)\n End Sub\nEnd Module\n")
