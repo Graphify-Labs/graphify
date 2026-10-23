@@ -4081,6 +4081,31 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             and edge_fam != cand_fam
         )
 
+    def _other_module_candidate(edge: dict, remapped_id: str) -> bool:
+        """Refuse a candidate outside the module the edge says it came from (#2732).
+
+        A Python decorator imported from a module (`import pytest` ->
+        `@pytest.fixture`, `from pytest import fixture`) carries
+        ``metadata.ref_module``. The unique-definition rewire would otherwise
+        bind it to any one same-named def in the corpus (e.g. a local helper
+        called `fixture`), so it may only land on a definition that lives in
+        that module: its own file (`m.py`, `m/__init__.py`) or a file inside the
+        package (`m/decorators.py`, the target of a re-export from
+        `m/__init__.py`). Dotted modules match as consecutive path segments. An
+        edge without the marker is left to the existing rules.
+        """
+        md = edge.get("metadata")
+        module = md.get("ref_module") if isinstance(md, dict) else None
+        if not module:
+            return False
+        source_file = str(by_id.get(remapped_id, {}).get("source_file") or "")
+        if not source_file:
+            return False
+        parts = Path(source_file).with_suffix("").parts
+        wanted = tuple(module.split("."))
+        n = len(wanted)
+        return not any(parts[i:i + n] == wanted for i in range(len(parts) - n + 1))
+
     for edge in edges:
         is_csharp_scoped_edge = (
             _is_dotnet_source_file(str(edge.get("source_file", "")))
@@ -4102,7 +4127,9 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
             ) and not _names_own_builtin_base(
                 edge, str(target), remapped_target
-            ) and not _cross_language_candidate(edge, remapped_target):
+            ) and not _cross_language_candidate(
+                edge, remapped_target
+            ) and not _other_module_candidate(edge, remapped_target):
                 edge["target"] = remapped_target
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
