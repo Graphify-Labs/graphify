@@ -1,13 +1,15 @@
 """Query logging for graphify — append-only JSONL, fail-silent."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+from graphify.paths import _atomic_replace
 
 _NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
 
@@ -38,6 +40,74 @@ def _log_responses() -> bool:
 def nodes_from_result(result: str) -> int | None:
     m = _NODES_RE.search(result or "")
     return int(m.group(1)) if m else None
+
+
+def _max_records() -> int | None:
+    raw = os.environ.get("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _archive_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.archive{path.suffix}")
+
+
+@contextlib.contextmanager
+def _query_log_lock(path: Path) -> Iterator[None]:
+    """Serialize append+rotate on POSIX (watch.py uses the same flock pattern).
+
+    Multi-process rotation on Windows is best-effort when fcntl is unavailable.
+    If the lock file cannot be opened, degrades to unlocked append rather than
+    dropping the log line.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fh = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
+def _rotate_if_needed(path: Path, max_records: int) -> None:
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if not lines or len(lines) <= max_records:
+        return
+    overflow, keep = lines[:-max_records], lines[-max_records:]
+
+    def _write_keep(fh) -> None:
+        fh.write("".join(keep))
+
+    _atomic_replace(path, _write_keep)
+    archive = _archive_path(path)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with archive.open("a", encoding="utf-8") as fh:
+            fh.writelines(overflow)
+    except OSError:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.writelines(overflow)
 
 
 def log_query(
@@ -74,7 +144,11 @@ def log_query(
         if result is not None and _log_responses():
             rec["response"] = result
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with _query_log_lock(path):
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            max_records = _max_records()
+            if max_records is not None:
+                _rotate_if_needed(path, max_records)
     except Exception:
         pass
