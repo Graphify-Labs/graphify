@@ -499,6 +499,17 @@ def _thinking_disabled_via_env() -> bool:
     empty content otherwise."""
     return os.environ.get("GRAPHIFY_DISABLE_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
 
+
+def _ollama_json_mode_via_env() -> bool:
+    """Opt-in (GRAPHIFY_OLLAMA_JSON) to constrain built-in Ollama extraction to valid JSON.
+
+    Tolerant parsing recovers *a* JSON object from prose but not the content a model
+    never emitted once it drifted out of JSON: on the reporter's corpus the constrained
+    run returned 73 nodes where the unconstrained one returned 39 (#3988). Opt-in, like
+    GRAPHIFY_OLLAMA_SEED, because the /v1 fallback servers behind this backend (LM
+    Studio, llama.cpp) do not all accept ``response_format``."""
+    return os.environ.get("GRAPHIFY_OLLAMA_JSON", "").strip().lower() in ("1", "true", "yes", "on")
+
 _EXTRACTION_SYSTEM = """\
 You are a graphify semantic extraction agent. Extract a knowledge graph fragment from the files provided.
 Output ONLY valid JSON — no explanation, no markdown fences, no preamble.
@@ -1484,6 +1495,9 @@ def _call_ollama_native(
     }
     if _thinking_disabled_via_env():
         body["think"] = False
+    # /api/chat spells the /v1 `response_format: json_object` as `format: "json"` (#3988).
+    if (kwargs.get("response_format") or {}).get("type") == "json_object":
+        body["format"] = "json"
     try:
         data = client.post(f"{root}/api/chat", body=body, cast_to=object)
     except APIStatusError as exc:
@@ -1585,6 +1599,8 @@ def _call_openai_compat(
             **kwargs.get("extra_body", {}),
             **_ollama_request_extras(user_message, max_completion_tokens),
         }
+        if _ollama_json_mode_via_env():
+            kwargs["response_format"] = {"type": "json_object"}
     native = None
     if backend == "ollama" and extra_body is None:
         native = _call_ollama_native(client, base_url, kwargs, user_message, images or [])

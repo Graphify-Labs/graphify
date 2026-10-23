@@ -554,6 +554,37 @@ def test_dispatch_variants_are_host_specific():
         assert marker.lower() in b2.lower(), f"[{key}] dispatch slot missing {marker!r}"
 
 
+def test_monolith_extraction_prompts_require_reading_files_to_the_end():
+    """A read tool can stop early without saying so, and a partial extraction then
+    replaces the file's nodes and is stamped done (#2225). The split hosts get the
+    shared spec's rule and coverage report; the aider/devin monoliths carry their
+    own copy, so check it there."""
+    devin, _ = _platform_artifacts("devin")
+    assert "Read every file to its last line" in devin
+    assert "re-queued on the next run" in devin
+    aider, _ = _platform_artifacts("aider")
+    assert "Read the file contents to the last line" in aider
+
+
+def test_subagent_chunks_are_bounded_by_lines_and_reshard_on_the_output_cap():
+    """File-count-only chunks overran the subagent output ceiling and the missing
+    chunk was blamed on a read-only dispatch (#1758). Step B1 caps lines too and
+    Step B3 names the output-cap cause and re-splits instead of resending."""
+    platforms = gen.load_platforms()
+    for key, platform in platforms.items():
+        if platform.bucket != "split" and key != "devin":
+            continue  # aider extracts sequentially in-session, with no subagents
+        core, _ = _platform_artifacts(key)
+        b1 = core[core.index("**Step B1"):core.index("**Step B2")]
+        b3 = core[core.index("**Step B3"):]
+        assert "~6000 total lines per chunk" in b1, f"[{key}] B1 has no line budget"
+        assert "2000 lines" in b1, f"[{key}] no solo chunk for a long file"
+        assert "output token maximum" in b3, f"[{key}] B3 misses the output-cap cause"
+        assert "never resend a chunk unchanged" in b3, f"[{key}] B3 does not re-split"
+        # The re-split must end: a one-file chunk cannot be split further.
+        assert "already a single file cannot be split" in b3, f"[{key}] no stop rule"
+
+
 def test_pi_never_names_the_claude_general_purpose_agent():
     """pi-subagents rejects `general-purpose` as an unknown agent (#4494), so
     neither Pi's dispatch nor its Step B3 re-run hints may name it; claude keeps

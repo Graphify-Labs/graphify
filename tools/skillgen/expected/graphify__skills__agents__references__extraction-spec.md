@@ -25,6 +25,8 @@ report the count you did read. A short count is recoverable - Step B3 warns, the
 as partial, and the next --update retries the file - whereas a missing entry is indistinguishable
 from a complete read.
 
+Write the JSON compact (no indentation or line breaks inside it) so the output limit is spent on content, not whitespace (#1758).
+
 Rules:
 - EXTRACTED: relationship explicit in source (import, call, citation, "see §3.2")
 - INFERRED: reasonable inference (shared data structure, implied dependency)

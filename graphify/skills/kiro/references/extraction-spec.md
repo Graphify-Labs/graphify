@@ -15,7 +15,7 @@ Page with offset/limit until you have seen the last line; never emit nodes for a
 replace-on-re-extract drops that file's existing nodes and re-adds only what you saw, so the unread
 tail is lost and the file is never retried (#2225). Report what you read in a top-level
 "coverage" object mapping each FILE_LIST path to its line count, e.g.
-{"coverage": {"docs/plan.md": 452}} - a short count is caught and retried, a missing one is not.
+{"coverage": {"docs/plan.md": 452}} - a short count is caught and retried, a missing one is not. Write the JSON compact (no indentation).
 
 Rules:
 - EXTRACTED: relationship explicit in source (import, call, citation)

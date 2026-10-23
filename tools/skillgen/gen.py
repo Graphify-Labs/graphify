@@ -1344,6 +1344,29 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+def _is_chunk_budget_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin partial-read / chunk-size fix (#2225, #1758).
+
+    Chunks were sized by file count alone, so a subagent skimmed the dense files
+    in a 20-25 file chunk and stopped reading them early (#2225), or its single
+    JSON write overran the output-token limit and the chunk file never appeared,
+    which Step B3 blamed on a read-only dispatch (#1758). Step B1 now bounds a
+    chunk by lines too, the prompt says to read every file to the end and to
+    leave out one it cannot finish, and Step B3 re-splits an oversized chunk.
+    These are the old and new lines.
+    """
+    s = line.strip()
+    return (
+        s.startswith("- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (")
+        or (s.startswith("Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks ")
+            and s.endswith("cross-file relationships are more likely to be extracted."))
+        or s.startswith("Read every file to its last line before extracting from it:")
+        or s.startswith("1. Read the file contents")
+        or (s.startswith("- If the file is missing, ")
+            and s.endswith('Re-run with general-purpose agent." Do not silently skip.'))
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1373,6 +1396,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_chunk_budget_fix_line,
 )
 
 
