@@ -2061,6 +2061,13 @@ def _rebuild_code(
                                 "module",
                                 "name",
                                 "arity",
+                                # VB cross-file call resolution (#4570): a unchanged
+                                # type keeps its owner, namespace and overload
+                                # arities, and a C# type its namespace.
+                                "owner",
+                                "full_name",
+                                "accepted_arities",
+                                "namespace",
                                 # C# overloads (#4584): which one a call's
                                 # argument count fits.
                                 "min_arity",
