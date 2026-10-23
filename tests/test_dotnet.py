@@ -198,6 +198,105 @@ def test_xaml_named_controls_and_bindings():
     assert any(e["relation"] == "references" and e.get("context") == "binding_path" for e in r["edges"])
 
 
+def test_xaml_keyed_resources_and_references(tmp_path: Path):
+    """#3507: keyed WPF resources survive extraction and ID canonicalization."""
+    xaml = (
+        '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        '    <Window.Resources>\n'
+        '        <Style x:Key="TabButtonStyle" TargetType="Button" />\n'
+        '        <Style x:Key="DerivedButtonStyle" BasedOn="{StaticResource TabButtonStyle}" />\n'
+        '        <SolidColorBrush x:Key="AccentBrush" Color="Blue" />\n'
+        '        <DataTemplate x:Key="CardTemplate" />\n'
+        '        <IValueConverter x:Key="TextConverter" />\n'
+        '    </Window.Resources>\n'
+        '    <Button x:Name="TabButton"\n'
+        '            Style="{StaticResource TabButtonStyle}"\n'
+        '            Background="{DynamicResource AccentBrush}"\n'
+        '            Tag="TabButtonStyle" />\n'
+        '    <ContentControl x:Name="Cards" ContentTemplate="{StaticResource ResourceKey=CardTemplate}" />\n'
+        '    <TextBlock x:Name="ConvertedText" Text="{Binding Value, Converter={StaticResource TextConverter}}" />\n'
+        '</Window>\n'
+    )
+    path = tmp_path / "Resources.xaml"
+    path.write_text(xaml, encoding="utf-8")
+
+    result = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    resources = {
+        node["label"]: node
+        for node in result["nodes"]
+        if node["label"] in {
+            "TabButtonStyle",
+            "DerivedButtonStyle",
+            "AccentBrush",
+            "CardTemplate",
+            "TextConverter",
+        }
+    }
+
+    assert "error" not in result
+    assert set(resources) == {
+        "TabButtonStyle",
+        "DerivedButtonStyle",
+        "AccentBrush",
+        "CardTemplate",
+        "TextConverter",
+    }
+    assert all(
+        sum(node["label"] == label for node in nodes.values()) == 1
+        for label in resources
+    )
+    assert all(node["source_file"].endswith("Resources.xaml") for node in resources.values())
+
+    references = {
+        (nodes[edge["source"]]["label"], nodes[edge["target"]]["label"], edge.get("context"))
+        for edge in result["edges"]
+        if edge["relation"] == "references"
+        and edge.get("context") == "xaml_resource"
+    }
+    assert references == {
+        ("TabButton", "TabButtonStyle", "xaml_resource"),
+        ("DerivedButtonStyle", "TabButtonStyle", "xaml_resource"),
+        ("TabButton", "AccentBrush", "xaml_resource"),
+        ("Cards", "CardTemplate", "xaml_resource"),
+        ("ConvertedText", "TextConverter", "xaml_resource"),
+    }
+    converted_id = next(node_id for node_id, node in nodes.items() if node["label"] == "ConvertedText")
+    assert not any(
+        edge.get("context") == "binding_converter"
+        for edge in result["edges"]
+        if edge["source"] == converted_id
+    )
+
+
+def test_xaml_ambiguous_or_unresolved_resources_do_not_fabricate_edges(tmp_path: Path):
+    """#3507: resource lookup must fail closed for ambiguous or missing keys."""
+    xaml = (
+        '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        '    <Window.Resources>\n'
+        '        <Style x:Key="SharedStyle" />\n'
+        '        <Style x:Key="SharedStyle" />\n'
+        '    </Window.Resources>\n'
+        '    <Button x:Name="Ambiguous" Style="{StaticResource SharedStyle}" />\n'
+        '    <Button x:Name="Missing" Style="{StaticResource MissingStyle}" />\n'
+        '    <TextBlock x:Name="Literal" Tag="SharedStyle" />\n'
+        '</Window>\n'
+    )
+    path = tmp_path / "AmbiguousResources.xaml"
+    path.write_text(xaml, encoding="utf-8")
+
+    result = extract_xaml(path)
+    resource_references = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "references" and edge.get("context") == "xaml_resource"
+    ]
+
+    assert resource_references == []
+    assert {node["label"] for node in result["nodes"]} >= {"SharedStyle", "Ambiguous", "Missing", "Literal"}
+
+
 def test_xaml_extracts_binding_paths_commands_and_converters():
     r = extract_xaml(FIXTURES / "bindings.xaml")
     labels_by_id = {n["id"]: n["label"] for n in r["nodes"]}
