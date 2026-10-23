@@ -17,10 +17,6 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
-[options]
-exclude-newer = "2026-10-18T16:41:07.165131Z"
-exclude-newer-span = "P2D"
-
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -1100,7 +1096,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.93"
+version = "0.9.94"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
