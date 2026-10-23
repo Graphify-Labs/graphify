@@ -5,8 +5,11 @@ import json
 import logging
 import os
 import posixpath
+import multiprocessing
 import re
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -2748,6 +2751,47 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     return _has_non_code([p for p in batch if p.exists()])
 
 
+@contextlib.contextmanager
+def _rebuild_timeout():
+    """Bound one watch-loop rebuild by GRAPHIFY_REBUILD_TIMEOUT seconds (0 disables).
+
+    Mirrors the hook rebuild (#791, #2148): SIGALRM raises TimeoutError where it
+    exists; elsewhere (Windows) a timer thread kills the pool workers and exits
+    the process, since nothing can interrupt the main thread (#2173).
+    """
+    timeout = int(os.environ.get("GRAPHIFY_REBUILD_TIMEOUT", "600"))
+    if timeout <= 0:
+        yield
+        return
+    if hasattr(signal, "SIGALRM"):
+        def _sigalrm_bail(*_a):
+            # Kill workers before raising: TimeoutError would otherwise block in
+            # the pool's shutdown(wait=True) on a worker the alarm cannot stop.
+            for child in multiprocessing.active_children():
+                child.kill()
+            raise TimeoutError(f"graphify rebuild exceeded {timeout}s")
+        previous = signal.signal(signal.SIGALRM, _sigalrm_bail)
+        signal.alarm(timeout)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+    else:
+        def _bail():
+            print(f"[graphify watch] graphify rebuild exceeded {timeout}s", flush=True)
+            for child in multiprocessing.active_children():
+                child.kill()
+            os._exit(1)
+        watchdog = threading.Timer(timeout, _bail)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            yield
+        finally:
+            watchdog.cancel()
+
+
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
     """
     Watch watch_path for new or modified files and auto-update the graph.
@@ -2847,7 +2891,11 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 # Reapply the observer's snapshot on the dispatch thread.
                 set_language_overrides(override_snapshot)
                 if config_event or _batch_triggers_rebuild(batch):
-                    _rebuild_code(watch_path)
+                    try:
+                        with _rebuild_timeout():
+                            _rebuild_code(watch_path)
+                    except TimeoutError as exc:
+                        print(f"[graphify watch] {exc}")
                 if config_event or _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:
