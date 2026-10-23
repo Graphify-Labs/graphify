@@ -4921,10 +4921,12 @@ def _resolve_python_member_calls(
             parent = nid = up
         return None
 
+    resolved_call_sites: dict[tuple[str, tuple[int, ...]], set[str]] = {}
+
     def _emit_call(
         caller: str, target_nid: "str | None", rc: dict, inferred: bool = False
     ) -> None:
-        if not target_nid or target_nid == caller or (caller, target_nid) in existing_pairs:
+        if not target_nid or target_nid == caller:
             return
         if rc.get("_python_attr_read"):
             # An attribute read only runs a property getter, and only the one it
@@ -4933,6 +4935,13 @@ def _resolve_python_member_calls(
             label = str(target.get("label", "")).strip().lstrip(".").removesuffix("()")
             if not target.get("_py_property") or label != rc.get("callee"):
                 return
+        elif rc.get("_python_call_site"):
+            # Record the precise producer before pair deduplication. A same-line
+            # argument call must never stand in for the assigned factory itself.
+            site = (caller, tuple(rc["_python_call_site"]))
+            resolved_call_sites.setdefault(site, set()).add(target_nid)
+        if (caller, target_nid) in existing_pairs:
+            return
         existing_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
@@ -5006,6 +5015,7 @@ def _resolve_python_member_calls(
             cls = base
         return None
 
+    factory_receivers: list[dict] = []
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -5033,6 +5043,9 @@ def _resolve_python_member_calls(
                 _emit_call(caller, method_nid, rc, inferred=True)
             continue
         if not receiver or not callee or not caller:
+            continue
+        if rc.get("_python_receiver_factory"):
+            factory_receivers.append(rc)
             continue
         # External modules have no parsed member definition. The extractor's
         # present-false lexical fact and one exact plain import are both needed;
@@ -5116,6 +5129,31 @@ def _resolve_python_member_calls(
             if len(children) != 1:  # absent or ambiguous callable -> bail
                 continue
             _emit_call(caller, children[0], rc)
+
+    # A local bound to a uniquely resolved method call may take the method's
+    # scalar return annotation. Container/union/unknown return types do not name
+    # one class here, and rebinding/shadowing was already rejected by the extractor.
+    return_classes: dict[str, set[str]] = {}
+    class_ids = {nid for group in class_def_nids.values() for nid in group}
+    for edge in all_edges:
+        if edge.get("relation") == "references" and edge.get("context") == "return_type":
+            # The AST must also identify one scalar class. Looking only at
+            # reference edges would misread `Task | int` as Task: builtins have
+            # no class node and are deliberately omitted from type references.
+            if not node_by_id.get(edge["source"], {}).get("_py_return_type"):
+                continue
+            return_classes.setdefault(edge["source"], set()).add(edge["target"])
+    for rc in factory_receivers:
+        site = (rc["caller_nid"], tuple(rc["_python_receiver_factory"]))
+        producers = resolved_call_sites.get(site, set())
+        if len(producers) != 1:
+            continue
+        classes = return_classes.get(next(iter(producers)), set())
+        if len(classes) != 1:
+            continue
+        cls = next(iter(classes))
+        if cls in class_ids:
+            _emit_call(rc["caller_nid"], method_index.get((cls, _key(rc["callee"]))), rc, inferred=True)
 
 
 # Every suffix the TS/JS extractors claim, so a pure-ESM (`.mjs`) repo still activates

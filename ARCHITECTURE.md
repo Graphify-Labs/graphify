@@ -124,6 +124,16 @@ classes under different parents retain separate definitions, methods, and
 containment edges; top-level class ids are unchanged. AST cache schema 7 prevents
 older cached definitions from retaining the collapsed identities.
 
+Python injected fields retain an unchanged parameter/local's declared class
+through `self.field = value`. A local assigned a member-call result can use the
+resolved method's single scalar return-type reference. The link uses the exact
+producer call's byte span, not a same-line argument or a bare method name.
+Unknown types, conflicting assignments, shadowed names, container returns, and
+ambiguous return references emit no inferred call. Resulting call edges remain
+`INFERRED`. Changed-caller rebuilds carry unchanged methods' return-type references
+as resolver context. Changes to a producer's return annotation require a full
+rebuild to recompute unchanged callers' inferred relationships.
+
 C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
 assembly. Nested halves merge only under the same enclosing chain, and `Foo` and

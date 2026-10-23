@@ -4343,7 +4343,7 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
-                            "_py_fixture",
+                            "_py_fixture", "_py_return_type",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4381,7 +4381,8 @@ def dispatch_command(cmd: str) -> None:
                         if _edge.get("relation") not in (
                             "contains", "method", "inherits", "imports", "imports_from"
                         ):
-                            continue
+                            if not (_edge.get("relation") == "references" and _edge.get("context") == "return_type"):
+                                continue
                         if not _ctx_is_ast_tier(_edge):
                             continue
                         _sf = _edge.get("source_file")
@@ -4393,6 +4394,8 @@ def dispatch_command(cmd: str) -> None:
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
                         }
+                        if _edge.get("context") == "return_type":
+                            _ctx_edge["context"] = "return_type"
                         _edge_metadata = _edge.get("metadata")
                         if (
                             isinstance(_edge_metadata, dict)

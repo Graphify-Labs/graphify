@@ -2690,11 +2690,13 @@ def _python_self_attr(node, source: bytes) -> str | None:
         return None
     return _read_text(attr, source)
 
-def _python_self_attr_bindings(body, source: bytes):
+def _python_self_attr_bindings(body, source: bytes, local_types: dict[str, str | None] | None = None):
     """Yield ``(attr, type_name)`` for every ``self.attr = ...`` in a method body
     (#2860). ``type_name`` is the annotation (``self.attr: T = ...``) or the bare
     class of ``self.attr = Ctor(...)``, and None for any other value so the
-    caller can poison the field; ``self.attr = None`` binds nothing."""
+    caller can poison the field; ``self.attr = None`` binds nothing. An unchanged
+    typed parameter/local also carries its class through ``self.attr = value``."""
+    local_types = local_types or {}
     stack = list(body.named_children)
     while stack:
         node = stack.pop()
@@ -2705,11 +2707,14 @@ def _python_self_attr_bindings(body, source: bytes):
         if left is None:
             continue
         value, right = node.child_by_field_name("type"), node.child_by_field_name("right")
+        bound_type = None
         if value is None and right is not None:
             if right.type == "none":
                 continue
+            if right.type == "identifier":
+                bound_type = local_types.get(_read_text(right, source))
             value = right.child_by_field_name("function") if right.type == "call" else None
-        name = _read_text(value, source) if value is not None else ""
+        name = _read_text(value, source) if value is not None else (bound_type or "")
         typed = name.isidentifier() and name[:1].isupper()
         for target in (left.named_children if left.type == "pattern_list" else [left]):
             attr = _python_self_attr(target, source)
@@ -5317,7 +5322,9 @@ def _python_class_ref(node, source: bytes) -> str | None:
             return _python_class_ref(right, source)
     return None
 
-def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | None]:
+def _python_local_class_bindings(
+    body_node, source: bytes, *, factory_bindings: dict[str, list[int]] | None = None,
+) -> dict[str, str | None]:
     """Map ``name -> ClassName`` for the parameters and locals of one Python function.
 
     Typed from a class annotation on a parameter or local (``request: Request``,
@@ -5331,10 +5338,12 @@ def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | No
     inside a lambda or a nested class body are attributed to this function, so
     every name those bind is poisoned rather than typed.
     """
-    bindings: dict[str, str | None] = {}
+    # A member-call result is not a known class in this file. Keep only its exact
+    # AST call span for the corpus resolver; the same poison rules apply to it.
+    bindings: dict[str, str | tuple[int, int] | None] = {}
     poison_only = False
 
-    def bind(name: str, cls: str | None) -> None:
+    def bind(name: str, cls: str | tuple[int, int] | None) -> None:
         if poison_only or cls is None or bindings.get(name, cls) != cls:
             bindings[name] = None
         elif name not in bindings:
@@ -5404,7 +5413,12 @@ def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | No
                     if annotation is not None:
                         bind(name, _python_class_ref(annotation, source))
                     elif right is not None and right.type == "call":
-                        bind(name, _python_class_ref(right.child_by_field_name("function"), source))
+                        fn = right.child_by_field_name("function")
+                        cls = _python_class_ref(fn, source)
+                        if cls is None and factory_bindings is not None and fn is not None and fn.type == "attribute":
+                            bind(name, (right.start_byte, right.end_byte))
+                        else:
+                            bind(name, cls)
                     else:
                         bindings[name] = None
                 else:
@@ -5434,7 +5448,10 @@ def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | No
             visit(child)
 
     visit(body_node)
-    return bindings
+    if factory_bindings is not None:
+        factory_bindings.update({name: list(value) for name, value in bindings.items()
+                                 if isinstance(value, tuple)})
+    return {name: value if isinstance(value, str) else None for name, value in bindings.items()}
 
 def _ruby_local_class_bindings(body_node, source: bytes) -> dict[str, str | None]:
     """Map ``local_var -> ClassName`` for ``var = ClassName.new`` within one Ruby
@@ -9880,10 +9897,14 @@ def _extract_generic(
                             _py_type = python_var_types.get(caller_nid, {}).get(member_receiver)
                             if _py_type:
                                 rc_entry["receiver_type"] = _py_type
+                            elif member_receiver in python_factory_bindings.get(caller_nid, {}):
+                                rc_entry["_python_receiver_factory"] = python_factory_bindings[caller_nid][member_receiver]
                             elif member_receiver in python_fixture_params.get(caller_nid, ()):
                                 # A fixture parameter: typed by the resolver from the
                                 # fixture pytest would pick for it.
                                 rc_entry["_python_fixture_param"] = True
+                        if config.ts_module == "tree_sitter_python":
+                            rc_entry["_python_call_site"] = [node.start_byte, node.end_byte]
                         # `super(Cls, obj).m()` starts the MRO after Cls, not after the
                         # caller's class; only bare `super()` may walk the caller's bases.
                         if member_receiver == "super" and config.ts_module == "tree_sitter_python":
@@ -10244,11 +10265,19 @@ def _extract_generic(
     # `self.X.m()` can resolve corpus-side (#2860). Conflicting or untypable
     # bindings poison the field to None.
     python_attr_types: dict[str, dict[str, str | None]] = {}
+    python_factory_bindings: dict[str, dict[str, list[int]]] = {}
     if config.ts_module == "tree_sitter_python":
         for caller_nid, body_node in function_bodies:
+            factories: dict[str, list[int]] = {}
+            python_var_types[caller_nid] = _python_local_class_bindings(
+                body_node, source, factory_bindings=factories,
+            )
+            python_factory_bindings[caller_nid] = factories
             if caller_nid in method_owner:
                 fields = python_attr_types.setdefault(method_owner[caller_nid], {})
-                for attr, type_name in _python_self_attr_bindings(body_node, source):
+                for attr, type_name in _python_self_attr_bindings(
+                    body_node, source, python_var_types[caller_nid],
+                ):
                     fields[attr] = type_name if fields.get(attr, type_name) == type_name else None
 
     if config.ts_module == "tree_sitter_ruby":
@@ -10260,10 +10289,12 @@ def _extract_generic(
         _py_node_by_id = {n["id"]: n for n in nodes}
         _py_test_module = _python_is_test_module(str_path)
         for caller_nid, body_node in function_bodies:
-            python_var_types[caller_nid] = _python_local_class_bindings(body_node, source)
             func = getattr(body_node, "parent", None)
             if func is None or func.type != "function_definition":
                 continue
+            return_class = _python_class_ref(func.child_by_field_name("return_type"), source)
+            if caller_nid in _py_node_by_id and return_class:
+                _py_node_by_id[caller_nid]["_py_return_type"] = return_class
             if caller_nid in _py_node_by_id and _python_is_property(func, source):
                 _py_node_by_id[caller_nid]["_py_property"] = True
             if not _py_test_module:
