@@ -41,6 +41,21 @@ def test_help_lists_prs_provider_and_export_formats():
     assert "hook-guard" not in out
 
 
+def test_help_lists_cochange():
+    r = subprocess.run([PYTHON, "-m", "graphify", "--help"], capture_output=True, text=True)
+    assert "  cochange" in r.stdout
+
+
+def test_help_lists_check():
+    r = subprocess.run([PYTHON, "-m", "graphify", "--help"], capture_output=True, text=True)
+    assert "  check " in r.stdout
+
+
+def test_help_lists_dead_code():
+    r = subprocess.run([PYTHON, "-m", "graphify", "--help"], capture_output=True, text=True)
+    assert "  dead-code" in r.stdout
+
+
 def test_help_lists_every_install_platform():
     """#4655: the `install [--platform P]` line must advertise every accepted
     `--platform` value. It is derived from the same source as `graphify install`

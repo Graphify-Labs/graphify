@@ -1821,6 +1821,97 @@ def dispatch_command(cmd: str) -> None:
             print("God nodes (most connected):")
             for rank, n in enumerate(gods, 1):
                 print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
+    elif cmd == "cochange":
+        import argparse as _ap
+
+        from graphify.affected import load_graph
+        from graphify.cochange import cochange_analysis, format_cochange, git_commit_files
+
+        p = _ap.ArgumentParser(prog="graphify cochange")
+        p.add_argument("--graph", default=_default_graph_path())
+        p.add_argument("--since", default=None)
+        p.add_argument("--max-commits", type=int, default=500)
+        p.add_argument("--min-count", type=int, default=3)
+        p.add_argument("--max-files-per-commit", type=int, default=30)
+        p.add_argument("--top", type=int, default=20)
+        p.add_argument("--json", action="store_true")
+        opts = p.parse_args(sys.argv[2:])
+        gp = Path(opts.graph).resolve()
+        if not gp.exists() or gp.suffix != ".json":
+            print(f"error: graph file not found or not .json: {gp}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            G = load_graph(gp)
+            root = _graph_root_for(gp)
+            commits = git_commit_files(root, max_commits=opts.max_commits, since=opts.since)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        result = cochange_analysis(
+            G, commits, root,
+            min_count=opts.min_count,
+            max_files_per_commit=opts.max_files_per_commit,
+            top=opts.top,
+        )
+        print(json.dumps(result, indent=2) if opts.json else format_cochange(result))
+    elif cmd == "check":
+        # Exit codes: 0 no violations, 1 violations, 2 unreadable graph or rules.
+        import argparse as _ap
+
+        from graphify.affected import load_graph
+        from graphify.rules import DEFAULT_RULES_FILE, check_rules, format_text, load_rules, to_sarif
+
+        p = _ap.ArgumentParser(prog="graphify check")
+        p.add_argument("--graph", default=_default_graph_path())
+        p.add_argument("--rules", default=None)
+        p.add_argument("--sarif", default=None, metavar="PATH")
+        opts = p.parse_args(sys.argv[2:])
+        gp = Path(opts.graph).resolve()
+        if not gp.exists() or gp.suffix != ".json":
+            print(f"error: graph file not found or not .json: {gp}", file=sys.stderr)
+            sys.exit(2)
+        rules_path = Path(opts.rules) if opts.rules else _graph_root_for(gp) / DEFAULT_RULES_FILE
+        try:
+            rules = load_rules(rules_path)
+            G = load_graph(gp)
+        except (ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        violations = check_rules(G, rules)
+        if opts.sarif:
+            from importlib.metadata import PackageNotFoundError, version as _pkg_version
+            try:
+                ver = _pkg_version("graphifyy")
+            except PackageNotFoundError:
+                ver = "unknown"
+            try:
+                Path(opts.sarif).write_text(json.dumps(to_sarif(violations, ver), indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(f"error: cannot write SARIF to {opts.sarif}: {exc}", file=sys.stderr)
+                sys.exit(2)
+        print(format_text(violations))
+        sys.exit(1 if violations else 0)
+    elif cmd in ("dead-code", "dead_code"):
+        import argparse as _ap
+
+        from graphify.affected import load_graph
+        from graphify.deadcode import dead_code_candidates, format_dead_code
+
+        p = _ap.ArgumentParser(prog="graphify dead-code")
+        p.add_argument("--graph", default=_default_graph_path())
+        p.add_argument("--json", action="store_true")
+        opts = p.parse_args(sys.argv[2:])
+        gp = Path(opts.graph).resolve()
+        if not gp.exists() or gp.suffix != ".json":
+            print(f"error: graph file not found or not .json: {gp}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            G = load_graph(gp)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        candidates = dead_code_candidates(G)
+        print(json.dumps(candidates, indent=2) if opts.json else format_dead_code(candidates))
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
