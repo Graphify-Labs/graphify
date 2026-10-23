@@ -411,7 +411,7 @@ viz_node_limit=0
 - **文档、PDF、图片**：会送往你的 AI 助手做语义提取（通过 `/graphify` 技能，使用你 IDE 会话所运行的任何模型）。无头的 `graphify extract` 需要 `GEMINI_API_KEY` / `GOOGLE_API_KEY`（Gemini）、`MOONSHOT_API_KEY`（Kimi）、`ANTHROPIC_API_KEY`（Claude）、`OPENAI_API_KEY`（OpenAI）、`DEEPSEEK_API_KEY`（DeepSeek）、一个运行中的 Ollama 实例（`OLLAMA_BASE_URL`）、通过标准提供者链获取的 AWS 凭证（Bedrock，不需 API key，使用 IAM），或是 `claude` CLI 二进制文件（Claude Code，不需 API key，使用你的 Claude 订阅）。`--dedup-llm` 标志使用同一把 key。
 - **数据驻留**：`graphify extract` 会根据设置了哪一把 API key 自动检测要使用哪个提供者（优先级：Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama）。对于有数据驻留要求的代码，请使用 `--backend ollama`（完全在本地）或传入一个明确的 `--backend` 标志。Kimi（`MOONSHOT_API_KEY`）会路由到位于中国的 Moonshot AI 服务器。
 - **没有遥测**，没有使用情况追踪，没有分析。
-- **查询日志**：每一次 `graphify query`、`graphify path`、`graphify explain` 以及 MCP `query_graph` 调用都会以 JSON Lines 格式记录到 `~/.cache/graphify-queries.log`（时间戳、问题、语料、返回的节点、耗时）。完整的子图响应默认**不会**被存储。设置 `GRAPHIFY_QUERY_LOG_DISABLE=1` 以退出，或设置 `GRAPHIFY_QUERY_LOG=/dev/null` 以在不停用代码路径的情况下静音。
+- **查询日志**：默认关闭。设置 `GRAPHIFY_QUERY_LOG_ENABLE=1` 后，每一次 `graphify query`、`graphify path`、`graphify explain` 以及 MCP `query_graph` 调用都会以 JSON Lines 格式记录到 `~/.cache/graphify-queries.log`（时间戳、问题、语料、返回的节点、耗时）；设置 `GRAPHIFY_QUERY_LOG=<path>` 则改为记录到该文件。只有同时设置 `GRAPHIFY_QUERY_LOG_RESPONSES=1` 时才会存储完整的子图响应。`GRAPHIFY_QUERY_LOG_DISABLE=1` 强制关闭日志。
 
 ---
 
