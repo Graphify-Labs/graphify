@@ -149,6 +149,29 @@ def test_vscode_install_uninstall_roundtrip(tmp_path, monkeypatch):
             assert "## graphify" not in instructions.read_text(encoding="utf-8")
 
 
+def test_vscode_install_fresh_instructions_is_byte_identical_on_second_install(tmp_path, monkeypatch):
+    """A fresh copilot-instructions.md must go through the same section
+    writer a merge into an existing one does, so the second install finds
+    the end marker the first one left behind instead of mis scanning the
+    boundary and growing the file on every call."""
+    from graphify.install import _SECTION_END_MARKER
+
+    home = tmp_path / "home"
+    project_dir = tmp_path / "proj"
+    home.mkdir()
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        mainmod.vscode_install(project_dir=project_dir)
+        instructions = project_dir / ".github" / "copilot-instructions.md"
+        first = instructions.read_text(encoding="utf-8")
+        assert first.count(_SECTION_END_MARKER) == 1
+
+        mainmod.vscode_install(project_dir=project_dir)
+        second = instructions.read_text(encoding="utf-8")
+        assert second == first
+
+
 def _install_via_entrypoint(tmp_path, platform):
     """Drive the high-level install() entry point with home + cwd in tmp_path."""
     old_cwd = Path.cwd()
