@@ -14,7 +14,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Callable, Iterable
 
 from graphify.google_workspace import (
@@ -1149,6 +1149,62 @@ def _has_venv_markers(d: "Path") -> bool:
     return False
 
 
+def _worktree_path_identity(path: PurePath) -> PurePath:
+    """Compare resolved paths across Windows extended and ordinary namespaces."""
+    if isinstance(path, PureWindowsPath):
+        spelling = str(path)
+        if spelling[:8].lower() == "\\\\?\\unc\\":
+            return PureWindowsPath("\\\\" + spelling[8:])
+        if spelling.startswith("\\\\?\\"):
+            return PureWindowsPath(spelling[4:])
+    return path
+
+
+# #1810/#947 cover excluded or conventionally named worktree copies. A linked
+# checkout with an arbitrary name is also noise when its main tree is in this
+# scan (#4683). Keep the root itself, external-main worktrees and submodules.
+def _is_redundant_linked_worktree(child: Path, root: Path) -> bool:
+    """Whether *child* duplicates a main working tree inside this scan root.
+
+    Only .git files with a readable commondir establish this relationship;
+    malformed/unreadable metadata fails open so real source stays indexed.
+    Containment does not check whether the main tree contributes files: even
+    if .graphifyignore excludes it, the linked copy is pruned. Scan the worktree
+    itself to index that copy.
+    """
+    try:
+        dot_git = child / ".git"
+        if not dot_git.is_file():
+            return False
+        content = dot_git.read_text(encoding="utf-8")
+        if not content.startswith("gitdir:"):
+            return False
+        gitdir_raw = content[len("gitdir:"):].strip()
+        if not gitdir_raw or "\n" in gitdir_raw or "\r" in gitdir_raw:
+            return False
+        gitdir = Path(gitdir_raw)
+        if not gitdir.is_absolute():
+            gitdir = child / gitdir
+        common_raw = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+        if not common_raw or "\n" in common_raw or "\r" in common_raw:
+            return False
+        common = Path(common_raw)
+        common = (common if common.is_absolute() else gitdir / common).resolve()
+        if not common.is_dir() or common.name != ".git":
+            return False  # a bare repo has no main working tree
+        root_identity = _worktree_path_identity(root.resolve())
+        child_identity = _worktree_path_identity(child.resolve())
+        main_identity = _worktree_path_identity(common.parent)
+        return (
+            child_identity != root_identity
+            and child_identity.is_relative_to(root_identity)
+            and main_identity != child_identity
+            and main_identity.is_relative_to(root_identity)
+        )
+    except (OSError, ValueError, RuntimeError, UnicodeError):
+        return False
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
@@ -1891,6 +1947,9 @@ def ignored_predicate(
     explicit_cache: dict[Path, bool] = {}
     # root's own ignore file is the last entry of _load_graphifyignore's chain.
     loaded_dirs: set[Path] = {root}
+    # Shared ancestors recur for every file; classify once per predicate lifetime.
+    # A fresh predicate rechecks metadata instead of retaining a global cache.
+    worktree_cache: dict[Path, bool] = {}
 
     def _ignored(path: Path) -> bool:
         path = Path(os.path.abspath(path))
@@ -1906,7 +1965,12 @@ def ignored_predicate(
         for part in rel_parts[:-1]:
             if _is_noise_dir(part, parent):
                 return True
-            parent = parent / part
+            child = parent / part
+            if child not in worktree_cache:
+                worktree_cache[child] = _is_redundant_linked_worktree(child, root)
+            if worktree_cache[child]:
+                return True
+            parent = child
         # Load ignore files along this path's own lineage — detect()'s walk
         # would have loaded exactly these before reaching the file (#1206).
         ancestor = root
@@ -2117,7 +2181,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if is_configured_out:
                         pruned_noise.append(str(child) + os.sep)
                         continue
-                    if _is_noise_dir(d, dp):
+                    if _is_noise_dir(d, dp) or _is_redundant_linked_worktree(child, root):
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
                         # than vanishing silently (#2058).

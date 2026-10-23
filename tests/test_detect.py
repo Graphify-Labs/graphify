@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import unicodedata
 import pytest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
 from graphify import detect as detect_mod
 
@@ -4568,6 +4568,202 @@ def test_real_git_repo_and_worktree_are_vcs_roots(tmp_path):
     (repo / "sub").mkdir()
     assert detect_mod._find_vcs_root(repo / "sub") == repo.resolve()
     assert detect_mod._find_vcs_root(tmp_path / "wt") == (tmp_path / "wt").resolve()
+
+
+@pytest.fixture
+def sibling_worktree(tmp_path, monkeypatch):
+    """Real linked checkouts without user Git config, hooks or environment."""
+    for name in list(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    template = tmp_path / "empty-template"
+    template.mkdir()
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(template))
+    workspace = tmp_path / "workspace"
+    repo = workspace / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "--initial-branch=main")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    worktree = workspace / "repo-feature"
+    _git(repo, "worktree", "add", "-q", "-b", "feature", str(worktree))
+    return workspace, repo, worktree
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_prunes_sibling_linked_worktree(sibling_worktree):
+    """An arbitrary-name linked checkout duplicates a main tree in the scan (#4683)."""
+    workspace, repo, worktree = sibling_worktree
+    result = detect(workspace)
+    assert {Path(f) for f in result["files"]["code"]} == {repo / "a.py"}
+    assert str(worktree) + os.sep in result["pruned_noise_dirs"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_keeps_linked_worktree_scan_root(sibling_worktree):
+    _, _, worktree = sibling_worktree
+    result = detect(worktree)
+    assert {Path(f) for f in result["files"]["code"]} == {worktree / "a.py"}
+    assert not detect_mod.ignored_predicate(worktree)(worktree / "a.py")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_keeps_worktree_with_main_outside_scan(sibling_worktree):
+    workspace, repo, worktree = sibling_worktree
+    only = workspace / "only"
+    only.mkdir()
+    moved = only / worktree.name
+    _git(repo, "worktree", "move", str(worktree), str(moved))
+    result = detect(only)
+    assert {Path(f) for f in result["files"]["code"]} == {moved / "a.py"}
+    assert not detect_mod.ignored_predicate(only)(moved / "a.py")
+
+
+def test_detect_keeps_submodule_without_commondir(tmp_path):
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git" / "modules" / "sub"
+    gitdir.mkdir(parents=True)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".git").write_text(f"gitdir: {gitdir}\n")
+    (sub / "a.py").write_text("x = 1\n")
+    assert {Path(f) for f in detect(tmp_path)["files"]["code"]} == {sub / "a.py"}
+    assert not detect_mod.ignored_predicate(tmp_path)(sub / "a.py")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_sibling_worktree_ignored_predicate_matches_scan(sibling_worktree):
+    workspace, repo, worktree = sibling_worktree
+    ignored = detect_mod.ignored_predicate(workspace)
+    assert ignored(worktree / "a.py")
+    assert not ignored(repo / "a.py")
+    assert {Path(f) for f in detect(workspace)["files"]["code"]} == {repo / "a.py"}
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_sibling_worktree_relative_metadata_and_symlinked_root(sibling_worktree, tmp_path):
+    workspace, repo, worktree = sibling_worktree
+    gitdir = Path((worktree / ".git").read_text().removeprefix("gitdir:").strip())
+    (worktree / ".git").write_text(f"gitdir: {os.path.relpath(gitdir, worktree)}\n")
+    assert (gitdir / "commondir").read_text().strip() == "../.."
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(workspace, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    result = detect(alias)
+    assert {Path(f) for f in result["files"]["code"]} == {repo / "a.py"}
+    assert str(worktree) + os.sep in result["pruned_noise_dirs"]
+    assert detect_mod.ignored_predicate(alias)(worktree / "a.py")
+
+
+@pytest.mark.parametrize("common_kind", ["missing", "file"])
+@pytest.mark.parametrize("entrypoint", ["detect", "predicate"])
+def test_worktree_invalid_common_target_stays_indexed(tmp_path, common_kind, entrypoint):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    common = repo / ".git"
+    if common_kind == "file":
+        common.write_text("not a directory\n")
+    child = tmp_path / "feature"
+    child.mkdir()
+    source = child / "a.py"
+    source.write_text("x = 1\n")
+    gitdir = tmp_path / "metadata" / "entry"
+    gitdir.mkdir(parents=True)
+    (child / ".git").write_text(f"gitdir: {gitdir}\n")
+    (gitdir / "commondir").write_text("../../repo/.git\n")
+    if entrypoint == "detect":
+        assert str(source) in detect(tmp_path)["files"]["code"]
+    else:
+        assert not detect_mod.ignored_predicate(tmp_path)(source)
+
+
+@pytest.mark.parametrize("extended_root", [False, True])
+@pytest.mark.parametrize("unc", [False, True])
+def test_worktree_path_identity_handles_windows_namespaces(extended_root, unc):
+    ordinary = "//server/share/ws" if unc else "C:/ws"
+    extended = "//?/UNC/server/share/ws" if unc else "//?/C:/ws"
+    root = PureWindowsPath(extended if extended_root else ordinary)
+    child = PureWindowsPath(ordinary if extended_root else extended) / "feature"
+    main = PureWindowsPath(ordinary if extended_root else extended) / "REPO"
+    normalize = detect_mod._worktree_path_identity
+    assert normalize(child).is_relative_to(normalize(root))
+    assert normalize(main).is_relative_to(normalize(root))
+    assert normalize(PureWindowsPath(extended) / "repo") == normalize(
+        PureWindowsPath(ordinary.lower()) / "REPO"
+    )
+    assert not normalize(PureWindowsPath("D:/outside")).is_relative_to(normalize(root))
+
+
+def test_worktree_predicate_caches_each_directory_per_instance(tmp_path, monkeypatch):
+    parent = tmp_path.joinpath(*(f"level{i}" for i in range(6)))
+    parent.mkdir(parents=True)
+    calls = []
+    redundant = False
+
+    def spy(child, root):
+        calls.append(child)
+        return redundant
+
+    monkeypatch.setattr(detect_mod, "_is_redundant_linked_worktree", spy)
+    ignored = detect_mod.ignored_predicate(tmp_path, gitignore=False)
+    files = [parent / f"file{i}.py" for i in range(100)]
+    assert not any(ignored(path) for path in files)
+    assert len(calls) == len(set(calls)) == 6
+    redundant = True
+    assert not ignored(files[0])  # this predicate keeps its classification snapshot
+    fresh = detect_mod.ignored_predicate(tmp_path, gitignore=False)
+    assert all(fresh(path) for path in files)
+    assert len(calls) == 7  # fresh predicate checks the first ancestor once again
+
+
+@pytest.mark.parametrize("case", [
+    "bad-marker", "empty-gitdir", "missing-common", "empty-common", "bad-encoding",
+    "nul-path", "multiline", "bare", "self", "unreadable-git", "unreadable-common",
+])
+def test_redundant_worktree_metadata_fails_open(tmp_path, monkeypatch, case):
+    child = tmp_path / "feature"
+    child.mkdir()
+    gitdir = tmp_path / "repo" / ".git" / "worktrees" / "feature"
+    gitdir.mkdir(parents=True)
+    marker = child / ".git"
+    marker.write_text(f"gitdir: {gitdir}\n")
+    common = gitdir / "commondir"
+    common.write_text("../..\n")
+    if case == "bad-marker":
+        marker.write_text("not gitdir: somewhere\n")
+    elif case == "empty-gitdir":
+        marker.write_text("gitdir: \n")
+    elif case == "missing-common":
+        common.unlink()
+    elif case == "empty-common":
+        common.write_text("\n")
+    elif case == "bad-encoding":
+        marker.write_bytes(b"gitdir: \xff")
+    elif case == "nul-path":
+        common.write_bytes(b"../../.git\x00")
+    elif case == "multiline":
+        common.write_text("../..\nextra\n")
+    elif case == "bare":
+        common.write_text(str(tmp_path / "bare.git"))
+    elif case == "self":
+        common.write_text(str(child / ".git"))
+    elif case.startswith("unreadable"):
+        denied = marker if case == "unreadable-git" else common
+        real_read = Path.read_text
+
+        def deny(path, *args, **kwargs):
+            if path == denied:
+                raise PermissionError("denied")
+            return real_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny)
+    assert not detect_mod._is_redundant_linked_worktree(child, tmp_path)
 
 
 def test_git_dir_symlink_is_followed(tmp_path):
