@@ -1344,6 +1344,19 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+def _is_hub_bypass_check_fix_line(line: str) -> bool:
+    """Whether a line is the aider/devin hub bypass check paragraph (#4426).
+
+    A hub/bridge question's neighbour listing only shows code with an edge to
+    the hub, so it cannot show code that reimplements the hub's job instead of
+    calling it. This single paragraph, inserted right before the save-result
+    step, tells the agent to grep for the hub's own literal constants/strings
+    in edge-less files and report hits as "Bypasses", and to flag when the
+    hub's community label actually names its heaviest consumer instead.
+    """
+    return line.strip().startswith("**Bypass check (hub/bridge questions only, #4426).**")
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1373,6 +1386,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_hub_bypass_check_fix_line,
 )
 
 
@@ -1391,7 +1405,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the hub bypass check (#4426).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
