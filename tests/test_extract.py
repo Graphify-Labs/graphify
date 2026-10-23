@@ -791,6 +791,41 @@ def test_cross_file_call_god_node_guard_two_real_defs(tmp_path):
     assert save_calls == [], f"god-node guard must bail, got {save_calls}"
 
 
+def test_module_import_does_not_promote_unimported_same_named_call(tmp_path):
+    """#2945: importing a module for a different symbol must not certify a
+    same-named call it never imported.
+
+    ``c.py`` does ``from b import other`` and calls ``_make_id()``. ``_make_id``
+    exists in both ``a.py`` and ``b.py``, but ``c`` never imported it. The edge
+    may still resolve through module evidence (for connectivity), but it must
+    stay INFERRED rather than being labelled EXTRACTED.
+    """
+    (tmp_path / "a.py").write_text("def _make_id(*parts):\n    return 'a'\n")
+    (tmp_path / "b.py").write_text(
+        "def _make_id(*parts):\n    return 'b'\n\n\ndef other():\n    return 1\n"
+    )
+    (tmp_path / "c.py").write_text(
+        "from b import other\n\n\ndef caller():\n    return _make_id('x')\n"
+    )
+
+    result = extract(
+        [tmp_path / "a.py", tmp_path / "b.py", tmp_path / "c.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "caller()"
+        and nodes[e["target"]]["label"] == "_make_id()"
+    ]
+    assert calls, "the call should still resolve for graph connectivity"
+    assert all(e["confidence"] != "EXTRACTED" for e in calls), (
+        "module-only import evidence must not certify an unimported symbol: "
+        f"{calls}"
+    )
+
+
 def test_cross_file_call_survives_many_test_mocks(tmp_path):
     """One src def + many same-named test stubs + caller => exactly one src edge."""
     src = tmp_path / "src"
