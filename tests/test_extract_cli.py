@@ -227,6 +227,181 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     } == {str(corpus / "README.md")}
 
 
+def test_extract_passes_cached_node_ids_to_fresh_provenance_resolution(
+    monkeypatch, tmp_path,
+):
+    from graphify.cache import save_semantic_cache
+    from graphify.llm import _extraction_system
+
+    corpus = _make_corpus(tmp_path)
+    cached_doc = corpus / "CACHED.md"
+    cached_doc.write_text("# Cached\nAn authoritative cached entity.\n")
+    out_dir = tmp_path / "out"
+    save_semantic_cache(
+        [{
+            "id": "cached_entity",
+            "label": "Cached Entity",
+            "source_file": "CACHED.md",
+            "file_type": "document",
+        }, *[
+            {"id": invalid_id, "label": "Invalid ID", "source_file": "CACHED.md",
+             "file_type": "document"}
+            for invalid_id in (0, "")
+        ]],
+        [], [], root=corpus, cache_root=out_dir,
+        prompt=_extraction_system(),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    captured = {}
+
+    def _fresh(paths, **kwargs):
+        captured.update(kwargs)
+        result = {
+            "nodes": [{
+                "id": "readme",
+                "label": "README",
+                "source_file": "README.md",
+                "file_type": "document",
+            }],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+        }
+        kwargs["on_chunk_done"](0, 1, result)
+        return result
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fresh)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert captured["known_node_ids"] == {"cached_entity"}
+
+
+@pytest.mark.parametrize("scan_name, source_name", [
+    ("B.md", "B.md"),
+    ("cafe\u0301.md", "caf\u00e9.md"),
+])
+def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
+    monkeypatch, tmp_path, scan_name, source_name,
+):
+    import graphify.llm as llmmod
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    changed = corpus / "A.md"
+    unchanged = corpus / scan_name
+    changed.write_text("# A\nInitial content.\n")
+    unchanged.write_text("# B\nAuthoritative target.\n")
+    if scan_name != source_name and (
+        not (corpus / source_name).is_file()
+        or not unchanged.samefile(corpus / source_name)
+    ):
+        pytest.skip("Filesystem does not alias NFC and NFD filename spellings")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    real_parallel = llmmod.extract_corpus_parallel
+
+    def _initial(paths, **kwargs):
+        result = {
+            "nodes": [
+                {"id": "a", "label": "A", "source_file": "A.md", "file_type": "document"},
+                {"id": "b", "label": "B", "source_file": scan_name, "file_type": "document"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 2, "output_tokens": 2,
+        }
+        kwargs["on_chunk_done"](0, 1, result)
+        return result
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _initial)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def _run_extract():
+        monkeypatch.setattr(
+            mainmod.sys, "argv",
+            ["graphify", "extract", str(corpus), "--backend", "claude",
+             "--no-cluster", "--out", str(out_dir)],
+        )
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    _run_extract()
+    # A valid persisted graph may use NFC while the filesystem scan returns
+    # NFD, especially on macOS (#2210/#2221). Keep that unchanged source as
+    # authority when the fresh response's same-ID foreign stub is removed.
+    import json
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    initial_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    for node in initial_graph["nodes"]:
+        if node["id"] == "b":
+            node["source_file"] = source_name
+    initial_graph["nodes"].extend(
+        {"id": invalid_id, "label": "Invalid ID", "source_file": source_name,
+         "file_type": "document"}
+        for invalid_id in (0, "")
+    )
+    graph_path.write_text(json.dumps(initial_graph), encoding="utf-8")
+    changed.write_text("# A\nChanged content that references B.\n")
+
+    calls = []
+
+    def _persistent_mismatch(_chunk, **_kwargs):
+        calls.append(1)
+        return {
+            "nodes": [
+                {"id": "a", "label": "A changed", "source_file": "A.md", "file_type": "document"},
+                {"id": "b", "label": "stale stub", "source_file": source_name, "file_type": "document"},
+            ],
+            "edges": [
+                {"source": "a", "target": "b", "source_file": "A.md"},
+            ],
+            "hyperedges": [
+                {"id": "a_b", "nodes": ["a", "b"], "source_file": "A.md"},
+            ],
+            "input_tokens": 1, "output_tokens": 1, "finish_reason": "stop",
+        }
+
+    captured = {}
+
+    def _incremental(paths, **kwargs):
+        captured["known_node_ids"] = set(kwargs["known_node_ids"])
+        result = real_parallel(paths, **kwargs)
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _incremental)
+    monkeypatch.setattr(llmmod, "extract_files_direct", _persistent_mismatch)
+    _run_extract()
+
+    assert calls == [1, 1]
+    assert captured["known_node_ids"] == {"b"}
+    assert [node["id"] for node in captured["result"]["nodes"]] == ["a"]
+    assert [(edge["source"], edge["target"]) for edge in captured["result"]["edges"]] == [
+        ("a", "b"),
+    ]
+    assert [(edge["id"], edge["nodes"]) for edge in captured["result"]["hyperedges"]] == [
+        ("a_b", ["a", "b"]),
+    ]
+    assert str(changed) in captured["result"]["_partial_files"]
+    final_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    # Invalid existing IDs remain ordinary retained data, never resolution authority.
+    assert {node["id"] for node in final_graph["nodes"]} == {"a", "b", 0, ""}
+    assert [(edge["source"], edge["target"]) for edge in final_graph["edges"]] == [("a", "b")]
+    assert [(edge["id"], edge["nodes"]) for edge in final_graph["hyperedges"]] == [
+        ("a_b", ["a", "b"]),
+    ]
+
+
 def test_incremental_partial_run_preserves_untouched_semantic_hash(
     monkeypatch, tmp_path
 ):
@@ -1721,3 +1896,74 @@ def test_incremental_stray_attribution_preserves_undispatched_file(
     assert "phantom_ts" not in ids, (
         f"stray attributed to a nonexistent path became a phantom node: {ids}"
     )
+
+
+@pytest.mark.parametrize("healthy_b_edge", [False, True])
+def test_extract_keeps_provisional_graph_edge_out_of_complete_sibling_cache(
+    tmp_path, monkeypatch, capsys, healthy_b_edge,
+):
+    import json
+    import graphify.llm as llm
+    from graphify.cache import check_semantic_cache, load_cached
+
+    corpus = _make_corpus(tmp_path)
+    first = corpus / "README.md"
+    second = corpus / "B.md"
+    second.write_text("# B\nAuthoritative sibling.\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    real_parallel = llm.extract_corpus_parallel
+    calls = []
+
+    def direct(chunk, **_kwargs):
+        name = chunk[0].name
+        calls.append(name)
+        result = {
+            "nodes": [{"id": "a" if name == "README.md" else "b", "label": name,
+                       "source_file": name, "file_type": "document"}],
+            "edges": [], "hyperedges": [], "finish_reason": "stop",
+            "input_tokens": 101 if name == "README.md" else 202,
+            "output_tokens": 11 if name == "README.md" else 22,
+        }
+        if name == "README.md":
+            result["nodes"].append({"id": "b", "label": "foreign stub",
+                                    "source_file": "B.md", "file_type": "document"})
+        if name == "README.md" or healthy_b_edge:
+            result["edges"].append({"source": "a", "target": "b", "source_file": "B.md"})
+        return result
+
+    def parallel(paths, **kwargs):
+        kwargs.update(token_budget=None, chunk_size=1, max_concurrency=1)
+        return real_parallel(sorted(paths, key=lambda path: path.name != "README.md"), **kwargs)
+
+    monkeypatch.setattr(llm, "extract_files_direct", direct)
+    monkeypatch.setattr(llm, "extract_corpus_parallel", parallel)
+    monkeypatch.setattr(mainmod.sys, "argv", [
+        "graphify", "extract", str(corpus), "--backend", "claude", "--no-cluster",
+        "--out", str(out_dir),
+    ])
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0)
+
+    assert calls == ["README.md", "README.md", "B.md"]
+    graph = json.loads((out_dir / "graphify-out" / "graph.json").read_text())
+    assert {"a", "b"} <= {node["id"] for node in graph["nodes"]}
+    assert ("a", "b") in [(edge["source"], edge["target"]) for edge in graph["edges"]]
+    assert "tokens: 404 in / 44 out" in capsys.readouterr().out
+    assert all("_partial" not in item and "_provenance_partial" not in item
+               for bucket in ("nodes", "edges") for item in graph[bucket])
+    cached_nodes, cached_edges, _hyperedges, uncached = check_semantic_cache(
+        [first, second], corpus, cache_root=out_dir, prompt=llm._extraction_system(),
+    )
+    assert uncached == [first]
+    assert [node["id"] for node in cached_nodes] == ["b"]
+    assert [(edge["source"], edge["target"]) for edge in cached_edges] == (
+        [("a", "b")] if healthy_b_edge else []
+    )
+    cached_b = load_cached(second, corpus, cache_root=out_dir,
+                           kind="semantic", prompt=llm._extraction_system())
+    assert cached_b is not None and not cached_b.get("partial")
+    assert all("_provenance_partial" not in edge for edge in cached_b["edges"])
