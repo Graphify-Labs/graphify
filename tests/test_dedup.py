@@ -481,6 +481,92 @@ def test_same_id_same_source_file_no_warning(capsys):
     assert "WARNING" not in captured.err
 
 
+# ── #4281: the collision warning says what the merge actually did ─────────────
+
+def _collision_doc(nid, label, source_file):
+    return {"id": nid, "label": label, "file_type": "document", "source_file": source_file}
+
+
+def _top_level_reference_input():
+    """docs/protocol.md has its own page (`docs_protocol`) and also mints the bare
+    `protocol`, the id of the top-level protocol.md."""
+    return [_collision_doc("docs_protocol", "Docs protocol", "docs/protocol.md"),
+            _collision_doc("protocol", "Protocol", "docs/protocol.md"),
+            _collision_doc("protocol", "Protocol (top-level)", "protocol.md")]
+
+
+def test_collision_warning_for_path_slice_id_is_conditional(capsys):
+    """`protocol` is a trailing slice of docs/protocol.md and also the whole stem of
+    the top-level protocol.md. docs/protocol.md has its own page (`docs_protocol`),
+    so the bare id may be a reference and neither #4362 nor the per-file own-page
+    rule splits it: it stays merged. It may be a second document or a reference to
+    the other file; the text must say so instead of asserting that a node was lost
+    (#4281)."""
+    deduplicate_entities(_top_level_reference_input(), [], communities={})
+    err = capsys.readouterr().err
+
+    assert "WARNING: node 'protocol' is minted by two different files:" in err
+    assert ("kept 'Protocol' from 'docs/protocol.md', merged 'Protocol (top-level)' "
+            "from 'protocol.md' into it") in err or (
+            "kept 'Protocol (top-level)' from 'protocol.md', merged 'Protocol' "
+            "from 'docs/protocol.md' into it") in err
+    assert "either a reference to the kept file" in err
+    assert "per subfolder" in err
+    assert "comes from neither path" not in err
+    assert "is lost" not in err
+    assert "does not identify a single entity" not in err
+
+
+def test_collision_warning_for_non_path_id_says_what_is_kept(capsys):
+    """`sender` is derived from neither path, so both files may describe one entity
+    (the case behind the reporter's 16 warnings). The text must not claim the
+    entity is lost, must not advise per-subfolder extraction, and must say what
+    the merge does drop (#4281)."""
+    nodes = [_collision_doc("sender", "Sender", "docs/a.md"),
+             _collision_doc("sender", "sender service", "docs/b.md")]
+    deduplicate_entities(nodes, [], communities={})
+    err = capsys.readouterr().err
+
+    assert "WARNING: node 'sender' is minted by two different files:" in err
+    assert ("kept 'Sender' from 'docs/a.md', merged 'sender service' "
+            "from 'docs/b.md' into it") in err
+    assert "comes from neither path" in err
+    assert "edges stay on the kept node" in err
+    assert "is lost" not in err
+    assert "does not identify a single entity" not in err
+    assert "per subfolder" not in err
+
+
+def test_collision_warning_wording_keeps_the_same_survivor():
+    """Wording only: which node survives must not change (pins #1851)."""
+    survivors = set()
+    nodes = _top_level_reference_input()
+    for order in (nodes, list(reversed(nodes))):
+        kept, _ = deduplicate_entities([dict(n) for n in order], [], communities={})
+        survivors.add(tuple(sorted((n["id"], n["label"], n["source_file"]) for n in kept)))
+    assert len(survivors) == 1
+
+    nodes = [_collision_doc("sender", "Sender", "docs/a.md"),
+             _collision_doc("sender", "sender service", "docs/b.md")]
+    for order in (nodes, list(reversed(nodes))):
+        kept, _ = deduplicate_entities([dict(n) for n in order], [], communities={})
+        assert [(n["label"], n["source_file"]) for n in kept] == [("Sender", "docs/a.md")]
+
+
+def test_collision_warning_for_path_derived_id_that_is_not_a_slice(capsys):
+    """`x_intro` is derived from the path (`x` + `_intro`) but is not a path slice
+    itself. With x.md at the top level, `x` is that file's whole stem, so #4362
+    leaves the pair merged. It must get the path-derived wording; claiming it
+    comes from neither path would be false (#4281)."""
+    nodes = [_collision_doc("x_intro", "Intro A", "x.md"), _collision_doc("x_intro", "Intro B", "a/x.md")]
+    deduplicate_entities(nodes, [], communities={})
+    err = capsys.readouterr().err
+
+    assert "WARNING: node 'x_intro' is minted by two different files:" in err
+    assert "The id comes from a file path" in err
+    assert "comes from neither path" not in err
+
+
 # ── #1857: dedup summary log breakdown ────────────────────────────────────────
 
 def test_dedup_summary_prints_fuzzy_count_when_no_exact_merges(capsys):
