@@ -247,6 +247,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
+| Mistral Vibe | `graphify install --platform vibe` |
 
 Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
@@ -298,6 +299,32 @@ Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native P
 Run this once in your project after building a graph:
 
 Run `graphify <platform> install` once in your project, for example `graphify claude install` or `graphify codex install` (or `graphify install --platform <name>`).
+
+| Platform | Command |
+|----------|---------|
+| Claude Code | `graphify claude install` |
+| CodeBuddy | `graphify codebuddy install` |
+| Codex | `graphify codex install` |
+| OpenCode | `graphify opencode install` |
+| Kilo Code | `graphify kilo install` |
+| GitHub Copilot CLI | `graphify copilot install` |
+| VS Code Copilot Chat | `graphify vscode install` |
+| Aider | `graphify aider install` |
+| OpenClaw | `graphify claw install` |
+| Factory Droid | `graphify droid install` |
+| Trae | `graphify trae install` |
+| Trae CN | `graphify trae-cn install` |
+| Cursor | `graphify cursor install` |
+| Gemini CLI | `graphify gemini install` |
+| Hermes | `graphify hermes install` |
+| Kimi Code | `graphify install --platform kimi` |
+| Amp | `graphify amp install` |
+| Agent Skills (cross-framework) | `graphify agents install` (alias `graphify skills install`) |
+| Kiro IDE/CLI | `graphify kiro install` |
+| Pi coding agent | `graphify pi install` |
+| Devin CLI | `graphify devin install` |
+| Google Antigravity | `graphify antigravity install` |
+| Mistral Vibe | `graphify vibe install` |
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
@@ -430,6 +457,171 @@ Common install and extraction issues and their fixes: **[Troubleshooting](https:
 ---
 
 ## Full command reference
+
+```
+/graphify                          # run on current directory
+/graphify ./raw                    # run on a specific folder
+/graphify ./raw --mode deep        # more aggressive relationship extraction
+graphify extract ./raw --code-only # index code only — local AST, no API key (skips docs/PDFs/images); an `extract` flag, not a skill flag
+/graphify ./raw --update           # re-extract only changed files
+/graphify ./raw --directed         # preserve edge direction
+/graphify ./raw --cluster-only     # rerun clustering on existing graph
+/graphify ./raw --no-viz           # skip HTML visualization
+/graphify ./raw --obsidian         # generate Obsidian vault
+/graphify ./raw --obsidian --obsidian-dir ~/vault  # write into an existing vault (never overwrites your own notes or .obsidian config)
+/graphify ./raw --wiki             # build agent-crawlable markdown wiki
+/graphify ./raw --svg              # export graph.svg
+/graphify ./raw --graphml          # export for Gephi / yEd
+/graphify ./raw --neo4j            # generate cypher.txt for Neo4j
+/graphify ./raw --neo4j-push bolt://localhost:7687
+/graphify ./raw --falkordb         # generate cypher.txt for FalkorDB
+/graphify ./raw --falkordb-push falkordb://localhost:6379
+/graphify ./raw --watch            # auto-sync as files change
+/graphify ./raw --mcp              # start MCP stdio server
+
+/graphify add https://arxiv.org/abs/1706.03762
+/graphify add <video-url>
+/graphify add https://... --author "Name" --contributor "Name"
+
+/graphify query "what connects attention to the optimizer?"
+/graphify query "..." --dfs --budget 1500
+/graphify path "DigestAuth" "Response"
+/graphify explain "SwinTransformer"
+
+graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome useful   # record how a Q&A turned out (work memory; outcome ∈ useful|dead_end|corrected)
+graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md
+graphify reflect --if-stale        # no-op when LESSONS.md is already newer than every input (cheap to run each session)
+graphify reflect --out docs/LESSONS.md    # write the lessons doc somewhere else
+graphify reflect --graph graphify-out/graph.json  # group lessons by community + write the work-memory overlay (.graphify_learning.json)
+                                   # the overlay tags nodes preferred/tentative/contested (recency-weighted, with provenance);
+                                   # graphify explain / query then show a "Lesson:" hint, flagged "code changed — re-verify" when the source moved on
+
+graphify uninstall                 # remove from all platforms in one shot
+graphify uninstall --purge         # also delete graphify-out/
+graphify uninstall --project --platform codex  # remove project-scoped install files only
+
+graphify hook install              # post-commit + post-checkout hooks
+graphify hook uninstall
+graphify hook status
+
+# always-on assistant instructions - platform-specific
+graphify claude install            # CLAUDE.md + PreToolUse hook (Claude Code)
+graphify claude uninstall
+graphify codebuddy install         # CODEBUDDY.md + PreToolUse hook (CodeBuddy)
+graphify codebuddy uninstall
+graphify codex install             # AGENTS.md + PreToolUse hook in .codex/hooks.json (Codex)
+graphify opencode install          # AGENTS.md + tool.execute.before plugin (OpenCode)
+graphify kilo install              # native Kilo skill + /graphify command + AGENTS.md + .kilo plugin
+graphify kilo uninstall
+graphify cursor install            # .cursor/rules/graphify.mdc (Cursor)
+graphify cursor uninstall
+graphify gemini install            # GEMINI.md + BeforeTool hook (Gemini CLI)
+graphify gemini uninstall
+graphify copilot install           # skill file (GitHub Copilot CLI)
+graphify copilot uninstall
+graphify aider install             # AGENTS.md (Aider)
+graphify aider uninstall
+graphify claw install              # AGENTS.md (OpenClaw)
+graphify claw uninstall
+graphify droid install             # AGENTS.md (Factory Droid)
+graphify droid uninstall
+graphify trae install              # AGENTS.md (Trae)
+graphify trae uninstall
+graphify trae-cn install           # AGENTS.md (Trae CN)
+graphify trae-cn uninstall
+graphify hermes install             # AGENTS.md + ~/.hermes/skills/ (Hermes)
+graphify hermes uninstall
+graphify amp install               # skill file (Amp)
+graphify amp uninstall
+graphify agents install            # ~/.agents/skills/ + AGENTS.md (cross-framework; alias: graphify skills)
+graphify agents uninstall
+graphify kiro install               # .kiro/skills/ + .kiro/steering/graphify.md (Kiro IDE/CLI)
+graphify kiro uninstall
+graphify pi install                # skill file (Pi coding agent)
+graphify pi uninstall
+graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
+graphify devin uninstall
+graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
+graphify antigravity uninstall
+graphify vibe install              # ~/.vibe/skills + AGENTS.md + hooks.toml pre_tool guards (Mistral Vibe)
+graphify vibe install --project    # project-scoped: .vibe/skills + AGENTS.md + .vibe/hooks.toml
+graphify vibe install --strict     # block first raw read per session (matches claude --strict)
+graphify vibe uninstall
+
+graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
+graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
+graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
+OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
+ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_MODEL=my-model graphify extract ./docs --backend claude   # any Anthropic-compatible endpoint (LiteLLM proxy, gateways)
+GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # override KV-cache window (auto-sized by default)
+GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
+graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
+graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
+graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
+graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
+graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
+graphify extract ./my-workspace --cargo        # introspect Rust Cargo workspace dependencies directly
+graphify extract ./docs --token-budget 30000   # smaller semantic chunks for local/small models
+graphify extract ./docs --max-concurrency 2    # fewer parallel LLM calls (useful for local inference)
+graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow local models (default 600s)
+graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
+graphify extract ./src --no-gitignore          # include git-ignored source; still honor .graphifyignore
+graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
+graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
+graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
+graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
+graphify extract ./src --no-dedup              # skip entity dedup; on an incremental merge this also arms the shrink guard that refuses to drop untouched files' nodes
+graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
+GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
+
+graphify export callflow-html                       # graphify-out/<project>-callflow.html
+graphify export callflow-html --max-sections 8      # cap generated architecture sections
+graphify export callflow-html --output docs/arch.html
+graphify export callflow-html ./some-repo/graphify-out
+
+graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
+graphify global remove myrepo                         # remove a project from the global graph
+graphify global list                                  # show all registered repos + node/edge counts
+graphify global path                                  # print path to the global graph file
+
+graphify prs                              # PR dashboard: CI, review, worktree, graph impact
+graphify prs 42                           # deep dive on PR #42
+graphify prs --triage                     # AI triage ranking (auto-detects backend from env)
+graphify prs --worktrees                  # worktree → branch → PR mapping
+graphify prs --conflicts                  # PRs sharing graph communities (merge-order risk)
+graphify prs --base main                  # filter to PRs targeting a specific base branch
+graphify prs --repo owner/repo            # run against a different GitHub repo
+GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend for triage
+
+graphify clone https://github.com/karpathy/nanoGPT
+graphify merge-graphs a.json b.json --out merged.json
+graphify --version                                    # print installed version
+graphify watch ./src
+graphify check-update ./src
+graphify update ./src
+graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
+graphify update ./src --force       # overwrite even if new graph has fewer nodes
+graphify cluster-only ./my-project
+graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
+graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # parallel community labeling (large graphs)
+graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
+graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
+graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
+graphify cluster-only ./my-project --backend=gemini            # backend for community naming
+graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
+graphify label ./my-project                                    # (re)name communities with the configured backend
+ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
+```
+
+`--no-dedup` also skips coalescing distinct non-AST nodes solely because they
+share a file and label. The Python equivalents are `build(chunks, dedup=False)`,
+build_merge(chunks, graph_path, dedup=False)`, and
+build_from_json(extraction, dedup=False)`. AST/semantic twins still reconcile to
+the canonical AST node, and document-file twin reconciliation remains enabled.
+
+> **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
 Every command and flag, with examples: **[CLI reference](https://docs.graphify.com/reference/overview)**.
 
