@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from graphify.extract import extract
+from graphify.validate import validate_extraction
 
 # tree-sitter-vb-dotnet is an optional extra, not installed by a default
 # `uv sync`. Skip the grammar tests when it is absent; the missing-parser
@@ -173,6 +174,52 @@ def test_vbnet_types_members_relationships_and_partial_calls(tmp_path):
     assert ("Counter", "IWorker") in _edge_labels(result, "implements")
     assert ("Run()", "Helper()") in _edge_labels(result, "calls")
     assert ("Run()", "Changed") in _edge_labels(result, "handles")
+
+
+@_needs_vbnet
+def test_vbnet_imported_namespaces_are_valid_global_stubs(tmp_path):
+    source = tmp_path / "Caller.vb"
+    source.write_text(
+        "Imports System.Collections.Generic\n"
+        "Public Class Caller\n"
+        " Inherits ExternalBase\n"
+        " Public Function Run() As String\n"
+        '  Return "x"\n'
+        " End Function\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+    other = tmp_path / "Other.vb"
+    other.write_text(
+        "Imports System.Collections.Generic\n"
+        "Public Class Other\n"
+        " Inherits ExternalBase\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source, other], cache_root=tmp_path)
+
+    namespaces = [
+        node for node in result["nodes"] if node["label"] == "System.Collections.Generic"
+    ]
+    assert len({node["id"] for node in namespaces}) == 1
+    assert {node["source_file"] for node in namespaces} == {""}
+    assert {node["source_location"] for node in namespaces} == {""}
+    imports = [edge for edge in result["edges"] if edge["relation"] == "imports"]
+    assert {edge["source_file"] for edge in imports} == {source.name, other.name}
+    assert {edge["target"] for edge in imports} == {namespaces[0]["id"]}
+
+    external_types = [
+        node for node in result["nodes"] if node["label"] == "ExternalBase"
+    ]
+    assert len({node["id"] for node in external_types}) == 1
+    assert {node["source_file"] for node in external_types} == {""}
+    assert {node["source_location"] for node in external_types} == {""}
+    inherits = [edge for edge in result["edges"] if edge["relation"] == "inherits"]
+    assert {edge["target"] for edge in inherits} == {external_types[0]["id"]}
+
+    assert validate_extraction(result) == []
 
 
 @_needs_vbnet
