@@ -3691,6 +3691,7 @@ def dispatch_command(cmd: str) -> None:
         out_dir: Path | None = None
         cli_postgres_dsn: str | None = None
         cli_cargo: bool = False
+        cli_rea_path: str | None = None
         cli_allow_partial: bool = False
         # --allow-dedup-shrink: write a graph that is smaller because dedup
         # merged nodes. A deleted file does not need this flag (#3774).
@@ -3819,6 +3820,10 @@ def dispatch_command(cmd: str) -> None:
             elif a == "--cargo":
                 cli_cargo = True
                 i += 1
+            elif a == "--rea" and i + 1 < len(args):
+                cli_rea_path = args[i + 1]; i += 2
+            elif a.startswith("--rea="):
+                cli_rea_path = a.split("=", 1)[1]; i += 1
             elif a == "--force":
                 force = True; i += 1
             elif a == "--allow-partial":
@@ -3830,8 +3835,8 @@ def dispatch_command(cmd: str) -> None:
             else:
                 i += 1
 
-        if not has_path and cli_postgres_dsn is None:
-            print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
+        if not has_path and cli_postgres_dsn is None and cli_rea_path is None:
+            print("error: must specify a path to scan, a --postgres DSN, or a --rea graph", file=sys.stderr)
             sys.exit(1)
 
         if no_dedup and dedup_llm:
@@ -4706,6 +4711,20 @@ def dispatch_command(cmd: str) -> None:
             print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
                   f"{len(cargo_result['edges'])} edges")
 
+        rea_result: dict = {"nodes": [], "edges": []}
+        if cli_rea_path is not None:
+            from graphify.rea_ingest import ingest_rea_jag
+            print(f"[graphify extract] ingesting REA application graph: {cli_rea_path}")
+            try:
+                import json as _json
+                rea_doc = _json.loads(Path(cli_rea_path).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                print(f"error: cannot read --rea graph: {exc}", file=sys.stderr)
+                sys.exit(1)
+            rea_result = ingest_rea_jag(rea_doc, source_file=cli_rea_path)
+            print(f"[graphify extract] REA: {len(rea_result['nodes'])} nodes, "
+                  f"{len(rea_result['edges'])} edges")
+
         # Merge AST + semantic + pg_result + cargo_result. Order matters for deduplication: passing AST
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
@@ -4719,8 +4738,8 @@ def dispatch_command(cmd: str) -> None:
         from graphify.llm import _stamp_semantic_origin as _stamp_sem
         _stamp_sem(sem_result)
         merged: dict = {
-            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
-            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
+            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])) + list(rea_result.get("nodes", [])),
+            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])) + list(rea_result.get("edges", [])),
             "hyperedges": list(sem_result.get("hyperedges", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
