@@ -16,6 +16,7 @@ from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
+from .cargo_introspect import package_name
 from .security import redact_secrets
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
@@ -3923,8 +3924,104 @@ def _is_top_level_function_definition(node: dict) -> bool:
     )
 
 
-def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
+def _rewire_unique_stub_nodes(
+    nodes: list[dict], edges: list[dict], root: Path | None = None,
+) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
+    scan_root = Path(root).resolve() if root is not None else None
+    crate_by_dir: dict[Path, str | None] = {}
+
+    def crate_of(source_file: str) -> str | None:
+        """The crate a Rust file belongs to: its nearest Cargo.toml with a package
+        name, looking no higher than the scan root. A file under none has no crate."""
+        if not source_file:
+            return None
+        path = Path(source_file)
+        if not path.is_absolute() and scan_root is not None:
+            path = scan_root / path
+        directory = path.parent
+        walked: list[Path] = []
+        crate: str | None = None
+        while True:
+            if directory in crate_by_dir:
+                crate = crate_by_dir[directory]
+                break
+            walked.append(directory)
+            manifest = directory / "Cargo.toml"
+            if manifest.is_file() and (crate := package_name(manifest)):
+                break
+            if directory == scan_root or directory.parent == directory:
+                break
+            directory = directory.parent
+        for seen in walked:  # every directory below a hit shares its crate
+            crate_by_dir[seen] = crate
+        return crate
+
+    # The crates the corpus contains: a `use` naming one of these is an edge to
+    # follow, anything else is a dependency outside the scan (#4699).
+    workspace_crates: set[str] = set()
+    for node in nodes:
+        sf = str(node.get("source_file", ""))
+        if sf.endswith(".rs") and (crate := crate_of(sf)):
+            workspace_crates.add(crate)
+
+    # A crate can re-export another crate's item (`pub use core::Thing;`), so an
+    # import that names the re-exporting crate reaches the defining one (#4699).
+    # Keyed by (re-exporting crate, imported label) -> crates it re-exports from.
+    reexports: dict[tuple[str, str], set[str]] = {}
+    for edge in edges:
+        info = edge.get("_rust_pub_use")
+        owner = crate_of(str(edge.get("source_file", "")))
+        if not isinstance(info, dict) or owner is None:
+            continue
+        root = str(info.get("root", ""))
+        if root != "crate":
+            reexports.setdefault((owner, str(info.get("label", ""))), set()).add(root)
+    for _ in range(len(workspace_crates)):  # follow `pub use` chains across crates
+        changed = False
+        for (crate, label), targets in tuple(reexports.items()):
+            more = {
+                deep for root in tuple(targets)
+                for deep in reexports.get((root, label), ())
+            }
+            if not more <= targets:
+                targets |= more
+                changed = True
+        if not changed:
+            break
+
+    def in_stub_crate(stub: dict, candidates: list[dict]) -> list[dict]:
+        """Keep the candidates that live in a crate the stub's `use` names.
+
+        `_rust_use_roots` holds the first segment of every `use` binding the
+        stub's name, with `crate` standing for this file's own crate. A stub
+        with no Cargo.toml above it, or a candidate with none, keeps v8's
+        label-only binding: without a manifest there is no crate to scope by.
+        A crate the `use` names may re-export the item from another crate, so
+        those crates count too — but only after the named crate itself, which
+        always wins when it has the definition.
+        """
+        origin = str(stub.get("origin_file", ""))
+        own = crate_of(origin) if origin.endswith(".rs") else None
+        if own is None:
+            return candidates
+        roots = stub.get("_rust_use_roots") or ["crate"]
+        label = str(stub.get("label", ""))
+        named = {own if root == "crate" else root for root in roots} & workspace_crates
+        allowed = set(named)
+        for root in named:
+            allowed |= reexports.get((root, label), set())
+
+        def keep(crates: set[str]) -> list[dict]:
+            return [
+                candidate for candidate in candidates
+                if not str(candidate.get("source_file", "")).endswith(".rs")
+                or crate_of(str(candidate.get("source_file", ""))) in (crates | {None})
+            ]
+
+        scoped_named = keep(named)
+        return scoped_named if len(scoped_named) == 1 else keep(allowed)
+
     real_by_label: dict[str, list[dict]] = {}       # exact-case type-like (all languages)
     real_by_label_ci: dict[str, list[dict]] = {}    # case-INSENSITIVE-language reals only
     func_by_label: dict[str, list[dict]] = {}       # top-level function defs (#1781)
@@ -3976,7 +4073,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
             continue
-        candidates = real_by_label.get(_node_label_key(stub), [])
+        candidates = in_stub_crate(stub, real_by_label.get(_node_label_key(stub), []))
         if len(candidates) > 1 and all(
             _lang_family(c.get("source_file")) == "rust" for c in candidates
         ):
@@ -3995,12 +4092,13 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             # No unique exact type match — fall back to a case-insensitive match, but
             # only against case-insensitive-language definitions (so a case-sensitive
             # `PATH` can never absorb a `Path` reference).
-            candidates = real_by_label_ci.get(_node_label_key(stub, fold=True), [])
+            candidates = in_stub_crate(
+                stub, real_by_label_ci.get(_node_label_key(stub, fold=True), []))
         if len(candidates) != 1:
             # #1781: no unique type — try a unique top-level FUNCTION definition,
             # gated by (a) the stub not being used as a supertype and (b) a
             # language-family match with the stub's referrers.
-            fcands = func_by_label.get(_node_label_key(stub), [])
+            fcands = in_stub_crate(stub, func_by_label.get(_node_label_key(stub), []))
             if len(fcands) == 1 and stub_id not in supertype_stub_ids:
                 fams = stub_families.get(stub_id, set())
                 cand_fam = _lang_family(fcands[0].get("source_file"))
@@ -4081,6 +4179,19 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             and edge_fam != cand_fam
         )
 
+    def _scoped_by_a_use(stub: dict) -> bool:
+        """A `use` that names this crate or a scanned crate vouches for the stub."""
+        roots = stub.get("_rust_use_roots") or []
+        return "crate" in roots or bool(set(roots) & workspace_crates)
+
+    # A Rust stub bound by its label alone is a guess: no `use` that names a corpus
+    # crate vouches for it (#4699).
+    rust_by_name_only = {
+        stub_id for stub_id in remap
+        if str(by_id.get(stub_id, {}).get("origin_file", "")).endswith(".rs")
+        and not _scoped_by_a_use(by_id.get(stub_id, {}))
+    } - {edge.get("target") for edge in edges if edge.get("_rust_use_name")}
+
     for edge in edges:
         is_csharp_scoped_edge = (
             _is_dotnet_source_file(str(edge.get("source_file", "")))
@@ -4104,6 +4215,8 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
                 edge, str(target), remapped_target
             ) and not _cross_language_candidate(edge, remapped_target):
                 edge["target"] = remapped_target
+                if target in rust_by_name_only:
+                    edge["confidence"] = "INFERRED"
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
     drop_ids = {stub_id for stub_id in remap if stub_id not in referenced}
@@ -10304,13 +10417,17 @@ def extract(
     # a sourceless node under the same id. Lend the rewire one for each imported name
     # that has none; they are not kept, so an unresolved import dangles as before.
     _use_stubs = {
-        e["target"]: {"id": e["target"], "label": e["_rust_use_name"], "file_type": "code", "source_file": ""}
+        e["target"]: {
+            "id": e["target"], "label": e["_rust_use_name"], "file_type": "code",
+            "source_file": "", "origin_file": e.get("source_file"),
+            "_rust_use_roots": ["crate"],
+        }
         for e in all_edges
         if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _fresh_ids
     }
     _rewire_view = all_nodes + list(_use_stubs.values()) + [
         n for n in resolution_context_nodes or [] if n.get("id") not in _fresh_ids]
-    _rewire_unique_stub_nodes(_rewire_view, all_edges)
+    _rewire_unique_stub_nodes(_rewire_view, all_edges, root)
     _kept = {id(n) for n in _rewire_view} - {id(n) for n in _use_stubs.values()}
     all_nodes[:] = [n for n in all_nodes if id(n) in _kept]
 
@@ -10960,6 +11077,9 @@ def extract(
     for e in all_edges:
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
+        e.pop("_rust_pub_use", None)
+    for n in all_nodes:
+        n.pop("_rust_use_roots", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
