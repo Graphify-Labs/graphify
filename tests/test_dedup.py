@@ -777,6 +777,24 @@ def test_active_plan_survives_archived_copy_order_independent():
         assert out[0]["source_file"] == "plans/in-progress/binding-doctrine.md"
 
 
+def test_sourced_node_survives_a_source_less_namesake_order_independent():
+    """#4492: when neither colliding node's own file encodes the id, both read
+    as mere references and tie on the first `_collision_rank` key too. A node
+    with no `source_file` at all used to win that tie anyway, since an empty
+    reversed path sorts before any real one — the located node told us where
+    the entity actually lives, and it was the one getting dropped. A node
+    with a `source_file` must beat one without, whichever order they arrive
+    in, mirroring the same rule `_pick_winner` already applies one level up
+    (#3775/#3786)."""
+    import itertools
+    sourced = {"id": "x", "label": "X", "source_file": "a.md"}
+    blank = {"id": "x", "label": "X"}
+    for perm in itertools.permutations([sourced, blank]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0] == sourced
+
+
 def test_checkout_dir_lifecycle_name_does_not_mark_paths(tmp_path):
     """Gap in #2540: markers must be matched on ROOT-RELATIVE segments only. An
     absolute source_file stored under a checkout directory named `wip` must not

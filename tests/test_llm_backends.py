@@ -1361,6 +1361,39 @@ def test_native_extraction_prompt_requests_rationale():
         assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
 
 
+def test_native_extraction_prompt_pins_source_file_to_the_dispatched_file():
+    """The native-backend prompt must say what source_file means. Without it the
+    model attributes a document's entities to the files the document cites or
+    links, and the out-of-scope filter (#1895) drops them on incremental runs
+    (#2297, #3377), or a doc-described API lands on the code file (#2270), or a
+    path reconstructed from a mention reaches the graph (#2217).
+    """
+    for deep in (False, True):
+        # Collapse whitespace so reflowing the prompt doesn't break the asserts.
+        prompt = " ".join(llm._extraction_system(deep=deep).split())
+        assert "the `path` attribute of its enclosing <untrusted_source> block" in prompt, deep
+        assert "is a reference, not the source" in prompt, deep
+        assert "never use its path as source_file" in prompt, deep
+        assert "never omit source_file" in prompt, deep
+
+
+def test_native_extraction_prompt_shares_skill_spec_source_file_rule_heading():
+    """Both extraction paths open their source_file rule with the same heading.
+    Only the heading is pinned: the rule bodies differ (the skill's covers
+    copying the FILE_LIST path verbatim, the native one adds the reference
+    clause), so this catches either side dropping or renaming the rule, not
+    drift in its wording."""
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    native = llm._EXTRACTION_SYSTEM
+    spec, native = (" ".join(text.split()) for text in (spec, native))
+    shared = "source_file RULE (every node, edge, and hyperedge)"
+    assert shared in spec, "skill extraction-spec changed its source_file rule heading"
+    assert shared in native, "native prompt lacks the skill's source_file rule heading"
+
+
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
 # BACKENDS reads the env at import time, so each case runs in a fresh interpreter
 # (subprocess) to avoid reload contamination of the test session.

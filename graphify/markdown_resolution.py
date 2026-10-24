@@ -31,6 +31,11 @@ to the code node that defines it:
   source path: ``time.sleep`` never lands on a repo's own ``sleep``, and
   ``Widget.render`` picks the ``render`` that ``Widget`` owns. No other
   tie-breaking: an ambiguous name is a guess, and a guess is not an edge.
+  A bare, parenthesis-less method name is held to one more test: a word like
+  ``redis`` is prose as often as it is a reference, so a method match survives
+  only when the citing document also names the class that owns it (#4609).
+  The trailing ``()``, a dotted form, or a class/function label carries enough
+  evidence on its own.
   The match is INFERRED (0.95, a named cross-file reference).
 
 An explicit relative cite (``./`` or ``../``) resolves against the document's
@@ -190,33 +195,49 @@ def resolve_markdown_mentions(
             candidates = narrowed
         return candidates[0] if len(candidates) == 1 else None
 
-    for rc in mentions:
-        caller = str(rc.get("caller_nid", ""))
-        callee = str(rc.get("callee", "")).strip()
-        if not caller or not callee or caller not in node_ids:
-            continue
-        names = list(rc.get("qualifiers") or []) + [callee]
+    def _target(rc: dict) -> tuple[str | None, str, float]:
+        """The node a mention resolves to, plus the confidence of that match."""
+        names = list(rc.get("qualifiers") or []) + [str(rc.get("callee", "")).strip()]
         cited = rc.get("path")
         if cited:
             source_file = _match_cited_file(
                 str(cited), _posix(str(rc.get("source_file", ""))), source_files
             )
             if source_file is None:
-                continue
-            target = _resolve_chain(by_file[source_file], names)
-            confidence, score = "EXTRACTED", 1.0
-        else:
-            if callee in _LANGUAGE_BUILTIN_GLOBALS:
-                continue
-            qualifiers = set(names[:-1])
-            candidates = [
-                c for c in by_label.get(callee, [])
-                if qualifiers <= _evidence(c, nodes_by_id, parents)
-            ]
-            target = candidates[0] if len(candidates) == 1 else None
-            confidence, score = "INFERRED", 0.95
-        if target is None or target == caller or (caller, target) in existing:
-            continue
+                return None, "EXTRACTED", 1.0
+            return _resolve_chain(by_file[source_file], names), "EXTRACTED", 1.0
+        callee = names[-1]
+        if callee in _LANGUAGE_BUILTIN_GLOBALS:
+            return None, "INFERRED", 0.95
+        qualifiers = set(names[:-1])
+        candidates = [
+            c for c in by_label.get(callee, [])
+            if qualifiers <= _evidence(c, nodes_by_id, parents)
+        ]
+        return (candidates[0] if len(candidates) == 1 else None), "INFERRED", 0.95
+
+    def _method_owner(node_id: str) -> str | None:
+        """The class that owns *node_id*, when it is a method and not a function."""
+        for parent in parents.get(node_id, ()):
+            node = nodes_by_id.get(parent)
+            if node is not None and node.get("_callable_class"):
+                return parent
+        return None
+
+    #: Targets already cited by each document, used as evidence in pass 2b.
+    cited_targets: dict[str, set[str]] = {}
+
+    def _add(rc: dict, target: str | None, confidence: str, score: float) -> None:
+        caller = str(rc.get("caller_nid", ""))
+        if target is None or target == caller:
+            return
+        doc = _posix(str(rc.get("source_file", "")))
+        if (caller, target) in existing:
+            # The edge is already in the graph, but this document still CITES that
+            # target, so it stays on record as owner evidence for a later method
+            # mention in the same document (#4609 review finding).
+            cited_targets.setdefault(doc, set()).add(target)
+            return
         existing.add((caller, target))
         all_edges.append({
             "source": caller,
@@ -229,3 +250,41 @@ def resolve_markdown_mentions(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+        cited_targets.setdefault(doc, set()).add(target)
+
+    # Pass 1: explicit evidence resolves on its own — a cited path, a dotted
+    # qualifier chain, or a trailing (). Record those targets per document.
+    # Pass 2 handles the bare, parenthesis-less, single-name spans, where the
+    # word alone (`redis`, `data`, `message`) is indistinguishable from prose.
+    bare: list[dict] = []
+    for rc in mentions:
+        caller = str(rc.get("caller_nid", ""))
+        callee = str(rc.get("callee", "")).strip()
+        if not caller or not callee or caller not in node_ids:
+            continue
+        names = list(rc.get("qualifiers") or []) + [callee]
+        span = str(rc.get("context") or "")
+        if rc.get("path") or len(names) > 1 or "(" in span:
+            _add(rc, *_target(rc))
+        else:
+            bare.append(rc)
+
+    # Pass 2a: bare mentions that do not name a method. A class or free function
+    # label is specific enough to keep matching, and the class a later method
+    # mention needs must be on record before pass 2b runs.
+    method_mentions: list[tuple[dict, str, str, float]] = []
+    for rc in bare:
+        target, confidence, score = _target(rc)
+        if target is not None and _method_owner(target) is not None:
+            method_mentions.append((rc, target, confidence, score))
+        else:
+            _add(rc, target, confidence, score)
+
+    # Pass 2b: a bare method name (#4609) is only evidence when the same
+    # document already cites the class that owns it. `redis` the server does not
+    # link to `Cache.redis` unless the document names `Cache`;
+    # `successWithWarnings` survives because `HandlerResult` is cited next to it.
+    for rc, target, confidence, score in method_mentions:
+        doc = _posix(str(rc.get("source_file", "")))
+        if _method_owner(target) in cited_targets.get(doc, ()):
+            _add(rc, target, confidence, score)

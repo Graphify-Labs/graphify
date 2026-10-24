@@ -460,6 +460,16 @@ def _collision_rank(node: dict, root: Path | None = None,
     repo-relative spellings of the same layout order identically — fully
     deterministic regardless of arrival order (#1851) or checkout location.
 
+    Neither side of the first key is exempt from the second: when the ID is
+    encoded by neither node's own file, both read as mere references and tie
+    there too, so a node with no ``source_file`` at all used to win purely on
+    an empty reversed path sorting before any real one — the sourced node was
+    the one actually telling us where the entity lives, and it was the one
+    getting dropped (#4492). A ``source_file`` beats none right after the
+    first key, mirroring the same rule ``_pick_winner`` already applies one
+    level up (#3775/#3786). It changes no collision between two sourced
+    nodes, since both sides of that key agree there.
+
     ``mentions`` (see ``_mentions``) holds the ``(id, file)`` of nodes read as a
     mention of a document rather than the document itself. Such a node ranks as a
     reference even though its id is a path slice, so a real document outranks it
@@ -474,6 +484,7 @@ def _collision_rank(node: dict, root: Path | None = None,
     return (
         # definers (False) sort before references (True)
         not _defines_id(node) or (node.get("id"), rank_path) in mentions,
+        not node.get("source_file"),  # a located node beats a source-less one (#4492)
         _lifecycle_penalty(rank_path),  # active paths beat archived ones (#2532)
         len(label),             # shorter, more canonical label first
         label,                  # lexical tiebreak
