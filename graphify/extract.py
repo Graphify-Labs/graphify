@@ -8122,7 +8122,17 @@ def _xaml_codebehind_path(path: Path) -> Path | None:
     if expected.exists():
         return expected
     try:
-        for sibling in path.parent.iterdir():
+        # On a case-sensitive filesystem more than one sibling can match
+        # case-insensitively (App.xaml.cs alongside app.xaml.CS), and iterdir()
+        # yields them in filesystem order. Picking whichever came first made
+        # the resolved codebehind -- and so the symbols and edges extracted
+        # from it -- depend on directory layout rather than on the inputs.
+        #
+        # key=name rather than a bare sorted(): WindowsPath comparison is
+        # case-insensitive, so sorting the paths themselves leaves two
+        # case-variant names comparing equal and a stable sort hands back the
+        # original filesystem order, which is the thing being fixed.
+        for sibling in sorted(path.parent.iterdir(), key=lambda p: p.name):
             if sibling.name.casefold() == expected.name.casefold():
                 return sibling
     except OSError:
