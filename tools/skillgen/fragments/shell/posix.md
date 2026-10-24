@@ -10,17 +10,12 @@ fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     _SHEBANG=$(head -n 1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//')
-    # Resolve `/usr/bin/env -S python` / `/usr/bin/env python` to the interpreter, then strip any argument
-    # (pipx writes `.../python -E`) so a shebang argument is not mistaken for the
-    # path and rejected by the allowlist below (silent python3 fallback, #2629).
+    # Resolve env [-S], strip the pipx arg (`.../python -E`), trust only an absolute allowlisted path, else python3 (#2629).
     case "$_SHEBANG" in */env\ -S\ *) _SHEBANG="${_SHEBANG#*/env -S }" ;; */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
     _SHEBANG="${_SHEBANG%% *}"
-    # Only trust shebang-derived interpreter paths. Env command names like
-    # `python` are PATH-controlled; explicit fallbacks handle them below.
-    case "$_SHEBANG" in */*|*\\*) ;; *) _SHEBANG="" ;; esac
     case "$_SHEBANG" in
-        ""|*[!a-zA-Z0-9/_.@-]*) ;;
-        *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
+        /*[!a-zA-Z0-9/_.@-]*) ;;
+        /*) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi
 # 3. Fall back to python3
