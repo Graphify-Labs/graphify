@@ -334,6 +334,25 @@ def _defines_id(node: dict) -> bool:
                for prefix in _id_prefixes(source_file))
 
 
+def _definition_path_specificity(node: dict) -> int:
+    """Length of the longest source-path prefix encoded in this node's ID.
+
+    A reference stub can accidentally look like a definition when its source and
+    target live below the same directory (for example both IDs start with
+    ``specifications_20_architecture``). The target's own path is more specific,
+    so prefer the longest matching prefix when resolving these collisions.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    if not nid or not source_file:
+        return 0
+    return max(
+        (len(prefix) for prefix in _id_prefixes(source_file)
+         if nid == prefix or nid.startswith(f"{prefix}_")),
+        default=0,
+    )
+
+
 # `node_kind` values marking a node that is STRUCTURE of its source file rather
 # than an entity mentioned inside it: `page` is the file's own node, `heading`
 # one of its sections. The markdown extractor stamps these precisely because
@@ -482,7 +501,11 @@ def _collision_rank(node: dict, root: Path | None = None,
     label = node.get("label") or ""
     rank_path = _rank_path(node.get("source_file") or "", root)
     return (
-        # definers (False) sort before references (True)
+        # Prefer the most specific source path encoded in the ID. A cross-file
+        # reference may share a parent path prefix with its target, but the
+        # target's full path is longer and identifies the defining file.
+        -(0 if (node.get("id"), rank_path) in mentions
+          else _definition_path_specificity(node)),
         not _defines_id(node) or (node.get("id"), rank_path) in mentions,
         not node.get("source_file"),  # a located node beats a source-less one (#4492)
         _lifecycle_penalty(rank_path),  # active paths beat archived ones (#2532)
