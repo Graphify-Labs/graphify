@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: the git post-commit hook and skill interpreter probes now strip a shebang argument before using it as a path, parse `/usr/bin/env [-S] /absolute/python [args]` launchers, and reject relative paths and PATH-controlled env interpreter names before verification. A pipx launcher (`#!/.../python -E`) now resolves instead of silently falling back to a `python3` without graphify and printing "could not locate a Python with graphify installed" after every commit (#2629, thanks @hpstr5000).
+
+Shebang probes accept absolute interpreter paths with optional interpreter arguments. Extra `env` options or assignments are outside this parser; they fall through to the existing interpreter probes instead of being executed.
+
 ## 0.9.95 (2026-10-23)
 
 Twenty-one community pull requests. A security pass on install: the skill-install writes go through randomly-named temp files instead of predictable ones, so a pre-planted symlink can no longer redirect a write. Extraction: Python, Go, C++ and Rust explicit type aliases (and Rust `union` items) are extracted as type nodes so references resolve instead of minting sourceless stubs, each C# method overload gets its own node bound by argument count, and a package.json dependency's manifest entry links to the node that references it. Plus a one-root-per-repo tree on merged graphs, extended-length cache paths on Windows, and binary media no longer counted as text. The AST cache schema is bumped, so the first build after upgrading re-extracts.

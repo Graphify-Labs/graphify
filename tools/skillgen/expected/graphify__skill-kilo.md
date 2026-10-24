@@ -75,10 +75,13 @@ if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
 fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
-    _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
+    _SHEBANG=$(head -n 1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//')
+    # Resolve env [-S], strip the pipx arg (`.../python -E`), trust only an absolute allowlisted path, else python3 (#2629).
+    case "$_SHEBANG" in */env\ -S\ *) _SHEBANG="${_SHEBANG#*/env -S }" ;; */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
+    _SHEBANG="${_SHEBANG%% *}"
     case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.@-]*) ;;
-        *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
+        /*[!a-zA-Z0-9/_.@-]*) ;;
+        /*) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi
 # 3. Fall back to python3
@@ -744,8 +747,11 @@ Before running any subcommand below (`--update`, `--cluster-only`, `query`, `pat
 if [ ! -f graphify-out/.graphify_python ]; then
     GRAPHIFY_BIN=$(which graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
+        PYTHON=$(head -n 1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//')
+        # Resolve env [-S], strip the pipx arg (`.../python -E`), trust only an absolute allowlisted path, else python3 (#2629).
+        case "$PYTHON" in */env\ -S\ *) PYTHON="${PYTHON#*/env -S }" ;; */env\ *) PYTHON="${PYTHON#*/env }" ;; esac
+        case "${PYTHON%% *}" in /*[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; /*) PYTHON="${PYTHON%% *}" ;; *) PYTHON="python3" ;; esac
+        if [ "$PYTHON" != "python3" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then PYTHON="python3"; fi
     else
         PYTHON="python3"
     fi
