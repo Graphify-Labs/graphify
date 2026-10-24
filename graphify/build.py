@@ -648,9 +648,13 @@ def _coerce_non_string_ids(extraction: dict) -> None:
     for he in extraction.get("hyperedges") or ():
         if not isinstance(he, dict):
             continue
-        members = he.get("nodes")
-        if isinstance(members, list):
-            he["nodes"] = [_coerce_id(ref) for ref in members]
+        # The `members`/`node_ids` aliases (#1561) are coerced too, for the
+        # same reason as `from`/`to` above: they are folded onto `nodes` only
+        # later, by which time the node ids they name have already become str.
+        for key in ("nodes", *_HE_MEMBER_ALIASES):
+            members = he.get(key)
+            if isinstance(members, list):
+                he[key] = [_coerce_id(ref) for ref in members]
 
 
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
