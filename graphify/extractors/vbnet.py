@@ -160,6 +160,15 @@ def extract_vbnet(path: Path) -> dict:
             (child for child in statement.named_children if child.type == "namespace_name"),
             None,
         )
+        # Aliased imports: `Imports Alias = Namespace.Name` — grammar
+        # emits no namespace_name child in some CST variants; fall back to identifier / qualified_name.
+        if namespace_node is None:
+            candidates = [
+                child for child in statement.named_children
+                if child.type in ("identifier", "qualified_name")
+            ]
+            if candidates:
+                namespace_node = candidates[-1]
         if namespace_node is None:
             continue
         namespace = _read_text(namespace_node, source)

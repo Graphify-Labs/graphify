@@ -2413,6 +2413,23 @@ def test_detect_skips_nested_worktrees_dir(tmp_path):
     assert not any("worktrees" in f for f in code)
 
 
+def test_detect_skips_msbuild_obj_and_bin_dirs(tmp_path):
+    """obj/ and bin/ dirs (.NET / MSBuild outputs) are skipped (#4742)."""
+    obj_dir = tmp_path / "MyProject" / "obj" / "Debug"
+    obj_dir.mkdir(parents=True)
+    (obj_dir / "Generated.cs").write_text("class Generated {}")
+    bin_dir = tmp_path / "MyProject" / "bin" / "Debug" / "net8.0"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "App.cs").write_text("class CompiledApp {}")
+    (tmp_path / "MyProject" / "Program.cs").write_text("class Program {}")
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    assert any("Program.cs" in f for f in code)
+    assert not any("obj" in Path(f).parts for f in code)
+    assert not any("bin" in Path(f).parts for f in code)
+
+
 # Regression tests for #4057 - graphify's own installed skill folder is not project content
 
 def _all_detected(result) -> list[str]:
