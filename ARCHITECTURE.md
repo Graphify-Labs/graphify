@@ -33,6 +33,12 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
+Detection counts words from text and converted documents. Supported raster images,
+audio and video stay in the discovered corpus, but their raw bytes are never decoded
+for word counting; detection also bypasses any older cached counts for them. SVG
+remains text-readable, and PDF/Office files retain their existing text converters.
+This avoids reading and splitting entire binary media files just to size the corpus.
+
 ### Calling `extract()` from your own code
 
 `extract()` takes a **list** of paths, and `root` is keyword-only and optional:

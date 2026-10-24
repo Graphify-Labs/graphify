@@ -116,14 +116,19 @@ def test_case_only_method_pair_keeps_both_methods(tmp_path):
     assert _one(r, ".Load()") != _one(r, ".load()")
 
 
-def test_overloads_stay_one_node(tmp_path):
+def test_overloads_are_not_an_underscore_collision(tmp_path):
+    # Overloads are one name, so this rule leaves them alone; they get a node
+    # each through the overload rule instead (#4584), the first keeping the
+    # plain id.
     r = _extract(tmp_path, {"S.cs": (
         "public class Host {\n"
         "    public void Save() { }\n"
         "    public void Save(int x) { }\n"
         "}\n"
     )})
-    _one(r, ".Save()")
+    ids = _ids(r, ".Save()")
+    assert len(ids) == 2
+    assert "s_host_save" in ids
 
 
 def test_member_behind_preprocessor_directive_is_counted(tmp_path):

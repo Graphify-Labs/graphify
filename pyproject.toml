@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.9.92"
+version = "0.9.95"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
@@ -15,6 +15,8 @@ dependencies = [
     "networkx>=3.4",
     "numpy>=1.21",
     "rapidfuzz>=3.0",
+    # Structural YAML extraction (#2214) plus manifest/markdown config parsing.
+    "pyyaml>=6.0",
     "tomli>=2.0.1; python_version < '3.11'",
     # Runtime floor is 0.25, not 0.23: 0.23/0.24 cap out at ABI 14
     # (LANGUAGE_VERSION=14) while the grammars pinned below ship ABI 15

@@ -3518,6 +3518,16 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
     return lines, labeled_cids
 
 
+def _decode_json_string_body(raw: str) -> str:
+    """Decode the inside of a JSON string literal, or return it unchanged when
+    it is not a valid one (an invalid escape, a raw control character)."""
+    try:
+        decoded = json.loads(f'"{raw}"')
+    except (json.JSONDecodeError, ValueError):
+        return raw
+    return decoded if isinstance(decoded, str) else raw
+
+
 def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
     """Parse the backend's JSON ``{cid: name}`` reply. Raises on non-JSON or a
     non-object payload; silently ignores cids it didn't name."""
@@ -3542,7 +3552,10 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
         # of dropping the entire batch to placeholders.
         pairs = re.findall(r'"?(-?\d+)"?\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
         if pairs:
-            data = {k: v for k, v in pairs}
+            # The captured value is still a JSON string body, escapes and all;
+            # decode it the way json.loads would have for a complete reply, so a
+            # salvaged `Caf\u00e9 \"Core\"` reads `Café "Core"`, not the raw escapes.
+            data = {k: _decode_json_string_body(v) for k, v in pairs}
         else:
             raise ValueError(f"label response is not parseable JSON: {text[:120]!r}")
     out: dict[int, str] = {}

@@ -22,7 +22,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, os_long_path, out_path
 from graphify.rcfile import activate_language_overrides, cache_salt, effective_suffix
 
 
@@ -45,12 +45,13 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
-DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml', '.j2', '.jinja', '.jinja2'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.yaml', '.yml', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
+DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.j2', '.jinja', '.jinja2'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
+_BINARY_MEDIA_EXTENSIONS = (IMAGE_EXTENSIONS - {'.svg'}) | VIDEO_EXTENSIONS
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
@@ -472,6 +473,24 @@ def _env_command_args(args: list[str], *, allow_split: bool = True) -> list[str]
     return []
 
 
+def _strip_interpreter_version(interp: str) -> str:
+    """Map a version-suffixed interpreter onto the name it is a version of.
+
+    Shebangs name a specific version as often as the generic one
+    (``python3.12``, ``python2.7``, ``lua5.4``, ``php8.2``). Try the name with
+    its major version (``python3``), then the bare name (``lua``), and keep the
+    original when neither is a known code interpreter.
+    """
+    if interp in _SHEBANG_CODE_INTERPRETERS:
+        return interp
+    m = re.fullmatch(r"([A-Za-z]+)(\d+)(?:\.\d+)*", interp)
+    if m:
+        for candidate in (m.group(1) + m.group(2), m.group(1)):
+            if candidate in _SHEBANG_CODE_INTERPRETERS:
+                return candidate
+    return interp
+
+
 def _shebang_interpreter(path: Path) -> str | None:
     """Return the interpreter name from a shebang line.
 
@@ -484,8 +503,9 @@ def _shebang_interpreter(path: Path) -> str | None:
       - `#!/usr/bin/env DEBUG=1 python3`   (inline var assignment)
       - `#!"/usr/local/bin/python with spaces"`  (shlex handles quotes)
 
-    Returns the basename of the resolved interpreter, or None if there is
-    no shebang / the file is unreadable / parsing fails.
+    Returns the basename of the resolved interpreter, with a version suffix
+    on a known interpreter dropped (``python3.12`` -> ``python3``), or None if
+    there is no shebang / the file is unreadable / parsing fails.
     """
     try:
         with path.open("rb") as f:
@@ -502,7 +522,7 @@ def _shebang_interpreter(path: Path) -> str | None:
             if not env_args:
                 return None
             interp = Path(env_args[0]).name
-        return interp
+        return _strip_interpreter_version(interp)
     except (OSError, ValueError):
         return None
 
@@ -557,10 +577,18 @@ def classify_file(path: Path) -> FileType | None:
 # Missing-pypdf is a process-global condition, not per-file, so warn at most
 # once per run — a corpus of many PDFs must not print the same hint N times.
 _pypdf_missing_warned = False
+# Unreadable PDFs are per-file, so warn once per path: detect() counts words and
+# the semantic pass reads the text again, and the same file must not warn twice.
+_pdf_failed_warned: set[str] = set()
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract plain text from a PDF file using pypdf."""
+    """Extract plain text from a PDF file using pypdf.
+
+    Returns ``""`` when the file cannot be read (malformed, encrypted, ...), the
+    same as for a PDF with no text, but warns on stderr naming the file and the
+    error first (#4527), so a failed read is not mistaken for an empty document.
+    """
     if not _file_within_size_cap(path):
         return ""
     try:
@@ -583,7 +611,16 @@ def extract_pdf_text(path: Path) -> str:
             if text:
                 pages.append(text)
         return "\n".join(pages)
-    except Exception:
+    except Exception as exc:
+        key = str(path)
+        if key not in _pdf_failed_warned:
+            _pdf_failed_warned.add(key)
+            print(
+                f"[graphify] WARNING: could not extract text from {path} "
+                f"({type(exc).__name__}: {exc}); it contributes no content to "
+                "the graph.",
+                file=sys.stderr,
+            )
         return ""
 
 
@@ -895,6 +932,8 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
 def count_words(path: Path) -> int:
     try:
         ext = path.suffix.lower()
+        if ext in _BINARY_MEDIA_EXTENSIONS:
+            return 0
         if ext == ".pdf":
             return len(extract_pdf_text(path).split())
         if ext == ".docx":
@@ -2198,7 +2237,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
-            if ftype != FileType.VIDEO:
+            # Bypass legacy cached counts derived from binary media bytes.
+            if p.suffix.lower() not in _BINARY_MEDIA_EXTENSIONS:
                 total_words += _wc(p)
 
     for ftype in files:
@@ -2237,32 +2277,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     }
 
 
-def _os_path(path: Path) -> str:
-    r"""Return an OS path string safe for open()/stat() on Windows long paths.
-
-    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
-    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
-    (which also requires a fully-qualified path). Without it, _md5_file /
-    save_manifest / count_words silently fail to hash deeply-nested files, so
-    their manifest entry never stabilizes and detect_incremental re-flags them
-    as changed on every run (#1655). cache._normalize_path strips this prefix
-    for stable KEYS; this adds it for I/O. Non-win32 and already-prefixed paths
-    pass through unchanged.
-    """
-    import sys
-    if sys.platform != "win32":
-        return str(path)
-    s = str(path)
-    if s.startswith("\\\\?\\"):
-        return s
-    try:
-        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
-    except Exception:
-        return str(path)
-    if s.startswith("\\\\"):
-        # UNC share \\server\share -> \\?\UNC\server\share
-        return "\\\\?\\UNC\\" + s[2:]
-    return "\\\\?\\" + s
+# Shared with cache.py (paths.os_long_path); the name stays for detect's callers.
+_os_path = os_long_path
 
 
 def _md5_file(path: Path) -> str:
@@ -2565,6 +2581,7 @@ def save_manifest(
     scan_corpus: set[str] | list[str] | None = None,
     clear_semantic: set[str] | list[str] | None = None,
     clear_ast: set[str] | list[str] | None = None,
+    ast_empty: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -2608,6 +2625,12 @@ def save_manifest(
     ``semantic_hash`` on the seeded row so either detect_incremental kind
     re-queues the file after the failure is fixed, without deleting
     graphify-out/.
+
+    ``ast_empty`` (#2879): code files the AST extractor declined by design this
+    run (data JSON, etc.) — stamped as up-to-date yet contributing zero nodes.
+    Marks their row ``ast_empty: true`` so the #2543 heal can tell an intentional
+    empty from a poisoned stamp and stop re-queuing them. Preserved across
+    incrementals for unchanged rows; dropped once a file starts producing nodes.
     """
     # Another root may have activated different overrides in this thread.
     if root is not None:
@@ -2628,6 +2651,7 @@ def save_manifest(
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
     clear_ast_set = _path_index(clear_ast)
+    ast_empty_set = _path_index(ast_empty)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -2661,6 +2685,17 @@ def save_manifest(
         try:
             resolved = str(Path(path_str).resolve())
             return resolved in clear_ast_set or _nfc(resolved) in clear_ast_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_ast_empty(path_str: str) -> bool:
+        if ast_empty_set is None:
+            return False
+        if path_str in ast_empty_set or _nfc(path_str) in ast_empty_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in ast_empty_set or _nfc(resolved) in ast_empty_set
         except (OSError, RuntimeError):
             return False
 
@@ -2728,7 +2763,9 @@ def save_manifest(
             continue  # excluded-but-alive: drop the stale row (#1908)
         if clear_ast_set is not None and _in_clear_ast(f):
             # AST failure this run (missing extra / zero nodes, #2543): blank
-            # both hashes so either detect_incremental kind re-queues.
+            # both hashes so either detect_incremental kind re-queues. A genuine
+            # failure is not an intentional empty, so drop any stale marker too.
+            normalised = {k: v for k, v in normalised.items() if k != "ast_empty"}
             normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
         elif clear_set is not None and _in_clear(f):
             # Dispatched-but-omitted this run: don't inherit the stale
@@ -2786,6 +2823,13 @@ def save_manifest(
         if current_lang is not None:
             # No override keeps legacy rows unchanged.
             entry["language"] = current_lang
+        # Intentional-empty marker (#2879): set when the extractor declined the
+        # file this run; otherwise inherited across an unchanged incremental the
+        # same way ast_hash is, and dropped once the file produces nodes.
+        if _in_ast_empty(f):
+            entry["ast_empty"] = True
+        elif not lang_changed and prev.get("ast_empty") and ast_h == prev.get("ast_hash", ""):
+            entry["ast_empty"] = True
         manifest[key] = entry
     if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
