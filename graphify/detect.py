@@ -1149,6 +1149,53 @@ def _has_venv_markers(d: "Path") -> bool:
     return False
 
 
+# Files only MSBuild/NuGet write. ``obj/`` gets the restore outputs (every
+# SDK-style restore writes project.assets.json) and, for legacy non-SDK
+# projects, the per-configuration FileListAbsolute.txt. ``bin/`` gets the
+# runtime manifests the SDK emits next to every executable, plus the PDBs.
+# .dll/.exe are deliberately absent: a checked-in tools/bin/ of vendored
+# binaries next to its wrapper scripts is source, not output.
+_MSBUILD_OBJ_MARKERS = (
+    "project.assets.json", ".nuget.dgspec.json", ".nuget.g.props",
+    ".filelistabsolute.txt",
+)
+_MSBUILD_BIN_MARKERS = (".deps.json", ".runtimeconfig.json", ".pdb")
+
+
+def _has_msbuild_markers(d: "Path", markers: tuple, max_depth: int) -> bool:
+    """True when a file ending in one of *markers* sits within *max_depth*
+    directory levels below *d*.
+
+    ``bin`` and ``obj`` are MSBuild's output and intermediate dirs, and an
+    unignored C# project carries both after its first build: the generated
+    GlobalUsings/AssemblyInfo sources land in the graph as file nodes with
+    import edges to every implicit namespace, and the build-copied
+    appsettings*.json are scanned twice. ``dotnet new`` writes no .gitignore,
+    so nothing else stops them. Neither name is safe to prune alone — ``bin``
+    is source in Rust's src/bin/, Ruby binstubs and script dirs — so prune
+    only on MSBuild's own artifacts, the same keep-on-doubt gating ``out``
+    gets (#3347). The walk is bounded by entries scanned, not just depth.
+    """
+    budget = 4000
+    pending = [(str(d), 0)]
+    while pending:
+        current, depth = pending.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    budget -= 1
+                    if budget <= 0:
+                        return False
+                    if entry.is_file():
+                        if entry.name.lower().endswith(markers):
+                            return True
+                    elif depth < max_depth and entry.is_dir(follow_symlinks=False):
+                        pending.append((entry.path, depth + 1))
+        except OSError:
+            continue
+    return False
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
@@ -1173,6 +1220,15 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_build_output_markers(parent / part)
+    if part in ("obj", "bin"):
+        # Ambiguous: MSBuild intermediate/output dirs OR real source (Rust's
+        # src/bin/, script dirs). Depths reach a legacy obj/<config>/ and a
+        # RID-specific bin/<config>/<tfm>/<rid>/.
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        if part == "obj":
+            return _has_msbuild_markers(parent / part, _MSBUILD_OBJ_MARKERS, 1)
+        return _has_msbuild_markers(parent / part, _MSBUILD_BIN_MARKERS, 3)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
