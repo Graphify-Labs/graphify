@@ -4790,7 +4790,7 @@ def _resolve_python_member_calls(
     # class label -> owning class node ids (len != 1 is the god-node guard), and
     # (class_node_id, method_key) -> method_node_id.
     class_def_nids: dict[str, list[str]] = {}
-    method_index: dict[tuple[str, str], str] = {}
+    method_index: dict[tuple[str, str], list[str]] = {}
     owner_of: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
@@ -4803,7 +4803,23 @@ def _resolve_python_member_calls(
             class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            slot = method_index.setdefault((src, _key(tnode.get("label", ""))), [])
+            if tgt not in slot:
+                slot.append(tgt)
+
+    def _method_of(cls: str, callee: str) -> "str | None":
+        # The key folds case and drops `_`, so `run()` and `_run()` of one class
+        # share it; Python names are exact. Among several, the one named exactly
+        # `callee` is the call's target, and none or two of them is no edge, as
+        # in the module arm below (#4577).
+        hits = method_index.get((cls, _key(callee)), [])
+        if len(hits) > 1:
+            hits = [
+                m for m in hits
+                if str(node_by_id.get(m, {}).get("label", "")).strip().lstrip(".").removesuffix("()") == callee
+            ]
+        return hits[0] if len(hits) == 1 else None
+
     # A class with N methods produced N entries; collapse to a unique set. (No
     # early return when there are no classes: the module arm below resolves
     # `module.func()` where the callable is a plain function, not a method.)
@@ -4985,7 +5001,7 @@ def _resolve_python_member_calls(
         while cls and cls not in seen:
             seen.add(cls)
             if not skip_own:
-                hit = method_index.get((cls, _key(callee)))
+                hit = _method_of(cls, callee)
                 if hit:
                     return hit
             skip_own = False
@@ -5029,7 +5045,7 @@ def _resolve_python_member_calls(
             if len(class_nids) == 1 and caller_file is not None and (
                     file_of_node.get(class_nids[0]) == caller_file
                     or class_nids[0] in imported_by_filenode.get(caller_file, ())):
-                method_nid = method_index.get((class_nids[0], _key(callee)))
+                method_nid = _method_of(class_nids[0], callee)
                 _emit_call(caller, method_nid, rc, inferred=True)
             continue
         if not receiver or not callee or not caller:
@@ -5063,7 +5079,7 @@ def _resolve_python_member_calls(
                     imported = imported_by_filenode.get(fixture_file, set())
                     cls_file = _file_node(cls)
                     if cls_file == fixture_file or cls in imported or (cls_file is not None and cls_file in imported):
-                        _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+                        _emit_call(caller, _method_of(cls, callee), rc, inferred=True)
             continue
         receiver_type = rc.get("receiver_type")
         if receiver_type and not receiver[:1].isupper():
@@ -5082,7 +5098,7 @@ def _resolve_python_member_calls(
                 imported = imported_by_filenode.get(caller_file, set())
                 cls_file = _file_node(cls)
                 if cls_file == caller_file or cls in imported or (cls_file is not None and cls_file in imported):
-                    _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+                    _emit_call(caller, _method_of(cls, callee), rc, inferred=True)
             continue
         if receiver[:1].isupper():
             # Class arm (#1446): a capitalized receiver is a class reference; an
@@ -5090,7 +5106,7 @@ def _resolve_python_member_calls(
             class_nids = class_def_nids.get(_key(receiver), [])
             if len(class_nids) != 1:  # absent or ambiguous -> bail (god-node guard)
                 continue
-            _emit_call(caller, method_index.get((class_nids[0], _key(callee))), rc)
+            _emit_call(caller, _method_of(class_nids[0], callee), rc)
         else:
             # Module arm (#1883): a lowercase receiver may be an imported module.
             # Resolve it against the modules imported into the caller's own file
