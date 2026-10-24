@@ -253,7 +253,8 @@ def extract_robot(path: Path) -> dict:
         def visit_TestCase(self, node):
             if not node.name:
                 return
-            tc_nid = _make_id(stem, node.name)
+            base_id = _make_id(stem, node.name)
+            tc_nid = base_id if base_id not in seen_ids else _make_id(stem, f"{node.name}:{node.lineno}")
             add_node(tc_nid, node.name, node.lineno)
             add_edge(file_nid, tc_nid, "contains", node.lineno)
             prev, self.scope_nid = self.scope_nid, tc_nid

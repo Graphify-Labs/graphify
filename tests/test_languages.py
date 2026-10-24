@@ -5509,6 +5509,24 @@ def test_robot_suite_tests_and_keywords_become_nodes():
 
 
 @_needs_robot
+def test_robot_duplicate_test_names_preserve_both_nodes(tmp_path):
+    suite = tmp_path / "dup.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Duplicate Name\n"
+        "    Log    first\n"
+        "Duplicate Name\n"
+        "    Log    second\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    nodes = [n for n in r["nodes"] if n["label"] == "Duplicate Name"]
+    assert len(nodes) == 2
+    assert len({n["id"] for n in nodes}) == 2
+
+
+@_needs_robot
 def test_robot_keyword_call_edges_incl_fixtures_and_loops():
     from graphify.extractors.robot import _kw_id
     r = extract_robot(FIXTURES / "sample.robot")

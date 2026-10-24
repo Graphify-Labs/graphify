@@ -242,3 +242,21 @@ def test_vbnet_enum_members_emit_case_of_not_contains(tmp_path):
     # A real class field is a declaration, not a case: it keeps `contains`.
     assert ("Widget", "count") in contains
     assert ("Widget", "count") not in case_of
+
+
+@_needs_vbnet
+def test_vbnet_aliased_imports_emits_import_node(tmp_path):
+    source = tmp_path / "Aliased.vb"
+    source.write_text(
+        "Imports WinForms = System.Windows.Forms\n"
+        "Imports IO = System.IO\n"
+        "Public Class App\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+    result = extract([source], cache_root=tmp_path)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"System.Windows.Forms", "System.IO"} <= labels
+    assert ("Aliased.vb", "System.Windows.Forms") in _edge_labels(result, "imports")
+    assert ("Aliased.vb", "System.IO") in _edge_labels(result, "imports")
+
