@@ -792,7 +792,16 @@ def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root
         # No evidence. Flag only a node the model itself presented as solid
         # (EXTRACTED/unset) — one it already hedged (INFERRED/AMBIGUOUS) needs no
         # second flag. Idempotent: never overwrites an existing verification.
-        if n.get("confidence") in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
+        # Matched case-insensitively, the way build._fold_confidence (#4529)
+        # reads it: a mis-cased enum value IS that enum value there and is
+        # corrected to the canonical spelling, so a node the model wrote as
+        # `"extracted"` reaches graph.json just as solid as `"EXTRACTED"` and
+        # must be evidence-checked the same. A hedged spelling in any case
+        # ("inferred", "ambiguous") still falls through unflagged.
+        _conf = n.get("confidence")
+        if isinstance(_conf, str):
+            _conf = _conf.upper()
+        if _conf in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
             n[_VERIFICATION_FIELD] = _UNVERIFIED_VALUE
             downgraded += 1
     return downgraded
