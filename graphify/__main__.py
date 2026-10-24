@@ -1079,6 +1079,8 @@ def _run_cli() -> None:
         print("  pi guard path           print the guard package path (e.g. for `omp plugin install`)")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print("  moca install            write skill to ~/.config/moca/skills/graphify/ (Mo Coding Agent)")
+        print("  moca uninstall          remove skill from ~/.config/moca/skills/graphify/")
         print()
         print("Prefer a hosted version? Try the graphify platform free for 14 days:")
         print("https://app.graphify.com")
