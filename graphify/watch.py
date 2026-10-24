@@ -1592,6 +1592,205 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
         return False
 
 
+def _inputs_unchanged(detected: dict, manifest_path: Path, root: Path) -> bool:
+    """True when nothing that can change the code graph changed since the last run.
+
+    Compares the fresh scan against the previous run's manifest by CONTENT
+    (``ast_hash``), never by mtime alone, over three input sets: every detected
+    bucket, the manifest rows the scan no longer covers, and the JS/TS resolution
+    inputs. A tsconfig/jsconfig/package.json edit can move a .ts result without
+    touching a source file, and the lock files are resolution inputs the scan
+    skips by name, so detect() reports them separately (#4740).
+
+    Fails closed. A missing or unreadable manifest, a row that cannot be verified,
+    or anything this cannot prove unchanged returns False so the caller takes the
+    full path: a false "changed" only costs time, a false "unchanged" ships a
+    stale graph.
+    """
+    from graphify.detect import classify_manifest_files, load_manifest
+    from graphify.paths import nfc
+
+    try:
+        manifest = load_manifest(str(manifest_path), root=root)
+    except Exception:
+        return False
+    if not manifest:
+        return False
+
+    def _abs(p: object) -> str:
+        # The scan may report CWD-relative paths while load_manifest re-anchors
+        # its keys at `root`; compare both sides in one absolute, NFC form.
+        try:
+            return nfc(str(Path(os.path.abspath(str(p)))))
+        except (OSError, ValueError, TypeError):
+            return nfc(str(p))
+
+    buckets = {
+        ftype: [_abs(f) for f in flist]
+        for ftype, flist in (detected.get("files") or {}).items()
+    }
+    buckets["resolution_inputs"] = [
+        _abs(f) for f in (detected.get("resolution_inputs") or [])
+    ]
+    keyed = {_abs(k): v for k, v in manifest.items()}
+
+    changed, _unchanged = classify_manifest_files(
+        buckets, keyed, kind="ast", unstamped_is_changed=False
+    )
+    if any(changed.values()):
+        return False
+
+    # A row with no matching scan entry is a deletion, or a file a changed ignore
+    # rule just excluded. Both can move the graph, and neither is provable here.
+    current = {f for flist in buckets.values() for f in flist}
+    return all(f in current for f in keyed)
+
+
+_BUILD_STATE_NAME = ".graphify_build_state.json"
+
+
+def _extractor_epoch() -> str:
+    """Identity of the extraction pipeline behind the current AST output.
+
+    The same triple the AST cache is namespaced by, so anything that invalidates
+    cached fragments also invalidates a graph built from the old ones. Without it
+    the gate would skip a graph the current extractor would not reproduce, which
+    is how the legacy-stub and legacy-marker heals work (#4740).
+    """
+    from graphify.cache import (
+        _AST_CACHE_SCHEMA,
+        _EXTRACTOR_VERSION,
+        _grammar_fingerprint,
+    )
+
+    return f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}-g{_grammar_fingerprint()}"
+
+
+def _scan_digest(detected: dict) -> str:
+    """Fingerprint of WHICH files the scan covers, not what they contain (#4740).
+
+    The manifest cannot answer this on its own: a source whose extraction fails
+    is deliberately left unstamped (#2543), so it has no row and a row-based
+    comparison cannot tell "same file, still failing" from "file is new". Only
+    the in-scope path set separates those, and it is also what catches an edit to
+    an ignore rule, a rename and an outright deletion.
+    """
+    import hashlib
+
+    paths = [
+        os.path.abspath(str(f))
+        for flist in (detected.get("files") or {}).values()
+        for f in flist
+    ]
+    paths += [
+        os.path.abspath(str(f)) for f in (detected.get("resolution_inputs") or [])
+    ]
+    return hashlib.md5(
+        "\n".join(sorted(paths)).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
+
+
+def _current_build_state(
+    *,
+    watch_root: Path,
+    follow_symlinks: bool,
+    no_cluster: bool,
+    gitignore: bool,
+    excludes: list[str] | None,
+    scan_digest: str,
+) -> dict:
+    """Everything besides file content that a rebuild's output depends on (#4740).
+
+    A different scan root, file set, ignore set, output shape or extractor
+    necessarily writes a different graph, so the previous run's stamp cannot
+    vouch for it.
+    """
+    import hashlib
+
+    rc = watch_root / RC_FILENAME
+    try:
+        rc_digest = (
+            hashlib.md5(rc.read_bytes(), usedforsecurity=False).hexdigest()
+            if rc.is_file()
+            else ""
+        )
+    except OSError:
+        rc_digest = ""
+    return {
+        "epoch": _extractor_epoch(),
+        "scan_root": str(watch_root),
+        "scan_digest": scan_digest,
+        "follow_symlinks": bool(follow_symlinks),
+        "no_cluster": bool(no_cluster),
+        "gitignore": bool(gitignore),
+        "excludes": sorted(excludes or []),
+        "rcfile": rc_digest,
+        # Env knobs that change the written output rather than just the timing:
+        # the viz cap removes graph.html outright, and the ambiguous-edge scale
+        # moves community assignment. Read raw so this cannot drift from how
+        # each consumer parses them.
+        "viz_node_limit": os.environ.get("GRAPHIFY_VIZ_NODE_LIMIT", ""),
+        "ambiguous_scale": os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE", ""),
+    }
+
+
+def _write_build_state(out: Path, state: dict, *, full_clean: bool) -> None:
+    """Stamp what the next run has to match to skip (#4740).
+
+    Written only after a rebuild has finished writing its outputs, and it records
+    those outputs as they now are: the gate treats any later change to them as
+    work to do.
+    """
+    try:
+        st = (out / "graph.json").stat()
+    except OSError:
+        return
+    payload = {
+        **state,
+        "full_clean": bool(full_clean),
+        "graph_size": st.st_size,
+        "graph_mtime_ns": st.st_mtime_ns,
+        "html_present": (out / "graph.html").exists(),
+    }
+    try:
+        (out / _BUILD_STATE_NAME).write_text(
+            json.dumps(payload, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _build_state_matches(out: Path, state: dict) -> bool:
+    """True when ``out`` still holds exactly what the last stamped rebuild wrote.
+
+    Fails closed on anything it cannot prove: a missing or unreadable stamp, a
+    graph.json another writer replaced or partly wrote, a pending HTML re-render,
+    or a last rebuild that was itself incremental (which is never a sound base
+    for skipping a full one).
+    """
+    try:
+        prev = json.loads((out / _BUILD_STATE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(prev, dict):
+        return False
+    for key, value in state.items():
+        if prev.get(key) != value:
+            return False
+    # Only a full rebuild leaves a graph a full rebuild could have produced.
+    if prev.get("full_clean") is not True:
+        return False
+    try:
+        st = (out / "graph.json").stat()
+    except OSError:
+        return False
+    if prev.get("graph_size") != st.st_size or prev.get("graph_mtime_ns") != st.st_mtime_ns:
+        return False
+    if (out / ".graph.html.stale").exists():
+        return False
+    return prev.get("html_present") is (out / "graph.html").exists()
+
+
 def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     """Reconcile missing, stale, or explicitly disabled HTML visualization.
 
@@ -1808,6 +2007,37 @@ def _rebuild_code(
                 f"[graphify watch] {len(_unclassified)} file(s) not classified "
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
+
+        # #4740: stop before extraction when nothing that reaches the code graph
+        # has changed. The only no-change exit today sits at the very end of the
+        # pipeline (the topology compare), so a zero-change run still pays for
+        # detect -> extract -> build -> cluster and its gigabytes.
+        #
+        # `changed_paths` already names the change set, so that path is left
+        # alone, and --force means "accept a shrink", not "prove nothing changed".
+        #
+        # Below, this state is both what the gate compares and what every
+        # successful rebuild stamps: the skip key has to cover everything a
+        # rebuild's output depends on besides file content.
+        _build_state_now = _current_build_state(
+            watch_root=watch_root,
+            follow_symlinks=follow_symlinks,
+            no_cluster=no_cluster,
+            gitignore=_gitignore_enabled,
+            excludes=_persisted_excludes,
+            scan_digest=_scan_digest(detected),
+        )
+
+        if changed_paths is None and not force:
+            if (
+                _inputs_unchanged(detected, out / "manifest.json", watch_root)
+                and _build_state_matches(out, _build_state_now)
+            ):
+                print(
+                    "[graphify watch] No relevant changes; "
+                    "graphify-out left untouched."
+                )
+                return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -2146,28 +2376,49 @@ def _rebuild_code(
 
             Only the STAMPED set shrinks; scan_corpus at the save sites stays
             the raw detect output so #1908 pruning is unaffected.
+
+            The JS/TS resolution inputs detect() skips by name are stamped under
+            their own bucket so the no-change gate can compare their content on
+            the next run (#4740). They are not extract targets and stay out of
+            scan_corpus, so nothing else sees them.
             """
             if not _failed_ast_sources:
-                return detected["files"]
-            failed_res = set(_failed_ast_sources)
-            for p in _failed_ast_sources:
-                try:
-                    failed_res.add(str(Path(p).resolve()))
-                except (OSError, RuntimeError):
-                    pass
+                stamped = detected["files"]
+            else:
+                failed_res = set(_failed_ast_sources)
+                for p in _failed_ast_sources:
+                    try:
+                        failed_res.add(str(Path(p).resolve()))
+                    except (OSError, RuntimeError):
+                        pass
 
-            def _failed(f: str) -> bool:
-                if f in failed_res:
-                    return True
-                try:
-                    return str(Path(f).resolve()) in failed_res
-                except (OSError, RuntimeError):
-                    return False
+                def _failed(f: str) -> bool:
+                    if f in failed_res:
+                        return True
+                    try:
+                        return str(Path(f).resolve()) in failed_res
+                    except (OSError, RuntimeError):
+                        return False
 
-            return {
-                ftype: [f for f in flist if not _failed(f)]
-                for ftype, flist in detected["files"].items()
-            }
+                stamped = {
+                    ftype: [f for f in flist if not _failed(f)]
+                    for ftype, flist in detected["files"].items()
+                }
+            resolution = detected.get("resolution_inputs") or []
+            if resolution:
+                stamped = {**stamped, "resolution_inputs": list(resolution)}
+            return stamped
+
+        def _stamp_build_state() -> None:
+            """Record what the NEXT run has to match to skip (#4740).
+
+            Only ever called once a rebuild has finished writing its outputs, so
+            the stamp describes a graph that is on disk and current. A rebuild
+            that fails before this point leaves the previous stamp in place, and
+            the gate compares against the outputs too, so it cannot vouch for a
+            graph that was half written.
+            """
+            _write_build_state(out, _build_state_now, full_clean=changed_paths is None)
 
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
@@ -2333,6 +2584,7 @@ def _rebuild_code(
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     clear_ast=_failed_ast_sources or None,
                 )
+                _stamp_build_state()
             except Exception:
                 pass
 
@@ -2393,6 +2645,9 @@ def _rebuild_code(
                     )
                 else:
                     print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
+                # Stamped last: it records the outputs as they now are, and this
+                # path may have just re-rendered or removed graph.html.
+                _stamp_build_state()
                 return True
 
         communities = cluster(G)
@@ -2669,6 +2924,9 @@ def _rebuild_code(
             if callflow_files:
                 products += f", {len(callflow_files)} callflow HTML"
             print(f"[graphify watch] {products} updated in {out}")
+        # Stamped last: every output this rebuild writes is on disk by now, and
+        # the gate compares against those outputs as well as the input manifest.
+        _stamp_build_state()
         return True
 
     except Exception as exc:
