@@ -9412,18 +9412,33 @@ def extract(
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
+    cache_hits = 0
+    no_extractor = 0
 
     for i, path in enumerate(paths):
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
+            no_extractor += 1
             continue
         bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:
                 per_file[i] = cached
+                cache_hits += 1
                 continue
         uncached_work.append((i, path))
+
+    # Report the hit rate against the file TOTAL. The "(100%)" on the progress
+    # lines below counts progress through the uncached work, and reads as a
+    # cache-hit rate, which it is not (#4740).
+    if total:
+        print(
+            f"  AST cache: {cache_hits}/{total} files served from cache "
+            f"({cache_hits * 100 // total}%); {len(uncached_work)} to extract"
+            + (f"; {no_extractor} without an extractor" if no_extractor else ""),
+            flush=True,
+        )
 
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
