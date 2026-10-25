@@ -54,9 +54,7 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 **Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
 
-If no path was given, use `.` (current directory). Do not ask the user for a path.
-
-Every occurrence of `INPUT_PATH` below is a placeholder substituted with this resolved path, inside a Python string literal. On Windows, substitute it with forward slashes (`C:/Users/me/project`, not `C:\Users\me\project`) — a literal backslash in a Windows path splices a stray escape into the Python source (`\t` becomes a tab, `\U` raises a `SyntaxError`), silently or loudly corrupting every block that uses it. If the path itself contains a literal single quote character (e.g. `/Users/o'brien/project`), escape it as `\'` before substituting too — an unescaped quote closes the string literal early, corrupting or hijacking the code that follows.
+If no path was given, use `.` (current directory). Do not ask the user for a path. Every occurrence of `INPUT_PATH` below is a placeholder substituted with this resolved path, inside a Python string literal; on Windows substitute it with forward slashes (`C:/Users/me/project`, not `C:\Users\me\project`, which splices a stray escape into the Python source), and if the path itself contains a literal single quote (`/Users/o'brien/project`), escape it as `\'` before substituting, since either mistake corrupts or hijacks the code that follows.
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
@@ -321,7 +319,7 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 A subagent that only read the first Read call's worth of a long file still writes a well-formed chunk, so "chunk file exists and parses" is not evidence of coverage. Compare each file's self-reported `coverage` against its real length:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, glob
 from pathlib import Path
 
@@ -477,9 +475,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
-
-Two more substitutions, in this step's block and Step 5's: replace `IS_NO_CLUSTER` with `True` if `--no-cluster` was given (explicitly, or accepted after Step 2 suggested it for a flat corpus), otherwise `False`. Replace `IS_FORCE` with `True` if `--force` was given, otherwise `False`.
+**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code. Two more substitutions apply here and in Step 5's block: replace `IS_NO_CLUSTER` with `True` if `--no-cluster` was given (explicitly, or accepted after Step 2 suggested it for a flat corpus), otherwise `False`; replace `IS_FORCE` with `True` if `--force` was given, otherwise `False`.
 
 ```bash
 mkdir -p graphify-out
@@ -522,10 +518,8 @@ questions = suggest_questions(G, communities, labels)
 # nothing) when the new graph is smaller than the existing graph.json. Only write
 # GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
 # they never describe a graph that graph.json doesn't contain (#1392).
-# community_labels=labels is passed here too, not just in Step 5's rewrite,
-# because --no-cluster skips Step 5 entirely -- this is the only write for
-# that path, so the 'Full Corpus' label computed above must reach graph.json
-# now or every node silently loses its community_name.
+# community_labels=labels is passed here too, not just in Step 5's rewrite: --no-cluster skips Step 5
+# entirely, so this is the only write for that path, and the 'Full Corpus' label above must reach graph.json now.
 wrote = to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
@@ -577,9 +571,7 @@ Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNI
 
 ### Step 5 - Label communities
 
-Skip this step entirely if `--no-cluster` was given in Step 4 (`IS_NO_CLUSTER` was `True`) — there is only one placeholder community ("Full Corpus"), nothing to label.
-
-Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
+Skip this step entirely if `--no-cluster` was given in Step 4 (`IS_NO_CLUSTER` was `True`) — there is only one placeholder community ("Full Corpus"), nothing to label. Otherwise read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
 
 Then regenerate the report and save the labels for the visualizer:
 
