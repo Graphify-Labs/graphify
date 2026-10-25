@@ -342,6 +342,13 @@ def _resolve_max_tokens(default: int) -> int:
     return default
 
 
+def _openai_max_tokens_kwarg(backend: str, max_tokens: int) -> dict[str, int]:
+    """Map the output cap to the OpenAI-compatible field accepted by the backend."""
+    # DeepSeek documents max_tokens and ignores max_completion_tokens.
+    key = "max_tokens" if backend == "deepseek" else "max_completion_tokens"
+    return {key: max_tokens}
+
+
 # Model-name fragments for OpenAI-compatible "reasoning" models that reject an
 # explicit temperature: the API returns 400 "Unsupported value: 'temperature'
 # does not support 0 with this model. Only the default (1) value is supported."
@@ -1554,7 +1561,7 @@ def _call_openai_compat(
             {"role": "system", "content": _extraction_system(deep=deep_mode)},
             {"role": "user", "content": _openai_content(user_message, images or [])},
         ],
-        "max_completion_tokens": max_completion_tokens,
+        **_openai_max_tokens_kwarg(backend, max_completion_tokens),
         "stream": False,
     }
     if temperature is not None:
@@ -3209,7 +3216,7 @@ def _call_llm(
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": max_tokens,
+        **_openai_max_tokens_kwarg(backend, max_tokens),
         # Force a single non-streamed response: some OpenAI-compatible gateways
         # default to SSE streaming when `stream` is omitted, but the result here
         # is always read as resp.choices[0]. Same fix as _call_openai_compat
