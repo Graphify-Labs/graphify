@@ -225,10 +225,10 @@ Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-2
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as a read-only type (e.g. Explore) — print a warning: "chunk N missing from disk — subagent may have been dispatched without Write and Bash access. Re-run with @@WRITER_AGENT@@, or on a host whose dispatch policy restricts that, any permitted type with both tools." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as a read-only type (e.g. Explore) — print a warning: "chunk N missing from disk — subagent may have been dispatched without Write and Bash access. Re-run with @@WRITER_AGENT@@. On a host whose dispatch policy restricts that type, use any permitted type with both tools instead." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run ensuring @@WRITER_AGENT_ARG@@ is used, or on a host whose dispatch policy restricts that type, any permitted type with Write and Bash access.
+If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure @@WRITER_AGENT_ARG@@ is used. On a host whose dispatch policy restricts that type, any permitted type with Write and Bash access is fine instead.
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
