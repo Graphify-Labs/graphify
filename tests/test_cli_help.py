@@ -69,6 +69,10 @@ def test_help_lists_every_install_platform():
 def test_help_lists_project_query_defaults_and_depth_range():
     result = subprocess.run([PYTHON, "-m", "graphify", "--help"], capture_output=True, text=True)
     assert result.returncode == 0
-    assert "--depth N" in result.stdout
-    assert "1-6" in result.stdout
-    assert ".graphifyrc" in result.stdout
+    assert "--budget N, --budget=N" in result.stdout
+    assert "--depth N, --depth=N" in result.stdout
+    assert "1-6 (default 2)" in result.stdout
+    assert "tokens (default 2000)" in result.stdout
+    assert "query_budget" in result.stdout and "query_depth" in result.stdout
+    assert "selected graph project's .graphifyrc" in result.stdout
+    assert "Explicit options override project values" in result.stdout

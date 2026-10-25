@@ -153,10 +153,14 @@ def _graph_root_for(gp: Path) -> Path:
         if text:
             root = Path(text)
             if root.is_absolute():
-                root = root.resolve()
-                if root.is_dir():
-                    return root
-    except (OSError, UnicodeError, ValueError, RuntimeError):
+                try:
+                    resolved = root.resolve()
+                except RuntimeError:
+                    pass  # Path resolution can report a symlink loop this way.
+                else:
+                    if resolved.is_dir():
+                        return resolved
+    except (OSError, UnicodeError, ValueError):
         pass
 
     # CLI-written absolute markers cover shared output. Otherwise strip only

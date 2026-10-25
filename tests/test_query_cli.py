@@ -295,7 +295,7 @@ def test_query_root_marker_is_absolute_directory_or_falls_back(monkeypatch, tmp_
         assert _graph_root_for(gp) == expected
 
 
-@pytest.mark.parametrize("failure", [OSError("unreadable"), UnicodeError("bad encoding"), ValueError("invalid path"), RuntimeError("resolve loop")])
+@pytest.mark.parametrize("failure", [OSError("unreadable"), UnicodeError("bad encoding"), ValueError("invalid path")])
 def test_query_root_expected_marker_failures_fall_back(monkeypatch, tmp_path, failure):
     from graphify.cli import _graph_root_for
 
@@ -387,3 +387,25 @@ def test_query_reads_custom_output_selected_project_settings(monkeypatch, tmp_pa
     for consumer in ["execution", "log"]:
         assert (captured[consumer]["token_budget"], captured[consumer]["depth"]) == (4000, 4)
     assert captured["execution"]["seed_root"] == project
+
+
+@pytest.mark.parametrize("operation", ["read_text", "is_dir"])
+def test_query_root_unexpected_runtime_error_propagates(monkeypatch, tmp_path, operation):
+    from graphify.cli import _graph_root_for
+
+    directory = tmp_path / "graphify-out"
+    directory.mkdir()
+    target = tmp_path / "project"
+    target.mkdir()
+    marker = directory / ".graphify_root"
+    marker.write_text(str(target), encoding="utf-8")
+    original = getattr(Path, operation)
+
+    def unexpected(path, *args, **kwargs):
+        if path == (marker if operation == "read_text" else target):
+            raise RuntimeError("unexpected marker operation")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, unexpected)
+    with pytest.raises(RuntimeError, match="unexpected marker operation"):
+        _graph_root_for(directory / "graph.json")
