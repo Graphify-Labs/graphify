@@ -11,7 +11,10 @@ skipped when the baseline is unknown.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -21,6 +24,25 @@ import graphify.extract as extract_mod
 from graphify.watch import _rebuild_code
 
 MANIFEST = "manifest.json"
+
+# Strip any working LLM backend so a developer's exported key cannot change what
+# these runs do. `update` is AST-only and needs none of them.
+_LLM_ENV_KEYS = (
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+    "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_BASE_URL",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID",
+)
+
+
+def _cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k not in _LLM_ENV_KEYS}
+    return subprocess.run(
+        [sys.executable, "-m", "graphify"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
 
 
 def _corpus(root: Path) -> Path:
@@ -283,3 +305,36 @@ def _graph_shape(root: Path):
         for e in payload.get("links", payload.get("edges", []))
     )
     return nodes, links
+
+
+def test_cli_update_re_extracts_only_changed_files(tmp_path: Path) -> None:
+    # End to end through the command the user runs. The first run has no
+    # baseline, so it must be full; the second must not be.
+    root = _corpus(tmp_path / "tree")
+    first = _cli(["update", "."], root)
+    assert first.returncode == 0, first.stderr
+    assert "Incremental:" not in first.stdout
+
+    (root / "src" / "a.py").write_text("def renamed_fa():\n    return 11\n")
+    second = _cli(["update", "."], root)
+    assert second.returncode == 0, second.stderr
+    assert "Incremental: re-extracting 1 of 4 scanned files" in second.stdout
+
+    # And the result is the graph a full rebuild of the same tree produces.
+    other = _corpus(tmp_path / "other")
+    (other / "src" / "a.py").write_text("def renamed_fa():\n    return 11\n")
+    full = _cli(["update", "."], other)
+    assert full.returncode == 0, full.stderr
+
+    assert _graph_shape(root) == _graph_shape(other)
+
+
+def test_cli_update_force_keeps_the_full_path(tmp_path: Path) -> None:
+    # The escape hatch: `--force` must not be silently downgraded to a change
+    # set, or a user reaching for it cannot shake a graph they distrust.
+    root = _corpus(tmp_path / "tree")
+    assert _cli(["update", "."], root).returncode == 0
+
+    forced = _cli(["update", ".", "--force"], root)
+    assert forced.returncode == 0, forced.stderr
+    assert "Incremental:" not in forced.stdout
