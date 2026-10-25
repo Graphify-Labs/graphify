@@ -525,7 +525,10 @@ source (a markdown or wiki link, a backticked path, a "Source:" or "Related:"
 line, a module or class a design doc specifies) is a reference, not the source:
 never use its path as source_file. Model the referenced file or entity as a node
 attributed to the enclosing file and link to it with a `references` or `cites`
-edge. Never invent, shorten or rewrite a path, and never omit source_file.
+edge. Add `"metadata":{"graphify_reference_stub":true}` to every node created
+solely for such a cross-document reference. Never add this marker to a node
+defined by the enclosing source. Never invent, shorten or rewrite a path, and
+never omit source_file.
 
 Node ID format: lowercase, only [a-z0-9_], no dots or slashes.
 Format: {stem}_{entity} where stem = full repo-relative path with the extension dropped, every segment joined with _ (e.g. src/auth/session.py -> src_auth_session); entity = symbol name (both normalised). Top-level files use just the filename stem (setup.py -> setup).

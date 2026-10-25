@@ -1374,6 +1374,7 @@ def test_native_extraction_prompt_pins_source_file_to_the_dispatched_file():
         assert "the `path` attribute of its enclosing <untrusted_source> block" in prompt, deep
         assert "is a reference, not the source" in prompt, deep
         assert "never use its path as source_file" in prompt, deep
+        assert '"graphify_reference_stub":true' in prompt.replace(" ", ""), deep
         assert "never omit source_file" in prompt, deep
 
 
