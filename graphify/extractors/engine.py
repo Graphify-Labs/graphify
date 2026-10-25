@@ -6504,6 +6504,90 @@ def _extract_generic(
         )
         return _swift_member_nid(enclosing, parent_nid, name, "type")
 
+    # Small Swift helpers for walk(): each keeps a branch out of walk(), which
+    # is already at pyright's code-flow complexity limit.
+    def _swift_current_scope() -> str | None:
+        """Qualified path of the innermost enclosing Swift type; None at file scope."""
+        return swift_scope_stack[-1] if swift_scope_stack else None
+
+    def _swift_note_body_scope(body) -> None:
+        if swift_scope_stack:
+            swift_body_scopes[id(body)] = swift_scope_stack[-1]
+
+    def _swift_push_scope(path: str | None) -> None:
+        if path is not None:
+            swift_scope_stack.append(path)
+
+    def _swift_pop_scope(path: str | None) -> None:
+        if path is not None:
+            swift_scope_stack.pop()
+
+    def _swift_written_class_name(node, name_node, class_name: str) -> str:
+        # `extension [T]` / `extension T?` extend Swift.Array /
+        # Swift.Optional, not T: label, id and path name the stdlib type.
+        if name_node is not None and _swift_is_extension(node):
+            return _SWIFT_SUGAR_EXTENSION_TARGETS.get(name_node.type, class_name)
+        return class_name
+
+    def _swift_class_nid(node, name_node, class_name: str, class_nid: str,
+                         parent_class_nid: str | None) -> str:
+        """The id of a Swift class-walk node (kept out of walk() for pyright)."""
+        # A nested type is held by its parent's id, so `A.State` and
+        # `B.State` of one file stay apart; salted only when a sibling
+        # type or member slugs to the same id (RFC Phase 3). A same-file
+        # extension of a nested type takes that type's real id.
+        if _swift_is_extension(node):
+            ext_path = (
+                _swift_extension_path(name_node, source)
+                if name_node is not None else None
+            ) or class_name
+            return _swift_nested_path_nid(ext_path) or class_nid
+        if parent_class_nid:
+            parent_path = swift_scope_stack[-1] if swift_scope_stack else None
+            class_nid = _swift_member_nid(parent_path, parent_class_nid, class_name, "type")
+            if parent_path is not None:
+                swift_path_nids.setdefault(f"{parent_path}.{class_name}", class_nid)
+            return class_nid
+        swift_path_nids.setdefault(class_name, class_nid)
+        return class_nid
+
+    def _swift_record_class(node, t: str, name_node, class_name: str,
+                            class_nid: str) -> str:
+        """Stamp the qualified path of a Swift class-walk node and record it as a
+        declaration or an extension; returns the path its body is walked under."""
+        is_swift_extension = (
+            t != "protocol_declaration"
+            and any(c.type == "extension" for c in node.children)
+        )
+        if is_swift_extension:
+            # An extension sits at file scope and names the type it
+            # extends by its written path (`extension A.B`).
+            swift_path = (
+                _swift_extension_path(name_node, source)
+                if name_node is not None else None
+            ) or class_name
+        elif swift_scope_stack:
+            swift_path = f"{swift_scope_stack[-1]}.{class_name}"
+        else:
+            swift_path = class_name
+        # One node per id: a second declaration (or a same-file
+        # extension) folding onto it adds its path once, in order.
+        swift_node = next((n for n in reversed(nodes) if n["id"] == class_nid), None)
+        if swift_node is not None:
+            swift_qualified = swift_node.setdefault("_swift_qualified", [])
+            if swift_path not in swift_qualified:
+                swift_qualified.append(swift_path)
+        if t == "protocol_declaration" or _swift_declaration_keyword(node) in (
+            "class", "struct", "enum", "actor",
+        ):
+            swift_declared_nids.add(class_nid)
+        elif is_swift_extension:
+            # `declared` is filled in after the walk (see above).
+            swift_extensions.append(
+                {"nid": class_nid, "label": class_name, "declared": False}
+            )
+        return swift_path
+
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
         python_underscore_groups = _python_pre_scan_underscore_collisions(root, source, stem)
@@ -6686,11 +6770,8 @@ def _extract_generic(
                 if not synthetic_name:
                     return
             class_name = synthetic_name if synthetic_name else _read_text(name_node, source)
-            if (config.ts_module == "tree_sitter_swift" and name_node is not None
-                    and _swift_is_extension(node)):
-                # `extension [T]` / `extension T?` extend Swift.Array /
-                # Swift.Optional, not T: label, id and path name the stdlib type.
-                class_name = _SWIFT_SUGAR_EXTENSION_TARGETS.get(name_node.type, class_name)
+            if config.ts_module == "tree_sitter_swift":
+                class_name = _swift_written_class_name(node, name_node, class_name)
             ruby_absolute_declaration = (
                 config.ts_module == "tree_sitter_ruby" and class_name.startswith("::")
             )
@@ -6720,25 +6801,9 @@ def _extract_generic(
             if config.ts_module == "tree_sitter_python" and parent_class_nid:
                 class_nid = _make_id(parent_class_nid, class_name)
             elif config.ts_module == "tree_sitter_swift":
-                # A nested type is held by its parent's id, so `A.State` and
-                # `B.State` of one file stay apart; salted only when a sibling
-                # type or member slugs to the same id (RFC Phase 3). A same-file
-                # extension of a nested type takes that type's real id.
-                if _swift_is_extension(node):
-                    _ext_path = (
-                        _swift_extension_path(name_node, source)
-                        if name_node is not None else None
-                    ) or class_name
-                    class_nid = _swift_nested_path_nid(_ext_path) or class_nid
-                elif parent_class_nid:
-                    _parent_path = swift_scope_stack[-1] if swift_scope_stack else None
-                    class_nid = _swift_member_nid(
-                        _parent_path, parent_class_nid, class_name, "type"
-                    )
-                    if _parent_path is not None:
-                        swift_path_nids.setdefault(f"{_parent_path}.{class_name}", class_nid)
-                else:
-                    swift_path_nids.setdefault(class_name, class_nid)
+                class_nid = _swift_class_nid(
+                    node, name_node, class_name, class_nid, parent_class_nid
+                )
             elif config.ts_module == "tree_sitter_python":
                 # `Session` / `session()`, `Foo` / `FOO` in one module (#2810).
                 class_nid = _underscore_salted_nid(class_nid, class_name, python_underscore_groups)
@@ -6854,37 +6919,7 @@ def _extract_generic(
 
             swift_path: str | None = None
             if config.ts_module == "tree_sitter_swift":
-                is_swift_extension = (
-                    t != "protocol_declaration"
-                    and any(c.type == "extension" for c in node.children)
-                )
-                if is_swift_extension:
-                    # An extension sits at file scope and names the type it
-                    # extends by its written path (`extension A.B`).
-                    swift_path = (
-                        _swift_extension_path(name_node, source)
-                        if name_node is not None else None
-                    ) or class_name
-                elif swift_scope_stack:
-                    swift_path = f"{swift_scope_stack[-1]}.{class_name}"
-                else:
-                    swift_path = class_name
-                # One node per id: a second declaration (or a same-file
-                # extension) folding onto it adds its path once, in order.
-                swift_node = next((n for n in reversed(nodes) if n["id"] == class_nid), None)
-                if swift_node is not None:
-                    swift_qualified = swift_node.setdefault("_swift_qualified", [])
-                    if swift_path not in swift_qualified:
-                        swift_qualified.append(swift_path)
-                if t == "protocol_declaration" or _swift_declaration_keyword(node) in (
-                    "class", "struct", "enum", "actor",
-                ):
-                    swift_declared_nids.add(class_nid)
-                elif is_swift_extension:
-                    # `declared` is filled in after the walk (see above).
-                    swift_extensions.append(
-                        {"nid": class_nid, "label": class_name, "declared": False}
-                    )
+                swift_path = _swift_record_class(node, t, name_node, class_name, class_nid)
 
             # Python-specific: inheritance
             if config.ts_module == "tree_sitter_python":
@@ -7589,14 +7624,12 @@ def _extract_generic(
                 previous_singleton_depth = ruby_singleton_context_depth
                 if config.ts_module == "tree_sitter_ruby":
                     ruby_singleton_context_depth = 0
-                if swift_path is not None:
-                    swift_scope_stack.append(swift_path)
+                _swift_push_scope(swift_path)
                 try:
                     for child in body.children:
                         walk(child, parent_class_nid=class_nid)
                 finally:
-                    if swift_path is not None:
-                        swift_scope_stack.pop()
+                    _swift_pop_scope(swift_path)
                     ruby_singleton_context_depth = previous_singleton_depth
                     if config.ts_module == "tree_sitter_ruby":
                         ruby_lexical_scopes.pop()
@@ -7966,9 +7999,7 @@ def _extract_generic(
             prop_name = _swift_property_name(node, source)
             if prop_name and prop_type:
                 type_table[prop_name] = prop_type
-                _swift_set_type_scope(
-                    prop_name, prop_type, swift_scope_stack[-1] if swift_scope_stack else "",
-                )
+                _swift_set_type_scope(prop_name, prop_type, _swift_current_scope() or "")
             elif (prop_name and pending_factory is not None
                   and prop_name not in swift_factory_bindings):
                 swift_factory_bindings[prop_name] = pending_factory
@@ -7987,8 +8018,7 @@ def _extract_generic(
                 add_node(prop_nid, f".{prop_name}", line)
                 add_edge(parent_class_nid, prop_nid, "method", line)
                 for body_block in comp_bodies:
-                    if swift_scope_stack:
-                        swift_body_scopes[id(body_block)] = swift_scope_stack[-1]
+                    _swift_note_body_scope(body_block)
                     function_bodies.append((prop_nid, body_block))
             return
 
@@ -8249,10 +8279,9 @@ def _extract_generic(
                         parent_class_nid, node, sanitized_name, source, js_member_groups
                     )
                 elif config.ts_module == "tree_sitter_swift":
-                    # `func state()` beside a nested `struct State` (RFC r1 F10).
+                    # `func state()` beside a nested `struct State`.
                     func_nid = _swift_member_nid(
-                        swift_scope_stack[-1] if swift_scope_stack else None,
-                        parent_class_nid, sanitized_name, "method",
+                        _swift_current_scope(), parent_class_nid, sanitized_name, "method",
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
@@ -8524,8 +8553,7 @@ def _extract_generic(
                         if pname:
                             type_table[pname] = param_type
                             _swift_set_type_scope(
-                                pname, param_type,
-                                swift_scope_stack[-1] if swift_scope_stack else "",
+                                pname, param_type, _swift_current_scope() or "",
                             )
                 return_node = node.child_by_field_name("return_type")
                 if return_node is not None:
@@ -8692,8 +8720,8 @@ def _extract_generic(
                     java_method_scopes[id(body)] = (node, parent_class_nid)
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
-                if config.ts_module == "tree_sitter_swift" and swift_scope_stack:
-                    swift_body_scopes[id(body)] = swift_scope_stack[-1]
+                if config.ts_module == "tree_sitter_swift":
+                    _swift_note_body_scope(body)
                 function_bodies.append((func_nid, body))
                 if config.ts_module in (
                     "tree_sitter_javascript", "tree_sitter_typescript"
