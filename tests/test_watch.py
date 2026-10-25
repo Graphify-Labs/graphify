@@ -3203,6 +3203,34 @@ def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
     assert {"notes", "notes_alpha", "notes_beta"} <= ids
 
 
+def test_rebuild_code_quick_scans_markdown_classified_as_paper(tmp_path):
+    """#4750: a .md that detect() classifies as a paper (arXiv id, "arxiv",
+    an Abstract heading) is still Markdown. The AST-only rebuild must
+    quick-scan it like any other doc instead of giving it zero nodes, while a
+    PDF paper (no AST extractor) stays out of the rebuild."""
+    from graphify.detect import detect
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (corpus / "paper_notes.md").write_text(
+        "# Notes on a paper\n\narXiv 2501.00001\n\n## Abstract\n\nWe study X.\n",
+        encoding="utf-8",
+    )
+    (corpus / "plain_notes.md").write_text("# Plain notes\n\n## Section\n\nSome text.\n", encoding="utf-8")
+    (corpus / "scan.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    files = detect(corpus)["files"]
+    assert any(Path(p).name == "paper_notes.md" for p in files["paper"]), "precondition: .md classified as paper"
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    nodes = json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))["nodes"]
+    by_source = {Path(n.get("source_file") or "").name for n in nodes}
+    assert "paper_notes.md" in by_source, "paper-classified Markdown got zero nodes (#4750)"
+    assert "plain_notes.md" in by_source
+    assert "scan.pdf" not in by_source
+
+
 def test_full_rebuild_preserves_semantic_backed_doc_ast_layer(tmp_path):
     """#2333 (COEXIST): a doc that carries BOTH an AST heading layer and a
     semantic layer keeps both across a full rebuild. The doc is excluded from
