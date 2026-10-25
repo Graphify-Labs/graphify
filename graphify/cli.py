@@ -812,6 +812,38 @@ def _zero_node_stamped_semantic_sources(
     return healed
 
 
+def _record_extract_cost(graphify_out: Path, input_tokens: int, output_tokens: int, files: int) -> None:
+    """Append this run's token usage to graphify-out/cost.json, the same ledger the
+    skill writes, so `graphify extract` refreshes are counted too (#1769). An
+    unreadable ledger is left alone rather than replaced with one run."""
+    from datetime import datetime, timezone
+    from graphify.paths import write_json_atomic
+
+    cost_path = graphify_out / "cost.json"
+    cost = {"runs": [], "total_input_tokens": 0, "total_output_tokens": 0}
+    if cost_path.exists():
+        try:
+            cost = json.loads(cost_path.read_text(encoding="utf-8"))
+            cost.setdefault("runs", [])
+            cost.setdefault("total_input_tokens", 0)
+            cost.setdefault("total_output_tokens", 0)
+        except (OSError, ValueError, AttributeError) as exc:
+            print(f"[graphify extract] warning: could not read {cost_path}, not updating it: {exc}", file=sys.stderr)
+            return
+    cost["runs"].append({
+        "date": datetime.now(timezone.utc).isoformat(),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "files": files,
+    })
+    cost["total_input_tokens"] += input_tokens
+    cost["total_output_tokens"] += output_tokens
+    try:
+        write_json_atomic(cost_path, cost, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        print(f"[graphify extract] warning: could not write {cost_path}: {exc}", file=sys.stderr)
+
+
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale_sources`` from graph.json
     in place. Returns the number of nodes removed.
@@ -4964,6 +4996,10 @@ def dispatch_command(cmd: str) -> None:
                     f"{merged['output_tokens']:,} out, "
                     f"est. cost: ${cost:.4f}"
                 )
+                _record_extract_cost(
+                    graphify_out, merged["input_tokens"], merged["output_tokens"],
+                    detection.get("total_files", 0),
+                )
             try:
                 if has_path:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
@@ -5205,6 +5241,10 @@ def dispatch_command(cmd: str) -> None:
                 f"{merged['input_tokens']:,} in / "
                 f"{merged['output_tokens']:,} out, "
                 f"est. cost (~{backend}): ${cost:.4f}"
+            )
+            _record_extract_cost(
+                graphify_out, merged["input_tokens"], merged["output_tokens"],
+                detection.get("total_files", 0),
             )
         # extract intentionally stops at graph.json + analysis; the report and
         # community labels are produced by `cluster-only` (or an agent's Step 5).
