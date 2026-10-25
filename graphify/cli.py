@@ -15,14 +15,19 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
+# Hook reminders arrive inside the agent's tool-result stream, where commands
+# ("MANDATORY", "You MUST", "include this in every subagent prompt") read like a
+# prompt injection and get ignored or flagged (#2202). State facts instead; the
+# per-agent budget in _nudge_allowed already gives each subagent its own nudge.
 _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: graphify-out/graph.json exists. You MUST run '
-            '`graphify query "<question>"` before grepping raw files. Grep raw '
-            'files only once you know the exact file and lines you need, from the '
-            'graph or an earlier read.'
+            'graphify: this project has a knowledge graph at graphify-out/graph.json. '
+            '`graphify query "<question>"` returns the files and relations that '
+            'matter for a question, usually in far fewer tokens than grepping raw '
+            'files. Grep works best once the graph or an earlier read has pointed '
+            'to the exact file and lines.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -30,13 +35,12 @@ _READ_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
-            'before reading source files. Use: `graphify query "<question>"` '
-            '(scoped subgraph), `graphify explain "<concept>"`, or '
-            '`graphify path "<A>" "<B>"`. Read raw files only once graphify has '
-            'shown you the exact file and lines you need. This rule applies to '
-            'subagents too — include it in every subagent prompt involving code '
-            'exploration.'
+            'graphify: this project has a knowledge graph at graphify-out/graph.json. '
+            '`graphify query "<question>"` (scoped subgraph), '
+            '`graphify explain "<concept>"` and `graphify path "<A>" "<B>"` show '
+            'which files and lines matter — usually in far fewer tokens than reading '
+            'source files one by one. Reading a file directly works best once the '
+            'graph has pointed to the exact lines.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -64,8 +68,7 @@ _READ_DENY = json.dumps({
             'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
             '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
             'will be allowed. This block fires at most once per session; after one '
-            'query, read raw files for the exact lines the graph pointed you to. Apply the '
-            'same rule in any subagent prompt that explores code.'
+            'query, read raw files for the exact lines the graph pointed you to.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
