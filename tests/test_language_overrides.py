@@ -157,6 +157,33 @@ def test_the_existing_option_and_unknown_keys_still_behave(tmp_path):
     assert cfg == {"viz_node_limit": 0, "languages": {".tpl": ".ts"}}
 
 
+@pytest.mark.parametrize("content, expected", [
+    ("query_budget=4000\n", {"query_budget": 4000}),
+    ("query_depth=6\n", {"query_depth": 6}),
+    ("query_budget=3\nquery_budget=4000\nquery_depth=1\n", {"query_budget": 4000, "query_depth": 1}),
+    ("\ufeffquery_budget=4000\nquery_depth=3\nviz_node_limit=0\nlanguage.tpl=.ts\nfuture_key=ok\n",
+     {"query_budget": 4000, "query_depth": 3, "viz_node_limit": 0, "languages": {".tpl": ".ts"}}),
+])
+def test_query_defaults_are_optional_strict_project_settings(tmp_path, content, expected):
+    (tmp_path / ".graphifyrc").write_text(content, encoding="utf-8")
+    assert load_graphifyrc(tmp_path) == expected
+
+
+@pytest.mark.parametrize("key, value", [
+    ("query_budget", "no"), ("query_budget", "0"), ("query_budget", "-1"),
+    ("query_budget", ""), ("query_depth", "no"), ("query_depth", "0"),
+    ("query_depth", "-1"), ("query_depth", "7"), ("query_depth", ""),
+])
+def test_invalid_query_defaults_report_key_path_and_line(tmp_path, key, value):
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text(f"# project settings\n{key}={value}\n", encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        load_graphifyrc(tmp_path)
+    assert key in str(error.value)
+    assert str(rc) in str(error.value)
+    assert "line 2" in str(error.value)
+
+
 def test_hooks_still_reads_the_same_file_through_its_old_name(tmp_path):
     from graphify.hooks import _load_graphifyrc
     (tmp_path / ".graphifyrc").write_text("viz_node_limit=3\nlanguage.inc=php\n", encoding="utf-8")

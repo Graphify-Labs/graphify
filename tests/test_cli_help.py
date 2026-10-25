@@ -64,3 +64,11 @@ def test_help_lists_every_install_platform():
         assert platform_name in listed, (
             f"`graphify --help` must list the --platform value {platform_name!r} (#4655)"
         )
+
+
+def test_help_lists_project_query_defaults_and_depth_range():
+    result = subprocess.run([PYTHON, "-m", "graphify", "--help"], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert "--depth N" in result.stdout
+    assert "1-6" in result.stdout
+    assert ".graphifyrc" in result.stdout

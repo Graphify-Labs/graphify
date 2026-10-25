@@ -404,6 +404,20 @@ viz_node_limit=0
 
 The declaration flows through classification, extractor selection, grammar and resolution, imports, `graphify watch`, and the AST cache (a file re-parsed under a different language never reuses the old entry), and the same `.graphifyrc` is read by `extract`, `update`, the hooks, the MCP server, and the `/graphify` skill. A typo is reported once on stderr and the scan continues with the defaults. How declarations interact with caching, incremental rebuilds, and import resolution: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+
+**Query defaults.** Set `query_budget` to a positive integer and `query_depth` to an integer from 1 to 6:
+
+```ini
+query_budget=4000
+query_depth=3
+```
+
+For `graphify query`, explicit `--budget N` / `--budget=N` and `--depth N` / `--depth=N` override these settings independently. Without a project setting or explicit option, the defaults remain budget 2000 and depth 2. These keys do not change the MCP server's defaults.
+
+Settings come from the project owning the selected `--graph`, even when the command runs from another directory. An existing absolute directory in the graph's sibling `.graphify_root` marker identifies that project. Otherwise a matching relative `GRAPHIFY_OUT` suffix identifies it; absolute, empty, traversal-containing or nonmatching output paths fall back to the graph file's directory. Relative markers are ignored.
+
+The query command always reads that project's `.graphifyrc`. An invalid recognized setting or an unreadable file produces one stderr warning and discards all project settings for that query; explicit options still apply. The settings parser stays strict for its other callers. Existing explicit budget values retain their behavior; persisted `query_budget` values must be positive.
+
 ---
 
 ## Team setup
