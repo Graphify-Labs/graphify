@@ -57,6 +57,8 @@ Follow these steps in order. Do not skip steps.
 
 ### Step 1 - Ensure graphify is installed
 
+First: write the resolved absolute path to scan into a file named `.graphify_input_path` using your file-writing tool - the exact path bytes, nothing else. Every later step reads the path from that file, so it is never pasted into code or a command line and quoting can never break it.
+
 ```bash
 python3 -c "import graphify" 2>/dev/null || pip install graphifyy -q --break-system-packages 2>&1 | tail -3
 ```
@@ -70,12 +72,13 @@ python3 -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-result = detect(Path('INPUT_PATH'))
+SCAN_ROOT = Path('.graphify_input_path').read_text().rstrip('\n')
+result = detect(Path(SCAN_ROOT))
 print(json.dumps(result))
 " > .graphify_detect.json
 ```
 
-Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
+The path comes from `.graphify_input_path`, written in Step 1 - do not substitute it into code or commands. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
 
 ```
 Corpus: X files · ~Y words
@@ -334,6 +337,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
+SCAN_ROOT = Path('.graphify_input_path').read_text().rstrip('\n')
 
 G = build_from_json(extraction)
 communities = cluster(G)
@@ -345,7 +349,7 @@ labels = {cid: 'Community ' + str(cid) for cid in communities}
 # Placeholder questions - regenerated with real labels in Step 5
 questions = suggest_questions(G, communities, labels)
 
-report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
+report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, SCAN_ROOT, suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 to_json(G, communities, 'graphify-out/graph.json')
 
@@ -367,7 +371,7 @@ print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(co
 
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
-Replace INPUT_PATH with the actual path.
+The path comes from `.graphify_input_path`, written in Step 1 - do not substitute it into code or commands.
 
 ### Step 5 - Label communities
 
@@ -387,6 +391,7 @@ from pathlib import Path
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
+SCAN_ROOT = Path('.graphify_input_path').read_text().rstrip('\n')
 
 G = build_from_json(extraction)
 communities = {int(k): v for k, v in analysis['communities'].items()}
@@ -399,7 +404,7 @@ labels = LABELS_DICT
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
 
-report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
+report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, SCAN_ROOT, suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 Path('.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}))
 print('Report updated with community labels')
@@ -407,7 +412,7 @@ print('Report updated with community labels')
 ```
 
 Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
-Replace INPUT_PATH with the actual path.
+The path comes from `.graphify_input_path`, written in Step 1 - do not substitute it into code or commands.
 
 ### Step 6 - Generate Obsidian vault (default) + optional HTML
 
@@ -670,13 +675,16 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
+First write the resolved absolute path being updated to `.graphify_input_path` with your file-writing tool (same mechanism as Step 1) - the block below reads it from there.
+
 ```bash
 python3 -c "
 import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+SCAN_ROOT = Path('.graphify_input_path').read_text().rstrip('\n')
+result = detect_incremental(Path(SCAN_ROOT))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('.graphify_incremental.json').write_text(json.dumps(result))
@@ -768,7 +776,7 @@ Clean up after: `rm -f .graphify_old.json`
 
 ## For --cluster-only
 
-Skip Steps 1–3. Load the existing graph from `graphify-out/graph.json` and re-run clustering:
+Skip Steps 1–3, but first write the resolved absolute target path to `.graphify_input_path` with your file-writing tool (same mechanism as Step 1) - Steps 5–9 read it. Load the existing graph from `graphify-out/graph.json` and re-run clustering:
 
 ```bash
 python3 -c "
@@ -1134,7 +1142,7 @@ except RuntimeError as e:
 "
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
+Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, write `./raw` resolved to an absolute path into `.graphify_input_path`, then run the `--update` pipeline to merge the new file into the existing graph.
 
 Supported URL types (auto-detected):
 - Twitter/X → fetched via oEmbed, saved as `.md` with tweet text and author
@@ -1150,10 +1158,10 @@ Supported URL types (auto-detected):
 Start a background watcher that monitors a folder and auto-updates the graph when files change.
 
 ```bash
-python3 -m graphify.watch INPUT_PATH --debounce 3
+python3 -m graphify.watch "$(cat .graphify_input_path)" --debounce 3
 ```
 
-Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:
+The folder comes from `.graphify_input_path` - write the resolved absolute folder to that file with your file-writing tool before running this command (as in Step 1), and do not substitute the path into the command itself. Behavior depends on what changed:
 
 - **Code files only (.py, .ts, .go, etc.):** re-runs AST extraction + rebuild + cluster immediately, no LLM needed. `graph.json` and `GRAPH_REPORT.md` are updated automatically.
 - **Docs, papers, or images:** writes a `graphify-out/needs_update` flag and prints a notification to run `/graphify --update` (LLM semantic re-extraction required).
