@@ -911,3 +911,31 @@ def test_dotted_reference_reaches_nested_type_not_same_slug_enum_case(tmp_path: 
         if e.get("relation") == "references" and e["source"] in use_ids
     }
     assert targets == {"Delegate"}, targets
+
+
+@pytest.mark.parametrize("top_level_first", [False, True])
+def test_dotted_reference_uses_lexical_scope_over_same_named_top_level(
+    tmp_path: Path, top_level_first: bool,
+):
+    # Inside `Outer`, `Model.Item` means `Outer.Model.Item`, which hides the
+    # top-level `Model.Item`, whichever of the two is declared first in the file.
+    outer = (
+        "struct Outer {\n    struct Model {\n        struct Item {}\n    }\n"
+        "    var item: Model.Item\n}\n"
+    )
+    top = "struct Model {\n    struct Item {}\n}\n"
+    base = tmp_path / "src"
+    path = base / "Types.swift"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(top + outer if top_level_first else outer + top, encoding="utf-8")
+    result = extract([path], cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    by_id = {n["id"]: n for n in result["nodes"]}
+    outer_ids = {nid for nid, n in by_id.items() if n.get("label") == "Outer"}
+    targets = [
+        by_id[e["target"]] for e in result["edges"]
+        if e.get("relation") == "references" and e["source"] in outer_ids
+        and by_id.get(e["target"], {}).get("label") in ("Item", "Model.Item")
+    ]
+    assert len(targets) == 1, targets
+    assert targets[0].get("_swift_qualified") == ["Outer.Model.Item"], targets[0]

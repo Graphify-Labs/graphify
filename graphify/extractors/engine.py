@@ -6640,19 +6640,17 @@ def _extract_generic(
         edges.append(edge)
 
     def ensure_named_node(name: str, line: int) -> str:
-        if config.ts_module == "tree_sitter_swift" and "." in name:
-            # A dotted Swift name declared in this file maps to its nested type's
-            # real id first: `Action.Delegate` slugs to the id of a same-file
-            # `case delegate`, which keeps the plain id while the type is salted.
-            nested_nid = _swift_nested_path_nid(name)
-            if nested_nid is not None:
-                return nested_nid
         nid = _make_id(stem, ".".join(namespace_stack), name)
         if config.ts_module == "tree_sitter_c_sharp":
             nid = _underscore_salted_nid(nid, name, csharp_type_groups)
         elif config.ts_module == "tree_sitter_python":
             nid = _underscore_salted_nid(nid, name, python_underscore_groups)
-        if nid in seen_ids:
+        # A dotted Swift name never takes the same-file id shortcut: its slug can
+        # hit an unrelated node (`Action.Delegate` -> `case delegate`) or the
+        # wrong one of two same-named nested types. It stays a stub, and the Swift
+        # type pass binds it by lexical lookup from the edge's `_swift_scope`.
+        swift_dotted = config.ts_module == "tree_sitter_swift" and "." in name
+        if nid in seen_ids and not swift_dotted:
             return nid
         nid = _make_id(name)
         if nid == _make_id(path.stem):
