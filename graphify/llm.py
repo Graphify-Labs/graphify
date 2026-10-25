@@ -2772,6 +2772,9 @@ def extract_corpus_parallel(
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
     }
     total = len(chunks)
+    # Files whose chunk raised before returning a response. The #1890
+    # reconciliation below must not describe them as omitted by the model (#3616).
+    failed_files: set[Path] = set()
 
     def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
@@ -2853,6 +2856,7 @@ def extract_corpus_parallel(
             if exc is not None:
                 print(f"[graphify] chunk {idx + 1}/{total} failed: {exc}", file=sys.stderr)
                 merged["failed_chunks"] += 1
+                failed_files.update(unit_path(f) for f in chunk)
                 continue
             assert result is not None
             _merge_into(merged, result)
@@ -2878,6 +2882,7 @@ def extract_corpus_parallel(
                         file=sys.stderr,
                     )
                     merged["failed_chunks"] += 1
+                    failed_files.update(unit_path(f) for f in chunks[idx])
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
@@ -2991,11 +2996,25 @@ def extract_corpus_parallel(
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     _stamp_semantic_origin(merged)
-    if uncovered:
-        shown = ", ".join(p.name for p in uncovered[:5])
-        more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
+    # Split the gap by cause (#3616): a file whose chunk raised never got a
+    # response, so only the rest were actually omitted by the model.
+    unanswered = [p for p in uncovered if p in failed_files]
+    omitted = [p for p in uncovered if p not in failed_files]
+    if unanswered:
+        shown = ", ".join(p.name for p in unanswered[:5])
+        more = f" (+{len(unanswered) - 5} more)" if len(unanswered) > 5 else ""
         print(
-            f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
+            f"[graphify] WARNING: {len(unanswered)}/{len(dispatched)} dispatched file(s) "
+            f"produced no nodes and are absent from the graph: {shown}{more}. Their "
+            "chunk failed before returning a response (see errors above); a re-run "
+            "will retry them.",
+            file=sys.stderr,
+        )
+    if omitted:
+        shown = ", ".join(p.name for p in omitted[:5])
+        more = f" (+{len(omitted) - 5} more)" if len(omitted) > 5 else ""
+        print(
+            f"[graphify] WARNING: {len(omitted)}/{len(dispatched)} dispatched file(s) "
             f"produced no nodes and are absent from the graph: {shown}{more}. The model "
             "returned a response but omitted them; a re-run will retry them.",
             file=sys.stderr,
