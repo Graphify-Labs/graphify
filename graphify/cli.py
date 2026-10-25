@@ -160,9 +160,28 @@ def _print_cloud_cta(out_dir: "Path") -> None:
 
 
 def _graph_root_for(gp: Path) -> Path:
-    """The analysed repo root for a graph file: <root>/<GRAPHIFY_OUT_NAME>/graph.json, else the file's own directory."""
-    from graphify.paths import GRAPHIFY_OUT_NAME
-    return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+    """Resolve the selected graph's project without interpreting paths via CWD."""
+    from graphify.paths import GRAPHIFY_OUT
+
+    try:
+        text = (gp.parent / ".graphify_root").read_text(encoding="utf-8-sig").strip()
+        if text:
+            root = Path(text)
+            if root.is_absolute():
+                root = root.resolve()
+                if root.is_dir():
+                    return root
+    except (OSError, UnicodeError, ValueError, RuntimeError):
+        pass
+
+    # CLI-written absolute markers cover shared output. Otherwise strip only
+    # an exact, traversal-free relative output suffix, never a CWD-resolved one.
+    output = Path(GRAPHIFY_OUT)
+    parts = output.parts
+    if (parts and not output.is_absolute() and ".." not in parts
+            and gp.parent.parts[-len(parts):] == parts):
+        return gp.parent.parents[len(parts) - 1]
+    return gp.parent
 
 
 def _default_graph_path() -> str:
@@ -1745,7 +1764,7 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
-        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]"
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
         if len(sys.argv) < 3:
             print(_query_usage, file=sys.stderr)
             sys.exit(1)
@@ -1764,7 +1783,8 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
-        budget = 2000
+        budget: int | None = None
+        depth: int | None = None
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         seeds: list[str] = []
@@ -1785,6 +1805,23 @@ def dispatch_command(cmd: str) -> None:
                     print(f"error: --budget must be an integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
+            elif args[i] == "--depth" or args[i].startswith("--depth="):
+                if args[i] == "--depth":
+                    if i + 1 >= len(args):
+                        print("error: --depth needs an integer from 1 to 6", file=sys.stderr)
+                        sys.exit(1)
+                    raw_depth = args[i + 1]
+                    i += 2
+                else:
+                    raw_depth = args[i].split("=", 1)[1]
+                    i += 1
+                try:
+                    depth = int(raw_depth)
+                    if not 1 <= depth <= 6:
+                        raise ValueError("out of range")
+                except ValueError:
+                    print("error: --depth must be an integer from 1 to 6", file=sys.stderr)
+                    sys.exit(1)
             elif args[i] == "--context" and i + 1 < len(args):
                 context_filters.append(args[i + 1])
                 i += 2
@@ -1854,6 +1891,17 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        from graphify.rcfile import RC_FILENAME, load_graphifyrc
+
+        graph_root = _graph_root_for(gp)
+        try:
+            project_settings = load_graphifyrc(graph_root)
+        except (ValueError, OSError) as exc:
+            print(f"warning: ignoring project settings in {graph_root / RC_FILENAME}: {exc}", file=sys.stderr)
+            project_settings = {}
+        effective_budget = budget if budget is not None else project_settings.get("query_budget", 2000)
+        effective_depth = depth if depth is not None else project_settings.get("query_depth", 2)
+
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
@@ -1861,13 +1909,12 @@ def dispatch_command(cmd: str) -> None:
             G,
             question,
             mode=_mode,
-            depth=2,
-            token_budget=budget,
+            depth=effective_depth,
+            token_budget=effective_budget,
             context_filters=context_filters,
             graph_path=str(gp),
             seeds=seeds or None,
-            # Same root derivation as `affected` (#2706): <root>/graphify-out/graph.json.
-            seed_root=_graph_root_for(gp),
+            seed_root=graph_root,
         )
         querylog.log_query(
             kind="query",
@@ -1875,8 +1922,8 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             result=_result,
             mode=_mode,
-            depth=2,
-            token_budget=budget,
+            depth=effective_depth,
+            token_budget=effective_budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
             seeds=seeds or None,
         )
