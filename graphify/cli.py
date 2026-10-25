@@ -624,6 +624,7 @@ def _zero_node_stamped_code_sources(
     graph_path: Path,
     scan_root: Path,
     unchanged_code: list[str],
+    manifest_path: Path | None = None,
 ) -> list[str]:
     """Manifest-stamped code files with a registered extractor but ZERO nodes
     in the existing graph.json (#2543 heal).
@@ -637,6 +638,12 @@ def _zero_node_stamped_code_sources(
     property: if it fails again this run it is now left unstamped, and if it
     succeeds its nodes enter graph.json so the next scan stops re-queuing it.
 
+    A file the extractor declines by design (data JSON, #2879) is a legitimate
+    stamped-but-zero-node row, not a poisoned one. Its manifest row carries
+    ``ast_empty: true``; skip those here or the heal re-queues them on every
+    incremental forever. A pre-#2879 manifest lacks the marker, so such a file
+    is re-queued once more, then stamped with it and left alone thereafter.
+
     Membership mirrors the ``source_file`` spellings extracts store (#1897/
     #1941: scan-root-relative, forward slash; absolute for out-of-root) and
     compares NFC-normalized (#2210/#2221).
@@ -644,6 +651,12 @@ def _zero_node_stamped_code_sources(
     if not unchanged_code:
         return []
     from graphify.paths import nfc
+    ast_empty: set[str] = set()
+    if manifest_path is not None:
+        from graphify.detect import load_manifest
+        for _k, _v in load_manifest(str(manifest_path), root=scan_root).items():
+            if isinstance(_v, dict) and _v.get("ast_empty"):
+                ast_empty.add(nfc(_k))
     try:
         data = json.loads(graph_path.read_text(encoding="utf-8"))
     except Exception:
@@ -698,6 +711,8 @@ def _zero_node_stamped_code_sources(
             pass
         if spellings & present:
             continue  # the graph has this file: stamp is honest
+        if spellings & ast_empty:
+            continue  # declined by design (#2879): zero nodes is intended
         healed.append(f)
     return healed
 
@@ -1532,7 +1547,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _QUERY_NO_MATCH, _query_graph_text
+        from graphify.serve import _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
@@ -1664,7 +1679,9 @@ def dispatch_command(cmd: str) -> None:
         )
         _touch_query_stamp(gp)
         print(_result)
-        if _result == _QUERY_NO_MATCH:
+        if _is_ambiguity_refusal(_result):
+            sys.exit(EXIT_AMBIGUOUS)
+        if _result == _QUERY_NO_MATCH or _result.startswith("No unique node match for --seed:"):
             sys.exit(EXIT_NOT_FOUND)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -3970,6 +3987,7 @@ def dispatch_command(cmd: str) -> None:
                 existing_graph_path,
                 target,
                 detection.get("unchanged_files", {}).get("code", []),
+                manifest_path,
             )
             if _healed_sources:
                 print(
@@ -4722,6 +4740,10 @@ def dispatch_command(cmd: str) -> None:
         # #2543: also drop AST sources that failed (missing optional extra /
         # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        # #2879: code files the extractor declined by design this run. They ARE
+        # stamped (not failures) but have zero nodes, so the manifest marks the
+        # emptiness intentional and the #2543 heal stops re-queuing them.
+        _ast_empty_sources = list(ast_result.get("skipped_sources") or [])
         _manifest_files = _stamped_manifest_files(
             files_by_type,
             sem_result,
@@ -4809,7 +4831,7 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -4944,7 +4966,7 @@ def dispatch_command(cmd: str) -> None:
                 )
             try:
                 if has_path:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -5156,7 +5178,7 @@ def dispatch_command(cmd: str) -> None:
         _wja(analysis_path, analysis, indent=2)
         try:
             if has_path:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 

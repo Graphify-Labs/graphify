@@ -1213,6 +1213,74 @@ def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
     assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
 
 
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_anchor_to_the_top_level_after_the_worktree_guard(name, script):
+    """Every hook cds to the checkout's top level before anything reads
+    graphify-out/ or launches the rebuild (#3258), and does so after the
+    worktree guard, whose _GFY_GITDIR/_GFY_COMMONDIR it reuses."""
+    from graphify.hooks import _TOPLEVEL_ANCHOR, _WORKTREE_GUARD
+    assert script.count(_TOPLEVEL_ANCHOR) == 1, f"{name} anchor not present exactly once"
+    assert script.index(_WORKTREE_GUARD) < script.index(_TOPLEVEL_ANCHOR)
+    # The cheap "is there a graph here?" early exits may stay ahead of it: at
+    # worst they skip a rebuild. Choosing the interpreter and launching the
+    # rebuild (which reads .graphify_root) must not.
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    anchor_at = code.index(_TOPLEVEL_ANCHOR.splitlines()[0])
+    for later in ("GRAPHIFY_PYTHON", "_rebuild_code"):
+        assert anchor_at < code.index(later), f"{name} uses {later} before anchoring"
+
+
+def test_toplevel_anchor_runs_from_the_top_when_git_starts_the_hook_in_a_subdir(tmp_path):
+    """End-to-end against a real repo (#3258): with GIT_DIR exported and no
+    GIT_WORK_TREE, git runs hooks in the caller's cwd and `--show-toplevel`
+    echoes that subdirectory. The anchored snippet must still run at the
+    repository top, keep later git calls working, and leave a linked worktree
+    to the guard."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    primary = tmp_path / "primary"
+    primary.mkdir()
+
+    def _git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, text=True)
+
+    _git("init", "-q", ".", cwd=primary)
+    _git("config", "user.email", "t@t.co", cwd=primary)
+    _git("config", "user.name", "t", cwd=primary)
+    (primary / "a.txt").write_text("x")
+    _git("add", "-A", cwd=primary)
+    _git("commit", "-qm", "init", cwd=primary)
+    sub = primary / ".claude" / "worktrees"
+    sub.mkdir(parents=True)
+    linked = sub / "wt1"
+    _git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=primary)
+
+    from graphify.hooks import _TOPLEVEL_ANCHOR, _WORKTREE_GUARD
+    snippet = (_WORKTREE_GUARD + _TOPLEVEL_ANCHOR
+               + 'git rev-parse --verify -q HEAD >/dev/null && echo GIT_OK\n'
+               + ': > anchored.txt\n')
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    cases = [
+        ("top", primary, {}),
+        ("subdir", sub, {}),
+        ("subdir+GIT_DIR", sub, {"GIT_DIR": "../../.git"}),
+    ]
+    for label, cwd, extra in cases:
+        r = subprocess.run(["sh", "-c", snippet], cwd=cwd, env={**env, **extra},
+                           capture_output=True, text=True)
+        assert (primary / "anchored.txt").exists(), f"{label}: did not run at the top ({r.stderr})"
+        assert not (sub / "anchored.txt").exists(), f"{label}: ran in the subdirectory"
+        assert "GIT_OK" in r.stdout, f"{label}: git broke after the cd ({r.stderr})"
+        (primary / "anchored.txt").unlink()
+
+    r = subprocess.run(["sh", "-c", snippet], cwd=linked, env=env,
+                       capture_output=True, text=True)
+    assert not (linked / "anchored.txt").exists() and not (primary / "anchored.txt").exists(), \
+        "the linked worktree must still be skipped by the guard"
+
+
 # ── #1907: duplicate keys in .git/config must not trigger spurious warnings ──
 
 def _append_duplicate_config_entries(repo: Path) -> None:

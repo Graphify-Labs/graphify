@@ -17,6 +17,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_long_path as _os_long_path
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
@@ -37,7 +38,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 17  # Batch: Python pytest-fixture markers (`_py_fixture`/`_python_fixture_param`, #4332) and module-level class-id collision salting (#2810); TS `this.field` typed from any method incl. static (#4473); Solidity callables carry `metadata.arity` + inherited-call/`super`/modifier raw calls (#4379); Go type-decl and Rust file-item case-distinct node ids (#4444); prior (16): Rust `use` edges carry the imported name as written (`_rust_use_name`, #4439); (15): Go generic receiver types normalized (`Box[T]` -> `Box`) so methods attach to the type node; prior (14): C# receiver resolution for nameless/`new X()`/`foreach` receivers (defer + receiver-chain markers) and `_`/case-distinct node ids (underscore-salted); prior (13): Kotlin/Scala/C++/Swift generic & template type params no longer mint sourceless stubs; Objective-C NS_ENUM/NS_OPTIONS extraction and `_callable`/`_callable_class` markers; Go and PHP receiver-typed member calls park cross-repo (`go_type_table`/`php_type_table`, receiver fields); prior (12): Java inherited-supertype (`receiver_unbound`) and chained/new/cast receiver typing (`java_receiver_chain`, `_java_ret`); C/C++ quoted cross-directory include provenance (`include_kind`); JS external imports anchored to the package, not the path leaf; prior (11): Python property-accessor decorators / `Self`, Swift `Self`, Go generic type params, Python forward type-hint file node, PowerShell dot-source, C# verbatim-interpolated string recovery; (10): C# partial types carry `type_path`; (9): Python property-read raw calls and `_py_property` nodes; (8): Rust `use`-group per-binding edges; (7): Python opaque-base/super(args) markers + nested-class enclosing ids.
+_AST_CACHE_SCHEMA = 25  # Python/Go/C++/Rust explicit type aliases (and Rust `union` items) are extracted as type nodes so references resolve instead of minting sourceless stubs (#4578/#4579/#4580/#4581); each C# method overload gets its own node bound by arity (#4584); a package.json dependency's manifest entry links to its ref node (#4569), so cached extractions re-run; prior (24): Objective-C `NS_CLOSED_ENUM` declarations are extracted as enums like `NS_ENUM` (#4705), and a `CREATE TABLE` whose column default the SQL grammar rejects (MySQL `DEFAULT current_timestamp()`) is recovered from its ERROR node (#4613), so cached ObjC and SQL extractions re-run; prior (23): `.yaml`/`.yml` files are structurally extracted (keys as nodes, config-vs-data gated) and reclassified from document to code (#2214), so cached YAML re-extracts; prior (22): SQL labels drop T-SQL brackets and routine bodies emit `reads_from`/`writes_to` (#4635), and a `GO` batch separator ends a statement (#4651), so cached `.sql` extractions re-run; prior (21): a CommonJS `const X = require('./m')` binding no longer mints a module-scope node that shadows the class the required file exports, so `new X()` resolves to the required declaration (#4621); prior (20): Obsidian `[[wikilink]]` targets that start with the scan root's own folder names now resolve to the real page (#4559), so cached markdown extractions re-run; prior (19): Dart `typedef` declarations are extracted as aliases (not variables of type `typedef`); C++ Metal/CUDA GPU qualifiers no longer mint sourceless god nodes (#4550); a `.h` header containing `extern "C"` routes to the C++ extractor; prior (18): Kotlin `typealias` (#4553), C# `delegate` (#4552), and Swift `macro` declarations (#4551) are now extracted so references stop minting sourceless stubs; Rust `use` rooted at a `mod` declared in the same scope carries `_rust_use_name` (#4564); prior (17): Python pytest-fixture markers (`_py_fixture`/`_python_fixture_param`, #4332) and module-level class-id collision salting (#2810); TS `this.field` typed from any method incl. static (#4473); Solidity callables carry `metadata.arity` + inherited-call/`super`/modifier raw calls (#4379); Go type-decl and Rust file-item case-distinct node ids (#4444); prior (16): Rust `use` edges carry the imported name as written (`_rust_use_name`, #4439); (15): Go generic receiver types normalized (`Box[T]` -> `Box`) so methods attach to the type node; prior (14): C# receiver resolution for nameless/`new X()`/`foreach` receivers (defer + receiver-chain markers) and `_`/case-distinct node ids (underscore-salted); prior (13): Kotlin/Scala/C++/Swift generic & template type params no longer mint sourceless stubs; Objective-C NS_ENUM/NS_OPTIONS extraction and `_callable`/`_callable_class` markers; Go and PHP receiver-typed member calls park cross-repo (`go_type_table`/`php_type_table`, receiver fields); prior (12): Java inherited-supertype (`receiver_unbound`) and chained/new/cast receiver typing (`java_receiver_chain`, `_java_ret`); C/C++ quoted cross-directory include provenance (`include_kind`); JS external imports anchored to the package, not the path leaf; prior (11): Python property-accessor decorators / `Self`, Swift `Self`, Go generic type params, Python forward type-hint file node, PowerShell dot-source, C# verbatim-interpolated string recovery; (10): C# partial types carry `type_path`; (9): Python property-read raw calls and `_py_property` nodes; (8): Rust `use`-group per-binding edges; (7): Python opaque-base/super(args) markers + nested-class enclosing ids.
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is
@@ -1099,10 +1100,11 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         return None
     h = _salted_key(h, salt)
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
-    entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
+    # Extended-length form so a deep root does not push the entry past MAX_PATH.
+    entry = Path(_os_long_path(cache_dir(location, kind, prompt_fp) / f"{h}.json"))
     legacy_hit = False
     if prompt_fp and not entry.exists() and allow_legacy:
-        legacy = cache_dir(location, kind) / f"{h}.json"
+        legacy = Path(_os_long_path(cache_dir(location, kind) / f"{h}.json"))
         if legacy.exists():
             entry, legacy_hit = legacy, True
     if entry.exists():
@@ -1263,8 +1265,10 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         _relativize_ids_in(on_disk, p, root)
     h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
     location = cache_root if cache_root is not None else root
-    target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
-    entry = target_dir / f"{h}.json"
+    # Extended-length form: under a deep root the entry, and its longer temp
+    # name, overrun Windows MAX_PATH and the write fails the whole extraction.
+    target_dir = _os_long_path(cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file)))
+    entry = os.path.join(target_dir, f"{h}.json")
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
         os.write(fd, json.dumps(on_disk).encode())

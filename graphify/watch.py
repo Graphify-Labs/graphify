@@ -2061,6 +2061,11 @@ def _rebuild_code(
                                 "module",
                                 "name",
                                 "arity",
+                                # C# overloads (#4584): which one a call's
+                                # argument count fits.
+                                "min_arity",
+                                "variadic",
+                                "signature",
                             )
                             if key in metadata
                         }
