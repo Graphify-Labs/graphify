@@ -609,6 +609,9 @@ def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
     return merged
 
 
+_SHARED_ID_TYPES = ("module", "namespace")
+
+
 def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     """Report an ID collision in proportion to what dropping the loser actually costs.
 
@@ -619,6 +622,18 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     and one is genuinely lost — warn, and point at the extraction split that keeps them
     apart (#1504).
     """
+    # A module/namespace node (`import Foundation`) is one shared entity that every
+    # importing file legitimately mints — the same rule the extractors apply when
+    # they exempt these types from collision disambiguation. Only a group of one
+    # such type under one label is that shared entity; a module colliding with a
+    # namespace, or two differently named modules, is still a real collision.
+    group = (survivor, *losers)
+    if (
+        survivor.get("type") in _SHARED_ID_TYPES
+        and all(n.get("type") == survivor.get("type") for n in group)
+        and all(n.get("label") == survivor.get("label") for n in group)
+    ):
+        return
     keep_file = survivor.get("source_file") or ""
     keep_label = survivor.get("label") or ""
     for loser in losers:
