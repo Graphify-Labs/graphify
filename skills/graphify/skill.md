@@ -57,16 +57,87 @@ Follow these steps in order. Do not skip steps.
 
 ### Step 1 - Ensure graphify is installed
 
+**graphifyy is a third-party PyPI package - never install or upgrade it without explicit user consent, and never install it into system Python.** The block below finds the interpreter that can `import graphify`. If none can: on a TTY it prompts `y/N`; agent shells are usually non-interactive, so the block aborts instead - then ask the user in chat "graphifyy is not installed. Install/upgrade from PyPI now? (y/N)" and run `uv tool install graphifyy` (or `pipx install graphifyy` if uv is missing) only after a yes. On any other answer stop cleanly. If neither uv nor pipx is available, do not install - tell the user to install uv (https://docs.astral.sh/uv/) or pipx, then run `uv tool install graphifyy`. Never run `pip install` into the system interpreter or override PEP 668 protections.
+
 ```bash
-python3 -c "import graphify" 2>/dev/null || pip install graphifyy -q --break-system-packages 2>&1 | tail -3
+# Find the interpreter that can import graphify (uv tool / pipx live in own venvs)
+PYTHON=""
+# 1. uv tool installs (found even when the bin dir is not on PATH)
+if command -v uv >/dev/null 2>&1; then
+    _UV_PY="$(uv tool dir 2>/dev/null)/graphifyy/bin/python"
+    if [ -x "$_UV_PY" ] && "$_UV_PY" -c "import graphify" 2>/dev/null; then PYTHON="$_UV_PY"; fi
+fi
+# 2. Shebang of the graphify CLI (pipx and other installs on PATH)
+if [ -z "$PYTHON" ]; then
+    _BIN=$(command -v graphify 2>/dev/null)
+    if [ -n "$_BIN" ]; then
+        _SH=$(head -1 "$_BIN" | tr -d '#!')
+        case "$_SH" in
+            *[!a-zA-Z0-9/_.@-]*) ;;
+            *) "$_SH" -c "import graphify" 2>/dev/null && PYTHON="$_SH" ;;
+        esac
+    fi
+fi
+# 3. Fall back to python3 (venv or user-site installs)
+if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
+if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+    # Consent gate: install only on an explicit yes; never touch system Python.
+    if [ -t 0 ]; then
+        printf 'graphifyy is not installed. Install/upgrade from PyPI now? (y/N) '
+        read -r _ANS
+        _ANS=${_ANS%$'\r'}
+        case "$_ANS" in
+            y|Y|yes|YES)
+                if command -v uv >/dev/null 2>&1; then
+                    uv tool install --upgrade graphifyy 2>&1 | tail -3
+                    _UV_PY="$(uv tool dir 2>/dev/null)/graphifyy/bin/python"
+                    [ -x "$_UV_PY" ] && PYTHON="$_UV_PY"
+                elif command -v pipx >/dev/null 2>&1; then
+                    pipx install graphifyy 2>&1 | tail -3
+                    _BIN=$(command -v graphify 2>/dev/null)
+                    if [ -n "$_BIN" ]; then
+                        _SH=$(head -1 "$_BIN" | tr -d '#!')
+                        case "$_SH" in
+                            *[!a-zA-Z0-9/_.@-]*) ;;
+                            *) "$_SH" -c "import graphify" 2>/dev/null && PYTHON="$_SH" ;;
+                        esac
+                    fi
+                else
+                    echo 'FATAL: neither uv nor pipx is available to install graphifyy.' >&2
+                    echo 'Install uv (https://docs.astral.sh/uv/), then run: uv tool install graphifyy' >&2
+                    exit 1
+                fi
+                ;;
+            *)
+                echo 'Install declined - run `uv tool install graphifyy` yourself, then re-run /graphify.' >&2
+                exit 1
+                ;;
+        esac
+    else
+        # Non-interactive: nobody can confirm - do not install, print the command.
+        echo 'FATAL: graphifyy is not installed (non-interactive session).' >&2
+        echo 'Run: uv tool install graphifyy   (or: pipx install graphifyy), then re-run /graphify.' >&2
+        exit 1
+    fi
+fi
+if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+    echo 'FATAL: graphify still not importable - run: uv tool install graphifyy' >&2
+    exit 1
+fi
+# Persist the interpreter - all later bash blocks use it instead of python3
+printf '%s' "$PYTHON" > .graphify_python
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
 
+**Every later bash block calls `"$(cat .graphify_python 2>/dev/null || echo python3)"` instead of `python3` - the interpreter where graphifyy is actually importable, with a `python3` fallback when the file is absent (e.g. graphs built by an older version of this skill).**
+
+`.graphify_python` holds a machine-specific absolute path - do not commit it; suggest adding it to `.gitignore` next to `graphify-out/`. On Windows the resolved interpreter may instead be `Scripts/python.exe` inside the uv/pipx venv.
+
 ### Step 2 - Detect files
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
@@ -106,7 +177,7 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.extract import collect_files, extract
 from pathlib import Path
@@ -144,7 +215,7 @@ Before dispatching subagents, print a timing estimate:
 Before dispatching any subagents, check which files already have cached extraction results:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from graphify.cache import check_semantic_cache
 from pathlib import Path
@@ -243,7 +314,7 @@ If more than half the chunks failed, stop and tell the user.
 
 Save new results to cache:
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from graphify.cache import save_semantic_cache
 from pathlib import Path
@@ -256,7 +327,7 @@ print(f'Cached {saved} files')
 
 Merge cached + new results into `.graphify_semantic.json`:
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from pathlib import Path
 
@@ -287,7 +358,7 @@ Clean up temp files: `rm -f .graphify_cached.json .graphify_uncached.txt .graphi
 #### Part C - Merge AST + semantic into final extraction
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from pathlib import Path
 
@@ -320,7 +391,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ```bash
 mkdir -p graphify-out
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
@@ -373,7 +444,7 @@ Read `.graphify_analysis.json`. For each community key, look at its node labels 
 Then regenerate the report and save the labels for the visualizer:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import score_all
@@ -411,7 +482,7 @@ Replace INPUT_PATH with the actual path.
 **Always generate the Obsidian vault and HTML** - they are the primary visualizations. Skip both if `--no-viz` (report + JSON only).
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.export import to_obsidian, to_canvas
@@ -442,7 +513,7 @@ print('  _COMMUNITY_* - overview notes with cohesion scores and dataview queries
 Also generate the HTML graph (always, unless `--no-viz`):
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.export import to_html
@@ -469,7 +540,7 @@ else:
 **If `--neo4j`** - generate a Cypher file for manual import:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.export import to_cypher
@@ -484,7 +555,7 @@ print('cypher.txt written - import with: cypher-shell < graphify-out/cypher.txt'
 **If `--neo4j-push <uri>`** - push directly to a running Neo4j instance. Ask the user for credentials if not provided:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster
@@ -506,7 +577,7 @@ Replace `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` with actual values. Default 
 ### Step 7b - SVG export (only if --svg flag)
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.export import to_svg
@@ -528,7 +599,7 @@ print('graph.svg written - embeds in Obsidian, Notion, GitHub READMEs')
 ### Step 7c - GraphML export (only if --graphml flag)
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from graphify.build import build_from_json
 from graphify.export import to_graphml
@@ -548,7 +619,7 @@ print('graph.graphml written - open in Gephi, yEd, or any GraphML tool')
 ### Step 7d - MCP server (only if --mcp flag)
 
 ```bash
-python3 -m graphify.serve graphify-out/graph.json
+"$(cat .graphify_python 2>/dev/null || echo python3)" -m graphify.serve graphify-out/graph.json
 ```
 
 This starts a stdio MCP server that exposes tools: `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`. Add to Claude Desktop or any MCP-compatible agent orchestrator so other agents can query the graph live.
@@ -565,12 +636,14 @@ To configure in Claude Desktop, add to `claude_desktop_config.json`:
 }
 ```
 
+If `python3` cannot import graphify (uv tool / pipx installs), set `"command"` to the interpreter path stored in `.graphify_python` instead.
+
 ### Step 8 - Token reduction benchmark (only if total_words > 5000)
 
 If `total_words` from `.graphify_detect.json` is greater than 5,000, run:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from graphify.benchmark import run_benchmark, print_benchmark
 from pathlib import Path
@@ -588,7 +661,7 @@ Print the output directly in chat. If `total_words <= 5000`, skip silently - the
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -668,7 +741,7 @@ The graph is the map. Your job after the pipeline is to be the guide.
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
@@ -687,7 +760,7 @@ print(f'{new_total} new/changed file(s) to re-extract.')
 If new files exist, first check whether all changed files are code files:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from pathlib import Path
 
@@ -707,7 +780,7 @@ If `code_only` is False (any changed file is a doc/paper/image): run the full St
 Then:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.export import to_json
@@ -734,7 +807,7 @@ Then run Steps 4–8 on the merged graph as normal.
 After Step 4, show the graph diff:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
@@ -768,7 +841,7 @@ Clean up after: `rm -f .graphify_old.json`
 Skip Steps 1–3. Load the existing graph from `graphify-out/graph.json` and re-run clustering:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections
@@ -821,7 +894,7 @@ Two traversal modes - choose based on the question:
 
 First check the graph exists:
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 from pathlib import Path
 if not Path('graphify-out/graph.json').exists():
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
@@ -839,7 +912,7 @@ Load `graphify-out/graph.json`, then:
 5. If the graph lacks enough information, say so - do not hallucinate edges.
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys, json
 from networkx.readwrite import json_graph
 import networkx as nx
@@ -930,7 +1003,7 @@ Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, 
 After writing the answer, save it back into the graph so it improves future queries:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 from graphify.ingest import save_query_result
 from pathlib import Path
 save_query_result(
@@ -954,7 +1027,7 @@ Find the shortest path between two named concepts in the graph.
 
 First check the graph exists:
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 from pathlib import Path
 if not Path('graphify-out/graph.json').exists():
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
@@ -964,7 +1037,7 @@ if not Path('graphify-out/graph.json').exists():
 If it fails, stop and tell the user to run `/graphify <path>` first.
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -1016,7 +1089,7 @@ Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then 
 After writing the explanation, save it back:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 from graphify.ingest import save_query_result
 from pathlib import Path
 save_query_result(
@@ -1038,7 +1111,7 @@ Give a plain-language explanation of a single node - everything connected to it.
 
 First check the graph exists:
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 from pathlib import Path
 if not Path('graphify-out/graph.json').exists():
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
@@ -1048,7 +1121,7 @@ if not Path('graphify-out/graph.json').exists():
 If it fails, stop and tell the user to run `/graphify <path>` first.
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -1093,7 +1166,7 @@ Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sent
 After writing the explanation, save it back:
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 from graphify.ingest import save_query_result
 from pathlib import Path
 save_query_result(
@@ -1114,7 +1187,7 @@ print('Explanation saved to graphify-out/memory/')
 Fetch a URL and add it to the corpus, then update the graph.
 
 ```bash
-python3 -c "
+"$(cat .graphify_python 2>/dev/null || echo python3)" -c "
 import sys
 from graphify.ingest import ingest
 from pathlib import Path
@@ -1147,7 +1220,7 @@ Supported URL types (auto-detected):
 Start a background watcher that monitors a folder and auto-updates the graph when files change.
 
 ```bash
-python3 -m graphify.watch INPUT_PATH --debounce 3
+"$(cat .graphify_python 2>/dev/null || echo python3)" -m graphify.watch INPUT_PATH --debounce 3
 ```
 
 Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:
