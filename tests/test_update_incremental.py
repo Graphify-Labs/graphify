@@ -168,8 +168,17 @@ def test_added_file_is_re_extracted_and_deleted_file_drops_its_nodes(
 def test_default_is_the_full_path(
     built: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The watcher and the post-checkout hook call this with incremental unset and
-    # their behaviour must not change.
+    # The watcher and the post-checkout hook call this with incremental unset, and
+    # their behaviour must not change: the whole corpus is re-extracted, unlike
+    # the subset that test_only_changed_files_are_re_extracted pins for
+    # incremental=True.
+    #
+    # One change first, so the assertion holds whether or not the #4740 no-change
+    # gate is present: a correct gate can never skip a tree that changed, so the
+    # run reaches the pipeline either way.
+    (built / "src" / "a.py").write_text("def fa():\n    return 99\n")
+    time.sleep(0.01)
+
     calls = _spy_extract(monkeypatch)
     assert _rebuild_code(built, acquire_lock=False) is True
     assert calls == [["a.py", "b.py", "c.py", "uses.py"]]
