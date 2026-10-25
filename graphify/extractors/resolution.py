@@ -1,7 +1,7 @@
 """resolution — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 from pathlib import Path
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 from graphify.extractors.base import (  # noqa: F401
@@ -3561,6 +3561,83 @@ def _resolve_cross_file_java_imports(
     return new_edges
 
 
+class SwiftTypeIndex(NamedTuple):
+    """Swift module symbol table rebuilt from node attributes (no hand-off)."""
+
+    # qualified path ("Layout.Pane") -> distinct node ids, sorted
+    by_path: dict[str, list[str]]
+    # last path segment ("Pane") -> node ids, sorted; a node declared under 2+
+    # paths appears that many times under each of its last segments
+    by_label: dict[str, list[str]]
+
+
+def _swift_type_index(nodes: list[dict]) -> SwiftTypeIndex:
+    """Index declared Swift types by qualified path and by last segment.
+
+    A node counts only when it is a Swift node stamped with ``_swift_qualified``
+    (the class walk stamps it, so it stands for "declared and contained") and is
+    not an extension-only placeholder.
+    """
+    seen: set[tuple[str, str]] = set()
+    for node in nodes:
+        qualified = node.get("_swift_qualified")
+        nid = node.get("id")
+        if not qualified or not nid or node.get("_swift_extension_only"):
+            continue
+        if not str(node.get("source_file") or "").endswith(".swift"):
+            continue
+        if isinstance(qualified, str):
+            qualified = [qualified]
+        for path in qualified:
+            if path:
+                seen.add((str(path), str(nid)))
+    by_path: dict[str, list[str]] = {}
+    labels_by_nid: dict[str, set[str]] = {}
+    path_count: dict[str, int] = {}
+    for path, nid in sorted(seen):
+        by_path.setdefault(path, []).append(nid)
+        labels_by_nid.setdefault(nid, set()).add(path.rsplit(".", 1)[-1])
+        path_count[nid] = path_count.get(nid, 0) + 1
+    by_label: dict[str, list[str]] = {}
+    for nid, labels in labels_by_nid.items():
+        for label in labels:
+            # One entry per declared path under every label of the node, so
+            # paths with different last segments (caseless id fold) still show.
+            by_label.setdefault(label, []).extend([nid] * path_count[nid])
+    for label_nids in by_label.values():
+        label_nids.sort()
+    return SwiftTypeIndex(by_path, by_label)
+
+
+def _swift_lookup(
+    index: SwiftTypeIndex, name: str, scope: str,
+) -> tuple[str, str | None]:
+    """Resolve a written Swift type path against the index, innermost scope first.
+
+    Returns ``("resolved", nid)``, ``("ambiguous", None)``,
+    ``("unresolved", None)`` (the last segment is declared in the corpus but no
+    lexical level matched) or ``("external", None)`` (last segment unknown).
+    """
+    last = name.rsplit(".", 1)[-1] if name else ""
+    label_nids = index.by_label.get(last)
+    if not label_nids:
+        return ("external", None)
+    scope_parts = scope.split(".") if scope else []
+    for depth in range(len(scope_parts), -1, -1):
+        prefix = ".".join(scope_parts[:depth])
+        candidates = index.by_path.get(f"{prefix}.{name}" if prefix else name)
+        if not candidates:
+            continue
+        distinct = sorted(set(candidates))
+        if len(distinct) != 1:
+            return ("ambiguous", None)
+        # by_label holds one entry per path, so repeats mean 2+ declared paths.
+        if label_nids.count(distinct[0]) > 1:
+            return ("ambiguous", None)
+        return ("resolved", distinct[0])
+    return ("unresolved", None)
+
+
 def _go_import_path_for_file(
     source_file: str | Path,
     root: Path,
@@ -3701,6 +3778,79 @@ def _resolve_go_type_references(
 
     if new_nodes:
         all_nodes.extend(new_nodes)
+
+    if not repointed_from:
+        return
+    referenced = {endpoint for edge in all_edges
+                  for endpoint in (edge.get("source"), edge.get("target"))}
+    all_nodes[:] = [
+        node for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in referenced
+    ]
+
+
+_SWIFT_TYPE_REFERENCE_RELATIONS = frozenset({"references", "inherits", "implements"})
+
+
+def _resolve_swift_type_references(
+    per_file: list[dict | None],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+    root: Path,
+    resolution_context_nodes: list[dict] | None = None,
+    resolution_context_edges: list[dict] | None = None,
+) -> None:
+    """Bind Swift type references to the declaration Swift name lookup selects.
+
+    The corpus is one module: the index holds every contained Swift type
+    declaration from ``all_nodes`` plus the context nodes. A Swift
+    ``references`` / ``inherits`` / ``implements`` edge onto a sourceless stub is
+    looked up by the stub label (the written, possibly dotted name) in the
+    edge's ``_swift_scope``. ``"resolved"`` repoints the edge and keeps its
+    confidence; ``"ambiguous"`` / ``"unresolved"`` leave it on the stub and stamp
+    ``_swift_lookup`` so the generic rewire does not bind it by bare label;
+    ``"external"`` leaves the edge alone. Repointed stubs nothing references
+    any more are dropped, as in ``_resolve_go_type_references``.
+
+    ``per_file``, ``paths``, ``root`` and ``resolution_context_edges`` keep the
+    shared corpus-pass signature; the lookup reads node attributes only.
+    """
+    index = _swift_type_index(all_nodes + (resolution_context_nodes or []))
+    if not index.by_label:
+        return
+
+    swift_source_ids = {
+        node.get("id") for node in all_nodes + (resolution_context_nodes or [])
+        if node.get("id")
+        and str(node.get("source_file") or "").lower().endswith(".swift")
+    }
+    stub_labels = {
+        node["id"]: str(node.get("label") or "")
+        for node in all_nodes
+        if node.get("id") and not node.get("source_file")
+        and str(node.get("label") or "")
+    }
+    if not swift_source_ids or not stub_labels:
+        return
+
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        if edge.get("relation") not in _SWIFT_TYPE_REFERENCE_RELATIONS:
+            continue
+        if edge.get("source") not in swift_source_ids:
+            continue
+        target = edge.get("target")
+        label = stub_labels.get(target)
+        if not label:
+            continue
+        status, nid = _swift_lookup(index, label, str(edge.get("_swift_scope") or ""))
+        if status == "resolved" and nid:
+            if nid != target:
+                edge["target"] = nid
+                repointed_from.add(str(target))
+        elif status in {"ambiguous", "unresolved"}:
+            edge["_swift_lookup"] = status
 
     if not repointed_from:
         return

@@ -570,6 +570,22 @@ def test_filter_graph_by_context_limits_traversal():
     assert edges == [("n1", "n2")]
 
 
+def test_callers_question_keeps_constructor_call_edges():
+    # A Swift `let vm = SessionViewModel()` is a `calls` edge with
+    # context "constructor"; "callers of X" infers the "call" filter and
+    # must still reach the constructing type.
+    G = nx.Graph()
+    G.add_node("vm", label="SessionViewModel", source_file="Models/SessionViewModel.swift")
+    G.add_node("home", label="HomeView", source_file="Views/HomeView.swift")
+    G.add_node("cfg", label="Config", source_file="Core/Config.swift")
+    G.add_edge("home", "vm", relation="calls", context="constructor")
+    G.add_edge("home", "cfg", relation="references", context="field")
+    filters = _infer_context_filters("callers of SessionViewModel")
+    filtered = _filter_graph_by_context(G, filters)
+    assert filtered.has_edge("home", "vm")
+    assert not filtered.has_edge("home", "cfg")
+
+
 # --- _dfs ---
 
 def test_dfs_depth_1():

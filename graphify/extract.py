@@ -157,6 +157,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_cross_file_java_imports,
     _resolve_export_target,
     _resolve_go_type_references,
+    _resolve_swift_type_references,
     _resolve_java_type_references,
     _resolve_php_type_references,
     _resolve_js_import_path,
@@ -171,6 +172,8 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_workspace_import,
     _source_key,
     _strip_jsonc,
+    _swift_lookup,
+    _swift_type_index,
     _ts_collect_type_refs,
     _ts_heritage_clause_entries,
     _ts_walk_class_members,
@@ -3903,6 +3906,9 @@ def _node_label_key(node: dict, fold: bool = False) -> str:
     # `_Response` must not share a key with an external `Response` and absorb its
     # reference during stub rewiring (#4269). Only drop call/generic punctuation
     # (`()`, `<>`, `.`, whitespace) so `Foo()` and `Foo` still match.
+    # Dropping `.` makes a dotted Swift stub (`Item.ID`) share a key with a
+    # concatenated name (`ItemID`); the rewire edge loop refuses that match per
+    # edge (`_swift_dotted_stub_edge`), since only `_swift_lookup` binds them.
     key = re.sub(r"[^a-zA-Z0-9_]+", "", label)
     return key.lower() if fold else key
 
@@ -3935,6 +3941,11 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         if not key:
             continue
         if node.get("source_file"):
+            if node.get("_swift_extension_only"):
+                # `extension View` with no declaration of its own is not a
+                # definition: references from other files stay on their stub,
+                # as for `Int` (#4574).
+                continue
             if _is_type_like_definition(node):
                 # Match stubs case-SENSITIVELY: a `Path` reference must not rewire to a
                 # `PATH` env var (#1581). Fold only for genuinely case-insensitive
@@ -4081,13 +4092,27 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             and edge_fam != cand_fam
         )
 
+    def _swift_dotted_stub_edge(edge: dict, stub_id: str) -> bool:
+        """A Swift edge on a dotted stub (`MenuItem.ID`) keeps its stub.
+
+        The label key drops the dot, so the stub would bind an unrelated
+        `MenuItemID`. A dotted Swift name binds only through
+        `_swift_lookup` (the Swift type-reference pass); what that pass left on
+        the stub stays there. Method-shaped `.foo()` stubs and edges from other
+        languages keep the label-key match.
+        """
+        if not str(edge.get("source_file") or "").lower().endswith(".swift"):
+            return False
+        label = str(by_id.get(stub_id, {}).get("label", "")).strip().lstrip(".")
+        return "." in label
+
     for edge in edges:
         is_csharp_scoped_edge = (
             _is_dotnet_source_file(str(edge.get("source_file", "")))
             and edge.get("relation") in csharp_scoped_relations
         )
         source = edge.get("source")
-        if source in remap:
+        if source in remap and not _swift_dotted_stub_edge(edge, str(source)):
             remapped_source = remap[str(source)]
             if not (
                 is_csharp_scoped_edge
@@ -4095,7 +4120,13 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             ) and not _cross_language_candidate(edge, remapped_source):
                 edge["source"] = remapped_source
         target = edge.get("target")
-        if target in remap:
+        # A Swift edge the Swift lookup declined (ambiguous / unresolved) stays
+        # on its stub: a bare label may not mean the one same-named nested type.
+        if (
+            target in remap
+            and not edge.get("_swift_lookup")
+            and not _swift_dotted_stub_edge(edge, str(target))
+        ):
             remapped_target = remap[str(target)]
             if not (
                 is_csharp_scoped_edge
@@ -4149,36 +4180,58 @@ def _merge_swift_extensions(
     per_file: list[dict],
     all_nodes: list[dict],
     all_edges: list[dict],
+    context_nodes: list[dict] | None = None,
+    context_edges: list[dict] | None = None,
 ) -> None:
     """Collapse cross-file Swift `extension Foo` nodes into the canonical `Foo`.
 
     tree-sitter-swift reuses `class_declaration` for both `class Foo` and
     `extension Foo`, and node ids carry the file stem, so each file that
-    extends `Foo` produces its own `Foo` node. The match is done by label:
-    when exactly one non-extension declaration shares the label, extension
-    nodes redirect onto it. Extensions of types outside the corpus (no match)
-    and ambiguous labels (more than one match) are left untouched — picking
-    arbitrarily would invent edges.
+    extends `Foo` produces its own `Foo` node. The written path (`Foo`,
+    `Outer.Inner`) is resolved against the Swift type index: a single declared
+    match takes the extension-only node; an ambiguous path or a known name
+    declared under another path leaves it untouched — picking arbitrarily
+    would invent edges — with `_swift_extension_only` kept. Only a name the
+    Swift index does not know falls back to the label match: exactly one
+    native-family declaration sharing the label (the Objective-C case).
+
+    A declaration with an extension in its own file shares that extension's
+    id (`declared: True` in its record); it is a candidate and is never
+    remapped. On an incremental build `context_nodes` / `context_edges` (the
+    unchanged files) widen the candidates read-only, so an extension in a
+    changed file folds onto an unchanged declaration as in a full build.
     """
     extension_nids: set[str] = set()
+    declared_nids: set[str] = set()
     extension_labels: dict[str, str] = {}
     for result in per_file:
         for ext in result.get("swift_extensions", []) or []:
-            extension_nids.add(ext["nid"])
+            if ext.get("declared"):
+                declared_nids.add(ext["nid"])
+            else:
+                extension_nids.add(ext["nid"])
             extension_labels[ext["nid"]] = ext["label"]
 
     if not extension_nids:
         return
 
+    # Context holds unchanged files only, so a context node that shares an id
+    # with a fresh one is a distinct declaration (a stem collision) and must
+    # count, both for the guard below and for ambiguity, as in a full build.
+    candidate_nodes = all_nodes + list(context_nodes or [])
     # A genuine Swift type is the target of a `contains` edge from its file node;
     # bare-reference shadow nodes (`let x: Foo`) carry a source_file but are NOT
     # contained, so excluding them keeps a stub from making a real type look
     # ambiguous — same predicate the Swift member-call resolver uses (#2538).
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    contained = {
+        e.get("target")
+        for e in all_edges + list(context_edges or [])
+        if e.get("relation") == "contains"
+    }
 
     label_to_canonical: dict[str, list[str]] = {}
-    for n in all_nodes:
-        if n.get("id") in extension_nids:
+    for n in candidate_nodes:
+        if n.get("_swift_extension_only"):
             continue
         label = n.get("label")
         if not label:
@@ -4196,13 +4249,35 @@ def _merge_swift_extensions(
         if not (n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n)):
             continue
         label_to_canonical.setdefault(label, []).append(n["id"])
+    canonical_ids = {nid for nids in label_to_canonical.values() for nid in nids}
+    # The extended type is looked up by its full written path ("Outer.Inner"
+    # or a bare "Config") in the Swift type index, with no lexical scope: an
+    # extension is always written at file scope. The bare-label table above is
+    # only the fallback for a type the Swift index does not know at all (an
+    # Objective-C declaration); a bare label must never fold onto a unique
+    # nested type that merely shares its last segment.
+    swift_index = _swift_type_index(candidate_nodes)
+    canonical_ids.update(nid for nids in swift_index.by_path.values() for nid in nids)
 
     remap: dict[str, str] = {}
-    for ext_nid in extension_nids:
-        candidates = label_to_canonical.get(extension_labels[ext_nid], [])
-        if len(candidates) != 1:
+    for ext_nid in sorted(extension_nids):
+        # Two files with one stem can mint one id for a declaration and an
+        # extension; remapping it would drop the declaration with it.
+        if ext_nid in declared_nids or ext_nid in canonical_ids:
             continue
-        canonical_nid = candidates[0]
+        ext_label = extension_labels[ext_nid]
+        status, resolved_nid = _swift_lookup(swift_index, ext_label, "")
+        if status == "resolved" and resolved_nid is not None:
+            canonical_nid = resolved_nid
+        elif status != "external":
+            # Ambiguous or not declared at this path: keep the extension node
+            # and its `_swift_extension_only` marker rather than guess.
+            continue
+        else:
+            candidates = label_to_canonical.get(ext_label, [])
+            if len(candidates) != 1:
+                continue
+            canonical_nid = candidates[0]
         if canonical_nid != ext_nid:
             remap[ext_nid] = canonical_nid
 
@@ -4210,14 +4285,26 @@ def _merge_swift_extensions(
         return
 
     all_nodes[:] = [n for n in all_nodes if n.get("id") not in remap]
+    # An initializer in the extension (`static let value = VM()`) is walked with
+    # the type node as its caller, so its raw call would keep a deleted caller.
+    # These are the same dicts as extract()'s all_raw_calls.
+    for result in per_file:
+        for rc in result.get("raw_calls", []) or []:
+            if rc.get("caller_nid") in remap:
+                rc["caller_nid"] = remap[rc["caller_nid"]]
 
     # Each extension file's `contains` edge ends up pointing at the canonical
     # type — multiple files containing the same node is the intended shape:
     # the type owns the methods, the files own their slice. Self-loops are
     # dropped (e.g. an in-file extension method whose call already pointed at
     # the canonical type).
+    # `context` is in the key: `func run(_ x: Foo) -> Foo` emits a
+    # `parameter_type` and a `return_type` reference on one line.
     def _key_of(e: dict, src: str, tgt: str) -> tuple:
-        return (src, tgt, e.get("relation"), e.get("source_file"), e.get("source_location"))
+        return (
+            src, tgt, e.get("relation"), e.get("source_file"),
+            e.get("source_location"), e.get("context"),
+        )
 
     rewritten: list[dict] = []
     seen_keys: set[tuple] = set()
@@ -4581,12 +4668,16 @@ def _resolve_swift_member_calls(
     Must run after id-disambiguation so node ids and caller_nids are final.
     """
     type_table_by_file: dict[str, dict[str, str]] = {}
+    # receiver name -> qualified path of the enclosing Swift type, per file;
+    # the scope a written type name is looked up from. Omitted at file scope.
+    scopes_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         tt = result.get("swift_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
-    if not type_table_by_file:
-        return
+            scopes_by_file[tt["path"]] = tt.get("scopes", {})
+    # No early return on an empty table set: a type-qualified call
+    # (`Inner.go()`) needs no table entry to bind.
 
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
@@ -4597,74 +4688,158 @@ def _resolve_swift_member_calls(
     # nodes keeps that shadow from making a real type name look ambiguous.
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
-    # Type name -> definition node ids (real, source-backed, type-like defs only).
-    # len != 1 is the god-node guard: an ambiguous type name bails.
+    # A Swift call binds only a target Swift can call: a Swift declaration or an
+    # Objective-C one (Swift<->ObjC interop, #1556: an ObjC class, and a Swift
+    # extension folded onto it, are called from Swift). A Python `Inner.go()`
+    # is never a Swift target. The language comes from the node's file through
+    # `effective_suffix`, so a `.graphifyrc` remap to Swift counts as Swift.
+    swift_target_suffixes = frozenset({".swift", ".m", ".mm", ".h"})
+
+    def _is_swift_target(node: dict | None) -> bool:
+        source_file = (node or {}).get("source_file") or ""
+        return effective_suffix(source_file).lower() in swift_target_suffixes
+
+    # Type name -> definition node ids (real, source-backed, type-like defs only,
+    # Swift targets only: a same-named type in another language is neither a
+    # candidate nor a rival). len != 1 is the god-node guard: an ambiguous type
+    # name bails. No Swift candidate parks the call like an unknown type below.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (n.get("source_file") and n.get("id") in contained
+                and _is_type_like_definition(n) and _is_swift_target(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
     method_index: dict[tuple[str, str], str] = {}
+    method_owner: dict[str, str] = {}  # method nid -> owning type nid
     for e in all_edges:
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
-        if tnode is not None:
+        if tnode is not None and src is not None and tgt is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
+            method_owner[tgt] = src
 
     # #2561: pending factory bindings (`let x = Factory.make()`) are label-only —
     # resolve each against the factory method's marked plain return type
     # (`swift_plain_return` on the return_type references edge) and fold the
     # result into the declaring file's table so the raw-call loop below types
     # `x.method()` through the existing INFERRED path. Every step is
-    # exactly-one guarded; any failure leaves the receiver untyped (no edge,
+    # exactly-one guarded (the return target by identity: it must be a real
+    # type definition); any failure leaves the receiver untyped (no edge,
     # never a wrong one). setdefault: an explicit annotation wins.
     factory_by_file: dict[str, dict] = {}
+    # (file, receiver) -> the factory's resolved return type nid: the label folded
+    # into the table below is a bare node label, not a path written at the
+    # receiver's scope, so such a receiver binds to this nid without a lookup.
+    factory_typed: dict[tuple[str, str], str] = {}
     for result in per_file:
         tt = result.get("swift_type_table")
         if tt and tt.get("path") and tt.get("factory"):
             factory_by_file[tt["path"]] = tt["factory"]
-    if factory_by_file:
-        # method nid -> marked plain-return target nids (must be exactly one).
-        return_targets_by_method: dict[str, set[str]] = {}
-        for e in all_edges:
-            if (e.get("relation") == "references"
-                    and e.get("context") == "return_type"
-                    and (e.get("metadata") or {}).get("swift_plain_return")):
-                return_targets_by_method.setdefault(
-                    e.get("source"), set()).add(e.get("target"))
-        for path, pending in factory_by_file.items():
-            # Copy before folding: the resolved label is corpus-dependent and
-            # must not leak back into the per-file result.
-            table = dict(type_table_by_file.get(path, {}))
-            type_table_by_file[path] = table
-            for receiver, bind in pending.items():
-                try:
-                    factory_type, factory_method = bind
-                except (TypeError, ValueError):
-                    continue
-                if factory_type in _LANGUAGE_BUILTIN_GLOBALS:
-                    continue
+    swift_index = _swift_type_index(all_nodes)
+    # method nid -> marked plain-return target nids (must be exactly one).
+    return_targets_by_method: dict[str, set[str]] = {}
+    for e in all_edges:
+        if (e.get("relation") == "references"
+                and e.get("context") == "return_type"
+                and (e.get("metadata") or {}).get("swift_plain_return")):
+            return_targets_by_method.setdefault(
+                e.get("source"), set()).add(e.get("target"))
+
+    def _factory_return(
+        factory_defs: list[str], factory_method: str,
+    ) -> tuple[str, str] | None:
+        # (label, nid) of the one plain return type of `factory_method` on the
+        # one factory type; None when any step is not exactly one.
+        if len(factory_defs) != 1:
+            return None
+        # Exact-case method label, not the case-folded `method_index`: `Make()`
+        # and `make()` are different Swift methods, and a folded hit would
+        # depend on edge order or bind a `Factory.Make` type annotation to
+        # `make()`'s return type.
+        wanted = f".{factory_method}()"
+        if (factory_defs[0], _key(factory_method)) not in method_index:
+            return None
+        exact = sorted(
+            m_nid for m_nid, owner in method_owner.items()
+            if owner == factory_defs[0]
+            and str((node_by_id.get(m_nid) or {}).get("label", "")) == wanted
+        )
+        if len(exact) != 1:
+            return None
+        method_nid = exact[0]
+        targets = return_targets_by_method.get(method_nid, set())
+        if len(targets) != 1:
+            return None
+        ret_nid = next(iter(targets))
+        tnode = node_by_id.get(ret_nid)
+        ret_label = str(tnode.get("label", "")) if tnode else ""
+        if not ret_label or ret_label in _LANGUAGE_BUILTIN_GLOBALS:
+            return None
+        # Identity, not label uniqueness: `ret_nid` is bound directly, so a
+        # same-named type elsewhere (top-level `Inner` beside `Outer.Inner`)
+        # must not void it; a shadow or stub target is still refused.
+        if ret_nid not in type_def_nids.get(_key(ret_label), []):
+            return None
+        return ret_label, ret_nid
+
+    for path, pending in factory_by_file.items():
+        # Copy before folding: the resolved label is corpus-dependent and
+        # must not leak back into the per-file result.
+        table = dict(type_table_by_file.get(path, {}))
+        type_table_by_file[path] = table
+        for receiver, bind in pending.items():
+            try:
+                factory_type, factory_method = bind
+            except (TypeError, ValueError):
+                continue
+            if factory_type in _LANGUAGE_BUILTIN_GLOBALS:
+                continue
+            ret = _factory_return(type_def_nids.get(_key(factory_type), []), factory_method)
+            if ret is not None and receiver not in table:
+                table[receiver] = ret[0]
+                factory_typed[(path, receiver)] = ret[1]
+
+    # A dotted constructor value (`let x = Factory.Make()` records
+    # "Factory.Make") that names no Swift type is a static factory with
+    # an upper-cased method: retry it as factory `Factory`, method `Make`.
+    # Unresolved here keeps the written path for the lookup below.
+    for path in sorted(type_table_by_file):
+        written = type_table_by_file[path]
+        scopes = scopes_by_file.get(path, {})
+        table = None
+        for receiver, type_name in written.items():
+            if (not isinstance(type_name, str) or "." not in type_name
+                    or (path, receiver) in factory_typed):
+                continue
+            scope = scopes.get(receiver, "")
+            if scope is None:  # conflicting writes in the file: fail closed
+                continue
+            if _swift_lookup(swift_index, type_name, scope)[0] == "resolved":
+                continue
+            factory_type, factory_method = type_name.rsplit(".", 1)
+            if factory_type in _LANGUAGE_BUILTIN_GLOBALS:
+                continue
+            status, factory_nid = _swift_lookup(swift_index, factory_type, scope)
+            if status == "resolved" and factory_nid is not None:
+                factory_defs = [factory_nid]
+            elif status == "external" and "." not in factory_type:
                 factory_defs = type_def_nids.get(_key(factory_type), [])
-                if len(factory_defs) != 1:
-                    continue
-                method_nid = method_index.get((factory_defs[0], _key(factory_method)))
-                if method_nid is None:
-                    continue
-                targets = return_targets_by_method.get(method_nid, set())
-                if len(targets) != 1:
-                    continue
-                tnode = node_by_id.get(next(iter(targets)))
-                ret_label = str(tnode.get("label", "")) if tnode else ""
-                if not ret_label or ret_label in _LANGUAGE_BUILTIN_GLOBALS:
-                    continue
-                if len(type_def_nids.get(_key(ret_label), [])) != 1:
-                    continue
-                table.setdefault(receiver, ret_label)
+            else:
+                continue
+            ret = _factory_return(factory_defs, factory_method)
+            if ret is None:
+                continue
+            if table is None:
+                table = dict(written)
+            table[receiver] = ret[0]
+            factory_typed[(path, receiver)] = ret[1]
+        if table is not None:
+            type_table_by_file[path] = table
 
     all_raw_calls: list[dict] = []
     for result in per_file:
@@ -4682,12 +4857,33 @@ def _resolve_swift_member_calls(
         # Determine the receiver's type. An upper-cased receiver is itself a type
         # (Type.staticMethod(), Singleton.shared.x()); otherwise look it up in the
         # declaring file's local type table.
+        call_file = rc.get("source_file", "")
+        # The effective suffix honours a `.graphifyrc` language override.
+        is_swift_call = effective_suffix(call_file).lower() == ".swift"
+        if not is_swift_call:
+            # Swift callers only: a Ruby `Inner.go()` must not bind a Swift-only
+            # `Inner`; other languages bind their member calls in their own passes.
+            continue
+        type_scope: str | None = ""
+        factory_nid = None
         if receiver[:1].isupper():
             type_name = receiver
             type_qualified = True
+            # A bare type name written in a caller is looked up from the
+            # caller's enclosing type; None = no single scope, bind nothing.
+            type_scope = _swift_caller_scope(caller, method_owner, node_by_id)
         else:
-            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+            type_name = type_table_by_file.get(call_file, {}).get(receiver)
             type_qualified = False
+            file_scopes = scopes_by_file.get(call_file, {})
+            if receiver in file_scopes and file_scopes[receiver] is None:
+                # Two writes of this name in the file disagree on type or
+                # scope: bind nothing and do not park (see below).
+                type_scope = None
+            else:
+                factory_nid = factory_typed.get((call_file, receiver))
+                if factory_nid is None:
+                    type_scope = file_scopes.get(receiver, "")
         if not type_name:
             continue
         # A builtin receiver type (Data, NSLock, DispatchQueue, ...) must not
@@ -4696,14 +4892,46 @@ def _resolve_swift_member_calls(
         # do the same for Swift (#2147).
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
-        type_defs = type_def_nids.get(_key(type_name), [])
+        # The written (possibly dotted) type name is looked up from the receiver's
+        # scope in the Swift type index. Only "external" (the last segment is
+        # unknown to the index) falls back to the label-key path below;
+        # "ambiguous" and a None scope (conflicting file writes, or an
+        # owner under 2+ paths) bind nothing and are NOT parked: the name
+        # is declared here, and a parked entry would let the cross-repo merge
+        # bind it to a foreign namesake (the baseline "ambiguous -> bail").
+        # "unresolved" (declared here, not visible from the scope) binds nothing
+        # and parks like any member call whose type cannot be bound. This
+        # replaces the `_key` strip that turned
+        # `Outer.Inner` into `outerinner`.
+        if factory_nid is not None:
+            lookup_status, lookup_nid = "resolved", factory_nid
+        elif type_scope is None:
+            lookup_status, lookup_nid = "ambiguous", None
+        else:
+            lookup_status, lookup_nid = _swift_lookup(swift_index, type_name, type_scope)
+        if lookup_status == "resolved" and lookup_nid is not None:
+            type_defs = [lookup_nid]
+        elif lookup_status == "ambiguous":
+            continue
+        elif lookup_status == "unresolved":
+            _park_unresolved_member_call(
+                node_by_id.get(caller), callee, type_name, "swift", rc,
+            )
+            continue
+        elif is_swift_call and "." in type_name:
+            # A dotted Swift name resolves only through `_swift_lookup`: the
+            # `_key` strip would turn `MenuItem.ID` into the unrelated
+            # `MenuItemID`. Unbound, it parks like any unknown type.
+            type_defs = []
+        else:
+            type_defs = type_def_nids.get(_key(type_name), [])
         if not type_defs:
             # Declared nowhere here — in a multi-repo setup that usually means "in
             # a repo this build does not contain", so park it for the merge
             # (#3152). This resolver shares `all_raw_calls` with every other
             # language and Swift raw_calls carry no `lang` tag, so the parked
             # entry's language comes from the declaring file's suffix.
-            if str(rc.get("source_file", "")).lower().endswith(".swift"):
+            if is_swift_call:
                 _park_unresolved_member_call(
                     node_by_id.get(caller), callee, type_name, "swift", rc,
                 )
@@ -4712,8 +4940,18 @@ def _resolve_swift_member_calls(
             continue
         type_nid = type_defs[0]
         method_nid = method_index.get((type_nid, _key(callee)))
+        # An extension-only node is not a declaration of its type (`extension
+        # NSEvent {}`, or an extension of a type declared nowhere here): a
+        # type-only `references` edge to it is a wrong binding, so emit none.
+        # A method defined in that extension is a real target and keeps `calls`.
+        if method_nid is None and (node_by_id.get(type_nid) or {}).get("_swift_extension_only"):
+            continue
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
+        if not _is_swift_target(node_by_id.get(target)):
+            # The type is a Swift target, but the method edge points into
+            # another language: bind nothing rather than cross languages.
+            continue
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
@@ -4732,6 +4970,31 @@ def _resolve_swift_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+
+def _swift_caller_scope(
+    caller_nid: str, method_owner: dict[str, str], node_by_id: dict[str, dict],
+) -> str | None:
+    """The qualified Swift type path a call inside ``caller_nid`` is looked up from.
+
+    A caller that is itself a Swift type (a property initializer is recorded on
+    the type node) uses its own single ``_swift_qualified`` path. A method or
+    nested function uses the single path of the type that owns it through a
+    ``method`` / ``contains`` edge (``method_owner``: member nid -> owner nid,
+    file nodes excluded). A caller with no owner is file-scope code: ``""``.
+    ``None`` when the path is not unique (0 or 2+ distinct paths): no Swift
+    binding is attempted for that call.
+    """
+    caller = node_by_id.get(caller_nid)
+    if caller is not None and caller.get("_swift_qualified"):
+        own_paths = list(dict.fromkeys(caller["_swift_qualified"]))
+        return own_paths[0] if len(own_paths) == 1 else None
+    owner_nid = method_owner.get(caller_nid)
+    if owner_nid is None:
+        return ""
+    owner = node_by_id.get(owner_nid) or {}
+    owner_paths = list(dict.fromkeys(owner.get("_swift_qualified") or ()))
+    return owner_paths[0] if len(owner_paths) == 1 else None
 
 
 def _stamp_python_fixture_paths(per_file: "list[dict | None]", root: Path) -> None:
@@ -10226,7 +10489,10 @@ def extract(
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _repoint_python_sibling_imports(paths, all_nodes, all_edges, root)
-    _merge_swift_extensions(per_file, all_nodes, all_edges)
+    _merge_swift_extensions(
+        per_file, all_nodes, all_edges,
+        resolution_context_nodes, resolution_context_edges,
+    )
     # Salt colliding ids apart BEFORE the C# partial merge. The merge rewires the
     # edges of every half onto the canonical half's id; if that id collides with
     # another file's node (`Spec.cs` next to `_Spec.cs`, `Cfg/Helpers.cs` next to
@@ -10283,6 +10549,22 @@ def extract(
             import logging
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
+            )
+    # Bind Swift type references by Swift name lookup (innermost scope first)
+    # before the generic bare-label rewire; edges the lookup declines carry
+    # `_swift_lookup` so the rewire leaves them on their stub.
+    _swift_sel = [(r, p) for r, p in zip(per_file, paths) if effective_suffix(p) == ".swift"]
+    if _swift_sel:
+        try:
+            _resolve_swift_type_references(
+                [r for r, _ in _swift_sel], [p for _, p in _swift_sel],
+                all_nodes, all_edges, root,
+                resolution_context_nodes, resolution_context_edges,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Swift type-reference resolution failed, skipping: %s", exc
             )
     # Cross-file Python import resolution and type-reference repointing (#3252)
     py_paths = [p for p in paths if effective_suffix(p) == ".py"]
@@ -10558,6 +10840,10 @@ def extract(
     _csharp_method_owner: dict[str, str] | None = None  # method nid -> type nid, built on first use
     _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
     _csharp_overload_cache: dict = {}  # filled on first use (#4584)
+    # Swift constructor-call lookup state, all three built together on first use.
+    _swift_index = None  # SwiftTypeIndex over resolution_nodes
+    _swift_member_owner: dict[str, str] = {}  # member nid -> owning node nid (file nodes excluded)
+    _swift_node_by_id: dict[str, dict] = {}  # resolution node by id
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -10602,6 +10888,57 @@ def extract(
         # `close` and `delete` are ordinary method names elsewhere (#2296).
         if rc.get("language") == "go" and callee in _GO_PREDECLARED_FUNCS:
             continue
+        # Swift `Foo(...)` constructs the type the caller's lexical scope sees,
+        # not whatever shares the name corpus-wide. Swift raw_calls carry no
+        # `lang` tag, so the file suffix selects them. A lexical hit is the
+        # evidence (the Swift counterpart of the C# `stub_scope_hit` below) and
+        # replaces the `via_stub` gate; the call stays INFERRED because `Foo(...)`
+        # could also be a free function or a static `callAsFunction`. A name the
+        # index knows but the scope does not see (or sees twice) gets no edge and
+        # no generic fallback. Only a name the index does not know at all falls
+        # through to the generic resolution (free functions, Objective-C).
+        if str(rc.get("source_file", "")).lower().endswith(".swift"):
+            if _swift_index is None:
+                _swift_index = _swift_type_index(resolution_nodes)
+                _swift_node_by_id.update(
+                    (n["id"], n) for n in resolution_nodes if n.get("id")
+                )
+                _swift_file_nids = set(sf_to_file_nid.values()) | set(nid_to_file_nid.values())
+                for e in all_edges + list(resolution_context_edges or []):
+                    if (
+                        e.get("relation") in ("method", "contains")
+                        and e.get("source") not in _swift_file_nids
+                    ):
+                        _swift_member_owner.setdefault(e["target"], e["source"])
+            swift_scope = _swift_caller_scope(
+                rc.get("caller_nid", ""), _swift_member_owner, _swift_node_by_id,
+            )
+            # A caller whose owner has no single qualified path binds nothing;
+            # its lookup only tells whether the callee is a Swift type at all.
+            swift_status, swift_nid = _swift_lookup(
+                _swift_index, callee, swift_scope if swift_scope is not None else "",
+            )
+            if swift_status != "external":
+                swift_caller = rc["caller_nid"]
+                if (
+                    swift_status == "resolved"
+                    and swift_scope is not None
+                    and swift_nid != swift_caller
+                    and (swift_caller, swift_nid) not in existing_pairs
+                ):
+                    existing_pairs.add((swift_caller, swift_nid))
+                    all_edges.append({
+                        "source": swift_caller,
+                        "target": swift_nid,
+                        "relation": "calls",
+                        "context": "constructor",
+                        "confidence": "INFERRED",
+                        "confidence_score": 0.85,
+                        "source_file": rc.get("source_file", ""),
+                        "source_location": rc.get("source_location"),
+                        "weight": 1.0,
+                    })
+                continue
         # Exact-case match first (case is semantic). Fold only when the CALLING
         # file's language is case-insensitive, and only against the folded index of
         # case-insensitive-language definitions — so a Python `Path()` call can never
@@ -10960,6 +11297,9 @@ def extract(
     for e in all_edges:
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
+        # Run-local Swift lookup state; every resolver and the rewire are done.
+        e.pop("_swift_scope", None)
+        e.pop("_swift_lookup", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
