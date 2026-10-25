@@ -902,6 +902,11 @@ section still differs (the Phase 3 salting rule), these notes take precedence.
   fail-closed for any differing write: two writes of the same type in two enclosing types, or
   spelled `Outer.T` and `T`, also give `None`. A refinement that keeps one scope for writes
   proven to name the same type is left for follow-up work.
+  The check sees the writes that go into `table`: properties, parameters and the locals that
+  `_swift_local_var_types` types. Factory bindings (`let x = Maker.make()`) and annotated
+  locals bound from a call (`let x: B = obtain()`) do not take part yet, so two such writes
+  of one name in different functions can still both bind to the first one, as on v8
+  (follow-up).
 - **Sugar extensions.** `extension [T]`, `extension [K: V]` and `extension T?` extend
   `Swift.Array`, `Swift.Dictionary` and `Swift.Optional` (label, id and `_swift_qualified`).
   Reading the written text would slug to `T`'s own id, give `T` a second qualified path and

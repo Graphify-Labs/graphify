@@ -888,3 +888,26 @@ def test_same_file_extension_of_salted_nested_type_keeps_its_owner(tmp_path: Pat
     assert not [e for e in result["edges"]
                 if e.get("relation") == "method" and e.get("source") == state]
     assert _by_id(result)[state].get("_swift_qualified", ["Outer.State"]) == ["Outer.State"]
+
+
+def test_dotted_reference_reaches_nested_type_not_same_slug_enum_case(tmp_path: Path):
+    # `Action.Delegate` slugs to the id of `case delegate` (ids are caseless), and the
+    # case keeps the plain id while the nested type is salted. The reference must
+    # reach the type, not the case.
+    base = tmp_path / "src"
+    path = base / "Action.swift"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "enum Action {\n    case delegate\n    enum Delegate {}\n}\n"
+        "struct Use {\n    var value: Action.Delegate\n}\n",
+        encoding="utf-8",
+    )
+    result = extract([path], cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    by_id = {n["id"]: n for n in result["nodes"]}
+    use_ids = {nid for nid, n in by_id.items() if n.get("label") == "Use"}
+    targets = {
+        by_id[e["target"]].get("label") for e in result["edges"]
+        if e.get("relation") == "references" and e["source"] in use_ids
+    }
+    assert targets == {"Delegate"}, targets

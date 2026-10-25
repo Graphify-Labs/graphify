@@ -4993,6 +4993,11 @@ def _swift_caller_scope(
     if owner_nid is None:
         return ""
     owner = node_by_id.get(owner_nid) or {}
+    owner_file = str(owner.get("source_file") or "")
+    if owner_file and effective_suffix(owner_file).lower() != ".swift":
+        # A Swift extension merged into an Objective-C class: the owner is not a
+        # Swift type and declares no nested Swift types, so look up at file scope.
+        return ""
     owner_paths = list(dict.fromkeys(owner.get("_swift_qualified") or ()))
     return owner_paths[0] if len(owner_paths) == 1 else None
 
@@ -10946,6 +10951,13 @@ def extract(
         candidates = global_label_to_nids.get(callee, [])
         if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
+        if candidates and str(rc.get("source_file", "")).lower().endswith(".swift"):
+            # An extension-only node declares nothing: `External()` of a type
+            # declared outside the corpus must not bind to an `extension External`.
+            candidates = [
+                c for c in candidates
+                if not _swift_node_by_id.get(c, {}).get("_swift_extension_only")
+            ]
         if not candidates:
             continue
         if rc.get("lang") == "csharp" and not rc.get("csharp_new") and len(candidates) > 1:

@@ -966,3 +966,44 @@ def test_ambiguous_constructor_callee_stays_unresolved(tmp_path: Path):
     config_ids = {n["id"] for n in result["nodes"] if n.get("label") == "Config"}
     assert len(config_ids) >= 2
     assert [e for e in _constructor_calls(result, ".make()") if e["target"] in config_ids] == []
+
+
+def test_constructor_call_in_extension_of_objc_class_binds(tmp_path: Path):
+    # A Swift extension of an Objective-C class folds onto the ObjC node, which
+    # carries no Swift qualified path. Its calls are looked up at file scope and
+    # still bind `Item()`, as before the Swift type index.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Widget.h",
+               "#import <Foundation/Foundation.h>\n@interface Widget : NSObject\n- (void)ping;\n@end\n"),
+        _write(base / "Types.swift", "struct Item {}\n"),
+        _write(base / "Extras.swift",
+               "extension Widget {\n    func run() {\n        Item()\n    }\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    item_ids = {
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Item" and str(n.get("source_file", "")).endswith("Types.swift")
+    }
+    assert len(item_ids) == 1
+    calls = [e for e in _constructor_calls(result, ".run()") if e["target"] in item_ids]
+    assert len(calls) == 1, f"expected one call to Item, got {_constructor_calls(result, '.run()')}"
+
+
+def test_constructor_call_does_not_bind_extension_only_node(tmp_path: Path):
+    # `External` is declared outside the corpus; `extension External` only adds
+    # members. `External()` must not bind to that extension node.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Ext.swift", "extension External {\n    func helper() {}\n}\n"),
+        _write(base / "Use.swift", "func run() {\n    External()\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    ext_ids = {
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "External" and str(n.get("source_file", "")).endswith("Ext.swift")
+    }
+    assert ext_ids
+    assert [e for e in _constructor_calls(result, "run()") if e["target"] in ext_ids] == []

@@ -6640,6 +6640,13 @@ def _extract_generic(
         edges.append(edge)
 
     def ensure_named_node(name: str, line: int) -> str:
+        if config.ts_module == "tree_sitter_swift" and "." in name:
+            # A dotted Swift name declared in this file maps to its nested type's
+            # real id first: `Action.Delegate` slugs to the id of a same-file
+            # `case delegate`, which keeps the plain id while the type is salted.
+            nested_nid = _swift_nested_path_nid(name)
+            if nested_nid is not None:
+                return nested_nid
         nid = _make_id(stem, ".".join(namespace_stack), name)
         if config.ts_module == "tree_sitter_c_sharp":
             nid = _underscore_salted_nid(nid, name, csharp_type_groups)
