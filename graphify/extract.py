@@ -4784,6 +4784,16 @@ def _resolve_python_member_calls(
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
+    def _is_python_file(source_file: object) -> bool:
+        # The effective suffix honours a `.graphifyrc` language override. Only a
+        # suffix another extractor owns is rejected: an extensionless file (a
+        # shebang script), an unknown suffix, or a raw call that names no file
+        # passes, as before the gate.
+        suffix = effective_suffix(str(source_file or ""))
+        if suffix.lower() in (".py", ".pyi"):
+            return True
+        return suffix not in _DISPATCH and suffix.lower() not in _DISPATCH
+
     node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
 
     # A class owns methods: it is the source of one or more `method` edges. Index
@@ -4799,7 +4809,9 @@ def _resolve_python_member_calls(
         if src and tgt:
             owner_of[tgt] = src
         cnode = node_by_id.get(src)
-        if cnode is not None:
+        # Only Python classes are candidates: a Swift `Inner` must not trip the
+        # single-definition guard for a Python `Inner`.
+        if cnode is not None and _is_python_file(cnode.get("source_file")):
             class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
         tnode = node_by_id.get(tgt)
         if tnode is not None:
@@ -4926,6 +4938,13 @@ def _resolve_python_member_calls(
     ) -> None:
         if not target_nid or target_nid == caller or (caller, target_nid) in existing_pairs:
             return
+        target_file = node_by_id.get(target_nid, {}).get("source_file")
+        if target_file and not _is_python_file(target_file):
+            # Python callers bind Python definitions only: `Inner.go()` in a .py
+            # file must not reach a Swift `Inner`, nor `SwiftArray.make()` a
+            # Swift node labelled `Swift.Array`. Stubs and external modules
+            # carry no file.
+            return
         if rc.get("_python_attr_read"):
             # An attribute read only runs a property getter, and only the one it
             # spells: _key() folds `_items` into `items`, so compare the name.
@@ -5010,6 +5029,11 @@ def _resolve_python_member_calls(
         if rc.get("_ambiguous_python_import"):
             continue
         if not rc.get("is_member_call"):
+            continue
+        if not _is_python_file(rc.get("source_file")):
+            # Python callers only: a Swift `Inner.go()` must not bind a Python
+            # `Inner`, nor `SwiftArray.make()` a Swift `Swift.Array`; other
+            # languages bind their member calls in their own passes.
             continue
         receiver = rc.get("receiver")
         callee = rc.get("callee")
