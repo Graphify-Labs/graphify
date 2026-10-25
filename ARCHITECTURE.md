@@ -33,6 +33,12 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
+Detection counts words from text and converted documents. Supported raster images,
+audio and video stay in the discovered corpus, but their raw bytes are never decoded
+for word counting; detection also bypasses any older cached counts for them. SVG
+remains text-readable, and PDF/Office files retain their existing text converters.
+This avoids reading and splitting entire binary media files just to size the corpus.
+
 ### Calling `extract()` from your own code
 
 `extract()` takes a **list** of paths, and `root` is keyword-only and optional:
@@ -117,6 +123,14 @@ Python nested class ids include their enclosing class id. Same-named nested
 classes under different parents retain separate definitions, methods, and
 containment edges; top-level class ids are unchanged. AST cache schema 7 prevents
 older cached definitions from retaining the collapsed identities.
+
+C# partial types merge across files by their path inside the namespace,
+enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
+assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
+`Foo<T>` stay separate types. AST cache schema 9 retires cached C# results that
+lack this path. The merge runs after colliding ids are salted apart by path, so
+a half whose file stem collides with another file's (`Spec.cs` and `_Spec.cs`,
+`Cfg/Helpers.cs` and `Cfg_Helpers.cs`) still merges and keeps its members.
 
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes

@@ -139,15 +139,11 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
 _MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
 
 
-def _active_scan_root() -> "Path | None":
-    """The scan root of the extraction in flight, or None outside extract().
-
-    _safe_extract_with_xaml_root sets this for every extraction despite its
-    XAML-era name; a direct extract_markdown() call has no root and the
-    fallback stays off.
-    """
-    import graphify.extract as _extract
-    return getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+# The in-flight scan root now lives on extractors.base (correct import
+# direction: extract.py -> extractors/, never back), so a rename can no longer
+# silently disable link resolution the way the old getattr(graphify.extract, …,
+# None) could (#3666).
+from graphify.extractors.base import active_scan_root as _active_scan_root
 
 
 def _nfc(s: str) -> str:
@@ -215,6 +211,17 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
         c for c in candidates
         if c[1] == suffix or c[1].endswith("/" + suffix)
     ]
+    if not matches:
+        # Obsidian writes vault-relative paths, so scanning a folder below the
+        # vault root meets links that start with that folder's own path
+        # ([[Corp/wiki/Fox]] from inside Corp/, #4559). Drop the longest such
+        # leading run and match the rest from the scan root.
+        root_parts = [_nfc(p) for p in Path(root).parts]
+        for k in range(len(parts) - 1, 0, -1):
+            if parts[:k] == root_parts[-k:]:
+                rest = "/".join(parts[k:])
+                matches = [c for c in candidates if c[1] == rest]
+                break
     if not matches:
         return None
     return min(matches)[2]

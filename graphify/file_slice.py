@@ -39,7 +39,8 @@ from graphify.extractors.base import _read_source_text
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
-    ".qmd", ".skill", ".html", ".yaml", ".yml",
+    ".qmd", ".skill", ".html",
+    ".j2", ".jinja", ".jinja2",
 })
 
 # Document types whose BYTES are not what the model is shown. `llm._file_to_text`

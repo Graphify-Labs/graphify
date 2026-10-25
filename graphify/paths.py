@@ -22,10 +22,63 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+def _out_from_env() -> str:
+    """``GRAPHIFY_OUT``, or ``"graphify-out"`` when it is unset, empty, or names
+    the project itself / a parent of it.
+
+    ``os.environ.get(key, default)`` only applies the default when the variable
+    is missing, so ``GRAPHIFY_OUT=`` (a blank ``.env`` entry) used to yield
+    ``""``: output landed in the project root and ``uninstall --purge`` deleted
+    the whole project. ``.`` and ``..`` are never a valid output dir either.
+    """
+    value = (os.environ.get("GRAPHIFY_OUT") or "").strip()
+    if not value:
+        return "graphify-out"
+    norm = os.path.normpath(value)
+    if norm == "." or all(part == ".." for part in Path(norm).parts):
+        print(
+            f"warning: GRAPHIFY_OUT={value!r} points at the project or a parent "
+            "of it; using 'graphify-out' instead",
+            file=sys.stderr,
+        )
+        return "graphify-out"
+    return value
+
+
+GRAPHIFY_OUT = _out_from_env()
+
+
+def os_long_path(path: "str | Path") -> str:
+    r"""Return an OS path string safe for open()/stat() on Windows long paths.
+
+    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
+    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
+    (which also requires a fully-qualified path). Without it, _md5_file /
+    save_manifest / count_words silently fail to hash deeply-nested files, so
+    their manifest entry never stabilizes and detect_incremental re-flags them
+    as changed on every run (#1655), and cache entries under a deep root cannot
+    be written at all. cache._normalize_path strips this prefix for stable
+    KEYS; this adds it for I/O. Non-win32 and already-prefixed paths pass
+    through unchanged.
+    """
+    if sys.platform != "win32":
+        return str(path)
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return s
+    try:
+        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
+    except Exception:
+        return str(path)
+    if s.startswith("\\\\"):
+        # UNC share \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
 
 
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
@@ -188,12 +241,18 @@ def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
     return True
 
 
-def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
+def write_json_atomic(
+    path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True, compact: bool = False
+) -> None:
     """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
     temp file rather than materializing the whole string first (matters for very
     large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
-    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
-    _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
+    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact`` writes one
+    line with no padding after ``,``/``:`` (graph.json, #3413). See :func:`_atomic_replace`."""
+    separators = (",", ":") if compact else None
+    _atomic_replace(
+        path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii, separators=separators)
+    )
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw

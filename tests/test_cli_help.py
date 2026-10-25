@@ -39,3 +39,28 @@ def test_help_lists_prs_provider_and_export_formats():
     # Silent hook internals — deliberately excluded from user-facing help.
     assert "hook-check" not in out
     assert "hook-guard" not in out
+
+
+def test_help_lists_every_install_platform():
+    """#4655: the `install [--platform P]` line must advertise every accepted
+    `--platform` value. It is derived from the same source as `graphify install`
+    usage (`[*_PLATFORM_CONFIG, "gemini", "cursor"]`), so this guards against the
+    list silently drifting again (amp, copilot, kilo, kimi, antigravity-windows
+    had all gone missing)."""
+    import re
+
+    from graphify.install import _PLATFORM_CONFIG
+
+    r = subprocess.run(
+        [PYTHON, "-m", "graphify", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, f"--help should exit 0: {r.stderr}"
+    m = re.search(r"install \[--platform P\][^(]*\(([^)]*)\)", r.stdout)
+    assert m, "could not find the install --platform list in `graphify --help`"
+    listed = set(m.group(1).split("|"))
+    for platform_name in [*_PLATFORM_CONFIG, "gemini", "cursor"]:
+        assert platform_name in listed, (
+            f"`graphify --help` must list the --platform value {platform_name!r} (#4655)"
+        )

@@ -20,13 +20,15 @@ graphify export wiki
 graphify export neo4j
 ```
 
-**If `--neo4j-push <uri>`** - push directly to a running Neo4j instance. Ask the user for credentials if not provided:
+**If `--neo4j-push`** - push directly to Neo4j using the destination URI supplied with the original `/graphify` command. Only push when this flag was explicitly given.
+
+Pass the exact URI from the original `/graphify` command as one argument. When constructing a shell command, quote the URI for the shell that will execute the command (use `shlex.quote` for POSIX shells), or use a structured argument interface. Keep the URI as data; never interpolate it unquoted or evaluate it as shell code. Never replace a supplied URI with localhost. If the user explicitly requested a push but supplied no URI, use the documented local default. Do not print the URI or credentials in status output or generated artifacts.
 
 ```bash
-graphify export neo4j --push bolt://localhost:7687 --user neo4j --password PASSWORD
+graphify export neo4j --push 'bolt://remote-host:7687' --user neo4j
 ```
 
-Default URI is `bolt://localhost:7687`, default user is `neo4j`. Uses MERGE - safe to re-run without creating duplicates.
+Default URI is `bolt://localhost:7687`, default user is `neo4j`. Prefer the `NEO4J_PASSWORD` environment variable so the password is kept off argv; ask for credentials only when needed. Uses MERGE - safe to re-run without creating duplicates.
 
 ### Step 7a - FalkorDB export (only if --falkordb or --falkordb-push flag)
 
@@ -36,10 +38,12 @@ Default URI is `bolt://localhost:7687`, default user is `neo4j`. Uses MERGE - sa
 graphify export falkordb
 ```
 
-**If `--falkordb-push <uri>`** - push directly to a running FalkorDB instance. Credentials are optional; ask the user only if the instance requires auth:
+**If `--falkordb-push`** - push directly to FalkorDB using the destination URI supplied with the original `/graphify` command. Only push when this flag was explicitly given.
+
+Pass the exact URI from the original `/graphify` command as one argument. When constructing a shell command, quote the URI for the shell that will execute the command (use `shlex.quote` for POSIX shells), or use a structured argument interface. Keep the URI as data; never interpolate it unquoted or evaluate it as shell code. Never replace a supplied URI with localhost. If the user explicitly requested a push but supplied no URI, use the documented local default. Do not print the URI or credentials in status output or generated artifacts. Credentials are optional; ask only if the instance requires authentication, and use `FALKORDB_PASSWORD` for a password rather than printing it.
 
 ```bash
-graphify export falkordb --push falkordb://localhost:6379
+graphify export falkordb --push 'falkordb://remote-host:6379'
 ```
 
 Default URI is `falkordb://localhost:6379` (the scheme is informational - `redis://` or a bare `host:port` work too), auth is optional, and the target graph defaults to `graphify`. Uses MERGE - safe to re-run without creating duplicates.
