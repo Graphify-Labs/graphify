@@ -91,14 +91,23 @@ def test_existing_skill_ledger_is_kept(monkeypatch, setup):
     assert cost["total_output_tokens"] == 40
 
 
-def test_unreadable_ledger_is_not_overwritten(monkeypatch, setup):
+@pytest.mark.parametrize("bad", [
+    "{not json",
+    "[]",
+    "null",
+    '{"runs": {}}',
+    '{"runs": [], "total_input_tokens": "5"}',
+    '{"runs": [], "total_input_tokens": null}',
+])
+def test_unreadable_ledger_is_not_overwritten(monkeypatch, setup, bad):
     corpus, out_dir = setup
     cost_path = out_dir / "graphify-out" / "cost.json"
     cost_path.parent.mkdir(parents=True)
-    cost_path.write_text("{not json", encoding="utf-8")
+    cost_path.write_text(bad, encoding="utf-8")
 
     _run_extract(monkeypatch, corpus, out_dir)
-    assert cost_path.read_text(encoding="utf-8") == "{not json"
+    assert (out_dir / "graphify-out" / "graph.json").exists()
+    assert cost_path.read_text(encoding="utf-8") == bad
 
 
 def test_code_only_run_with_no_tokens_writes_nothing(monkeypatch, tmp_path):

@@ -827,6 +827,10 @@ def _record_extract_cost(graphify_out: Path, input_tokens: int, output_tokens: i
             cost.setdefault("runs", [])
             cost.setdefault("total_input_tokens", 0)
             cost.setdefault("total_output_tokens", 0)
+            if not isinstance(cost["runs"], list) or not all(
+                type(cost[k]) is int for k in ("total_input_tokens", "total_output_tokens")
+            ):
+                raise ValueError("unexpected layout")
         except (OSError, ValueError, AttributeError) as exc:
             print(f"[graphify extract] warning: could not read {cost_path}, not updating it: {exc}", file=sys.stderr)
             return
