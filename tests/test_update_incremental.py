@@ -307,6 +307,61 @@ def _graph_shape(root: Path):
     return nodes, links
 
 
+def _cross_file_calls(root: Path) -> set[str]:
+    """``src:label -> dst:label`` for every calls edge that spans two files."""
+    payload = json.loads((root / "graphify-out" / "graph.json").read_text())
+    labels = {
+        n["id"]: (Path(n.get("source_file") or "?").name, n.get("label"))
+        for n in payload["nodes"]
+    }
+    edges: set[str] = set()
+    for edge in payload.get("links", payload.get("edges", [])):
+        src = labels.get(edge.get("source"))
+        dst = labels.get(edge.get("target"))
+        if edge.get("relation") == "calls" and src and dst and src[0] != dst[0]:
+            edges.add(f"{src[0]}:{src[1]} -> {dst[0]}:{dst[1]}")
+    return edges
+
+
+def _add_caller_of_fa(root: Path) -> None:
+    """Add a second caller of ``a.py:fa()`` to ``uses.py`` and nothing else."""
+    (root / "src" / "uses.py").write_text(
+        "from src.a import fa\n\ndef use():\n    return fa()\n\ndef added():\n    return fa()\n"
+    )
+
+
+def test_cross_file_call_edge_survives_an_incremental_update(
+    built: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only uses.py changes, and its new caller lives there — but the callee is in
+    # an untouched file, so the edge can only be rebuilt from the resolution
+    # context (the #2406/#3763 failure mode).
+    assert "uses.py:use() -> a.py:fa()" in _cross_file_calls(built)
+
+    _add_caller_of_fa(built)
+    assert _rebuild_code(built, incremental=True, acquire_lock=False) is True
+
+    edges = _cross_file_calls(built)
+    assert "uses.py:added() -> a.py:fa()" in edges
+    assert "uses.py:use() -> a.py:fa()" in edges
+
+
+def test_cross_file_call_edge_survives_a_copied_checkout(
+    built: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Same as above on a copied checkout, where graphify-out/.graphify_root still
+    # names the original tree. Stored source paths then resolve against the old
+    # root, which used to make the whole resolve context look corpus-absent.
+    copy = tmp_path / "copy"
+    shutil.copytree(built, copy)
+    assert "uses.py:use() -> a.py:fa()" in _cross_file_calls(copy)
+
+    _add_caller_of_fa(copy)
+    assert _rebuild_code(copy, incremental=True, acquire_lock=False) is True
+
+    assert "uses.py:added() -> a.py:fa()" in _cross_file_calls(copy)
+
+
 def test_cli_update_re_extracts_only_changed_files(tmp_path: Path) -> None:
     # End to end through the command the user runs. The first run has no
     # baseline, so it must be full; the second must not be.

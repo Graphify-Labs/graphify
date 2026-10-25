@@ -2424,7 +2424,15 @@ def _rebuild_code(
                     if not node.get("id") or not _is_ast_tier(node):
                         continue
                     source_file = node.get("source_file")
-                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                    # ctx_live is built from project_root-anchored paths, so the
+                    # membership test has to use the same anchoring. identity()
+                    # resolves a stored relative path against the root recorded
+                    # in graphify-out/.graphify_root, and a copied checkout left
+                    # that pointing at its original location — every stored node
+                    # then read as corpus-absent, the context came back empty,
+                    # and the changed batch lost its cross-file edges (#2406).
+                    ctx_identity = ctx_paths.absolute_identity(source_file, project_root)
+                    if not source_file or ctx_identity not in ctx_live:
                         continue
                     ctx_node = {
                         "id": node["id"],
@@ -2491,7 +2499,11 @@ def _rebuild_code(
                     if not _is_ast_tier(edge):
                         continue
                     source_file = edge.get("source_file")
-                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                    # Same anchoring as the nodes above, or an unchanged file's
+                    # import edge drops out of the resolve context and a changed
+                    # file's call into it cannot be resolved (#2437).
+                    ctx_identity = ctx_paths.absolute_identity(source_file, project_root)
+                    if not source_file or ctx_identity not in ctx_live:
                         continue
                     context_edge = {
                         "source": edge.get("source"),
