@@ -1,0 +1,34 @@
+{
+  "observations": [
+    {
+      "id": "synthetic-001",
+      "project": "graphify",
+      "date": "2026-10-17",
+      "summary": "A synthetic issue describes ambiguous seed labels.",
+      "source_ref": "synthetic-001"
+    },
+    {
+      "id": "synthetic-002",
+      "project": "graphify",
+      "date": "2026-10-17",
+      "summary": "A synthetic observation about an unrelated feature.",
+      "source_ref": "synthetic-002"
+    }
+  ],
+  "cases": [
+    {
+      "id": "q001",
+      "question": "How are ambiguous seeds handled?",
+      "relevant_node_ids": ["graphify_affected_resolve_seed"],
+      "relevant_pairs": [["graphify_affected_resolve_seed", "synthetic-001"]],
+      "observation_ids": ["synthetic-001"]
+    },
+    {
+      "id": "q002",
+      "question": "Which node implements an unrelated legacy billing feature?",
+      "relevant_node_ids": [],
+      "relevant_pairs": [],
+      "observation_ids": ["synthetic-002"]
+    }
+  ]
+}
