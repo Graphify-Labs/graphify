@@ -5,8 +5,11 @@ import json
 import logging
 import os
 import posixpath
+import multiprocessing
 import re
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -1592,6 +1595,252 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
         return False
 
 
+def _inputs_unchanged(detected: dict, manifest_path: Path, root: Path) -> bool:
+    """True when nothing that can change the code graph changed since the last run.
+
+    Compares the fresh scan against the previous run's manifest by CONTENT
+    (``ast_hash``), never by mtime alone, over three input sets: every detected
+    bucket, the manifest rows the scan no longer covers, and the JS/TS resolution
+    inputs. A tsconfig/jsconfig/package.json edit can move a .ts result without
+    touching a source file, and the lock files are resolution inputs the scan
+    skips by name, so detect() reports them separately (#4740).
+
+    Fails closed. A missing or unreadable manifest, a row that cannot be verified,
+    or anything this cannot prove unchanged returns False so the caller takes the
+    full path: a false "changed" only costs time, a false "unchanged" ships a
+    stale graph.
+    """
+    from graphify.detect import classify_manifest_files, load_manifest
+    from graphify.paths import nfc
+
+    try:
+        manifest = load_manifest(str(manifest_path), root=root)
+    except Exception:
+        return False
+    if not manifest:
+        return False
+
+    def _abs(p: object) -> str:
+        # The scan may report CWD-relative paths while load_manifest re-anchors
+        # its keys at `root`; compare both sides in one absolute, NFC form.
+        try:
+            return nfc(str(Path(os.path.abspath(str(p)))))
+        except (OSError, ValueError, TypeError):
+            return nfc(str(p))
+
+    buckets = {
+        ftype: [_abs(f) for f in flist]
+        for ftype, flist in (detected.get("files") or {}).items()
+    }
+    buckets["resolution_inputs"] = [
+        _abs(f) for f in (detected.get("resolution_inputs") or [])
+    ]
+    keyed = {_abs(k): v for k, v in manifest.items()}
+
+    # unstamped_is_changed=True: a scanned file with no manifest row or a blanked
+    # ast_hash (e.g. one that previously FAILED extraction, #2543) counts as
+    # changed, so fixing it later takes the full rebuild instead of being skipped
+    # forever. The only cost is that a corpus with a permanently-failing file never
+    # fast-paths — the safe direction (a false "changed" only costs time).
+    changed, _unchanged = classify_manifest_files(
+        buckets, keyed, kind="ast", unstamped_is_changed=True
+    )
+    if any(changed.values()):
+        return False
+
+    # A row with no matching scan entry is a deletion, or a file a changed ignore
+    # rule just excluded. Both can move the graph, and neither is provable here.
+    current = {f for flist in buckets.values() for f in flist}
+    return all(f in current for f in keyed)
+
+
+_BUILD_STATE_NAME = ".graphify_build_state.json"
+
+
+def _extractor_epoch() -> str:
+    """Identity of the extraction pipeline behind the current AST output.
+
+    The same triple the AST cache is namespaced by, so anything that invalidates
+    cached fragments also invalidates a graph built from the old ones. Without it
+    the gate would skip a graph the current extractor would not reproduce, which
+    is how the legacy-stub and legacy-marker heals work (#4740).
+    """
+    from graphify.cache import (
+        _AST_CACHE_SCHEMA,
+        _EXTRACTOR_VERSION,
+        _grammar_fingerprint,
+    )
+
+    return f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}-g{_grammar_fingerprint()}"
+
+
+def _scan_digest(detected: dict) -> str:
+    """Fingerprint of WHICH files the scan covers, not what they contain (#4740).
+
+    The manifest cannot answer this on its own: a source whose extraction fails
+    is deliberately left unstamped (#2543), so it has no row and a row-based
+    comparison cannot tell "same file, still failing" from "file is new". Only
+    the in-scope path set separates those, and it is also what catches an edit to
+    an ignore rule, a rename and an outright deletion.
+    """
+    import hashlib
+
+    paths = [
+        os.path.abspath(str(f))
+        for flist in (detected.get("files") or {}).values()
+        for f in flist
+    ]
+    paths += [
+        os.path.abspath(str(f)) for f in (detected.get("resolution_inputs") or [])
+    ]
+    return hashlib.md5(
+        "\n".join(sorted(paths)).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
+
+
+def _current_build_state(
+    *,
+    watch_root: Path,
+    follow_symlinks: bool,
+    no_cluster: bool,
+    gitignore: bool,
+    excludes: list[str] | None,
+    scan_digest: str,
+) -> dict:
+    """Everything besides file content that a rebuild's output depends on (#4740).
+
+    A different scan root, file set, ignore set, output shape or extractor
+    necessarily writes a different graph, so the previous run's stamp cannot
+    vouch for it.
+    """
+    import hashlib
+
+    rc = watch_root / RC_FILENAME
+    try:
+        rc_digest = (
+            hashlib.md5(rc.read_bytes(), usedforsecurity=False).hexdigest()
+            if rc.is_file()
+            else ""
+        )
+    except OSError:
+        rc_digest = ""
+    return {
+        "epoch": _extractor_epoch(),
+        "scan_root": str(watch_root),
+        "scan_digest": scan_digest,
+        "follow_symlinks": bool(follow_symlinks),
+        "no_cluster": bool(no_cluster),
+        "gitignore": bool(gitignore),
+        "excludes": sorted(excludes or []),
+        "rcfile": rc_digest,
+        # Env knobs that change the written output rather than just the timing:
+        # the viz cap removes graph.html outright, and the ambiguous-edge scale
+        # moves community assignment. Read raw so this cannot drift from how
+        # each consumer parses them.
+        "viz_node_limit": os.environ.get("GRAPHIFY_VIZ_NODE_LIMIT", ""),
+        "ambiguous_scale": os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE", ""),
+    }
+
+
+def _graph_json_is_complete(path: Path) -> bool:
+    """Cheap structural check that ``path`` holds a whole JSON object (#4748).
+
+    Deliberately not a full ``json.load``. graph.json is capped at 512 MiB by
+    default (``GRAPHIFY_MAX_GRAPH_BYTES``), and the rebuild that just wrote it is
+    still holding its own copy of the graph, so parsing it again can add a
+    gigabyte of peak RSS to answer one question: did the bytes land whole.
+    Reading the first and last non-whitespace byte answers that for the failure
+    this guards, a partial or truncated publish, which the atomic replace can
+    still produce through its non-atomic fallback.
+
+    Says nothing about corruption in the middle of the file. That would change
+    mtime, which the caller's own stat comparison catches.
+    """
+    try:
+        size = path.stat().st_size
+        if size < 2:
+            return False
+        from graphify.paths import os_long_path
+        with open(os_long_path(path), "rb") as f:
+            head = f.read(64)
+            f.seek(max(0, size - 64))
+            tail = f.read(64)
+    except OSError:
+        return False
+    head = head.lstrip()
+    tail = tail.rstrip()
+    return bool(head) and bool(tail) and head[:1] == b"{" and tail[-1:] == b"}"
+
+
+def _write_build_state(out: Path, state: dict, *, full_clean: bool) -> None:
+    """Stamp what the next run has to match to skip (#4740).
+
+    Refuses to stamp unless the outputs it is about to describe are on disk and
+    whole. A stamp is a promise that the next run may skip, so writing one over a
+    graph.json that a failed or partial publish left behind turns that promise
+    into a stale graph nothing ever repairs (#4748). Any doubt means no stamp,
+    which costs the next run a full rebuild and nothing else.
+    """
+    graph = out / "graph.json"
+    try:
+        st = graph.stat()
+    except OSError:
+        return
+    if not _graph_json_is_complete(graph):
+        return
+    from graphify.exporters.html import _HTML_STALE_MARKER
+    if (out / _HTML_STALE_MARKER).exists():
+        # A pending re-render means graph.html does not describe this graph yet.
+        # _build_state_matches() rejects such a stamp anyway, so writing one that
+        # could never match would only make "a stamp exists" meaningless.
+        return
+    payload = {
+        **state,
+        "full_clean": bool(full_clean),
+        "graph_size": st.st_size,
+        "graph_mtime_ns": st.st_mtime_ns,
+        "html_present": (out / "graph.html").exists(),
+    }
+    try:
+        (out / _BUILD_STATE_NAME).write_text(
+            json.dumps(payload, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _build_state_matches(out: Path, state: dict) -> bool:
+    """True when ``out`` still holds exactly what the last stamped rebuild wrote.
+
+    Fails closed on anything it cannot prove: a missing or unreadable stamp, a
+    graph.json another writer replaced or partly wrote, a pending HTML re-render,
+    or a last rebuild that was itself incremental (which is never a sound base
+    for skipping a full one).
+    """
+    try:
+        prev = json.loads((out / _BUILD_STATE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(prev, dict):
+        return False
+    for key, value in state.items():
+        if prev.get(key) != value:
+            return False
+    # Only a full rebuild leaves a graph a full rebuild could have produced.
+    if prev.get("full_clean") is not True:
+        return False
+    try:
+        st = (out / "graph.json").stat()
+    except OSError:
+        return False
+    if prev.get("graph_size") != st.st_size or prev.get("graph_mtime_ns") != st.st_mtime_ns:
+        return False
+    from graphify.exporters.html import _HTML_STALE_MARKER
+    if (out / _HTML_STALE_MARKER).exists():
+        return False
+    return prev.get("html_present") is (out / "graph.html").exists()
+
+
 def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     """Reconcile missing, stale, or explicitly disabled HTML visualization.
 
@@ -1809,6 +2058,37 @@ def _rebuild_code(
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
 
+        # #4740: stop before extraction when nothing that reaches the code graph
+        # has changed. The only no-change exit today sits at the very end of the
+        # pipeline (the topology compare), so a zero-change run still pays for
+        # detect -> extract -> build -> cluster and its gigabytes.
+        #
+        # `changed_paths` already names the change set, so that path is left
+        # alone, and --force means "accept a shrink", not "prove nothing changed".
+        #
+        # Below, this state is both what the gate compares and what every
+        # successful rebuild stamps: the skip key has to cover everything a
+        # rebuild's output depends on besides file content.
+        _build_state_now = _current_build_state(
+            watch_root=watch_root,
+            follow_symlinks=follow_symlinks,
+            no_cluster=no_cluster,
+            gitignore=_gitignore_enabled,
+            excludes=_persisted_excludes,
+            scan_digest=_scan_digest(detected),
+        )
+
+        if changed_paths is None and not force:
+            if (
+                _inputs_unchanged(detected, out / "manifest.json", watch_root)
+                and _build_state_matches(out, _build_state_now)
+            ):
+                print(
+                    "[graphify watch] No relevant changes; "
+                    "graphify-out left untouched."
+                )
+                return True
+
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
         # purged from the graph instead of preserved forever by the fail-closed
@@ -1825,9 +2105,16 @@ def _rebuild_code(
             watch_root, extra_excludes=_persisted_excludes or None, gitignore=True,
         ) if _gitignore_enabled else _ignored_always
 
-        # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
+        # Include document files that have AST extractors (e.g. .md, .mdx, .qmd).
+        # A document that detect() reclassified as a paper (_looks_like_paper,
+        # e.g. Markdown notes quoting an arXiv abstract) gets the same quick-scan
+        # when it has an AST extractor; otherwise an AST-only rebuild gives it
+        # zero nodes with no warning (#4750). Only formats with an extractor
+        # qualify (.md/.mdx/.qmd today): PDFs and plain .txt still have none, so
+        # the _get_extractor filter keeps them out exactly as before.
         ast_doc_files: list[Path] = []
-        for doc_file in detected['files'].get('document', []):
+        for doc_file in [*detected['files'].get('document', []),
+                         *detected['files'].get('paper', [])]:
             p = Path(doc_file)
             if _get_extractor(p) is not None:
                 code_files.append(p)
@@ -2050,6 +2337,7 @@ def _rebuild_code(
                         "_php_class_fqns",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",
+                        "_py_fixture", "_py_return_type",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
@@ -2073,6 +2361,11 @@ def _rebuild_code(
                                 "module",
                                 "name",
                                 "arity",
+                                # C# overloads (#4584): which one a call's
+                                # argument count fits.
+                                "min_arity",
+                                "variadic",
+                                "signature",
                             )
                             if key in metadata
                         }
@@ -2089,7 +2382,8 @@ def _rebuild_code(
                     if edge.get("relation") not in (
                         "contains", "method", "inherits", "imports", "imports_from"
                     ):
-                        continue
+                        if not (edge.get("relation") == "references" and edge.get("context") == "return_type"):
+                            continue
                     if not _is_ast_tier(edge):
                         continue
                     source_file = edge.get("source_file")
@@ -2101,6 +2395,8 @@ def _rebuild_code(
                         "relation": edge.get("relation"),
                         "source_file": source_file,
                     }
+                    if edge.get("context") == "return_type":
+                        context_edge["context"] = "return_type"
                     edge_metadata = edge.get("metadata")
                     if (
                         isinstance(edge_metadata, dict)
@@ -2153,28 +2449,49 @@ def _rebuild_code(
 
             Only the STAMPED set shrinks; scan_corpus at the save sites stays
             the raw detect output so #1908 pruning is unaffected.
+
+            The JS/TS resolution inputs detect() skips by name are stamped under
+            their own bucket so the no-change gate can compare their content on
+            the next run (#4740). They are not extract targets and stay out of
+            scan_corpus, so nothing else sees them.
             """
             if not _failed_ast_sources:
-                return detected["files"]
-            failed_res = set(_failed_ast_sources)
-            for p in _failed_ast_sources:
-                try:
-                    failed_res.add(str(Path(p).resolve()))
-                except (OSError, RuntimeError):
-                    pass
+                stamped = detected["files"]
+            else:
+                failed_res = set(_failed_ast_sources)
+                for p in _failed_ast_sources:
+                    try:
+                        failed_res.add(str(Path(p).resolve()))
+                    except (OSError, RuntimeError):
+                        pass
 
-            def _failed(f: str) -> bool:
-                if f in failed_res:
-                    return True
-                try:
-                    return str(Path(f).resolve()) in failed_res
-                except (OSError, RuntimeError):
-                    return False
+                def _failed(f: str) -> bool:
+                    if f in failed_res:
+                        return True
+                    try:
+                        return str(Path(f).resolve()) in failed_res
+                    except (OSError, RuntimeError):
+                        return False
 
-            return {
-                ftype: [f for f in flist if not _failed(f)]
-                for ftype, flist in detected["files"].items()
-            }
+                stamped = {
+                    ftype: [f for f in flist if not _failed(f)]
+                    for ftype, flist in detected["files"].items()
+                }
+            resolution = detected.get("resolution_inputs") or []
+            if resolution:
+                stamped = {**stamped, "resolution_inputs": list(resolution)}
+            return stamped
+
+        def _stamp_build_state() -> None:
+            """Record what the NEXT run has to match to skip (#4740).
+
+            Only ever called once a rebuild has finished writing its outputs, so
+            the stamp describes a graph that is on disk and current. A rebuild
+            that fails before this point leaves the previous stamp in place, and
+            the gate compares against the outputs too, so it cannot vouch for a
+            graph that was half written.
+            """
+            _write_build_state(out, _build_state_now, full_clean=changed_paths is None)
 
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
@@ -2340,6 +2657,7 @@ def _rebuild_code(
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     clear_ast=_failed_ast_sources or None,
                 )
+                _stamp_build_state()
             except Exception:
                 pass
 
@@ -2400,6 +2718,9 @@ def _rebuild_code(
                     )
                 else:
                     print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
+                # Stamped last: it records the outputs as they now are, and this
+                # path may have just re-rendered or removed graph.html.
+                _stamp_build_state()
                 return True
 
         communities = cluster(G)
@@ -2676,6 +2997,9 @@ def _rebuild_code(
             if callflow_files:
                 products += f", {len(callflow_files)} callflow HTML"
             print(f"[graphify watch] {products} updated in {out}")
+        # Stamped last: every output this rebuild writes is on disk by now, and
+        # the gate compares against those outputs as well as the input manifest.
+        _stamp_build_state()
         return True
 
     except Exception as exc:
@@ -2753,6 +3077,54 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     reconcile sweep, so a pure-deletion batch must not leave a stale flag.
     """
     return _has_non_code([p for p in batch if p.exists()])
+
+
+@contextlib.contextmanager
+def _rebuild_timeout():
+    """Bound one watch-loop rebuild by GRAPHIFY_REBUILD_TIMEOUT seconds (0 disables).
+
+    Mirrors the hook rebuild (#791, #2148): SIGALRM raises TimeoutError where it
+    exists; elsewhere (Windows) a timer thread kills the pool workers and exits
+    the process, since nothing can interrupt the main thread (#2173).
+    """
+    timeout = int(os.environ.get("GRAPHIFY_REBUILD_TIMEOUT", "600"))
+    if timeout <= 0:
+        yield
+        return
+    # SIGALRM can only be armed from the main thread: signal.signal() raises
+    # ValueError ("signal only works in main thread") anywhere else. watch()'s
+    # dispatch loop is not always the main thread (it is run in a worker thread
+    # both under test and when embedded), and that ValueError would escape the
+    # `except TimeoutError` guard and tear the watch loop down before the
+    # rebuild runs (#4724 regressed gh-928). Off the main thread, fall back to
+    # the signal-free Timer path, which bounds the rebuild just the same.
+    if hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread():
+        def _sigalrm_bail(*_a):
+            # Kill workers before raising: TimeoutError would otherwise block in
+            # the pool's shutdown(wait=True) on a worker the alarm cannot stop.
+            for child in multiprocessing.active_children():
+                child.kill()
+            raise TimeoutError(f"graphify rebuild exceeded {timeout}s")
+        previous = signal.signal(signal.SIGALRM, _sigalrm_bail)
+        signal.alarm(timeout)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+    else:
+        def _bail():
+            print(f"[graphify watch] graphify rebuild exceeded {timeout}s", flush=True)
+            for child in multiprocessing.active_children():
+                child.kill()
+            os._exit(1)
+        watchdog = threading.Timer(timeout, _bail)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            yield
+        finally:
+            watchdog.cancel()
 
 
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
@@ -2854,7 +3226,11 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 # Reapply the observer's snapshot on the dispatch thread.
                 set_language_overrides(override_snapshot)
                 if config_event or _batch_triggers_rebuild(batch):
-                    _rebuild_code(watch_path)
+                    try:
+                        with _rebuild_timeout():
+                            _rebuild_code(watch_path)
+                    except TimeoutError as exc:
+                        print(f"[graphify watch] {exc}")
                 if config_event or _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:

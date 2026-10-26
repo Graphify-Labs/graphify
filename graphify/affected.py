@@ -129,6 +129,29 @@ def _prefer_file_node(
     if len(exact_file_nodes) == 1:
         return exact_file_nodes[0]
 
+    # #2032 relabels colliding basenames to their shortest unique path suffix
+    # ("alpha/hooks.py"), so neither pass above nor the one below matches a file
+    # node whose basename is shared. The label is still a path form of the
+    # node's OWN source_file, which is what _is_file_node_label encodes (the
+    # predicate build/analyze already treat as "this node names its file").
+    # Checked before the L1 fallback because a module docstring (a `rationale`
+    # node located on the docstring's line) or a one-line top-level definition
+    # can also sit on L1, leaving that fallback with more than one candidate
+    # (#4698).
+    from graphify.build import _is_file_node_label
+
+    path_file_nodes = [
+        node_id
+        for node_id in node_ids
+        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+        and _is_file_node_label(
+            str(graph.nodes[node_id].get("label", "")),
+            str(graph.nodes[node_id].get("source_file", "")),
+        )
+    ]
+    if len(path_file_nodes) == 1:
+        return path_file_nodes[0]
+
     l1_nodes = [
         node_id
         for node_id in node_ids

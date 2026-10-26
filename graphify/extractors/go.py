@@ -48,6 +48,21 @@ _GO_PREDECLARED_FUNCS = frozenset({
     "recover",
 })
 
+def _go_alias_re_exports(alias_node, source: bytes) -> bool:
+    """Whether `type A = pkg.A` (or `pkg.A[...]`) re-exports another package's type
+    under its own name. Such an alias denotes that very type and declares no new
+    name, so it gets no node: references to `A` keep resolving to the original
+    instead of tying between the two. Any other alias introduces a name."""
+    target = alias_node.child_by_field_name("type")
+    if target is not None and target.type == "generic_type":
+        target = target.child_by_field_name("type")
+    if target is None or target.type != "qualified_type":
+        return False
+    name, target_name = alias_node.child_by_field_name("name"), target.child_by_field_name("name")
+    return (name is not None and target_name is not None
+            and _read_text(name, source) == _read_text(target_name, source))
+
+
 def _go_type_param_names(decl_node, source: bytes) -> frozenset[str]:
     """Names bound by a declaration's generic type parameters.
 
@@ -269,7 +284,7 @@ def extract_go(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
 
     def ensure_named_node(name: str, line: int) -> str:
-        nid = _make_id(pkg_scope, name)
+        nid = type_symbol_nid(name)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
@@ -357,6 +372,12 @@ def extract_go(path: Path) -> dict:
     # once the sibling exists, so salting it re-points nothing. When the collision
     # has no unique exported member (`Run`/`RUN`), every member is salted rather
     # than picking one arbitrarily, so the result never depends on declaration order.
+    #
+    # Type declarations follow the same rule: `type ResponseWriter interface` and
+    # `type responseWriter struct` share an id too, and the struct used to vanish
+    # with its methods hung off the interface. A salted type's methods, receivers
+    # and in-file references go through the salted id. The census is per file, so a
+    # pair split across two files of one package is not covered here.
     case_groups: dict[str, set[str]] = {}
 
     def _receiver_type_of(node) -> str | None:
@@ -380,16 +401,32 @@ def extract_go(path: Path) -> dict:
         name = _read_text(name_node, source)
         if node.type == "method_declaration":
             receiver_type = _receiver_type_of(node)
-            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
+            base = type_symbol_nid(receiver_type) if receiver_type else stem
         else:
             base = stem
         return _make_id(base, name), name
+
+    def _scan_type_names(node) -> None:
+        # Types first: a method is keyed under its owner's final id, which is
+        # salted when the owner's own name collides. An alias (`type A = B`) is a
+        # `type_alias`, not a `type_spec`, and declares a type name all the same.
+        if node.type == "type_spec" or (
+            node.type == "type_alias" and not _go_alias_re_exports(node, source)
+        ):
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                case_groups.setdefault(_make_id(pkg_scope, name), set()).add(name)
+        if node.type in ("function_declaration", "method_declaration"):
+            return
+        for child in node.children:
+            _scan_type_names(child)
 
     def _scan_declarations(node) -> None:
         if node.type == "type_spec":
             name_node = node.child_by_field_name("name")
             if name_node is not None:
-                owner_nid = _make_id(pkg_scope, _read_text(name_node, source))
+                owner_nid = type_symbol_nid(_read_text(name_node, source))
                 for body in node.children:
                     if body.type != "interface_type":
                         continue
@@ -418,6 +455,12 @@ def extract_go(path: Path) -> dict:
             return plain_nid
         salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
         return _make_id(plain_nid, salt)
+
+    def type_symbol_nid(name: str) -> str:
+        plain_nid = _make_id(pkg_scope, name)
+        if name not in case_groups.get(plain_nid, ()):
+            return plain_nid
+        return symbol_nid(plain_nid, name)
 
     def walk(node) -> None:
         t = node.type
@@ -462,7 +505,7 @@ def extract_go(path: Path) -> dict:
             line = node.start_point[0] + 1
 
             if receiver_type:
-                parent_nid = _make_id(pkg_scope, receiver_type)
+                parent_nid = type_symbol_nid(receiver_type)
                 add_node(parent_nid, receiver_type, line)
                 callable_class_nids.add(parent_nid)
                 method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
@@ -484,17 +527,24 @@ def extract_go(path: Path) -> dict:
 
         if t == "type_declaration":
             for child in node.children:
-                if child.type != "type_spec":
+                if child.type not in ("type_spec", "type_alias"):
+                    continue
+                if child.type == "type_alias" and _go_alias_re_exports(child, source):
                     continue
                 name_node = child.child_by_field_name("name")
                 if not name_node:
                     continue
                 type_name = _read_text(name_node, source)
                 line = child.start_point[0] + 1
-                type_nid = _make_id(pkg_scope, type_name)
+                type_nid = type_symbol_nid(type_name)
                 add_node(type_nid, type_name, line)
                 callable_class_nids.add(type_nid)
                 add_edge(file_nid, type_nid, "contains", line)
+                if child.type == "type_alias":
+                    # `type A = B` is a declaration like `type A B`: references to
+                    # it land here instead of minting a sourceless stub. Its
+                    # right-hand side is not walked.
+                    continue
                 # A generic type's own parameters (`type Box[T any]`) are local
                 # bindings; a field or method using `T` must not mint a stub.
                 type_params = _go_type_param_names(child, source)
@@ -622,6 +672,7 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
+    _scan_type_names(root)
     _scan_declarations(root)
     walk(root)
 

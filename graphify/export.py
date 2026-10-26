@@ -15,7 +15,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
-from graphify.build import edge_data
+from graphify.build import edge_datas, has_parallel_links
 from graphify.paths import (
     os_replace_with_fallback,
     stem_filename_budget,
@@ -404,6 +404,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             if isinstance(link, dict)
             and link.get("source") in node_ids and link.get("target") in node_ids
         ]
+        # The flag above was derived from the in-memory simple graph, but the
+        # restored links may hold parallel edges (#3999); keep the serialized
+        # metadata consistent with the links or readers collapse them (#4500).
+        if has_parallel_links(data["links"], directed=bool(data.get("directed", True))):
+            data["multigraph"] = True
     for link in data["links"]:
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
@@ -854,9 +859,9 @@ def to_obsidian(
 
         # Build tags for this node
         ftype = data.get("file_type", "")
-        ftype_tag = _FTYPE_TAG.get(ftype, f"graphify/{ftype}" if ftype else "graphify/document")
+        ftype_tag = _FTYPE_TAG.get(ftype, f"graphify/{_obsidian_tag(ftype)}" if ftype else "graphify/document")
         dom_conf = _dominant_confidence(node_id)
-        conf_tag = f"graphify/{dom_conf}"
+        conf_tag = f"graphify/{_obsidian_tag(dom_conf)}"
         comm_tag = f"community/{_obsidian_tag(community_name)}"
         node_tags = [ftype_tag, conf_tag, comm_tag]
 
@@ -884,11 +889,20 @@ def to_obsidian(
         if neighbors:
             lines.append("## Connections")
             for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
-                edata = edge_data(G, node_id, neighbor)
                 neighbor_label = node_filename[neighbor]
-                relation = edata.get("relation", "")
-                confidence = edata.get("confidence", "EXTRACTED")
-                lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
+                # One bullet per parallel edge, not per neighbour: graph.json is
+                # reloaded as a MultiGraph when it carries parallel edges
+                # (#4500), and `edge_data()` returns only the FIRST of them — so
+                # a pair joined by both `imports` and `calls` lost one relation
+                # from the note. Sorted so the note is byte-stable regardless of
+                # the order the parallel edges were inserted in.
+                for edata in sorted(
+                    edge_datas(G, node_id, neighbor),
+                    key=lambda d: (str(d.get("relation", "")), str(d.get("confidence", "EXTRACTED"))),
+                ):
+                    relation = edata.get("relation", "")
+                    confidence = edata.get("confidence", "EXTRACTED")
+                    lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
             lines.append("")
 
         # Inline tags at bottom of note body (for Obsidian tag panel)
@@ -1341,9 +1355,12 @@ def to_graphml(
     for node_id in H.nodes():
         for key, val in list(H.nodes[node_id].items()):
             H.nodes[node_id][key] = _graphml_safe(val)
-    for u, v in H.edges():
-        for key, val in list(H.edges[u, v].items()):
-            H.edges[u, v][key] = _graphml_safe(val)
+    # edges(data=True) rather than H.edges[u, v]: graph.json is loaded as a
+    # MultiGraph when it carries parallel edges (#4500), and a MultiGraph edge
+    # view needs a key, so the (u, v) form crashed the whole export.
+    for *_, attrs in H.edges(data=True):
+        for key, val in list(attrs.items()):
+            attrs[key] = _graphml_safe(val)
 
     # Write atomically: a mid-serialization error otherwise leaves a 0-byte
     # .graphml on disk that downstream tooling mistakes for a completed export

@@ -14,7 +14,7 @@ from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
-from graphify.build import edge_data, edge_datas
+from graphify.build import edge_datas, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
@@ -61,6 +61,13 @@ def _read_graph(graph_path: str) -> nx.Graph:
     # not mistake the override for graph truth.
     _logical_directed = bool(data.get("directed", False))
     data = {**data, "directed": True}
+    # Repair files whose links hold parallel edges while the serialized flag says
+    # otherwise (#4500): older writers restored original_links verbatim while
+    # node_link_data derived "multigraph": false from the simple graph. Forced the
+    # same way "directed" is forced above, so the load keeps every relationship
+    # instead of collapsing parallel edges.
+    if has_parallel_links(data.get("links"), directed=True):
+        data = {**data, "multigraph": True}
     try:
         from graphify.build import graph_has_legacy_ids as _legacy
         if _legacy(data.get("nodes", [])):
@@ -1170,8 +1177,9 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
     Dedup keys on the ordered pair for directed graphs and the unordered pair
     otherwise: on a DiGraph `u->v` and `v->u` are genuinely distinct edges
     (mutual recursion, circular imports), and collapsing them would drop a real
-    one. On a multigraph parallel edges collapse to one entry, matching the
-    renderer, which already shows only the first (`_subgraph_to_text`).
+    one. On a multigraph the traversal still records one entry per pair; the
+    renderer expands it into one line per parallel edge (`_subgraph_to_text`,
+    #4500).
 
     Traversal edges keep their discovery order; completions are appended after.
     """
@@ -1342,39 +1350,42 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
-            # (u, v) is BFS/DFS visit order, not necessarily the true edge
-            # direction: on an undirected graph G.neighbors() walks callers
-            # and callees alike, so a caller->callee edge renders backwards
-            # whenever the callee is visited first. _src/_tgt (stashed on the
-            # edge data by the `query` CLI loader) carry the real direction;
-            # fall back to (u, v) for graphs/edges that don't set them.
-            src = d.get("_src", u)
-            tgt = d.get("_tgt", v)
-            # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
-            # graph.json): only trust them when they name exactly this edge's
-            # endpoints, else fall back to (u, v). Without this, G.nodes[src]
-            # would KeyError on an unknown id (#2080 review).
-            if {src, tgt} != {u, v}:
-                src, tgt = u, v
-            context = d.get("context")
-            context_suffix = f" context={sanitize_label(str(context))}" if context else ""
-            # The relation SITE (call/import/reference line in the source's
-            # file), not a def line — so "who calls X" cites a clickable call
-            # location, not the caller's def (#BUG1).
-            _loc = str(d.get("source_location") or "")
-            at_suffix = (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                if _loc else ""
-            )
-            line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-            )
-            lines.append(line)
+            # One EDGE line per relationship: on a multigraph a pair can
+            # carry several edges (e.g. contains + calls), each with its
+            # own metadata (#4500). The traversal records one entry per
+            # pair; expanding here keeps every relationship visible.
+            for d in edge_datas(G, u, v):
+                # (u, v) is BFS/DFS visit order, not necessarily the true edge
+                # direction: on an undirected graph G.neighbors() walks callers
+                # and callees alike, so a caller->callee edge renders backwards
+                # whenever the callee is visited first. _src/_tgt (stashed on the
+                # edge data by the `query` CLI loader) carry the real direction;
+                # fall back to (u, v) for graphs/edges that don't set them.
+                src = d.get("_src", u)
+                tgt = d.get("_tgt", v)
+                # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
+                # graph.json): only trust them when they name exactly this edge's
+                # endpoints, else fall back to (u, v). Without this, G.nodes[src]
+                # would KeyError on an unknown id (#2080 review).
+                if {src, tgt} != {u, v}:
+                    src, tgt = u, v
+                context = d.get("context")
+                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+                # The relation SITE (call/import/reference line in the source's
+                # file), not a def line — so "who calls X" cites a clickable call
+                # location, not the caller's def (#BUG1).
+                _loc = str(d.get("source_location") or "")
+                at_suffix = (
+                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                    if _loc else ""
+                )
+                line = (
+                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                    f"--{sanitize_label(str(d.get('relation', '')))} "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                )
+                lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -1561,20 +1572,36 @@ def _query_graph_text(
     # of a node reference. Fail closed: a value that does not resolve to exactly
     # one node is reported and skipped, never guessed.
     unresolved: list[str] = []
+    ambiguous_refusals: list[str] = []
     if seeds:
         from graphify.affected import resolve_seed
         start_nodes: list[str] = []
         for value in seeds:
             nid = resolve_seed(G, value, seed_root)
             if nid is None:
-                if value not in unresolved:
+                refusal = _query_name_refusal(G, value)
+                if refusal:
+                    if refusal not in ambiguous_refusals:
+                        ambiguous_refusals.append(refusal)
+                elif value not in unresolved:
                     unresolved.append(value)
             elif nid not in start_nodes:
                 start_nodes.append(nid)
         if not start_nodes:
+            # An ambiguous --seed is a refusal, not a miss (#4511). Exit code
+            # is decided by the CLI from the message prefix.
+            if ambiguous_refusals:
+                return "\n".join(ambiguous_refusals)
             return "No unique node match for --seed: " + ", ".join(seeds)
         return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
                              context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
+    # A question that is itself the exact name of several nodes is refused,
+    # matching `explain` and `path` (#4511). A sentence, or a bare keyword that
+    # only prefix/substring-matches labels, is not an ambiguous node name and
+    # falls through to keyword scoring (#4517).
+    _refusal = _query_name_refusal(G, question)
+    if _refusal:
+        return _refusal
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
@@ -1905,8 +1932,8 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     `G.nodes()` iteration order — reorder the graph and the same query answers with
     a different file, equally confidently.
 
-    Returns one representative node id per distinct source file when the winning
-    tier is split that way, else `[]`. Several matches *within one file* (a file
+    Returns one representative node id per distinct file (repo plus source file)
+    when the winning tier is split that way, else `[]`. Several matches *within one file* (a file
     node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
 
     Sourceless nodes are the exception to the per-file grouping, in *every* tier:
@@ -1932,20 +1959,57 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
 
 
 def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
-    """One node id per distinct source file in *tier*, or `[]` for a single file.
+    """One node id per distinct file in *tier*, or `[]` for a single file.
 
+    A file is its repo plus its source_file. A merged graph keeps source_file relative
+    to each repo, so two repos that both have `dup.py` hold two files, not one (#4512).
+    A single-repo graph has no `repo` attribute and groups by source_file alone.
     Each sourceless node counts as its own rival (#49).
     """
-    by_source: dict[str, str] = {}
+    by_file: dict[tuple[str, str], str] = {}
     for nid in tier:
-        source = str(G.nodes[nid].get("source_file") or "")
+        data = G.nodes[nid]
+        source = str(data.get("source_file") or "")
         # "\0" can't occur in a path, so a stub never joins a real file's group.
-        by_source.setdefault(source or "\0" + nid, nid)
-    return list(by_source.values()) if len(by_source) > 1 else []
+        file_id = (str(data.get("repo") or ""), source) if source else ("\0", nid)
+        by_file.setdefault(file_id, nid)
+    return list(by_file.values()) if len(by_file) > 1 else []
+
+
+def _near_miss_message(G: nx.Graph, label: str, hits: list[str], *, limit: int = 5) -> str:
+    """`No exact match`, then the substring matches that are the closest names (#3917).
+
+    A substring tier means the query sits *inside* a label (`mailcontroller` ->
+    `EmailController`), so a hit is a search result, not the symbol the caller
+    named. Listing them, labelled as substring hits, lets the caller retry with
+    the real name instead of trusting a different node as the answer.
+    """
+    listing = []
+    for nid in hits[:limit]:
+        d = G.nodes[nid]
+        name = sanitize_label(str(d.get("label") or nid))
+        where = " ".join(
+            part for part in (str(d.get("source_file") or "").strip(),
+                              str(d.get("source_location") or "").strip()) if part
+        )
+        listing.append(f"  {name}" + (f"  {sanitize_label(where)}" if where else ""))
+    if len(hits) > limit:
+        listing.append(f"  ... and {len(hits) - limit} more")
+    example = sanitize_label(str(G.nodes[hits[0]].get("label") or hits[0]))
+    source = str(G.nodes[hits[0]].get("source_file") or "").strip()
+    example_form = f"{sanitize_label(source)}::{example}" if source else example
+    return (
+        f"No exact match for '{sanitize_label(label)}'. These names contain it, "
+        f"but none is called that:\n"
+        + "\n".join(listing)
+        + f"\nRetry with the exact label, a path::symbol form (e.g. {example_form}), "
+        "or the full node id."
+    )
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
-    """Shared node resolution for `explain` and the get_node / get_neighbors tools.
+    """Shared node resolution for the `explain` CLI command and the get_node /
+    get_neighbors MCP tools.
 
     Returns ``(node_id, None)`` when *label* resolves to a single winner via the
     tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
@@ -1953,15 +2017,45 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     `path` endpoints refuse them. Routing both tools through this keeps get_node
     from silently returning a `G.nodes()` iteration-order match for a hub name
     while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+
+    A prefix match still resolves: the caller started typing the real name
+    (`Email` -> `EmailController`). A substring match does not: the query sits
+    in the middle of an unrelated label (`MailController` -> `EmailController`),
+    which is a search hit, so it comes back as a near miss with suggestions
+    instead of a different node presented as the answer (#3917).
     """
     source_exact, exact, prefix, substring = _find_node_tiers(G, label)
-    tier = source_exact or exact or prefix or substring
-    if not tier:
-        return None, f"No node matching '{label}' found."
+    if not (source_exact or exact or prefix):
+        if not substring:
+            return None, f"No node matching '{label}' found."
+        return None, _near_miss_message(G, label, substring)
+    tier = source_exact or exact or prefix
     refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
     if refusal:
         return None, refusal
     return tier[0], None
+
+
+def _query_name_refusal(G: nx.Graph, label: str) -> str | None:
+    """Refuse a `query`/`--seed` value only when it is a literal node NAME that
+    matches several nodes, not when it is merely a search keyword.
+
+    `query` doubles as keyword search, so a bare term that prefix- or
+    substring-matches several labels (`client` -> `AlphaClient`, `BetaClient`) is a
+    legitimate exploratory search and must still score, not be refused. Only an
+    EXACT-tier tie (the term is itself the name of two or more nodes, as in #4511's
+    `.nonce()`) is a genuinely ambiguous node reference and gets the same refusal
+    `explain`/`path` give. Returns the refusal message, or None to fall through to
+    scoring. (`explain`/`path`/get_node keep using `_resolve_single_node`, where a
+    prefix shorthand still resolves but a substring hit is a near miss, not an answer.)
+    """
+    source_exact, exact, _prefix, _substring = _find_node_tiers(G, label)
+    tier = source_exact or exact
+    if not tier:
+        return None
+    refusal = _tier_refusal(G, label, tier,
+                            file_query=bool(source_exact) and "::" not in label)
+    return refusal if _is_ambiguity_refusal(refusal) else None
 
 
 def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool) -> str | None:
@@ -1992,17 +2086,33 @@ def _is_ambiguity_refusal(message: str | None) -> bool:
 
 
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
-    listing = "\n".join(
-        f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-    )
+    # Name the repo only when the candidates span several: that is when the bare path is
+    # not enough to tell them apart (#4512). One repo, or a graph with no `repo`, keeps
+    # the plain path.
+    several_repos = len({str(G.nodes[r].get("repo") or "") for r in rivals}) > 1
+
+    def where(r: str) -> str:
+        source = G.nodes[r].get("source_file") or ""
+        repo = G.nodes[r].get("repo")
+        return f"{repo}/{source}" if several_repos and repo and source else source
+
+    listing = "\n".join(f"  {where(r) or r}\n    id: {r}" for r in rivals)
     # The example names the matched node's own label: echoing the query would
     # nest a path-scoped one (`index.ts::foo()`) behind a second path.
     symbol = G.nodes[rivals[0]].get("label") or label
+    sources = [str(G.nodes[r].get("source_file") or "") for r in rivals]
+    if any(sources.count(src) > 1 for src in sources if src):
+        # The same path in two repos: `<path>::symbol` matches both, so it would be a
+        # dead end. Only the node id tells them apart.
+        retry = ("Retry with the full node id: the same path exists in more than one repo, "
+                 "so a path cannot tell them apart.")
+    else:
+        retry = (f"Retry with path::symbol using one of the paths above (e.g. "
+                 f"<path>::{symbol}) or the full node id.")
     return (
         f"{_AMBIGUOUS}'{label}' matches {len(rivals)} nodes in different files.\n"
         f"{listing}\n"
-        f"Retry with path::symbol using one of the paths above (e.g. "
-        f"<path>::{symbol}) or the full node id."
+        f"{retry}"
     )
 
 
@@ -2271,6 +2381,42 @@ def _community_header(cid: int, community_name) -> str:
         if clean and clean != base:
             return f"{base} — {clean}"
     return base
+
+
+def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
+    """One output line per relationship incident to ``nid``.
+
+    Parallel edges between the same pair each render as their own line with
+    their own metadata (#4500); ``edge_data()`` would return only the first.
+    """
+    def _edge_at(d: dict) -> str:
+        # Edge location = the relation SITE (call/import line) in the source
+        # node's file, not a def line (#BUG1).
+        loc = str(d.get("source_location") or "")
+        return (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+            if loc else ""
+        )
+    lines: list[str] = []
+    for nb in G.successors(nid):
+        for d in edge_datas(G, nid, nb):
+            rel = d.get("relation", "")
+            if rel_filter and rel_filter not in rel.lower():
+                continue
+            lines.append(
+                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+            )
+    for nb in G.predecessors(nid):
+        for d in edge_datas(G, nb, nid):
+            rel = d.get("relation", "")
+            if rel_filter and rel_filter not in rel.lower():
+                continue
+            lines.append(
+                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+            )
+    return lines
 
 
 def _build_server(graph_path: str):
@@ -2574,32 +2720,7 @@ def _build_server(graph_path: str):
         if err:
             return err
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
-        def _edge_at(d: dict) -> str:
-            # Edge location = the relation SITE (call/import line) in the source
-            # node's file, not a def line (#BUG1).
-            loc = str(d.get("source_location") or "")
-            return (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
-                if loc else ""
-            )
-        for nb in G.successors(nid):
-            d = edge_data(G, nid, nb)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
-        for nb in G.predecessors(nid):
-            d = edge_data(G, nb, nid)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+        lines.extend(_neighbor_lines(G, nid, rel_filter))
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
@@ -3037,7 +3158,9 @@ def _build_http_app(
     if host in ("0.0.0.0", "::", ""):
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:
-        allowed = {host, "localhost", "127.0.0.1"}
+        # An IPv6 literal appears bracketed in the Host header ("[::1]:8080").
+        bind = f"[{host.strip('[]')}]" if ":" in host else host
+        allowed = {bind, "localhost", "127.0.0.1"}
         allowed |= {f"{h}:{port}" for h in list(allowed)}
         security = TransportSecuritySettings(allowed_hosts=sorted(allowed))
 

@@ -221,7 +221,15 @@ else:
 
 #### Part B - Semantic extraction (parallel subagents)
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do.
+**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+Path('.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
+"
+```
 
 > **Aider platform:** Multi-agent support is still early on Aider. Extraction runs sequentially — you read and extract each file yourself. This is slower than parallel platforms but fully reliable.
 
@@ -375,7 +383,7 @@ sem = json.loads(Path('.graphify_semantic.json').read_text())
 # _origin when present and otherwise guesses from the SHAPE of
 # source_location ('L<line>' means AST). A subagent that writes 'L12' for a
 # doc section therefore made that node read as AST, and the next
-# `graphify update` deleted it along with the re-extracted code file it
+# graphify update deleted it along with the re-extracted code file it
 # seemed to belong to (#2843). extract() stamps its own items 'ast'; the
 # semantic side must say so explicitly.
 for n in sem['nodes']:
@@ -805,6 +813,24 @@ if new_total > 0:
 "
 ```
 
+Then populate `.graphify_detect.json` so Steps 3A–6 (which read it unconditionally) see the right state for an incremental run. `files` carries the changed subset (what Part A and Part B's cache check read); `all_files` carries the full corpus for any step that needs corpus-wide context:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+r = json.loads(Path('.graphify_incremental.json').read_text())
+Path('.graphify_detect.json').write_text(json.dumps({
+    'files': r.get('new_files', {}),
+    'all_files': r.get('files', {}),
+    'total_files': r.get('new_total', 0),
+    'total_words': r.get('total_words', 0),
+    'skipped_sensitive': r.get('skipped_sensitive', []),
+    'needs_graph': True,
+}))
+"
+```
+
 If new files exist, first check whether all changed files are code files:
 
 ```bash
@@ -821,7 +847,7 @@ print('code_only:', code_only)
 "
 ```
 
-If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no subagents), then go straight to merge and Steps 4–8.
+If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run Step 3A (AST) on the changed files, then run the Part B fast path to write an empty `.graphify_semantic.json`, then run Part C, which builds `.graphify_extract.json` from the new AST result. Do not dispatch subagents or read the semantic cache. Then go on to the merge and Steps 4–8.
 
 If `code_only` is False (any changed file is a doc/paper/image): run the full Steps 3A–3C pipeline as normal.
 
@@ -829,12 +855,12 @@ If `code_only` is False (any changed file is a doc/paper/image): run the full St
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:
 
 ```bash
-if [ ! -f graphify-out/.graphify_extract.json ]; then
+if [ ! -f .graphify_extract.json ]; then
     echo '[graphify update] Only deletions -- creating empty extraction for merge.'
     $(cat graphify-out/.graphify_python) -c "
 import json
 from pathlib import Path
-Path('graphify-out/.graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
+Path('.graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
 "
 fi
 ```

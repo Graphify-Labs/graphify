@@ -22,7 +22,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, os_long_path, out_path
 from graphify.rcfile import activate_language_overrides, cache_salt, effective_suffix
 
 
@@ -45,12 +45,13 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
-DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml', '.j2', '.jinja', '.jinja2'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.yaml', '.yml', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
+DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.j2', '.jinja', '.jinja2'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
+_BINARY_MEDIA_EXTENSIONS = (IMAGE_EXTENSIONS - {'.svg'}) | VIDEO_EXTENSIONS
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
@@ -472,6 +473,24 @@ def _env_command_args(args: list[str], *, allow_split: bool = True) -> list[str]
     return []
 
 
+def _strip_interpreter_version(interp: str) -> str:
+    """Map a version-suffixed interpreter onto the name it is a version of.
+
+    Shebangs name a specific version as often as the generic one
+    (``python3.12``, ``python2.7``, ``lua5.4``, ``php8.2``). Try the name with
+    its major version (``python3``), then the bare name (``lua``), and keep the
+    original when neither is a known code interpreter.
+    """
+    if interp in _SHEBANG_CODE_INTERPRETERS:
+        return interp
+    m = re.fullmatch(r"([A-Za-z]+)(\d+)(?:\.\d+)*", interp)
+    if m:
+        for candidate in (m.group(1) + m.group(2), m.group(1)):
+            if candidate in _SHEBANG_CODE_INTERPRETERS:
+                return candidate
+    return interp
+
+
 def _shebang_interpreter(path: Path) -> str | None:
     """Return the interpreter name from a shebang line.
 
@@ -484,8 +503,9 @@ def _shebang_interpreter(path: Path) -> str | None:
       - `#!/usr/bin/env DEBUG=1 python3`   (inline var assignment)
       - `#!"/usr/local/bin/python with spaces"`  (shlex handles quotes)
 
-    Returns the basename of the resolved interpreter, or None if there is
-    no shebang / the file is unreadable / parsing fails.
+    Returns the basename of the resolved interpreter, with a version suffix
+    on a known interpreter dropped (``python3.12`` -> ``python3``), or None if
+    there is no shebang / the file is unreadable / parsing fails.
     """
     try:
         with path.open("rb") as f:
@@ -502,7 +522,7 @@ def _shebang_interpreter(path: Path) -> str | None:
             if not env_args:
                 return None
             interp = Path(env_args[0]).name
-        return interp
+        return _strip_interpreter_version(interp)
     except (OSError, ValueError):
         return None
 
@@ -557,10 +577,18 @@ def classify_file(path: Path) -> FileType | None:
 # Missing-pypdf is a process-global condition, not per-file, so warn at most
 # once per run — a corpus of many PDFs must not print the same hint N times.
 _pypdf_missing_warned = False
+# Unreadable PDFs are per-file, so warn once per path: detect() counts words and
+# the semantic pass reads the text again, and the same file must not warn twice.
+_pdf_failed_warned: set[str] = set()
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract plain text from a PDF file using pypdf."""
+    """Extract plain text from a PDF file using pypdf.
+
+    Returns ``""`` when the file cannot be read (malformed, encrypted, ...), the
+    same as for a PDF with no text, but warns on stderr naming the file and the
+    error first (#4527), so a failed read is not mistaken for an empty document.
+    """
     if not _file_within_size_cap(path):
         return ""
     try:
@@ -583,7 +611,16 @@ def extract_pdf_text(path: Path) -> str:
             if text:
                 pages.append(text)
         return "\n".join(pages)
-    except Exception:
+    except Exception as exc:
+        key = str(path)
+        if key not in _pdf_failed_warned:
+            _pdf_failed_warned.add(key)
+            print(
+                f"[graphify] WARNING: could not extract text from {path} "
+                f"({type(exc).__name__}: {exc}); it contributes no content to "
+                "the graph.",
+                file=sys.stderr,
+            )
         return ""
 
 
@@ -895,6 +932,8 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
 def count_words(path: Path) -> int:
     try:
         ext = path.suffix.lower()
+        if ext in _BINARY_MEDIA_EXTENSIONS:
+            return 0
         if ext == ".pdf":
             return len(extract_pdf_text(path).split())
         if ext == ".docx":
@@ -966,6 +1005,30 @@ _SKIP_FILES = {
     # file out of the unclassified list instead of surfacing it as scan input.
     ".graphifyinclude",
 }
+
+# Files a JS/TS toolchain reads to resolve modules: workspace package roots,
+# tsconfig `paths`/`baseUrl`, and the installed dependency tree. Changing one of
+# these can change a .ts/.tsx/.js result without touching a single source file, so
+# the no-change gate in watch._rebuild_code() has to see them (#4740).
+# tsconfig*.json / jsconfig.json / package.json are ordinary scan input (they land
+# in the "code" bucket and are stamped in the manifest like any other file). The
+# lock files are in _SKIP_FILES, so detect() records them separately instead.
+_RESOLUTION_INPUT_NAMES = frozenset({
+    "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "jsconfig.json",
+})
+_TS_CONFIG_NAME_RE = re.compile(r"^tsconfig(\.[^/\\]+)?\.json$")
+
+
+def is_resolution_input(path: "Path | str") -> bool:
+    """True when ``path`` steers JS/TS module resolution (#4740).
+
+    Deliberately over-approximate: a false positive only costs a slower run, a
+    false negative ships a stale graph.
+    """
+    name = Path(path).name.lower()
+    return name in _RESOLUTION_INPUT_NAMES or bool(_TS_CONFIG_NAME_RE.match(name))
+
 
 # A bare "snapshots" dir is a Jest/Vitest artifact only when it actually holds
 # snapshot files or lives directly under a JS test root. Elsewhere it is often a
@@ -1110,6 +1173,53 @@ def _has_venv_markers(d: "Path") -> bool:
     return False
 
 
+# Files only MSBuild/NuGet write. ``obj/`` gets the restore outputs (every
+# SDK-style restore writes project.assets.json) and, for legacy non-SDK
+# projects, the per-configuration FileListAbsolute.txt. ``bin/`` gets the
+# runtime manifests the SDK emits next to every executable, plus the PDBs.
+# .dll/.exe are deliberately absent: a checked-in tools/bin/ of vendored
+# binaries next to its wrapper scripts is source, not output.
+_MSBUILD_OBJ_MARKERS = (
+    "project.assets.json", ".nuget.dgspec.json", ".nuget.g.props",
+    ".filelistabsolute.txt",
+)
+_MSBUILD_BIN_MARKERS = (".deps.json", ".runtimeconfig.json", ".pdb")
+
+
+def _has_msbuild_markers(d: "Path", markers: tuple, max_depth: int) -> bool:
+    """True when a file ending in one of *markers* sits within *max_depth*
+    directory levels below *d*.
+
+    ``bin`` and ``obj`` are MSBuild's output and intermediate dirs, and an
+    unignored C# project carries both after its first build: the generated
+    GlobalUsings/AssemblyInfo sources land in the graph as file nodes with
+    import edges to every implicit namespace, and the build-copied
+    appsettings*.json are scanned twice. ``dotnet new`` writes no .gitignore,
+    so nothing else stops them. Neither name is safe to prune alone — ``bin``
+    is source in Rust's src/bin/, Ruby binstubs and script dirs — so prune
+    only on MSBuild's own artifacts, the same keep-on-doubt gating ``out``
+    gets (#3347). The walk is bounded by entries scanned, not just depth.
+    """
+    budget = 4000
+    pending = [(str(d), 0)]
+    while pending:
+        current, depth = pending.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    budget -= 1
+                    if budget <= 0:
+                        return False
+                    if entry.is_file():
+                        if entry.name.lower().endswith(markers):
+                            return True
+                    elif depth < max_depth and entry.is_dir(follow_symlinks=False):
+                        pending.append((entry.path, depth + 1))
+        except OSError:
+            continue
+    return False
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
@@ -1134,6 +1244,15 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_build_output_markers(parent / part)
+    if part in ("obj", "bin"):
+        # Ambiguous: MSBuild intermediate/output dirs OR real source (Rust's
+        # src/bin/, script dirs). Depths reach a legacy obj/<config>/ and a
+        # RID-specific bin/<config>/<tfm>/<rid>/.
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        if part == "obj":
+            return _has_msbuild_markers(parent / part, _MSBUILD_OBJ_MARKERS, 1)
+        return _has_msbuild_markers(parent / part, _MSBUILD_BIN_MARKERS, 3)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
@@ -1218,12 +1337,46 @@ def _parse_gitignore_line(raw: str) -> str:
     return _nfc(line)
 
 
+def _is_valid_git_marker(dot_git: Path) -> bool:
+    """Whether ``dot_git`` is a ``.git`` that git itself would accept (#4444).
+
+    A ``.git`` directory needs ``HEAD``, ``objects/`` and ``refs/``, the same
+    entries git's own repository check looks for. A ``.git`` file (linked
+    worktree, submodule) must start with ``gitdir:``. An empty or partial
+    ``.git`` directory, e.g. one left in a home directory, is not a repo and
+    must not become the ignore-walk ceiling. No git subprocess is used.
+    """
+    try:
+        if dot_git.is_dir():
+            return (dot_git / "HEAD").is_file() and (dot_git / "objects").is_dir() and (dot_git / "refs").is_dir()
+        if dot_git.is_file():
+            with dot_git.open("rb") as fh:
+                return fh.read(7) == b"gitdir:"
+    except OSError:
+        pass
+    return False
+
+
+def _has_vcs_marker(directory: Path) -> bool:
+    for marker in _VCS_MARKERS:
+        path = directory / marker
+        if marker == ".git":
+            if _is_valid_git_marker(path):
+                return True
+        elif path.exists():
+            return True
+    return False
+
+
 def _find_vcs_root(start: Path) -> Path | None:
-    """Walk upward from start; return the first directory containing a VCS marker."""
+    """Walk upward from start; return the first directory containing a VCS marker.
+
+    ``.git`` only counts when it is a valid repo marker (#4444).
+    """
     current = start.resolve()
     home = Path.home()
     while True:
-        if any((current / m).exists() for m in _VCS_MARKERS):
+        if _has_vcs_marker(current):
             return current
         parent = current.parent
         if parent == current or current == home:
@@ -1937,6 +2090,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     # this bounded — a pruned `data/` is one entry, not one per contained file.
     ignored: list[str] = []
     pruned_noise: list[str] = []
+    # JS/TS resolution inputs that _SKIP_FILES keeps out of the corpus. They are
+    # not scan input, but they do steer resolution, so they are reported
+    # separately for the no-change gate to compare (#4740).
+    resolution_inputs: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
     explicit_ignore_patterns = _load_graphifyignore(root, gitignore=False)
     # See ignored_predicate: skip the `git ls-files` subprocess when .gitignore
@@ -2069,6 +2226,11 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     dirnames[:] = safe_dirs
             for fname in filenames:
                 if fname in _SKIP_FILES:
+                    if is_resolution_input(fname):
+                        # Not corpus input, but a JS/TS resolution input: record
+                        # it so the no-change gate can compare its content
+                        # (#4740). It stays out of the scan exactly as before.
+                        resolution_inputs.append(str(dp / fname))
                     continue
                 p = dp / fname
                 if _is_installed_graphify_file(p):
@@ -2164,7 +2326,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
-            if ftype != FileType.VIDEO:
+            # Bypass legacy cached counts derived from binary media bytes.
+            if p.suffix.lower() not in _BINARY_MEDIA_EXTENSIONS:
                 total_words += _wc(p)
 
     for ftype in files:
@@ -2198,37 +2361,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "walk_errors": walk_errors,
         "ignored": sorted(ignored),
         "pruned_noise_dirs": sorted(pruned_noise),
+        "resolution_inputs": sorted(set(resolution_inputs)),
         "graphifyignore_patterns": len(ignore_patterns),
         "scan_root": str(root.resolve()),
     }
 
 
-def _os_path(path: Path) -> str:
-    r"""Return an OS path string safe for open()/stat() on Windows long paths.
-
-    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
-    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
-    (which also requires a fully-qualified path). Without it, _md5_file /
-    save_manifest / count_words silently fail to hash deeply-nested files, so
-    their manifest entry never stabilizes and detect_incremental re-flags them
-    as changed on every run (#1655). cache._normalize_path strips this prefix
-    for stable KEYS; this adds it for I/O. Non-win32 and already-prefixed paths
-    pass through unchanged.
-    """
-    import sys
-    if sys.platform != "win32":
-        return str(path)
-    s = str(path)
-    if s.startswith("\\\\?\\"):
-        return s
-    try:
-        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
-    except Exception:
-        return str(path)
-    if s.startswith("\\\\"):
-        # UNC share \\server\share -> \\?\UNC\server\share
-        return "\\\\?\\UNC\\" + s[2:]
-    return "\\\\?\\" + s
+# Shared with cache.py (paths.os_long_path); the name stays for detect's callers.
+_os_path = os_long_path
 
 
 def _md5_file(path: Path) -> str:
@@ -2531,6 +2671,7 @@ def save_manifest(
     scan_corpus: set[str] | list[str] | None = None,
     clear_semantic: set[str] | list[str] | None = None,
     clear_ast: set[str] | list[str] | None = None,
+    ast_empty: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -2574,6 +2715,12 @@ def save_manifest(
     ``semantic_hash`` on the seeded row so either detect_incremental kind
     re-queues the file after the failure is fixed, without deleting
     graphify-out/.
+
+    ``ast_empty`` (#2879): code files the AST extractor declined by design this
+    run (data JSON, etc.) — stamped as up-to-date yet contributing zero nodes.
+    Marks their row ``ast_empty: true`` so the #2543 heal can tell an intentional
+    empty from a poisoned stamp and stop re-queuing them. Preserved across
+    incrementals for unchanged rows; dropped once a file starts producing nodes.
     """
     # Another root may have activated different overrides in this thread.
     if root is not None:
@@ -2594,6 +2741,7 @@ def save_manifest(
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
     clear_ast_set = _path_index(clear_ast)
+    ast_empty_set = _path_index(ast_empty)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -2627,6 +2775,17 @@ def save_manifest(
         try:
             resolved = str(Path(path_str).resolve())
             return resolved in clear_ast_set or _nfc(resolved) in clear_ast_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_ast_empty(path_str: str) -> bool:
+        if ast_empty_set is None:
+            return False
+        if path_str in ast_empty_set or _nfc(path_str) in ast_empty_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in ast_empty_set or _nfc(resolved) in ast_empty_set
         except (OSError, RuntimeError):
             return False
 
@@ -2694,7 +2853,9 @@ def save_manifest(
             continue  # excluded-but-alive: drop the stale row (#1908)
         if clear_ast_set is not None and _in_clear_ast(f):
             # AST failure this run (missing extra / zero nodes, #2543): blank
-            # both hashes so either detect_incremental kind re-queues.
+            # both hashes so either detect_incremental kind re-queues. A genuine
+            # failure is not an intentional empty, so drop any stale marker too.
+            normalised = {k: v for k, v in normalised.items() if k != "ast_empty"}
             normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
         elif clear_set is not None and _in_clear(f):
             # Dispatched-but-omitted this run: don't inherit the stale
@@ -2752,6 +2913,13 @@ def save_manifest(
         if current_lang is not None:
             # No override keeps legacy rows unchanged.
             entry["language"] = current_lang
+        # Intentional-empty marker (#2879): set when the extractor declined the
+        # file this run; otherwise inherited across an unchanged incremental the
+        # same way ast_hash is, and dropped once the file produces nodes.
+        if _in_ast_empty(f):
+            entry["ast_empty"] = True
+        elif not lang_changed and prev.get("ast_empty") and ast_h == prev.get("ast_hash", ""):
+            entry["ast_empty"] = True
         manifest[key] = entry
     if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
@@ -2803,6 +2971,103 @@ def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
     # filesystem cannot separate writes inside that second.
     coarse = float(current_mtime).is_integer()
     return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
+
+
+def classify_manifest_files(
+    file_buckets: dict[str, list[str]],
+    manifest: dict,
+    *,
+    kind: str = "ast",
+    unstamped_is_changed: bool = True,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Split ``file_buckets`` into (changed, unchanged) against ``manifest``.
+
+    This is the comparison ``detect_incremental`` has always used: mtime first
+    (free, no disk IO beyond stat), content hash only when mtime moved or when
+    the racily-clean window needs it. A missing row, a row with no usable hash,
+    a language change, or an unknown row format all count as changed, so a caller
+    can only ever over-report change.
+
+    Factored out so the ``graphify update`` no-change gate in
+    :func:`graphify.watch._rebuild_code` reaches the same verdict from an
+    already-computed ``detect()`` result instead of paying for a second scan
+    (#4740). ``file_buckets`` is not required to come from ``detect()["files"]``:
+    the gate passes a synthetic bucket holding the JS/TS resolution inputs that
+    the manifest stamps but the scan skips.
+
+    ``unstamped_is_changed=False`` is for that gate. A file with no row (or a row
+    whose hash was blanked after a failed extraction, #2543) is then treated as
+    unchanged: it contributed no nodes, so re-extraction cannot change the graph,
+    and only the gate's own file-set digest can tell "same file, still failing"
+    from "new file". The incremental path keeps the default, where such a file is
+    re-queued until it extracts.
+    """
+    new_files: dict[str, list[str]] = {k: [] for k in file_buckets}
+    unchanged_files: dict[str, list[str]] = {k: [] for k in file_buckets}
+
+    for ftype, file_list in file_buckets.items():
+        for f in file_list:
+            # Manifest keys are NFC; scan paths may arrive NFD (#2221).
+            stored = manifest.get(_nfc(f))
+            try:
+                current_mtime = os.stat(_os_path(Path(f))).st_mtime
+            except Exception:
+                current_mtime = 0
+
+            # Legacy manifest: plain float value stores only mtime.
+            # Compare with `!=` so backwards mtime motion (git checkout of an
+            # older commit, tarball restore, rsync --times) still triggers a
+            # re-extract; the previous `>` silently kept the stale cache and
+            # the graph drifted from disk (#1859). No stored hash means we
+            # cannot verify content — any mtime delta forces a re-extract,
+            # and the next save promotes the entry into the dict schema.
+            # A language change invalidates even identical bytes and legacy rows.
+            stored_lang = stored.get("language") if isinstance(stored, dict) else None
+            if stored is None:
+                changed = unstamped_is_changed
+            elif cache_salt(f) != stored_lang:
+                changed = True
+            elif isinstance(stored, (int, float)):
+                changed = current_mtime != stored
+            elif isinstance(stored, dict):
+                # Normalise legacy {mtime, hash} to new schema
+                if "hash" in stored and "ast_hash" not in stored:
+                    stored = {"mtime": stored.get("mtime", 0), "ast_hash": stored["hash"], "semantic_hash": ""}
+                hash_key = "semantic_hash" if kind == "semantic" else "ast_hash"
+                stored_hash = stored.get(hash_key, "")
+                # Missing semantic_hash means update ran but extract hasn't — always re-extract
+                if not stored_hash:
+                    changed = unstamped_is_changed
+                else:
+                    stored_mtime = stored.get("mtime")
+                    # Schema-drift guard (#1163): tolerate a nested {mtime: ...}
+                    # dict or any non-numeric value without crashing.
+                    if isinstance(stored_mtime, dict):
+                        stored_mtime = stored_mtime.get("mtime")
+                    if not isinstance(stored_mtime, (int, float)):
+                        stored_mtime = None
+                    if stored_mtime is None or current_mtime != stored_mtime:
+                        # mtime bumped — verify with content hash before re-extracting
+                        changed = _md5_file(Path(f)) != stored_hash
+                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
+                        # mtime is unchanged, but it was recorded in the same
+                        # filesystem tick the file was written in — a later
+                        # same-length edit lands in that tick without moving
+                        # mtime, and the file silently skips re-extraction
+                        # while the graph keeps serving the old content.
+                        # Only this narrow window pays for a content hash.
+                        changed = _md5_file(Path(f)) != stored_hash
+                    else:
+                        changed = False
+            else:
+                changed = True  # unknown format, re-extract to be safe
+
+            if changed:
+                new_files[ftype].append(f)
+            else:
+                unchanged_files[ftype].append(f)
+
+    return new_files, unchanged_files
 
 
 def detect_incremental(
@@ -2868,68 +3133,7 @@ def detect_incremental(
         full["excluded_files"] = []
         return full
 
-    new_files: dict[str, list[str]] = {k: [] for k in full["files"]}
-    unchanged_files: dict[str, list[str]] = {k: [] for k in full["files"]}
-
-    for ftype, file_list in full["files"].items():
-        for f in file_list:
-            # Manifest keys are NFC; scan paths may arrive NFD (#2221).
-            stored = manifest.get(_nfc(f))
-            try:
-                current_mtime = os.stat(_os_path(Path(f))).st_mtime
-            except Exception:
-                current_mtime = 0
-
-            # Legacy manifest: plain float value stores only mtime.
-            # Compare with `!=` so backwards mtime motion (git checkout of an
-            # older commit, tarball restore, rsync --times) still triggers a
-            # re-extract; the previous `>` silently kept the stale cache and
-            # the graph drifted from disk (#1859). No stored hash means we
-            # cannot verify content — any mtime delta forces a re-extract,
-            # and the next save promotes the entry into the dict schema.
-            # A language change invalidates even identical bytes and legacy rows.
-            stored_lang = stored.get("language") if isinstance(stored, dict) else None
-            if stored is not None and cache_salt(f) != stored_lang:
-                changed = True
-            elif isinstance(stored, (int, float)):
-                changed = current_mtime != stored
-            elif isinstance(stored, dict):
-                # Normalise legacy {mtime, hash} to new schema
-                if "hash" in stored and "ast_hash" not in stored:
-                    stored = {"mtime": stored.get("mtime", 0), "ast_hash": stored["hash"], "semantic_hash": ""}
-                hash_key = "semantic_hash" if kind == "semantic" else "ast_hash"
-                stored_hash = stored.get(hash_key, "")
-                # Missing semantic_hash means update ran but extract hasn't — always re-extract
-                if not stored_hash:
-                    changed = True
-                else:
-                    stored_mtime = stored.get("mtime")
-                    # Schema-drift guard (#1163): tolerate a nested {mtime: ...}
-                    # dict or any non-numeric value without crashing.
-                    if isinstance(stored_mtime, dict):
-                        stored_mtime = stored_mtime.get("mtime")
-                    if not isinstance(stored_mtime, (int, float)):
-                        stored_mtime = None
-                    if stored_mtime is None or current_mtime != stored_mtime:
-                        # mtime bumped — verify with content hash before re-extracting
-                        changed = _md5_file(Path(f)) != stored_hash
-                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
-                        # mtime is unchanged, but it was recorded in the same
-                        # filesystem tick the file was written in — a later
-                        # same-length edit lands in that tick without moving
-                        # mtime, and the file silently skips re-extraction
-                        # while the graph keeps serving the old content.
-                        # Only this narrow window pays for a content hash.
-                        changed = _md5_file(Path(f)) != stored_hash
-                    else:
-                        changed = False
-            else:
-                changed = True  # unknown format, re-extract to be safe
-
-            if changed:
-                new_files[ftype].append(f)
-            else:
-                unchanged_files[ftype].append(f)
+    new_files, unchanged_files = classify_manifest_files(full["files"], manifest, kind=kind)
 
     # Manifest rows that left the corpus, split by disk existence (#1908):
     # a row whose file is gone from DISK is a genuine deletion (its cached
@@ -2958,6 +3162,10 @@ def detect_incremental(
             return False
 
     current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
+    # Resolution inputs carry manifest rows but are deliberately kept out of
+    # detect()'s corpus. Without this they read as rows that "left the scan" and
+    # would be reported as excluded on every run (#4740).
+    current_files |= {_nfc(f) for f in full.get("resolution_inputs", [])}
     deleted_files: list[str] = []
     excluded_files: list[str] = []
     for f in manifest:
