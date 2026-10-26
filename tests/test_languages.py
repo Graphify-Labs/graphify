@@ -3645,6 +3645,62 @@ def test_markdown_fenced_heading_not_parsed():
     assert not any("Not A Heading" in l for l in labels), \
         f"fenced '## Not A Heading' was incorrectly parsed as a node: {labels}"
 
+
+def _md_heading_labels(tmp_path, src: str) -> list[str]:
+    path = tmp_path / "doc.md"
+    path.write_text(src, encoding="utf-8")
+    r = extract_markdown(path)
+    return [n["label"] for n in r["nodes"] if n.get("node_kind") == "heading"]
+
+
+def test_markdown_tilde_fence_contents_are_not_headings(tmp_path):
+    """CommonMark `~~~` fences are code blocks too; their `## ...` lines were
+    parsed as headings because only ``` toggled the fence."""
+    labels = _md_heading_labels(tmp_path, "# Top\n\n~~~\n## Not A Heading\n~~~\n\n## After\n")
+    assert labels == ["Top", "After"]
+
+
+def test_markdown_longer_fence_is_not_closed_by_a_shorter_inner_fence(tmp_path):
+    """A doc showing a fenced example wraps it in a longer fence. The inner ```
+    lines must not toggle the block: a closing run needs the opener's length."""
+    src = (
+        "# Guide\n\n"
+        "````markdown\n"
+        "```bash\n"
+        "# Not A Heading\n"
+        "```\n"
+        "````\n\n"
+        "## After\n"
+    )
+    assert _md_heading_labels(tmp_path, src) == ["Guide", "After"]
+
+
+def test_markdown_backtick_run_inside_a_tilde_fence_is_content(tmp_path):
+    """``` inside a ~~~ block neither opens nor closes anything; the ~~~ closes
+    the block and the heading after it is real."""
+    src = "# Top\n\n~~~\n```\n~~~\n\n## After\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "After"]
+
+
+def test_markdown_fence_run_followed_by_text_does_not_close(tmp_path):
+    """A closing fence carries no info string; ``` followed by text is content."""
+    src = "# Top\n\n```js\n``` not a close\n# Still Code\n```\n\n## End\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "End"]
+
+
+def test_markdown_inline_triple_backtick_span_does_not_open_a_fence(tmp_path):
+    """A line that starts with an inline ```code``` span is prose: a backtick
+    fence's info string cannot contain a backtick. Treating it as an opener hid
+    every heading after it."""
+    src = "# Top\n\n```x``` is inline code\n\n## Next\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "Next"]
+
+
+def test_markdown_indented_fence_in_a_list_still_skips_its_contents(tmp_path):
+    """Fences nested in list items are indented; they keep working."""
+    src = "# Top\n\n1. Step\n\n    ```bash\n    # Not A Heading\n    ```\n\n## After\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "After"]
+
 def test_markdown_no_dangling_edges():
     r = extract_markdown(FIXTURES / "deploy_guide.md")
     node_ids = {n["id"] for n in r["nodes"]}

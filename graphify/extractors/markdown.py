@@ -49,6 +49,43 @@ _MD_BARE_MENTION_RE = re.compile(
     r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
 )
 
+# A fenced code block line: a run of 3+ backticks or 3+ tildes, then the rest of
+# the line (an info string on an opener). Leading whitespace is accepted at any
+# depth, as before, so a fence inside a nested list item still counts.
+_MD_FENCE_RE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+
+
+def _fence_open(line: str) -> "tuple[str, int] | None":
+    """(fence char, run length) when ``line`` opens a fenced code block.
+
+    CommonMark: a backtick fence's info string may not contain a backtick, so
+    a line that starts with an inline ```` ```code``` ```` span is prose, not a
+    fence. Tilde fences have no such restriction.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return None
+    run, rest = m.group(1), m.group(2)
+    if run[0] == "`" and "`" in rest:
+        return None
+    return run[0], len(run)
+
+
+def _fence_closes(line: str, fence: "tuple[str, int]") -> bool:
+    """True when ``line`` closes the block opened by ``fence``.
+
+    CommonMark: the closing run uses the opener's character, is at least as
+    long, and carries nothing but whitespace after it. So ``` does not close a
+    ~~~ block, ``` does not close a ```` block (the usual way a doc shows a
+    fenced example), and ``` followed by text is content.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return False
+    run, rest = m.group(1), m.group(2)
+    return run[0] == fence[0] and len(run) >= fence[1] and not rest.strip()
+
+
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
 # must not be mistaken for one. Bounded so a file that opens a fence and never
@@ -407,8 +444,9 @@ def extract_markdown(path: Path) -> dict:
     cross-file call pass skips these raw_calls, so a mention never becomes a
     ``calls`` edge.
 
-    Fenced code blocks (``` ... ```) are skipped during parsing so their
-    contents don't get treated as headings, but no node is emitted for
+    Fenced code blocks (``` ... ``` or ~~~ ... ~~~, closed by a run of the
+    same character at least as long, per CommonMark) are skipped during
+    parsing so their contents don't get treated as headings, but no node is emitted for
     them — they were always orphans (only a single contains edge to the
     parent doc) and inflated the disconnected-component count (#1077).
 
@@ -521,19 +559,20 @@ def extract_markdown(path: Path) -> dict:
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
-    in_code_block = False
+    fence: "tuple[str, int] | None" = None  # (char, length) of the open fence
 
     for line_num_0, line_text in enumerate(lines):
         line_num = line_num_0 + 1
 
         # Skip over fenced code blocks so their contents are not parsed as
         # headings, but do not emit nodes/edges for them (#1077).
-        stripped = line_text.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
+        if fence is not None:
+            if _fence_closes(line_text, fence):
+                fence = None
             continue
-
-        if in_code_block:
+        opened = _fence_open(line_text)
+        if opened is not None:
+            fence = opened
             continue
 
         # Markdown links -> document references (#1376). Scanned on every
