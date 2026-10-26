@@ -171,6 +171,36 @@ def _prefer_file_node(
     return None
 
 
+def resolve_reference_forms(graph: nx.Graph, query: str) -> str | None:
+    """Resolve the reference forms `explain` accepts but `resolve_seed` did not.
+
+    `explain` resolves a `path::Symbol` reference (#3485) and a dotted Python
+    name (`pkg.mod.func` / `pkg.mod:func`, #4366) to a single node; `affected` and
+    `query --seed` rejected both with "No unique node match" even when `explain`
+    resolved the very same string. Following the README's own advice ("use the
+    precise ID returned by the graph") therefore forced a caller through
+    `explain` first just to obtain an id (#4792).
+
+    Only the two path-qualified forms are handled here — they carry their own
+    disambiguating context, so a match is never a guess. A bare name keeps going
+    through `resolve_seed`'s existing tiers, where an exact-name tie must stay
+    unresolved rather than be broken by graph-iteration order.
+
+    Returns the unique node id, or None to fall through to the ordinary tiers.
+    """
+    from graphify.serve import _find_node_tiers
+
+    source_exact, exact, _prefix, _substring = _find_node_tiers(graph, query)
+    for tier in (source_exact, exact):
+        if len(tier) == 1:
+            return str(tier[0])
+        if tier:
+            # Several nodes in the winning tier is ambiguity, not precedence;
+            # do not fall back to a looser tier and pick one arbitrarily.
+            break
+    return None
+
+
 def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str | None:
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
@@ -178,6 +208,11 @@ def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str |
     query = query.rstrip("/\\") or query
     if query in graph:
         return query
+    # `path::Symbol` and dotted Python names resolve exactly as `explain` does
+    # (#4792); checked before the label tiers, which cannot express them.
+    qualified = resolve_reference_forms(graph, query)
+    if qualified is not None:
+        return qualified
     query_lower = _normalize_label(query)
     exact_label_matches = [
         str(node_id)
@@ -353,6 +388,27 @@ def affected_nodes(
     return hits
 
 
+def resolve_seed_outcome(
+    graph: nx.Graph, query: str, root: Path | None = None
+) -> tuple[str | None, list[str]]:
+    """Resolve a seed and report why it failed, so the CLI can set an exit code.
+
+    `affected` printed "No unique node match" and still exited 0, so a script
+    could not branch on the outcome the README documents (3 = ambiguous,
+    4 = no match) while `explain` already follows it (#4792). Returns
+    ``(node_id, [])`` on success, ``(None, rivals)`` when the query is the
+    ambiguous name of several nodes, and ``(None, [])`` when nothing matched.
+    """
+    seed = resolve_seed(graph, query, root)
+    if seed is not None:
+        return seed, []
+    from graphify.serve import find_node_ambiguity
+
+    normalized = query.rstrip("/\\") or query
+    rivals = find_node_ambiguity(graph, normalized)
+    return None, [str(node_id) for node_id in rivals]
+
+
 def format_affected(
     graph: nx.Graph,
     query: str,
@@ -360,9 +416,11 @@ def format_affected(
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
     root: Path | None = None,
+    seed: str | None = None,
 ) -> str:
     relation_list = tuple(relations)
-    seed = resolve_seed(graph, query, root)
+    if seed is None:
+        seed = resolve_seed(graph, query, root)
     if seed is None:
         return f"No unique node match for {query}"
 
