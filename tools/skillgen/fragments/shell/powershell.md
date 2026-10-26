@@ -1,3 +1,5 @@
+If the scan path contains a line break (a newline or carriage return), stop and ask the user for a different path. Do not run the block below: a path line could end the here-string early and run the lines after it as shell.
+
 ```powershell
 # Detect Python with graphify — uv/pipx-aware (fixes #831)
 New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
@@ -58,13 +60,15 @@ if (-not $GRAPHIFY_PYTHON) {
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
 # Save scan root so `graphify update` (no args) knows where to look next time.
-# INPUT_PATH is captured through a single-quoted (literal) here-string, never
-# substituted directly into the command line: an unquoted bareword argument
-# substituted here would let a malicious path (a stray `;`, `|`, or `$(...)`)
-# execute as script code the moment this line runs.
+# PowerShell never expands the scan path: it is captured through a single-quoted
+# (literal) here-string, not the command line. A path with a line break is refused,
+# because a line starting with '@ would end the here-string early and run the lines
+# after it as script code.
 $InputPathRaw = @'
 INPUT_PATH
 '@
+$InputPathChecked = $InputPathRaw -replace '\n$', ''
+if ($InputPathChecked.Contains("`n") -or $InputPathChecked.Contains("`r")) { throw 'graphify: the scan path has a line break, so it was not used; give a single-line path' }
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
 ```
 

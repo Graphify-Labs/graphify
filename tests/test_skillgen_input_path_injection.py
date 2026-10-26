@@ -124,7 +124,7 @@ def test_monolith_watch_uses_trusted_graphify_root(skill_file: str):
         f"{skill_file} --watch command does not reference graphify-out/.graphify_python"
     )
     assert block == (
-        '$(cat graphify-out/.graphify_python) -m graphify.watch '
+        '"$(cat graphify-out/.graphify_python)" -m graphify.watch '
         '"$(cat graphify-out/.graphify_root)" --debounce 3'
     )
 
@@ -210,6 +210,12 @@ def test_step1_still_resolves_a_legitimate_path(tmp_path: Path, skill_file: str)
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     marker_content = marker.read_text(encoding="utf-8").strip()
+    # An empty marker would resolve to the cwd (the repo) and fail below with a
+    # misleading path mismatch; a full disk leaves Step 1's write empty.
+    assert marker_content, (
+        f"Step 1 wrote an empty {marker} for {skill_file}; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
     if sys.platform == "win32" and project.drive:
         drive_letter = project.drive[0].lower()
         if marker_content.startswith(f"/mnt/{drive_letter}/"):
@@ -235,3 +241,67 @@ def test_step1_still_fails_loudly_on_a_nonexistent_path(tmp_path: Path, skill_fi
     marker = tmp_path / "graphify-out" / ".graphify_root"
     assert result.returncode != 0
     assert not marker.exists() or marker.read_text(encoding="utf-8") == ""
+
+
+# --- #4309: a scan path with a line break is refused --------------------------
+# The shell ends a heredoc / here-string at the first line equal to its terminator,
+# before any Python runs. The refusal instruction to the agent is the real guard;
+# the Python check below is a backstop for multi-line input that reaches stdin.
+
+_PY_ROOT_LINE = re.compile(r"^\"\$PYTHON\" -c \".*graphify_root.*\" <<'GRAPHIFY_ROOT_EOF'$", re.M)
+
+
+def _root_capture_skills() -> list[Path]:
+    return sorted(
+        p for p in (REPO_ROOT / "graphify").glob("skill*.md")
+        if "GRAPHIFY_ROOT_EOF" in p.read_text(encoding="utf-8")
+        or "$InputPathRaw" in p.read_text(encoding="utf-8")
+    )
+
+
+def test_root_capture_skills_are_discovered():
+    """The parametrized guard below must not pass vacuously."""
+    assert len(_root_capture_skills()) >= 10, [p.name for p in _root_capture_skills()]
+
+
+@pytest.mark.parametrize("skill", _root_capture_skills(), ids=lambda p: p.name)
+def test_every_root_capture_tells_the_agent_to_refuse_a_line_break(skill: Path):
+    """The heredoc / here-string that carries the scan path can be ended early by a
+    path line, so every skill that captures the root must tell the agent to refuse
+    a path with a line break instead of running the block (#4309)."""
+    text = skill.read_text(encoding="utf-8")
+    assert "contains a line break" in text and "stop and ask the user for a different path" in text, skill.name
+
+
+def _run_root_capture(stdin: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Run the shipped POSIX one-liner with ``stdin`` in place of the heredoc body."""
+    text = (REPO_ROOT / "graphify" / "skill.md").read_text(encoding="utf-8")
+    (line,) = _PY_ROOT_LINE.findall(text)
+    command = line.removesuffix(" <<'GRAPHIFY_ROOT_EOF'")
+    (cwd / "graphify-out").mkdir(exist_ok=True)
+    return subprocess.run(
+        ["bash", "-c", command], cwd=cwd, input=stdin, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "PYTHON": sys.executable},
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX one-liner through bash")
+def test_root_capture_writes_the_exact_path_and_runs_nothing(tmp_path: Path):
+    """A path with spaces, quotes, `$(...)` text and non-ASCII is saved as is; the
+    `$(touch X)` in it is a directory name, not a command (#4309)."""
+    target = tmp_path / "a b" / "$(touch X)" / "it's é"
+    target.mkdir(parents=True)
+    done = _run_root_capture(f"{target}\n", tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "graphify-out" / ".graphify_root").read_text(encoding="utf-8") == str(target.resolve())
+    assert not (tmp_path / "X").exists() and not (target.parent / "X").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX one-liner through bash")
+def test_root_capture_rejects_input_with_more_than_one_line(tmp_path: Path):
+    """A path with a line break (here a forged heredoc terminator and a command) is
+    refused: non-zero exit, nothing written (#4309)."""
+    done = _run_root_capture("/tmp/x\nGRAPHIFY_ROOT_EOF\necho pwned\n", tmp_path)
+    assert done.returncode != 0
+    assert "line break" in done.stderr
+    assert not (tmp_path / "graphify-out" / ".graphify_root").exists()
