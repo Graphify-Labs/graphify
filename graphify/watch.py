@@ -26,6 +26,7 @@ from graphify.paths import (
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_FULL_FILENAME = ".pending_full"
+_PENDING_INCREMENTAL_FILENAME = ".pending_incremental"
 _PENDING_DRAIN_MAX_PASSES = 20
 
 
@@ -98,6 +99,29 @@ def _drain_pending_full(out_dir: Path) -> bool:
     """Consume the full-rebuild marker. Returns True if one was queued."""
     try:
         (out_dir / _PENDING_FULL_FILENAME).unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _queue_pending_incremental(out_dir: Path) -> None:
+    """Record that an incremental rebuild was requested but could not run.
+
+    An incremental request names no paths: it derives its change set from the
+    manifest *inside* the lock (#4740). So it cannot append to
+    ``.pending_changes``, and ``.pending_full`` would be a lie — the drain runs
+    after the lock the caller then wins, so a full marker would upgrade that
+    caller's own pass to a full rebuild. This third marker says the one thing the
+    other two cannot: run an incremental pass.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / _PENDING_INCREMENTAL_FILENAME).touch()
+
+
+def _drain_pending_incremental(out_dir: Path) -> bool:
+    """Consume the incremental-rebuild marker. Returns True if one was queued."""
+    try:
+        (out_dir / _PENDING_INCREMENTAL_FILENAME).unlink()
     except FileNotFoundError:
         return False
     return True
@@ -2207,11 +2231,12 @@ def _rebuild_code(
         queued = False
         if not block_on_lock:
             if incremental and changed_paths is None:
-                # #4740: an incremental request derives its change set from the
-                # manifest inside the lock, so it has nothing to queue. A
-                # .pending_full marker would also push every later drain into a
-                # full rebuild, which is not what this caller asked for.
-                pass
+                # #4740: this request derives its change set from the manifest
+                # inside the lock, so it names no paths. Without a record of its
+                # own, losing the lock below drops it. The marker says "run an
+                # incremental pass", which a later full pass also satisfies.
+                _queue_pending_incremental(out)
+                queued = True
             elif changed_paths is None:
                 _queue_pending_full(out)
                 queued = True
@@ -2237,11 +2262,17 @@ def _rebuild_code(
             # already in it. That is why merged stays None here — passing the
             # hints would suppress the derivation and re-extract only them.
             queued_full = _drain_pending_full(out)
+            queued_incremental = _drain_pending_incremental(out)
             pending = _drain_pending(out)
+            # A queued incremental request has to be honoured even when this
+            # caller's own flag is off. The marker exists because that request
+            # lost the lock; its change set is the manifest diff, which this
+            # holder can compute just as well.
+            incremental_effective = incremental or queued_incremental
             if queued_full:
                 full = True
             elif changed_paths is None:
-                full = not incremental
+                full = not incremental_effective
             else:
                 full = False
             merged = (
@@ -2254,7 +2285,7 @@ def _rebuild_code(
                 changed_paths=merged,
                 # A queued full request overrides the hint: a hook saw a tree
                 # change it could not describe, so re-extract everything.
-                incremental=incremental and not queued_full,
+                incremental=incremental_effective and not queued_full,
                 follow_symlinks=follow_symlinks,
                 force=force,
                 no_cluster=no_cluster,
@@ -2267,13 +2298,14 @@ def _rebuild_code(
             # quiesces without livelocking.
             for _ in range(_PENDING_DRAIN_MAX_PASSES):
                 late_full = _drain_pending_full(out)
+                late_incremental = _drain_pending_incremental(out)
                 late = _drain_pending(out)
-                if not late_full and not late:
+                if not late_full and not late and not late_incremental:
                     break
                 ok = _rebuild_code(
                     watch_path,
-                    changed_paths=None if late_full else late,
-                    incremental=incremental and not late_full,
+                    changed_paths=None if (late_full or late_incremental) else late,
+                    incremental=(incremental or late_incremental) and not late_full,
                     follow_symlinks=follow_symlinks,
                     force=force,
                     no_cluster=no_cluster,
