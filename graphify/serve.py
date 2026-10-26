@@ -995,6 +995,10 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
+    # A constructor call (Swift `Foo(...)`, Rust `Foo { .. }` / `Foo(..)`) is a
+    # call: "callers of Foo" must keep the edges tagged `context="constructor"`.
+    if "call" in filters:
+        filters.add("constructor")
     H = G.__class__()
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):

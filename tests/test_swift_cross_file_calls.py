@@ -471,3 +471,539 @@ def test_extension_merge_does_not_prune_unrelated_edges(tmp_path: Path):
         return sum(1 for e in result["edges"] if str(e.get("source_file", "")).endswith(".py"))
 
     assert _py_edges(with_ext) == _py_edges(without_ext), "the extension merge pruned unrelated .py edges"
+
+
+# ── Phase 1 of the cross-file type resolution RFC: mark real declarations ─────
+#
+# A type declared in one file, extended in the same file, and extended again in
+# another file used to leave two sourced nodes of one name, so the rewire kept
+# every referrer on its own stub. An extension of a type nobody in the corpus
+# declares acted as that type's declaration instead. The assertions below name
+# the target node (id plus source_file), not only a label: several nodes share a
+# label, so a label-only check passes on a wrong binding.
+
+def _xext_nodes(result: dict, label: str, file_suffix: str | None = None) -> list[dict]:
+    return [
+        n for n in result["nodes"]
+        if n.get("label") == label
+        and (file_suffix is None or str(n.get("source_file", "")).endswith(file_suffix))
+    ]
+
+
+def _xext_one(result: dict, label: str, file_suffix: str) -> dict:
+    found = _xext_nodes(result, label, file_suffix)
+    assert len(found) == 1, f"expected one {label!r} node in {file_suffix}, got {[n['id'] for n in found]}"
+    return found[0]
+
+
+def _xext_incoming(result: dict, nid: str, relation: str = "references") -> set[tuple[str, str | None, str]]:
+    """{(source label, edge context, source file name)} of the `relation` edges into `nid`."""
+    by_id = {n["id"]: n for n in result["nodes"]}
+    return {
+        (by_id[e["source"]].get("label", ""), e.get("context"),
+         Path(str(by_id[e["source"]].get("source_file", ""))).name)
+        for e in result["edges"]
+        if e.get("target") == nid and e.get("relation") == relation and e.get("source") in by_id
+    }
+
+
+def _xext_has_edge(result: dict, source: str, target: str, relation: str) -> bool:
+    return any(e.get("source") == source and e.get("target") == target
+               and e.get("relation") == relation for e in result["edges"])
+
+
+def _xext_foreign_refs(result: dict, nid: str, own_file: str) -> set[tuple[str, str | None, str]]:
+    """References into `nid` that come from a file other than `own_file`."""
+    return {r for r in _xext_incoming(result, nid) if r[2] != own_file}
+
+
+def _xext_assert_contained(result: dict, ext_file: str, nid: str) -> None:
+    """The file node of `ext_file` must have a `contains` edge to the node `nid`."""
+    file_node = _xext_one(result, ext_file, ext_file)
+    assert _xext_has_edge(result, file_node["id"], nid, "contains"), f"{ext_file} does not contain {nid}"
+
+
+def test_declaration_with_same_file_extension_absorbs_cross_file_extension(tmp_path: Path):
+    # RC1: `struct Shape` + `extension Shape` in one file share a node id and
+    # the id used to be skipped as a merge candidate, so the `extension Shape` in
+    # another file found no declaration and every referrer kept a per-file stub.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "App/Models/Shape.swift", (
+            "import Foundation\n\n"
+            "struct Shape: Equatable, Codable {\n"
+            "  var points: [Point]\n"
+            "  struct Point: Equatable, Codable { var id: Int }\n"
+            "  func encodeAll() -> Data { Data() }\n"
+            "}\n\n"
+            "extension Shape {\n"
+            "  var isEmpty: Bool { points.isEmpty }\n"
+            "}\n"
+        )),
+        _write(base / "App/Logic/Converter.swift", (
+            "import Foundation\n\n"
+            "extension Shape {\n"
+            "  static func converted() -> Shape { Shape(points: []) }\n"
+            "}\n\n"
+            "enum Converter {\n"
+            "  static func run(_ input: Shape) -> Shape { input }\n"
+            "}\n"
+        )),
+        _write(base / "App/Screens/Canvas.swift", (
+            "import Foundation\n\n"
+            "struct Canvas {\n"
+            "  struct State: Equatable {\n"
+            "    var shape: Shape\n"
+            "    var selected: Shape.Point?\n"
+            "  }\n"
+            "  func reset(_ state: inout State) {\n"
+            "    state.shape = Shape(points: [])\n"
+            "  }\n"
+            "}\n"
+        )),
+        _write(base / "App/Logic/Persistence.swift", (
+            "import Foundation\n\n"
+            "final class ShapeStore {\n"
+            "  var cached: Shape?\n"
+            "  func save(_ shape: Shape) {}\n"
+            "  func load() -> Shape { Shape(points: []) }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    # One Shape node: the declaration. No extension node, no per-file stub.
+    shapes = _xext_nodes(result, "Shape")
+    assert len(shapes) == 1, f"expected one Shape node, got {[(n['id'], n.get('source_file')) for n in shapes]}"
+    decl = shapes[0]
+    assert str(decl.get("source_file", "")).endswith("Shape.swift")
+    assert not decl.get("_swift_extension_only"), "a declared type must not be marked extension-only"
+    nid = decl["id"]
+
+    # The cross-file extension's method hangs on the declaration, and the extension's
+    # file contains it.
+    converted = _xext_one(result, ".converted()", "Converter.swift")
+    assert _xext_has_edge(result, nid, converted["id"], "method")
+    for file_label in ("Shape.swift", "Converter.swift"):
+        file_node = _xext_one(result, file_label, file_label)
+        assert _xext_has_edge(result, file_node["id"], nid, "contains"), f"{file_label} must contain the declaration"
+
+    # Every `references` edge from the other files lands on that node.
+    refs = _xext_incoming(result, nid)
+    expected = {
+        (".run()", "parameter_type", "Converter.swift"),
+        (".run()", "return_type", "Converter.swift"),
+        (".converted()", "return_type", "Converter.swift"),
+        ("State", "field", "Canvas.swift"),
+        ("ShapeStore", "field", "Persistence.swift"),
+        (".save()", "parameter_type", "Persistence.swift"),
+        (".load()", "return_type", "Persistence.swift"),
+    }
+    assert expected <= refs, f"references that missed the declaration: {sorted(expected - refs)}"
+
+
+def test_extension_of_outside_type_does_not_absorb_references(tmp_path: Path):
+    # RC2 / #4574: `extension String` is not a declaration of String. The only sourced
+    # `String` node used to become the unique "real" definition, and every other file's
+    # `String` stub was rewired onto the extension.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Ext/StringExt.swift",
+               "extension String {\n    func shout() -> String { self }\n}\n"),
+        _write(base / "Ext/DateExt.swift",
+               "private extension Date {\n    func day() -> Int { 1 }\n}\n"),
+        _write(base / "Models/Name.swift", (
+            "struct Name {\n"
+            "    var raw: String\n"
+            "    var at: Date\n"
+            "    func f(_ s: String) -> Date { at }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+    by_id = {n["id"]: n for n in result["nodes"]}
+
+    for label, ext_file in (("String", "StringExt.swift"), ("Date", "DateExt.swift")):
+        ext = _xext_one(result, label, ext_file)
+        # The extension node stays, file-local, and no other file's reference reaches it.
+        _xext_assert_contained(result, ext_file, ext["id"])
+        assert _xext_foreign_refs(result, ext["id"], ext_file) == set(), (
+            f"{ext_file} extension of {label} absorbed references from another file"
+        )
+        # Name.swift keeps its reference on a sourceless stub of the outside type.
+        targets = [by_id[e["target"]] for e in result["edges"]
+                   if e.get("relation") == "references"
+                   and e["target"] in by_id and e["source"] in by_id
+                   and by_id[e["target"]].get("label") == label
+                   and Path(str(by_id[e["source"]].get("source_file", ""))).name == "Name.swift"]
+        assert targets, f"Name.swift lost its reference to {label}"
+        assert all(not t.get("source_file") for t in targets), (
+            f"Name.swift reference to {label} reached {[(t['id'], t.get('source_file')) for t in targets]}"
+        )
+
+    # The extension's own method keeps its file-local reference to its extension node.
+    string_ext = _xext_one(result, "String", "StringExt.swift")
+    assert (".shout()", "return_type", "StringExt.swift") in _xext_incoming(result, string_ext["id"])
+
+
+def test_extension_only_type_extended_in_two_files_stays_unresolved(tmp_path: Path):
+    # Control (passes on the base too: two extension nodes already make the label
+    # ambiguous). `extension View` in two files and `var body: some View` elsewhere: View
+    # is declared nowhere in the corpus. The reference must stay on its stub and neither
+    # extension node may attract it.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Ext/ViewA.swift",
+               "extension View {\n    func a() -> some View { self }\n}\n"),
+        _write(base / "Ext/ViewB.swift",
+               "extension View {\n    func b() -> some View { self }\n}\n"),
+        _write(base / "Views/Home.swift",
+               "struct Home {\n    var body: some View { Text() }\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+    by_id = {n["id"]: n for n in result["nodes"]}
+
+    ext_a = _xext_one(result, "View", "ViewA.swift")
+    ext_b = _xext_one(result, "View", "ViewB.swift")
+    for ext, own_file in ((ext_a, "ViewA.swift"), (ext_b, "ViewB.swift")):
+        _xext_assert_contained(result, own_file, ext["id"])
+        assert _xext_foreign_refs(result, ext["id"], own_file) == set()
+
+    home_targets = [by_id[e["target"]] for e in result["edges"]
+                    if e.get("relation") == "references"
+                    and e["target"] in by_id and e["source"] in by_id
+                    and by_id[e["target"]].get("label") == "View"
+                    and Path(str(by_id[e["source"]].get("source_file", ""))).name == "Home.swift"]
+    assert home_targets, "Home.swift lost its reference to View"
+    assert all(not t.get("source_file") for t in home_targets), (
+        f"Home.swift reference to View reached {[(t['id'], t.get('source_file')) for t in home_targets]}"
+    )
+
+
+def test_extension_only_node_does_not_absorb_other_file_reference(tmp_path: Path):
+    # `extension Foo {}` in one file, no declaration anywhere, `var w: Foo` in another
+    # file. On the base the rewire binds the other file's reference to the single
+    # extension node; the extension-only marker keeps it on its sourceless stub.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "FooExt.swift", "extension Foo {\n    func a() {}\n}\n"),
+        _write(base / "Use.swift", "struct Use {\n    var w: Foo\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+    by_id = {n["id"]: n for n in result["nodes"]}
+
+    ext = _xext_one(result, "Foo", "FooExt.swift")
+    assert ext.get("_swift_extension_only") is True, "the extension node lost its marker"
+    _xext_assert_contained(result, "FooExt.swift", ext["id"])
+    assert _xext_foreign_refs(result, ext["id"], "FooExt.swift") == set(), (
+        "Use.swift reference reached the extension-only node"
+    )
+    targets = [by_id[e["target"]] for e in result["edges"]
+               if e.get("relation") == "references"
+               and e["target"] in by_id and e["source"] in by_id
+               and by_id[e["target"]].get("label") == "Foo"
+               and Path(str(by_id[e["source"]].get("source_file", ""))).name == "Use.swift"]
+    assert targets, "Use.swift lost its reference to Foo"
+    assert all(not t.get("source_file") for t in targets), (
+        f"Use.swift reference to Foo reached {[(t['id'], t.get('source_file')) for t in targets]}"
+    )
+
+
+def test_extension_only_marker_survives_incremental_update(tmp_path: Path):
+    """`graphify update` hands the unchanged extension file to the changed file's
+    resolution only as context nodes. The extension-only marker must ride along, or
+    the changed file's `String` reference binds to the extension again."""
+    import json
+
+    from graphify.watch import _GRAPHIFY_OUT, _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "StringExt.swift").write_text(
+        "extension String {\n    func shout() -> String { self }\n}\n", encoding="utf-8")
+    consumer = corpus / "Name.swift"
+    consumer.write_text("struct Name {\n    var raw: String\n}\n", encoding="utf-8")
+    graph_path = corpus / _GRAPHIFY_OUT / "graph.json"
+
+    def graph() -> tuple[dict[str, dict], list[dict]]:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        return {n["id"]: n for n in data["nodes"]}, data["links"]
+
+    def refs_from_consumer_onto_extension() -> list[tuple[str, str]]:
+        by_id, links = graph()
+        ext_ids = {nid for nid, n in by_id.items()
+                   if n.get("label") == "String" and str(n.get("source_file", "")).endswith("StringExt.swift")}
+        assert len(ext_ids) == 1, f"expected the extension node of String, got {sorted(ext_ids)}"
+        return [
+            (by_id[e["source"]].get("label", ""), e["target"])
+            for e in links
+            if e.get("relation") == "references" and e["target"] in ext_ids
+            and e["source"] in by_id
+            and str(by_id[e["source"]].get("source_file", "")).endswith("Name.swift")
+        ]
+
+    def consumer_refs_on_stub() -> int:
+        """Name's field reference to String, kept on a sourceless stub."""
+        by_id, links = graph()
+        return sum(
+            1 for e in links
+            if e.get("relation") == "references" and e.get("context") == "field"
+            and e["source"] in by_id and e["target"] in by_id
+            and by_id[e["source"]].get("label") == "Name"
+            and by_id[e["target"]].get("label") == "String"
+            and not by_id[e["target"]].get("source_file")
+        )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert refs_from_consumer_onto_extension() == [], "the full build bound Name to the String extension"
+    assert consumer_refs_on_stub() == 1, "the full build lost Name's reference to the String stub"
+
+    # Change only the consumer; the extension file comes back as context nodes.
+    consumer.write_text("struct Name {\n    var raw: String\n    func f() {}\n}\n", encoding="utf-8")
+    assert _rebuild_code(corpus, changed_paths=[consumer], no_cluster=True, acquire_lock=False) is True
+    by_id, _ = graph()
+    assert any(n.get("label") == ".f()" for n in by_id.values()), "the incremental update did not re-extract Name.swift"
+    assert refs_from_consumer_onto_extension() == [], "the incremental update bound Name to the String extension"
+    assert consumer_refs_on_stub() == 1, "the incremental update lost Name's reference to the String stub"
+
+
+def test_incremental_extension_merges_into_unchanged_declaration(tmp_path: Path):
+    """Change only `extension Foo`: the declaration in the unchanged file is a read-only
+    candidate, so the extension folds onto it exactly as in a full build."""
+    import json
+
+    from graphify.watch import _GRAPHIFY_OUT, _rebuild_code
+
+    ext_v1 = "extension Foo {\n    func extra() {}\n}\n"
+    ext_v2 = "extension Foo {\n    func extra() {}\n    func more() {}\n}\n"
+
+    def write_corpus(corpus: Path, ext_text: str) -> Path:
+        corpus.mkdir()
+        (corpus / "Foo.swift").write_text("struct Foo {\n    func a() {}\n}\n", encoding="utf-8")
+        (corpus / "Use.swift").write_text("struct Use {\n    var f: Foo\n}\n", encoding="utf-8")
+        ext_file = corpus / "FooExt.swift"
+        ext_file.write_text(ext_text, encoding="utf-8")
+        return ext_file
+
+    def graph(corpus: Path) -> tuple[dict[str, dict], set[tuple[str, str, str]]]:
+        data = json.loads((corpus / _GRAPHIFY_OUT / "graph.json").read_text(encoding="utf-8"))
+        by_id = {n["id"]: n for n in data["nodes"]}
+        return by_id, {(e["source"], e["target"], e["relation"]) for e in data["links"]}
+
+    # Reference: a full build of the final content.
+    full_dir = tmp_path / "full" / "corpus"
+    full_dir.parent.mkdir()
+    write_corpus(full_dir, ext_v2)
+    assert _rebuild_code(full_dir, no_cluster=True, acquire_lock=False) is True
+    full_nodes, full_edges = graph(full_dir)
+
+    # Full build of the old content, then an incremental update of the extension file only.
+    inc_dir = tmp_path / "inc" / "corpus"
+    inc_dir.parent.mkdir()
+    ext_file = write_corpus(inc_dir, ext_v1)
+    assert _rebuild_code(inc_dir, no_cluster=True, acquire_lock=False) is True
+    ext_file.write_text(ext_v2, encoding="utf-8")
+    assert _rebuild_code(inc_dir, changed_paths=[ext_file], no_cluster=True, acquire_lock=False) is True
+    inc_nodes, inc_edges = graph(inc_dir)
+
+    foos = [n for n in inc_nodes.values() if n.get("label") == "Foo"]
+    assert len(foos) == 1, f"expected one Foo node, got {[(n['id'], n.get('source_file')) for n in foos]}"
+    foo = foos[0]
+    assert str(foo.get("source_file", "")).endswith("Foo.swift")
+    methods = {inc_nodes[t]["label"] for s, t, r in inc_edges if s == foo["id"] and r == "method"}
+    assert methods == {".a()", ".extra()", ".more()"}
+    uses = [n for n in inc_nodes.values() if n.get("label") == "Use"]
+    assert len(uses) == 1
+    assert (uses[0]["id"], foo["id"], "references") in inc_edges, "Use lost its reference to the declaration"
+
+    assert set(inc_nodes) == set(full_nodes), "the incremental node set differs from a full build"
+    assert inc_edges == full_edges, "the incremental edge set differs from a full build"
+
+
+def test_same_file_extension_alone_still_resolves_references(tmp_path: Path):
+    # Control (the RC1 control, and the #4600 regression guard): `struct Foo` + `extension
+    # Foo` in one file, nothing extends Foo elsewhere. The declared node is the only Foo,
+    # so other files' references resolve to it. Marking every id that has an extension as
+    # "extension-only" would put them back on stubs.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Foo.swift", (
+            "struct Foo {\n    func a() {}\n}\n\n"
+            "extension Foo {\n    func b() {}\n}\n"
+        )),
+        _write(base / "Consumer.swift", (
+            "struct Consumer {\n"
+            "    var f: Foo\n"
+            "    func g(_ x: Foo) -> Foo { x }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    foo = _xext_one(result, "Foo", "Foo.swift")
+    assert len(_xext_nodes(result, "Foo")) == 1, "a sourceless Foo stub survived"
+    assert not foo.get("_swift_extension_only")
+    file_node = _xext_one(result, "Foo.swift", "Foo.swift")
+    assert _xext_has_edge(result, file_node["id"], foo["id"], "contains")
+    for method in (".a()", ".b()"):
+        node = _xext_one(result, method, "Foo.swift")
+        assert _xext_has_edge(result, foo["id"], node["id"], "method")
+    expected = {
+        ("Consumer", "field", "Consumer.swift"),
+        (".g()", "parameter_type", "Consumer.swift"),
+        (".g()", "return_type", "Consumer.swift"),
+    }
+    refs = _xext_incoming(result, foo["id"])
+    assert expected <= refs, f"references that missed Foo: {sorted(expected - refs)}"
+
+
+def test_same_file_reference_to_extension_only_node_stays_file_local(tmp_path: Path):
+    # Control: `extension Foo {}` and `var v: Foo` in one file, no declaration anywhere.
+    # The reference targets that file's own extension node, never a fabricated stub. (The
+    # other half of the rule, that no OTHER file's reference reaches an extension-only
+    # node, is covered by test_extension_only_node_does_not_absorb_other_file_reference.)
+    base = tmp_path / "src"
+    f = _write(base / "Holder.swift", (
+        "extension Foo {\n    func a() {}\n}\n\n"
+        "struct Holder {\n    var v: Foo\n}\n"
+    ))
+    result = extract([f], cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    foo = _xext_one(result, "Foo", "Holder.swift")
+    assert len(_xext_nodes(result, "Foo")) == 1, "a Foo stub appeared next to the file's own node"
+    _xext_assert_contained(result, "Holder.swift", foo["id"])
+    assert ("Holder", "field", "Holder.swift") in _xext_incoming(result, foo["id"])
+
+
+# Phase 4 (RC4): a bare `Foo(...)` in a Swift file binds to the one type the
+# caller's lexical scope sees, as an INFERRED constructor call.
+
+
+def _constructor_calls(result: dict, caller_label: str) -> list[dict]:
+    """The `calls` edges out of the node labelled ``caller_label``."""
+    callers = {n["id"] for n in result["nodes"] if n.get("label") == caller_label}
+    return [
+        e for e in result["edges"]
+        if e.get("relation") == "calls" and e["source"] in callers
+    ]
+
+
+def test_cross_file_constructor_call_emits_inferred_call(tmp_path: Path):
+    # `.reset()` names Shape only in the constructor call, not as a type,
+    # so the (caller, target) pair dedup cannot hide the edge behind a
+    # `references` edge. The caller's file names Shape as a field type
+    # without defining it, which made the call a `via_stub` call that the
+    # import-evidence gate dropped before.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Models/Shape.swift",
+               "struct Shape {\n    let points: [Int]\n}\n"),
+        _write(base / "Screens/Canvas.swift", (
+            "struct Canvas {\n"
+            "    struct State {\n"
+            "        var shape: Shape\n"
+            "    }\n"
+            "    func reset(_ state: inout State) {\n"
+            "        state.shape = Shape(points: [])\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    decl_ids = {
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Shape"
+        and str(n.get("source_file", "")).endswith("Models/Shape.swift")
+    }
+    assert len(decl_ids) == 1
+    calls = [e for e in _constructor_calls(result, ".reset()") if e["target"] in decl_ids]
+    assert len(calls) == 1
+    edge = calls[0]
+    assert edge["context"] == "constructor"
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.85
+
+
+def test_constructor_call_not_visible_lexically_stays_unresolved(tmp_path: Path):
+    # The only Config is the nested Outer.Config; a bare `Config()` in an
+    # unrelated type cannot see it, so no edge lands on it by name.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Models/Outer.swift",
+               "struct Outer {\n    struct Config {}\n}\n"),
+        _write(base / "Views/User.swift", (
+            "struct User {\n"
+            "    func make() {\n"
+            "        let c = Config()\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    config_ids = {n["id"] for n in result["nodes"] if n.get("label") == "Config"}
+    assert config_ids
+    assert [e for e in _constructor_calls(result, ".make()") if e["target"] in config_ids] == []
+
+
+def test_ambiguous_constructor_callee_stays_unresolved(tmp_path: Path):
+    # Two top-level Config types: `Config()` sees both, so it binds to neither.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "a/Config.swift", "struct Config {}\n"),
+        _write(base / "b/Config.swift", "struct Config {}\n"),
+        _write(base / "Views/User.swift", (
+            "struct User {\n"
+            "    func make() {\n"
+            "        let c = Config()\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    config_ids = {n["id"] for n in result["nodes"] if n.get("label") == "Config"}
+    assert len(config_ids) >= 2
+    assert [e for e in _constructor_calls(result, ".make()") if e["target"] in config_ids] == []
+
+
+def test_constructor_call_in_extension_of_objc_class_binds(tmp_path: Path):
+    # A Swift extension of an Objective-C class folds onto the ObjC node, which
+    # carries no Swift qualified path. Its calls are looked up at file scope and
+    # still bind `Item()`, as before the Swift type index.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Widget.h",
+               "#import <Foundation/Foundation.h>\n@interface Widget : NSObject\n- (void)ping;\n@end\n"),
+        _write(base / "Types.swift", "struct Item {}\n"),
+        _write(base / "Extras.swift",
+               "extension Widget {\n    func run() {\n        Item()\n    }\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    item_ids = {
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Item" and str(n.get("source_file", "")).endswith("Types.swift")
+    }
+    assert len(item_ids) == 1
+    calls = [e for e in _constructor_calls(result, ".run()") if e["target"] in item_ids]
+    assert len(calls) == 1, f"expected one call to Item, got {_constructor_calls(result, '.run()')}"
+
+
+def test_constructor_call_does_not_bind_extension_only_node(tmp_path: Path):
+    # `External` is declared outside the corpus; `extension External` only adds
+    # members. `External()` must not bind to that extension node.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Ext.swift", "extension External {\n    func helper() {}\n}\n"),
+        _write(base / "Use.swift", "func run() {\n    External()\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+
+    ext_ids = {
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "External" and str(n.get("source_file", "")).endswith("Ext.swift")
+    }
+    assert ext_ids
+    assert [e for e in _constructor_calls(result, "run()") if e["target"] in ext_ids] == []
