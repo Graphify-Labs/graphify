@@ -88,6 +88,22 @@ def test_ts_generics_as_and_jsx_logical_and_are_silent(tmp_path, capsys):
     _assert_silent(capsys.readouterr().err)
 
 
+def test_ts_generic_tagged_template_preserves_symbols(tmp_path, capsys):
+    # TypeScript accepts generic tagged templates such as the typed postgres
+    # query form used by this corpus, but tree-sitter-typescript 0.23 parses
+    # the angle brackets as a recovery error and drops the file's symbols.
+    r = _extract(tmp_path, {
+        "queries.ts": (
+            "declare function sql<T>(strings: TemplateStringsArray): T;\n"
+            "export function loadRows() {\n"
+            "  return sql<{ id: string }[]>`select id from rows`;\n"
+            "}\n"
+        ),
+    })
+    assert "loadRows()" in _labels(r)
+    _assert_silent(capsys.readouterr().err)
+
+
 def test_ts_genuinely_broken_file_still_warns(tmp_path, capsys):
     # `function f( {` dissolves the whole parse — nothing beyond the file
     # node extracts. The warning must fire and name the file + first line.

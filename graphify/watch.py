@@ -2547,17 +2547,20 @@ def _rebuild_code(
                 dedupe_nodes as _dedupe_nodes,
                 disambiguate_file_labels_in_nodes as _disamb_labels,
                 finalize_raw_graph_endpoints as _finalize_raw_graph_endpoints,
+                has_parallel_links as _has_parallel_links,
             )
             raw_nodes = _dedupe_nodes(result.get("nodes", []))
             _disamb_labels(raw_nodes)
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
+            _directed = bool((existing_graph_data or {}).get("directed", False))
+            raw_links = _dedupe_edges(result.get("edges", []))
             candidate_graph_data = {
                 **{
                     k: v for k, v in result.items()
                     if k not in ("edges", "nodes") and k not in _RUN_ONLY_KEYS
                 },
                 "nodes": raw_nodes,
-                "links": _dedupe_edges(result.get("edges", [])),
+                "links": raw_links,
                 # A first build's fresh extraction may carry no hyperedges key,
                 # while a reconciled rebuild always does; write it either way so
                 # the two builds of one tree give the same file.
@@ -2565,7 +2568,8 @@ def _rebuild_code(
                 # Inherit the existing graph's directed flag (#2342) so
                 # `graphify update --no-cluster` can't silently drop it -
                 # `result` (the raw merged extraction) never carries one.
-                "directed": bool((existing_graph_data or {}).get("directed", False)),
+                "directed": _directed,
+                "multigraph": _has_parallel_links(raw_links, directed=_directed),
             }
             # This path writes the raw merged extraction, not a build_from_json
             # graph, so mint the same external stubs the builder does — otherwise
