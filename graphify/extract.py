@@ -118,6 +118,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _find_workspace_root,
     _go_import_path_for_file,
     _is_python_package_dir,
+    _is_swift_source,
     _is_type_like_definition,
     _js_call_identifier,
     _js_default_export_name,
@@ -4101,7 +4102,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         the stub stays there. Method-shaped `.foo()` stubs and edges from other
         languages keep the label-key match.
         """
-        if not str(edge.get("source_file") or "").lower().endswith(".swift"):
+        if not _is_swift_source(edge.get("source_file")):
             return False
         label = str(by_id.get(stub_id, {}).get("label", "")).strip().lstrip(".")
         return "." in label
@@ -10585,7 +10586,7 @@ def extract(
     # Bind Swift type references by Swift name lookup (innermost scope first)
     # before the generic bare-label rewire; edges the lookup declines carry
     # `_swift_lookup` so the rewire leaves them on their stub.
-    _swift_sel = [(r, p) for r, p in zip(per_file, paths) if effective_suffix(p) == ".swift"]
+    _swift_sel = [(r, p) for r, p in zip(per_file, paths) if _is_swift_source(p)]
     if _swift_sel:
         try:
             _resolve_swift_type_references(
@@ -10929,7 +10930,7 @@ def extract(
         # index knows but the scope does not see (or sees twice) gets no edge and
         # no generic fallback. Only a name the index does not know at all falls
         # through to the generic resolution (free functions, Objective-C).
-        if str(rc.get("source_file", "")).lower().endswith(".swift"):
+        if _is_swift_source(rc.get("source_file")):
             if _swift_index is None:
                 _swift_index = _swift_type_index(resolution_nodes)
                 _swift_node_by_id.update(
@@ -10978,7 +10979,7 @@ def extract(
         candidates = global_label_to_nids.get(callee, [])
         if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
-        if candidates and str(rc.get("source_file", "")).lower().endswith(".swift"):
+        if candidates and _is_swift_source(rc.get("source_file")):
             # An extension-only node declares nothing: `External()` of a type
             # declared outside the corpus must not bind to an `extension External`.
             candidates = [
