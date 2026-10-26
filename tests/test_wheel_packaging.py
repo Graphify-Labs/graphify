@@ -41,15 +41,18 @@ def _skill_bodies() -> list[Path]:
 
 
 def _expected_artifacts() -> list[Path]:
-    """Every committed skill body + references/*.md (per host) + always_on/*.md block."""
+    """Every committed skill body + references/*.md (per host) + always_on/*.md
+    block + the vendored JS that graph.html inlines at export time."""
     bodies = _skill_bodies()
     refs = sorted((PKG / "skills").glob("*/references/*.md"))
     always = sorted((PKG / "always_on").glob("*.md"))
+    vendor = sorted((PKG / "exporters" / "vendor").glob("*.js"))
     # Sanity: if these are empty the test wiring is broken, not the wheel.
     assert bodies, "no platform skill bodies found — packaging test mis-wired"
     assert refs, "no skills/*/references/*.md found in repo — packaging test mis-wired"
     assert always, "no always_on/*.md found in repo — packaging test mis-wired"
-    return bodies + refs + always
+    assert vendor, "no exporters/vendor/*.js found in repo — packaging test mis-wired"
+    return bodies + refs + always + vendor
 
 
 @pytest.fixture(scope="module")
@@ -79,6 +82,7 @@ def test_skill_artifact_ships_in_wheel(artifact: Path, wheel_namelist: set[str])
     rel = "graphify/" + artifact.relative_to(PKG).as_posix()
     assert rel in wheel_namelist, (
         f"{rel} is committed in the repo but NOT in the built wheel — "
-        f"`graphify install` would hard-exit for this host. Check the "
-        f"[tool.setuptools.package-data] globs in pyproject.toml."
+        f"`graphify install` or `graphify export html` would hard-exit for "
+        f"every installed user. Check the [tool.setuptools.package-data] "
+        f"globs in pyproject.toml."
     )

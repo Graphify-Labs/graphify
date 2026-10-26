@@ -376,7 +376,7 @@ See the [full command reference](#full-command-reference) below.
 - **`--batch-size`**: 100 communities per labeling call by default, sized for a ~16k-token context (~150 tokens/community). Use `--batch-size 40` for an 8k window. Context overflow is not split-retried; failed batches keep hub-derived names.
 - **`--missing-only`**: `label --missing-only` keeps existing labels and names only unnamed / `Community N` entries. Use `label` (full relabel) to refresh names after the community set changes.
 - **`.graphify_labels.json.sig`**: records the community membership signature; labels survive a re-cluster only while it matches.
-- **`export html`**: 5,000-node default; above it graphify renders an aggregated community view. Use `--node-limit N`. `GRAPHIFY_VIZ_NODE_LIMIT` / `.graphifyrc` `viz_node_limit=N` apply to `cluster-only`, `update`, `watch`, and hooks, not `export html`.
+- **`export html`**: 20,000-node default (or `GRAPHIFY_VIZ_NODE_LIMIT`); above it graphify renders an aggregated community view. Use `--node-limit N`. `.graphifyrc` `viz_node_limit=N` applies to `cluster-only`, `update`, `watch`, and hooks.
 - **Leiden fallback**: without the `leiden` extra, clustering silently uses networkx Louvain. Switching later reshuffles every community, so plan a full relabel.
 
 ---

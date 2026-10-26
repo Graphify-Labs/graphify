@@ -995,7 +995,7 @@ def _run_cli() -> None:
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
-        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N, default 5000] [--no-viz]")
+        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N, default 20000] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
         print("                          [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]")

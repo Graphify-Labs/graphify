@@ -332,15 +332,18 @@ def test_to_html_creates_file():
         to_html(G, communities, str(out))
         assert out.exists()
 
-def test_to_html_contains_visjs():
+def test_to_html_is_self_contained():
+    """The renderer is inlined, so the file opens offline with no CDN fetch."""
     G = make_graph()
     communities = cluster(G)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out))
         content = out.read_text()
-        assert "vis-network" in content
-
+    assert "force-graph" in content
+    assert "<script src=" not in content
+    assert "unpkg.com" not in content
+    assert len(_vis_nodes_from_html(content)) == G.number_of_nodes()
 
 
 def test_to_html_title_uses_portable_path_not_host_absolute():
@@ -393,32 +396,6 @@ def test_to_html_neighbor_links_have_no_inline_onclick_xss():
     assert 'data-nid="${esc(nid)}"' in html
     assert "closest('.neighbor-link')" in html
 
-
-def test_to_html_pins_visjs_version_with_sri():
-    """vis-network script tag must use a pinned versioned URL with a sha384
-    Subresource Integrity hash and crossorigin=anonymous. Without this,
-    a compromised CDN could ship arbitrary JavaScript into every rendered
-    graph viewer. The hash was verified against the upstream file at
-    https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js
-    (sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1).
-    Bumping the vis-network version MUST update both the URL and the hash.
-    """
-    G = make_graph()
-    communities = cluster(G)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
-        content = out.read_text()
-
-    # Versioned URL — unversioned `vis-network/standalone/...` is rejected.
-    assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" in content
-    assert "https://unpkg.com/vis-network/standalone" not in content
-
-    # SRI integrity attribute pinning the known-good hash.
-    assert 'integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"' in content
-
-    # crossorigin="anonymous" is required for SRI on cross-origin scripts.
-    assert 'crossorigin="anonymous"' in content
 
 def test_to_html_contains_search():
     G = make_graph()
@@ -492,8 +469,8 @@ def test_to_html_annotated_node_gets_learning_status_and_ring():
     ann = nodes["n_transformer"]
     assert ann["learning_status"] == "preferred"
     assert ann["learning_stale"] is False
-    assert ann["color"]["border"] == "#22c55e"  # green ring for preferred
-    assert ann.get("borderWidth") == 3
+    assert ann["ring"] == "#22c55e"  # green ring for preferred
+    assert ann["ring_dashed"] is False
     assert "Lesson: preferred source" in ann["title"]
     # An un-annotated node carries no learning fields.
     other = next(n for nid, n in nodes.items() if nid != "n_transformer")
@@ -515,8 +492,8 @@ def test_to_html_contested_stale_node_gets_dashed_desaturated_ring():
     ann = {n["id"]: n for n in _vis_nodes_from_html(content)}["n_transformer"]
     assert ann["learning_status"] == "contested"
     assert ann["learning_stale"] is True
-    assert ann["color"]["border"] == "#9ca3af"  # desaturated when stale
-    assert ann["shapeProperties"]["borderDashes"] == [4, 4]
+    assert ann["ring"] == "#9ca3af"  # desaturated when stale
+    assert ann["ring_dashed"] is True
     assert "code changed" in ann["title"]
 
 
@@ -538,9 +515,9 @@ def test_to_html_unannotated_identical_to_pre_feature():
 
 
 def test_to_html_tooltips_preserve_special_characters_without_html_entities(tmp_path):
-    """Issue #3664: Node and edge hover tooltips (vis-network title) must preserve
+    """Issue #3664: Node and edge tooltip data (title) must preserve
     raw characters (&, ', ", <, >) without HTML entity escaping (&amp;, &#x27;, etc.)
-    because vis-network renders title via innerText rather than innerHTML."""
+    because the page escapes title with esc() at the tooltip sink."""
     import networkx as nx
     G = nx.Graph()
     G.add_node("n1", label="B-Roll & Filming", source_file="src/a.py", community=0)
@@ -579,6 +556,9 @@ def test_to_html_tooltips_preserve_special_characters_without_html_entities(tmp_
 
     # In contrast, legend items are injected into innerHTML and MUST remain HTML-escaped.
     assert "Team A &amp; Team B" in content
+    # force-graph renders tooltip strings as HTML, so the raw titles are escaped at the sink.
+    assert "nodeLabel(n => esc(n.title)" in content
+    assert "linkLabel(l => esc(l.title))" in content
 
 
 def test_to_html_learning_overlay_tooltip_preserves_special_characters(tmp_path):
@@ -1202,8 +1182,8 @@ def test_hyperedge_perimeter_uses_convex_hull_not_member_order():
     """The hyperedge polygon must be traced in hull order. Tracing `h.nodes`
     array order self-intersects whenever the layout does not place members in
     angular order, so `fill()` paints crossed wedges instead of one region."""
-    from graphify.exporters.html import _hyperedge_script
-    script = _hyperedge_script("[]")
+    from graphify.exporters.html import _html_script
+    script = _html_script("[]", "[]", "[]", "[]")
     assert "function convexHull(pts)" in script
     assert "const hull = convexHull(positions);" in script
     # the traced ring must derive from the hull, never from raw member order
@@ -1220,8 +1200,8 @@ def test_hyperedge_convex_hull_js_is_geometrically_sound():
     if node is None:
         import pytest
         pytest.skip("node not available")
-    from graphify.exporters.html import _hyperedge_script
-    m = re.search(r"function convexHull\(pts\) \{.*?\n\}", _hyperedge_script("[]"), re.S)
+    from graphify.exporters.html import _html_script
+    m = re.search(r"function convexHull\(pts\) \{.*?\n\}", _html_script("[]", "[]", "[]", "[]"), re.S)
     assert m, "convexHull not found in emitted script"
     harness = m.group(0) + r"""
 const cross = (p,q,r) => (q.x-p.x)*(r.y-p.y) - (q.y-p.y)*(r.x-p.x);
@@ -1276,25 +1256,6 @@ console.log(bad);
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
 
 
-def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():
-    """Tooltip `title` is passed to vis-network as a STRING and rendered via
-    Popup.setText -> innerText (verified in the 9.1.6 bundle), so tooltips are
-    intentionally NOT html-escaped (#3664/#3686). That safety rests on the pin:
-    if vis-network is bumped, the innerText rendering path (the #1838 stored-XSS
-    boundary) must be re-verified. This guard fails CI on a silent bump."""
-    G = make_graph()
-    communities = cluster(G)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
-        content = out.read_text()
-        assert "vis-network@9.1.6" in content, (
-            "vis-network pin changed — re-verify Popup.setText renders a string "
-            "title via innerText (not innerHTML) before updating this pin, or the "
-            "un-escaped tooltip (#3686) reopens the #1838 stored-XSS boundary"
-        )
-
-
 def test_to_html_spiral_seed_uses_a_real_map_index():
     """#3699: the Fermat-spiral seed positions reference `i`, so the node map
     MUST bind an index (`RAW_NODES.map((n, i) => ...)`). Without it the emitted
@@ -1314,7 +1275,7 @@ def test_to_html_spiral_seed_uses_a_real_map_index():
 
 
 def test_to_html_canonical_node_schema_mapping(tmp_path):
-    """#3914: nodesDS and showInfo must use canonical un-prefixed field names
+    """#3914: the client script and showInfo must use canonical un-prefixed field names
     matching RAW_NODES and Graphify's node schema (file_type, source_file,
     community_name, degree), eliminating the underscore-prefixed mapping."""
     import networkx as nx
@@ -1331,13 +1292,7 @@ def test_to_html_canonical_node_schema_mapping(tmp_path):
     assert nodes["n_sample"]["community_name"] == "Core"
     assert "degree" in nodes["n_sample"]
 
-    # nodesDS dataset mapping must preserve canonical field names
-    assert "file_type: n.file_type" in content
-    assert "source_file: n.source_file" in content
-    assert "community_name: n.community_name" in content
-    assert "degree: n.degree" in content
-
-    # nodesDS must not contain old underscore-prefixed mappings
+    # No underscore-prefixed field mappings anywhere in the client script
     assert "_file_type: n.file_type" not in content
     assert "_source_file: n.source_file" not in content
     assert "_community_name: n.community_name" not in content
@@ -1355,6 +1310,23 @@ def test_to_html_canonical_node_schema_mapping(tmp_path):
     assert "n._degree" not in content
 
 
+# Stands in for the inlined force-graph build: every property is a chainable
+# no-op, so the client script runs top to bottom without a canvas.
+_FORCE_GRAPH_MOCK_JS = """
+const _chain = new Proxy(function () {}, { get: () => _chain, apply: () => _chain });
+globalThis.ForceGraph = () => () => _chain;
+globalThis.ResizeObserver = class { observe() {} };
+globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
+document.documentElement = { setAttribute() {} };
+"""
+
+
+def _main_script(html_content: str) -> str:
+    m = re.search(r"<script>\n(const RAW_NODES = .*?)</script>", html_content, re.DOTALL)
+    assert m, "graph client script block not found in html"
+    return m.group(1)
+
+
 def _run_node_info_harness(html_content: str, target_node_id: str) -> str:
     """Helper to execute graph.html's client script in Node.js and return #info-content innerHTML."""
     import re
@@ -1365,9 +1337,7 @@ def _run_node_info_harness(html_content: str, target_node_id: str) -> str:
         import pytest
         pytest.skip("node not available")
 
-    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
-    assert m, "vis script block not found in html"
-    script = m.group(1)
+    script = _main_script(html_content)
 
     harness = f"""
 const mockElem = () => ({{
@@ -1397,30 +1367,9 @@ const doc = {{
   querySelectorAll() {{ return []; }}
 }};
 
-class MockDataSet {{
-  constructor(items) {{
-    this.map = new Map();
-    items.forEach(it => this.map.set(it.id, it));
-  }}
-  get(id) {{ return this.map.get(id); }}
-  update() {{}}
-}}
-
-const vis = {{
-  DataSet: MockDataSet,
-  Network: class {{
-    constructor() {{}}
-    once() {{}}
-    on() {{}}
-    getConnectedNodes() {{ return []; }}
-    focus() {{}}
-    selectNodes() {{}}
-  }}
-}};
-
 const document = doc;
 const window = {{}};
-
+{_FORCE_GRAPH_MOCK_JS}
 {script}
 
 showInfo('{target_node_id}');
@@ -1499,8 +1448,7 @@ def _run_sidebar_harness(html_content: str, epilogue: str):
     if node is None:
         import pytest
         pytest.skip("node not available")
-    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
-    assert m, "vis script block not found in html"
+    script = _main_script(html_content)
     harness = """
 const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remove() {} }, children: [], listeners: {},
   offsetWidth: 200, offsetHeight: 30,
@@ -1509,11 +1457,7 @@ const els = {};
 const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
   createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
 const window = { innerWidth: 1280, innerHeight: 800 };
-class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
-  get(id) { return this.map.get(id); } update() {} }
-const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}
-  getConnectedNodes(id) { return RAW_NODES.map(n => n.id).filter(x => x !== id); } } };
-""" + m.group(1) + "\n" + epilogue
+""" + _FORCE_GRAPH_MOCK_JS + script + "\n" + epilogue
     proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
     return json.loads(proc.stdout)
@@ -1563,7 +1507,7 @@ def test_to_html_legend_label_escaped_once_without_title(tmp_path):
 
 
 def test_to_html_sidebar_tooltip_shows_truncated_text_and_node_counts(tmp_path):
-    """One shared .vis-tooltip: names only when truncated, counts always as
+    """One shared #sidebar-tip: names only when truncated, counts always as
     'N node(s)'; text set via textContent so & " ' < > show literally."""
     import networkx as nx
     G = nx.Graph()
@@ -1604,7 +1548,7 @@ console.log(JSON.stringify({ count: tips.length, hovers: [
 # `tip` is the shared tooltip; tip.styleLog records every left/top it is given.
 _SIDEBAR_DOM_JS = """
 globalThis.setTimeout = f => f();
-const tips = document.body.children.filter(c => c.className === 'vis-tooltip');
+const tips = document.body.children.filter(c => c.id === 'sidebar-tip');
 const tip = tips[0];
 tip.styleLog = [];
 tip.style = new Proxy(tip.style, { set(s, k, v) { if (k === 'left' || k === 'top') tip.styleLog.push(String(v));
