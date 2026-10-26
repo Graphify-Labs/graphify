@@ -61,8 +61,14 @@ def _common_root(paths: List[str]) -> str:
     return str(Path(*common)) if common else ""
 
 
-def _make_truncation_leaf(extra: int) -> Dict[str, Any]:
-    return {"name": f"(+{extra} more)", "total_count": extra, "children": []}
+def _make_truncation_leaf(
+    extra: int, total_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    return {
+        "name": f"(+{extra} more)",
+        "total_count": extra if total_count is None else total_count,
+        "children": [],
+    }
 
 
 def _attach_files(
@@ -71,6 +77,7 @@ def _attach_files(
     root: str,
     max_children: int,
     label: Optional[str],
+    directory_ids: set[int],
 ) -> "tuple[Dict[str, Any], int, Dict[str, List[Dict[str, Any]]]]":
     """Build one directory tree from ``file_nodes`` (all carry ``source_file``).
 
@@ -92,6 +99,7 @@ def _attach_files(
         "name": label_root, "total_count": 0, "children": [],
     }
     dir_index[str(root_path)] = root_node
+    directory_ids.add(id(root_node))
 
     def _ensure_dir(abs_path: Path) -> Dict[str, Any]:
         key = str(abs_path)
@@ -103,6 +111,7 @@ def _attach_files(
                   if abs_path.parent != abs_path else root_node)
         node = {"name": abs_path.name, "total_count": 0, "children": []}
         dir_index[key] = node
+        directory_ids.add(id(node))
         parent["children"].append(node)
         return node
 
@@ -186,7 +195,9 @@ def build_tree(
 
     Each leaf is either a code symbol (class / top-level function) or
     a synthetic "(+N more)" placeholder for truncated wide directories.
-    Each interior node carries ``total_count = sum of leaf counts``.
+    Each interior node carries the full descendant leaf count, including
+    entries hidden by ``max_children``. Directory omission labels count hidden
+    immediate entries; their totals count all leaves behind those entries.
 
     A graph whose nodes carry two or more distinct ``repo`` tags (a
     ``merge-graphs`` / ``global add`` result) gets one top-level root per
@@ -194,10 +205,14 @@ def build_tree(
     in different repos stay separate. Graphs with fewer than two tags are
     built exactly as before.
 
-    Raises ``ValueError`` when an explicit ``root`` matches none of the
+    Raises ``ValueError`` for negative ``max_children`` or when an explicit
+    ``root`` matches none of the
     graph's ``source_file`` paths — every file would silently attach flat
     to the root and the hierarchy would be lost (#2534).
     """
+    if max_children < 0:
+        raise ValueError("--max-children must be nonnegative")
+    directory_ids: set[int] = set()
     nodes: List[Dict[str, Any]] = list(graph.get("nodes", []))
     file_nodes = [n for n in nodes if n.get("source_file")]
     if not file_nodes:
@@ -213,7 +228,7 @@ def build_tree(
             root = _common_root([n["source_file"] for n in file_nodes])
         root_node, matched_files, by_file = _attach_files(
             file_nodes, root=root, max_children=max_children,
-            label=project_label,
+            label=project_label, directory_ids=directory_ids,
         )
         total_matched, total_files = matched_files, len(by_file)
         sample = min(by_file)
@@ -223,6 +238,7 @@ def build_tree(
             "total_count": 0,
             "children": [],
         }
+        directory_ids.add(id(root_node))
         total_matched = total_files = 0
         sample = ""
         ordered = sorted(groups.items())
@@ -240,6 +256,7 @@ def build_tree(
                 group_root = _common_root(paths)
             repo_node, matched, by_file = _attach_files(
                 group, root=group_root, max_children=max_children, label=tag,
+                directory_ids=directory_ids,
             )
             root_node["children"].append(repo_node)
             total_matched += matched
@@ -265,10 +282,14 @@ def build_tree(
         ))
         if not kids:
             return d.get("total_count") or 1
-        n = 0
-        for c in kids:
-            n += _finalise(c)
-        d["total_count"] = n or 1
+        child_totals = [_finalise(c) for c in kids]
+        d["total_count"] = sum(child_totals) or 1
+        if id(d) in directory_ids and len(kids) > max_children:
+            d["children"] = kids[:max_children] + [
+                _make_truncation_leaf(
+                    len(kids) - max_children, sum(child_totals[max_children:]),
+                ),
+            ]
         return d["total_count"]
 
     _finalise(root_node)
