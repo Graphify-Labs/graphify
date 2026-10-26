@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -124,7 +125,7 @@ def test_monolith_watch_uses_trusted_graphify_root(skill_file: str):
         f"{skill_file} --watch command does not reference graphify-out/.graphify_python"
     )
     assert block == (
-        '$(cat graphify-out/.graphify_python) -m graphify.watch '
+        '"$(cat graphify-out/.graphify_python)" -m graphify.watch '
         '"$(cat graphify-out/.graphify_root)" --debounce 3'
     )
 
@@ -210,6 +211,12 @@ def test_step1_still_resolves_a_legitimate_path(tmp_path: Path, skill_file: str)
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     marker_content = marker.read_text(encoding="utf-8").strip()
+    # An empty marker would resolve to the cwd (the repo) and fail below with a
+    # misleading path mismatch; a full disk leaves Step 1's write empty.
+    assert marker_content, (
+        f"Step 1 wrote an empty {marker} for {skill_file}; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
     if sys.platform == "win32" and project.drive:
         drive_letter = project.drive[0].lower()
         if marker_content.startswith(f"/mnt/{drive_letter}/"):
@@ -235,3 +242,156 @@ def test_step1_still_fails_loudly_on_a_nonexistent_path(tmp_path: Path, skill_fi
     marker = tmp_path / "graphify-out" / ".graphify_root"
     assert result.returncode != 0
     assert not marker.exists() or marker.read_text(encoding="utf-8") == ""
+
+
+# --- #4309: a scan path with a line break is refused --------------------------
+# The shell ends a heredoc / here-string at the first line equal to its terminator,
+# before any Python runs. The refusal instruction to the agent is the real guard;
+# the Python check below is a backstop for multi-line input that reaches stdin.
+
+def _root_capture_skills() -> list[Path]:
+    return sorted(
+        p for p in (REPO_ROOT / "graphify").glob("skill*.md")
+        if "GRAPHIFY_ROOT_EOF" in p.read_text(encoding="utf-8")
+        or "$InputPathRaw" in p.read_text(encoding="utf-8")
+    )
+
+
+def test_root_capture_skills_are_discovered():
+    """The parametrized guard below must not pass vacuously."""
+    assert len(_root_capture_skills()) >= 10, [p.name for p in _root_capture_skills()]
+
+
+@pytest.mark.parametrize("skill", _root_capture_skills(), ids=lambda p: p.name)
+def test_every_root_capture_tells_the_agent_to_refuse_a_line_break(skill: Path):
+    """The heredoc / here-string that carries the scan path can be ended early by a
+    path line, so every skill that captures the root must tell the agent to refuse
+    a path with a line break instead of running the block (#4309)."""
+    text = skill.read_text(encoding="utf-8")
+    assert "contains a line break" in text and "stop and ask the user for a different path" in text, skill.name
+
+
+def _run_root_capture(stdin: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Run the shipped POSIX Step 1 Python with ``stdin`` in place of the heredoc body.
+
+    The script spans lines: it runs from ``"$PYTHON" -c "`` to the closing quote
+    that opens the heredoc."""
+    text = (REPO_ROOT / "graphify" / "skill.md").read_text(encoding="utf-8")
+    end = text.index("\n\" <<'GRAPHIFY_ROOT_EOF'")
+    command = text[text.rindex('"$PYTHON" -c "\n', 0, end):end + 2]
+    (cwd / "graphify-out").mkdir(exist_ok=True)
+    return subprocess.run(
+        ["bash", "-c", command], cwd=cwd, input=stdin, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "PYTHON": sys.executable},
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX one-liner through bash")
+def test_root_capture_writes_the_exact_path_and_runs_nothing(tmp_path: Path):
+    """A path with spaces, quotes, `$(...)` text and non-ASCII is saved as is; the
+    `$(touch X)` in it is a directory name, not a command (#4309)."""
+    target = tmp_path / "a b" / "$(touch X)" / "it's é"
+    target.mkdir(parents=True)
+    done = _run_root_capture(f"{target}\n", tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "graphify-out" / ".graphify_root").read_text(encoding="utf-8") == str(target.resolve())
+    assert (tmp_path / "graphify-out" / ".graphify_python").read_text(encoding="utf-8") == sys.executable
+    assert not list((tmp_path / "graphify-out").glob(".graphify_*.tmp*")), "a temp file was left behind"
+    assert not (tmp_path / "X").exists() and not (target.parent / "X").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX one-liner through bash")
+def test_root_capture_rejects_input_with_more_than_one_line(tmp_path: Path):
+    """A path with a line break (here a forged heredoc terminator and a command) is
+    refused: non-zero exit, no root marker, and last run's root is not left behind
+    (#4309, #4346)."""
+    out = _write_old_markers(tmp_path)
+    done = _run_root_capture("/tmp/x\nGRAPHIFY_ROOT_EOF\necho pwned\n", tmp_path)
+    assert done.returncode != 0
+    assert "line break" in done.stderr
+    assert not (out / ".graphify_root").exists()
+    assert (out / ".graphify_python").read_text(encoding="utf-8") == sys.executable
+
+
+# --- #4346: Step 1 must not leave empty or stale marker files ------------------
+
+
+def _write_old_markers(tmp_path: Path) -> Path:
+    """Markers a previous, successful run left behind (maybe for another project)."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_python").write_text("/old/python", encoding="utf-8")
+    (out / ".graphify_root").write_text("/old/project", encoding="utf-8")
+    return out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ulimit is POSIX")
+@pytest.mark.parametrize("skill_file", ALL_TESTED_SKILL_FILES)
+def test_step1_fails_loudly_when_it_cannot_write(tmp_path: Path, skill_file: str):
+    """#4346: a full disk left empty marker files and Step 1 still exited 0.
+    `ulimit -f 0` makes every file write fail the way a full disk does."""
+    _skip_unless_bash_python_has_graphify()
+    script = _extract_step1_bash_block(skill_file)
+    script = script.replace(
+        "mkdir -p graphify-out", "mkdir -p graphify-out\ntrap '' XFSZ\nulimit -f 0", 1
+    )
+    out = _write_old_markers(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+
+    result = _run_step1(script, str(project), cwd=tmp_path)
+
+    assert result.returncode != 0, f"{skill_file}: Step 1 exited 0 after its writes failed"
+    assert "graphify-out/.graphify_" in result.stderr, result.stderr
+    # Nothing left behind: not an empty file, and not last run's answer either.
+    assert not (out / ".graphify_python").exists(), skill_file
+    assert not (out / ".graphify_root").exists(), skill_file
+
+
+@pytest.mark.parametrize("skill_file", ALL_TESTED_SKILL_FILES)
+def test_step1_replaces_markers_from_an_earlier_run(tmp_path: Path, skill_file: str):
+    """Writing through a temp file and a rename must still overwrite old markers."""
+    _skip_unless_bash_python_has_graphify()
+    script = _extract_step1_bash_block(skill_file)
+    out = _write_old_markers(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+
+    result = _run_step1(script, str(project), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert Path((out / ".graphify_root").read_text(encoding="utf-8")).resolve() == project.resolve()
+    assert (out / ".graphify_python").read_text(encoding="utf-8") != "/old/python"
+    assert not list(out.glob(".graphify_*.tmp*")), "a temp file was left behind"
+
+
+def _extract_windows_step1() -> str:
+    text = (REPO_ROOT / "graphify" / "skill-windows.md").read_text(encoding="utf-8")
+    for block in re.findall(r"```powershell\n(.*?)\n```", text, re.S):
+        if "graphify_root" in block:
+            return block
+    raise AssertionError("could not find the Step 1 powershell block in skill-windows.md")
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell (pwsh)")
+def test_windows_step1_fails_loudly_when_it_cannot_write(tmp_path: Path):
+    """#4346: WriteAllText threw and the script kept going. A directory where the
+    temp file goes makes the write fail on any OS. `ulimit -f 0` can't be used
+    here: it also stops pwsh itself from starting on CI ("Failed to create CoreCLR")."""
+    project = tmp_path / "project"
+    project.mkdir()
+    out = _write_old_markers(tmp_path)
+    (out / ".graphify_python.tmp").mkdir()          # the write to the temp file fails
+    script = _extract_windows_step1().replace("\nINPUT_PATH\n", f"\n{project}\n")
+    (tmp_path / "step1.ps1").write_text(script, encoding="utf-8")
+    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-File", "step1.ps1"],
+        cwd=tmp_path, capture_output=True, text=True, env=env,
+    )
+
+    assert result.returncode != 0, "Windows Step 1 exited 0 after a write failed"
+    assert ".graphify_python" in result.stdout + result.stderr
+    assert not (out / ".graphify_python").is_file()
+    assert not (out / ".graphify_root").is_file()
