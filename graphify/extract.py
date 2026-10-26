@@ -9672,6 +9672,8 @@ def extract(
     #   nodes / retry) and is not double-reported with contradictory advice;
     # - skip `skipped` (#1224/#2879 intentional data declines, like #1666) and
     #   no-extractor files (#1689 already reports those as unsupported code);
+    # - skip Godot scenes/resources: extract_godot_resource models their links as
+    #   edges and never emits symbols, so every scene would be reported;
     # - skip empty/whitespace-only files (an empty `__init__.py`, `py.typed`)
     #   — there is nothing to model, so the warning would be pure noise.
     # The message stays neutral ("no symbols"): a def-less script or thin
@@ -9681,7 +9683,7 @@ def extract(
         _res = per_file[i] or {}
         if _res.get("parse_errors") or _res.get("error") or _res.get("skipped"):
             continue
-        if _get_extractor(_p) is None:
+        if _get_extractor(_p) in (None, extract_godot_resource):
             continue
         if len(_res.get("nodes", [])) != 1:
             continue

@@ -183,6 +183,13 @@ def test_godot_project_declares_autoloads_and_main_scene(tmp_path):
     assert [Path(e["target_file"]).name for e in main] == ["main.tscn"]
 
 
+def test_godot_scenes_and_resources_are_not_reported_as_symbolless(tmp_path, capsys):
+    root = _project(tmp_path)
+    # bullet.tscn and hud.tscn are a bare file node, main.tscn only adds edges
+    _extract(root, [p for p in _godot_files(root) if p.suffix != ".gd"])
+    assert "yielded no symbols" not in capsys.readouterr().err
+
+
 @_needs_gdscript
 def test_godot_scene_handler_lands_on_the_script_method(tmp_path):
     root = _project(tmp_path)
