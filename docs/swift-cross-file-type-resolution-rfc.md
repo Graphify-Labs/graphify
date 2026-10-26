@@ -28,75 +28,75 @@ results hold for the current HEAD.
 
 ### Observed on a real app
 
-The real app is a SwiftUI/TCA macOS app with 567 Swift files, built with
+The real app is a SwiftUI app with several hundred Swift files, built with
 `graphify extract . --code-only --no-label`.
 
-- `graphify affected "Layout"` prints `No unique node match for Layout`. Two sourced
-  `Layout` nodes exist: the declaration in `Models/Layout.swift` and an unmerged
-  `extension Layout` in `Logic/Migrator.swift`.
-- `graphify affected <declaration id>` lists only Layout's own `.encode()` callers. None of
-  the 17 references from other files reach it. Each referencing file has its own stub, for
-  example `..._reducer_editor_swift_layout`, with an empty `source_file`, and
-  `Editor.State` (L114 `var layout: Layout`) references that stub.
+- `graphify affected "Shape"` prints `No unique node match for Shape`. Two sourced
+  `Shape` nodes exist: the declaration in `Models/Shape.swift` and an unmerged
+  `extension Shape` in `Logic/Converter.swift`.
+- `graphify affected <declaration id>` lists only Shape's own `.encode()` callers. None of
+  the references from other files reach it. Each referencing file has its own stub, for
+  example `..._screens_canvas_swift_shape`, with an empty `source_file`, and
+  `Canvas.State` (`var shape: Shape`) references that stub.
 - Every `import Foundation` / `import SwiftUI` prints
   `WARNING: node 'foundation' is minted by two different files`.
 
-Across the corpus, 1,362 `references` edges from Swift files point at a sourceless stub whose
-label matches a type the corpus declares. They fall into four groups:
+Across the corpus, more than a thousand `references` edges from Swift files point at a
+sourceless stub whose label matches a type the corpus declares. They fall into four groups:
 
-| Bucket | Labels | Stub edges | Cause | Phase |
-|---|---|---|---|---|
-| One declaration + same-file extension + extension elsewhere | 8 (`Layout`, `Session`, `Client`, …) | 601 | §RC1 | 1 |
-| Extension only, the type is declared outside the corpus (`View`, `DependencyValues`, …) | 6 | 408 | #4574 | 1 (fail-closed) |
-| Several declarations of one name (nested `State`, `Action`, `CodingKeys`, `Delegate`, …) | 40 | 353 | §RC3 | 3 |
-| Declaration lost to a tree-sitter-swift parse error | (`LargeFeature`, 119 of the 408 above) | — | out of scope | — |
+| Bucket | Example labels | Cause | Phase |
+|---|---|---|---|
+| One declaration + same-file extension + extension elsewhere | `Shape`, … | §RC1 | 1 |
+| Extension only, the type is declared outside the corpus | `View`, `DependencyValues`, … | #4574 | 1 (fail-closed) |
+| Several declarations of one name | nested `State`, `Action`, `CodingKeys`, `Delegate`, … | §RC3 | 3 |
+| Declaration lost to a tree-sitter-swift parse error | the main type of one large file | out of scope | — |
 
-`LargeFeature.swift` (7,222 lines) parses with a top-level `ERROR` node from L100 to
-L900, and that node swallows `@Reducer struct LargeFeature`. This is a grammar
+One large feature file parses with a top-level `ERROR` node that spans part of the file,
+and that node swallows the file's main type declaration. This is a grammar
 limitation, a separate problem that this spec does not address (see #3542 for that class of
 bug).
 
 ### Minimal reproduction (3 files + 1 consumer)
 
 ```swift
-// App/Models/Layout.swift
+// App/Models/Shape.swift
 import Foundation
 
-struct Layout: Equatable, Codable {
-  var panes: [Pane]
-  struct Pane: Equatable, Codable { var id: Int }
+struct Shape: Equatable, Codable {
+  var points: [Point]
+  struct Point: Equatable, Codable { var id: Int }
   func encodeAll() -> Data { Data() }
 }
 
-extension Layout {            // same-file extension: shares the declaration's id
-  var isEmpty: Bool { panes.isEmpty }
+extension Shape {             // same-file extension: shares the declaration's id
+  var isEmpty: Bool { points.isEmpty }
 }
 ```
 
 ```swift
-// App/Logic/Migrator.swift
+// App/Logic/Converter.swift
 import Foundation
 
-extension Layout {            // cross-file extension
-  static func migrated() -> Layout { Layout(panes: []) }
+extension Shape {             // cross-file extension
+  static func converted() -> Shape { Shape(points: []) }
 }
 
-enum Migrator {
-  static func run(_ input: Layout) -> Layout { input }
+enum Converter {
+  static func run(_ input: Shape) -> Shape { input }
 }
 ```
 
 ```swift
-// App/Reducer/Editor.swift
+// App/Screens/Canvas.swift
 import Foundation
 
-struct Editor {
+struct Canvas {
   struct State: Equatable {
-    var layout: Layout
-    var focused: Layout.Pane?
+    var shape: Shape
+    var selected: Shape.Point?
   }
   func reset(_ state: inout State) {
-    state.layout = Layout(panes: [])
+    state.shape = Shape(points: [])
   }
 }
 ```
@@ -105,30 +105,30 @@ struct Editor {
 // App/Logic/Persistence.swift
 import Foundation
 
-final class LayoutStore {
-  var cached: Layout?
-  func save(_ layout: Layout) {}
-  func load() -> Layout { Layout(panes: []) }
+final class ShapeStore {
+  var cached: Shape?
+  func save(_ shape: Shape) {}
+  func load() -> Shape { Shape(points: []) }
 }
 ```
 
 **Actual** (`graphify extract . --code-only --no-label`, 0.9.94):
 
 ```
-Layout nodes:
-  app_models_layout_layout        App/Models/Layout.swift     <- declaration
-  app_logic_migrator_layout    App/Logic/Migrator.swift <- unmerged extension
-  app_logic_persistence_swift_layout  ''                              <- stub
-  app_reducer_editor_swift_layout ''                           <- stub
-edges into Layout:
-  .run()             references parameter_type -> app_logic_migrator_layout
-  .run()             references return_type    -> app_logic_migrator_layout
-  LayoutStore  references field          -> app_logic_persistence_swift_layout
-  .save()            references parameter_type -> app_logic_persistence_swift_layout
-  .load()            references return_type    -> app_logic_persistence_swift_layout
-  State              references field          -> app_reducer_editor_swift_layout
-  (no edge from .reset() or .load() for the Layout(...) constructor calls)
-  (no edge from State to Pane; `focused: Layout.Pane?` is recorded as a Layout reference)
+Shape nodes:
+  app_models_shape_shape             App/Models/Shape.swift     <- declaration
+  app_logic_converter_shape          App/Logic/Converter.swift  <- unmerged extension
+  app_logic_persistence_swift_shape  ''                         <- stub
+  app_screens_canvas_swift_shape     ''                         <- stub
+edges into Shape:
+  .run()             references parameter_type -> app_logic_converter_shape
+  .run()             references return_type    -> app_logic_converter_shape
+  ShapeStore         references field          -> app_logic_persistence_swift_shape
+  .save()            references parameter_type -> app_logic_persistence_swift_shape
+  .load()            references return_type    -> app_logic_persistence_swift_shape
+  State              references field          -> app_screens_canvas_swift_shape
+  (no edge from .reset() or .load() for the Shape(...) constructor calls)
+  (no edge from State to Point; `selected: Shape.Point?` is recorded as a Shape reference)
 stderr:
   WARNING: node 'foundation' is minted by two different files ... (x2)
 ```
@@ -136,21 +136,21 @@ stderr:
 **Expected:**
 
 ```
-Layout nodes: app_models_layout_layout only
-  (migrated() attached to it as a method; Migrator.swift contains it)
-edges into Layout: all six references above point at app_models_layout_layout
-  .reset() calls -> Layout   (constructor; INFERRED, see Phase 4)
-  State references field -> app_models_layout_pane   (the nested Pane, after Phase 2;
-                            app_models_layout_layout_pane after Phase 3)
+Shape nodes: app_models_shape_shape only
+  (converted() attached to it as a method; Converter.swift contains it)
+edges into Shape: all six references above point at app_models_shape_shape
+  .reset() calls -> Shape   (constructor; INFERRED, see Phase 4)
+  State references field -> app_models_shape_point   (the nested Point, after Phase 2;
+                            app_models_shape_shape_point after Phase 3)
 stderr: no 'foundation' collision warning
 ```
 
 Two controls narrow the cause down:
 
-- *Remove the same-file `extension Layout`* (keep the cross-file one): every reference
+- *Remove the same-file `extension Shape`* (keep the cross-file one): every reference
   resolves to the declaration. So the generic rewire works for Swift, and the merge fails only
   because of the shared id.
-- *Remove `Migrator.swift`* (keep the same-file extension): every reference resolves.
+- *Remove `Converter.swift`* (keep the same-file extension): every reference resolves.
 
 ---
 
@@ -168,19 +168,19 @@ passes that match by label: `_merge_swift_extensions` (`extract.py:4147`) and
 ### RC1: a declaration that has a same-file extension is never canonical
 
 - Node ids are `_make_id(stem, name)` (`engine.py:6168`; Swift leaves `namespace_stack` empty),
-  so `struct Layout` and `extension Layout` in **one** file mint the **same** id.
+  so `struct Shape` and `extension Shape` in **one** file mint the **same** id.
 - When the declaration node has an `extension` child, its id is appended to `swift_extensions`
   (`engine.py:6287-6290`). That includes this shared id.
 - `_merge_swift_extensions` skips every id in `extension_nids` when it collects canonical
   candidates (`extract.py:4180-4181`). The real declaration is therefore not a candidate.
-  The extension in `Migrator.swift` finds zero candidates and is left alone
+  The extension in `Converter.swift` finds zero candidates and is left alone
   (`extract.py:4201-4203`).
-- `_rewire_unique_stub_nodes` then sees two sourced, type-like `Layout` nodes
+- `_rewire_unique_stub_nodes` then sees two sourced, type-like `Shape` nodes
   (`extract.py:3936-3941`), treats the label as ambiguous and keeps every stub
   (`extract.py:3993-4009`). The fail-closed guard is correct here, but its input is wrong.
 - `_disambiguate_colliding_node_ids` (`extractors/resolution.py:1060`, called at
-  `extract.py:10185`) salts the bare `layout` stubs apart by referencing file. That
-  produces the `<file>_swift_layout` ids seen above. The ids are a symptom, not a cause.
+  `extract.py:10185`) salts the bare `shape` stubs apart by referencing file. That
+  produces the `<file>_swift_shape` ids seen above. The ids are a symptom, not a cause.
 
 The #4574 author describes the same mechanism (the "Money" case) in a comment on that issue.
 
@@ -190,28 +190,28 @@ An extension of a type declared nowhere in the corpus (`extension View`,
 `private extension String`) survives the merge with a `source_file` and the label of the
 extended type. If one such node exists, it becomes the unique "real" definition for the rewire
 (`extract.py:3936-3941`). If several files extend the same type, the label becomes ambiguous
-(408 edges on the app above). Either way the result is wrong.
+(a large share of the stub edges on the app above). Either way the result is wrong.
 
 ### RC3: Swift type names are reduced to their first segment
 
 - `_swift_collect_type_refs` keeps only the first `type_identifier` of a `user_type`
-  (`engine.py:1478-1484`). tree-sitter-swift parses `Layout.Pane` as `user_type` with
-  children `type_identifier(Layout) type_identifier(Pane)`, so the reference becomes
-  `Layout`. `_swift_user_type_name` behaves the same way for inheritance clauses
+  (`engine.py:1478-1484`). tree-sitter-swift parses `Shape.Point` as `user_type` with
+  children `type_identifier(Shape) type_identifier(Point)`, so the reference becomes
+  `Shape`. `_swift_user_type_name` behaves the same way for inheritance clauses
   (`engine.py:1424-1432`).
 - The same head-only name goes into `swift_type_table` (`engine.py:7332-7333`, `7371`), so
-  `focused` is typed as `Layout` and a later `focused.id` would be resolved against the
+  `selected` is typed as `Shape` and a later `selected.id` would be resolved against the
   wrong type.
 - Nested types get no qualified identity. Their id omits the enclosing type (#4575), and their
-  label is the bare name, so `real_by_label["State"]` holds 23 candidates on the app.
-  `extension Editor.State` is labelled `Editor.State`. That dotted label is never
+  label is the bare name, so `real_by_label["State"]` holds every nested `State` of the app.
+  `extension Canvas.State` is labelled `Canvas.State`. That dotted label is never
   type-like (`resolution.py:1209-1212`) and never matches the bare-labelled declaration in
   `_merge_swift_extensions`, so extensions of nested types never merge.
 
 ### RC4: cross-file constructor calls are dropped
 
-`Layout(panes: [])` is recorded as a raw call with `via_stub: True` whenever the same file
-also names `Layout` in a type position (`engine.py:9614-9618`, #3888). The shared call pass
+`Shape(points: [])` is recorded as a raw call with `via_stub: True` whenever the same file
+also names `Shape` in a type position (`engine.py:9614-9618`, #3888). The shared call pass
 accepts such a call only with import evidence or a C# namespace hit (`extract.py:10798`). A
 Swift file never imports a type from its own module, so the call is always dropped. Even
 without `via_stub`, the `(caller, target)` pair dedup at `extract.py:10800` suppresses the call
@@ -263,11 +263,11 @@ re-checked.
 **#4600 regresses the common case.** It sets `metadata.swift_extension = True` on
 `class_nid` whenever a declaration has an `extension` child. In the same-file case that id is
 the real declaration, so the rewire skips the only definition. The 5 references in the
-control fixture move from `app_models_layout_layout` back onto stubs. In the
+control fixture move from `app_models_shape_shape` back onto stubs. In the
 `struct X` + `extension X` in `X.swift` layout this affects every such type, even when no
 other file extends it. Phase 1 below is the variant that the #4574 author proposed in the
 issue thread: mark only **extension-only** ids. Phase 1 is its own implementation and is not
-based on #4600, since #4600 does not fix the `Layout` case and regresses the common case.
+based on #4600, since #4600 does not fix the `Shape` case and regresses the common case.
 
 **#4599** gives nested types a parent-qualified id. Phase 3 is implemented here on its own,
 with the same kind of id, and does not wait for #4599 (D8). #4599 alone does not resolve
@@ -306,10 +306,10 @@ Parallel implementers build against these names. A phase may not rename them.
 |---|---|---|---|
 | node key | `_swift_extension_only: True` | 1 | sourced Swift class node made only of `extension` blocks in its file |
 | per-file record | `swift_extensions[]` = `{"nid", "label", "declared": bool}` | 1 | `declared` = the id is also in `swift_declared_nids` |
-| node key | `_swift_qualified: list[str]` | 2 | qualified paths of the declaration(s) on this node, e.g. `["Editor.State"]`; an extension node holds the path it extends |
+| node key | `_swift_qualified: list[str]` | 2 | qualified paths of the declaration(s) on this node, e.g. `["Canvas.State"]`; an extension node holds the path it extends |
 | edge attr | `_swift_scope: str` | 2 | on Swift `references`, `inherits` and `implements` edges: qualified path of the enclosing type or extended type; omitted at file scope (D14) |
 | edge attr | `_swift_lookup: "ambiguous" \| "unresolved"` | 2 | the Swift pass declined this edge; the generic rewire must leave it on its stub |
-| per-file record | `swift_type_table = {"path", "table", "scopes", "factory"?}` | 2 | `table[name]` is the written type path (`"Layout.Pane"`) for properties, parameters and locals alike; new `scopes[name]` is the innermost enclosing Swift type (D12) |
+| per-file record | `swift_type_table = {"path", "table", "scopes", "factory"?}` | 2 | `table[name]` is the written type path (`"Shape.Point"`) for properties, parameters and locals alike; new `scopes[name]` is the innermost enclosing Swift type (D12) |
 | function | `_swift_type_index(nodes: list[dict]) -> SwiftTypeIndex` | 2 | `extractors/resolution.py`; `SwiftTypeIndex` is a `NamedTuple(by_path: dict[str, list[str]], by_label: dict[str, list[str]])` |
 | function | `_swift_lookup(index: SwiftTypeIndex, name: str, scope: str) -> tuple[str, str \| None]` | 2 | status `"resolved"` (with nid), `"ambiguous"`, `"unresolved"` or `"external"` (with `None`) |
 | function | `_resolve_swift_type_references(per_file, paths, all_nodes, all_edges, root, resolution_context_nodes=None, resolution_context_edges=None) -> None` | 2 | `extractors/resolution.py`, same signature as `_resolve_go_type_references` (`resolution.py:3612-3620`) |
@@ -494,7 +494,7 @@ and `watch.py:2035-2041` (D2), so `graphify update` keeps it on unchanged contex
 graph built before Phase 1 has no marker; its extension-only nodes act as declarations (today's
 behaviour) until the next full `graphify extract`.
 
-Expected effect on the app: the 601-edge bucket resolves. The extension-only nodes for `View`,
+Expected effect on the app: the first bucket resolves. The extension-only nodes for `View`,
 `DependencyValues` and similar stop attracting references.
 
 ### Phase 2: Swift module symbol table and type-reference pass (RC3, qualified names)
@@ -509,8 +509,8 @@ the Go pass (`extract.py:10221-10232`): after `_merge_swift_extensions` and
 Extractor outputs. They change per-file records, so `_AST_CACHE_SCHEMA` gets a bump (D5):
 
 - Each Swift class node gets `_swift_qualified: list[str]`, built from a nesting stack during
-  the walk (`["Editor.State"]`). An extension node records the path it extends
-  (`extension Editor.State` -> `["Editor.State"]`). A second declaration whose id
+  the walk (`["Canvas.State"]`). An extension node records the path it extends
+  (`extension Canvas.State` -> `["Canvas.State"]`). A second declaration whose id
   folds onto an existing node appends its path instead of being lost, so before Phase 3
   `struct A { struct State {} }; struct B { struct State {} }` in one file gives one node with
   `["A.State", "B.State"]`. Add `"_swift_qualified"` to the marker tuples (D2).
@@ -521,9 +521,9 @@ Extractor outputs. They change per-file records, so `_AST_CACHE_SCHEMA` gets a b
   generic-parameter exclusions apply to the head segment, so `T.Element` and `Self.Element`
   emit nothing. `_swift_user_type_name` (`engine.py:1424-1432`) returns the same joined path
   for inheritance clauses.
-- The stub for `Layout.Pane` is labelled `Layout.Pane`, not `Layout`. Every Swift
+- The stub for `Shape.Point` is labelled `Shape.Point`, not `Shape`. Every Swift
   `references`, `inherits` and `implements` edge carries `_swift_scope`, the qualified path of
-  the enclosing type or extended type (`"Editor.State"`), omitted at file scope (D14).
+  the enclosing type or extended type (`"Canvas.State"`), omitted at file scope (D14).
 - `swift_type_table["table"][name]` holds the joined path for every producer: properties
   (`prop_type` at `engine.py:7333`), parameters (`engine.py:7898-7899`) and locals
   (`_swift_local_var_types`, `engine.py:2984`). A new `swift_type_table["scopes"][name]` holds
@@ -535,8 +535,8 @@ Extractor outputs. They change per-file records, so `_AST_CACHE_SCHEMA` gets a b
 Symbol table (`_swift_type_index`, D1):
 
 ```
-by_path:  qualified name ("Layout", "Layout.Pane", "Editor.State") -> [nid, ...]
-by_label: last segment ("Pane", "State") -> [nid, ...]
+by_path:  qualified name ("Shape", "Shape.Point", "Canvas.State") -> [nid, ...]
+by_label: last segment ("Point", "State") -> [nid, ...]
 ```
 
 It holds nodes whose `source_file` is `.swift`, that carry `_swift_qualified` (which stands
@@ -551,8 +551,8 @@ way to annotations, parameter and return types, inheritance/conformance clauses,
 arguments and extension targets:
 
 1. Lexical lookup, innermost first: try `S1.S2.A.B.C`, then `S1.A.B.C`, then `A.B.C`. This
-   mirrors Swift name lookup, where a bare `State` inside `Editor` or inside
-   `extension Editor` means `Editor.State`.
+   mirrors Swift name lookup, where a bare `State` inside `Canvas` or inside
+   `extension Canvas` means `Canvas.State`.
 2. The first level that has exactly one candidate wins (`"resolved"`). The edge is repointed
    and keeps `EXTRACTED`, since the binding follows from the text and the language rules.
 3. A level that has two or more candidates stops the search without binding (`"ambiguous"`).
@@ -571,7 +571,7 @@ sourceless stub; the written name is the stub `label` (D14, D17). For `"ambiguou
 
 Extension targets resolve with the same lookup at file scope (D18): every extension label,
 dotted or bare, goes through `_swift_lookup(index, label, "")` in `_merge_swift_extensions`.
-`extension Editor.State` merges into the nested declaration; a bare `extension Config` of
+`extension Canvas.State` merges into the nested declaration; a bare `extension Config` of
 an outside type does not merge into a nested `Outer.Config` (`"unresolved"`). Only
 `"external"` falls back to the existing family-gated bare-label match, which keeps Swift↔ObjC
 folding.
@@ -634,7 +634,7 @@ calls it takes the place of the `via_stub` evidence gate at `extract.py:10798`: 
 precedent here.
 
 The `(caller, target)` pair dedup at `extract.py:10800` stays (RC4). A caller that already
-references the type, such as `func load() -> Layout { Layout(...) }`, keeps only the
+references the type, such as `func load() -> Shape { Shape(...) }`, keeps only the
 `references` edge. The Phase 4 test therefore uses a caller without a type reference to the
 callee (`.reset()` in the repro).
 
@@ -657,7 +657,7 @@ bump (D5).
 
 - Phase 1 changes no ids. It removes duplicate sourced nodes (extension nodes folded into
   their declaration) and sourceless stubs that become unreferenced.
-- Phase 2 changes stub labels from `Layout` to `Layout.Pane` for qualified references
+- Phase 2 changes stub labels from `Shape` to `Shape.Point` for qualified references
   that still do not resolve. Their ids follow from the label through `_make_id`.
 - Phase 3 changes nested-type ids, and salts the ids of a nested type and a member that
   collide. Saved queries and `--seed` ids that name a nested Swift type stop matching. This
@@ -700,8 +700,8 @@ bump (D5).
 - Phase 1: O(nodes) set membership, no extra parse.
 - Phase 2: one dict build over declared Swift nodes, plus at most `depth(scope)` lookups per
   Swift reference edge, which in practice means at most 3-4. It needs no reparse, because
-  scope and full path are recorded at extraction time. On the app above, with 39,656 edges and
-  13,962 nodes, this costs less than the existing rewire pass. The call pass and the
+  scope and full path are recorded at extraction time. On the app above, with tens of thousands of
+  edges and nodes, this costs less than the existing rewire pass. The call pass and the
   member-call resolver each rebuild the index once (D1).
 - No change to the per-file extraction cost beyond keeping a scope stack.
 
@@ -721,7 +721,7 @@ fix, and **controls**, which pass on `c588b72d` and must keep passing.
 Phase 1 (`tests/test_swift_cross_file_calls.py`):
 
 - Regression `test_declaration_with_same_file_extension_absorbs_cross_file_extension`: the 3+1
-  file repro. It asserts one `Layout` node, `.migrated()` as its method, and every
+  file repro. It asserts one `Shape` node, `.converted()` as its method, and every
   `references` edge onto it.
 - Regression `test_extension_of_outside_type_does_not_absorb_references`: the #4574 repro.
 - Regression `test_extension_only_node_does_not_absorb_other_file_reference`: `extension Foo {}`
@@ -746,23 +746,23 @@ Phase 1 (`tests/test_swift_cross_file_calls.py`):
 Phase 2 (new `tests/test_swift_type_resolution.py`):
 
 - Regression `test_qualified_nested_reference_resolves_to_nested_type`:
-  `var focused: Layout.Pane?` from another file reaches the `Pane` node.
+  `var selected: Shape.Point?` from another file reaches the `Point` node.
 - Regression `test_bare_nested_name_resolves_lexically_in_extension`:
-  `extension Editor { func f(_ s: State) }` in another file reaches
-  `Editor.State` and not another reducer's `State`.
+  `extension Canvas { func f(_ s: State) }` in another file reaches
+  `Canvas.State` and not another reducer's `State`.
 - Regression `test_bare_name_not_visible_lexically_stays_on_stub`: the only `Config` is
   `Outer.Config`; a bare `Config` in another file stays on its stub, and no edge reaches
   `Outer.Config`. The `_swift_lookup` marker is popped at the end of `extract()` (D16), so
   `_swift_lookup == "unresolved"` is asserted in a direct test of
   `_resolve_swift_type_references` in `tests/test_swift_type_index.py` (D15),
   `test_type_pass_marks_bare_name_not_visible_lexically_unresolved`.
-- Regression `test_extension_of_nested_type_merges`: `extension Editor.State { ... }` in
+- Regression `test_extension_of_nested_type_merges`: `extension Canvas.State { ... }` in
   another file. Its methods attach to the nested declaration.
 - Regression `test_qualified_conformance_and_generic_args_resolve`: `struct A: Outer.Proto` and
-  `var x: [String: Layout.Pane]` across files.
+  `var x: [String: Shape.Point]` across files.
 - Regression `test_type_table_records_full_path`: on the per-file extractor result,
-  `result["swift_type_table"]["table"]["focused"] == "Layout.Pane"` and
-  `result["swift_type_table"]["scopes"]["focused"] == "Editor.State"`.
+  `result["swift_type_table"]["table"]["selected"] == "Shape.Point"` and
+  `result["swift_type_table"]["scopes"]["selected"] == "Canvas.State"`.
 - Regression `test_member_call_through_nested_type_annotation`: `x: Outer.Inner` and `x.go()`
   bind to `Inner.go()`.
 - Regression `test_member_call_through_nested_parameter_type`: `A.State` and `B.State`;
@@ -817,7 +817,7 @@ Phase 3 (`tests/test_swift_type_resolution.py`):
 Phase 4 (`tests/test_swift_cross_file_calls.py`):
 
 - Regression `test_cross_file_constructor_call_emits_inferred_call`: `.reset()` calls
-  `Layout(panes: [])`; one `calls` edge, `context == "constructor"`, `INFERRED`.
+  `Shape(points: [])`; one `calls` edge, `context == "constructor"`, `INFERRED`.
 - Regression `test_constructor_call_not_visible_lexically_stays_unresolved`: the only `Config`
   is `Outer.Config`; `Config()` elsewhere gets no edge.
 - Control `test_ambiguous_constructor_callee_stays_unresolved`: two top-level `Config`; no edge.
@@ -847,8 +847,8 @@ Full gate, per CONTRIBUTING: `uv run pytest tests -q`, `uv run ruff check .`, `u
 
 ## Out of scope
 
-- tree-sitter-swift parse errors that swallow declarations (the `@Reducer` struct above, #3542).
-- Member-call resolution through nested receivers (`state.layout.encodeAll()`, depth > 1).
+- tree-sitter-swift parse errors that swallow declarations (the parse-error group above, #3542).
+- Member-call resolution through nested receivers (`state.shape.encodeAll()`, depth > 1).
 - Constructor calls in member form (`Outer.Inner(...)`), see Phase 4.
 - Member calls through a factory that returns a nested type whose bare name is not unique
   (`let x = Factory.make(); x.go()` with `make() -> Outer.Inner` and a top-level `Inner`). The
@@ -869,7 +869,7 @@ Full gate, per CONTRIBUTING: `uv run pytest tests -q`, `uv run ruff check .`, `u
    scoping would avoid false bindings and false ambiguity between an app and its test target,
    which declare many same-named helpers.
 2. **#4600 vs Phase 1.** Resolved: Phase 1 is its own implementation and is not based on #4600,
-   which does not fix the `Layout` case and regresses the common case.
+   which does not fix the `Shape` case and regresses the common case.
 3. **Confidence for lexical resolution.** Is `EXTRACTED` right for a binding derived from Swift
    lookup rules, or should cross-file Swift type bindings be `INFERRED` like Phase 4?
 4. **Stub labels.** Resolved: a qualified unresolved reference (`Foo.Bar`) keeps the full

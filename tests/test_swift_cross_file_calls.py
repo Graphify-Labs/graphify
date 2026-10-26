@@ -524,78 +524,78 @@ def _xext_assert_contained(result: dict, ext_file: str, nid: str) -> None:
 
 
 def test_declaration_with_same_file_extension_absorbs_cross_file_extension(tmp_path: Path):
-    # RC1: `struct Layout` + `extension Layout` in one file share a node id and
-    # the id used to be skipped as a merge candidate, so the `extension Layout` in
+    # RC1: `struct Shape` + `extension Shape` in one file share a node id and
+    # the id used to be skipped as a merge candidate, so the `extension Shape` in
     # another file found no declaration and every referrer kept a per-file stub.
     base = tmp_path / "src"
     files = [
-        _write(base / "App/Models/Layout.swift", (
+        _write(base / "App/Models/Shape.swift", (
             "import Foundation\n\n"
-            "struct Layout: Equatable, Codable {\n"
-            "  var panes: [Pane]\n"
-            "  struct Pane: Equatable, Codable { var id: Int }\n"
+            "struct Shape: Equatable, Codable {\n"
+            "  var points: [Point]\n"
+            "  struct Point: Equatable, Codable { var id: Int }\n"
             "  func encodeAll() -> Data { Data() }\n"
             "}\n\n"
-            "extension Layout {\n"
-            "  var isEmpty: Bool { panes.isEmpty }\n"
+            "extension Shape {\n"
+            "  var isEmpty: Bool { points.isEmpty }\n"
             "}\n"
         )),
-        _write(base / "App/Logic/Migrator.swift", (
+        _write(base / "App/Logic/Converter.swift", (
             "import Foundation\n\n"
-            "extension Layout {\n"
-            "  static func migrated() -> Layout { Layout(panes: []) }\n"
+            "extension Shape {\n"
+            "  static func converted() -> Shape { Shape(points: []) }\n"
             "}\n\n"
-            "enum Migrator {\n"
-            "  static func run(_ input: Layout) -> Layout { input }\n"
+            "enum Converter {\n"
+            "  static func run(_ input: Shape) -> Shape { input }\n"
             "}\n"
         )),
-        _write(base / "App/Reducer/Editor.swift", (
+        _write(base / "App/Screens/Canvas.swift", (
             "import Foundation\n\n"
-            "struct Editor {\n"
+            "struct Canvas {\n"
             "  struct State: Equatable {\n"
-            "    var layout: Layout\n"
-            "    var focused: Layout.Pane?\n"
+            "    var shape: Shape\n"
+            "    var selected: Shape.Point?\n"
             "  }\n"
             "  func reset(_ state: inout State) {\n"
-            "    state.layout = Layout(panes: [])\n"
+            "    state.shape = Shape(points: [])\n"
             "  }\n"
             "}\n"
         )),
         _write(base / "App/Logic/Persistence.swift", (
             "import Foundation\n\n"
-            "final class LayoutStore {\n"
-            "  var cached: Layout?\n"
-            "  func save(_ layout: Layout) {}\n"
-            "  func load() -> Layout { Layout(panes: []) }\n"
+            "final class ShapeStore {\n"
+            "  var cached: Shape?\n"
+            "  func save(_ shape: Shape) {}\n"
+            "  func load() -> Shape { Shape(points: []) }\n"
             "}\n"
         )),
     ]
     result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
 
-    # One Layout node: the declaration. No extension node, no per-file stub.
-    layouts = _xext_nodes(result, "Layout")
-    assert len(layouts) == 1, f"expected one Layout node, got {[(n['id'], n.get('source_file')) for n in layouts]}"
-    decl = layouts[0]
-    assert str(decl.get("source_file", "")).endswith("Layout.swift")
+    # One Shape node: the declaration. No extension node, no per-file stub.
+    shapes = _xext_nodes(result, "Shape")
+    assert len(shapes) == 1, f"expected one Shape node, got {[(n['id'], n.get('source_file')) for n in shapes]}"
+    decl = shapes[0]
+    assert str(decl.get("source_file", "")).endswith("Shape.swift")
     assert not decl.get("_swift_extension_only"), "a declared type must not be marked extension-only"
     nid = decl["id"]
 
     # The cross-file extension's method hangs on the declaration, and the extension's
     # file contains it.
-    migrated = _xext_one(result, ".migrated()", "Migrator.swift")
-    assert _xext_has_edge(result, nid, migrated["id"], "method")
-    for file_label in ("Layout.swift", "Migrator.swift"):
+    converted = _xext_one(result, ".converted()", "Converter.swift")
+    assert _xext_has_edge(result, nid, converted["id"], "method")
+    for file_label in ("Shape.swift", "Converter.swift"):
         file_node = _xext_one(result, file_label, file_label)
         assert _xext_has_edge(result, file_node["id"], nid, "contains"), f"{file_label} must contain the declaration"
 
     # Every `references` edge from the other files lands on that node.
     refs = _xext_incoming(result, nid)
     expected = {
-        (".run()", "parameter_type", "Migrator.swift"),
-        (".run()", "return_type", "Migrator.swift"),
-        (".migrated()", "return_type", "Migrator.swift"),
-        ("State", "field", "Editor.swift"),
-        ("LayoutStore", "field", "Persistence.swift"),
+        (".run()", "parameter_type", "Converter.swift"),
+        (".run()", "return_type", "Converter.swift"),
+        (".converted()", "return_type", "Converter.swift"),
+        ("State", "field", "Canvas.swift"),
+        ("ShapeStore", "field", "Persistence.swift"),
         (".save()", "parameter_type", "Persistence.swift"),
         (".load()", "return_type", "Persistence.swift"),
     }
@@ -889,22 +889,22 @@ def _constructor_calls(result: dict, caller_label: str) -> list[dict]:
 
 
 def test_cross_file_constructor_call_emits_inferred_call(tmp_path: Path):
-    # `.reset()` names Layout only in the constructor call, not as a type,
+    # `.reset()` names Shape only in the constructor call, not as a type,
     # so the (caller, target) pair dedup cannot hide the edge behind a
-    # `references` edge. The caller's file names Layout as a field type
+    # `references` edge. The caller's file names Shape as a field type
     # without defining it, which made the call a `via_stub` call that the
     # import-evidence gate dropped before.
     base = tmp_path / "src"
     files = [
-        _write(base / "Models/Layout.swift",
-               "struct Layout {\n    let panes: [Int]\n}\n"),
-        _write(base / "Reducer/Editor.swift", (
-            "struct Editor {\n"
+        _write(base / "Models/Shape.swift",
+               "struct Shape {\n    let points: [Int]\n}\n"),
+        _write(base / "Screens/Canvas.swift", (
+            "struct Canvas {\n"
             "    struct State {\n"
-            "        var layout: Layout\n"
+            "        var shape: Shape\n"
             "    }\n"
             "    func reset(_ state: inout State) {\n"
-            "        state.layout = Layout(panes: [])\n"
+            "        state.shape = Shape(points: [])\n"
             "    }\n"
             "}\n"
         )),
@@ -913,8 +913,8 @@ def test_cross_file_constructor_call_emits_inferred_call(tmp_path: Path):
 
     decl_ids = {
         n["id"] for n in result["nodes"]
-        if n.get("label") == "Layout"
-        and str(n.get("source_file", "")).endswith("Models/Layout.swift")
+        if n.get("label") == "Shape"
+        and str(n.get("source_file", "")).endswith("Models/Shape.swift")
     }
     assert len(decl_ids) == 1
     calls = [e for e in _constructor_calls(result, ".reset()") if e["target"] in decl_ids]

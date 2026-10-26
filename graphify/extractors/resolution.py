@@ -3564,9 +3564,9 @@ def _resolve_cross_file_java_imports(
 class SwiftTypeIndex(NamedTuple):
     """Swift module symbol table rebuilt from node attributes (no hand-off)."""
 
-    # qualified path ("Layout.Pane") -> distinct node ids, sorted
+    # qualified path ("Shape.Point") -> distinct node ids, sorted
     by_path: dict[str, list[str]]
-    # last path segment ("Pane") -> node ids, sorted; a node declared under 2+
+    # last path segment ("Point") -> node ids, sorted; a node declared under 2+
     # paths appears that many times under each of its last segments
     by_label: dict[str, list[str]]
 

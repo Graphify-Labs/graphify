@@ -106,21 +106,21 @@ def _method_of(result: dict, owner: str, label: str) -> str:
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
-def _layout_files(base: Path) -> list[Path]:
+def _shape_files(base: Path) -> list[Path]:
     return [
-        _write(base / "App/Models/Layout.swift", (
+        _write(base / "App/Models/Shape.swift", (
             "import Foundation\n\n"
-            "struct Layout: Equatable {\n"
-            "    var panes: [Pane]\n"
-            "    struct Pane: Equatable { var id: Int }\n"
+            "struct Shape: Equatable {\n"
+            "    var points: [Point]\n"
+            "    struct Point: Equatable { var id: Int }\n"
             "}\n"
         )),
-        _write(base / "App/Reducer/Editor.swift", (
+        _write(base / "App/Screens/Canvas.swift", (
             "import Foundation\n\n"
-            "struct Editor {\n"
+            "struct Canvas {\n"
             "    struct State {\n"
-            "        var layout: Layout\n"
-            "        var focused: Layout.Pane?\n"
+            "        var shape: Shape\n"
+            "        var selected: Shape.Point?\n"
             "    }\n"
             "}\n"
         )),
@@ -130,8 +130,8 @@ def _layout_files(base: Path) -> list[Path]:
 def _two_reducers(base: Path) -> list[Path]:
     """Two features that both declare a nested ``State``."""
     return [
-        _write(base / "Features/Editor.swift",
-               "struct Editor {\n    struct State { var n: Int }\n}\n"),
+        _write(base / "Features/Canvas.swift",
+               "struct Canvas {\n    struct State { var n: Int }\n}\n"),
         _write(base / "Features/OtherFeature.swift",
                "struct OtherFeature {\n    struct State { var m: Int }\n}\n"),
     ]
@@ -140,37 +140,37 @@ def _two_reducers(base: Path) -> list[Path]:
 # ── regressions ───────────────────────────────────────────────────────────────
 
 def test_qualified_nested_reference_resolves_to_nested_type(tmp_path: Path):
-    # `var focused: Layout.Pane?` was reduced to its head and bound to Layout.
-    files = _layout_files(tmp_path / "src")
+    # `var selected: Shape.Point?` was reduced to its head and bound to Shape.
+    files = _shape_files(tmp_path / "src")
     result = _extract(files, tmp_path)
 
-    pane = _node(result, "Pane", "Layout.swift", parent="Layout")
-    _assert_declaration(result, pane, "Pane", "Layout.swift", "Layout")
-    state = _node(result, "State", "Editor.swift", parent="Editor")
-    layout = _node(result, "Layout", "Layout.swift")
+    point = _node(result, "Point", "Shape.swift", parent="Shape")
+    _assert_declaration(result, point, "Point", "Shape.swift", "Shape")
+    state = _node(result, "State", "Canvas.swift", parent="Canvas")
+    shape = _node(result, "Shape", "Shape.swift")
 
     targets = _targets(result, state)
-    assert pane in targets, "State.focused must reach the nested Pane declaration"
-    assert layout in targets, "State.layout still reaches Layout"
-    assert not [t for t in targets if _by_id(result)[t].get("label") == "Layout.Pane"], (
+    assert point in targets, "State.selected must reach the nested Point declaration"
+    assert shape in targets, "State.shape still reaches Shape"
+    assert not [t for t in targets if _by_id(result)[t].get("label") == "Shape.Point"], (
         "the repointed qualified reference must not leave its stub behind"
     )
 
 
 def test_bare_nested_name_resolves_lexically_in_extension(tmp_path: Path):
-    # Inside `extension Editor`, a bare `State` means Editor.State and
+    # Inside `extension Canvas`, a bare `State` means Canvas.State and
     # not the State of another reducer.
     base = tmp_path / "src"
     files = _two_reducers(base) + [
-        _write(base / "Features/Editor+Ext.swift",
-               "extension Editor {\n    func f(_ s: State) {}\n}\n"),
+        _write(base / "Features/Canvas+Ext.swift",
+               "extension Canvas {\n    func f(_ s: State) {}\n}\n"),
     ]
     result = _extract(files, tmp_path)
 
-    own = _node(result, "State", "Editor.swift", parent="Editor")
+    own = _node(result, "State", "Canvas.swift", parent="Canvas")
     other = _node(result, "State", "OtherFeature.swift", parent="OtherFeature")
-    _assert_declaration(result, own, "State", "Editor.swift", "Editor")
-    f = _node(result, ".f()", "Editor+Ext.swift")
+    _assert_declaration(result, own, "State", "Canvas.swift", "Canvas")
+    f = _node(result, ".f()", "Canvas+Ext.swift")
 
     targets = _targets(result, f)
     assert own in targets
@@ -195,15 +195,15 @@ def test_bare_name_not_visible_lexically_stays_on_stub(tmp_path: Path):
 
 
 def test_extension_of_nested_type_merges(tmp_path: Path):
-    # `extension Editor.State` merges into the nested declaration.
+    # `extension Canvas.State` merges into the nested declaration.
     base = tmp_path / "src"
     files = _two_reducers(base) + [
         _write(base / "Features/State+Ext.swift",
-               "extension Editor.State {\n    func reset() {}\n}\n"),
+               "extension Canvas.State {\n    func reset() {}\n}\n"),
     ]
     result = _extract(files, tmp_path)
 
-    own = _node(result, "State", "Editor.swift", parent="Editor")
+    own = _node(result, "State", "Canvas.swift", parent="Canvas")
     other = _node(result, "State", "OtherFeature.swift", parent="OtherFeature")
     reset = _node(result, ".reset()", "State+Ext.swift")
 
@@ -211,11 +211,11 @@ def test_extension_of_nested_type_merges(tmp_path: Path):
         e["source"] for e in result["edges"]
         if e.get("relation") == "method" and e.get("target") == reset
     }
-    assert methods == {own}, f"reset() must attach to Editor.State only, got {methods}"
+    assert methods == {own}, f"reset() must attach to Canvas.State only, got {methods}"
     assert other not in methods
     leftovers = [
         n["id"] for n in result["nodes"]
-        if n.get("label") in ("State", "Editor.State") and _sf(n).endswith("State+Ext.swift")
+        if n.get("label") in ("State", "Canvas.State") and _sf(n).endswith("State+Ext.swift")
     ]
     assert not leftovers, f"the extension must not survive as its own node: {leftovers}"
 
@@ -225,14 +225,14 @@ def test_qualified_conformance_and_generic_args_resolve(tmp_path: Path):
     # reach the nested declarations, with the relation the base kind dictates:
     # a struct conforms (`implements`), the first base of a class is `inherits`.
     base = tmp_path / "src"
-    files = _layout_files(base) + [
+    files = _shape_files(base) + [
         _write(base / "Outer.swift", (
             "enum Outer {\n    protocol Proto {}\n    class Base { func hello() {} }\n}\n"
         )),
         _write(base / "Conf.swift", "struct Conf: Outer.Proto {}\n"),
         _write(base / "Child.swift", "class Child: Outer.Base {}\n"),
         _write(base / "Holder.swift",
-               "struct Holder {\n    var x: [String: Layout.Pane]\n}\n"),
+               "struct Holder {\n    var x: [String: Shape.Point]\n}\n"),
     ]
     result = _extract(files, tmp_path)
 
@@ -240,21 +240,21 @@ def test_qualified_conformance_and_generic_args_resolve(tmp_path: Path):
     _assert_declaration(result, proto, "Proto", "Outer.swift", "Outer")
     outer_base = _node(result, "Base", "Outer.swift", parent="Outer")
     _assert_declaration(result, outer_base, "Base", "Outer.swift", "Outer")
-    pane = _node(result, "Pane", "Layout.swift", parent="Layout")
+    point = _node(result, "Point", "Shape.swift", parent="Shape")
 
     assert proto in _targets(result, _node(result, "Conf", "Conf.swift"), ("implements",))
     assert outer_base in _targets(result, _node(result, "Child", "Child.swift"), ("inherits",))
-    assert pane in _targets(result, _node(result, "Holder", "Holder.swift"))
+    assert point in _targets(result, _node(result, "Holder", "Holder.swift"))
 
 
 def test_type_table_records_full_path(tmp_path: Path):
     # The per-file extractor result keeps the written dotted path and the scope of the
-    # property, so the corpus pass can resolve `focused.xxx()` against the right type.
-    path = _write(tmp_path / "src/Editor.swift", (
-        "struct Editor {\n"
-        "    var plain: Layout\n"
+    # property, so the corpus pass can resolve `selected.xxx()` against the right type.
+    path = _write(tmp_path / "src/Canvas.swift", (
+        "struct Canvas {\n"
+        "    var plain: Shape\n"
         "    struct State {\n"
-        "        var focused: Layout.Pane?\n"
+        "        var selected: Shape.Point?\n"
         "    }\n"
         "}\n"
     ))
@@ -262,10 +262,10 @@ def test_type_table_records_full_path(tmp_path: Path):
 
     table = result["swift_type_table"]["table"]
     scopes = result["swift_type_table"]["scopes"]
-    assert table["focused"] == "Layout.Pane"
-    assert scopes["focused"] == "Editor.State"
-    assert table["plain"] == "Layout"
-    assert scopes["plain"] == "Editor"
+    assert table["selected"] == "Shape.Point"
+    assert scopes["selected"] == "Canvas.State"
+    assert table["plain"] == "Shape"
+    assert scopes["plain"] == "Canvas"
 
 
 def test_member_call_through_nested_type_annotation(tmp_path: Path):
@@ -596,7 +596,7 @@ def test_swift_reference_to_non_swift_type_keeps_generic_rewire(tmp_path: Path):
                    for t in targets), "no stub is left for the resolved reference"
 
 
-@pytest.mark.parametrize("name", ["Layout.Pane", "Outer.Inner"])
+@pytest.mark.parametrize("name", ["Shape.Point", "Outer.Inner"])
 def test_dotted_external_name_keeps_its_full_label_on_stub(tmp_path: Path, name: str):
     # Nothing in the corpus declares the type: the stub keeps the written dotted label
     # (RFC open question 4), so a later declaration can still be told apart.

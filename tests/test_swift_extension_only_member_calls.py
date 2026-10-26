@@ -53,7 +53,7 @@ def _files(base: Path, *, with_declaration: bool, helper_call: bool = False) -> 
     """The repro: extension-only ``Manager`` and ``NSEvent``, called from ``User``."""
     calls = [
         "        Manager.shared.run()",
-        "        m?.hostIfExists()",
+        "        m?.lookupIfPresent()",
         "        NSEvent.addMonitor()",
     ]
     if helper_call:
@@ -128,7 +128,7 @@ def test_member_call_with_real_declaration_still_binds(tmp_path: Path):
     ), calls
 
     refs = [(src, tgt) for src, tgt in _call_edges(result, "references")]
-    # `m?.hostIfExists()` names no method, so it references the declared type.
+    # `m?.lookupIfPresent()` names no method, so it references the declared type.
     manager_refs = [
         tgt for src, tgt in refs
         if src.get("label") == ".go()" and tgt.get("label") == "Manager"

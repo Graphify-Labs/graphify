@@ -1,9 +1,9 @@
 """Swift extensions of a sugared or standard generic type (`[T]`, `[K: V]`, `T?`, `Optional<T>`).
 
-See docs/swift-cross-file-type-resolution-rfc.md. `extension [ScriptDefinition]` extends
-`Swift.Array`, an external type, not `ScriptDefinition` (nor a project's own `Array`). Read as text, `[ScriptDefinition]`
+See docs/swift-cross-file-type-resolution-rfc.md. `extension [Recipe]` extends
+`Swift.Array`, an external type, not `Recipe` (nor a project's own `Array`). Read as text, `[Recipe]`
 slugs to the struct's own id, so in the struct's file the extension folded onto the
-struct and stamped a second `_swift_qualified` path (`[ScriptDefinition]`) on it; the
+struct and stamped a second `_swift_qualified` path (`[Recipe]`) on it; the
 lexical lookup then saw the struct as ambiguous and every reference to it stayed a stub.
 
 The style follows tests/test_swift_type_resolution.py: write the files into ``tmp_path``,
@@ -62,8 +62,8 @@ def _contains_sources(result: dict, nid: str) -> list[str]:
 
 def _assert_struct_untouched(result: dict, struct_suffix: str) -> str:
     """The struct keeps only its own path, one `contains` edge and no extension method."""
-    struct = _node(result, "ScriptDefinition", struct_suffix)
-    assert _by_id(result)[struct].get("_swift_qualified") == ["ScriptDefinition"]
+    struct = _node(result, "Recipe", struct_suffix)
+    assert _by_id(result)[struct].get("_swift_qualified") == ["Recipe"]
     assert len(_contains_sources(result, struct)) == 1
     assert not _targets(result, struct, "method")
     return struct
@@ -82,8 +82,8 @@ def _assert_external_extension(result: dict, label: str, suffix: str) -> None:
     assert _targets(result, ext, "method"), "the extension keeps its own methods"
 
 
-_STRUCT = "struct ScriptDefinition {\n    let name: String\n}\n"
-_USER = "struct User {\n    let def: ScriptDefinition\n}\n"
+_STRUCT = "struct Recipe {\n    let name: String\n}\n"
+_USER = "struct User {\n    let def: Recipe\n}\n"
 
 
 # ── array sugar ───────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ def test_array_sugar_extension_does_not_make_element_type_ambiguous(tmp_path):
     src = tmp_path / "src"
     files = [
         _write(src / "A.swift", _STRUCT),
-        _write(src / "B.swift", "extension [ScriptDefinition] {\n    func x() {}\n}\n"),
+        _write(src / "B.swift", "extension [Recipe] {\n    func x() {}\n}\n"),
         _write(src / "C.swift", _USER),
     ]
     result = _extract(files, tmp_path)
@@ -106,7 +106,7 @@ def test_array_sugar_extension_in_the_element_types_file(tmp_path):
     # The case that regressed: the extension's text slugged to the struct's own id.
     src = tmp_path / "src"
     files = [
-        _write(src / "A.swift", _STRUCT + "extension [ScriptDefinition] {\n    func x() {}\n}\n"),
+        _write(src / "A.swift", _STRUCT + "extension [Recipe] {\n    func x() {}\n}\n"),
         _write(src / "C.swift", _USER),
     ]
     result = _extract(files, tmp_path)
@@ -120,7 +120,7 @@ def test_dictionary_sugar_extension_in_the_value_types_file(tmp_path):
     src = tmp_path / "src"
     files = [
         _write(src / "A.swift",
-               _STRUCT + "extension [String: ScriptDefinition] {\n    func x() {}\n}\n"),
+               _STRUCT + "extension [String: Recipe] {\n    func x() {}\n}\n"),
         _write(src / "C.swift", _USER),
     ]
     result = _extract(files, tmp_path)
@@ -135,7 +135,7 @@ def test_dictionary_sugar_extension_in_the_value_types_file(tmp_path):
 def test_optional_sugar_extension_does_not_make_wrapped_type_ambiguous(tmp_path):
     src = tmp_path / "src"
     files = [
-        _write(src / "A.swift", _STRUCT + "extension ScriptDefinition? {\n    func x() {}\n}\n"),
+        _write(src / "A.swift", _STRUCT + "extension Recipe? {\n    func x() {}\n}\n"),
         _write(src / "C.swift", _USER),
     ]
     result = _extract(files, tmp_path)
@@ -150,7 +150,7 @@ def test_optional_generic_extension_does_not_make_wrapped_type_ambiguous(tmp_pat
     src = tmp_path / "src"
     files = [
         _write(src / "A.swift", _STRUCT),
-        _write(src / "B.swift", "extension Optional<ScriptDefinition> {\n    func x() {}\n}\n"),
+        _write(src / "B.swift", "extension Optional<Recipe> {\n    func x() {}\n}\n"),
         _write(src / "C.swift", _USER),
     ]
     result = _extract(files, tmp_path)
@@ -167,7 +167,7 @@ def test_optional_generic_extension_does_not_make_wrapped_type_ambiguous(tmp_pat
 # ── a project type named like the standard generic ───────────────────────────
 
 _USER_ARRAY = "struct Array {\n    let n: Int\n}\n"
-_SUGAR_EXT = "extension [ScriptDefinition] {\n    func x() {}\n}\n"
+_SUGAR_EXT = "extension [Recipe] {\n    func x() {}\n}\n"
 
 
 def _assert_user_array_untouched(result: dict) -> None:
