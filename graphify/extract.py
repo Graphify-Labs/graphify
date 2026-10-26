@@ -4693,6 +4693,8 @@ def _resolve_swift_member_calls(
     # extension folded onto it, are called from Swift). A Python `Inner.go()`
     # is never a Swift target. The language comes from the node's file through
     # `effective_suffix`, so a `.graphifyrc` remap to Swift counts as Swift.
+    # A `.h` type stays a candidate and rival here; `_swift_header_target_ok`
+    # admits the bind only for ObjC (sigil method, or a type owning one).
     swift_target_suffixes = frozenset({".swift", ".m", ".mm", ".h"})
 
     def _is_swift_target(node: dict | None) -> bool:
@@ -4714,6 +4716,7 @@ def _resolve_swift_member_calls(
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
     method_index: dict[tuple[str, str], str] = {}
     method_owner: dict[str, str] = {}  # method nid -> owning type nid
+    methods_of: dict[str, list[str]] = {}  # type nid -> its method nids
     for e in all_edges:
         if e.get("relation") != "method":
             continue
@@ -4722,6 +4725,7 @@ def _resolve_swift_member_calls(
         if tnode is not None and src is not None and tgt is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
             method_owner[tgt] = src
+            methods_of.setdefault(src, []).append(tgt)
 
     # #2561: pending factory bindings (`let x = Factory.make()`) are label-only —
     # resolve each against the factory method's marked plain return type
@@ -4952,6 +4956,10 @@ def _resolve_swift_member_calls(
             # The type is a Swift target, but the method edge points into
             # another language: bind nothing rather than cross languages.
             continue
+        if not _swift_header_target_ok(
+                node_by_id.get(target), methods_of.get(target, []), node_by_id):
+            # A C or C++ namesake in a `.h` header is not a Swift target.
+            continue
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
@@ -4970,6 +4978,25 @@ def _resolve_swift_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+
+def _swift_header_target_ok(
+    node: dict | None, owned_methods: list[str], node_by_id: dict[str, dict],
+) -> bool:
+    """Whether a Swift member call may bind ``node`` when it lives in a ``.h``.
+
+    A ``.h`` header is C, C++ or Objective-C, and only Objective-C is a Swift
+    target there (Swift<->ObjC interop, #1556). An ObjC method label carries a
+    ``+``/``-`` sigil (``extract_objc``); C and C++ labels never do. So a ``.h``
+    target is admitted only as an ObjC method or as a type that owns one; any
+    other ``.h`` target fails closed, which also drops a type-only ``references``
+    edge to an ObjC class with no ObjC method in the corpus. A target in any
+    other file passes.
+    """
+    if effective_suffix((node or {}).get("source_file") or "").lower() != ".h":
+        return True
+    candidates = [node, *(node_by_id.get(m) for m in owned_methods)]
+    return any(str((n or {}).get("label", ""))[:1] in ("-", "+") for n in candidates)
 
 
 def _swift_caller_scope(
