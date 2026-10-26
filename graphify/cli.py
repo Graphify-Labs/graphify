@@ -94,6 +94,43 @@ EXIT_AMBIGUOUS = 3
 EXIT_NOT_FOUND = 4
 
 
+def _format_duration(seconds: float) -> str:
+    total = max(int(seconds), 0)
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _format_remaining(seconds: float) -> str:
+    seconds = max(seconds, 0.0)
+    if int(seconds + 0.5) < 60:
+        return f"{int(seconds + 0.5)}s"
+    minutes = int(seconds / 60 + 0.5)
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h{minutes % 60:02d}m"
+
+
+def format_chunk_progress(done: int, total: int, elapsed_seconds: float) -> str:
+    """Progress line for the semantic extraction pass (#792, #3179).
+
+    The remaining time is extrapolated from the average time per completed
+    chunk and omitted until two chunks are done and once all of them are.
+    """
+    line = (
+        f"[graphify extract] chunk {done}/{total} done"
+        f" · {_format_duration(elapsed_seconds)} elapsed"
+    )
+    if 2 <= done < total:
+        left = elapsed_seconds / done * (total - done)
+        line += f" · ~{_format_remaining(left)} left"
+    return line
+
+
 def _nudge_for_out(nudge: str) -> str:
     """Name the effective graph.json in a hook-guard reminder (#4040).
 
@@ -4544,16 +4581,19 @@ def dispatch_command(cmd: str) -> None:
                 if cli_max_concurrency is not None:
                     corpus_kwargs["max_concurrency"] = cli_max_concurrency
 
-                # Minimal progress callback so the CLI is no longer silent
-                # during long local-inference runs (issue #792 addendum).
-                # Also track per-chunk success so we can fail loudly when
+                # Track per-chunk success so we can fail loudly when
                 # every chunk errors (e.g. missing backend SDK package).
                 _chunk_stats = {"total": 0, "succeeded": 0}
+                _extract_t0 = time.perf_counter()
                 def _progress(idx: int, total: int, _result: dict) -> None:
                     _chunk_stats["total"] = total
                     _chunk_stats["succeeded"] += 1
                     print(
-                        f"[graphify extract] chunk {idx + 1}/{total} done",
+                        format_chunk_progress(
+                            _chunk_stats["succeeded"],
+                            total,
+                            time.perf_counter() - _extract_t0,
+                        ),
                         flush=True,
                     )
                 corpus_kwargs["on_chunk_done"] = _progress
