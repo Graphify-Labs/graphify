@@ -90,6 +90,10 @@ def _queue_pending_full(out_dir: Path) -> None:
     Full requests (watcher, post-checkout hook) have no path list to append to
     ``.pending_changes``, so they leave a marker file instead. The lock-holder
     consumes it and runs one more full pass before releasing (#4274).
+
+    A derived incremental request has no path list either, but it needs a pass of
+    its own kind rather than a full one; that is
+    :func:`_queue_pending_incremental`.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / _PENDING_FULL_FILENAME).touch()
@@ -2226,8 +2230,14 @@ def _rebuild_code(
         # #1059: a hook must not drop its request when another rebuild is
         # already running. Queue before attempting the lock so a non-blocking
         # failure still records the work; the lock-holder drains the queue.
-        # Incremental requests append their paths to .pending_changes; full-
-        # corpus requests leave a .pending_full marker (#4274).
+        #
+        # Three request kinds, three records:
+        #   explicit paths -> .pending_changes, one path per line
+        #   full corpus    -> .pending_full, a marker meaning "re-extract all"
+        #   derived        -> .pending_incremental, a marker meaning "run an
+        #                     incremental pass"; it has no paths of its own, and
+        #                     a full marker would upgrade the holder that then
+        #                     drains it (#4274, #4769)
         queued = False
         if not block_on_lock:
             if incremental and changed_paths is None:
