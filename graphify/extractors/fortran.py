@@ -237,14 +237,23 @@ def extract_fortran(path: Path) -> dict:
         t = node.type
         if t in ("subroutine", "function", "module", "program", "internal_procedures"):
             return
-        # call FOO(args) — tree-sitter-fortran uses subroutine_call
+        # call FOO(args) — tree-sitter-fortran uses subroutine_call. Unlike
+        # call_expression below, `call` is unambiguous: there is no array-index
+        # reading, so a callee defined in another file (reached through its own
+        # `use` statement) is resolved the same way a cross-file parameter/return
+        # type already is, through a sourceless stub the corpus rewire can
+        # collapse onto the real definition. Computing the target id directly
+        # (the previous behaviour) always salted it with THIS file's own stem,
+        # so a cross-file call target never matched the callee's real node and
+        # dangled permanently.
         if t == "subroutine_call":
             name_node = next((c for c in node.children if c.type == "identifier"), None)
             if name_node:
                 callee = _read_text(name_node, source).lower()
-                target_nid = _make_id(stem, callee)
-                add_edge(scope_nid, target_nid, "calls", node.start_point[0] + 1,
-                         confidence="EXTRACTED", context="call")
+                target_nid = ensure_named_node(callee, node.start_point[0] + 1)
+                if target_nid != scope_nid:
+                    add_edge(scope_nid, target_nid, "calls", node.start_point[0] + 1,
+                             confidence="EXTRACTED", context="call")
         # x = compute(args) — function invocations are `call_expression`, which
         # shares Fortran's `name(...)` syntax with array indexing. Only emit a
         # call edge when the callee resolves to a procedure defined in this file
