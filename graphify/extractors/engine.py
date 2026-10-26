@@ -1626,6 +1626,62 @@ def _swift_nested_collision_groups(bodies, source: bytes,
     }
 
 
+def _swift_file_decl_owners(root_node, bodies: dict[str, list], source: bytes,
+                            stem: str) -> dict[str, set[tuple[str, str]]]:
+    """Plain id -> ``{(enclosing path, kind)}`` of every declaration of one Swift file.
+
+    The plain id has no salt in its chain: ``_make_id(stem, "A.B.c")`` equals
+    ``_make_id(_make_id(_make_id(stem, "A"), "B"), "c")``. A file-level
+    declaration has the enclosing path ``""``; an extension of a type not
+    declared here counts as a file-level type, as it mints that type's node.
+    A member that its sibling collision group salts is left out, as it does not
+    hold the plain id. ``bodies`` is the first result of ``_swift_nested_scan``;
+    kinds are as in ``_swift_body_members``.
+    """
+    owners: dict[str, set[tuple[str, str]]] = {}
+
+    def _add(enclosing: str, name: str, kind: str) -> None:
+        path = f"{enclosing}.{name}" if enclosing else name
+        owners.setdefault(_make_id(stem, path), set()).add((enclosing, kind))
+
+    for name, kind in _swift_body_members(root_node, source):
+        _add("", name, kind)
+    for path, path_bodies in bodies.items():
+        if "." not in path:
+            _add("", path, "type")
+        parent_nid = _make_id(stem, path)
+        groups = _swift_nested_collision_groups(path_bodies, source, parent_nid)
+        for body in path_bodies:
+            for name, kind in _swift_body_members(body, source):
+                plain = _make_id(parent_nid, name)
+                # A member its sibling group salts no longer holds the plain id.
+                if _swift_salted_member_nid(plain, name, kind, groups.get(plain)) == plain:
+                    _add(path, name, kind)
+    return owners
+
+
+def _swift_nested_type_yields(nid: str, parent_path: str,
+                              owners: dict[str, set[tuple[str, str]]]) -> bool:
+    """Whether a declaration of another scope holds a nested Swift type's id.
+
+    Joining a parent id and a name is ambiguous across scopes: ``Outer.State``,
+    a file-level ``Outer_State`` or ``outer_state()`` and ``Outer.A.B`` /
+    ``Outer.A_B`` slug to one id each, and ``add_node`` would drop the second
+    node. The nested type yields to any member or function, to any type
+    of the same or a shallower depth and to nothing deeper, so the outcome does
+    not depend on declaration order. Siblings (same ``parent_path``) are left
+    to the collision group.
+    """
+    depth = parent_path.count(".") + 2
+    for enclosing, kind in owners.get(nid, ()):
+        if enclosing == parent_path:
+            continue
+        other_depth = enclosing.count(".") + 2 if enclosing else 1
+        if kind != "type" or other_depth <= depth:
+            return True
+    return False
+
+
 def _swift_salted_member_nid(plain_nid: str, name: str, kind: str,
                              group: set[tuple[str, str]] | None) -> str:
     """The id of a nested type or a method in one Swift collision group.
@@ -6455,19 +6511,27 @@ def _extract_generic(
     # JS/TS class body -> member collision groups, filled lazily (#4475).
     js_member_groups: dict = {}
     # Swift nested type / member ids (RFC Phase 3): the file's type bodies by
-    # qualified path, scanned once on first use; collision groups per (parent
-    # path, parent nid); the nid minted for each qualified path.
+    # qualified path and the owners of each plain id, scanned once on first use;
+    # collision groups per (parent path, parent nid); the nid minted for each
+    # qualified path.
     swift_nested_plan: list = []
     swift_nested_groups: dict = {}
     swift_path_nids: dict[str, str] = {}
+
+    def _swift_ensure_nested_plan() -> None:
+        # [bodies, nested, plain id owners], scanned once on first use.
+        if not swift_nested_plan:
+            swift_nested_plan.extend(_swift_nested_scan(root, source))
+            swift_nested_plan.append(
+                _swift_file_decl_owners(root, swift_nested_plan[0], source, stem)
+            )
 
     def _swift_member_nid(parent_path: str | None, parent_nid: str, name: str,
                           kind: str) -> str:
         plain = _make_id(parent_nid, name)
         if parent_path is None:
             return plain
-        if not swift_nested_plan:
-            swift_nested_plan.extend(_swift_nested_scan(root, source))
+        _swift_ensure_nested_plan()
         key = (parent_path, parent_nid)
         groups = swift_nested_groups.get(key)
         if groups is None:
@@ -6475,12 +6539,16 @@ def _extract_generic(
                 swift_nested_plan[0].get(parent_path, []), source, parent_nid
             )
             swift_nested_groups[key] = groups
-        return _swift_salted_member_nid(plain, name, kind, groups.get(plain))
+        nid = _swift_salted_member_nid(plain, name, kind, groups.get(plain))
+        if kind == "type" and _swift_nested_type_yields(nid, parent_path, swift_nested_plan[2]):
+            # A declaration of another scope holds the id.
+            tagged = f"nested:{parent_path}.{name}".encode("utf-8")
+            nid = _make_id(nid, hashlib.sha1(tagged, usedforsecurity=False).hexdigest()[:6])
+        return nid
 
     def _swift_nested_path_nid(path: str) -> str | None:
         """The nid of the nested type declared at ``path`` in this file, else None."""
-        if not swift_nested_plan:
-            swift_nested_plan.extend(_swift_nested_scan(root, source))
+        _swift_ensure_nested_plan()
         entry = swift_nested_plan[1].get(path)
         if entry is None:
             return None
