@@ -31,6 +31,34 @@ _CONFIG_JSON_KEYS = frozenset({
 _SCHEMA_DEFINITION_KEYS = frozenset({"$defs", "definitions", "$id"})
 
 
+def _json_root_keys(obj_node, source: bytes) -> set[str]:
+    """The root object's immediate keys, no deep walk. Shared by the schema
+    check and the config probe below so both agree on the same key set, and
+    by `extract_json`'s own skip branch so it can tell a schema document
+    apart from a plain data document without re-deriving the rule (#2108)."""
+    root_keys: set[str] = set()
+    for top_key in obj_node.children:
+        if top_key.type != "pair":
+            continue
+        key_node = top_key.child_by_field_name("key")
+        if key_node is None:
+            continue
+        kc = key_node.child_by_field_name("string_content")
+        root_keys.add(_read_text(kc, source) if kc
+                      else _read_text(key_node, source).strip('"\''))
+    return root_keys
+
+def _is_json_schema_like(root_keys: set[str]) -> bool:
+    """True for a root key set that marks the document as a JSON Schema
+    itself, rather than data that merely fails the config probe (#2108).
+
+    A file that declares the meta-schema AND defines something IS a schema
+    (`$schema` plus `$defs`/`definitions`/`$id`). A root-level `$ref` alone
+    is also schema-only vocabulary, never a config or a data signal (#2255)."""
+    if "$schema" in root_keys and (root_keys & _SCHEMA_DEFINITION_KEYS):
+        return True
+    return "$ref" in root_keys
+
 def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     """True if a .json file is a recognized config/manifest worth AST-extracting.
 
@@ -62,20 +90,8 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
                       "tsconfig.json", "jsconfig.json")):
         return True
-    # Collect the root object's immediate keys once (no deep walk), so the
-    # schema check below and the config probe agree on the same key set.
-    root_keys: set[str] = set()
-    for top_key in obj_node.children:
-        if top_key.type != "pair":
-            continue
-        key_node = top_key.child_by_field_name("key")
-        if key_node is None:
-            continue
-        kc = key_node.child_by_field_name("string_content")
-        root_keys.add(_read_text(kc, source) if kc
-                      else _read_text(key_node, source).strip('"\''))
-    # A file that declares the meta-schema AND defines something IS a schema.
-    if "$schema" in root_keys and (root_keys & _SCHEMA_DEFINITION_KEYS):
+    root_keys = _json_root_keys(obj_node, source)
+    if _is_json_schema_like(root_keys):
         return False
     # Top-level key probe. `$ref` is deliberately absent: a root-level `$ref` is
     # a schema construct and never a config signal (#2255).
@@ -289,12 +305,24 @@ def extract_json(path: Path) -> dict:
     if doc.type == "object":
         # Only AST-extract recognized config/manifest JSON. Data JSON (fixtures,
         # datasets, GeoJSON, API dumps) is skipped so it doesn't explode into
-        # orphan key-nodes (#1224); it's left to the LLM semantic pass.
+        # orphan key-nodes (#1224); it's left to the LLM semantic pass. `nodes`
+        # already holds the bare file node added above — returning it (rather
+        # than an empty list) keeps the file discoverable via query/explain/
+        # affected without reintroducing the key-node explosion #1224 fixed
+        # (#2108): no children, no edges, just the one file node. A JSON
+        # Schema document is a narrower case of this same skip and stays fully
+        # invisible instead, exactly as #2255 pinned it: a schema is reference
+        # material for OTHER files, not a corpus member worth surfacing on its
+        # own, and its bare node would be just as noisy a "god document" as
+        # the per-keyword nodes #2255 already removed.
         if not _is_config_json(path, doc, source):
-            return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
+            if _is_json_schema_like(_json_root_keys(doc, source)):
+                return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
+            return {"nodes": nodes, "edges": [], "skipped": "data json (not a config/manifest)"}
         walk_object(doc, file_nid, None, 0, [0])
     else:
         # Top-level array or scalar => data JSON, never a config/manifest.
-        return {"nodes": [], "edges": [], "skipped": "data json (non-object root)"}
+        # Same bare-file-node rationale as above (#2108).
+        return {"nodes": nodes, "edges": [], "skipped": "data json (non-object root)"}
 
     return {"nodes": nodes, "edges": edges}
