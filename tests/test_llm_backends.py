@@ -977,6 +977,124 @@ def test_call_openai_compat_extra_body_wins_over_moonshot_default(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Custom-provider extra_headers (#3680): gateways such as OpenCode Go reject a
+# request without their own header (x-opencode-session). providers.json passes
+# them to the OpenAI client as default_headers, at extraction and at _call_llm.
+# ---------------------------------------------------------------------------
+
+
+def _install_header_capturing_openai(monkeypatch):
+    """Record the OpenAI client's constructor kwargs (where default_headers go)."""
+    import sys
+    import types
+
+    clients: list[dict] = []
+
+    class _FakeOpenAI:
+        def __init__(self, *_, **kwargs):
+            clients.append(kwargs)
+            self.chat = self
+            self.completions = self
+
+        def create(self, **_kwargs):
+            return _fake_openai_response(
+                '{"nodes":[{"id":"x"}],"edges":[],"hyperedges":[]}',
+                finish_reason="stop",
+                completion_tokens=100,
+            )
+
+    fake_module = types.ModuleType("openai")
+    setattr(fake_module, "OpenAI", _FakeOpenAI)
+    setattr(fake_module, "APIStatusError", _FakeAPIStatusError)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    return clients
+
+
+def _register_header_provider(monkeypatch, extra_headers):
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "go-key")
+    monkeypatch.setitem(
+        llm.BACKENDS,
+        "opencode-go",
+        {
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "default_model": "deepseek-v4-flash",
+            "env_key": "OPENCODE_API_KEY",
+            "pricing": {"input": 0.0, "output": 0.0},
+            "temperature": 0,
+            "extra_headers": extra_headers,
+        },
+    )
+
+
+def test_call_openai_compat_passes_extra_headers_as_default_headers(monkeypatch):
+    clients = _install_header_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://opencode.ai/zen/go/v1", "go-key", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="opencode-go",
+        extra_headers={"x-opencode-session": "s-1"},
+    )
+
+    assert clients[-1]["default_headers"] == {"x-opencode-session": "s-1"}
+
+
+def test_call_openai_compat_without_extra_headers_sets_no_default_headers(monkeypatch):
+    clients = _install_header_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.moonshot.ai/v1", "tk", "kimi-k2",
+        "u", temperature=0, max_completion_tokens=8192, backend="kimi",
+    )
+
+    assert "default_headers" not in clients[-1]
+
+
+def test_extraction_forwards_provider_extra_headers(monkeypatch, tmp_path):
+    clients = _install_header_capturing_openai(monkeypatch)
+    _register_header_provider(monkeypatch, {"x-opencode-session": "s-1", "User-Agent": "my-agent/1.0"})
+    doc = tmp_path / "a.md"
+    doc.write_text("# A\n", encoding="utf-8")
+
+    llm.extract_files_direct([doc], backend="opencode-go", root=tmp_path)
+
+    assert clients[-1]["default_headers"] == {"x-opencode-session": "s-1", "User-Agent": "my-agent/1.0"}
+
+
+def test_call_llm_forwards_provider_extra_headers(monkeypatch):
+    clients = _install_header_capturing_openai(monkeypatch)
+    _register_header_provider(monkeypatch, {"x-opencode-session": "s-1"})
+
+    llm._call_llm("label this", backend="opencode-go")
+
+    assert clients[-1]["default_headers"] == {"x-opencode-session": "s-1"}
+
+
+def test_provider_extra_headers_cannot_override_authorization(monkeypatch, capsys):
+    """The key always comes from env_key; a providers.json header must not swap it."""
+    clients = _install_header_capturing_openai(monkeypatch)
+    _register_header_provider(
+        monkeypatch,
+        {"Authorization": "Bearer other", "x-opencode-session": "s-1", "x-bad": 7},
+    )
+
+    llm._call_llm("label this", backend="opencode-go")
+
+    assert clients[-1]["default_headers"] == {"x-opencode-session": "s-1"}
+    err = capsys.readouterr().err
+    assert "cannot set Authorization" in err and "'x-bad'" in err
+
+
+@pytest.mark.parametrize("raw", [None, {}, "x-opencode-session: s-1", {"Authorization": "Bearer x"}])
+def test_provider_extra_headers_unusable_values_send_no_default_headers(monkeypatch, raw):
+    clients = _install_header_capturing_openai(monkeypatch)
+    _register_header_provider(monkeypatch, raw)
+
+    llm._call_llm("label this", backend="opencode-go")
+
+    assert "default_headers" not in clients[-1]
+
+
+# ---------------------------------------------------------------------------
 # GRAPHIFY_DISABLE_THINKING: opt-in disable-thinking for reasoning models like
 # deepseek-v4-flash. Off by default — disabling thinking trades a rare reasoning
 # leak for lower extraction quality/coverage, so it must not be forced (#1621).
