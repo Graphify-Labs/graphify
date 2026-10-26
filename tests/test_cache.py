@@ -1367,6 +1367,9 @@ def test_save_semantic_cache_drops_edges_to_ghost_file_nodes(tmp_path):
 
     real = tmp_path / "real.md"
     real.write_text("# Real\n")
+    # Two files dispatched: with one, a path naming no real file can only be
+    # that file and is attributed to it instead of skipped (#3982).
+    (tmp_path / "sibling.md").write_text("# Sibling\n")
 
     nodes = [
         {"id": "kept", "source_file": "real.md"},
@@ -1377,7 +1380,7 @@ def test_save_semantic_cache_drops_edges_to_ghost_file_nodes(tmp_path):
         {"source": "kept", "target": "kept", "relation": "self", "source_file": "real.md"},
     ]
     saved = save_semantic_cache(
-        nodes, edges, root=tmp_path, allowed_source_files=["real.md"]
+        nodes, edges, root=tmp_path, allowed_source_files=["real.md", "sibling.md"]
     )
     assert saved == 1
 

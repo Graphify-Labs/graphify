@@ -274,7 +274,7 @@ Load files from `.graphify_uncached.txt`. Split into chunks of 20-25 files each.
 
 Process each file one at a time. For each file:
 
-1. Read the file contents
+1. Read the file contents to the last line: a read can return only the first part of a long file without saying so, so check its length and page through it until you reach the end. If you cannot read it to the end, skip it — a partial extraction replaces the file's existing nodes and is recorded as done, while a file left out is re-queued on the next run.
 2. Extract nodes, edges, and hyperedges applying the same rules:
    - EXTRACTED: relationship explicit in source (import, call, citation)
    - INFERRED: reasonable inference (shared structure, implied dependency)

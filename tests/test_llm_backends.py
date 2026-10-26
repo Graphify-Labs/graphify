@@ -12,6 +12,7 @@ from graphify import llm
 def _clear_ollama_seed_env(monkeypatch):
     """Keep a developer's ambient seed from changing request-shape tests."""
     monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_JSON", raising=False)
 
 
 def _clear_backend_env(monkeypatch):
@@ -797,6 +798,50 @@ def test_ollama_seed_disabled_omits_request_key(monkeypatch, raw):
     )
 
     assert "seed" not in captured["native"]["options"]
+
+
+def _ollama_extract_call():
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+
+def test_ollama_json_mode_constrains_the_native_request(monkeypatch):
+    """#3988: GRAPHIFY_OLLAMA_JSON asks Ollama to emit valid JSON only."""
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_JSON", "1")
+
+    _ollama_extract_call()
+
+    assert captured["native"]["format"] == "json"
+
+
+def test_ollama_json_mode_reaches_the_v1_fallback(monkeypatch):
+    """A server with no /api/chat gets the same constraint as `response_format`."""
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_JSON", "1")
+    monkeypatch.setattr(llm, "_OLLAMA_NO_NATIVE", {"http://localhost:11434"})
+
+    _ollama_extract_call()
+
+    assert "native" not in captured
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.parametrize("raw", [None, "", "0", "off"])
+def test_ollama_json_mode_is_off_by_default(monkeypatch, raw):
+    captured = _install_capturing_openai(monkeypatch)
+    if raw is not None:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_JSON", raw)
+
+    _ollama_extract_call()
+
+    assert "format" not in captured["native"]
+    assert "response_format" not in captured
 
 
 def test_call_llm_ollama_forwards_seed(monkeypatch):
