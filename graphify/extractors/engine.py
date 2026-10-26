@@ -6580,6 +6580,23 @@ def _extract_generic(
                             base = _read_text(arg, source)
                             base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
+                        elif arg.type == "attribute":
+                            base_node = arg.child_by_field_name("attribute")
+                            module_node = arg.child_by_field_name("object")
+                            if base_node is None or module_node is None:
+                                continue
+                            base = _read_text(base_node, source)
+                            module = _read_text(module_node, source)
+                            if not base or not module:
+                                continue
+                            base_nid = ensure_named_node(base, line)
+                            add_edge(
+                                class_nid,
+                                base_nid,
+                                "inherits",
+                                line,
+                                metadata={"python_base_module": module},
+                            )
 
             # Swift-specific: conformance / inheritance
             if config.ts_module == "tree_sitter_swift":
