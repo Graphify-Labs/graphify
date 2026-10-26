@@ -2793,6 +2793,84 @@ def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
     assert stub["source_file"] == ""
 
 
+def test_fortran_subroutine_call_to_another_module_is_sourceless(tmp_path):
+    """A `call` to a subroutine implemented in another module resolves to a
+    sourceless stub the corpus rewire can collapse, never a dangling edge.
+
+    The target id used to be computed directly from this file's own stem
+    (`_make_id(stem, callee)`), which never matched the callee's real node in
+    its own file, so every cross-file `call` dangled permanently."""
+    src = tmp_path / "caller.f90"
+    src.write_text(
+        "program caller\n"
+        "  use greeter_mod\n"
+        "  call greet()\n"
+        "end program caller\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids and e["target"] in node_ids, e
+    stub = next(n for n in r["nodes"] if n["label"] == "greet")
+    assert stub["source_file"] == ""
+    assert ("caller", "greet") in _edge_labels(r, "calls")
+
+
+def test_fortran_subroutine_call_resolves_across_files(tmp_path):
+    """End to end: a cross-file `call` lands on the callee's real node, not a
+    dangling stub, once the corpus rewire runs over both files together."""
+    from graphify.extract import extract
+
+    mod = tmp_path / "greeter_mod.f90"
+    mod.write_text(
+        "module greeter_mod\n"
+        "contains\n"
+        "  subroutine greet()\n"
+        "    print *, \"hello\"\n"
+        "  end subroutine greet\n"
+        "end module greeter_mod\n",
+        encoding="utf-8",
+    )
+    caller = tmp_path / "caller.f90"
+    caller.write_text(
+        "program caller\n"
+        "  use greeter_mod\n"
+        "  call greet()\n"
+        "end program caller\n",
+        encoding="utf-8",
+    )
+    result = extract([mod, caller], cache_root=tmp_path / "cache")
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_edges = [
+        (labels.get(e["source"]), labels.get(e["target"]))
+        for e in result["edges"] if e["relation"] == "calls"
+    ]
+    assert ("caller", "greet()") in call_edges, call_edges
+    # the target really is the subroutine's own sourced node, not a leftover stub
+    real_greet = next(n for n in result["nodes"] if n["label"] == "greet()")
+    assert real_greet["source_file"].endswith("greeter_mod.f90")
+
+
+def test_fortran_same_file_subroutine_call_is_unaffected(tmp_path):
+    """Control: a same-file call must keep resolving to its own file's node."""
+    src = tmp_path / "samefile.f90"
+    src.write_text(
+        "program samefile\n"
+        "  call helper()\n"
+        "contains\n"
+        "  subroutine helper()\n"
+        "    print *, \"hi\"\n"
+        "  end subroutine helper\n"
+        "end program samefile\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert ("samefile", "helper") in _edge_labels(r, "calls")
+    helper = next(n for n in r["nodes"] if n["label"] == "helper()")
+    assert helper["source_file"] != ""
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():
