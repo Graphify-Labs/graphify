@@ -4871,6 +4871,13 @@ def _resolve_swift_member_calls(
             continue
         type_scope: str | None = ""
         factory_nid = None
+        file_scopes = scopes_by_file.get(call_file, {})
+        if receiver in file_scopes and file_scopes[receiver] is None:
+            # Two writes of this name in the file disagree on type or scope,
+            # or a write's type is unproven: bind nothing and do not park
+            # (see below). Checked before the upper-case arm: a variable
+            # spelled `X` is not the type `X`.
+            continue
         if receiver[:1].isupper():
             type_name = receiver
             type_qualified = True
@@ -4880,15 +4887,9 @@ def _resolve_swift_member_calls(
         else:
             type_name = type_table_by_file.get(call_file, {}).get(receiver)
             type_qualified = False
-            file_scopes = scopes_by_file.get(call_file, {})
-            if receiver in file_scopes and file_scopes[receiver] is None:
-                # Two writes of this name in the file disagree on type or
-                # scope: bind nothing and do not park (see below).
-                type_scope = None
-            else:
-                factory_nid = factory_typed.get((call_file, receiver))
-                if factory_nid is None:
-                    type_scope = file_scopes.get(receiver, "")
+            factory_nid = factory_typed.get((call_file, receiver))
+            if factory_nid is None:
+                type_scope = file_scopes.get(receiver, "")
         if not type_name:
             continue
         # A builtin receiver type (Data, NSLock, DispatchQueue, ...) must not
