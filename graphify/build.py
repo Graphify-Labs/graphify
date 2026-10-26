@@ -1975,8 +1975,10 @@ def build(
         combined["nodes"].extend(ext.get("nodes", []))
         combined["edges"].extend(ext.get("edges", []))
         combined["hyperedges"].extend(ext.get("hyperedges", []))
-        combined["input_tokens"] += ext.get("input_tokens", 0)
-        combined["output_tokens"] += ext.get("output_tokens", 0)
+        for key in ("input_tokens", "output_tokens"):
+            # None is "the host did not report usage" and stays unknown (#2786).
+            count = ext.get(key, 0)
+            combined[key] = None if count is None or combined[key] is None else combined[key] + count
     _root = str(Path(root).resolve()) if root else None
     _dedup_collapsed = 0
     if dedup and combined["nodes"]:
