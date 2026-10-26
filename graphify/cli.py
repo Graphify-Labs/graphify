@@ -4299,11 +4299,14 @@ def dispatch_command(cmd: str) -> None:
             _extraction_incomplete = True
 
         if incremental_mode:
+            from graphify.extractors.blade import refresh_blade_paths
             from graphify.extractors.terraform import refresh_terraform_paths
-            code_files = refresh_terraform_paths(
-                code_files, [Path(p) for p in files_by_type.get("code", [])],
-                [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
-            )
+            _live_code = [Path(p) for p in files_by_type.get("code", [])]
+            _invalidated = [
+                Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]
+            ]
+            code_files = refresh_terraform_paths(code_files, _live_code, _invalidated)
+            code_files = refresh_blade_paths(code_files, _live_code, _invalidated)
 
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().

@@ -147,3 +147,18 @@ When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
 underscore separators cannot collide with an ordinary normalized binding ID. Local
 call resolution stops if malformed scope metadata cycles.
+
+Laravel Blade views are extracted by regex, not tree-sitter. `@extends('a.b')`,
+`@include('a.b')` and `<x-a.b>` first point at a per-file stub; a cross-file
+resolver then retargets each edge to the scanned file
+`resources/views/a/b.blade.php`, or for a component
+`resources/views/components/a/b.blade.php`, then `components/a/b/index.blade.php`.
+A scan root above the Laravel root still matches (path suffix). No match, or one
+that is ambiguous (two Laravel apps in one corpus), keeps the stub: the resolver
+never guesses. It does not resolve namespaced or package views (`mail::message`),
+class-based components in `app/View/Components`, `<livewire:…>`, `@component`,
+`@livewire`, the `@includeIf`/`@includeWhen`/`@each` family or
+`<x-dynamic-component>`, and `{{-- --}}` comments are not stripped first. On an
+incremental rebuild, any changed, added or deleted Blade file (or ignore-file
+change) re-extracts every view, mostly from the AST cache, so an unchanged view
+follows its target being added or deleted.

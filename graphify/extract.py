@@ -51,7 +51,7 @@ from graphify.extractors.base import (  # noqa: F401
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
-from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.blade import extract_blade, resolve_blade_references  # noqa: F401
 from graphify.extractors.cobol import extract_cobol  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
@@ -7740,6 +7740,12 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver("php_member_calls", frozenset({".php"}), _resolve_php_member_calls)
 )
+# Blade @extends/@include/<x-…> edges retargeted from their per-file stub to the
+# view or component file they name. `.php` because effective_suffix() of
+# `page.blade.php` is `.php`; the resolver picks the Blade files itself.
+register_language_resolver(
+    LanguageResolver("blade_references", frozenset({".php"}), resolve_blade_references)
+)
 register_language_resolver(
     LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)
 )
@@ -11184,8 +11190,14 @@ def extract(
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
         e.pop("_rust_pub_use", None)
+        e.pop("_blade_ref", None)
+    # A Blade stub the resolver retargeted every edge away from. On an incremental run
+    # it ran over a scratch list, so the drop has to happen here as well. The other
+    # Blade markers are cleared too, in case the resolver failed and left them.
+    all_nodes[:] = [n for n in all_nodes if not n.pop("_blade_orphan", False)]
     for n in all_nodes:
         n.pop("_rust_use_roots", None)
+        n.pop("_blade_stub", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
