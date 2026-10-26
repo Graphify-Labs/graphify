@@ -1,13 +1,22 @@
 """The lock-queue contract for rebuild requests (#4769).
 
 A rebuild request that loses the per-repo lock has to leave something behind, or
-tell its caller it was not served. This file pins that contract for the request
-kinds that exist today, and for the queue files they use.
+tell its caller it was not served. This file pins that contract for every request
+kind, and for the queue files they use.
 
+    I1  a contended incremental request leaves a record a drain can act on, or
+        tells its caller it was not served; it must not vanish
     I2  a caller that WINS the lock runs the pass it asked for, never a full one
         driven by its own record
+    I3  the record drives the work through the winner's drain, with nothing
+        re-asking for it
     I4  ``.pending_full`` / ``.pending_changes`` keep their meaning, and a queued
         full marker still upgrades a blocking incremental caller
+
+An incremental request names no paths, so it can neither append to
+``.pending_changes`` nor use ``.pending_full`` (which means "re-extract
+everything"). It records ``.pending_incremental`` instead, and the tests below
+pin that marker's lifecycle.
 
 Determinism: the real ``_rebuild_lock`` and the real queue files are used, with no
 monkeypatching of the lock, the queue, or ``_rebuild_code``. Contention comes from
@@ -28,6 +37,7 @@ import graphify.extract as extract_mod
 from graphify.watch import (
     _drain_pending,
     _drain_pending_full,
+    _drain_pending_incremental,
     _queue_pending,
     _queue_pending_full,
     _rebuild_code,
@@ -97,6 +107,41 @@ def _artifacts(root: Path) -> list[str]:
     return sorted(p.name for p in (root / OUT).iterdir() if p.name.startswith(".pending"))
 
 
+def _refused(outcome) -> bool:
+    """The caller was told it was not served, rather than given a plain False."""
+    return isinstance(outcome, BaseException) or outcome is None
+
+
+# --- I1 -------------------------------------------------------------------
+
+
+def test_i1_contended_incremental_request_is_not_silently_dropped(built: Path) -> None:
+    outcome, artifacts = _contend(
+        built, incremental=True, acquire_lock=True, block_on_lock=False
+    )
+
+    assert artifacts or _refused(outcome), (
+        "a contended incremental request was dropped: it left no pending record "
+        f"and its caller got an indistinguishable result (outcome={outcome!r}, "
+        f"pending={artifacts})"
+    )
+
+
+def test_i1_the_marker_is_written_on_contention_and_drained_exactly_once(
+    built: Path,
+) -> None:
+    """.pending_incremental's lifecycle: written when the lock is lost, drained once."""
+    out = built / OUT
+    assert not (out / ".pending_incremental").exists()
+
+    _contend(built, incremental=True, acquire_lock=True, block_on_lock=False)
+    assert (out / ".pending_incremental").exists(), "the contended request left no marker"
+
+    assert _drain_pending_incremental(out) is True
+    assert not (out / ".pending_incremental").exists()
+    assert _drain_pending_incremental(out) is False
+
+
 # --- I2 -------------------------------------------------------------------
 
 
@@ -109,6 +154,35 @@ def test_i2_incremental_caller_that_wins_the_lock_does_not_upgrade_itself(
     assert _rebuild_code(built, incremental=True, acquire_lock=True, block_on_lock=True) is True
 
     assert calls == [["a.py"]], f"an incremental caller re-extracted {calls}"
+
+
+# --- I3 -------------------------------------------------------------------
+
+
+def test_i3_a_queued_incremental_request_makes_the_next_winner_run_incrementally(
+    built: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record drives the work; nothing re-asks for an incremental pass.
+
+    The call that ends up running the work asks for the DEFAULT pass, which is a
+    full one, so a single re-extracted file can only come from the winner's own
+    drain honouring the marker. Calling ``_rebuild_code(incremental=True)`` here
+    instead would be this test re-asking, which proves nothing about the queue.
+    """
+    _edit(built, "a.py", "def fa():\n    return 12\n")
+    _, artifacts = _contend(
+        built, incremental=True, acquire_lock=True, block_on_lock=False
+    )
+    assert ".pending_incremental" in artifacts, "the contended request left no record"
+
+    calls = _spy_extract(monkeypatch)
+    assert _rebuild_code(built, acquire_lock=True, block_on_lock=True) is True
+
+    assert calls == [["a.py"]], (
+        "the queued incremental record did not drive the winner's pass "
+        f"(extracted {calls})"
+    )
+    assert ".pending_incremental" not in _artifacts(built), "the marker survived the drain"
 
 
 # --- I4 -------------------------------------------------------------------
