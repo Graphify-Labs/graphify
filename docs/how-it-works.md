@@ -74,6 +74,39 @@ Code files are extracted in parallel using `ProcessPoolExecutor` — bypasses Py
 
 ---
 
+## Keep graphs across Git cleans and resets
+
+By default, graphify writes to `graphify-out/` inside the project. To keep the graph,
+report, manifest, and extraction cache outside the working tree, opt in with
+`GRAPHIFY_HOME`:
+
+```sh
+export GRAPHIFY_HOME="$HOME/.graphify"
+cd /path/to/your/repo
+graphify extract . --code-only
+graphify update .
+graphify query "where is authentication handled?"
+```
+
+Graphify uses a different path for each resolved Git worktree, under
+`$GRAPHIFY_HOME/projects/<repo-name>-<path-hash>/graphify-out/`. Working
+from a subdirectory of the same repo selects the same graph. After `git clean`
+or `git reset`, subsequent commands can reuse the saved graph and cache;
+incremental updates still check the source files for changes.
+
+The setting is opt-in and must be present for **every** Graphify command that
+should use the external graph. Run commands from within the intended repository:
+an explicit extraction target outside the current worktree does not change the
+storage key. Distinct clones/worktrees have separate caches, even if their
+remote URL matches. Existing local `graphify-out/` data is not moved
+automatically, and moving a clone to a different path starts a new cache.
+
+`GRAPHIFY_OUT` remains the higher-priority override for users who want an
+exact output path. If neither variable is set, the original local directory
+is used. For safety, `GRAPHIFY_HOME` cannot point inside the current repo.
+
+---
+
 ## SHA256 cache
 
 Every extracted file is fingerprinted by content hash. Re-runs skip unchanged files entirely — only new or modified files go through extraction again. The cache lives in `graphify-out/cache/`.

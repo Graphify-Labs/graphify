@@ -3,7 +3,8 @@
 The output directory is ``graphify-out`` by default and overridable with the
 ``GRAPHIFY_OUT`` env var (worktrees or shared-output setups, #686). It accepts a
 relative name (``"graphify-out-feature"``) or an absolute path
-(``"/shared/graphify-out"``).
+(``"/shared/graphify-out"``). Setting ``GRAPHIFY_HOME`` instead stores each
+repository's graph and cache outside the worktree (#4063).
 
 This used to be duplicated as an identical ``_GRAPHIFY_OUT`` constant in
 ``__main__``, ``cache``, and ``watch``, while ``security`` and ``callflow_html``
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import errno
 import functools
+import hashlib
 import json
 import os
 import re
@@ -25,6 +27,41 @@ import stat
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+
+def _project_root(start: Path) -> Path:
+    """Find the containing Git worktree without invoking Git.
+
+    A .git file (linked worktrees/submodules) and a .git directory both count.
+    Non-Git corpora are keyed by their current working directory.
+    """
+    resolved = start.resolve()
+    for directory in (resolved, *resolved.parents):
+        if (directory / ".git").exists():
+            return directory
+    return resolved
+
+
+def _project_out_from_home(home: str) -> str:
+    """Stable, separate external output directory for the current project."""
+    root = _project_root(Path.cwd())
+    store = Path(home).expanduser().resolve()
+
+    # An output inside the source tree would still be destroyed by git clean.
+    if store == root or root in store.parents:
+        print(
+            "warning: GRAPHIFY_HOME must be outside the repository; "
+            "using 'graphify-out' instead",
+            file=sys.stderr,
+        )
+        return "graphify-out"
+
+    # Avoid collisions between repositories with the same name; use the
+    # resolved worktree path so changing branches or resetting Git is harmless.
+    identity = os.path.normcase(str(root))
+    digest = hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", root.name) or "project"
+    return str(store / "projects" / f"{name}-{digest}" / "graphify-out")
 
 
 def _out_from_env() -> str:
@@ -38,7 +75,8 @@ def _out_from_env() -> str:
     """
     value = (os.environ.get("GRAPHIFY_OUT") or "").strip()
     if not value:
-        return "graphify-out"
+        home = (os.environ.get("GRAPHIFY_HOME") or "").strip()
+        return _project_out_from_home(home) if home else "graphify-out"
     norm = os.path.normpath(value)
     if norm == "." or all(part == ".." for part in Path(norm).parts):
         print(
