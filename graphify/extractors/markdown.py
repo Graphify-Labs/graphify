@@ -49,6 +49,13 @@ _MD_BARE_MENTION_RE = re.compile(
     r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
 )
 
+# An ATX heading (CommonMark): up to three spaces of indent (four is an indented
+# code block), 1-6 `#`, then whitespace and the text. An optional closing run of
+# `#` preceded by whitespace is not part of the text: `## Setup ##` is "Setup",
+# while `## C#` and `## Trailing \#` keep their `#`.
+_MD_ATX_HEADING_RE = re.compile(r'^ {0,3}(#{1,6})[ \t]+(.+)$')
+_MD_ATX_CLOSING_RE = re.compile(r'(?:^|[ \t]+)#+[ \t]*$')
+
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
 # must not be mistaken for one. Bounded so a file that opens a fence and never
@@ -555,10 +562,10 @@ def extract_markdown(path: Path) -> dict:
             continue
 
         # Detect headings: # Heading, ## Heading, etc.
-        heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
-        if heading_match:
+        heading_match = _MD_ATX_HEADING_RE.match(line_text)
+        title = _MD_ATX_CLOSING_RE.sub("", heading_match.group(2).strip()) if heading_match else ""
+        if heading_match and title:
             level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
             h_nid = _make_id(stem, title)
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:

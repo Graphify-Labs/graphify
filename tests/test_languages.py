@@ -3614,6 +3614,38 @@ def test_markdown_contains_edges():
     assert len(contains_edges) >= 5, f"expected >= 5 contains edges, got {len(contains_edges)}"
 
 
+def _atx_headings(tmp_path, src: str) -> list[tuple[str, str]]:
+    path = tmp_path / "doc.md"
+    path.write_text(src, encoding="utf-8")
+    return [(n["label"], n["source_location"]) for n in extract_markdown(path)["nodes"]
+            if n.get("node_kind") == "heading"]
+
+
+def test_markdown_heading_closing_sequence_is_not_part_of_the_label(tmp_path):
+    """CommonMark: `## Setup ##` is the heading "Setup". The closing run of `#`
+    used to stay in the label (and so in GRAPH_REPORT.md, query and explain)."""
+    src = "# Title #\n\n## Setup ##   \n\n### Deep ###########\n"
+    assert _atx_headings(tmp_path, src) == [("Title", "L1"), ("Setup", "L3"), ("Deep", "L5")]
+
+
+def test_markdown_heading_keeps_a_hash_that_is_part_of_the_text(tmp_path):
+    """Only a whitespace-separated closing run is stripped: `C#` and an escaped
+    `\\#` stay, and a heading made of nothing but hashes yields no node."""
+    src = "## C# Guide\n\n## Uses C#\n\n## Trailing \\#\n\n## ##\n"
+    assert _atx_headings(tmp_path, src) == [
+        ("C# Guide", "L1"), ("Uses C#", "L3"), ("Trailing \\#", "L5"),
+    ]
+
+
+def test_markdown_heading_indented_up_to_three_spaces_is_a_heading(tmp_path):
+    """CommonMark allows 0-3 spaces before an ATX heading; four make an indented
+    code block. One to three spaces used to drop the heading entirely."""
+    src = "# Top\n\n   ## Three Spaces\n\n ### One Space\n\n    #### Four Is Code\n"
+    assert _atx_headings(tmp_path, src) == [
+        ("Top", "L1"), ("Three Spaces", "L3"), ("One Space", "L5"),
+    ]
+
+
 def test_markdown_fenced_heading_not_parsed():
     """A '## heading' inside a fenced block must not produce a heading node (#1077).
 
