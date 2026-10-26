@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
@@ -48,8 +49,9 @@ _READ_NUDGE_STALE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'graphify-out/graph.json exists but may be STALE for this file (the file '
-            'changed after the last build). Prefer `graphify query "<question>"` for '
+            'graphify-out/graph.json exists but may be STALE for this file or repository '
+            '(the file or a recent commit changed after the last build). Prefer '
+            '`graphify query "<question>"` for '
             'orientation, and run `graphify update` to refresh the graph. Reading the '
             'file directly is fine.'
         ),
@@ -1067,6 +1069,66 @@ def _mark_session_denied(session_id: str) -> bool:
         return False
 
 
+def _git_head_time_for_session(root: Path, session_id: str) -> float | None:
+    """Best-effort repository freshness probe, memoized for one hook session.
+
+    Commit time and graph-file mtime have different precision and clock sources,
+    and rebases can rewrite commit time. This comparison is only a nudge/deny
+    softener, never proof that the graph is current. A failed probe is cached as
+    unavailable for this session and fails open.
+    """
+    from graphify.paths import out_path, write_text_atomic
+
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    if not sid:
+        # Without a session id the strict guard cannot deny this read anyway,
+        # so do not pay for a process spawn just to change the soft nudge text.
+        return None
+    root_key = str(root)
+    marker_dir = out_path("cache", "hook_sessions")
+    marker = marker_dir / f"{sid}.repo_head.json"
+    try:
+        marker_stat = marker.stat()
+        if marker_stat.st_mtime >= time.time() - 86400 and marker_stat.st_size <= 4096:
+            cached = json.loads(marker.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and cached.get("root") == root_key:
+                value = cached.get("commit_time")
+                return None if value is None else float(value)
+    except (OSError, TypeError, ValueError):
+        pass
+
+    commit_time = None
+    try:
+        latest = subprocess.run(
+            ["git", "-C", str(root), "log", "-1", "--format=%ct"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        ).stdout.strip()
+        commit_time = float(latest) if latest else None
+    except Exception:
+        # Hooks must stay fail-open if Git is absent, slow, or outside a repo.
+        pass
+
+    try:
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(
+            marker,
+            json.dumps({"root": root_key, "commit_time": commit_time}),
+        )
+        cutoff = time.time() - 86400
+        for entry in os.scandir(marker_dir):
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return commit_time
+
+
 _SEARCH_COMMANDS = frozenset({
     "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
 })
@@ -1301,6 +1363,15 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     stale = os.stat(fp).st_mtime > gmtime
                 except OSError:
                     stale = False
+            # A repository can be stale even when the file being read has not
+            # changed since the graph build: commits may add or delete nearby
+            # modules, so per-file mtime cannot see the missing graph coverage
+            # (#3718). This is a best-effort comparison of filesystem mtime with
+            # second-resolution, rebase-mutable commit time; it only softens to
+            # a nudge and cannot prove freshness. Git is optional and fails open.
+            if not stale:
+                latest = _git_head_time_for_session(root, str(d.get("session_id") or ""))
+                stale = latest is not None and latest > gmtime
             try:
                 if out_path("needs_update").exists():
                     stale = True
