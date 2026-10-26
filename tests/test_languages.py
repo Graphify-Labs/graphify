@@ -4660,6 +4660,27 @@ def test_systemverilog_no_dangling_edges():
         assert e["target"] in node_ids, f"dangling target: {e}"
 
 
+def test_systemverilog_class_task_method_gets_a_node():
+    """A class method declared `task` instead of `function` must get the same
+    treatment a `function` method does: its own node and a `method` edge from
+    the class. The function-only harvest silently dropped every task method.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "reset") in _edge_labels(r, "method")
+    assert ("reset", "Config") in _edge_labels(r, "references", "parameter_type")
+
+
+def test_systemverilog_task_locals_do_not_leak_into_class_fields():
+    """A task method's own local declarations must not be scanned as class
+    fields, exactly like a function's already aren't. Only `function...
+    endfunction` bodies were stripped before the field regex ran, so a type
+    declared purely as a task-local variable (`Flag`, never a real field)
+    showed up as a false `references`/`field` edge from the class.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "Flag") not in _edge_labels(r, "references", "field")
+
+
 # ── Header/impl class merge + .h routing (#1547 C++, #1556 ObjC/Swift) ─────────
 from graphify.extract import (
     extract as _extract_corpus,
