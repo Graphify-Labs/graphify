@@ -5006,6 +5006,13 @@ def _resolve_python_member_calls(
         return _key(stem or n.get("label", ""))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # A dispatch-table value is only pre-empted by an edge that already says the
+    # caller reaches the target. An `imports` edge from the file to the same symbol
+    # is expected and must not hide it (the generic resolver's call_like_pairs).
+    call_like_pairs = {
+        (e.get("source"), e.get("target")) for e in all_edges
+        if e.get("relation") in ("calls", "indirect_call")
+    }
     # A method hangs off its class (`method` edge), not its file (`contains`), so
     # the typed-receiver arm finds a method caller's file through its class.
     method_class: dict[str, str] = {}
@@ -5076,6 +5083,28 @@ def _resolve_python_member_calls(
             # Swift node labelled `Swift.Array`. Stubs and external modules
             # carry no file.
             return
+        if rc.get("indirect"):
+            # `module.func` listed in a dispatch table: referenced as a value, not
+            # invoked, so the same INFERRED `indirect_call` the bare-name path emits,
+            # and only to a real callable, never a class used as a value (#2137).
+            if (caller, target_nid) in call_like_pairs:
+                return
+            if not node_by_id.get(target_nid, {}).get("_callable") or node_by_id.get(target_nid, {}).get("_callable_class"):
+                return
+            call_like_pairs.add((caller, target_nid))
+            existing_pairs.add((caller, target_nid))
+            all_edges.append({
+                "source": caller,
+                "target": target_nid,
+                "relation": "indirect_call",
+                "context": rc.get("context", "collection"),
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": rc.get("source_file", ""),
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+            })
+            return
         if rc.get("_python_attr_read"):
             # An attribute read only runs a property getter, and only the one it
             # spells: _key() folds `_items` into `items`, so compare the name.
@@ -5091,6 +5120,8 @@ def _resolve_python_member_calls(
         if (caller, target_nid) in existing_pairs:
             return
         existing_pairs.add((caller, target_nid))
+        if not rc.get("_python_attr_read"):
+            call_like_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
         # definition (each arm applies a single-definition god-node guard).
@@ -5164,7 +5195,10 @@ def _resolve_python_member_calls(
         return None
 
     factory_receivers: list[dict] = []
-    for rc in all_raw_calls:
+    # Dispatch-table values (`indirect`) go last, so a direct call to the same target
+    # claims the pair as `calls` whichever comes first in the body. Both halves keep
+    # their source order.
+    for rc in [r for r in all_raw_calls if not r.get("indirect")] + [r for r in all_raw_calls if r.get("indirect")]:
         if rc.get("_ambiguous_python_import"):
             continue
         if not rc.get("is_member_call"):
@@ -5177,14 +5211,18 @@ def _resolve_python_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
-        if receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
+        # A dispatch-table `module.func` value takes the module arm only: its
+        # receiver is a bare name the extractor already checked is not a local.
+        if rc.get("indirect") and not (receiver and callee and caller and not receiver[:1].isupper()):
+            continue
+        if not rc.get("indirect") and receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
             target = _inherited_method(caller, callee, skip_own=receiver == "super")
             if target:
                 # Same rule as the in-file base walk (_self_call_target), across files.
                 _emit_call(caller, target, rc)
                 continue
         attr_type = rc.get("_python_self_attr_type")
-        if attr_type and callee and caller:
+        if attr_type and callee and caller and not rc.get("indirect"):
             # `self.X.m()` with X bound to one class (#2860): only a unique class
             # the caller's own file defines or imports, and only if it owns `m`.
             class_nids = class_def_nids.get(_key(attr_type), [])
@@ -5266,6 +5304,8 @@ def _resolve_python_member_calls(
             # (#2082), so an aliased import resolves the same as the bare name.
             rkey = _key(receiver)
             caller_file = _file_node(caller)
+            if caller_file is None and rc.get("indirect") and caller in imported_by_filenode and caller not in file_of_node:
+                caller_file = str(caller)  # a module-level dispatch table: the caller IS the file
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children

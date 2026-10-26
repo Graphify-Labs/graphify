@@ -8993,6 +8993,42 @@ def _extract_generic(
                 if el.type == "identifier":
                     yield el
 
+    def _python_dispatch_value_attrs(coll_node):
+        """Yield the ``module.func`` value-nodes of a dict/list/set/tuple literal: the
+        same value positions as ``_python_dispatch_value_idents``, written with a module
+        prefix (``{"card": card.card_charge}``). Only a bare-name receiver qualifies; a
+        longer chain (``a.b.c``) or a call result has no single receiver to resolve."""
+        if coll_node.type == "dictionary":
+            values = (p.child_by_field_name("value") for p in coll_node.children if p.type == "pair")
+        else:  # list / set / tuple
+            values = iter(coll_node.children)
+        for val in values:
+            if val is None or val.type != "attribute":
+                continue
+            obj = val.child_by_field_name("object")
+            if obj is not None and obj.type == "identifier" and val.child_by_field_name("attribute") is not None:
+                yield val
+
+    def _emit_indirect_member_ref(attr_node, scope_nid: str, enclosing_locals, context: str) -> None:
+        """``module.func`` listed in a dispatch table: defer it to the Python member-call
+        resolver as an ``indirect`` member raw_call. That resolver binds it only when the
+        receiver is a module imported into this file holding exactly one callable of that
+        name, and emits an INFERRED ``indirect_call`` like the bare-name path. A receiver
+        bound as a param/local (or ``self``/``cls``) names a value, not a module."""
+        receiver = _read_text(attr_node.child_by_field_name("object"), source)
+        if receiver in enclosing_locals or receiver in ("self", "cls"):
+            return
+        raw_calls.append({
+            "caller_nid": scope_nid,
+            "callee": _read_text(attr_node.child_by_field_name("attribute"), source),
+            "is_member_call": True,
+            "receiver": receiver,
+            "indirect": True,
+            "context": context,
+            "source_file": str_path,
+            "source_location": f"L{attr_node.start_point[0] + 1}",
+        })
+
     def _python_ref_value_idents(value_node):
         """Identifiers on the VALUE side of an assignment RHS or a return: a bare name
         (`cb = handler`, `return handler`) or the elements of a bare unpack
@@ -10246,6 +10282,8 @@ def _extract_generic(
             enclosing_locals = local_bound_names.get(caller_nid, frozenset()) | extra_locals
             for ident in _python_dispatch_value_idents(node):
                 _emit_indirect_ref(ident, caller_nid, enclosing_locals, "collection")
+            for attr in _python_dispatch_value_attrs(node):
+                _emit_indirect_member_ref(attr, caller_nid, enclosing_locals, "collection")
         elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript") \
                 and node.type in ("object", "array"):
             enclosing_locals = local_bound_names.get(caller_nid, frozenset()) | extra_locals
@@ -10445,6 +10483,8 @@ def _extract_generic(
             if n.type in ("dictionary", "list", "set", "tuple"):
                 for ident in _python_dispatch_value_idents(n):
                     _emit_indirect_ref(ident, file_nid, module_bound, "collection")
+                for attr in _python_dispatch_value_attrs(n):
+                    _emit_indirect_member_ref(attr, file_nid, module_bound, "collection")
             elif n.type == "assignment":
                 # Module-level alias / re-export: CALLBACK = handler
                 for ident in _python_ref_value_idents(n.child_by_field_name("right")):
