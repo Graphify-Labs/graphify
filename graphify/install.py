@@ -208,8 +208,9 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
     if platform_name == "gemini":
         if project:
             return (project_dir or Path(".")) / ".gemini" / "skills" / "graphify" / "SKILL.md"
-        if platform.system() == "Windows":
-            return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+        # Gemini CLI reads ~/.gemini/skills on every OS. ~/.agents/skills is the
+        # `agents` platform's destination, and sharing it let each platform
+        # overwrite and uninstall the other's skill (#2800).
         return Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
 
     if platform_name == "opencode":
@@ -1054,10 +1055,22 @@ def _gemini_hook(project: bool = False) -> dict:
         "matcher": "read_file|list_directory",
         "hooks": [{"type": "command", "command": f"{exe} hook-guard gemini"}],
     }
+def _warn_shadowing_agents_skill() -> None:
+    """Gemini CLI prefers ~/.agents/skills over ~/.gemini/skills for a skill of
+    the same name. Before #2800 a Windows gemini install wrote there, so an old
+    copy can hide the one just installed. It may belong to the `agents`
+    platform, so point at it rather than delete it."""
+    shadow = _platform_skill_destination("agents")
+    if shadow.exists():
+        print(f"  note: Gemini CLI loads {shadow} ahead of this install. If an older")
+        print("        `graphify install --platform gemini` wrote it, delete that folder;")
+        print("        if you use the `agents` platform, keep it.")
 def gemini_install(project_dir: Path | None = None, *, project: bool = False) -> None:
     """Copy skill file, write GEMINI.md section, and install BeforeTool hook."""
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file("gemini", project=project, project_dir=project_dir)
+    if not project:
+        _warn_shadowing_agents_skill()
 
     target = project_dir / "GEMINI.md"
 
