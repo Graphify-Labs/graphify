@@ -14,3 +14,6 @@ Examples:
 - `/graphify query "what connects auth to billing?"`
 
 Do not answer from raw files before handing off to the `graphify` skill.
+
+<!-- graphify:managed -->
+

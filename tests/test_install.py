@@ -918,7 +918,10 @@ def test_opencode_agents_install_writes_the_global_command(tmp_path):
         _install_fn(project, "opencode")
     command = home / ".config" / "opencode" / "commands" / "graphify.md"
     assert command.exists()
-    assert "$ARGUMENTS" in command.read_text(encoding="utf-8")
+    body = command.read_text(encoding="utf-8")
+    assert "$ARGUMENTS" in body
+    # Uninstall deletes this path, so it carries the ownership marker.
+    assert "<!-- graphify:managed -->" in body
 
 
 def test_opencode_agents_uninstall_removes_the_project_command(tmp_path):
@@ -933,18 +936,56 @@ def test_opencode_agents_uninstall_removes_the_project_command(tmp_path):
     assert not command.exists()
 
 
+def test_opencode_uninstall_keeps_a_command_graphify_did_not_write(tmp_path):
+    """Uninstall must not delete a hand-written commands/graphify.md.
+
+    Only a file still carrying graphify's marker is removed; anything else
+    belongs to the user and survives an uninstall untouched.
+    """
+    from graphify.__main__ import _agents_install as _install_fn
+    from graphify.__main__ import _agents_uninstall as _uninstall_fn
+
+    command = tmp_path / ".opencode" / "commands" / "graphify.md"
+    command.parent.mkdir(parents=True)
+    command.write_text("# my own command\n", encoding="utf-8")
+
+    _install_fn(tmp_path, "opencode", project=True)
+    _uninstall_fn(tmp_path, platform="opencode")
+
+    assert command.exists()
+    assert command.read_text(encoding="utf-8") == "# my own command\n"
+
+
+def test_install_opencode_leaves_a_user_command_in_place(tmp_path):
+    """Install reports the conflict instead of overwriting the user's file."""
+    from graphify.__main__ import _agents_install as _install_fn
+
+    project = tmp_path / "project"
+    command = project / ".opencode" / "commands" / "graphify.md"
+    command.parent.mkdir(parents=True)
+    command.write_text("# my own command\n", encoding="utf-8")
+
+    _install_fn(project, "opencode", project=True)
+
+    assert command.read_text(encoding="utf-8") == "# my own command\n"
+    # The rest of the install still lands.
+    assert (project / "AGENTS.md").exists()
+
+
 def test_opencode_uninstall_removes_the_global_command(tmp_path, monkeypatch):
     """`graphify opencode uninstall` removes the user-scope /graphify command."""
     from graphify.__main__ import main
 
+    home = tmp_path / "home"
+    command = home / ".config" / "opencode" / "commands" / "graphify.md"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "install"])
-    main()
-    command = Path.home() / ".config" / "opencode" / "commands" / "graphify.md"
-    assert command.exists()
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "install"])
+        main()
+        assert command.exists()
 
-    monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "uninstall"])
-    main()
+        monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "uninstall"])
+        main()
     assert not command.exists()
 
 

@@ -1770,6 +1770,11 @@ _OPENCODE_COMMAND_PATH = Path(".opencode") / "commands" / "graphify.md"
 _OPENCODE_GLOBAL_COMMAND_PATH = (
     Path(".config") / "opencode" / "commands" / "graphify.md"
 )
+# Last line of the command template. `graphify uninstall` deletes this file, so it
+# must be able to tell its own command from a user's `commands/graphify.md`: the
+# marker survives re-installs and version bumps, while a file without it belongs
+# to someone else.
+_OPENCODE_COMMAND_MARKER = "<!-- graphify:managed -->"
 # First line of every plugin graphify has written, back to the first one (#71).
 _OPENCODE_PLUGIN_HEADER = "// graphify OpenCode plugin"
 def _opencode_plugin_is_v1_only(body: str) -> bool:
@@ -1833,6 +1838,18 @@ def _opencode_command_destination(
     if project:
         return (project_dir or Path(".")) / _OPENCODE_COMMAND_PATH
     return Path.home() / _OPENCODE_GLOBAL_COMMAND_PATH
+def _graphify_wrote_opencode_command(command_file: Path) -> bool:
+    """True when *command_file* still carries the marker graphify writes.
+
+    ``uninstall`` deletes this path, and ``install`` overwrites it, so both must
+    recognize their own file: a ``commands/graphify.md`` without the marker was
+    written by the user, not by this installer, and is left untouched.
+    """
+    try:
+        body = command_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return _OPENCODE_COMMAND_MARKER in body
 def _install_opencode_command(
     project_dir: Path | None = None, *, project: bool = False
 ) -> None:
@@ -1843,6 +1860,10 @@ def _install_opencode_command(
     ``/graphify`` instructions with an unknown command. OpenCode's own commands
     are markdown files under ``commands/`` (global ``~/.config/opencode`` or a
     project's ``.opencode``), with ``$ARGUMENTS`` replaced by what the user typed.
+
+    An existing command file graphify did not write is reported and skipped
+    rather than replaced: the user put it there, and the rest of the install
+    (skill, plugin) is unaffected.
     """
     command_src = Path(__file__).parent / "command-opencode.md"
     if not command_src.exists():
@@ -1852,12 +1873,29 @@ def _install_opencode_command(
         )
         sys.exit(1)
     command_dst = _opencode_command_destination(project_dir, project=project)
+    if command_dst.exists() and not _graphify_wrote_opencode_command(command_dst):
+        print(
+            f"  {_shown_path(command_dst)}  ->  exists and was not written by"
+            " graphify; left unchanged",
+            file=sys.stderr,
+        )
+        return
     command_dst.parent.mkdir(parents=True, exist_ok=True)
     _write_text_atomic(command_dst, command_src.read_text(encoding="utf-8"))
     print(f"  command installed ->  {_shown_path(command_dst)}")
 def _uninstall_opencode_command(command_file: Path) -> bool:
-    """Remove one graphify command file and the directory it leaves empty."""
+    """Remove one graphify command file and the directory it leaves empty.
+
+    A file that does not carry the marker is someone else's command and is left
+    in place, so uninstalling graphify cannot delete a hand-written
+    ``commands/graphify.md``.
+    """
     if not command_file.exists():
+        return False
+    if not _graphify_wrote_opencode_command(command_file):
+        print(
+            f"  {_shown_path(command_file)}  ->  not written by graphify; left in place"
+        )
         return False
     command_file.unlink()
     print(f"  {_shown_path(command_file)}  ->  command removed")
