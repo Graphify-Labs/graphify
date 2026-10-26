@@ -6,3 +6,19 @@ Rules:
 - When working on Graphify itself, use the repository's existing Graphify guidance. For codebase questions, prefer scoped graph queries where available; use the report for broad orientation. Do not use the graph as evidence when the task concerns the graph's correctness itself.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `JulioLeonPhD/graphify`. See `docs/agents/issue-tracker.md`.
+Fork-local: exclude this subsection and `docs/agents/issue-tracker.md` from the upstream PR.
+
+### Triage labels
+
+Use the five default triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` and `docs/adr/`, created lazily.
+See `docs/agents/domain.md`.
