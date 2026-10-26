@@ -1197,6 +1197,12 @@ def _disambiguate_colliding_node_ids(
             raw_call["caller_nid"] = remap[caller_key]
         elif raw_call.get("caller_nid") in unambiguous_remaps:
             raw_call["caller_nid"] = unambiguous_remaps[str(raw_call["caller_nid"])]
+        if raw_call.get("evidence_owner"):
+            eo_key = (raw_call.get("evidence_owner", ""), call_source_key)
+            if eo_key in remap:
+                raw_call["evidence_owner"] = remap[eo_key]
+            elif raw_call.get("evidence_owner") in unambiguous_remaps:
+                raw_call["evidence_owner"] = unambiguous_remaps[str(raw_call["evidence_owner"])]
 
 def _is_type_like_definition(node: dict) -> bool:
     if node.get("type") == "namespace":

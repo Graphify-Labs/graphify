@@ -91,9 +91,16 @@ def test_code_span_mentions_are_classified():
     pinned = ("src/widget.py", ["Widget", "render"])
     assert _code_span_mention("src/widget.py::Widget::render") == pinned
     assert _code_span_mention("src/widget.py::Widget::render()") == pinned
-    # Files, commands, expressions and prose are not symbol mentions.
-    for span in ("setup.py", "README.md", "notes.txt", "git revert", "x = 1", "a-b",
-                 "--flag", "", "src/widget.py"):
+    # A source-file span classifies with an empty symbol chain, so resolution
+    # can record it as file evidence (#4804).
+    assert _code_span_mention("setup.py") == ("setup.py", [])
+    assert _code_span_mention("src/widget.py") == ("src/widget.py", [])
+    # A *document* span is not evidence (only code files are), so it is not a
+    # mention at all.
+    assert _code_span_mention("README.md") is None
+    assert _code_span_mention("docs/notes.mdx") is None
+    # Commands, expressions and prose are not symbol mentions.
+    for span in ("git revert", "x = 1", "a-b", "--flag", ""):
         assert _code_span_mention(span) is None, span
 
 
@@ -324,16 +331,71 @@ def test_bare_method_with_parentheses_still_resolves(tmp_path):
     assert (notes["id"], method["id"]) in _references(r)
 
 
-def test_bare_function_mention_still_resolves_without_its_owner(tmp_path):
-    """The extra owner test is scoped to methods; a free function label stays evidence (#4609)."""
+def test_bare_lowercase_word_does_not_link_to_an_unrelated_function(tmp_path):
+    """`token` the query parameter is prose, not a reference to token() in an unrelated JS file (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) {\n  return name;\n}\n",
+        "docs/feed.md": "# Quote feed\n\nThe client sends the API key as the `token` query parameter.\n",
+    })
+
+    feed = _node(r, "Quote feed")
+    assert {t for (s, t) in _references(r) if s == feed["id"]} == set()
+
+
+def test_bare_function_mention_survives_when_the_document_cites_another_symbol_from_its_file(tmp_path):
+    """`token` next to `palette()` from the same file is a real reference (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": (
+            "export function palette() { return 'dark'; }\n"
+            "export function token(name) { return name; }\n"
+        ),
+        "docs/feed.md": "# Quote feed\n\nWalks through charts, mentions `palette()` and then `token`.\n",
+    })
+
+    feed = _node(r, "Quote feed")
+    token = _node(r, "token()", "charts.js")
+    palette = _node(r, "palette()", "charts.js")
+    assert (feed["id"], token["id"]) in _references(r)
+    assert (feed["id"], palette["id"]) in _references(r)
+
+
+def test_bare_function_with_parentheses_still_resolves(tmp_path):
+    """A trailing () is explicit evidence, so defining file does not need another symbol cited (#4804)."""
     r = _extract(tmp_path, {
         "deploy.py": "def deploy():\n    pass\n",
-        "notes.md": "# Notes\n\nRun `deploy` after the tests.\n",
+        "notes.md": "# Notes\n\nRun `deploy()` after the tests.\n",
     })
 
     notes = _node(r, "Notes")
     deploy = _node(r, "deploy()", "deploy.py")
     assert (notes["id"], deploy["id"]) in _references(r)
+
+
+def test_bare_function_survives_when_a_class_in_its_file_is_cited(tmp_path):
+    """`deploy` next to `Deployer` in the same file is a real reference (#4804)."""
+    r = _extract(tmp_path, {
+        "deploy.py": "class Deployer:\n    pass\n\ndef deploy():\n    pass\n",
+        "notes.md": "# Notes\n\nUse `Deployer` then run `deploy`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    deploy = _node(r, "deploy()", "deploy.py")
+    assert (notes["id"], deploy["id"]) in _references(r)
+
+
+def test_function_evidence_cited_in_another_document_does_not_count(tmp_path):
+    """The file-symbol evidence is per document: one doc's mention cannot license another's (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": (
+            "export function palette() { return 'dark'; }\n"
+            "export function token(name) { return name; }\n"
+        ),
+        "a.md": "# A\n\nUses `palette()`.\n",
+        "b.md": "# B\n\nSends `token`.\n",
+    })
+
+    b = _node(r, "B")
+    assert {t for (s, t) in _references(r) if s == b["id"]} == set()
 
 
 def test_owner_cited_in_another_document_does_not_count(tmp_path):
@@ -382,3 +444,384 @@ def test_owner_evidence_survives_an_edge_that_already_exists():
 
     assert ("doc_notes", "handler_handlerresult_successwithwarnings") in {
         (e["source"], e["target"]) for e in edges if e.get("relation") == "references"}
+
+
+def test_bare_function_survives_when_file_is_cited(tmp_path):
+    """Naming the defining file (span or link) licenses a bare function (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/span.md": "# Span\n\n- `web/charts.js` — uses `token` to read styles.\n",
+        "docs/link.md": "# Link\n\nSee [charts](../web/charts.js). Uses `token`.\n",
+    })
+
+    token = _node(r, "token()", "charts.js")
+    span_node = _node(r, "Span")
+    link_node = _node(r, "Link")
+    refs = _references(r)
+    assert (span_node["id"], token["id"]) in refs
+    assert (link_node["id"], token["id"]) in refs
+
+
+def test_two_bare_functions_from_one_file_with_no_other_citation_yield_no_edge(tmp_path):
+    """Two bare prose-like names cannot circularly license each other without evidence (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": (
+            "export function palette() { return 'dark'; }\n"
+            "export function token(name) { return name; }\n"
+        ),
+        "notes.md": "# Notes\n\nCalls `palette` then `token`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    assert {t for (s, t) in _references(r) if s == notes["id"]} == set()
+
+
+def test_bare_function_resolves_when_class_is_cited_after_it_in_document(tmp_path):
+    """Pass 2a/2c ordering ensures license is document-scoped, not reading-order dependent (#4804)."""
+    r = _extract(tmp_path, {
+        "deploy.py": "class Deployer:\n    pass\n\ndef deploy():\n    pass\n",
+        "notes.md": "# Notes\n\nRun `deploy` first. Then use `Deployer`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    deploy = _node(r, "deploy()", "deploy.py")
+    deployer = _node(r, "Deployer", "deploy.py")
+    refs = _references(r)
+    assert (notes["id"], deploy["id"]) in refs
+    assert (notes["id"], deployer["id"]) in refs
+
+
+def test_bare_function_survives_with_path_qualified_evidence(tmp_path):
+    """A path-qualified class citation licenses a bare function from that file (#4804)."""
+    r = _extract(tmp_path, {
+        "deploy.py": "class Deployer:\n    pass\n\ndef deploy():\n    pass\n",
+        "notes.md": "# Notes\n\nSee `deploy.py::Deployer`. Then run `deploy`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    deploy = _node(r, "deploy()", "deploy.py")
+    assert (notes["id"], deploy["id"]) in _references(r)
+
+
+def test_target_with_no_source_file_is_safely_skipped():
+    """A callable target without a source_file sentinel is skipped without error (#4804)."""
+    from graphify.markdown_resolution import resolve_markdown_mentions
+
+    per_file = [{"raw_calls": [
+        {"caller_nid": "doc_notes", "callee": "sourceless", "language": "markdown",
+         "context": "sourceless", "source_file": "notes.md", "source_location": "L1"},
+    ]}]
+    nodes = [
+        {"id": "doc_notes", "label": "Notes", "file_type": "document", "source_file": "notes.md"},
+        {"id": "code_sourceless", "label": "sourceless()", "file_type": "code",
+         "_callable": True, "source_file": ""},
+    ]
+    edges: list[dict] = []
+    resolve_markdown_mentions(per_file, nodes, edges)
+    assert not [e for e in edges if e.get("relation") == "references"]
+
+
+def test_nested_class_resolves_standalone(tmp_path):
+    """A nested class is a class, not a method; it resolves without outer class cited (#4804)."""
+    r = _extract(tmp_path, {
+        "tree.py": "class Outer:\n    class Inner:\n        pass\n",
+        "notes.md": "# Notes\n\nUse `Inner`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    inner = _node(r, "Inner", "tree.py")
+    assert (notes["id"], inner["id"]) in _references(r)
+
+
+def test_bare_function_with_snake_case_or_camel_case_resolves_without_file_citation(tmp_path):
+    """Distinct code identifiers (snake_case or camelCase) resolve standalone (#4804)."""
+    r = _extract(tmp_path, {
+        "build.py": (
+            "def deduplicate_by_label():\n    pass\n\n"
+            "def buildFromJson():\n    pass\n"
+        ),
+        "notes.md": (
+            "# Notes\n\n"
+            "Calls `deduplicate_by_label` and `buildFromJson`.\n"
+        ),
+    })
+
+    notes = _node(r, "Notes")
+    dedup = _node(r, "deduplicate_by_label()", "build.py")
+    build_json = _node(r, "buildFromJson()", "build.py")
+    refs = _references(r)
+    assert (notes["id"], dedup["id"]) in refs
+    assert (notes["id"], build_json["id"]) in refs
+
+
+def test_bare_function_mention_survives_when_symbol_itself_cited_with_parentheses(tmp_path):
+    """An explicit () mention under h1 licenses a bare mention under h2 (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function palette() { return 'dark'; }\n",
+        "docs/guide.md": (
+            "# Overview\n\n"
+            "Call `palette()` to configure theme.\n\n"
+            "## Details\n\n"
+            "Reads `palette` for current colors.\n"
+        ),
+    })
+
+    overview = _node(r, "Overview")
+    details = _node(r, "Details")
+    palette = _node(r, "palette()", "charts.js")
+    refs = _references(r)
+    assert (overview["id"], palette["id"]) in refs
+    assert (details["id"], palette["id"]) in refs
+
+
+def test_link_to_scanned_source_file_is_a_reference_and_licenses_bare_mentions(tmp_path):
+    """A link to a scanned source file is a doc->file edge AND licenses a bare mention (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/guide.md": "# Guide\n\nSee [charts](../web/charts.js). Sends `token`.\n",
+    })
+
+    guide = _node(r, "Guide")
+    token = _node(r, "token()", "charts.js")
+    charts_file = _node(r, "charts.js", "charts.js")
+    page = _node(r, "guide.md")
+    refs = _references(r)
+    assert (guide["id"], token["id"]) in refs
+    # The link itself is a real reference from the page to the scanned file
+    # node — EXTRACTED, since the document names the file verbatim.
+    assert refs[(page["id"], charts_file["id"])]["confidence"] == "EXTRACTED"
+
+
+def test_extract_markdown_records_a_source_file_link_as_a_citation(tmp_path):
+    """The citation rides the markdown raw-call channel with only `path`, so the
+    corpus-aware resolver can decide edge vs evidence-only (#4804)."""
+    doc = tmp_path / "docs" / "guide.md"
+    doc.parent.mkdir()
+    doc.write_text("# Guide\n\nSee [charts](../web/charts.js) and `token`.\n")
+
+    r = extract_markdown(doc)
+
+    assert all(e["relation"] == "contains" for e in r["edges"])
+    page = next(n for n in r["nodes"] if n.get("node_kind") == "page")
+    citations = [rc for rc in r["raw_calls"] if rc["callee"] == "" and rc.get("path")]
+    assert [(rc["caller_nid"], rc["path"]) for rc in citations] == [
+        (page["id"], "../web/charts.js")]
+    assert all(rc.get("file_link") for rc in citations)
+    # The symbol mention still travels as a normal markdown raw call.
+    assert [rc["callee"] for rc in r["raw_calls"] if rc.get("path") is None] == ["token"]
+
+
+def test_link_to_unscanned_source_file_yields_no_edge_or_phantom(tmp_path):
+    """A link to a source file outside the corpus is evidence only, never a dangling edge."""
+    outside = tmp_path / "outside" / "script.py"
+    outside.parent.mkdir()
+    outside.write_text("def run():\n    pass\n")
+    r = _extract(tmp_path, {"docs/guide.md": "# Guide\n\nSee [script](../outside/script.py).\n"})
+
+    assert r["edges"] == [e for e in r["edges"] if e["relation"] == "contains"]
+
+
+def test_wikilink_to_scanned_source_file_yields_only_a_file_edge(tmp_path):
+    """An Obsidian wikilink naming a scanned source file is a page->file reference."""
+    r = _extract(tmp_path, {
+        "setup.py": "def setup():\n    pass\n",
+        "docs/guide.md": "# Guide\n\nSee [[setup.py]].\n",
+    })
+
+    page = _node(r, "guide.md")
+    setup_file = _node(r, "setup.py", "setup.py")
+    assert set(_references(r)) == {(page["id"], setup_file["id"])}
+
+
+def test_single_word_pascal_case_function_resolves_standalone(tmp_path):
+    """An exported Go/C#/Swift entry point (`Serve`) is a distinct identifier, not prose (#4804)."""
+    r = _extract(tmp_path, {
+        "worker.go": "package worker\n\nfunc Serve() {}\n",
+        "docs/guide.md": "# Guide\n\n`Serve` starts the server.\n",
+    })
+
+    guide = _node(r, "Guide")
+    serve = _node(r, "Serve()", "worker.go")
+    assert (guide["id"], serve["id"]) in _references(r)
+
+
+def test_single_word_lowercase_function_still_needs_evidence(tmp_path):
+    """The PascalCase exemption does not loosen the prose-like test (`serve`)."""
+    r = _extract(tmp_path, {
+        "worker.go": "package worker\n\nfunc serve() {}\n",
+        "docs/guide.md": "# Guide\n\n`serve` starts the server.\n",
+    })
+
+    guide = _node(r, "Guide")
+    assert {t for (s, t) in _references(r) if s == guide["id"]} == set()
+
+
+def test_file_citation_evidence_survives_a_rebuild(tmp_path):
+    """A source-file link's citation comes from the cached fragment, so a rebuild keeps the edge."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "docs").mkdir(parents=True)
+    (corpus / "web").mkdir()
+    (corpus / "web" / "charts.js").write_text(
+        "export function token(name) { return name; }\n")
+    doc = corpus / "docs" / "guide.md"
+    doc.write_text("# Guide\n\nSee [charts](../web/charts.js). Sends `token`.\n")
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    def reference_edges():
+        links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+        return {(e["source"], e["target"]) for e in links
+                if e.get("relation") == "references"}
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    expected = reference_edges()
+    # Two edges: the doc->file link reference and the licensed mention edge.
+    assert len(expected) == 2
+
+    doc.write_text(doc.read_text() + "\nStill `token`.\n")
+    assert _rebuild_code(corpus, changed_paths=[doc], no_cluster=True,
+                         acquire_lock=False) is True
+    assert reference_edges() == expected, "document re-extracted"
+
+    # The citation now comes from the document's cached fragment, so a code-side
+    # rebuild must still resolve the mention.
+    (corpus / "web" / "charts.js").write_text(
+        "export function token(name) { return name; }\n"
+        "export function palette() { return 'dark'; }\n")
+    assert _rebuild_code(corpus, changed_paths=[corpus / "web" / "charts.js"],
+                         no_cluster=True, acquire_lock=False) is True
+    assert reference_edges() == expected, "code re-extracted"
+
+
+def test_bare_function_mention_in_a_sibling_section_needs_its_own_evidence(tmp_path):
+    """Evidence is section-scoped: a citation in one h1 does not license a sibling h1 (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": (
+            "export function palette() { return 'dark'; }\n"
+            "export function token(name) { return name; }\n"
+        ),
+        "docs/guide.md": (
+            "# Charts\n\n"
+            "`palette()` configures the theme.\n\n"
+            "# Token notes\n\n"
+            "The API key travels as the `token` query parameter.\n"
+        ),
+    })
+
+    token_notes = _node(r, "Token notes")
+    charts = _node(r, "Charts")
+    token = _node(r, "token()", "charts.js")
+    palette = _node(r, "palette()", "charts.js")
+    refs = _references(r)
+    # The explicit () citation resolves on its own.
+    assert (charts["id"], palette["id"]) in refs
+    # The sibling section's prose word gets no license from it...
+    assert {t for (s, t) in refs if s == token_notes["id"]} == set()
+    # ...but a nested section would: evidence at h1 licenses its h2 children.
+    r = _extract(tmp_path, {
+        "web/charts.js": (
+            "export function palette() { return 'dark'; }\n"
+            "export function token(name) { return name; }\n"
+        ),
+        "docs/guide.md": (
+            "# Charts\n\n"
+            "`palette()` configures the theme.\n\n"
+            "## Colors\n\n"
+            "Reads `palette` for the current scheme.\n"
+        ),
+    })
+    colors = _node(r, "Colors")
+    assert (colors["id"], palette["id"]) in _references(r)
+
+
+def test_pascal_case_in_a_lowercase_convention_language_needs_evidence(tmp_path):
+    """`Token` in Python is prose as often as not; only PascalCase-export languages skip the test (#4804)."""
+    r = _extract(tmp_path, {
+        "build.py": "def Token():\n    pass\n",
+        "notes.md": "# Notes\n\n`Token` builds the response.\n",
+    })
+
+    notes = _node(r, "Notes")
+    assert {t for (s, t) in _references(r) if s == notes["id"]} == set()
+
+    # With the defining file cited, the same mention resolves.
+    r = _extract(tmp_path, {
+        "build.py": "def Token():\n    pass\n",
+        "notes.md": "# Notes\n\nSee `build.py`. `Token` builds the response.\n",
+    })
+    notes = _node(r, "Notes")
+    token = _node(r, "Token()", "build.py")
+    assert (notes["id"], token["id"]) in _references(r)
+
+
+def test_file_span_is_evidence_but_not_a_doc_file_edge(tmp_path):
+    """A source-file code span licenses bare mentions; only a link is a doc->file reference (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/span.md": "# Span\n\n- `web/charts.js` — uses `token` to read styles.\n",
+    })
+
+    span_node = _node(r, "Span")
+    token = _node(r, "token()", "charts.js")
+    refs = _references(r)
+    assert (span_node["id"], token["id"]) in refs
+    assert len(refs) == 1, "a span is evidence, not a link: no doc->file edge"
+
+
+def test_cited_file_fallback_respects_explicit_relative_discipline():
+    """The suffix fallback fires only under detected path-form mixing (#4804)."""
+    from graphify.markdown_resolution import _match_cited_file_any_form
+
+    sources = {"web/charts.js"}
+    # Uniform path forms: an explicit ../ cite resolves against the citing
+    # document's directory only — even when the doc sits outside the corpus
+    # root and a corpus file shares the tail (#4804's discipline).
+    assert _match_cited_file_any_form(
+        "../web/charts.js", "/other/docs/guide.md", sources,
+        form_mismatch=False) is None
+    # An absolute citing document against a relative corpus is exactly the
+    # partial-rebuild mixing the fallback exists for.
+    assert _match_cited_file_any_form(
+        "../web/charts.js", "/repo/docs/guide.md", sources,
+        form_mismatch=True) == "web/charts.js"
+
+
+def test_escaping_citation_does_not_match_in_corpus_file():
+    """An explicit cite escaping the scan root does not match an in-corpus file."""
+    from graphify.markdown_resolution import _match_cited_file_any_form
+
+    sources = {"web/charts.js"}
+    assert _match_cited_file_any_form(
+        "../../outside/web/charts.js", "/repo/docs/guide.md", sources,
+        form_mismatch=True, scan_root="/repo",
+    ) is None
+
+
+def test_source_file_link_in_heading_does_not_license_sibling_heading(tmp_path):
+    """A source-file link licenses mentions in its own section, not sibling sections."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/guide.md": (
+            "# Charts\n\n"
+            "See [charts](../web/charts.js).\n\n"
+            "# Authentication\n\n"
+            "Sends `token` for auth.\n"
+        ),
+    })
+
+    auth = _node(r, "Authentication")
+    token = _node(r, "token()", "charts.js")
+    assert (auth["id"], token["id"]) not in _references(r)
+
+
+def test_missing_source_link_does_not_reference_other_files(tmp_path):
+    """An inline Markdown link to a missing path does not fall back to unrelated files."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/guide.md": "# Guide\n\nSee [charts](web/charts.js).\n",
+    })
+
+    page = _node(r, "guide.md")
+    charts_file = _node(r, "charts.js", "charts.js")
+    assert (page["id"], charts_file["id"]) not in _references(r)
