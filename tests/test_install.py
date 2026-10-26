@@ -983,6 +983,54 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
     assert "tool.execute.before" in plugin.read_text()
 
 
+def test_opencode_global_install_writes_plugin_to_config_dir(tmp_path, monkeypatch):
+    """A global install puts the plugin in ~/.config/opencode/plugins, where
+    OpenCode loads global plugins, and writes nothing under the cwd (#3398)."""
+    from graphify.install import install
+
+    cwd = tmp_path / "some-project"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    install("opencode")
+
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    assert "tool.execute.before" in plugin.read_text(encoding="utf-8")
+    assert not (cwd / ".opencode").exists()
+    assert not (Path.home() / ".config" / "opencode" / ".opencode").exists()
+
+
+def test_opencode_project_install_keeps_plugin_in_project(tmp_path, monkeypatch):
+    from graphify.install import install
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    install("opencode", project=True, project_dir=proj)
+
+    assert (proj / ".opencode" / "plugins" / "graphify.js").exists()
+    assert not (Path.home() / ".config" / "opencode" / "plugins").exists()
+    assert not (elsewhere / ".opencode").exists()
+
+
+def test_uninstall_all_removes_the_global_opencode_plugin(tmp_path, monkeypatch):
+    from graphify.install import install, uninstall_all
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    install("opencode")
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    assert plugin.exists()
+
+    uninstall_all(proj)
+
+    assert not plugin.exists()
+
+
 def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
     """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
 
