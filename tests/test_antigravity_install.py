@@ -57,3 +57,22 @@ def test_antigravity_project_uninstall_clears_rules_and_workflows(tmp_path):
     assert not (tmp_path / ".agents" / "rules" / "graphify.md").exists()
     assert not (tmp_path / ".agents" / "workflows" / "graphify.md").exists()
     assert not (tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_antigravity_windows_project_install_writes_rules_and_workflows(tmp_path):
+    m._project_install("antigravity-windows", tmp_path)
+    skill = tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md"
+    rules = tmp_path / ".agents" / "rules" / "graphify.md"
+    workflow = tmp_path / ".agents" / "workflows" / "graphify.md"
+    assert skill.exists(), "skill should be installed under .agents/skills/"
+    assert rules.exists(), "antigravity rules (always-on) must be written"
+    assert workflow.exists(), "antigravity workflow must be written"
+    assert skill.read_text(encoding="utf-8").startswith("---\n")
+
+
+def test_antigravity_windows_project_uninstall_clears_rules_and_workflows(tmp_path):
+    m._project_install("antigravity-windows", tmp_path)
+    m._project_uninstall("antigravity-windows", tmp_path)
+    assert not (tmp_path / ".agents" / "rules" / "graphify.md").exists()
+    assert not (tmp_path / ".agents" / "workflows" / "graphify.md").exists()
+    assert not (tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md").exists()

@@ -866,6 +866,7 @@ def _run_cli() -> None:
         # hand-maintaining it (amp, copilot, antigravity-windows had been missed, #4655).
         _platform_values = "|".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
         print(f"  install [--platform P]  copy skill to platform config dir ({_platform_values})")
+        print("    --detect               detect installed assistants and install graphify for each")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
