@@ -3816,12 +3816,13 @@ def _resolve_swift_type_references(
     ``per_file``, ``paths``, ``root`` and ``resolution_context_edges`` keep the
     shared corpus-pass signature; the lookup reads node attributes only.
     """
-    index = _swift_type_index(all_nodes + (resolution_context_nodes or []))
+    index_nodes = all_nodes + (resolution_context_nodes or [])
+    index = _swift_type_index(index_nodes)
     if not index.by_label:
         return
 
     swift_source_ids = {
-        node.get("id") for node in all_nodes + (resolution_context_nodes or [])
+        node.get("id") for node in index_nodes
         if node.get("id")
         and str(node.get("source_file") or "").lower().endswith(".swift")
     }

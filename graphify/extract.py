@@ -4918,7 +4918,7 @@ def _resolve_swift_member_calls(
                 node_by_id.get(caller), callee, type_name, "swift", rc,
             )
             continue
-        elif is_swift_call and "." in type_name:
+        elif "." in type_name:
             # A dotted Swift name resolves only through `_swift_lookup`: the
             # `_key` strip would turn `MenuItem.ID` into the unrelated
             # `MenuItemID`. Unbound, it parks like any unknown type.

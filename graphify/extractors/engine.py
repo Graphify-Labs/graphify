@@ -14,6 +14,7 @@ from graphify.extractors.base import (
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
+from graphify.extractors.resolution import _SWIFT_TYPE_REFERENCE_RELATIONS
 from graphify.security import sanitize_metadata
 from pathlib import Path
 
@@ -1933,6 +1934,31 @@ def _swift_property_name(property_node, source: bytes) -> str | None:
             return _read_text(c, source)
     return None
 
+def _swift_upper_navigation_path(node, source: bytes) -> str | None:
+    """Return the dotted path of an all-upper-cased identifier chain, or None.
+
+    ``node`` is a ``simple_identifier`` or a ``navigation_expression`` chain over
+    one (``Outer.Inner``); every segment must start upper-cased. ``None``, any
+    other node shape, or a lower-cased segment gives None.
+    """
+    segments: list[str] = []
+    while node is not None and node.type == "navigation_expression":
+        named = [c for c in node.children if c.is_named]
+        if len(named) != 2 or named[1].type != "navigation_suffix":
+            return None
+        ident = next((sc for sc in named[1].children
+                      if sc.type == "simple_identifier"), None)
+        if ident is None:
+            return None
+        segments.append(_read_text(ident, source))
+        node = named[0]
+    if node is None or node.type != "simple_identifier":
+        return None
+    segments.append(_read_text(node, source))
+    if all(seg and seg[:1].isupper() for seg in segments):
+        return ".".join(reversed(segments))
+    return None
+
 def _swift_constructor_type(call_node, source: bytes) -> str | None:
     """If a Swift call expression is a constructor (``Foo()``), return the type name.
 
@@ -1943,24 +1969,8 @@ def _swift_constructor_type(call_node, source: bytes) -> str | None:
     (a lower-cased last segment) stays a factory call.
     """
     first = call_node.children[0] if call_node.children else None
-    if first is None:
-        return None
-    segments: list[str] = []
-    while first.type == "navigation_expression":
-        named = [c for c in first.children if c.is_named]
-        if len(named) != 2 or named[1].type != "navigation_suffix":
-            return None
-        ident = next((sc for sc in named[1].children
-                      if sc.type == "simple_identifier"), None)
-        if ident is None:
-            return None
-        segments.append(_read_text(ident, source))
-        first = named[0]
-    if first.type != "simple_identifier":
-        return None
-    segments.append(_read_text(first, source))
-    if all(seg and seg[:1].isupper() for seg in segments):
-        return ".".join(reversed(segments))
+    if first is not None:
+        return _swift_upper_navigation_path(first, source)
     return None
 
 def _swift_receiver_name(recv_node, source: bytes) -> str | None:
@@ -3337,10 +3347,6 @@ def _cpp_local_var_types(body_node, source: bytes, table: dict[str, str]) -> Non
         for c in n.children:
             stack.append(c)
 
-# Swift edge relations that name a type by its written path and so carry the
-# lexical scope (`_swift_scope`) the type-reference pass resolves them from.
-_SWIFT_SCOPED_RELATIONS = frozenset({"references", "inherits", "implements"})
-
 def _swift_navigation_type_head(nav_node, source: bytes) -> str | None:
     """Return the written type path of a static-member access, or None.
 
@@ -3349,23 +3355,7 @@ def _swift_navigation_type_head(nav_node, source: bytes) -> str | None:
     it is an upper-cased identifier. ``vm.shared`` and ``Type.a.b`` give None.
     """
     head = nav_node.children[0] if nav_node.children else None
-    segments: list[str] = []
-    while head is not None and head.type == "navigation_expression":
-        named = [c for c in head.children if c.is_named]
-        if len(named) != 2 or named[1].type != "navigation_suffix":
-            return None
-        ident = next((sc for sc in named[1].children
-                      if sc.type == "simple_identifier"), None)
-        if ident is None:
-            return None
-        segments.append(_read_text(ident, source))
-        head = named[0]
-    if head is None or head.type != "simple_identifier":
-        return None
-    segments.append(_read_text(head, source))
-    if all(seg and seg[:1].isupper() for seg in segments):
-        return ".".join(reversed(segments))
-    return None
+    return _swift_upper_navigation_path(head, source)
 
 def _swift_local_var_types(body_node, source: bytes, table: dict[str, str],
                            factory: dict[str, tuple[str, str]] | None = None,
@@ -6555,10 +6545,7 @@ def _extract_generic(
                             class_nid: str) -> str:
         """Stamp the qualified path of a Swift class-walk node and record it as a
         declaration or an extension; returns the path its body is walked under."""
-        is_swift_extension = (
-            t != "protocol_declaration"
-            and any(c.type == "extension" for c in node.children)
-        )
+        is_swift_extension = _swift_is_extension(node)
         if is_swift_extension:
             # An extension sits at file scope and names the type it
             # extends by its written path (`extension A.B`).
@@ -6632,7 +6619,7 @@ def _extract_generic(
             edge["context"] = context
         if metadata:
             edge["metadata"] = sanitize_metadata(metadata)
-        if (swift_scope_stack and relation in _SWIFT_SCOPED_RELATIONS
+        if (swift_scope_stack and relation in _SWIFT_TYPE_REFERENCE_RELATIONS
                 and config.ts_module == "tree_sitter_swift"):
             # The type-reference pass looks the written name up from the
             # innermost enclosing Swift type outwards; omitted at file scope.

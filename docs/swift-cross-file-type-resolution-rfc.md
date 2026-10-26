@@ -934,7 +934,7 @@ section still differs (the Phase 3 salting rule), these notes take precedence.
   its plain id, so with one of them in the group every nested type and method is salted, even
   the only public name; and a nested type and a method of the very same name (`struct State`,
   `func State()`) get distinct ids, the type salting a kind-tagged name
-  (`_swift_salted_member_nid`, `engine.py:1503-1523`).
+  (`_swift_salted_member_nid`).
 - **Cache schema.** This PR bumps `_AST_CACHE_SCHEMA` once, 25 -> 26 (D5), instead of once
   per phase.
 
