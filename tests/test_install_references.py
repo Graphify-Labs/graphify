@@ -464,6 +464,11 @@ def test_built_wheel_ships_the_full_skill_payload():
     assert not missing_always_on, f"wheel is missing always-on blocks: {missing_always_on}"
     assert len(_ALWAYS_ON_NAMES) == 6
 
+    # The native command templates the installers copy must ship in the wheel:
+    # a missing command-kilo.md/command-opencode.md makes `install` abort.
+    for command in ("command-kilo.md", "command-opencode.md"):
+        assert f"graphify/{command}" in names, f"wheel is missing {command}"
+
     # The specific headline file that the stale glob would have dropped.
     assert "graphify/skills/claude/references/extraction-spec.md" in names
     assert "graphify/skills/trae/references/hooks.md" in names
