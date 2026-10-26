@@ -5,9 +5,13 @@ from pathlib import Path
 
 from graphify.extractors.base import _make_id, _read_source_text
 
+# `<x-…>` tags Blade itself handles: slots and the runtime-named dynamic component.
+_BLADE_BUILTIN_TAGS = frozenset({"slot", "dynamic-component"})
+
 
 def extract_blade(path: Path) -> dict:
-    """Extract @extends, @include, <livewire:> components, and wire:click bindings from Blade templates."""
+    """Extract @extends, @include, <x-…> and <livewire:> components, and wire:click
+    bindings from Blade templates."""
     import re
     try:
         src = _read_source_text(path)
@@ -41,6 +45,21 @@ def extract_blade(path: Path) -> dict:
             nodes.append({"id": tgt_nid, "label": m.group(1), "file_type": "code",
                           "source_file": str(path), "source_location": None})
         edges.append({"source": file_nid, "target": tgt_nid, "relation": "includes",
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str(path), "source_location": None, "weight": 1.0})
+
+    # <x-alert>, <x-forms.input /> — anonymous Blade components. A `x-` attribute
+    # (Alpine's x-data, x-on:click) never follows `<`, so the tag form is distinct.
+    # <x-slot> and <x-dynamic-component> are Blade built-ins, not component files.
+    for m in re.finditer(r"<x-((?:[\w\-]+::)?[\w.\-]+)", src):
+        name = m.group(1)
+        if name in _BLADE_BUILTIN_TAGS:
+            continue
+        tgt_nid = _make_id("components/" + name.replace(".", "/"))
+        if tgt_nid not in {n["id"] for n in nodes}:
+            nodes.append({"id": tgt_nid, "label": f"x-{name}", "file_type": "code",
+                          "source_file": str(path), "source_location": None})
+        edges.append({"source": file_nid, "target": tgt_nid, "relation": "uses_component",
                       "confidence": "EXTRACTED", "confidence_score": 1.0,
                       "source_file": str(path), "source_location": None, "weight": 1.0})
 
