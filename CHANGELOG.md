@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: **tree** `graphify tree` now caps each logical directory at 200 immediate children by default (overridable with `--max-children`), appending a `(+N more)` entry while preserving full descendant totals (#4766, #4768).
+
 ## 0.9.95 (2026-10-23)
 
 Twenty-one community pull requests. A security pass on install: the skill-install writes go through randomly-named temp files instead of predictable ones, so a pre-planted symlink can no longer redirect a write. Extraction: Python, Go, C++ and Rust explicit type aliases (and Rust `union` items) are extracted as type nodes so references resolve instead of minting sourceless stubs, each C# method overload gets its own node bound by argument count, and a package.json dependency's manifest entry links to the node that references it. Plus a one-root-per-repo tree on merged graphs, extended-length cache paths on Windows, and binary media no longer counted as text. The AST cache schema is bumped, so the first build after upgrading re-extracts.
