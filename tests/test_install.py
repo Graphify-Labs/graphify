@@ -1365,9 +1365,8 @@ def test_kilo_uninstall_removes_plugin_registration_and_command(tmp_path):
     _kilo_install(project_dir, home_dir)
     _kilo_uninstall(project_dir, home_dir)
     assert not (home_dir / ".config" / "kilo" / "command" / "graphify.md").exists()
-    assert not (
-        home_dir / ".config" / "kilo" / "skills" / "graphify" / "SKILL.md"
-    ).exists()
+    # The whole skill dir, references/ included, not only SKILL.md.
+    assert not (home_dir / ".config" / "kilo" / "skills" / "graphify").exists()
     assert not (project_dir / ".kilo" / "plugins" / "graphify.js").exists()
     config_file = project_dir / ".kilo" / "kilo.json"
     if config_file.exists():

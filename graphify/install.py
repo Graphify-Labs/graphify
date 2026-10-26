@@ -2160,6 +2160,9 @@ def _kilo_uninstall_global() -> list[str]:
         version_file = skill_dst.parent / ".graphify_version"
         if version_file.exists():
             version_file.unlink()
+        refs_dir = skill_dst.parent / "references"
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir)
         for d in (
             skill_dst.parent,
             skill_dst.parent.parent,
