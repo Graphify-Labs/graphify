@@ -3926,28 +3926,38 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
 
 
-def test_lexical_relative_matches_pathlib_relative_to():
-    """The string-space `_lexical_relative` must return exactly what
-    `_nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))` would — including
-    None where relative_to raises (target not under anchor). Guards the
-    reimplemented relative_to against silent drift (#2226)."""
+@pytest.mark.parametrize(
+    "anchor_path",
+    ["/a/b", "/a", "/a/b/c", "/x", "/"],
+)
+@pytest.mark.parametrize(
+    "target_path",
+    [
+        "/a/b/c/d.py",
+        "/a/b",
+        "/a/b/c",
+        "/a/x.py",
+        "/a/b/c/d/e.py",
+        "/x/y.py",
+        "/other/z.py",
+        "/a/bb/c.py",
+        "/a/b/c",
+    ],
+)
+def test_lexical_relative_matches_pathlib_relative_to(anchor_path, target_path):
+    """Compare lexical relative paths with pathlib for all path combinations."""
     from pathlib import Path
     from graphify.detect import _lexical_relative, _nfc
 
-    anchors = ["/a/b", "/a", "/a/b/c", "/x", "/"]
-    targets = [
-        "/a/b/c/d.py", "/a/b", "/a/b/c", "/a/x.py", "/a/b/c/d/e.py",
-        "/x/y.py", "/other/z.py", "/a/bb/c.py", "/a/b/c",
-    ]
-    for r in anchors:
-        anchor = Path(r)
-        for t in targets:
-            target = Path(t)
-            try:
-                expected = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
-                expected = None
-            assert _lexical_relative(target, target.parts, anchor) == expected, (t, r)
+    anchor = Path(anchor_path)
+    target = Path(target_path)
+
+    try:
+        expected = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
+    except ValueError:
+        expected = None
+
+    assert _lexical_relative(target, target.parts, anchor) == expected
 
 
 def test_globstar_matcher_leaves_no_reference_cycle():
