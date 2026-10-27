@@ -1764,6 +1764,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Python `import time` must not bind to a `time.ts`, #1749).
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
+            # .m is shared with Objective-C; extraction provenance wins over suffixes.
+            src_matlab = (G.nodes[src].get("metadata") or {}).get("language") == "matlab"
+            tgt_matlab = (G.nodes[tgt].get("metadata") or {}).get("language") == "matlab"
+            if src_matlab != tgt_matlab:
+                continue
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
