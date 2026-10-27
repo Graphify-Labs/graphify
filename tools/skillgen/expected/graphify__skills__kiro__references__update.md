@@ -161,7 +161,13 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # is lost forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
-_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'))
+# A file a subagent only partly read DID produce output, so the stamp filter alone would
+# keep it - but its node set covers just the head of the file, and stamping it means
+# detect_incremental reads it as done and never re-queues it, leaving the truncated graph
+# live forever. Name those files so they stay unstamped and are retried next run (#2225).
+_pf = Path('graphify-out/.graphify_partial.txt')
+_partial = {l.strip() for l in _pf.read_text(encoding=\"utf-8\").splitlines() if l.strip()} if _pf.exists() else set()
+_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'), partial_source_files=_partial)
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
 _sem_types = ('document', 'paper', 'image')

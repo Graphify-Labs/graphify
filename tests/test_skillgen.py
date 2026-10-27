@@ -1312,3 +1312,71 @@ def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
     assert [Path(u).name for u in uncached] == ["short.md"], (
         f"the partly-read file must be re-dispatched, uncached={uncached}"
     )
+
+
+def test_update_reference_passes_partial_source_files():
+    """All 14 platform references/update.md files must pass partial_source_files (#4807)."""
+    targets = sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    assert len(targets) == 14
+    for path in targets:
+        text = path.read_text(encoding="utf-8")
+        assert "partial_source_files=_partial" in text, (
+            f"{path.relative_to(REPO_ROOT)} missing partial_source_files=_partial (#4807)"
+        )
+        assert ".graphify_partial.txt" in text, (
+            f"{path.relative_to(REPO_ROOT)} missing .graphify_partial.txt (#4807)"
+        )
+
+
+def test_update_runbook_leaves_partly_read_doc_unstamped_for_retry(tmp_path, monkeypatch):
+    """The --update runbook must leave partly-read files unstamped so they are retried (#4807).
+
+    Replays the manifest write from references/update.md on a partly-read doc.
+    Without partial_source_files=_partial, the doc was stamped done in the manifest
+    and detect_incremental never re-queued it on subsequent updates.
+    """
+    import json as _json
+    import networkx as _nx
+
+    from graphify.cli import _stamped_manifest_files
+    from graphify.detect import detect, detect_incremental, save_manifest
+    from graphify.export import to_json
+
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    doc = tmp_path / "long.md"
+    doc.write_text("".join(f"line {i} about Widget\n" for i in range(3000)), encoding="utf-8")
+
+    # Initial full build: doc produced output and is stamped
+    initial_extract = {
+        "nodes": [{"id": "long_widget", "label": "Widget", "file_type": "document", "source_file": str(doc)}],
+        "edges": [],
+        "hyperedges": [],
+    }
+    manifest = _stamped_manifest_files(detect(tmp_path)["files"], initial_extract, tmp_path)
+    save_manifest(manifest, root=tmp_path)
+    G = _nx.Graph()
+    G.add_node("long_widget", label="Widget", source_file=str(doc))
+    to_json(G, {}, out / "graph.json", force=True)
+
+    # Doc changes; --update detects it
+    doc.write_text(doc.read_text(encoding="utf-8") + "line 3000 about Sprocket\n", encoding="utf-8")
+    inc = detect_incremental(tmp_path)
+    assert [Path(f).name for f in inc["new_files"]["document"]] == ["long.md"]
+    (out / ".graphify_incremental.json").write_text(_json.dumps(inc), encoding="utf-8")
+    (out / ".graphify_extract.json").write_text(_json.dumps(initial_extract), encoding="utf-8")
+    # Subagent read only partway; Step B3.5 flags it
+    (out / ".graphify_partial.txt").write_text(str(doc) + "\n", encoding="utf-8")
+
+    update_text = (gen.FRAGMENTS_DIR / "references" / "shared" / "update.md").read_text(encoding="utf-8")
+    merge_body = [b for b in _python_step_bodies(update_text) if "build_merge" in b][0]
+    substituted = _substituted(merge_body, tmp_path).replace("IS_DIRECTED", "False")
+
+    exec(compile(substituted, "update_merge", "exec"), {"__name__": "__main__"})
+
+    # The doc must remain unstamped and be queued on the next update
+    inc_after = detect_incremental(tmp_path)
+    queued = [Path(f).name for f in inc_after["new_files"].get("document", [])]
+    assert "long.md" in queued, f"partly-read doc must be re-queued on next update, got {queued}"
+
