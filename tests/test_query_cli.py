@@ -123,3 +123,34 @@ def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "exceeds" in err
     assert "byte cap" in err
+
+
+def test_query_cli_lone_help_flag_prints_usage(monkeypatch, tmp_path, capsys):
+    """`graphify query --help`/`-h` with nothing else shows usage instead of
+    running a literal query for the text "--help" (#TBD)."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    for flag in ("--help", "-h"):
+        monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "query", flag, "--graph", str(graph_path)][:3])
+        mainmod.main()
+        out = capsys.readouterr().out
+        assert out.startswith("Usage: graphify query")
+        assert "extract" not in out
+        assert "cluster" not in out
+
+
+def test_query_cli_question_containing_help_text_still_runs(monkeypatch, tmp_path, capsys):
+    """A genuine free-text question that merely contains "--help" as a
+    substring must still run as a literal query, not be swallowed as a help
+    request - only an *exact*, standalone "--help"/"-h" is intercepted."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "how do I get --help for extract", "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "cluster" in out
+    assert not out.startswith("Usage: graphify query")
