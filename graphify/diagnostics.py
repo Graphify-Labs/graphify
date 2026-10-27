@@ -167,8 +167,9 @@ def diagnose_extraction(
     dependencies outside the scanned corpus. They are counted separately from
     actionable internal dangling endpoints.
     """
-    from graphify.build import build_from_json
+    from graphify.build import _degraded_passes, build_from_json
 
+    degraded_passes = _degraded_passes(extraction)
     node_ids = _node_ids(extraction)
     raw_edges = _edge_list(extraction)
     canonical_edges = [_canonical_edge(edge) for edge in raw_edges]
@@ -262,6 +263,8 @@ def diagnose_extraction(
     return {
         "node_count": len(node_ids),
         "unverified_node_count": unverified_node_count,
+        "degraded_pass_count": len(degraded_passes),
+        "degraded_passes": degraded_passes,
         "raw_edge_count": len(raw_edges),
         "non_object_edges": non_object_edges,
         "missing_endpoint_edges": missing_endpoint_edges,
@@ -348,8 +351,9 @@ def format_diagnostic_json(summary: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             key: value
             for key, value in summary.items()
-            if key not in {"examples", "producer_suppression"}
+            if key not in {"examples", "producer_suppression", "degraded_passes"}
         },
+        "degraded_passes": summary.get("degraded_passes", []),
         "examples": summary.get("examples", []),
         "producer_suppression": summary.get("producer_suppression", {}),
         "notes": [
@@ -369,6 +373,7 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"effective_directed: {summary.get('effective_directed', '<direct-call>')}",
         f"nodes: {summary['node_count']}",
         f"unverified_code_nodes: {summary.get('unverified_node_count', 0)}",
+        f"degraded_resolution_passes: {summary.get('degraded_pass_count', 0)}",
         f"raw_edges: {summary['raw_edge_count']}",
         f"valid_candidate_edges: {summary['valid_candidate_edges']}",
         f"missing_endpoint_edges: {summary['missing_endpoint_edges']}",
@@ -395,6 +400,15 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"post_build_edges: {summary['post_build_edge_count']}",
         f"producer_suppression_sites: {suppression.get('total_sites', 0)}",
     ]
+    if summary.get("degraded_passes"):
+        lines.append("degraded_resolution_details:")
+        for item in summary["degraded_passes"][:8]:
+            lines.append(
+                "  - "
+                f"{item.get('resolver', '?')} "
+                f"suffixes={item.get('suffixes', [])} "
+                f"error={item.get('error', '')}"
+            )
     if summary.get("post_build_error"):
         lines.append(f"post_build_error: {summary['post_build_error']}")
     if suppression.get("error"):

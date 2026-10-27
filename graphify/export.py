@@ -473,6 +473,16 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
     graph_metadata = data.setdefault("graph", {})
+    degraded_passes = getattr(G, "graph", {}).get("degraded_passes")
+    if isinstance(degraded_passes, list) and degraded_passes:
+        # #3667: mirror resolver health at the top level as well as node-link
+        # graph metadata so lightweight consumers can discover degradation
+        # without understanding NetworkX's nested graph-attribute shape.
+        graph_metadata["degraded_passes"] = degraded_passes
+        data["degraded_passes"] = degraded_passes
+    else:
+        graph_metadata.pop("degraded_passes", None)
+        data.pop("degraded_passes", None)
     graph_metadata["schema_version"] = GRAPH_SCHEMA_VERSION
     graphify_version = _graphify_version()
     if graphify_version is not None:

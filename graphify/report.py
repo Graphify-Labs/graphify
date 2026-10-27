@@ -205,6 +205,28 @@ def generate(
         f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
     ]
 
+    degraded_passes = G.graph.get("degraded_passes") or []
+    if isinstance(degraded_passes, list) and degraded_passes:
+        count = len(degraded_passes)
+        pass_word = "pass" if count == 1 else "passes"
+        lines += [
+            "",
+            "## Graph Health",
+            (
+                f"- WARNING: {count} resolution {pass_word} failed; affected cross-file "
+                "relationships may be incomplete."
+            ),
+        ]
+        for item in degraded_passes[:8]:
+            if not isinstance(item, dict):
+                continue
+            suffixes = ", ".join(str(s) for s in (item.get("suffixes") or [])) or "unknown"
+            resolver = str(item.get("resolver") or "unknown")
+            error = str(item.get("error") or "")
+            lines.append(
+                f"- `{resolver}` ({suffixes})" + (f": {error}" if error else "")
+            )
+
     if built_at_commit:
         lines += [
             "",

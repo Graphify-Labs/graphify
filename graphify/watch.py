@@ -1312,13 +1312,18 @@ def _reconcile_existing_graph(
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
             source_paths.rebase_preserved(item)
 
-        return {
+        from graphify.build import _degraded_passes, _merge_degraded_passes
+        merged_degraded = _merge_degraded_passes(_degraded_passes(existing), [result])
+        reconciled = {
             "nodes": result["nodes"] + preserved_nodes,
             "edges": result["edges"] + preserved_edges,
             "hyperedges": result.get("hyperedges", []) + preserved_hyperedges,
             "input_tokens": 0,
             "output_tokens": 0,
-        }, existing_graph_data
+        }
+        if merged_degraded:
+            reconciled["degraded_passes"] = merged_degraded
+        return reconciled, existing_graph_data
     except Exception as exc:
         # Post-load reconciliation failure: fall back to the fresh extraction
         # while keeping the loaded baseline, so _check_shrink still guards the
