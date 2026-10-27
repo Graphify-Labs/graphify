@@ -92,6 +92,16 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
 
+### MATLAB fallback contract
+
+For `.m` files, explicit `.graphifyrc` remaps take precedence, then the existing Objective-C content detector; a non-Objective-C `.m` falls back to MATLAB. `.mm` remains Objective-C, and `language.inc=.m` keeps its existing Objective-C interpretation. This adds no MATLAB remap alias or force-language option.
+
+The file node remains the script/file navigation anchor and records the file kind when established; there is no separate synthetic script node. Located classes and functions are definition nodes; use immediate `contains` for file/owner-to-definition relationships and `method` for class-to-method relationships, not both for one pair. Trustworthy definitions remain even when relationship binding is unsafe; declaration-only methods are declarations, not fabricated executable bodies. This is not full MATLAB runtime semantics, and separately stored `@Class` methods are not associated.
+
+- **Calls:** emit only uniquely resolved, unqualified parenthesized calls in executable function or method bodies to lexically visible same-file functions. Parentheses/braces used for indexing, parameter/output/assignment bindings, and uncertain scopes do not produce calls. Script top-level, cross-file, qualified/member, command, handle, constructor/dynamic, and class-method target guesses are omitted; there is no generic unresolved-call pass.
+- **Bases:** preserve written superclass names and source locations in class metadata, including external and unresolved names. Emit `inherits` only for a unique exact source match: a qualified namespace path, or an eligible unpackaged sibling file with a matching class declaration. This does not claim to model MATLAB runtime path selection and does not invent a target.
+- **Provenance and call sites:** each MATLAB file/definition node keeps nested `metadata.language = "matlab"` through persistence. Extraction retains separate located call sites, while graph assembly coalesces repeated same-pair edges; the persisted graph is not a lossless call-site multigraph.
+
 ## Security
 
 All external input passes through `graphify/security.py` before use:
