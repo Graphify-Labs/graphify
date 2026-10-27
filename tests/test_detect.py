@@ -3747,7 +3747,8 @@ def test_save_manifest_unchanged_file_preserves_seen(tmp_path):
 def test_save_manifest_changed_file_updates_seen(tmp_path):
     """#2838: save_manifest assigns a new seen timestamp when file content changes."""
     import json
-    import time
+    import os
+
     a = tmp_path / "a.py"
     a.write_text("x = 1\n", encoding="utf-8")
     manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
@@ -3756,9 +3757,13 @@ def test_save_manifest_changed_file_updates_seen(tmp_path):
     raw1 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     seen_1 = raw1["a.py"]["seen"]
 
-    # Modify file content (new hash)
-    time.sleep(0.01)
+    # Modify file content and advance its modification timestamp
+    previous_mtime_ns = a.stat().st_mtime_ns
     a.write_text("x = 2\n", encoding="utf-8")
+
+    new_mtime_ns = previous_mtime_ns + 2_000_000_000
+    os.utime(a, ns=(new_mtime_ns, new_mtime_ns))
+
     save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
     raw2 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 
