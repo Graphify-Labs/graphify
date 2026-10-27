@@ -57,6 +57,29 @@ def test_caller_shows_callee_as_outbound(monkeypatch, tmp_path, capsys):
     assert "<-- " not in out
 
 
+def test_explain_lists_parallel_relations(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False,
+        "multigraph": True,
+        "graph": {},
+        "nodes": [
+            {"id": "owner", "label": "Owner()", "source_file": "app.ts"},
+            {"id": "child", "label": "child()", "source_file": "app.ts"},
+        ],
+        "links": [
+            {"source": "owner", "target": "child", "relation": "contains", "confidence": "EXTRACTED"},
+            {"source": "owner", "target": "child", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "Owner", capsys)
+
+    assert "--> child() [contains]" in out
+    assert "--> child() [calls]" in out
+
+
 def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path, capsys):
     source_file = "app/api/example/route.ts"
     graph_data = {

@@ -2087,6 +2087,87 @@ def _ts_mask_candidate_is_malformed(
 
 _TS_EXPORT_TYPE_STAR_RE = re.compile(rb"\bexport\s+(type)\s*\*")
 
+_TS_TAGGED_TEMPLATE_NAME_RE = re.compile(
+    rb"(?<![A-Za-z0-9_$])"
+    rb"[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*\s*<"
+)
+
+
+def _ts_tagged_template_ranges(source: bytes) -> list[tuple[int, int]]:
+    """Find generic type arguments immediately before a tagged template."""
+    ranges: list[tuple[int, int]] = []
+    for match in _TS_TAGGED_TEMPLATE_NAME_RE.finditer(source):
+        start = match.end() - 1
+        angle_depth = 1
+        quote: int | None = None
+        escaped = False
+        index = start + 1
+        while index < len(source):
+            byte = source[index]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif byte == ord("\\"):
+                    escaped = True
+                elif byte == quote:
+                    quote = None
+                index += 1
+                continue
+            if byte in (ord("'"), ord('"'), ord("`")):
+                quote = byte
+            elif byte == ord("<"):
+                angle_depth += 1
+            elif byte == ord(">") and not (index > 0 and source[index - 1] == ord("=")):
+                angle_depth -= 1
+                if angle_depth == 0:
+                    after = index + 1
+                    while after < len(source) and source[after] in b" \t":
+                        after += 1
+                    if after < len(source) and source[after] == ord("`"):
+                        ranges.append((start, index + 1))
+                    break
+            index += 1
+    return ranges
+
+
+def _normalize_ts_tagged_template_types(source: bytes, *, tsx: bool = False) -> bytes | None:
+    """Mask generic tagged-template arguments for tree-sitter-typescript."""
+    ranges = _ts_tagged_template_ranges(source)
+    if not ranges:
+        return None
+    try:
+        import tree_sitter_typescript as ts_typescript
+        from tree_sitter import Language, Parser
+
+        language_factory = ts_typescript.language_tsx if tsx else ts_typescript.language_typescript
+        parser = Parser(Language(language_factory()))
+        root = parser.parse(source).root_node
+    except Exception:
+        return None
+    if not root.has_error:
+        return None
+
+    errors: list[Any] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ERROR" or node.is_error or node.is_missing:
+            errors.append(node)
+        stack.extend(node.children)
+
+    ranges = [
+        span
+        for span in ranges
+        if any(error.start_byte <= span[1] + 2 and error.end_byte >= span[0] - 2 for error in errors)
+        and _ts_import_is_code(root, span[0])
+    ]
+    if not ranges:
+        return None
+    masked = bytearray(source)
+    for start, end in ranges:
+        masked[start:end] = b" " * (end - start)
+    return bytes(masked)
+
 
 def _normalize_ts_export_type_star(source: bytes) -> bytes | None:
     """Rewrite ``export type * from "..."`` to a plain ``export * from "..."``.
@@ -2227,6 +2308,8 @@ def extract_js(path: Path) -> dict:
             source = _read_source_bytes(path)
             working = _normalize_ts_export_type_star(source) or source
             normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
+            working = normalized if normalized is not None else working
+            normalized = _normalize_ts_tagged_template_types(working, tsx=suffix == ".tsx")
             source_override = normalized if normalized is not None else (
                 working if working is not source else None
             )
