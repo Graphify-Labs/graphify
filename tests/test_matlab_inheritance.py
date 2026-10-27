@@ -227,5 +227,3 @@ def test_non_file_nodes_cannot_establish_source_context():
     base = _class("Base.m", "Base")
     base[0]["metadata"]["kind"] = "matlab_class"
     assert _matlab_inheritance_edges(child + base) == []
-
-
