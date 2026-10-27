@@ -54,6 +54,35 @@ def test_validate_url_rejects_empty_scheme():
     with pytest.raises(ValueError):
         validate_url("//no-scheme.example.com")
 
+@pytest.mark.parametrize("url", [
+    "http://",
+    "https://",
+    "http:///etc/passwd",
+    "https:///example.com/path",
+])
+def test_validate_url_rejects_missing_hostname(url):
+    with pytest.raises(ValueError, match="without a hostname"):
+        validate_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com:abc/path",
+    "https://example.com:65536/path",
+    "http://example.com:0/path",
+])
+def test_validate_url_rejects_invalid_port(url):
+    with pytest.raises(ValueError, match="port"):
+        validate_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:secret@example.com/path",
+    "https://user@example.com/path",
+])
+def test_validate_url_rejects_embedded_credentials(url):
+    with pytest.raises(ValueError, match="embedded credentials"):
+        validate_url(url)
+
 
 # ---------------------------------------------------------------------------
 # safe_fetch - scheme and redirect guards (mocked network)

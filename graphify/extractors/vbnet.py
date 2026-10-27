@@ -128,11 +128,10 @@ def extract_vbnet(path: Path) -> dict:
                 "id": nid,
                 "label": label,
                 "file_type": "code",
-                "source_location": f"L{node.start_point[0] + 1}",
+                "source_file": source_file if source_backed else "",
+                "source_location": f"L{node.start_point[0] + 1}" if source_backed else "",
                 "metadata": details,
             }
-            if source_backed:
-                item["source_file"] = source_file
             if callable_node:
                 item["_callable"] = True
             nodes.append(item)

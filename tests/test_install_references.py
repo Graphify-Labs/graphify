@@ -548,6 +548,59 @@ def test_install_from_read_only_package_dir(tmp_path, fake_bundle):
     assert os.access(refs, os.W_OK)
 
 
+def test_install_skill_references_ignores_precreated_predictable_tmp_symlink_to_file(tmp_path):
+    """A pre-created symlink at references.tmp pointing to an outside file must not be followed."""
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = tmp_path / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    skill_dst = skill_dir / "SKILL.md"
+    skill_dst.write_text("skill", encoding="utf-8")
+
+    predictable_tmp = skill_dir / "references.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    refs_src = PKG_DIR / "skills" / "claude" / "references"
+    mainmod._install_skill_references(skill_dst, refs_src)
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "references" / "extraction-spec.md").is_file()
+    assert not list(skill_dir.glob(".references.*.tmp"))
+
+
+def test_install_skill_references_ignores_precreated_predictable_tmp_symlink_to_dir(tmp_path):
+    """A pre-created symlink at references.tmp pointing to an outside directory must not be followed or deleted."""
+    sentinel_dir = tmp_path / "outside_dir"
+    sentinel_dir.mkdir(parents=True)
+    sentinel_file = sentinel_dir / "sentinel.txt"
+    sentinel_file.write_text("sentinel-dir-untouched\n", encoding="utf-8")
+
+    skill_dir = tmp_path / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    skill_dst = skill_dir / "SKILL.md"
+    skill_dst.write_text("skill", encoding="utf-8")
+
+    predictable_tmp = skill_dir / "references.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel_dir, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    refs_src = PKG_DIR / "skills" / "claude" / "references"
+    mainmod._install_skill_references(skill_dst, refs_src)
+
+    assert sentinel_file.exists()
+    assert sentinel_file.read_text(encoding="utf-8") == "sentinel-dir-untouched\n"
+    assert {p.name for p in sentinel_dir.iterdir()} == {"sentinel.txt"}
+    assert (skill_dir / "references" / "extraction-spec.md").is_file()
+    assert not list(skill_dir.glob(".references.*.tmp"))
+
+
 import pytest as _pytest_posix
 
 

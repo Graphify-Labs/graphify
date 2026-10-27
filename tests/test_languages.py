@@ -5470,6 +5470,79 @@ def test_zig_tagged_union_variants_emit_case_of_nodes(tmp_path):
     assert not any(src_lbl == "rectangle" for src_lbl, _ in case_of)
 
 
+@_needs_zig
+def test_zig_bare_call_does_not_cross_resolve_to_a_same_named_method(tmp_path):
+    """A bare call (`helper()`) must bind to the free function of that name,
+    never to an unrelated struct's method sharing the name.
+
+    `is_member_call` was computed but never consulted: the lookup matched
+    either `f"{callee}()"` or `f".{callee}()"` for every call regardless of
+    whether it was written with a receiver, so a bare call landed on whichever
+    of the two happened to come first in the file's own node list.
+    """
+    src = (
+        "const Box = struct {\n"
+        "    pub fn helper(self: Box) i32 {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() i32 {\n"
+        "    return 2;\n"
+        "}\n"
+        "\n"
+        "fn caller() i32 {\n"
+        "    return helper();\n"
+        "}\n"
+    )
+    f = tmp_path / "zigtest.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("caller()", "helper()") in calls
+    assert ("caller()", ".helper()") not in calls
+
+
+@_needs_zig
+def test_zig_member_call_does_not_cross_resolve_to_a_same_named_free_function(tmp_path):
+    """The reverse control: a member call (`b.helper()`) must bind to the
+    receiver's own method, never to an unrelated free function of the same
+    name."""
+    src = (
+        "const Box = struct {\n"
+        "    pub fn helper(self: Box) i32 {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() i32 {\n"
+        "    return 2;\n"
+        "}\n"
+        "\n"
+        "fn caller(b: Box) i32 {\n"
+        "    return b.helper();\n"
+        "}\n"
+    )
+    f = tmp_path / "zigtest.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("caller()", ".helper()") in calls
+    assert ("caller()", "helper()") not in calls
+
+
 @_needs_commonlisp
 def test_cl_ids_are_path_qualified_across_directories(tmp_path):
     """Two same-named .lisp files in DIFFERENT directories must mint distinct
@@ -5639,6 +5712,58 @@ def test_robot_keyword_matching_is_case_space_underscore_insensitive(tmp_path):
                     if e["relation"] == "calls" and e["source"] == tc_id]
     assert styled_calls, "no call edges extracted"
     assert all(e["target"] == def_id for e in styled_calls), styled_calls
+
+
+@_needs_robot
+def test_robot_duplicate_test_case_names_get_separate_nodes(tmp_path):
+    # Robot only WARNS on a duplicate test case name in one suite, it still
+    # runs both - unlike a duplicate keyword definition, which Robot itself
+    # rejects. Stem-qualifying by name alone collapsed both onto one node, so
+    # the second test's own calls landed on the first test's id and line.
+    suite = tmp_path / "dupe.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Test\n"
+        "    Click Button\n"
+        "\n"
+        "Login Test\n"
+        "    Open Browser\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    from graphify.extractors.robot import _kw_id
+    tc_nodes = [n for n in r["nodes"] if n["label"] == "Login Test"]
+    assert len(tc_nodes) == 2, tc_nodes
+    assert {n["source_location"] for n in tc_nodes} == {"L2", "L5"}
+    by_loc = {n["source_location"]: n["id"] for n in tc_nodes}
+    first_calls = {e["target"] for e in r["edges"]
+                   if e["relation"] == "calls" and e["source"] == by_loc["L2"]}
+    second_calls = {e["target"] for e in r["edges"]
+                    if e["relation"] == "calls" and e["source"] == by_loc["L5"]}
+    assert first_calls == {_kw_id("Click Button")}
+    assert second_calls == {_kw_id("Open Browser")}
+
+
+@_needs_robot
+def test_robot_unique_test_case_name_keeps_the_plain_id(tmp_path):
+    # Control: a file with no duplicate test case name is completely
+    # unaffected by the duplicate-name salting above.
+    suite = tmp_path / "plain.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Test\n"
+        "    Click Button\n"
+        "\n"
+        "Logout Test\n"
+        "    Open Browser\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    from graphify.extractors.base import _make_id, _file_stem
+    stem = _file_stem(suite)
+    tc_id = next(n["id"] for n in r["nodes"] if n["label"] == "Login Test")
+    assert tc_id == _make_id(stem, "Login Test")
 
 
 def test_robot_extractor_degrades_gracefully_without_robotframework():

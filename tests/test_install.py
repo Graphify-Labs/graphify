@@ -1667,6 +1667,7 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     an unrecognized one exits non-zero and would break every Bash tool call.
     """
     import json
+    import shlex
 
     from graphify.install import _install_codex_hook
 
@@ -1685,13 +1686,66 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
     for entry in entries:
-        # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
+        # command is "<abs exe path> <subcommand> [args...]" and the exe path is
+        # double-quoted when it contains spaces (parity with the claude/gemini
+        # hooks), so split the way a shell would.
+        parts = shlex.split(entry["command"])
         subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
         )
+
+
+def test_hook_commands_quote_a_spaced_resolved_exe(tmp_path, monkeypatch):
+    """A resolved install path containing spaces must be double-quoted in every
+    hook command, whatever shell runs it (Git Bash on Windows, cmd.exe, sh on
+    POSIX): unquoted, the shell word-splits the command at the first space and
+    the guard can never fire (#522/#1987 follow-up).
+
+    The claude and gemini hooks already quoted since their #522 fix; codex was
+    missed. shlex parsing proves the old unquoted codex form failed:
+    ``shlex.split("C:/Program Files/.../graphify.EXE hook-check")`` starts at
+    ``'C:/Program'`` instead of the exe.
+    """
+    import json
+    import shlex
+
+    from graphify.install import (
+        _claude_pretooluse_hooks,
+        _gemini_hook,
+        _install_codex_hook,
+        _is_graphify_hook_command,
+    )
+
+    spaced_exe = "C:/Program Files/Graphify/graphify.EXE"
+    monkeypatch.setattr(
+        "graphify.install._resolve_graphify_exe", lambda project=False: spaced_exe
+    )
+
+    _install_codex_hook(tmp_path)
+    codex_doc = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    commands = [
+        h["command"]
+        for group in (
+            _claude_pretooluse_hooks()
+            + [_gemini_hook()]
+            + codex_doc["hooks"]["PreToolUse"]
+        )
+        for h in group["hooks"]
+    ]
+
+    assert commands, "no hook command resolved"
+    for command in commands:
+        argv = shlex.split(command)
+        assert argv[0] == spaced_exe, (
+            f"spaced exe must survive quoting as one first word, got argv[0]={argv[0]!r} "
+            f"from {command!r}"
+        )
+        assert argv[1] in ("hook-guard", "hook-check"), argv
+        # a quoted command must still be recognized as graphify's own, or an
+        # uninstall/reinstall cycle on a spaced path would strand the entry.
+        assert _is_graphify_hook_command(command), command
 
 
 # --- #3129: project-scoped installs must not embed a machine-absolute path ----
@@ -1815,3 +1869,60 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+def test_copy_skill_file_ignores_precreated_predictable_tmp_symlink(tmp_path, monkeypatch):
+    """A pre-created symlink at SKILL.md.tmp must not overwrite its target during skill install."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = home / ".claude" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    predictable_tmp = skill_dir / "SKILL.md.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert not list(skill_dir.glob(".SKILL.md.*.tmp"))
+
+
+def test_vscode_install_ignores_precreated_predictable_tmp_symlink(tmp_path, monkeypatch):
+    """A pre-created symlink at SKILL.md.tmp must not overwrite its target during vscode_install."""
+    from graphify.__main__ import vscode_install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = home / ".copilot" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    predictable_tmp = skill_dir / "SKILL.md.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        vscode_install(project_dir=project)
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert not list(skill_dir.glob(".SKILL.md.*.tmp"))
