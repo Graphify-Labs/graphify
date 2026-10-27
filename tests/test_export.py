@@ -1053,6 +1053,65 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     assert backup_if_protected(tmp_path) is None
 
 
+# ── Issue #3769: incomplete backups reported as successful ──────────────────
+
+def test_backup_failed_copy_warns_and_returns_none(tmp_path, monkeypatch, capsys):
+    """A copy that fails part-way leaves a stale snapshot; it must be warned
+    and reported as no backup, not printed as a success (#3769)."""
+    import shutil
+    from datetime import date
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[{"id":"new"}],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    # A same-day snapshot holding the pre-overwrite graph: its graph.json is
+    # stale but readable, so the copy attempt fails rather than the hash check.
+    backup_dir = tmp_path / date.today().isoformat()
+    backup_dir.mkdir()
+    stale = backup_dir / "graph.json"
+    stale.write_text('{"nodes":[{"id":"old"}],"links":[]}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "graph.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is None
+    assert "graph.json" in capsys.readouterr().err
+    # The stale snapshot must not have been silently kept.
+    assert stale.read_text() == '{"nodes":[{"id":"old"}],"links":[]}'
+
+
+def test_backup_same_day_retries_missing_sidecar(tmp_path, monkeypatch, capsys):
+    """A snapshot missing a sidecar is retried on the next call, not treated
+    as complete because graph.json already matches (#3769)."""
+    import shutil
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    (tmp_path / "cost.json").write_text('{"input_tokens": 5}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "cost.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    assert backup_if_protected(tmp_path) is None
+    assert "cost.json" in capsys.readouterr().err
+
+    monkeypatch.setattr(shutil, "copy2", real_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    assert (result / "graph.json").exists()
+    assert (result / "cost.json").read_text() == '{"input_tokens": 5}'
+
+
 def _mkG(n):
     import networkx as nx
     G = nx.Graph()

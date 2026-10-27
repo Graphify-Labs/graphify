@@ -75,18 +75,25 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     backup_dir = out / today
     graph_src = out / "graph.json"
 
-    # Skip re-copying if today's backup already has identical graph.json content.
-    # If content differs (graph changed since the last backup today), overwrite
-    # the backup in place — one folder per day, always the latest pre-overwrite state.
-    if backup_dir.exists() and (backup_dir / "graph.json").exists():
-        src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
-        bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
-        if src_hash == bak_hash:
-            return backup_dir  # identical content, nothing to do
-
     try:
+        # Skip re-copying if today's backup already holds every artifact with an
+        # identical graph.json. graph.json alone is not proof of completeness: a
+        # snapshot missing a sidecar (an earlier copy attempt failed part-way)
+        # must fall through and retry the copy instead of reporting itself
+        # complete forever (#3769). If content differs, overwrite the backup in
+        # place — one folder per day, always the latest pre-overwrite state.
+        if backup_dir.exists() and (backup_dir / "graph.json").exists():
+            src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
+            bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
+            if src_hash == bak_hash and all(
+                (backup_dir / name).exists()
+                for name in _BACKUP_ARTIFACTS
+                if (out / name).exists()
+            ):
+                return backup_dir  # identical content, nothing to do
         backup_dir.mkdir(parents=True, exist_ok=True)
         copied = 0
+        failed: list[str] = []
         for name in _BACKUP_ARTIFACTS:
             src = out / name
             if src.exists():
@@ -94,12 +101,21 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
                     shutil.copy2(src, backup_dir / name)
                     copied += 1
                 except Exception:
-                    pass
+                    failed.append(name)
+        if failed:
+            # A partial snapshot reported as a successful backup lets a stale
+            # graph.json survive the next overwrite unnoticed (#3769). Best-effort
+            # is unchanged: warn, report no backup, do not block the write.
+            print(
+                f"[graphify] warning: backup incomplete - could not copy "
+                f"{', '.join(failed)} -> {backup_dir.name}/ - continuing with overwrite",
+                file=sys.stderr,
+            )
+            return None
         if copied:
             print(f"[graphify] backed up {reason} graph ({copied} files) -> {backup_dir.name}/")
         return backup_dir
     except Exception as exc:
-        import sys
         print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
         return None
 
