@@ -990,12 +990,27 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     return out
 
 
-def _refresh_matlab_inheritance(nodes: list[dict], edges: list[dict]) -> list[dict]:
+def _refresh_matlab_inheritance(
+    nodes: list[dict], edges: list[dict], root: str | Path | None = None,
+) -> list[dict]:
     """Replace only source-owned MATLAB inheritance facts for the current nodes."""
     from graphify.extractors.resolution import _matlab_inheritance_edges
+    _root = str(Path(root).resolve()) if root else None
+
+    def rooted(item: dict) -> dict:
+        if not isinstance(item, dict):
+            return item
+        source = item.get("source_file")
+        normalized = _norm_source_file(source, _root) if isinstance(source, str) else source
+        return item if normalized == source else {**item, "source_file": normalized}
+
+    # Resolver inputs may combine absolute incoming paths with relative stored
+    # paths. Canonicalize private views only; unchanged extraction context is read-only.
+    resolver_nodes = [rooted(node) for node in nodes]
+    resolver_edges = [rooted(edge) for edge in edges]
 
     matlab_sources: dict[str, str] = {}
-    for node in nodes:
+    for node in resolver_nodes:
         if not isinstance(node, dict):
             continue
         metadata = node.get("metadata")
@@ -1014,18 +1029,19 @@ def _refresh_matlab_inheritance(nodes: list[dict], edges: list[dict]) -> list[di
     def _is_matlab_inheritance(edge: dict) -> bool:
         if not isinstance(edge, dict) or edge.get("relation") != "inherits":
             return False
-        try:
-            source_file = matlab_sources.get(edge.get("source"))
-        except TypeError:
+        source = edge.get("source")
+        if not isinstance(source, str):
             return False
+        source_file = matlab_sources.get(source)
         return (
             source_file is not None
             and edge.get("source_file") == source_file
             and _is_ast_tier(edge)
         )
 
-    kept = [edge for edge in edges if not _is_matlab_inheritance(edge)]
-    refreshed = _matlab_inheritance_edges(nodes)
+    kept = [edge for edge, resolver_edge in zip(edges, resolver_edges)
+            if not _is_matlab_inheritance(resolver_edge)]
+    refreshed = _matlab_inheritance_edges(resolver_nodes)
     return kept + [{**edge, "_origin": "ast"} for edge in refreshed]
 
 
@@ -1803,11 +1819,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Python `import time` must not bind to a `time.ts`, #1749).
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
-            # .m is shared with Objective-C; extraction provenance wins over suffixes.
+            # .m is shared with Objective-C. Keep that provenance boundary for
+            # native code while letting source-backed docs/configs reach the
+            # established family gate below.
             src_matlab = (G.nodes[src].get("metadata") or {}).get("language") == "matlab"
             tgt_matlab = (G.nodes[tgt].get("metadata") or {}).get("language") == "matlab"
             if src_matlab != tgt_matlab:
-                continue
+                non_matlab = G.nodes[tgt] if src_matlab else G.nodes[src]
+                non_matlab_ext = Path(non_matlab.get("source_file") or "").suffix.lower()
+                source_backed_doc_or_config = bool(non_matlab.get("source_file")) and (
+                    non_matlab.get("file_type") in {"document", "paper", "image"}
+                    or non_matlab_ext not in _EDGE_LANG_FAMILY
+                )
+                if _edge_rel == "calls" or not source_backed_doc_or_config:
+                    continue
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
@@ -2390,7 +2415,7 @@ def merge_raw_extraction(
     if unverified_semantic_shrink:
         new["_unverified_semantic_shrink"] = unverified_semantic_shrink
     new["edges"] = _refresh_matlab_inheritance(
-        dedupe_nodes(new.get("nodes", [])), new.get("edges", [])
+        dedupe_nodes(new.get("nodes", [])), new.get("edges", []), root=_eff_root,
     )
     return new
 
@@ -2693,7 +2718,7 @@ def build_merge(
             edge for chunk in all_chunks for edge in chunk.get("edges", [])
         ]
         all_chunks[0]["edges"] = _refresh_matlab_inheritance(
-            resolver_nodes, merged_edges
+            resolver_nodes, merged_edges, root=_eff_root,
         )
         for chunk in all_chunks[1:]:
             chunk["edges"] = []

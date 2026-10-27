@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from graphify.build import build, build_merge, merge_raw_extraction
+from graphify.build import (
+    _refresh_matlab_inheritance,
+    build,
+    build_merge,
+    merge_raw_extraction,
+)
 from graphify.export import to_json
 from graphify.extract import extract
 
@@ -163,6 +168,104 @@ def test_changed_child_replaces_only_itself_and_keeps_context_read_only(tmp_path
     assert sum(node.get("source_file") == "Base.m" for node in after["nodes"]) == sum(
         node.get("source_file") == "Base.m" for node in before["nodes"]
     )
+
+
+def test_matlab_inheritance_refresh_normalizes_mixed_paths_without_mutating_inputs(tmp_path):
+    root = tmp_path / "src"
+    root.mkdir()
+    child_source = str(root / "Child.m")
+    nodes = [
+        {
+            "id": "child_file",
+            "label": "Child.m",
+            "source_file": child_source,
+            "file_type": "code",
+            "metadata": {
+                "language": "matlab", "kind": "matlab_file", "namespace": "",
+                "matlab_file_kind": "class", "matlab_primary_name": "Child",
+            },
+        },
+        {
+            "id": "child",
+            "label": "Child",
+            "source_file": child_source,
+            "file_type": "code",
+            "metadata": {
+                "language": "matlab", "kind": "matlab_class", "namespace": "",
+                "scope_chain": [],
+                "matlab_superclasses": [{"name": "Base", "source_location": "L2"}],
+            },
+        },
+        {
+            "id": "base_file",
+            "label": "Base.m",
+            "source_file": "Base.m",
+            "file_type": "code",
+            "metadata": {
+                "language": "matlab", "kind": "matlab_file", "namespace": "",
+                "matlab_file_kind": "class", "matlab_primary_name": "Base",
+            },
+        },
+        {
+            "id": "base",
+            "label": "Base",
+            "source_file": "Base.m",
+            "file_type": "code",
+            "metadata": {
+                "language": "matlab", "kind": "matlab_class", "namespace": "",
+                "scope_chain": [],
+            },
+        },
+    ]
+    edges = [
+        {"source": "base_file", "target": "base", "relation": "contains", "source_file": "Base.m"},
+        {
+            "source": "child", "target": "stale", "relation": "inherits",
+            "source_file": child_source, "_origin": "ast",
+        },
+    ]
+    before = copy.deepcopy((nodes, edges))
+
+    refreshed = _refresh_matlab_inheritance(nodes, edges, root=root)
+
+    assert (nodes, edges) == before
+    assert [
+        (edge["source"], edge["target"], edge["source_file"])
+        for edge in refreshed if edge.get("relation") == "inherits"
+    ] == [("child", "base", "Child.m")]
+
+
+@pytest.mark.parametrize("mode", MERGE_PATHS)
+def test_absolute_matlab_reextract_resolves_relative_unchanged_base(tmp_path, mode):
+    root = tmp_path / "src"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+    base_path = _write(root, "Base.m", _class_source("Base"))
+    child_path = _write(root, "Child.m", _class_source("Child", "Base"))
+    _start_graph(mode, root, graph_path, [base_path, child_path])
+    fresh = _extract(root, [child_path])
+    for item in fresh["nodes"] + fresh["edges"]:
+        if item.get("source_file"):
+            item["source_file"] = str(root / item["source_file"])
+
+    if mode == "raw":
+        merged = merge_raw_extraction(
+            fresh, graph_path, root=root, ast_sources=[child_path],
+        )
+        _write_raw(graph_path, merged)
+    else:
+        graph = build_merge(
+            [fresh], graph_path, dedup=False, root=root, ast_sources=[child_path],
+        )
+        assert to_json(graph, {}, str(graph_path), force=True)
+
+    after = _read_graph(graph_path)
+    child = next(
+        node for node in after["nodes"]
+        if node.get("label") == "Child"
+        and node.get("metadata", {}).get("kind") == "matlab_class"
+    )
+    assert [node["label"] for node in _targets(after, child)] == ["Base"]
 
 
 @pytest.mark.parametrize("mode", MERGE_PATHS)

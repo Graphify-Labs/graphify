@@ -276,7 +276,11 @@ def extract_matlab(path: Path) -> dict:
             return False
         parent = node.parent
         while parent is not None and node_key(parent) != node_key(scope_node):
-            if parent.type in {"lambda", "handle_operator", "arguments_statement", "field_expression"}:
+            if parent.type == "field_expression":
+                field = parent.child_by_field_name("field")
+                if field is not None and node_key(field) == node_key(node):
+                    return False
+            if parent.type in {"lambda", "handle_operator", "arguments_statement"}:
                 return False
             if parent.type == "assignment":
                 left = parent.child_by_field_name("left")
