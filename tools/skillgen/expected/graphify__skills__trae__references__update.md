@@ -161,7 +161,12 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # is lost forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
-_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'))
+# A file a subagent only partly read (Step B3.5 lists it) DID produce output, so the
+# filter alone would stamp it and the next --update would never re-queue it. Pass the
+# list as Step 9 does after a full build, so it stays unstamped and is retried (#2225, #4807).
+_pf = Path('graphify-out/.graphify_partial.txt')
+_partial = {l.strip() for l in _pf.read_text(encoding=\"utf-8\").splitlines() if l.strip()} if _pf.exists() else set()
+_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'), partial_source_files=_partial)
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
 _sem_types = ('document', 'paper', 'image')
@@ -172,6 +177,10 @@ _cleared = _dispatched - _stamped
 # are dropped rather than masquerading as deletions; untouched rows preserved (#1908).
 _scan = {f for fl in incremental['files'].values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+# The list is used up. --update never runs Step 9, which deletes it after a full build,
+# and only B3.5 rewrites it, so a later run that skips B3.5 would read this one: a doc
+# it names that comes back as a cache hit would then stay unstamped on every run.
+_pf.unlink(missing_ok=True)
 print('[graphify update] Manifest saved.')
 "
 ```
