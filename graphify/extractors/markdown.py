@@ -26,7 +26,12 @@ _MD_INLINE_LINK_RE = re.compile(
     r')\)')
 
 _MD_REF_DEF_RE = re.compile(
-    r'^\s{0,3}\[[^\]]+\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["\'(]|$))|<?([^\s>]+)>?)')
+    r'^\s{0,3}\[([^\]]+)\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["\'(]|$))|<?([^\s>]+)>?)')
+
+# Reference-style link uses: [text][label] or [label][]. The label resolves to
+# a separate definition (`[label]: target`), so the use — not the definition —
+# carries the citation evidence for its section (#4804).
+_MD_REF_LINK_RE = re.compile(r'(?<!\!)\[([^\]]*)\]\[([^\]]*)\]')
 
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
@@ -510,11 +515,38 @@ def extract_markdown(path: Path) -> dict:
     fm_lines, body_start = _split_frontmatter(lines)
     frontmatter = sanitize_metadata(_parse_frontmatter(fm_lines))
 
+    # Pre-scan reference definitions so a use can resolve to a definition that
+    # appears later in the document (#4804). Fenced code blocks are skipped.
+    ref_defs: dict[str, str] = {}
+    _in_fence = False
+    for _line in lines:
+        _stripped = _line.strip()
+        if _stripped.startswith("```"):
+            _in_fence = not _in_fence
+            continue
+        if _in_fence:
+            continue
+        _ref_def = _MD_REF_DEF_RE.match(_line)
+        if _ref_def:
+            _label = _ref_def.group(1)
+            _url = _ref_def.group(2) or _ref_def.group(3)
+            if _url:
+                ref_defs[_label] = _url
+
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1, node_kind="page",
              extra={"frontmatter": frontmatter} if frontmatter else None)
 
     source_dir = path.parent
+
+    def _is_code_file_link(raw: str, base: Path) -> bool:
+        """Whether *raw* resolves to a source file (not a document or asset)."""
+        resolved = _resolve_markdown_link(raw, base, exts=_MD_CITEABLE_EXTS)
+        if resolved is None:
+            return False
+        suffix = resolved.suffix.lower()
+        return suffix in CODE_EXTENSIONS and suffix not in _MD_LINKABLE_EXTS
+
     # Dedup link edges by resolved target node so a hub doc that links to the
     # same sibling many times yields one edge, not N (keeps weights meaningful).
     linked_targets: set[str] = set()
@@ -602,11 +634,18 @@ def extract_markdown(path: Path) -> dict:
         if line_num_0 < body_start:
             for m in _MD_INLINE_LINK_RE.finditer(line_text):
                 add_link(m.group(1) or m.group(2), line_num, owner=file_nid)
+            for m in _MD_REF_LINK_RE.finditer(line_text):
+                _text, _label = m.group(1), m.group(2)
+                _label = _label or _text
+                if _label in ref_defs:
+                    add_link(ref_defs[_label], line_num, owner=file_nid)
             for m in _MD_WIKILINK_RE.finditer(line_text):
                 add_link(m.group(1), line_num, owner=file_nid, wikilink=True)
             ref_def = _MD_REF_DEF_RE.match(line_text)
             if ref_def:
-                add_link(ref_def.group(1) or ref_def.group(2), line_num, owner=file_nid)
+                _url = ref_def.group(2) or ref_def.group(3)
+                if _url and not _is_code_file_link(_url, source_dir):
+                    add_link(_url, line_num, owner=file_nid)
             continue
 
         # Detect headings: # Heading, ## Heading, etc.
@@ -632,6 +671,11 @@ def extract_markdown(path: Path) -> dict:
             # Links in the heading itself belong to this heading.
             for m in _MD_INLINE_LINK_RE.finditer(title):
                 add_link(m.group(1) or m.group(2), line_num, owner=h_nid)
+            for m in _MD_REF_LINK_RE.finditer(title):
+                _text, _label = m.group(1), m.group(2)
+                _label = _label or _text
+                if _label in ref_defs:
+                    add_link(ref_defs[_label], line_num, owner=h_nid)
             for m in _MD_WIKILINK_RE.finditer(title):
                 add_link(m.group(1), line_num, owner=h_nid, wikilink=True)
             # A code span in the heading itself is that heading's mention.
@@ -644,11 +688,21 @@ def extract_markdown(path: Path) -> dict:
         owner = heading_stack[-1][1] if heading_stack else file_nid
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
             add_link(m.group(1) or m.group(2), line_num, owner=owner)
+        for m in _MD_REF_LINK_RE.finditer(line_text):
+            _text, _label = m.group(1), m.group(2)
+            _label = _label or _text
+            if _label in ref_defs:
+                add_link(ref_defs[_label], line_num, owner=owner)
         for m in _MD_WIKILINK_RE.finditer(line_text):
             add_link(m.group(1), line_num, owner=owner, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
-            add_link(ref_def.group(1) or ref_def.group(2), line_num, owner=owner)
+            # A definition is not a use. A document definition keeps its
+            # page-level link edge; a source-file definition creates no
+            # citation at all — only its uses carry section evidence (#4804).
+            _url = ref_def.group(2) or ref_def.group(3)
+            if _url and not _is_code_file_link(_url, source_dir):
+                add_link(_url, line_num, owner=file_nid)
         for m in _MD_CODE_SPAN_RE.finditer(line_text):
             add_mention(owner, m.group(2), line_num)
 

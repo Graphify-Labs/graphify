@@ -825,3 +825,67 @@ def test_missing_source_link_does_not_reference_other_files(tmp_path):
     page = _node(r, "guide.md")
     charts_file = _node(r, "charts.js", "charts.js")
     assert (page["id"], charts_file["id"]) not in _references(r)
+
+
+def test_reference_style_use_licenses_its_own_section(tmp_path):
+    """A reference-style use `[charts][source]` licenses a bare mention in its own section,
+    not the section where the definition sits (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/guide.md": (
+            "# Charts\n\n"
+            "See [charts][source]. Uses `token`.\n\n"
+            "# Authentication\n\n"
+            "[source]: ../web/charts.js\n"
+        ),
+    })
+
+    charts = _node(r, "Charts")
+    token = _node(r, "token()", "charts.js")
+    charts_file = _node(r, "charts.js", "charts.js")
+    page = _node(r, "guide.md")
+    refs = _references(r)
+    # The use's section licenses the bare mention.
+    assert (charts["id"], token["id"]) in refs
+    # The link itself is a doc->file edge from the page.
+    assert (page["id"], charts_file["id"]) in refs
+
+
+def test_reference_definition_section_does_not_license_bare_mention(tmp_path):
+    """A definition's own section does not inherit citation evidence from the
+    definition line (#4804 regression)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/guide.md": (
+            "# Charts\n\n"
+            "Uses `token`.\n\n"
+            "# Authentication\n\n"
+            "Sends `token` for auth.\n\n"
+            "[source]: ../web/charts.js\n"
+        ),
+    })
+
+    auth = _node(r, "Authentication")
+    token = _node(r, "token()", "charts.js")
+    assert (auth["id"], token["id"]) not in _references(r)
+
+
+def test_reference_style_use_shared_by_multiple_sections(tmp_path):
+    """Each use of a shared definition licenses its own section (#4804)."""
+    r = _extract(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/guide.md": (
+            "# Charts\n\n"
+            "See [charts][source]. Uses `token`.\n\n"
+            "# Token notes\n\n"
+            "Also [charts][source]. Sends `token`.\n\n"
+            "[source]: ../web/charts.js\n"
+        ),
+    })
+
+    charts = _node(r, "Charts")
+    token_notes = _node(r, "Token notes")
+    token = _node(r, "token()", "charts.js")
+    refs = _references(r)
+    assert (charts["id"], token["id"]) in refs
+    assert (token_notes["id"], token["id"]) in refs
