@@ -683,6 +683,108 @@ def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
         assert "allowed_source_files=uncached" in body
 
 
+@pytest.mark.parametrize("key", ["aider", "devin"])
+def test_monolith_update_saves_manifest_for_changed_file(key, tmp_path, monkeypatch):
+    """#4812: a successful monolith --update must advance the manifest baseline.
+
+    Execute the emitted update-merge Python against a one-document corpus. Before
+    the block runs, detect_incremental sees the edited document. Afterwards the
+    same unchanged bytes must no longer be queued. The pre-fix monoliths fail this
+    because their --update path never calls save_manifest at all.
+    """
+    import json
+
+    from graphify.cli import _stamped_manifest_files
+    from graphify.detect import detect, detect_incremental, save_manifest
+
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    doc = tmp_path / "notes.md"
+    doc.write_text("# Notes\nWidget\n", encoding="utf-8")
+
+    initial = {
+        "nodes": [
+            {
+                "id": "notes_widget",
+                "label": "Widget",
+                "file_type": "document",
+                "source_file": str(doc),
+            }
+        ],
+        "edges": [],
+        "hyperedges": [],
+    }
+    initial_files = detect(tmp_path)["files"]
+    save_manifest(
+        _stamped_manifest_files(initial_files, initial, tmp_path),
+        root=tmp_path,
+    )
+    (out / "graph.json").write_text(
+        json.dumps(
+            {
+                "directed": False,
+                "multigraph": False,
+                "graph": {},
+                "nodes": initial["nodes"],
+                "links": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    doc.write_text("# Notes\nWidget and Sprocket\n", encoding="utf-8")
+    incremental = detect_incremental(tmp_path)
+    assert incremental["new_total"] == 1
+
+    fresh = {
+        "nodes": [
+            {
+                "id": "notes_sprocket",
+                "label": "Sprocket",
+                "file_type": "document",
+                "source_file": str(doc),
+            }
+        ],
+        "edges": [],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    detect_payload = {
+        "files": incremental.get("new_files", {}),
+        "all_files": incremental.get("files", {}),
+        "total_files": incremental.get("new_total", 0),
+        "total_words": incremental.get("total_words", 0),
+        "skipped_sensitive": incremental.get("skipped_sensitive", []),
+        "needs_graph": True,
+    }
+    # Aider keeps these temporary files at the project root; Devin keeps them
+    # under graphify-out/. Populate both so the same behavioral test exercises
+    # each rendered monolith without mocking its path conventions.
+    for base in (tmp_path, out):
+        (base / ".graphify_incremental.json").write_text(
+            json.dumps(incremental), encoding="utf-8"
+        )
+        (base / ".graphify_detect.json").write_text(
+            json.dumps(detect_payload), encoding="utf-8"
+        )
+        (base / ".graphify_extract.json").write_text(json.dumps(fresh), encoding="utf-8")
+
+    platform = gen.load_platforms()[key]
+    core = gen.render(platform)[0].content
+    body = _step_body(core, "G_existing.update(G_new)")
+    body = _substituted(body, tmp_path).replace("IS_DIRECTED", "False")
+    exec(compile(body, f"{key}-update-merge", "exec"), {"__name__": "__main__"})
+
+    after = detect_incremental(tmp_path)
+    queued = {Path(f).name for files in after["new_files"].values() for f in files}
+    assert "notes.md" not in queued, (
+        f"[{key}] --update left the changed document on the previous manifest baseline: "
+        f"{after['new_files']}"
+    )
+
+
 def test_generated_runbooks_pass_root_to_save_manifest():
     """#1417: every save_manifest call in a shipped runbook threads root=.
 
@@ -1163,7 +1265,7 @@ def _python_step_bodies(core: str) -> list[str]:
     for line in core.split("\n"):
         if line == gen._PY_INVOKE_POSIX:
             current = []
-        elif current is not None and line == '"':
+        elif current is not None and line.strip() == '"':
             bodies.append("\n".join(gen._unescape_bash_dq(x) for x in current))
             current = None
         elif current is not None:
