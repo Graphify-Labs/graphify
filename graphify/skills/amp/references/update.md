@@ -14,6 +14,10 @@ from pathlib import Path
 
 from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
+# Step B3.5 lists the files this run reads only partway, and the manifest write (and Step 9,
+# if it runs) keeps them unstamped. Only B3.5 rewrites the list, so drop one an earlier run
+# left: it would keep a file this run serves from the cache unstamped on every run (#4807).
+Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
 result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 nf = result.get('new_files', {})
@@ -177,10 +181,6 @@ _cleared = _dispatched - _stamped
 # are dropped rather than masquerading as deletions; untouched rows preserved (#1908).
 _scan = {f for fl in incremental['files'].values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
-# The list is used up. --update never runs Step 9, which deletes it after a full build,
-# and only B3.5 rewrites it, so a later run that skips B3.5 would read this one: a doc
-# it names that comes back as a cache hit would then stay unstamped on every run.
-_pf.unlink(missing_ok=True)
 print('[graphify update] Manifest saved.')
 "
 ```
