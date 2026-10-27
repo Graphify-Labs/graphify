@@ -45,6 +45,7 @@ from graphify.cli import _stamped_manifest_files
 from graphify.detect import detect, save_manifest
 root = Path(sys.argv[1])
 extraction = {'nodes': [{'id': 'long_widget', 'source_file': 'guide/long.md'},
+                        {'id': 'notes_gear', 'source_file': 'notes.md'},
                         {'id': 'short_gadget', 'source_file': 'short.md'}],
               'edges': [], 'hyperedges': []}
 save_manifest(_stamped_manifest_files(detect(root)['files'], extraction, root), root=sys.argv[1])
@@ -108,7 +109,9 @@ def _env() -> dict[str, str]:
 
 def _bash(block: str, proj: Path, root: str) -> str:
     block = block.replace("INPUT_PATH", root).replace("IS_DIRECTED", "False")
-    result = subprocess.run(["bash", "-c", block], cwd=proj, env=_env(),
+    # -e: a block that runs more commands after its Python (Step 9's cleanup) must not hide a
+    # Python failure behind their exit status.
+    result = subprocess.run(["bash", "-e", "-c", block], cwd=proj, env=_env(),
                             capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, f"runbook block failed:\n{result.stdout}\n{result.stderr}"
     return result.stdout
@@ -132,11 +135,13 @@ def _built_project(tmp_path: Path, root: str) -> Path:
     out = proj / "graphify-out"
     out.mkdir()
     (proj / root / LONG).write_text(LONG_V1, encoding="utf-8")
+    (proj / root / "notes.md").write_text("# Notes\nGear\n", encoding="utf-8")
     (proj / root / "short.md").write_text("# Short\nGadget uses Widget\n", encoding="utf-8")
     (out / ".graphify_python").write_text(sys.executable, encoding="utf-8")
     _python(FULL_BUILD, proj, root)
     (out / "graph.json").write_text(json.dumps({
         "nodes": [{"id": "long_widget", "label": "Widget", "source_file": LONG},
+                  {"id": "notes_gear", "label": "Gear", "source_file": "notes.md"},
                   {"id": "short_gadget", "label": "Gadget", "source_file": "short.md"}],
         "edges": [], "hyperedges": [],
     }), encoding="utf-8")
@@ -174,21 +179,26 @@ def test_partly_read_doc_is_queued_again_by_the_next_update(
         detect, populate, merge, entry, root, tmp_path):
     proj = _built_project(tmp_path, root)
     _edit_long(proj, root)
+    (proj / root / "notes.md").write_text("# Notes\nGear and Pinion\n", encoding="utf-8")
     (proj / root / "short.md").write_text("# Short\nGadget uses Sprocket\n", encoding="utf-8")
 
-    # Both docs changed. The subagent read short.md to its end and long.md only partway. B3.5
-    # lists long.md as the subagent reported it: the absolute path it was given, or relative
-    # to the scan root.
-    listed = str(proj / root / LONG) if entry == "absolute" else LONG
+    # All three docs changed. The subagents read short.md to its end, and long.md and notes.md
+    # only partway. B3.5 lists both as the subagent reported them: the absolute path it was
+    # given, or relative to the scan root.
+    partly_read = [LONG, "notes.md"]
+    listed = [str(proj / root / f) if entry == "absolute" else f for f in partly_read]
     _update(proj, root, detect, populate, merge,
-            nodes=[LONG_NODE, SHORT_NODE],
-            partial=[listed])
+            nodes=[{"id": "long_head", "label": "Long Head", "source_file": LONG},
+                   {"id": "notes_pinion", "label": "Pinion", "source_file": "notes.md"},
+                   SHORT_NODE],
+            partial=listed)
 
-    assert _queued(proj, root) == [LONG]
-    # The nodes read so far are kept until the retry replaces them.
+    assert _queued(proj, root) == partly_read
+    # What this run read of each is kept until the retry replaces it.
     extract = proj / "graphify-out" / ".graphify_extract.json"
-    merged = json.loads(extract.read_text(encoding="utf-8"))
-    assert LONG in {node.get("source_file") for node in merged["nodes"]}
+    merged = {(node.get("label"), node.get("source_file"))
+              for node in json.loads(extract.read_text(encoding="utf-8"))["nodes"]}
+    assert {("Long Head", LONG), ("Pinion", "notes.md")} <= merged
 
 
 @pytest.mark.parametrize("detect,populate,merge,step9", _cases(step9=True))
