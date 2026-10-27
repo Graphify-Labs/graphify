@@ -146,15 +146,15 @@ def test_print_benchmark_error_message(capsys):
 # unconditionally printed U+2500 and U+2192. _safe() falls back to ASCII when
 # stdout cannot encode the glyph.
 
-def test_safe_returns_unicode_when_encodable():
-    import io, sys
-    real_stdout = sys.stdout
-    try:
-        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
-        assert _safe("→", "->") == "→"
-        assert _hr(5) == "─" * 5
-    finally:
-        sys.stdout = real_stdout
+def test_safe_returns_unicode_when_encodable(monkeypatch):
+    import io
+    import sys
+
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+
+    assert _safe("→", "->") == "→"
+    assert _hr(5) == "─" * 5
 
 def test_safe_falls_back_when_unencodable():
     import io, sys
