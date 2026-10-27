@@ -156,15 +156,15 @@ def test_safe_returns_unicode_when_encodable(monkeypatch):
     assert _safe("→", "->") == "→"
     assert _hr(5) == "─" * 5
 
-def test_safe_falls_back_when_unencodable():
-    import io, sys
-    real_stdout = sys.stdout
-    try:
-        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
-        assert _safe("→", "->") == "->"
-        assert _hr(5) == "-" * 5
-    finally:
-        sys.stdout = real_stdout
+def test_safe_falls_back_when_unencodable(monkeypatch):
+    import io
+    import sys
+
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+
+    assert _safe("→", "->") == "->"
+    assert _hr(5) == "-" * 5
 
 def test_print_benchmark_survives_cp1252_stdout(tmp_path, monkeypatch, capsys):
     """Regression: U+2500 / U+2192 used to crash with UnicodeEncodeError on cp1252."""
