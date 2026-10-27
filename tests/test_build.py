@@ -1599,6 +1599,46 @@ def test_doc_twin_merge_does_not_touch_code_symbols():
     assert {"m_foo", "m_foo_doc"} <= set(G.nodes())
 
 
+def test_marked_cross_document_stubs_survive_issue_4738_collisions():
+    """The complete build keeps every marked reference stub and the definition.
+
+    This covers the three collision shapes reported in #4738, including a
+    stub whose ID also looks like an entity defined in its citing file.
+    """
+    logging = "specifications_20_architecture_operational_logging_document"
+    runtime = "functional_agent_runtime_doc"
+    license_schedule = "company_license_schedule_c"
+    stub = {"graphify_reference_stub": True}
+    extraction = {"nodes": [
+        {"id": logging, "label": "Logging", "file_type": "document",
+         "source_file": "specifications/20-architecture/delivery/change-policy.md",
+         "metadata": stub},
+        {"id": logging, "label": "Logging specification", "file_type": "document",
+         "source_file": ".github/instructions/rust.instructions.md",
+         "metadata": stub},
+        {"id": runtime, "label": "Agent runtime", "file_type": "document",
+         "source_file": "functional/agents/agent-operator.md", "metadata": stub},
+        {"id": runtime, "label": "Agent Runtime and Subagent Contract", "file_type": "document",
+         "source_file": "delivery/developer-interaction.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license-schedule-c.md"},
+    ], "edges": []}
+
+    graph = build([extraction])
+
+    assert graph.number_of_nodes() == 6
+    assert {data["source_file"] for _, data in graph.nodes(data=True)} == {
+        "specifications/20-architecture/delivery/change-policy.md",
+        ".github/instructions/rust.instructions.md",
+        "functional/agents/agent-operator.md",
+        "delivery/developer-interaction.md",
+        "company/license.md",
+        "company/license-schedule-c.md",
+    }
+
+
 def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     """#1916: build_from_json used to copy hyperedges into G.graph["hyperedges"]
     verbatim without validating members, so a dangling member reached graph.json

@@ -1254,3 +1254,40 @@ def test_to_json_keeps_multigraph_false_without_parallel_edges(tmp_path):
     data = json.loads(out.read_text())
     assert data["multigraph"] is False
     assert len(data["links"]) == 1
+
+
+def test_to_obsidian_lists_every_parallel_relation(tmp_path):
+    """#4500 follow-up: graph.json preserves parallel edges and is reloaded as a
+    MultiGraph, but the vault note's Connections list went through
+    ``edge_data()``, which returns only the FIRST parallel edge. A pair joined by
+    both `imports` and `calls` therefore lost one relation from the exported
+    note, exactly as serve.py's neighbor output did before it moved to
+    ``edge_datas()``."""
+    from networkx.readwrite import json_graph
+
+    from graphify.export import to_obsidian
+
+    raw = {
+        "directed": False,
+        "multigraph": True,
+        "nodes": [
+            {"id": "a.py", "label": "a.py", "file_type": "code"},
+            {"id": "b.py", "label": "b.py", "file_type": "code"},
+        ],
+        "links": [
+            {"source": "a.py", "target": "b.py", "relation": "imports",
+             "confidence": "EXTRACTED"},
+            {"source": "a.py", "target": "b.py", "relation": "calls",
+             "confidence": "INFERRED"},
+        ],
+    }
+    G = json_graph.node_link_graph(raw, edges="links")
+    assert G.is_multigraph() and G.number_of_edges() == 2
+
+    to_obsidian(G, {0: ["a.py", "b.py"]}, str(tmp_path))
+    note = (tmp_path / "a.py.md").read_text(encoding="utf-8")
+    connections = [line for line in note.splitlines() if line.startswith("- [[")]
+    assert connections == [
+        "- [[b.py]] - `calls` [INFERRED]",
+        "- [[b.py]] - `imports` [EXTRACTED]",
+    ], connections

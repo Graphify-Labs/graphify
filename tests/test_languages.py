@@ -336,6 +336,29 @@ def test_cuda_host_call_edges():
     assert ("main()", "host_norm()") in calls
 
 
+def test_cuda_execution_space_qualifiers_do_not_mint_sourceless_god_nodes():
+    """CUDA's `__global__`/`__device__`/`__host__` are execution-space
+    qualifiers, not C++ types. tree-sitter-cpp parses the leading qualifier as
+    the declaration's `type_identifier`; before the fix each became a sourceless
+    corpus-shared god node (ids `global`/`device`/`host`) that every kernel
+    `references` — a provenance violation. The real struct `Vec3` still resolves.
+    """
+    r = extract_cpp(FIXTURES / "sample.cu")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    for qualifier in ("__global__", "__device__", "__host__"):
+        assert qualifier not in sourceless, (
+            f"CUDA qualifier {qualifier!r} leaked as a sourceless god node"
+        )
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    referenced = {
+        id_to_label.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert referenced.isdisjoint({"__global__", "__device__", "__host__"})
+    assert "Vec3" in referenced
+
+
 # Metal Shading Language is a C++14-derived language, so .metal files route
 # through the C++ extractor just like CUDA does.
 
@@ -355,6 +378,32 @@ def test_metal_finds_kernel_function_and_struct():
     assert any("Vec3" in l for l in labels)
     assert any("dot3" in l for l in labels)
     assert any("saxpy" in l for l in labels)
+
+
+def test_metal_qualifiers_do_not_mint_sourceless_god_nodes():
+    """Metal's `kernel`/`device`/`constant` qualifiers are not C++ types.
+
+    tree-sitter-cpp has no grammar for them, so it parses the leading qualifier
+    as the declaration's `type_identifier`. Before the fix each one became a
+    sourceless, corpus-shared god node that every shader `references` — a
+    provenance violation (a node with no source_file). The real user type (the
+    `Vec3` struct) must still resolve.
+    """
+    r = extract_cpp(FIXTURES / "sample.metal")
+    sourceless = {n["label"] for n in r["nodes"] if not n.get("source_file")}
+    for qualifier in ("kernel", "device", "constant"):
+        assert qualifier not in sourceless, (
+            f"Metal qualifier {qualifier!r} leaked as a sourceless god node"
+        )
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    referenced = {
+        id_to_label.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert referenced.isdisjoint({"kernel", "device", "constant"})
+    # The genuine user-defined struct reference is preserved.
+    assert "Vec3" in referenced
 
 
 # ── Ruby ─────────────────────────────────────────────────────────────────────
@@ -3723,6 +3772,35 @@ def test_markdown_wikilink_fallback_path_qualified(tmp_path):
                for e in refs), f"path-qualified vault link lost: {refs}"
 
 
+def test_markdown_wikilink_vault_relative_to_a_scan_root_below_the_vault(tmp_path):
+    """Obsidian writes vault-relative paths, so scanning a folder below the
+    vault meets links that start with that folder's own path (#4559)."""
+    corp = tmp_path / "Vault" / "Projects" / "Corp"
+    (corp / "wiki").mkdir(parents=True)
+    for name in ("Charlie", "Delta", "Fox"):
+        (corp / "wiki" / f"{name}.md").write_text(f"# {name}\n")
+    (corp / "Alpha.md").write_text(
+        "[[wiki/Charlie]] [[Corp/wiki/Delta|alias]] [[Projects/Corp/wiki/Fox]]\n")
+    pages = [corp / "Alpha.md", *(corp / "wiki").iterdir()]
+    _, refs, page_id = _vault_extract(corp, pages)
+    alpha = page_id(corp / "Alpha.md")
+    assert {e["target"] for e in refs if e["source"] == alpha} == {
+        page_id(corp / "wiki" / f"{name}.md") for name in ("Charlie", "Delta", "Fox")}
+
+
+def test_markdown_wikilink_scan_root_prefix_still_needs_the_exact_path(tmp_path):
+    """Once the scan root's folder is dropped the rest is a path from the
+    root, not a suffix: [[Corp/Fox]] does not reach Corp/wiki/Fox.md."""
+    corp = tmp_path / "Corp"
+    (corp / "wiki").mkdir(parents=True)
+    (corp / "wiki" / "Fox.md").write_text("# Fox\n")
+    (corp / "Alpha.md").write_text("[[Corp/Fox]]\n")
+    _, refs, page_id = _vault_extract(corp, [corp / "Alpha.md", corp / "wiki" / "Fox.md"])
+    alpha = page_id(corp / "Alpha.md")
+    fox = page_id(corp / "wiki" / "Fox.md")
+    assert fox not in {e["target"] for e in refs if e["source"] == alpha}
+
+
 def test_markdown_wikilink_fallback_root_wins(tmp_path):
     """On a bare-name collision the shallowest match wins — Obsidian resolves
     a bare wikilink to the root-level file over a same-named subfolder file."""
@@ -4628,6 +4706,23 @@ def test_plain_c_header_stays_on_c_extractor():
     assert _get_extractor(p).__name__ == "extract_c"
 
 
+def test_extern_c_header_routes_to_cpp_extractor(tmp_path):
+    """A C-API header wrapped in `#ifdef __cplusplus extern "C" {` must route to
+    extract_cpp: the C grammar rejects the linkage block and extracts nothing."""
+    p = tmp_path / "api.h"
+    p.write_text(
+        '#ifdef __cplusplus\nextern "C" {\n#endif\n\n'
+        "struct api_ctx;\nstruct api_ctx * api_init(const char * path);\n"
+        "void api_free(struct api_ctx * ctx);\n\n"
+        "#ifdef __cplusplus\n}\n#endif\n",
+        encoding="utf-8",
+    )
+    assert _is_cpp_header(p)
+    assert _get_extractor(p).__name__ == "extract_cpp"
+    labels = {n["label"] for n in _get_extractor(p)(p)["nodes"]}
+    assert "api_ctx" in labels, labels
+
+
 def test_cpp_paired_single_class_node():
     """Foo.h (class) + Foo.cpp (Foo::bar def) + Main.cpp must yield exactly ONE
     Foo class node — not a foo_h + foo_cpp pair, and no junk `class` stub."""
@@ -5375,6 +5470,79 @@ def test_zig_tagged_union_variants_emit_case_of_nodes(tmp_path):
     assert not any(src_lbl == "rectangle" for src_lbl, _ in case_of)
 
 
+@_needs_zig
+def test_zig_bare_call_does_not_cross_resolve_to_a_same_named_method(tmp_path):
+    """A bare call (`helper()`) must bind to the free function of that name,
+    never to an unrelated struct's method sharing the name.
+
+    `is_member_call` was computed but never consulted: the lookup matched
+    either `f"{callee}()"` or `f".{callee}()"` for every call regardless of
+    whether it was written with a receiver, so a bare call landed on whichever
+    of the two happened to come first in the file's own node list.
+    """
+    src = (
+        "const Box = struct {\n"
+        "    pub fn helper(self: Box) i32 {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() i32 {\n"
+        "    return 2;\n"
+        "}\n"
+        "\n"
+        "fn caller() i32 {\n"
+        "    return helper();\n"
+        "}\n"
+    )
+    f = tmp_path / "zigtest.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("caller()", "helper()") in calls
+    assert ("caller()", ".helper()") not in calls
+
+
+@_needs_zig
+def test_zig_member_call_does_not_cross_resolve_to_a_same_named_free_function(tmp_path):
+    """The reverse control: a member call (`b.helper()`) must bind to the
+    receiver's own method, never to an unrelated free function of the same
+    name."""
+    src = (
+        "const Box = struct {\n"
+        "    pub fn helper(self: Box) i32 {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() i32 {\n"
+        "    return 2;\n"
+        "}\n"
+        "\n"
+        "fn caller(b: Box) i32 {\n"
+        "    return b.helper();\n"
+        "}\n"
+    )
+    f = tmp_path / "zigtest.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("caller()", ".helper()") in calls
+    assert ("caller()", "helper()") not in calls
+
+
 @_needs_commonlisp
 def test_cl_ids_are_path_qualified_across_directories(tmp_path):
     """Two same-named .lisp files in DIFFERENT directories must mint distinct
@@ -5544,6 +5712,58 @@ def test_robot_keyword_matching_is_case_space_underscore_insensitive(tmp_path):
                     if e["relation"] == "calls" and e["source"] == tc_id]
     assert styled_calls, "no call edges extracted"
     assert all(e["target"] == def_id for e in styled_calls), styled_calls
+
+
+@_needs_robot
+def test_robot_duplicate_test_case_names_get_separate_nodes(tmp_path):
+    # Robot only WARNS on a duplicate test case name in one suite, it still
+    # runs both - unlike a duplicate keyword definition, which Robot itself
+    # rejects. Stem-qualifying by name alone collapsed both onto one node, so
+    # the second test's own calls landed on the first test's id and line.
+    suite = tmp_path / "dupe.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Test\n"
+        "    Click Button\n"
+        "\n"
+        "Login Test\n"
+        "    Open Browser\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    from graphify.extractors.robot import _kw_id
+    tc_nodes = [n for n in r["nodes"] if n["label"] == "Login Test"]
+    assert len(tc_nodes) == 2, tc_nodes
+    assert {n["source_location"] for n in tc_nodes} == {"L2", "L5"}
+    by_loc = {n["source_location"]: n["id"] for n in tc_nodes}
+    first_calls = {e["target"] for e in r["edges"]
+                   if e["relation"] == "calls" and e["source"] == by_loc["L2"]}
+    second_calls = {e["target"] for e in r["edges"]
+                    if e["relation"] == "calls" and e["source"] == by_loc["L5"]}
+    assert first_calls == {_kw_id("Click Button")}
+    assert second_calls == {_kw_id("Open Browser")}
+
+
+@_needs_robot
+def test_robot_unique_test_case_name_keeps_the_plain_id(tmp_path):
+    # Control: a file with no duplicate test case name is completely
+    # unaffected by the duplicate-name salting above.
+    suite = tmp_path / "plain.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Test\n"
+        "    Click Button\n"
+        "\n"
+        "Logout Test\n"
+        "    Open Browser\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    from graphify.extractors.base import _make_id, _file_stem
+    stem = _file_stem(suite)
+    tc_id = next(n["id"] for n in r["nodes"] if n["label"] == "Login Test")
+    assert tc_id == _make_id(stem, "Login Test")
 
 
 def test_robot_extractor_degrades_gracefully_without_robotframework():

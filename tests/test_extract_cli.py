@@ -1506,6 +1506,57 @@ def test_incremental_data_json_not_requeued_end_to_end(monkeypatch, tmp_path, ca
     out_text = capsys.readouterr().out
     assert "re-queuing" not in out_text, f"declined data JSON re-queued: {out_text}"
     assert "0 re-extracted" in out_text, out_text
+def test_declined_by_design_file_is_not_requeued_every_run(monkeypatch, tmp_path, capsys):
+    """#2879: a file the extractor declines by design (data JSON, etc.) is
+    stamped yet has zero nodes — the same shape the #2543 heal re-queues. Its
+    manifest row carries ``ast_empty: true`` so the heal leaves it alone; a
+    pre-#2879 manifest (no marker) re-queues it once, then settles."""
+    import json
+    import graphify.extract as extractmod
+
+    def _skipped_sql(path):
+        return {"nodes": [], "edges": [], "skipped": True}
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _skipped_sql)
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # seed: schema.sql declined, keep.py in graph
+    capsys.readouterr()
+    row = _manifest_row(manifest_path, "schema.sql")
+    assert row and row.get("ast_empty") is True and row.get("ast_hash"), (
+        f"declined file must be stamped and marked intentional-empty, got {row}"
+    )
+
+    for run in (2, 3):
+        _run_extract(monkeypatch, argv)
+        out_text = capsys.readouterr().out
+        assert "re-queuing" not in out_text, (
+            f"run {run}: a declined-by-design file must not be re-queued: {out_text}"
+        )
+        assert "0 re-extracted" in out_text, f"run {run} must be a no-op: {out_text}"
+
+    # Pre-#2879 manifest: strip the marker. The heal re-queues once, the re-run
+    # restamps the marker, and the run after that settles — a one-cycle migration.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest.values():
+        if isinstance(entry, dict):
+            entry.pop("ast_empty", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "re-queuing 1" in out_text, (
+        f"an unmarked declined file is re-queued once (pre-#2879 state): {out_text}"
+    )
+    assert _manifest_row(manifest_path, "schema.sql").get("ast_empty") is True
+
+    _run_extract(monkeypatch, argv)
+    assert "re-queuing" not in capsys.readouterr().out
 
 
 def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):

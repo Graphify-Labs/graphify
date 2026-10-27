@@ -1430,20 +1430,36 @@ def _query_graph_text(
     # of a node reference. Fail closed: a value that does not resolve to exactly
     # one node is reported and skipped, never guessed.
     unresolved: list[str] = []
+    ambiguous_refusals: list[str] = []
     if seeds:
         from graphify.affected import resolve_seed
         start_nodes: list[str] = []
         for value in seeds:
             nid = resolve_seed(G, value, seed_root)
             if nid is None:
-                if value not in unresolved:
+                refusal = _query_name_refusal(G, value)
+                if refusal:
+                    if refusal not in ambiguous_refusals:
+                        ambiguous_refusals.append(refusal)
+                elif value not in unresolved:
                     unresolved.append(value)
             elif nid not in start_nodes:
                 start_nodes.append(nid)
         if not start_nodes:
+            # An ambiguous --seed is a refusal, not a miss (#4511). Exit code
+            # is decided by the CLI from the message prefix.
+            if ambiguous_refusals:
+                return "\n".join(ambiguous_refusals)
             return "No unique node match for --seed: " + ", ".join(seeds)
         return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
                              context_filters=context_filters, graph_path=graph_path, given=True, unresolved=unresolved)
+    # A question that is itself the exact name of several nodes is refused,
+    # matching `explain` and `path` (#4511). A sentence, or a bare keyword that
+    # only prefix/substring-matches labels, is not an ambiguous node name and
+    # falls through to keyword scoring (#4517).
+    _refusal = _query_name_refusal(G, question)
+    if _refusal:
+        return _refusal
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
@@ -1739,8 +1755,8 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     `G.nodes()` iteration order — reorder the graph and the same query answers with
     a different file, equally confidently.
 
-    Returns one representative node id per distinct source file when the winning
-    tier is split that way, else `[]`. Several matches *within one file* (a file
+    Returns one representative node id per distinct file (repo plus source file)
+    when the winning tier is split that way, else `[]`. Several matches *within one file* (a file
     node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
 
     `_disambiguate_file_node_labels` (#2032) already relabels colliding *file*
@@ -1753,16 +1769,54 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
 
 
 def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
-    """One node id per distinct source file in *tier*, or `[]` for a single file."""
-    by_source: dict[str, str] = {}
+    """One node id per distinct file in *tier*, or `[]` for a single file.
+
+    A file is its repo plus its source_file. A merged graph keeps source_file relative
+    to each repo, so two repos that both have `dup.py` hold two files, not one (#4512).
+    A single-repo graph has no `repo` attribute and groups by source_file alone.
+    """
+    by_file: dict[tuple[str, str], str] = {}
     for nid in tier:
-        source = str(G.nodes[nid].get("source_file") or "")
-        by_source.setdefault(source, nid)
-    return list(by_source.values()) if len(by_source) > 1 else []
+        data = G.nodes[nid]
+        file_id = (str(data.get("repo") or ""), str(data.get("source_file") or ""))
+        by_file.setdefault(file_id, nid)
+    return list(by_file.values()) if len(by_file) > 1 else []
+
+
+def _near_miss_message(G: nx.Graph, label: str, hits: list[str], *, limit: int = 5) -> str:
+    """`No exact match`, then the substring matches that are the closest names (#3917).
+
+    A substring tier means the query sits *inside* a label (`mailcontroller` ->
+    `EmailController`), so a hit is a search result, not the symbol the caller
+    named. Listing them, labelled as substring hits, lets the caller retry with
+    the real name instead of trusting a different node as the answer.
+    """
+    listing = []
+    for nid in hits[:limit]:
+        d = G.nodes[nid]
+        name = sanitize_label(str(d.get("label") or nid))
+        where = " ".join(
+            part for part in (str(d.get("source_file") or "").strip(),
+                              str(d.get("source_location") or "").strip()) if part
+        )
+        listing.append(f"  {name}" + (f"  {sanitize_label(where)}" if where else ""))
+    if len(hits) > limit:
+        listing.append(f"  ... and {len(hits) - limit} more")
+    example = sanitize_label(str(G.nodes[hits[0]].get("label") or hits[0]))
+    source = str(G.nodes[hits[0]].get("source_file") or "").strip()
+    example_form = f"{sanitize_label(source)}::{example}" if source else example
+    return (
+        f"No exact match for '{sanitize_label(label)}'. These names contain it, "
+        f"but none is called that:\n"
+        + "\n".join(listing)
+        + f"\nRetry with the exact label, a path::symbol form (e.g. {example_form}), "
+        "or the full node id."
+    )
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
-    """Shared node resolution for `explain` and the get_node / get_neighbors tools.
+    """Shared node resolution for the `explain` CLI command and the get_node /
+    get_neighbors MCP tools.
 
     Returns ``(node_id, None)`` when *label* resolves to a single winner via the
     tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
@@ -1770,15 +1824,45 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     `path` endpoints refuse them. Routing both tools through this keeps get_node
     from silently returning a `G.nodes()` iteration-order match for a hub name
     while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+
+    A prefix match still resolves: the caller started typing the real name
+    (`Email` -> `EmailController`). A substring match does not: the query sits
+    in the middle of an unrelated label (`MailController` -> `EmailController`),
+    which is a search hit, so it comes back as a near miss with suggestions
+    instead of a different node presented as the answer (#3917).
     """
     source_exact, exact, prefix, substring = _find_node_tiers(G, label)
-    tier = source_exact or exact or prefix or substring
-    if not tier:
-        return None, f"No node matching '{label}' found."
+    if not (source_exact or exact or prefix):
+        if not substring:
+            return None, f"No node matching '{label}' found."
+        return None, _near_miss_message(G, label, substring)
+    tier = source_exact or exact or prefix
     refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
     if refusal:
         return None, refusal
     return tier[0], None
+
+
+def _query_name_refusal(G: nx.Graph, label: str) -> str | None:
+    """Refuse a `query`/`--seed` value only when it is a literal node NAME that
+    matches several nodes, not when it is merely a search keyword.
+
+    `query` doubles as keyword search, so a bare term that prefix- or
+    substring-matches several labels (`client` -> `AlphaClient`, `BetaClient`) is a
+    legitimate exploratory search and must still score, not be refused. Only an
+    EXACT-tier tie (the term is itself the name of two or more nodes, as in #4511's
+    `.nonce()`) is a genuinely ambiguous node reference and gets the same refusal
+    `explain`/`path` give. Returns the refusal message, or None to fall through to
+    scoring. (`explain`/`path`/get_node keep using `_resolve_single_node`, where a
+    prefix shorthand still resolves but a substring hit is a near miss, not an answer.)
+    """
+    source_exact, exact, _prefix, _substring = _find_node_tiers(G, label)
+    tier = source_exact or exact
+    if not tier:
+        return None
+    refusal = _tier_refusal(G, label, tier,
+                            file_query=bool(source_exact) and "::" not in label)
+    return refusal if _is_ambiguity_refusal(refusal) else None
 
 
 def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool) -> str | None:
@@ -1809,17 +1893,33 @@ def _is_ambiguity_refusal(message: str | None) -> bool:
 
 
 def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
-    listing = "\n".join(
-        f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-    )
+    # Name the repo only when the candidates span several: that is when the bare path is
+    # not enough to tell them apart (#4512). One repo, or a graph with no `repo`, keeps
+    # the plain path.
+    several_repos = len({str(G.nodes[r].get("repo") or "") for r in rivals}) > 1
+
+    def where(r: str) -> str:
+        source = G.nodes[r].get("source_file") or ""
+        repo = G.nodes[r].get("repo")
+        return f"{repo}/{source}" if several_repos and repo and source else source
+
+    listing = "\n".join(f"  {where(r) or r}\n    id: {r}" for r in rivals)
     # The example names the matched node's own label: echoing the query would
     # nest a path-scoped one (`index.ts::foo()`) behind a second path.
     symbol = G.nodes[rivals[0]].get("label") or label
+    sources = [str(G.nodes[r].get("source_file") or "") for r in rivals]
+    if any(sources.count(src) > 1 for src in sources if src):
+        # The same path in two repos: `<path>::symbol` matches both, so it would be a
+        # dead end. Only the node id tells them apart.
+        retry = ("Retry with the full node id: the same path exists in more than one repo, "
+                 "so a path cannot tell them apart.")
+    else:
+        retry = (f"Retry with path::symbol using one of the paths above (e.g. "
+                 f"<path>::{symbol}) or the full node id.")
     return (
         f"{_AMBIGUOUS}'{label}' matches {len(rivals)} nodes in different files.\n"
         f"{listing}\n"
-        f"Retry with path::symbol using one of the paths above (e.g. "
-        f"<path>::{symbol}) or the full node id."
+        f"{retry}"
     )
 
 
@@ -2865,7 +2965,9 @@ def _build_http_app(
     if host in ("0.0.0.0", "::", ""):
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:
-        allowed = {host, "localhost", "127.0.0.1"}
+        # An IPv6 literal appears bracketed in the Host header ("[::1]:8080").
+        bind = f"[{host.strip('[]')}]" if ":" in host else host
+        allowed = {bind, "localhost", "127.0.0.1"}
         allowed |= {f"{h}:{port}" for h in list(allowed)}
         security = TransportSecuritySettings(allowed_hosts=sorted(allowed))
 

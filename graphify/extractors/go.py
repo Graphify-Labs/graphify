@@ -48,6 +48,21 @@ _GO_PREDECLARED_FUNCS = frozenset({
     "recover",
 })
 
+def _go_alias_re_exports(alias_node, source: bytes) -> bool:
+    """Whether `type A = pkg.A` (or `pkg.A[...]`) re-exports another package's type
+    under its own name. Such an alias denotes that very type and declares no new
+    name, so it gets no node: references to `A` keep resolving to the original
+    instead of tying between the two. Any other alias introduces a name."""
+    target = alias_node.child_by_field_name("type")
+    if target is not None and target.type == "generic_type":
+        target = target.child_by_field_name("type")
+    if target is None or target.type != "qualified_type":
+        return False
+    name, target_name = alias_node.child_by_field_name("name"), target.child_by_field_name("name")
+    return (name is not None and target_name is not None
+            and _read_text(name, source) == _read_text(target_name, source))
+
+
 def _go_type_param_names(decl_node, source: bytes) -> frozenset[str]:
     """Names bound by a declaration's generic type parameters.
 
@@ -393,8 +408,11 @@ def extract_go(path: Path) -> dict:
 
     def _scan_type_names(node) -> None:
         # Types first: a method is keyed under its owner's final id, which is
-        # salted when the owner's own name collides.
-        if node.type == "type_spec":
+        # salted when the owner's own name collides. An alias (`type A = B`) is a
+        # `type_alias`, not a `type_spec`, and declares a type name all the same.
+        if node.type == "type_spec" or (
+            node.type == "type_alias" and not _go_alias_re_exports(node, source)
+        ):
             name_node = node.child_by_field_name("name")
             if name_node is not None:
                 name = _read_text(name_node, source)
@@ -509,7 +527,9 @@ def extract_go(path: Path) -> dict:
 
         if t == "type_declaration":
             for child in node.children:
-                if child.type != "type_spec":
+                if child.type not in ("type_spec", "type_alias"):
+                    continue
+                if child.type == "type_alias" and _go_alias_re_exports(child, source):
                     continue
                 name_node = child.child_by_field_name("name")
                 if not name_node:
@@ -520,6 +540,11 @@ def extract_go(path: Path) -> dict:
                 add_node(type_nid, type_name, line)
                 callable_class_nids.add(type_nid)
                 add_edge(file_nid, type_nid, "contains", line)
+                if child.type == "type_alias":
+                    # `type A = B` is a declaration like `type A B`: references to
+                    # it land here instead of minting a sourceless stub. Its
+                    # right-hand side is not walked.
+                    continue
                 # A generic type's own parameters (`type Box[T any]`) are local
                 # bindings; a field or method using `T` must not mint a stub.
                 type_params = _go_type_param_names(child, source)
