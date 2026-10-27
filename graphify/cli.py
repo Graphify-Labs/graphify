@@ -81,6 +81,15 @@ _GEMINI_NUDGE_TEXT = (
     'GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only '
     'for broad architecture context.'
 )
+_ZCODE_NUDGE_TEXT = (
+    'graphify: knowledge graph at graphify-out/. For any codebase question, run '
+    '`graphify query "<question>"` (scoped subgraph, usually much smaller than '
+    'GRAPH_REPORT.md) instead of grepping raw files; `graphify path "<A>" "<B>"` '
+    'traces relationships and `graphify explain "<concept>"` explains one. Read '
+    'GRAPH_REPORT.md only for broad architecture context, and raw files only for '
+    'lines the graph already located. Include this rule in subagent prompts that '
+    'explore code, and run `graphify update .` after changing code.'
+)
 
 
 _DEFAULT_NUDGE_GRAPH = "graphify-out/graph.json"
@@ -1132,6 +1141,33 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         except Exception:
             pass
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+    if kind == "zcode":
+        # ZCode SessionStart reminder: no stdin contract and no decision to
+        # return — just additionalContext when a graph exists, silence
+        # otherwise, exit 0 either way (a nag must never break a session). The
+        # first arg is ${CLAUDE_PROJECT_DIR} expanded by the hook runner, but a
+        # process hook can hand the literal through unexpanded, so anything
+        # that is not an existing directory falls back to the env vars / cwd.
+        raw = (sys.argv[3] if len(sys.argv) > 3 else "").strip()
+        if raw and not raw.startswith("${") and Path(raw).is_dir():
+            base = Path(raw)
+        else:
+            base = Path(
+                os.environ.get("CLAUDE_PROJECT_DIR")
+                or os.environ.get("ZCODE_PROJECT_DIR")
+                or os.getcwd()
+            )
+        try:
+            graph = out_path("graph.json")
+            if not graph.is_absolute():
+                graph = base / graph
+            if graph.is_file():
+                sys.stdout.write(json.dumps(
+                    {"additionalContext": _ZCODE_NUDGE_TEXT},
+                    ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            pass
         return
     try:
         d = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
