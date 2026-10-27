@@ -1458,19 +1458,36 @@ def test_graph_has_legacy_ids_ignores_global_mcp_ids(mcp_kind, nid):
     assert graph_has_legacy_ids([node], root=".") is False
 
 
-def test_graph_has_legacy_ids_still_checks_file_scoped_mcp_nodes():
-    """The exemption is narrow: file-derived MCP kinds stay under detection, and a
-    missing/malformed metadata blob doesn't exempt anything (or crash)."""
+@pytest.mark.parametrize("kind", ["mcp_config_file", "mcp_server"])
+def test_graph_has_legacy_ids_checks_file_scoped_mcp_kinds(kind):
     from graphify.build import graph_has_legacy_ids
-    for kind in ("mcp_config_file", "mcp_server"):
-        stale = {"id": "mcp_mcp_server_x", "source_file": "sub/.mcp.json",
-                 "source_location": "L1", "metadata": {"mcp_kind": kind}}
-        assert graph_has_legacy_ids([stale], root=".") is True
-    for meta in (None, "not-a-dict", {}, {"mcp_kind": None}):
-        stale = {"id": "mcp_mcp_server_x", "source_file": "sub/.mcp.json",
-                 "source_location": "L1", "metadata": meta}
-        assert graph_has_legacy_ids([stale], root=".") is True
 
+    stale = {
+        "id": "mcp_mcp_server_x",
+        "source_file": "sub/.mcp.json",
+        "source_location": "L1",
+        "metadata": {"mcp_kind": kind},
+    }
+
+    assert graph_has_legacy_ids([stale], root=".") is True
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [None, "not-a-dict", {}, {"mcp_kind": None}],
+    ids=["none", "invalid-string", "empty-dict", "missing-kind"],
+)
+def test_graph_has_legacy_ids_checks_invalid_mcp_metadata(meta):
+    from graphify.build import graph_has_legacy_ids
+
+    stale = {
+        "id": "mcp_mcp_server_x",
+        "source_file": "sub/.mcp.json",
+        "source_location": "L1",
+        "metadata": meta,
+    }
+
+    assert graph_has_legacy_ids([stale], root=".") is True
 
 @pytest.mark.parametrize("mcp_dir", ["", "sub"])
 def test_fresh_mcp_graph_is_not_flagged_legacy(tmp_path, monkeypatch, mcp_dir):
