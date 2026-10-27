@@ -65,6 +65,8 @@ from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.erlang import extract_erlang, resolve_erlang_remote_calls  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
+from graphify.extractors.gdscript import extract_gdscript, resolve_gdscript_references  # noqa: F401
+from graphify.extractors.godot_resource import extract_godot_resource  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.yaml_config import extract_yaml  # noqa: F401
@@ -3840,6 +3842,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".cs": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
+    ".gd": "gdscript", ".tscn": "gdscript", ".tres": "gdscript", ".godot": "gdscript",
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
@@ -7782,6 +7785,9 @@ register_language_resolver(
     )
 )
 register_language_resolver(
+    LanguageResolver("gdscript_references", frozenset({".gd"}), resolve_gdscript_references)
+)
+register_language_resolver(
     LanguageResolver(
         "elixir_import_targets",
         frozenset({".ex", ".exs"}),
@@ -8928,6 +8934,10 @@ _DISPATCH: dict[str, Any] = {
     ".luau": extract_lua,
     ".toc": extract_lua,
     ".zig": extract_zig,
+    ".gd": extract_gdscript,
+    ".tscn": extract_godot_resource,
+    ".tres": extract_godot_resource,
+    ".godot": extract_godot_resource,
     ".ps1": extract_powershell,
     ".psm1": extract_powershell,
     ".psd1": extract_powershell_manifest,
@@ -9013,6 +9023,7 @@ _DISPATCH: dict[str, Any] = {
 _EXTRA_FOR_EXTENSION = {
     ".vb": "vbnet",
     ".r": "r",
+    ".gd": "gdscript",
     ".sol": "solidity",
     ".erl": "erlang",
     ".hrl": "erlang",
@@ -9894,6 +9905,8 @@ def extract(
     #   nodes / retry) and is not double-reported with contradictory advice;
     # - skip `skipped` (#1224/#2879 intentional data declines, like #1666) and
     #   no-extractor files (#1689 already reports those as unsupported code);
+    # - skip Godot scenes/resources: extract_godot_resource models their links as
+    #   edges and never emits symbols, so every scene would be reported;
     # - skip empty/whitespace-only files (an empty `__init__.py`, `py.typed`)
     #   — there is nothing to model, so the warning would be pure noise.
     # The message stays neutral ("no symbols"): a def-less script or thin
@@ -9903,7 +9916,7 @@ def extract(
         _res = per_file[i] or {}
         if _res.get("parse_errors") or _res.get("error") or _res.get("skipped"):
             continue
-        if _get_extractor(_p) is None:
+        if _get_extractor(_p) in (None, extract_godot_resource):
             continue
         if len(_res.get("nodes", [])) != 1:
             continue
