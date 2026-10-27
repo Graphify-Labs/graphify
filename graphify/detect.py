@@ -23,7 +23,12 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, os_long_path, out_path
-from graphify.rcfile import activate_language_overrides, cache_salt, effective_suffix
+from graphify.rcfile import (
+    activate_language_overrides,
+    cache_salt,
+    effective_suffix,
+    generated_sources_for,
+)
 
 
 class FileType(str, Enum):
@@ -2878,15 +2883,20 @@ def save_manifest(
         # Hash workers do not inherit this thread's language overrides.
         current_lang = cache_salt(f)
         lang_changed = current_lang != prev.get("language")
+        current_generated = generated_sources_for(f)
+        stored_generated = (
+            tuple(prev.get("generated") or ()) if "generated" in prev else None
+        )
+        generated_changed = current_generated != stored_generated
         if kind in ("ast", "both"):
             ast_h = h
-        elif lang_changed:
+        elif lang_changed or generated_changed:
             ast_h = ""
         else:
             ast_h = prev.get("ast_hash", "")
         if kind in ("semantic", "both"):
             sem_h = h
-        elif lang_changed:
+        elif lang_changed or generated_changed:
             sem_h = ""
         else:
             # Preserve semantic_hash only when content is unchanged
@@ -2901,6 +2911,7 @@ def save_manifest(
             and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
             and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
             and not lang_changed
+            and not generated_changed
             and not _in_clear_ast(f)
             and not _in_clear(f)
         )
@@ -2913,12 +2924,20 @@ def save_manifest(
         if current_lang is not None:
             # No override keeps legacy rows unchanged.
             entry["language"] = current_lang
+        if current_generated is not None:
+            # Exact source list is the artifact's extraction identity (#4815).
+            entry["generated"] = list(current_generated)
         # Intentional-empty marker (#2879): set when the extractor declined the
         # file this run; otherwise inherited across an unchanged incremental the
         # same way ast_hash is, and dropped once the file produces nodes.
         if _in_ast_empty(f):
             entry["ast_empty"] = True
-        elif not lang_changed and prev.get("ast_empty") and ast_h == prev.get("ast_hash", ""):
+        elif (
+            not lang_changed
+            and not generated_changed
+            and prev.get("ast_empty")
+            and ast_h == prev.get("ast_hash", "")
+        ):
             entry["ast_empty"] = True
         manifest[key] = entry
     if storage_root is not None:
@@ -3023,9 +3042,16 @@ def classify_manifest_files(
             # and the next save promotes the entry into the dict schema.
             # A language change invalidates even identical bytes and legacy rows.
             stored_lang = stored.get("language") if isinstance(stored, dict) else None
+            stored_generated = (
+                tuple(stored.get("generated") or ())
+                if isinstance(stored, dict) and "generated" in stored
+                else None
+            )
             if stored is None:
                 changed = unstamped_is_changed
             elif cache_salt(f) != stored_lang:
+                changed = True
+            elif generated_sources_for(f) != stored_generated:
                 changed = True
             elif isinstance(stored, (int, float)):
                 changed = current_mtime != stored

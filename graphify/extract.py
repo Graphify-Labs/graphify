@@ -37,6 +37,7 @@ from graphify.rcfile import (
     cache_salt,
     effective_suffix,
     get_language_overrides,
+    load_graphifyrc,
     set_language_overrides,
 )
 from graphify.extractors.base import (  # noqa: F401
@@ -9522,6 +9523,7 @@ def extract(
             fresh results are appended to the returned nodes/edges.
     """
     paths = [Path(p) for p in paths]
+    input_paths = list(paths)
     anchor_root = Path(root) if root is not None else None
     _check_tree_sitter_version()
     _raise_recursion_limit()
@@ -9573,6 +9575,52 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+
+    # Explicit generated-artifact provenance (#4815). A generated aggregate is
+    # operationally meaningful, but its copied declarations are not peer source
+    # definitions. Keep the input for manifest bookkeeping and add its file node
+    # back near the end, while excluding it from every structural resolver pass.
+    # No heuristic detection: only exact repo-relative declarations in
+    # <root>/.graphifyrc participate.
+    try:
+        _project_cfg = load_graphifyrc(root)
+    except (ValueError, OSError):
+        # activate_language_overrides() below owns the existing warn-once policy
+        # for malformed .graphifyrc files. Fall back here so this feature does not
+        # turn a config typo into a hard extraction failure.
+        _project_cfg = {}
+    _generated_cfg: dict[str, list[str]] = _project_cfg.get("generated", {})
+    _generated_inputs: dict[str, tuple[Path, list[str]]] = {}
+    _canonical_paths: list[Path] = []
+    for _input_path in paths:
+        try:
+            if _input_path.is_absolute():
+                _rel_input = _input_path.relative_to(root).as_posix()
+            else:
+                _raw_input = _input_path.as_posix()
+                if _raw_input in _generated_cfg:
+                    _rel_input = _raw_input
+                else:
+                    _rel_input = Path(os.path.abspath(_input_path)).relative_to(root).as_posix()
+        except (ValueError, OSError, RuntimeError):
+            _canonical_paths.append(_input_path)
+            continue
+        _sources = _generated_cfg.get(_rel_input)
+        if _sources is None:
+            _canonical_paths.append(_input_path)
+            continue
+        try:
+            _generated_exists = _input_path.is_file()
+        except OSError:
+            _generated_exists = False
+        if not _generated_exists:
+            # Do not manufacture a configured artifact that disappeared after
+            # detection; let the ordinary extractor path fail/skip it.
+            _canonical_paths.append(_input_path)
+            continue
+        _generated_inputs[_rel_input] = (_input_path, list(_sources))
+    paths = _canonical_paths
+
     python_scan_paths = list(paths)
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
@@ -9600,6 +9648,12 @@ def extract(
         print(
             "  language overrides (.graphifyrc): "
             + ", ".join(f"{k} -> {v}" for k, v in sorted(_overrides.items())),
+            flush=True,
+        )
+    if _generated_inputs:
+        print(
+            f"  generated provenance (.graphifyrc): {len(_generated_inputs)} artifact(s) "
+            "kept as file nodes; copied symbols excluded from resolution",
             flush=True,
         )
 
@@ -11351,6 +11405,60 @@ def extract(
         e.pop("local_alias", None)
         e.pop("_python_plain_import", None)
 
+    # Re-introduce explicitly declared generated artifacts as file-level facts
+    # after all structural resolution is complete (#4815). Their copied symbols
+    # never enter any resolver index, while generated_from preserves the build
+    # provenance. A declared source must still exist AND have a structural file
+    # node in this batch or the incremental resolution context; otherwise fail
+    # closed rather than fabricate a dangling provenance claim.
+    if _generated_inputs:
+        _known_node_ids = {
+            str(n.get("id"))
+            for n in (*all_nodes, *(resolution_context_nodes or []))
+            if n.get("id")
+        }
+        # A generated artifact can itself be the declared input of another
+        # generated artifact in the same batch. Register those file-node ids up
+        # front so exact explicit chains remain representable.
+        _known_node_ids.update(
+            _file_node_id(Path(rel)) for rel in _generated_inputs
+        )
+        for _generated_rel, (_generated_path, _source_rels) in sorted(_generated_inputs.items()):
+            _generated_id = _file_node_id(Path(_generated_rel))
+            all_nodes.append({
+                "id": _generated_id,
+                "label": Path(_generated_rel).name,
+                "file_type": "code",
+                "source_file": _generated_rel,
+                "source_location": "L1",
+                "generated": True,
+            })
+            for _source_rel in _source_rels:
+                _source_path = root / Path(_source_rel)
+                try:
+                    _source_exists = _source_path.is_file()
+                except OSError:
+                    _source_exists = False
+                _source_id = _file_node_id(Path(_source_rel))
+                if not _source_exists or _source_id not in _known_node_ids:
+                    print(
+                        f"  warning: generated artifact {_generated_rel} declares source "
+                        f"{_source_rel}, but that source has no structural file node; "
+                        "generated_from edge omitted (#4815).",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    continue
+                all_edges.append({
+                    "source": _generated_id,
+                    "target": _source_id,
+                    "relation": "generated_from",
+                    "confidence": "EXTRACTED",
+                    "source_file": _generated_rel,
+                    "source_location": "L1",
+                    "evidence": ".graphifyrc",
+                })
+
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
     # the watcher drops any AST-marked node missing from the fresh output
@@ -11407,7 +11515,7 @@ def extract(
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
-        "extracted_sources": [str(p) for p in paths],
+        "extracted_sources": [str(p) for p in input_paths],
     }
 
 
