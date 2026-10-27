@@ -10,7 +10,10 @@ PLATFORMS = {
     "claude": (".claude/skills/graphify/SKILL.md",),
     "codebuddy": (".codebuddy/skills/graphify/SKILL.md",),
     "codex": (".codex/skills/graphify/SKILL.md",),
-    "opencode": (".config/opencode/skills/graphify/SKILL.md",),
+    "opencode": (
+        ".config/opencode/skills/graphify/SKILL.md",
+        ".config/opencode/commands/graphify.md",
+    ),
     "kilo": (
         ".config/kilo/skills/graphify/SKILL.md",
         ".config/kilo/command/graphify.md",
@@ -347,6 +350,20 @@ def test_install_opencode(tmp_path):
     ).exists()
 
 
+def test_install_opencode_writes_the_graphify_command(tmp_path):
+    """OpenCode loads skills through its `skill` tool, not as slash commands, so
+    `graphify install --platform opencode` must also write a real /graphify
+    command or the README's /graphify instruction does nothing."""
+    _install(tmp_path, "opencode")
+    command = tmp_path / ".config" / "opencode" / "commands" / "graphify.md"
+    assert command.exists()
+    body = command.read_text(encoding="utf-8")
+    assert "description:" in body
+    assert "graphify" in body
+    # OpenCode substitutes the user's text for $ARGUMENTS.
+    assert "$ARGUMENTS" in body
+
+
 def test_install_positional_platform_opencode(tmp_path, monkeypatch):
     from graphify.__main__ import main
     monkeypatch.chdir(tmp_path)
@@ -355,6 +372,24 @@ def test_install_positional_platform_opencode(tmp_path, monkeypatch):
         main()
     assert (tmp_path / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_install_project_opencode_writes_the_command_in_the_project(tmp_path, monkeypatch):
+    """--project keeps the /graphify command in the project, next to the skill,
+    instead of writing the user's global config."""
+    from graphify.__main__ import main
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "install", "--platform", "opencode", "--project"]
+    )
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+    assert (project / ".opencode" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (project / ".opencode" / "commands" / "graphify.md").exists()
+    assert not (home / ".config" / "opencode" / "commands" / "graphify.md").exists()
 
 
 def test_install_project_claude_writes_project_scope(tmp_path, monkeypatch, capsys):
@@ -619,6 +654,13 @@ def test_kilo_command_file_exists_in_package():
     assert (pkg / "command-kilo.md").exists()
 
 
+def test_opencode_command_file_exists_in_package():
+    import graphify
+
+    pkg = Path(graphify.__file__).parent
+    assert (pkg / "command-opencode.md").exists()
+
+
 def test_claude_install_registers_claude_md(tmp_path):
     """Claude platform install writes CLAUDE.md; others do not."""
     _install(tmp_path, "claude")
@@ -862,6 +904,89 @@ def test_codex_agents_install_writes_agents_md(tmp_path):
 def test_opencode_agents_install_writes_agents_md(tmp_path):
     _agents_install(tmp_path, "opencode")
     assert (tmp_path / "AGENTS.md").exists()
+
+
+def test_opencode_agents_install_writes_the_global_command(tmp_path):
+    """`graphify opencode install` is the documented route, so it writes the
+    /graphify command to the user's global OpenCode config too."""
+    from graphify.__main__ import _agents_install as _install_fn
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    with patch("graphify.__main__.Path.home", return_value=home):
+        _install_fn(project, "opencode")
+    command = home / ".config" / "opencode" / "commands" / "graphify.md"
+    assert command.exists()
+    body = command.read_text(encoding="utf-8")
+    assert "$ARGUMENTS" in body
+    # Uninstall deletes this path, so it carries the ownership marker.
+    assert "<!-- graphify:managed -->" in body
+
+
+def test_opencode_agents_uninstall_removes_the_project_command(tmp_path):
+    """A project-scoped command file is graphify's, so uninstall removes it."""
+    from graphify.__main__ import _agents_install as _install_fn
+    from graphify.__main__ import _agents_uninstall as _uninstall_fn
+
+    _install_fn(tmp_path, "opencode", project=True)
+    command = tmp_path / ".opencode" / "commands" / "graphify.md"
+    assert command.exists()
+    _uninstall_fn(tmp_path, platform="opencode")
+    assert not command.exists()
+
+
+def test_opencode_uninstall_keeps_a_command_graphify_did_not_write(tmp_path):
+    """Uninstall must not delete a hand-written commands/graphify.md.
+
+    Only a file still carrying graphify's marker is removed; anything else
+    belongs to the user and survives an uninstall untouched.
+    """
+    from graphify.__main__ import _agents_install as _install_fn
+    from graphify.__main__ import _agents_uninstall as _uninstall_fn
+
+    command = tmp_path / ".opencode" / "commands" / "graphify.md"
+    command.parent.mkdir(parents=True)
+    command.write_text("# my own command\n", encoding="utf-8")
+
+    _install_fn(tmp_path, "opencode", project=True)
+    _uninstall_fn(tmp_path, platform="opencode")
+
+    assert command.exists()
+    assert command.read_text(encoding="utf-8") == "# my own command\n"
+
+
+def test_install_opencode_leaves_a_user_command_in_place(tmp_path):
+    """Install reports the conflict instead of overwriting the user's file."""
+    from graphify.__main__ import _agents_install as _install_fn
+
+    project = tmp_path / "project"
+    command = project / ".opencode" / "commands" / "graphify.md"
+    command.parent.mkdir(parents=True)
+    command.write_text("# my own command\n", encoding="utf-8")
+
+    _install_fn(project, "opencode", project=True)
+
+    assert command.read_text(encoding="utf-8") == "# my own command\n"
+    # The rest of the install still lands.
+    assert (project / "AGENTS.md").exists()
+
+
+def test_opencode_uninstall_removes_the_global_command(tmp_path, monkeypatch):
+    """`graphify opencode uninstall` removes the user-scope /graphify command."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    command = home / ".config" / "opencode" / "commands" / "graphify.md"
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "install"])
+        main()
+        assert command.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "uninstall"])
+        main()
+    assert not command.exists()
 
 
 def test_claw_agents_install_writes_agents_md(tmp_path):
