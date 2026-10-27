@@ -390,7 +390,9 @@ graphify honors `.gitignore` and supports `--exclude` patterns and a project `.g
 
 Create a `.graphifyrc` in the scan root for settings that belong to the project rather than to one run. One `key=value` per line; lines beginning with `#` are comments.
 
-**Ambiguous extensions.** Some extensions mean different languages in different projects: `.inc` is PHP on pfSense, Pascal in a Delphi tree, SQL or assembly elsewhere; `.h` is C or C++; `.m` is Objective-C or MATLAB. graphify has to pick one global default, and when it picks wrong the file does not fail: it parses as the wrong language and yields a handful of incidental nodes, so the graph looks populated while the real symbols are missing. Declare what the extension means in your repo:
+**Ambiguous extensions.** Some extensions mean different languages in different projects: `.inc` is PHP on pfSense, Pascal in a Delphi tree, SQL or assembly elsewhere; `.h` is C or C++; `.m` is Objective-C or MATLAB. Explicit `.graphifyrc` remaps let projects declare their intent; otherwise, an ambiguous extension can be parsed as the wrong language and yield incidental nodes while missing its real symbols. Declare what the extension means in your repo:
+
+For `.m` files, explicit `.graphifyrc` remaps take precedence, then the existing Objective-C content detector; a non-Objective-C `.m` falls back to MATLAB. `.mm` remains Objective-C, and `language.inc=.m` keeps its existing Objective-C interpretation. This adds no MATLAB remap alias or force-language option.
 
 ```
 # .graphifyrc

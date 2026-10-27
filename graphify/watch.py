@@ -2513,6 +2513,11 @@ def _rebuild_code(
             # graph".
             print(f"error: {exc}", file=sys.stderr)
             return False
+        # Refresh after reconciliation so unchanged MATLAB classes are in scope.
+        from graphify.build import _refresh_matlab_inheritance
+        result["edges"] = _refresh_matlab_inheritance(
+            result.get("nodes", []), result.get("edges", [])
+        )
 
         # The equality skips below compare parsed data, not layout; an existing
         # multi-line graph.json must still be rewritten compact (#3413).

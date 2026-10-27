@@ -895,6 +895,10 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
     data[links_key] = kept_edges
     if "hyperedges" in data:
         data["hyperedges"] = kept_hyper
+    from graphify.build import _refresh_matlab_inheritance, dedupe_nodes
+    data[links_key] = _refresh_matlab_inheritance(
+        dedupe_nodes(kept_nodes), kept_edges
+    )
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic

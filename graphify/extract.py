@@ -70,6 +70,7 @@ from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.yaml_config import extract_yaml  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
+from graphify.extractors.matlab import extract_matlab  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -134,6 +135,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _js_top_level_function_bodies,
     _load_tsconfig_aliases,
     _load_tsconfig_base_url,
+    _matlab_inheritance_edges,
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
@@ -3922,6 +3924,11 @@ def _node_label_key(node: dict, fold: bool = False) -> str:
     return key.lower() if fold else key
 
 
+def _is_matlab_node(node: dict) -> bool:
+    """Use explicit provenance; `.m` also denotes native Objective-C sources."""
+    return (node.get("metadata") or {}).get("language") == "matlab"
+
+
 def _is_top_level_function_definition(node: dict) -> bool:
     """A free/top-level function def (label ``name()``), not a method or type.
 
@@ -4040,8 +4047,11 @@ def _rewire_unique_stub_nodes(
     real_by_label_ci: dict[str, list[dict]] = {}    # case-INSENSITIVE-language reals only
     func_by_label: dict[str, list[dict]] = {}       # top-level function defs (#1781)
     stubs: list[dict] = []
+    matlab_ids = {node.get("id") for node in nodes if _is_matlab_node(node)}
 
     for node in nodes:
+        if node.get("id") in matlab_ids:
+            continue
         key = _node_label_key(node)
         if not key:
             continue
@@ -4070,6 +4080,8 @@ def _rewire_unique_stub_nodes(
     supertype_stub_ids: set[str] = set()  # stubs used as a base type — never a function
     _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends"}
     for edge in edges:
+        if edge.get("source") in matlab_ids:
+            continue
         rel = edge.get("relation")
         for endpoint in ("source", "target"):
             nid = edge.get(endpoint)
@@ -4207,6 +4219,8 @@ def _rewire_unique_stub_nodes(
     } - {edge.get("target") for edge in edges if edge.get("_rust_use_name")}
 
     for edge in edges:
+        if edge.get("source") in matlab_ids:
+            continue
         is_csharp_scoped_edge = (
             _is_dotnet_source_file(str(edge.get("source_file", "")))
             and edge.get("relation") in csharp_scoped_relations
@@ -4301,10 +4315,18 @@ def _merge_swift_extensions(
     # bare-reference shadow nodes (`let x: Foo`) carry a source_file but are NOT
     # contained, so excluding them keeps a stub from making a real type look
     # ambiguous — same predicate the Swift member-call resolver uses (#2538).
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    matlab_ids = {n.get("id") for n in all_nodes if _is_matlab_node(n)}
+    contained = {
+        e.get("target") for e in all_edges
+        if e.get("relation") == "contains"
+        and e.get("source") not in matlab_ids
+        and e.get("target") not in matlab_ids
+    }
 
     label_to_canonical: dict[str, list[str]] = {}
     for n in all_nodes:
+        if _is_matlab_node(n):
+            continue
         if n.get("id") in extension_nids:
             continue
         label = n.get("label")
@@ -4722,13 +4744,21 @@ def _resolve_swift_member_calls(
     # Bare type references create a same-label shadow node (via ensure_named_node)
     # that carries a source_file but is NOT contained; excluding non-contained
     # nodes keeps that shadow from making a real type name look ambiguous.
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    matlab_ids = {n.get("id") for n in all_nodes if _is_matlab_node(n)}
+    contained = {
+        e.get("target") for e in all_edges
+        if e.get("relation") == "contains"
+        and e.get("source") not in matlab_ids
+        and e.get("target") not in matlab_ids
+    }
 
     # Type name -> definition node ids (real, source-backed, type-like defs only).
     # len != 1 is the god-node guard: an ambiguous type name bails.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
+        if _is_matlab_node(n):
+            continue
         node_by_id[n.get("id")] = n
         if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
@@ -4736,7 +4766,7 @@ def _resolve_swift_member_calls(
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
     method_index: dict[tuple[str, str], str] = {}
     for e in all_edges:
-        if e.get("relation") != "method":
+        if e.get("relation") != "method" or e.get("source") in matlab_ids:
             continue
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
@@ -4759,9 +4789,13 @@ def _resolve_swift_member_calls(
         # method nid -> marked plain-return target nids (must be exactly one).
         return_targets_by_method: dict[str, set[str]] = {}
         for e in all_edges:
-            if (e.get("relation") == "references"
-                    and e.get("context") == "return_type"
-                    and (e.get("metadata") or {}).get("swift_plain_return")):
+            if (
+                e.get("relation") == "references"
+                and e.get("context") == "return_type"
+                and (e.get("metadata") or {}).get("swift_plain_return")
+                and e.get("source") not in matlab_ids
+                and e.get("target") not in matlab_ids
+            ):
                 return_targets_by_method.setdefault(
                     e.get("source"), set()).add(e.get("target"))
         for path, pending in factory_by_file.items():
@@ -5612,13 +5646,19 @@ def _resolve_cpp_member_calls(
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
     # A genuine C++ type is the target of a `contains` edge from its file node;
-    # bare-reference shadow nodes (ensure_named_node stubs) are not contained, so
-    # excluding non-contained nodes keeps them from making a real type ambiguous.
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    matlab_ids = {n.get("id") for n in all_nodes if _is_matlab_node(n)}
+    contained = {
+        e.get("target") for e in all_edges
+        if e.get("relation") == "contains"
+        and e.get("source") not in matlab_ids
+        and e.get("target") not in matlab_ids
+    }
 
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
+        if _is_matlab_node(n):
+            continue
         node_by_id[n.get("id")] = n
         if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
@@ -5632,7 +5672,7 @@ def _resolve_cpp_member_calls(
     enclosing_type: dict[str, str] = {}
     for rel in ("defines", "method"):
         for e in all_edges:
-            if e.get("relation") != rel:
+            if e.get("relation") != rel or e.get("source") in matlab_ids:
                 continue
             src, tgt = e.get("source"), e.get("target")
             tnode = node_by_id.get(tgt)
@@ -5654,6 +5694,8 @@ def _resolve_cpp_member_calls(
     # exactly-one-candidate.
     qualified_method_nids: dict[str, list[str]] = {}
     for n in all_nodes:
+        if _is_matlab_node(n):
+            continue
         label = str(n.get("label", ""))
         if n.get("source_file") and label.endswith("()") and "::" in label:
             qualified_method_nids.setdefault(label, []).append(n["id"])
@@ -6640,7 +6682,13 @@ def _resolve_objc_member_calls(
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    matlab_ids = {n.get("id") for n in all_nodes if _is_matlab_node(n)}
+    contained = {
+        e.get("target") for e in all_edges
+        if e.get("relation") == "contains"
+        and e.get("source") not in matlab_ids
+        and e.get("target") not in matlab_ids
+    }
 
     def _is_protocol_declaration(n: dict) -> bool:
         """A ``@protocol`` declaration, which the ObjC extractor labels ``<Name>``.
@@ -6655,6 +6703,8 @@ def _resolve_objc_member_calls(
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
+        if _is_matlab_node(n):
+            continue
         node_by_id[n.get("id")] = n
         if (n.get("source_file") and n.get("id") in contained
                 and _is_type_like_definition(n) and not _is_protocol_declaration(n)):
@@ -6663,12 +6713,12 @@ def _resolve_objc_member_calls(
     method_index: dict[tuple[str, str], str] = {}
     enclosing_type: dict[str, str] = {}
     for e in all_edges:
-        if e.get("relation") != "method":
+        if e.get("relation") != "method" or e.get("source") in matlab_ids:
             continue
         src, tgt = e.get("source"), e.get("target")
-        enclosing_type.setdefault(tgt, src)
         tnode = node_by_id.get(tgt)
         if tnode is not None:
+            enclosing_type.setdefault(tgt, src)
             # ObjC method labels carry a +/- sigil (`-doThing`); strip it so the
             # selector `doThing` keys to the method.
             method_index[(src, _key(tnode.get("label", "")))] = tgt
@@ -6682,7 +6732,9 @@ def _resolve_objc_member_calls(
     # subclass too (#3151): walk the inherits chain, nearest table first.
     _objc_bases: dict[str, list[str]] = {}
     for e in all_edges:
-        if e.get("relation") == "inherits":
+        if (e.get("relation") == "inherits"
+                and e.get("source") not in matlab_ids
+                and e.get("target") not in matlab_ids):
             _objc_bases.setdefault(e["source"], []).append(e["target"])
 
     def _field_type_up_chain(cls, receiver):
@@ -9175,13 +9227,11 @@ def _get_extractor(path: Path) -> Any | None:
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
         if _is_cpp_header(path):
             return extract_cpp
-    # `.m` is Objective-C OR MATLAB. extract_objc unconditionally would force-parse
-    # MATLAB through the ObjC grammar into garbage (#1702). Route to extract_objc
-    # only when the file actually looks like Objective-C; otherwise leave it without
-    # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
-    # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
+    # `.m` is Objective-C OR MATLAB. Explicit remaps above retain priority, and
+    # Objective-C `.m` files keep their current extractor; all other `.m` files
+    # use the MATLAB frontend. `.mm` remains unambiguously Objective-C++.
     if suffix == ".m" and not _is_objc_source(path):
-        return None
+        return extract_matlab
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -10657,6 +10707,8 @@ def extract(
             if n.get("id") and n["id"] not in _fresh_ids
         ]
     for n in resolution_nodes:
+        if _is_matlab_node(n):
+            continue
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         raw = n.get("label", "")
@@ -10677,11 +10729,17 @@ def extract(
     # `resolution_nodes`, not `all_nodes` (#2438): an unchanged callee's context node
     # carries the marker persisted in graph.json, so an incremental rebuild keeps
     # resolving callbacks into unchanged files while data symbols stay excluded.
-    callable_nids = {n["id"] for n in resolution_nodes if n.get("_callable")}
+    callable_nids = {
+        n["id"] for n in resolution_nodes
+        if n.get("_callable") and not _is_matlab_node(n)
+    }
     # Class defs are callable only via their constructor; they are frequently passed
     # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
     # them from the indirect_call guard below to avoid false edges (#2137).
-    class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
+    class_nids = {
+        n["id"] for n in resolution_nodes
+        if n.get("_callable_class") and not _is_matlab_node(n)
+    }
 
     # Kotlin import targets (#2526): rewrite each `imports` edge from the bare
     # last-segment id to the node its written FQN names, via the per-file
@@ -11404,6 +11462,39 @@ def extract(
         _df = _item.get("definition_file")
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
+
+    # Resolve MATLAB inheritance only after IDs and source paths are canonical.
+    # Unchanged context contributes class/file candidates, never output edges.
+    _matlab_kinds = {"matlab_file", "matlab_class"}
+    _fresh_matlab_nodes = [
+        n for n in all_nodes
+        if isinstance(n.get("metadata"), dict)
+        and n["metadata"].get("language") == "matlab"
+        and n["metadata"].get("kind") in _matlab_kinds
+    ]
+    _fresh_matlab_class_ids = {
+        n["id"] for n in _fresh_matlab_nodes
+        if n["metadata"].get("kind") == "matlab_class"
+        and isinstance(n.get("id"), str)
+    }
+    if _fresh_matlab_class_ids:
+        _fresh_matlab_ids = {n.get("id") for n in _fresh_matlab_nodes}
+        _matlab_context_nodes = [
+            n for n in resolution_context_nodes or []
+            if isinstance(n.get("metadata"), dict)
+            and n["metadata"].get("language") == "matlab"
+            and n["metadata"].get("kind") in _matlab_kinds
+            and n.get("id") not in _fresh_matlab_ids
+        ]
+        _matlab_edges = [
+            edge for edge in _matlab_inheritance_edges(
+                _fresh_matlab_nodes + _matlab_context_nodes
+            )
+            if edge["source"] in _fresh_matlab_class_ids
+        ]
+        for edge in _matlab_edges:
+            edge["_origin"] = "ast"
+        all_edges.extend(_matlab_edges)
 
     return {
         "nodes": all_nodes,

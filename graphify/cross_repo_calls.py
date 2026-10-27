@@ -113,6 +113,9 @@ def _index_declarations(merged: "nx.Graph") -> tuple[dict[str, list[str]], set[s
     for node, data in merged.nodes(data=True):
         if not data.get("_callable_class") or not data.get("source_file"):
             continue
+        # MATLAB shares .m with Objective-C, but cannot answer native parked calls.
+        if (data.get("metadata") or {}).get("language") == "matlab":
+            continue
         if not data.get("repo"):
             continue
         name = _key(data.get("label"))
