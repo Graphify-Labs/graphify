@@ -2,6 +2,9 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: symbols in a capital-F Fortran file (`.F`/`.F90`/`.F95`/`.F03`/`.F08`) now report the correct `source_location` (#2092). cpp's `-P` option suppressed linemarkers, so removed directives and inactive conditional blocks shifted tree-sitter locations. cpp now runs without `-P`, and the emitted stdin linemarkers map node and edge locations back to original source lines; lowercase `.f90` and the cpp-unavailable fallback are unaffected.
 ## 0.9.96 (2026-10-25)
 
 - Security: **deps** the Pillow floor is raised to `>=13.0.0` on Python 3.11+ (staying at `>=12.3.0` on 3.10, which Pillow 13 no longer supports) and pypdf to `>=6.19.0`, and the lockfile is refreshed to patched versions of transitive dependencies (pyjwt, cryptography, certifi, urllib3, anyio, fsspec, soupsieve, virtualenv). This clears the bulk of the open Dependabot advisories; the Pillow image-parsing CVEs are only patched upstream for Python 3.11+, so a 3.10 install keeps the newest 3.10-compatible Pillow.
@@ -1050,6 +1053,7 @@ Intra-class call binding across five languages, new language-structure coverage,
 - Feat: `get_neighbors` and `get_community` (MCP) now honor a `token_budget` (default 2000) instead of rendering unbounded, so one call on a god node or large community can't flood the client's context (#2069, thanks @ojmucianski). Truncation is announced at the top of the output (matching `query`), with a line count and a narrowing hint.
 - Docs: `--code-only` is now surfaced in the `extract` usage text and README (#2071, thanks @HerenderKumar); documented as an `extract` flag rather than a `/graphify` skill flag.
 - Docs: README troubleshooting note for an older `graphifyy` in system site-packages shadowing `uv run --with graphifyy`, which silently runs the old version (#1540, thanks @HerenderKumar).
+
 
 ## 0.9.23 (2026-07-21)
 

@@ -12,23 +12,15 @@ _FORTRAN_CPP_EXTS = {".F", ".F90", ".F95", ".F03", ".F08"}
 # A cpp `#include` directive at the start of a (optionally indented) line, in
 # either the `"..."` or `<...>` form. Matched on raw bytes before preprocessing.
 _INCLUDE_DIRECTIVE_RE = re.compile(rb"^[ \t]*#[ \t]*include\b")
+_LINEMARKER = re.compile(rb'^#\s+(\d+)\s+"((?:[^"\\]|\\.)*)"')
 
 
 def _strip_include_directives(source: bytes) -> bytes:
-    """Blank every cpp `#include` directive, preserving line numbers.
+    """Blank cpp include directives while preserving source line numbers.
 
-    cpp always searches the directory of the file being preprocessed for quoted
-    includes and always honours absolute include paths, regardless of
-    `-nostdinc`/`-I` — so a malicious capital-F Fortran source containing
-    `#include "/etc/passwd"` or `#include "../../../secret"` would inline
-    arbitrary host files into the graph we ship to the LLM and persist to disk
-    (GHSA-pcc4-rvhr-2pr8, CWE-22/73/200). The `-nostdinc -I /dev/null` mitigation
-    did not cover those two cases. Removing the directives entirely keeps macro
-    expansion (the reason capital-F files need cpp — `#ifdef MPI`, `#define
-    REAL8`) while making host-file reads impossible. Cross-file include fidelity
-    is lost, which is an acceptable trade for closing an arbitrary-read vector on
-    the default offline path. Each stripped line is blanked (not deleted) so
-    reported line numbers still match the original source.
+    Capital-F source may be untrusted; stripping includes prevents cpp from
+    reading arbitrary host files. The sanitized source is passed on stdin, so cpp
+    cannot search the source directory for quoted includes.
     """
     return b"\n".join(
         b"" if _INCLUDE_DIRECTIVE_RE.match(line) else line
@@ -36,38 +28,56 @@ def _strip_include_directives(source: bytes) -> bytes:
     )
 
 
-def _cpp_preprocess(path: Path) -> bytes:
-    """Run cpp -w -P on a capital-F Fortran file and return preprocessed bytes.
+def _decode_marker_path(raw: bytes) -> str:
+    """Decode a cpp linemarker filename, undoing cpp's `\\` and `"` escaping."""
+    return raw.decode("utf-8", "replace").replace('\\"', '"').replace("\\\\", "\\")
 
-    Falls back to (include-stripped) raw file bytes if cpp is not available.
-    Capital-F extensions conventionally require C preprocessor expansion
-    (#ifdef MPI, #define REAL8, etc.) before parsing.
 
-    Security (GHSA-pcc4-rvhr-2pr8): every `#include` directive is stripped before
-    preprocessing (see `_strip_include_directives`) and the sanitized source is
-    fed to cpp on stdin, so cpp never opens the source file's directory or any
-    absolute/traversing include path — closing the corpus-side arbitrary
-    file-read/exfiltration vector that `-nostdinc -I /dev/null` alone left open.
-    Feeding stdin (rather than a file path) also removes the `-I/etc/x.F90`
-    argument-injection edge case entirely.
+def _strip_linemarkers(out: bytes, input_name: str = "<stdin>") -> tuple[bytes, list[int]]:
+    """Remove cpp linemarkers and map each output line to its input line."""
+    content: list[bytes] = []
+    line_map: list[int] = []
+    cur = 1
+    in_input = False
+    for raw in out.split(b"\n"):
+        marker = _LINEMARKER.match(raw)
+        if marker is not None:
+            cur = int(marker.group(1))
+            in_input = _decode_marker_path(marker.group(2)) == input_name
+            continue
+        content.append(raw)
+        line_map.append(cur if in_input else 0)
+        cur += 1
+    return b"\n".join(content), line_map
+
+
+def _cpp_preprocess(path: Path) -> tuple[bytes, list[int] | None]:
+    """Run cpp on a capital-F Fortran file and return source plus its line map.
+
+    Keeping linemarkers (without `-P`) restores original locations after cpp
+    removes directives or inactive branches. Every `#include` directive is
+    stripped before preprocessing and the sanitized source is fed on stdin, so
+    cpp never opens the source directory or an absolute/traversing include path
+    (GHSA-pcc4-rvhr-2pr8). Stdin also avoids treating an attacker-named source
+    path as a cpp option.
     """
     import shutil
     import subprocess
     safe = _strip_include_directives(_read_source_bytes(path))
     if not shutil.which("cpp"):
-        return safe
+        return safe, None
     try:
         result = subprocess.run(
-            ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null"],
+            ["cpp", "-w", "-nostdinc", "-I", "/dev/null"],
             input=safe,
             capture_output=True,
             timeout=30,
         )
         if result.returncode == 0 and result.stdout:
-            return result.stdout
+            return _strip_linemarkers(result.stdout)
     except Exception:
         pass
-    return safe
+    return safe, None
 
 def extract_fortran(path: Path) -> dict:
     """Extract programs, modules, subroutines, functions, use statements, and calls from Fortran files.
@@ -84,7 +94,10 @@ def extract_fortran(path: Path) -> dict:
     try:
         language = Language(tsfortran.language())
         parser = Parser(language)
-        source = _cpp_preprocess(path) if path.suffix in _FORTRAN_CPP_EXTS else _read_source_bytes(path)
+        if path.suffix in _FORTRAN_CPP_EXTS:
+            source, line_map = _cpp_preprocess(path)
+        else:
+            source, line_map = _read_source_bytes(path), None
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -97,6 +110,19 @@ def extract_fortran(path: Path) -> dict:
     seen_ids: set[str] = set()
     scope_bodies: list[tuple[str, object]] = []
 
+    def _orig_line(line: int) -> int:
+        """Translate a 1-based preprocessed line to its original source line (#2092).
+
+        No-op when the source was not preprocessed (line_map is None); falls back to
+        the preprocessed line for rows outside the map or in an untrusted region.
+        """
+        if line_map is None:
+            return line
+        idx = line - 1
+        if 0 <= idx < len(line_map) and line_map[idx] >= 1:
+            return line_map[idx]
+        return line
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -105,7 +131,7 @@ def extract_fortran(path: Path) -> dict:
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
-                "source_location": f"L{line}",
+                "source_location": f"L{_orig_line(line)}",
             })
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
@@ -117,7 +143,7 @@ def extract_fortran(path: Path) -> dict:
             "relation": relation,
             "confidence": confidence,
             "source_file": str_path,
-            "source_location": f"L{line}",
+            "source_location": f"L{_orig_line(line)}",
             "weight": weight,
         }
         if context:
