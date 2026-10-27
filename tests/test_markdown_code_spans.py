@@ -10,11 +10,32 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 from graphify.extract import extract
 from graphify.extractors.markdown import _code_span_mention, extract_markdown
 from graphify.markdown_resolution import _match_cited_file
+
+
+def _run_isolated(script: str, *args: str) -> subprocess.CompletedProcess:
+    """Run *script* in a fresh interpreter so in-process global state cannot leak in.
+
+    ``_rebuild_code`` touches module-level globals: the cache stat index
+    (#3989) and the active scan root.  In the full suite a prior test's root
+    can be served to a later rebuild, dropping resolver-minted markdown
+    reference edges.  A subprocess starts from a clean slate, matching the
+    isolated run the test sees when executed on its own.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script), *args],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
 
 _WIDGET_PY = '''\
 class Widget:
@@ -657,9 +678,13 @@ def test_single_word_lowercase_function_still_needs_evidence(tmp_path):
 
 
 def test_file_citation_evidence_survives_a_rebuild(tmp_path):
-    """A source-file link's citation comes from the cached fragment, so a rebuild keeps the edge."""
-    from graphify.watch import _rebuild_code
+    """A source-file link's citation comes from the cached fragment, so a rebuild keeps the edge.
 
+    Runs in a subprocess: ``_rebuild_code`` shares the cache stat index and the
+    active scan root as process globals, and a prior test in the full suite can
+    leave a root bound that makes a partial rebuild drop the reference edges.
+    A fresh interpreter gives the test the same clean slate it has in isolation.
+    """
     corpus = tmp_path / "corpus"
     (corpus / "docs").mkdir(parents=True)
     (corpus / "web").mkdir()
@@ -667,31 +692,52 @@ def test_file_citation_evidence_survives_a_rebuild(tmp_path):
         "export function token(name) { return name; }\n")
     doc = corpus / "docs" / "guide.md"
     doc.write_text("# Guide\n\nSee [charts](../web/charts.js). Sends `token`.\n")
-    graph_path = corpus / "graphify-out" / "graph.json"
+    result_file = tmp_path / "result.json"
 
-    def reference_edges():
-        links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
-        return {(e["source"], e["target"]) for e in links
-                if e.get("relation") == "references"}
+    script = '''
+        import json, sys
+        from pathlib import Path
+        from graphify.watch import _rebuild_code
 
-    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
-    expected = reference_edges()
+        corpus = Path(sys.argv[1])
+        result_file = Path(sys.argv[2])
+        doc = corpus / "docs" / "guide.md"
+        charts = corpus / "web" / "charts.js"
+        graph_path = corpus / "graphify-out" / "graph.json"
+
+        def reference_edges():
+            links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+            return sorted((e["source"], e["target"]) for e in links
+                          if e.get("relation") == "references")
+
+        assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+        first = reference_edges()
+
+        doc.write_text(doc.read_text() + "\\nStill `token`.\\n")
+        assert _rebuild_code(corpus, changed_paths=[doc], no_cluster=True,
+                             acquire_lock=False) is True
+        second = reference_edges()
+
+        charts.write_text(
+            "export function token(name) { return name; }\\n"
+            "export function palette() { return 'dark'; }\\n")
+        assert _rebuild_code(corpus, changed_paths=[charts], no_cluster=True,
+                             acquire_lock=False) is True
+        third = reference_edges()
+
+        result_file.write_text(
+            json.dumps({"first": first, "second": second, "third": third}),
+            encoding="utf-8")
+    '''
+    completed = _run_isolated(script, str(corpus), str(result_file))
+    assert completed.returncode == 0, completed.stderr[-2000:]
+
+    payload = json.loads(result_file.read_text(encoding="utf-8"))
+    expected = payload["first"]
     # Two edges: the doc->file link reference and the licensed mention edge.
     assert len(expected) == 2
-
-    doc.write_text(doc.read_text() + "\nStill `token`.\n")
-    assert _rebuild_code(corpus, changed_paths=[doc], no_cluster=True,
-                         acquire_lock=False) is True
-    assert reference_edges() == expected, "document re-extracted"
-
-    # The citation now comes from the document's cached fragment, so a code-side
-    # rebuild must still resolve the mention.
-    (corpus / "web" / "charts.js").write_text(
-        "export function token(name) { return name; }\n"
-        "export function palette() { return 'dark'; }\n")
-    assert _rebuild_code(corpus, changed_paths=[corpus / "web" / "charts.js"],
-                         no_cluster=True, acquire_lock=False) is True
-    assert reference_edges() == expected, "code re-extracted"
+    assert payload["second"] == expected, "document re-extracted"
+    assert payload["third"] == expected, "code re-extracted"
 
 
 def test_bare_function_mention_in_a_sibling_section_needs_its_own_evidence(tmp_path):
@@ -770,21 +816,37 @@ def test_file_span_is_evidence_but_not_a_doc_file_edge(tmp_path):
 
 
 def test_cited_file_fallback_respects_explicit_relative_discipline():
-    """The suffix fallback fires only under detected path-form mixing (#4804)."""
-    from graphify.markdown_resolution import _match_cited_file_any_form
+    """The suffix fallback fires only under detected path-form mixing (#4804).
 
-    sources = {"web/charts.js"}
-    # Uniform path forms: an explicit ../ cite resolves against the citing
-    # document's directory only — even when the doc sits outside the corpus
-    # root and a corpus file shares the tail (#4804's discipline).
-    assert _match_cited_file_any_form(
-        "../web/charts.js", "/other/docs/guide.md", sources,
-        form_mismatch=False) is None
-    # An absolute citing document against a relative corpus is exactly the
-    # partial-rebuild mixing the fallback exists for.
-    assert _match_cited_file_any_form(
-        "../web/charts.js", "/repo/docs/guide.md", sources,
-        form_mismatch=True) == "web/charts.js"
+    Runs in a subprocess so ``_active_scan_root()`` is None: the resolver's
+    fallback consults that process global, and a root leaked by an earlier test
+    would prefix-mismatch the synthetic ``/repo`` path and return None.
+    """
+    script = '''
+        import json
+        from graphify.markdown_resolution import _match_cited_file_any_form
+
+        sources = {"web/charts.js"}
+        # Uniform path forms: an explicit ../ cite resolves against the citing
+        # document's directory only — even when the doc sits outside the corpus
+        # root and a corpus file shares the tail (#4804's discipline).
+        uniform = _match_cited_file_any_form(
+            "../web/charts.js", "/other/docs/guide.md", sources,
+            form_mismatch=False)
+        # An absolute citing document against a relative corpus is exactly the
+        # partial-rebuild mixing the fallback exists for.
+        mixed = _match_cited_file_any_form(
+            "../web/charts.js", "/repo/docs/guide.md", sources,
+            form_mismatch=True)
+        print("===RESULT===" + json.dumps({"uniform": uniform, "mixed": mixed}))
+    '''
+    completed = _run_isolated(script)
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    line = next(l for l in completed.stdout.splitlines()
+                if l.startswith("===RESULT==="))
+    payload = json.loads(line[len("===RESULT==="):])
+    assert payload["uniform"] is None
+    assert payload["mixed"] == "web/charts.js"
 
 
 def test_escaping_citation_does_not_match_in_corpus_file():
