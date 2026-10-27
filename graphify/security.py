@@ -96,6 +96,8 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_reserved
         or ip.is_loopback
         or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
         or ip in _CGN_NETWORK
     )
 
@@ -115,7 +117,20 @@ def validate_url(url: str) -> str:
             f"Got: {url!r}"
         )
 
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Blocked URL containing embedded credentials. Got: {url!r}")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Blocked URL with an invalid port. Got: {url!r}") from exc
+    if port == 0:
+        raise ValueError(f"Blocked URL with port 0. Got: {url!r}")
+
     hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Blocked URL without a hostname. Got: {url!r}")
+
     if hostname:
         # Block known cloud metadata hostnames
         if hostname.lower() in _BLOCKED_HOSTS:

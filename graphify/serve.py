@@ -1783,8 +1783,40 @@ def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
     return list(by_file.values()) if len(by_file) > 1 else []
 
 
+def _near_miss_message(G: nx.Graph, label: str, hits: list[str], *, limit: int = 5) -> str:
+    """`No exact match`, then the substring matches that are the closest names (#3917).
+
+    A substring tier means the query sits *inside* a label (`mailcontroller` ->
+    `EmailController`), so a hit is a search result, not the symbol the caller
+    named. Listing them, labelled as substring hits, lets the caller retry with
+    the real name instead of trusting a different node as the answer.
+    """
+    listing = []
+    for nid in hits[:limit]:
+        d = G.nodes[nid]
+        name = sanitize_label(str(d.get("label") or nid))
+        where = " ".join(
+            part for part in (str(d.get("source_file") or "").strip(),
+                              str(d.get("source_location") or "").strip()) if part
+        )
+        listing.append(f"  {name}" + (f"  {sanitize_label(where)}" if where else ""))
+    if len(hits) > limit:
+        listing.append(f"  ... and {len(hits) - limit} more")
+    example = sanitize_label(str(G.nodes[hits[0]].get("label") or hits[0]))
+    source = str(G.nodes[hits[0]].get("source_file") or "").strip()
+    example_form = f"{sanitize_label(source)}::{example}" if source else example
+    return (
+        f"No exact match for '{sanitize_label(label)}'. These names contain it, "
+        f"but none is called that:\n"
+        + "\n".join(listing)
+        + f"\nRetry with the exact label, a path::symbol form (e.g. {example_form}), "
+        "or the full node id."
+    )
+
+
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
-    """Shared node resolution for `explain` and the get_node / get_neighbors tools.
+    """Shared node resolution for the `explain` CLI command and the get_node /
+    get_neighbors MCP tools.
 
     Returns ``(node_id, None)`` when *label* resolves to a single winner via the
     tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
@@ -1792,11 +1824,19 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     `path` endpoints refuse them. Routing both tools through this keeps get_node
     from silently returning a `G.nodes()` iteration-order match for a hub name
     while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+
+    A prefix match still resolves: the caller started typing the real name
+    (`Email` -> `EmailController`). A substring match does not: the query sits
+    in the middle of an unrelated label (`MailController` -> `EmailController`),
+    which is a search hit, so it comes back as a near miss with suggestions
+    instead of a different node presented as the answer (#3917).
     """
     source_exact, exact, prefix, substring = _find_node_tiers(G, label)
-    tier = source_exact or exact or prefix or substring
-    if not tier:
-        return None, f"No node matching '{label}' found."
+    if not (source_exact or exact or prefix):
+        if not substring:
+            return None, f"No node matching '{label}' found."
+        return None, _near_miss_message(G, label, substring)
+    tier = source_exact or exact or prefix
     refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
     if refusal:
         return None, refusal
@@ -1813,8 +1853,8 @@ def _query_name_refusal(G: nx.Graph, label: str) -> str | None:
     EXACT-tier tie (the term is itself the name of two or more nodes, as in #4511's
     `.nonce()`) is a genuinely ambiguous node reference and gets the same refusal
     `explain`/`path` give. Returns the refusal message, or None to fall through to
-    scoring. (`explain`/`path`/get_node keep using `_resolve_single_node`, whose
-    lower prefix/substring tiers are correct for a direct node lookup.)
+    scoring. (`explain`/`path`/get_node keep using `_resolve_single_node`, where a
+    prefix shorthand still resolves but a substring hit is a near miss, not an answer.)
     """
     source_exact, exact, _prefix, _substring = _find_node_tiers(G, label)
     tier = source_exact or exact
@@ -2925,7 +2965,9 @@ def _build_http_app(
     if host in ("0.0.0.0", "::", ""):
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:
-        allowed = {host, "localhost", "127.0.0.1"}
+        # An IPv6 literal appears bracketed in the Host header ("[::1]:8080").
+        bind = f"[{host.strip('[]')}]" if ":" in host else host
+        allowed = {bind, "localhost", "127.0.0.1"}
         allowed |= {f"{h}:{port}" for h in list(allowed)}
         security = TransportSecuritySettings(allowed_hosts=sorted(allowed))
 

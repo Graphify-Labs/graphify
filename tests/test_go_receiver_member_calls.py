@@ -150,8 +150,9 @@ def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):
         "java/Greeter.java": "public class Greeter { public void Greet() {} }\n",
     })
     assert _greet_edge(calls) is None, calls
-    parked = [(n.get("metadata") or {}).get("unresolved_calls")
-              for n in result["nodes"] if n["label"] == "Run()"]
+    parked = [[{k: v for k, v in e.items() if k != "file"} for e in uc]
+              for n in result["nodes"] if n["label"] == "Run()"
+              for uc in [(n.get("metadata") or {}).get("unresolved_calls")] if uc]
     assert parked == [[{"callee": "Greet", "receiver_type": "Greeter",
                         "lang": "go", "line": "L3"}]], parked
 

@@ -861,7 +861,11 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        # Derive the list from the same source as `graphify install` usage
+        # (_print_install_usage) so the two can never drift apart, rather than
+        # hand-maintaining it (amp, copilot, antigravity-windows had been missed, #4655).
+        _platform_values = "|".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
+        print(f"  install [--platform P]  copy skill to platform config dir ({_platform_values})")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -905,13 +909,13 @@ def _run_cli() -> None:
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
-        print("    --model=<name>          model to use for community naming")
+        print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
         print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
-        print("    --batch-size=N          communities per labeling LLM call (default 100)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100, sized for ~16k context; use 40 for 8k)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
         print("    --missing-only         keep existing labels and only name missing/placeholder communities")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
-        print("    --model=<name>          model to use for community naming")
+        print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
         print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
         print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
@@ -991,7 +995,7 @@ def _run_cli() -> None:
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
-        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]")
+        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N, default 5000] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
         print("                          [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]")
@@ -1032,6 +1036,8 @@ def _run_cli() -> None:
         )
         print("  aider install           write graphify section to AGENTS.md (Aider)")
         print("  aider uninstall         remove graphify section from AGENTS.md")
+        print("  amp install             copy graphify skill + write AGENTS.md section (Amp)")
+        print("  amp uninstall           remove graphify skill + AGENTS.md section (Amp)")
         print(
             "  copilot install         copy graphify skill to ~/.copilot/skills (GitHub Copilot CLI)"
         )
