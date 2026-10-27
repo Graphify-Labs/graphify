@@ -839,10 +839,24 @@ def _reconcile_markdown_links(
             and not _is_file_node(target)
         )
 
+    def _is_code_file_citation(edge: dict) -> bool:
+        """A page -> source-file link citation minted by markdown resolution (#4804)."""
+        if edge.get("relation") != "references" or edge.get("target_file"):
+            return False
+        target = nodes_by_id.get(edge.get("target"))
+        source = nodes_by_id.get(edge.get("source"))
+        return (
+            target is not None
+            and target.get("file_type") == "code"
+            and _is_file_node(target)
+            and source is not None
+            and source.get("file_type") == "document"
+        )
+
     def _keep_edge(edge: dict) -> bool:
         if not (_is_ast_tier(edge) and edge.get("relation") == "references"):
             return True
-        if _is_code_span_mention(edge):
+        if _is_code_span_mention(edge) or _is_code_file_citation(edge):
             return True
         owner = source_paths.normalize(edge.get("source_file"))
         if owner not in parsed_sources:

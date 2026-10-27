@@ -4555,6 +4555,9 @@ def _merge_csharp_partial_class_nodes(
             cn = rc.get("caller_nid")
             if cn in remap:
                 rc["caller_nid"] = remap[cn]
+            eo = rc.get("evidence_owner")
+            if eo in remap:
+                rc["evidence_owner"] = remap[eo]
 
 
 def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[dict]) -> None:
@@ -10232,6 +10235,10 @@ def extract(
             _new = _remapped(rc.get("caller_nid"), rc.get("source_file"))
             if _new is not None:
                 rc["caller_nid"] = _new
+            if rc.get("evidence_owner"):
+                _new_eo = _remapped(rc.get("evidence_owner"), rc.get("source_file"))
+                if _new_eo is not None:
+                    rc["evidence_owner"] = _new_eo
         # swift_extensions[].nid is the same kind of id carrier as caller_nid
         # above (cache.py remaps both), consumed by _merge_swift_extensions far
         # below. Left stale it matches no node, so whether the extension merge
@@ -10313,6 +10320,9 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+                eo = rc.get("evidence_owner")
+                if eo in sym_remap:
+                    rc["evidence_owner"] = sym_remap[eo]
             # Same for swift_extensions[].nid (see the id_remap pass above).
             for result in per_file:
                 for ext in result.get("swift_extensions", []) or []:
