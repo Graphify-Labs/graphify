@@ -1312,3 +1312,56 @@ def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
     assert [Path(u).name for u in uncached] == ["short.md"], (
         f"the partly-read file must be re-dispatched, uncached={uncached}"
     )
+
+
+def test_step4_skill_honors_force_flag_on_shrink(tmp_path, capsys, monkeypatch):
+    """#4777: Step 4 must pass force=IS_FORCE to to_json so --force allows shrinking."""
+    import json as _json
+    import networkx as _nx
+    from graphify.export import to_json
+
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    assert "force=IS_FORCE" in core
+    assert "IS_FORCE" in core
+
+    body = _substituted(_step_body(core, "wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE)"), tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Seed an existing graph with 50 nodes
+    big = _nx.Graph()
+    for i in range(50):
+        big.add_node(f"n{i}", label=f"n{i}", source_file=f"f{i}.py", file_type="code")
+    to_json(big, {0: list(big.nodes)}, str(out / "graph.json"))
+
+    # Prepare extraction and detect fixtures with only 10 nodes (intentional shrink)
+    small_nodes = [{"id": f"n{i}", "label": f"n{i}", "source_file": f"f{i}.py", "file_type": "code"} for i in range(10)]
+    (out / ".graphify_extract.json").write_text(_json.dumps({"nodes": small_nodes, "edges": [], "hyperedges": []}), encoding="utf-8")
+    (out / ".graphify_detect.json").write_text(_json.dumps({"files": {"code": [f"f{i}.py" for i in range(10)]}, "total_files": 10, "total_words": 100}), encoding="utf-8")
+
+    # 1. When IS_FORCE is False, Step 4 must refuse to shrink and raise SystemExit(1)
+    body_no_force = body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "False")
+    with pytest.raises(SystemExit) as exc_info:
+        exec(compile(body_no_force, "step-4-no-force", "exec"), {"__name__": "__main__"})
+    assert exc_info.value.code == 1
+    assert "refused to shrink" in capsys.readouterr().out
+
+    # 2. When IS_FORCE is True, Step 4 must overwrite and succeed
+    body_force = body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "True")
+    exec(compile(body_force, "step-4-force", "exec"), {"__name__": "__main__"})
+    out_text = capsys.readouterr().out
+    assert "Graph: 10 nodes" in out_text
+    assert (out / "GRAPH_REPORT.md").exists()
+    persisted = _json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert len(persisted["nodes"]) == 10
+
+    # 3. Subsequent Step 5 re-export succeeds because graph.json was updated
+    step5_body = _substituted(_step_body(core, "labels = LABELS_DICT"), tmp_path)
+    step5_exec = step5_body.replace("IS_DIRECTED", "False").replace("LABELS_DICT", "{0: 'Test Community'}")
+    exec(compile(step5_exec, "step-5-exec", "exec"), {"__name__": "__main__"})
+    assert "Report updated with community labels" in capsys.readouterr().out
+    persisted5 = _json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert len(persisted5["nodes"]) == 10
+    assert persisted5["nodes"][0]["community_name"] == "Test Community"
+
