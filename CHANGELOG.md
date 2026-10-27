@@ -2,6 +2,9 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: the incremental `#2543` self-heal no longer re-queues deliberately declined data JSON (a data-shaped `.json` file that legitimately produces zero nodes, #1224/#2879) on every run, and now makes the decline decision with a shallow `json.load` root-shape/key probe instead of a full tree-sitter parse of every unchanged `.json` file on every incremental run.
 ## 0.9.96 (2026-10-25)
 
 - Security: **deps** the Pillow floor is raised to `>=13.0.0` on Python 3.11+ (staying at `>=12.3.0` on 3.10, which Pillow 13 no longer supports) and pypdf to `>=6.19.0`, and the lockfile is refreshed to patched versions of transitive dependencies (pyjwt, cryptography, certifi, urllib3, anyio, fsspec, soupsieve, virtualenv). This clears the bulk of the open Dependabot advisories; the Pillow image-parsing CVEs are only patched upstream for Python 3.11+, so a 3.10 install keeps the newest 3.10-compatible Pillow.
