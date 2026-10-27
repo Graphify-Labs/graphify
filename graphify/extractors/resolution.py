@@ -1198,6 +1198,114 @@ def _disambiguate_colliding_node_ids(
         elif raw_call.get("caller_nid") in unambiguous_remaps:
             raw_call["caller_nid"] = unambiguous_remaps[str(raw_call["caller_nid"])]
 
+def _matlab_inheritance_edges(nodes: list[dict]) -> list[dict]:
+    """Match written bases to exact repository source, never MATLAB's runtime path.
+
+    File context must establish a unique primary class. Keep uncertain source
+    candidates in the index so malformed duplicate package roots cannot make a
+    different root appear uniquely resolvable. Inputs and reference metadata are
+    read-only; callers own final-ID remapping and inheritance refreshes.
+    """
+    identifier = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
+    files: dict[tuple[str | None, str], list[dict]] = {}
+    classes: dict[tuple[str | None, str], list[dict]] = {}
+    for node in nodes:
+        metadata = node.get("metadata") or {}
+        if not isinstance(metadata, dict) or metadata.get("language") != "matlab":
+            continue
+        source = node.get("source_file")
+        repo = node.get("repo")
+        if not isinstance(source, str) or not source or not (repo is None or isinstance(repo, str)):
+            continue
+        key = (repo, source)
+        if metadata.get("kind") == "matlab_file":
+            files.setdefault(key, []).append(node)
+        elif metadata.get("kind") == "matlab_class":
+            classes.setdefault(key, []).append(node)
+
+    qualified: dict[tuple[str | None, str], list[tuple[str | None, str]]] = {}
+    eligible: dict[tuple[str | None, str], dict] = {}
+    namespaces: dict[tuple[str | None, str], str] = {}
+    for key in files.keys() | classes.keys():
+        repo, source = key
+        path = Path(source)
+        if path.suffix != ".m" or not identifier.fullmatch(path.stem):
+            continue
+        if any(part == "private" or part.startswith("@") for part in path.parts[:-1]):
+            continue
+        parts = []
+        for part in reversed(path.parts[:-1]):
+            if not part.startswith("+"):
+                break
+            parts.append(part[1:])
+        if any(not identifier.fullmatch(part) for part in parts):
+            continue
+        namespace = ".".join(reversed(parts))
+        namespaces[key] = namespace
+        if namespace:
+            qualified.setdefault((repo, f"{namespace}.{path.stem}"), []).append(key)
+        file_nodes = files.get(key, [])
+        class_nodes = classes.get(key, [])
+        if len(file_nodes) != 1 or len(class_nodes) != 1:
+            continue
+        file_node, class_node = file_nodes[0], class_nodes[0]
+        file_metadata, class_metadata = file_node["metadata"], class_node["metadata"]
+        if (
+            file_node.get("type") != "file"
+            or class_node.get("type") != "class"
+            or file_node.get("file_type") != "code"
+            or class_node.get("file_type") != "code"
+            or file_node.get("external")
+            or class_node.get("external")
+            or not isinstance(class_node.get("id"), str)
+            or not class_node["id"]
+            or file_metadata.get("matlab_file_kind") != "class"
+            or file_metadata.get("matlab_primary_name") != path.stem
+            or class_node.get("label") != path.stem
+            or class_metadata.get("scope_chain") != []
+            or file_metadata.get("namespace", "") != namespace
+            or class_metadata.get("namespace", "") != namespace
+        ):
+            continue
+        eligible[key] = class_node
+
+    edges = []
+    for key, child in eligible.items():
+        repo, source = key
+        bases = child["metadata"].get("matlab_superclasses", [])
+        if not isinstance(bases, list):
+            continue
+        for base in bases:
+            if not isinstance(base, dict):
+                continue
+            name, location = base.get("name"), base.get("source_location")
+            if not isinstance(name, str) or not all(identifier.fullmatch(part) for part in name.split(".")):
+                continue
+            if not isinstance(location, str) or not re.fullmatch(r"L[1-9][0-9]*", location):
+                continue
+            if "." in name:
+                matches = qualified.get((repo, name), [])
+            elif not namespaces[key]:
+                matches = [(repo, str(Path(source).with_name(f"{name}.m")))]
+            else:
+                continue
+            if len(matches) != 1:
+                continue
+            target = eligible.get(matches[0])
+            if target is None or target["id"] == child["id"]:
+                continue
+            edges.append({
+                "source": child["id"],
+                "target": target["id"],
+                "relation": "inherits",
+                "confidence": "EXTRACTED",
+                "source_file": source,
+                "source_location": location,
+                "weight": 1.0,
+            })
+    return sorted(edges, key=lambda edge: (edge["source"], edge["source_location"], edge["target"]))
+
+
 def _is_type_like_definition(node: dict) -> bool:
     if node.get("type") == "namespace":
         return False
