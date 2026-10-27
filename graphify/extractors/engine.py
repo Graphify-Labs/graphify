@@ -9355,8 +9355,12 @@ def _extract_generic(
                         # (#3406) — read the bare identifier instead.
                         callee_name = _csharp_bare_call_name(mname, source)
                         is_member_call = True
-                        if recv is not None and recv.type == "identifier":
-                            member_receiver = _read_text(recv, source)
+                        if recv is not None and recv.type in ("identifier", "generic_name"):
+                            # generic_name: a constructed generic type as the
+                            # receiver (`Bag<Payload>.Make()`). Type nodes are
+                            # stored under the bare name, so read it without the
+                            # type-argument list and bind like any `Type.M()` (#2624).
+                            member_receiver = _csharp_bare_call_name(recv, source)
                         elif recv is not None and recv.type in ("this", "this_expression"):
                             member_receiver = "this"
                         elif recv is not None and recv.type in ("base", "base_expression"):
