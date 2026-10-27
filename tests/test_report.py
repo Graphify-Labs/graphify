@@ -29,6 +29,29 @@ def test_report_contains_corpus_check():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
     assert "## Corpus Check" in report
 
+
+def test_report_surfaces_unclassified_files():
+    """#3511: detect() already tracks files it saw but could not classify
+    (no supported extension), but nothing surfaced them -- a corpus that is
+    mostly an unsupported language got the same "well covered" verdict as
+    one that was actually extracted."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {
+        **detection,
+        "unclassified": ["Main.lean", "Util.lean", "a.toml", "b.toml", "c.toml", "readme"],
+    }
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Unclassified: 6 file(s)" in report
+    assert ".lean 2" in report
+    assert ".toml 3" in report
+
+
+def test_report_omits_unclassified_line_when_none():
+    """Backward compatible: no unclassified files, no new line."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Unclassified:" not in report
+
 def test_report_contains_god_nodes():
     G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
@@ -61,6 +84,30 @@ def test_report_shows_raw_cohesion_scores():
     assert "Cohesion:" in report
     assert "✓" not in report
     assert "⚠" not in report
+
+
+def test_report_header_does_not_embed_host_absolute_path():
+    """#2628 / #2598: the header must not bake the generator host absolute path
+    into GRAPH_REPORT.md — it labels with the project directory basename so the
+    same graph produces the same bytes on any machine."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                      tokens, "/Users/mike/dev/apps/secretproj")
+    header = report.splitlines()[0]
+    assert "/Users/mike" not in header
+    assert "secretproj" in header
+
+
+def test_portable_root_label():
+    from graphify.report import _portable_root_label
+    # Absolute paths collapse to the basename on both POSIX and Windows.
+    assert _portable_root_label("/Users/mike/dev/apps/proj") == "proj"
+    assert _portable_root_label(r"C:\Users\mike\dev\proj") == "proj"
+    # A trailing slash still yields the directory name, not an empty label.
+    assert _portable_root_label("/Users/mike/dev/proj/") == "proj"
+    # Relative names pass through unchanged.
+    assert _portable_root_label("./project") == "project"
+    assert _portable_root_label("project") == "project"
 
 
 # --- work-memory lessons section ----------------------------------------------

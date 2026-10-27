@@ -54,6 +54,21 @@ def test_query_keeps_short_non_english_terms():
     assert tokens > 0
 
 
+def test_query_handles_node_with_none_label():
+    """A node can carry `label` with a None VALUE, not just a missing key.
+
+    `.get("label", "")` only substitutes when the key is absent, so a stored
+    None reached `.lower()` and raised
+    `AttributeError: 'NoneType' object has no attribute 'lower'`. The loop
+    scans every node before returning, so one such node broke the whole
+    benchmark rather than just its own score.
+    """
+    G = _make_graph()
+    G.add_node("n6", label=None, source_file="orphan.py", source_location="L1", community=0)
+    G.add_edge("n6", "n1", relation="calls", confidence="INFERRED")
+    assert _query_subgraph_tokens(G, "how does authentication work") > 0
+
+
 # --- run_benchmark ---
 
 def test_run_benchmark_returns_reduction(tmp_path):

@@ -24,8 +24,8 @@ def test_manifests_classify_as_code_not_document(tmp_path):
         p = _write(tmp_path / name, "x")
         assert is_package_manifest_path(p)
         assert classify_file(p) is FileType.CODE, name
-    # a generic yaml stays a document
-    assert classify_file(_write(tmp_path / "config.yaml", "a: 1")) is FileType.DOCUMENT
+    # yaml is now structurally extracted like json (code path) (#2214)
+    assert classify_file(_write(tmp_path / "config.yaml", "a: 1")) is FileType.CODE
 
 
 # ── per-format parsing ───────────────────────────────────────────────────────
@@ -75,6 +75,29 @@ def test_pom_parses_artifact_and_deps(tmp_path):
     assert any(e["target"] == "pkg_org_lib_core" for e in r["edges"])
 
 
+
+def test_pom_deps_exclude_managed_and_plugin_dependencies(tmp_path):
+    # <dependencyManagement> only pins versions and a plugin's <dependencies> are
+    # the build tool's; neither is a dependency of the project. Profile
+    # dependencies are.
+    dep = "<dependency><groupId>{}</groupId><artifactId>{}</artifactId></dependency>"
+    p = _write(tmp_path / "pom.xml",
+               '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+               '  <groupId>com.acme</groupId><artifactId>service</artifactId><version>1.0</version>\n'
+               f'  <dependencyManagement><dependencies>{dep.format("com.google.guava", "guava")}'
+               '</dependencies></dependencyManagement>\n'
+               f'  <dependencies>{dep.format("org.slf4j", "slf4j-api")}</dependencies>\n'
+               '  <build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>\n'
+               f'    <dependencies>{dep.format("org.junit.platform", "junit-platform-surefire-provider")}</dependencies>\n'
+               '  </plugin></plugins></build>\n'
+               f'  <profiles><profile><id>pg</id><dependencies>{dep.format("org.postgresql", "postgresql")}'
+               '</dependencies></profile></profiles>\n'
+               '</project>\n')
+    r = extract_package_manifest(p)
+    assert {e["target"] for e in r["edges"] if e["relation"] == "depends_on"} == {
+        "pkg_org_slf4j_slf4j_api", "pkg_org_postgresql_postgresql",
+    }
+
 # ── #1377: a package referenced by N manifests is ONE node ───────────────────
 
 def test_apm_dependency_collapses_to_single_canonical_node(tmp_path):
@@ -112,3 +135,107 @@ def test_malformed_manifest_does_not_crash(tmp_path):
     p = _write(tmp_path / "pom.xml", "<project><not closed")
     r = extract_package_manifest(p)  # parse error -> empty, no exception
     assert r["nodes"] == [] and r["edges"] == []
+
+
+# ── #2434: Cargo.toml joins pyproject.toml/go.mod/pom.xml as a package manifest ─
+
+def test_cargo_classifies_as_code_manifest(tmp_path):
+    p = _write(tmp_path / "Cargo.toml", '[package]\nname = "x"\n')
+    assert is_package_manifest_path(p)
+    assert classify_file(p) is FileType.CODE
+
+
+def test_cargo_parses_name_version_and_deps(tmp_path):
+    # A crate declares its name/version under [package]; deps appear both as a
+    # bare version string and as an inline table (version + features).
+    p = _write(tmp_path / "Cargo.toml",
+               '[package]\nname = "my-crate"\nversion = "0.3.1"\nedition = "2021"\n\n'
+               '[dependencies]\nserde = "1.0"\ntokio = { version = "1", features = ["full"] }\n')
+    r = extract_package_manifest(p)
+    pkg = _pkg_nodes(r)[0]
+    assert pkg["label"] == "my-crate" and pkg["version"] == "0.3.1"
+    assert pkg["ecosystem"] == "cargo"
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert {"pkg_serde", "pkg_tokio"} <= deps  # inline-table dep keyed by name
+
+
+def test_cargo_virtual_workspace_manifest_emits_no_package(tmp_path, capsys):
+    # A virtual workspace root has no [package] table, so it declares no package
+    # of its own — it must not fabricate a node, and is skipped by design (#3910).
+    p = _write(tmp_path / "Cargo.toml", '[workspace]\nmembers = ["a", "b"]\n')
+    r = extract_package_manifest(p)
+    assert _pkg_nodes(r) == []
+    assert r.get("skipped") == "virtual workspace root Cargo.toml"
+
+    # In extract(): must not emit zero-node warning, must not be marked failed, and must be cached
+    result = extract([p], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "zero nodes" not in err
+    assert result.get("failed_sources") == []
+
+    # Caching verification: load_cached returns the skipped result
+    from graphify.cache import load_cached
+    cached = load_cached(p, tmp_path, cache_root=tmp_path)
+    assert cached is not None
+    assert cached.get("skipped") == "virtual workspace root Cargo.toml"
+    assert cached.get("nodes") == []
+
+
+def test_cargo_target_conditional_deps_are_collected(tmp_path):
+    # Platform-gated deps under [target.'cfg(...)'.dependencies] are common in
+    # real crates and must not be dropped just because they are conditional.
+    p = _write(tmp_path / "Cargo.toml",
+               '[package]\nname = "portable"\n\n'
+               '[dependencies]\nserde = "1"\n\n'
+               '[target."cfg(windows)".dependencies]\nwinapi = "0.3"\n')
+    r = extract_package_manifest(p)
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert {"pkg_serde", "pkg_winapi"} <= deps
+
+
+def test_cargo_workspace_inherited_version_does_not_crash(tmp_path):
+    # `version.workspace = true` yields a table, not a string. It must be ignored
+    # (no bogus version attribute) rather than crash the parse.
+    p = _write(tmp_path / "Cargo.toml",
+               '[package]\nname = "member"\nversion.workspace = true\n')
+    pkg = _pkg_nodes(extract_package_manifest(p))[0]
+    assert pkg["label"] == "member" and "version" not in pkg
+
+
+# ── #3806: inherited groupId and ${...} properties in pom.xml ────────────────
+
+def test_pom_inherits_groupid_and_resolves_properties(tmp_path):
+    _write(tmp_path / "rsc/pom.xml",
+           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
+           '  <groupId>org.acme</groupId>\n  <artifactId>acme-rsc</artifactId>\n</project>\n')
+    _write(tmp_path / "server/pom.xml",
+           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
+           '  <artifactId>acme-server</artifactId>\n'
+           '  <properties><core.suffix>2.12</core.suffix></properties>\n'
+           '  <dependencies>\n'
+           '    <dependency><groupId>${project.groupId}</groupId><artifactId>acme-rsc</artifactId></dependency>\n'
+           '    <dependency><groupId>org.acme</groupId><artifactId>acme-core_${core.suffix}</artifactId></dependency>\n'
+           '  </dependencies>\n</project>\n')
+    _write(tmp_path / "web/pom.xml",
+           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
+           '  <artifactId>acme-web</artifactId>\n'
+           '  <dependencies>\n'
+           '    <dependency><groupId>org.acme</groupId><artifactId>acme-server</artifactId></dependency>\n'
+           '  </dependencies>\n</project>\n')
+
+    server = extract_package_manifest(tmp_path / "server/pom.xml")
+    pkg = _pkg_nodes(server)[0]
+    assert pkg["label"] == "org.acme:acme-server" and pkg["version"] == "1.0"
+    targets = {e["target"] for e in server["edges"] if e["relation"] == "depends_on"}
+    assert {"pkg_org_acme_acme_rsc", "pkg_org_acme_acme_core_2_12"} <= targets
+
+    result = extract(sorted(tmp_path.rglob("pom.xml")), cache_root=tmp_path)
+    g = build_from_json(result)
+    labels = {n: d.get("label") for n, d in g.nodes(data=True)}
+    dep_edges = {frozenset((labels[u], labels[v])) for u, v, d in g.edges(data=True)
+                 if d.get("relation") == "depends_on"}
+    assert frozenset(("org.acme:acme-server", "org.acme:acme-rsc")) in dep_edges
+    assert frozenset(("org.acme:acme-web", "org.acme:acme-server")) in dep_edges

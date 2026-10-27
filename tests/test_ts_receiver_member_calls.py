@@ -25,7 +25,8 @@ def _calls(tmp_path, files: dict[str, str]):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body)
     # Real-CLI shape: absolute input paths + a graphify-out cache subdir.
-    r = extract([tmp_path / n for n in files], cache_root=tmp_path / "graphify-out")
+    r = extract([tmp_path / n for n in files],
+                cache_root=tmp_path / "graphify-out", parallel=False)
     lbl = {n["id"]: n["label"] for n in r["nodes"]}
     return {(lbl.get(e["source"]), lbl.get(e["target"])) for e in r["edges"]
             if e["relation"] == "calls"}, r
@@ -79,3 +80,530 @@ def test_array_typed_receiver_emits_no_edge(tmp_path):
                  "export function h(xs: Svc[]): number { return xs[0].doThing(); }\n"),
     })
     assert not any("h(" in s and "doThing" in t for s, t in calls)
+
+
+# ── Origin gate (#2553) ──────────────────────────────────────────────────────
+# A receiver typed as a THIRD-PARTY `Repo` must never bind, by name alone, to an
+# unrelated local `class Repo` the caller's file neither defines nor imports.
+
+_LOCAL_REPO = "export class Repo {\n  save(): void {}\n  static staticSave(): void {}\n}\n"
+
+
+def _cross_file_edges(r, src_file: str, tgt_file: str):
+    """Edges (any relation) whose source node lives in src_file and target in tgt_file."""
+    sf = {n["id"]: str(n.get("source_file", "")) for n in r["nodes"]}
+    # method nodes carry their own source_file; fall back to it for both ends
+    return [e for e in r["edges"]
+            if sf.get(e["source"], "").endswith(src_file)
+            and sf.get(e["target"], "").endswith(tgt_file)]
+
+
+def test_third_party_type_does_not_fabricate_edge_to_local_class(tmp_path):
+    _, r = _calls(tmp_path, {
+        "fileb.ts": _LOCAL_REPO,
+        "filea.ts": ("import type { Repo } from 'external-pkg';\n"
+                     "export class ReportService {\n"
+                     "  constructor(private repo: Repo) {}\n"
+                     "  run(): void { this.repo.save(); }\n"
+                     "}\n"),
+    })
+    bad = [e for e in _cross_file_edges(r, "filea.ts", "fileb.ts")
+           if e["relation"] in ("calls", "references", "indirect_call")]
+    assert not bad, f"fabricated cross-file edge(s) to un-imported local Repo: {bad}"
+
+
+def test_genuinely_imported_type_still_resolves_inferred(tmp_path):
+    _, r = _calls(tmp_path, {
+        "fileb.ts": _LOCAL_REPO,
+        "filea.ts": ('import { Repo } from "./fileb";\n'
+                     "export class ReportService {\n"
+                     "  constructor(private repo: Repo) {}\n"
+                     "  run(): void { this.repo.save(); }\n"
+                     "}\n"),
+    })
+    lbl = {n["id"]: n["label"] for n in r["nodes"]}
+    hits = [e for e in r["edges"]
+            if e["relation"] == "calls"
+            and "run" in lbl.get(e["source"], "") and "save" in lbl.get(e["target"], "")]
+    assert hits, "imported receiver type must still resolve"
+    # table-inferred receiver -> INFERRED (Swift/C#/Java tiering parity)
+    assert all(e["confidence"] == "INFERRED" for e in hits)
+
+
+def test_source_qualified_static_call_is_extracted(tmp_path):
+    _, r = _calls(tmp_path, {
+        "fileb.ts": _LOCAL_REPO,
+        "filea.ts": ('import { Repo } from "./fileb";\n'
+                     "export class ReportService {\n"
+                     "  constructor(private repo: Repo) {}\n"
+                     "  run(): void { Repo.staticSave(); }\n"
+                     "}\n"),
+    })
+    lbl = {n["id"]: n["label"] for n in r["nodes"]}
+    hits = [e for e in r["edges"]
+            if e["relation"] == "calls"
+            and "run" in lbl.get(e["source"], "")
+            and "staticSave" in lbl.get(e["target"], "")]
+    assert hits, "source-qualified Repo.staticSave() must resolve"
+    assert all(e["confidence"] == "EXTRACTED" for e in hits)
+
+
+def test_same_file_type_still_resolves(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "one.ts": (_LOCAL_REPO
+                   + "const r = new Repo();\n"
+                     "export function runLocal(): void { r.save(); }\n"),
+    })
+    assert any("runLocal" in s and "save" in t for s, t in calls)
+
+
+# ── Class fields (`this.field.m()` where the field is declared on the class, not
+# injected through the constructor). NestJS / Angular / TypeORM services hold their
+# collaborators this way; only constructor parameter properties were typed before.
+
+def _caller_hits(calls, caller: str, callee: str = "doThing") -> bool:
+    return any(s == f".{caller}()" and callee in t for s, t in calls)
+
+
+def test_typed_class_fields_type_this_field_calls(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "svc.ts": _SVC,
+        "k.ts": ('import { Svc } from "./svc";\n'
+                 "export class K {\n"
+                 "  protected plain: Svc;\n"
+                 "  private maybe?: Svc | undefined;\n"
+                 "  #hidden: Svc = new Svc();\n"
+                 "  private made = new Svc();\n"
+                 "  declare readonly declared: Svc;\n"
+                 "  a(): number { return this.plain.doThing(); }\n"
+                 "  b(): number { return this.maybe?.doThing() ?? 0; }\n"
+                 "  c(): number { return this.#hidden.doThing(); }\n"
+                 "  d(): number { return this.made.doThing(); }\n"
+                 "  e(): number { return this.declared.doThing(); }\n"
+                 "}\n"),
+    })
+    for caller in ("a", "b", "c", "d", "e"):
+        assert _caller_hits(calls, caller), caller
+
+
+def test_class_fields_the_table_cannot_type_emit_no_edge(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "svc.ts": _SVC,
+        "other.ts": "export class Other {\n  doThing(): number { return 2; }\n}\n",
+        "k.ts": ('import { Svc } from "./svc";\nimport { Other } from "./other";\n'
+                 "export class K {\n"
+                 "  static shared: Svc;\n"
+                 "  many: Svc[];\n"
+                 "  either: Svc | Other;\n"
+                 "  boxed: Map<string, Svc>;\n"
+                 "  a(): number { return this.shared.doThing(); }\n"
+                 "  b(): number { return this.many.doThing(); }\n"
+                 "  c(): number { return this.either.doThing(); }\n"
+                 "  d(): number { return this.boxed.doThing(); }\n"
+                 "}\n"),
+    })
+    for caller in ("a", "b", "c", "d"):
+        assert not _caller_hits(calls, caller), caller
+
+
+def test_class_field_of_an_unimported_type_emits_no_edge(tmp_path):
+    # The #2553 origin gate still applies: `Svc` here is not the local class.
+    calls, _ = _calls(tmp_path, {
+        "svc.ts": _SVC,
+        "k.ts": ('import type { Svc } from "external-pkg";\n'
+                 "export class K {\n  repo: Svc;\n  a(): number { return this.repo.doThing(); }\n}\n"),
+    })
+    assert not _caller_hits(calls, "a")
+# ── Same-named types: `Context` can be a class in one file and an interface or
+# type in others. The caller's own import says which one `c: Context` means.
+
+_CTX_CLASS = "export class Context {\n  header(): number { return 1; }\n}\n"
+_CTX_IFACE = "export interface Context {\n  header(): number;\n}\n"
+
+
+def _hits(calls, caller: str, callee: str = "header") -> bool:
+    return any(caller in s and callee in t for s, t in calls)
+
+
+def test_same_named_type_is_picked_by_the_callers_import(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "context.ts": _CTX_CLASS,
+        "jsx/context.ts": _CTX_IFACE,
+        "router/node.ts": "export type Context = { header(): number };\n",
+        "cookie.ts": ('import type { Context } from "./context";\n'
+                      "export const setCookie = (c: Context): number => c.header();\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    targets = [e["target"] for e in r["edges"]
+               if e["relation"] == "calls" and "setCookie" in nodes[e["source"]]["label"]]
+    # the class in ./context.ts, not the jsx interface or the router type alias
+    assert len(targets) == 1, targets
+    assert targets[0].endswith("context_context_header"), targets
+    assert "jsx" not in targets[0] and "router" not in targets[0], targets
+
+
+def test_same_named_type_the_import_cannot_decide_emits_no_edge(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "a/context.ts": _CTX_CLASS,
+        "b/context.ts": _CTX_CLASS,
+        "both.ts": ('import * as a from "./a/context";\nimport * as b from "./b/context";\n'
+                    "type Context = a.Context;\n"
+                    "export function both(c: Context): number { return c.header(); }\n"),
+        "neither.ts": "export function neither(c: Context): number { return c.header(); }\n",
+    })
+    assert not _hits(calls, "both")
+    assert not _hits(calls, "neither")
+
+
+def test_public_call_reaches_the_member_node_in_either_declaration_order(tmp_path):
+    # `foo()` and `#foo()` share one node (ids drop `#`), labeled after whichever is
+    # declared first. `c.foo()` can only mean the public one, so it must keep its
+    # edge to that node in both orders.
+    orders = (
+        "  foo(): number { return 1; }\n  #foo(): number { return 2; }\n",
+        "  #foo(): number { return 2; }\n  foo(): number { return 1; }\n",
+    )
+    for i, members in enumerate(orders):
+        calls, _ = _calls(tmp_path / f"order{i}", {
+            "ctx.ts": "export class Ctx {\n" + members + "}\n",
+            "use.ts": ('import { Ctx } from "./ctx";\n'
+                       "export function make(c: Ctx): number { return c.foo(); }\n"),
+        })
+        assert any("make" in str(s) and "foo" in str(t) for s, t in calls), (i, calls)
+
+
+def test_public_call_never_reaches_a_private_only_member(tmp_path):
+    # `Child` declares only `#run`; its public `run` is inherited from `Base`, so
+    # `c.run()` must not land on the private method's node.
+    calls, _ = _calls(tmp_path, {
+        "base.ts": "export class Base {\n  run(): number { return 0; }\n}\n",
+        "child.ts": ('import { Base } from "./base";\n'
+                     "export class Child extends Base {\n  #run(): number { return 1; }\n}\n"),
+        "use.ts": ('import { Child } from "./child";\n'
+                   "export function go(c: Child): number { return c.run(); }\n"),
+    })
+    assert not any("go" in str(s) and "#run" in str(t) for s, t in calls), calls
+
+
+def test_public_property_sharing_a_private_methods_node_keeps_its_edge(tmp_path):
+    # hono's shape: a public arrow property and a `#` method of the same name.
+    calls, _ = _calls(tmp_path, {
+        "ctx.ts": ("export class Ctx {\n"
+                   "  #respond(): number { return 1; }\n"
+                   "  respond = (): number => this.#respond();\n"
+                   "}\n"),
+        "use.ts": ('import { Ctx } from "./ctx";\n'
+                   "export function go(c: Ctx): number { return c.respond(); }\n"),
+    })
+    assert any("go" in str(s) and "respond" in str(t) for s, t in calls), calls
+
+
+def test_a_pure_esm_corpus_still_activates_the_resolver(tmp_path):
+    # `.mjs` and `.cjs` route to extract_js like `.js` does, so a repo that uses
+    # only those must not be the one shape where the resolver never runs.
+    calls, _ = _calls(tmp_path, {
+        "svc.mjs": "export class Svc {\n  doThing() { return 1; }\n}\n",
+        "app.mjs": ('import { Svc } from "./svc.mjs";\nconst s = new Svc();\n'
+                    "export function usesDirect() { return s.doThing(); }\n"),
+    })
+    assert any("usesDirect" in s and "doThing" in t for s, t in calls)
+
+
+def _parked(r) -> list[dict]:
+    # `file` (the parked call-site path, #3152 issue 3) is dropped: its exact
+    # value depends on the root these cases extract without, and they assert the
+    # receiver/callee/lang/line shape, not the location.
+    return [{k: v for k, v in entry.items() if k != "file"}
+            for n in r["nodes"]
+            if isinstance(n.get("metadata"), dict)
+            for entry in n["metadata"].get("unresolved_calls", [])]
+
+
+def test_an_annotated_type_declared_nowhere_is_parked_for_the_merge(tmp_path):
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from 'greeter-pkg';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+    })
+    assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
+                           "lang": "typescript", "line": "L4"}]
+
+
+def test_a_namespace_style_receiver_is_not_parked(tmp_path):
+    # An uppercase receiver types the type by spelling alone, which a namespace
+    # alias, a default import or a plain const object satisfies just as well.
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import * as React from 'react';\n"
+                   "const s = new Svc();\n"
+                   "export function render(): void { React.createElement(); }\n"),
+    })
+    assert _parked(r) == []
+
+
+def test_a_type_the_origin_gate_rejected_is_not_parked(tmp_path):
+    # A local declaration exists and the gate refused it, so parking would ask the
+    # merge to accept a remote match on evidence the gate just judged weaker.
+    _, r = _calls(tmp_path, {
+        "fileb.ts": _LOCAL_REPO,
+        "filea.ts": ("import type { Repo } from 'external-pkg';\n"
+                     "export class ReportService {\n"
+                     "  constructor(private repo: Repo) {}\n"
+                     "  run(): void { this.repo.save(); }\n"
+                     "}\n"),
+    })
+    assert _parked(r) == []
+
+
+def test_a_class_from_another_language_neither_answers_nor_blocks_parking(tmp_path):
+    # The declaration index is corpus-wide, so a same-named PHP class used to make the
+    # receiver look locally declared and the call was dropped instead of parked.
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from 'greeter-pkg';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+        "Greeter.php": "<?php\nclass Greeter {\n    public function greet(): void {}\n}\n",
+    })
+    assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
+                           "lang": "typescript", "line": "L4"}]
+
+
+def test_a_class_declared_in_an_sfc_script_block_still_answers(tmp_path):
+    # An SFC script block is TS, so its declarations belong to the same interop family
+    # as the caller's and must keep resolving.
+    calls, _ = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from './Greeter.vue';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+        "Greeter.vue": ("<script lang=\"ts\">\nexport class Greeter {\n"
+                        "  greet(): void {}\n}\n</script>\n"),
+    })
+    assert any("run" in str(s) and "greet" in str(t) for s, t in calls), calls
+
+
+def test_same_named_fields_in_two_classes_of_one_file_keep_their_own_type(tmp_path):
+    # Fields are scoped to their class: B's `repo: RepoB` must not type A's `this.repo`.
+    _, r = _calls(tmp_path, {
+        "repos.ts": ("export class RepoA {\n  save(): number { return 1; }\n}\n"
+                     "export class RepoB {\n  save(): number { return 2; }\n}\n"),
+        "two.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class A {\n  repo: RepoA = new RepoA();\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class B {\n  repo: RepoB = new RepoB();\n  run(): number { return this.repo.save(); }\n}\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    pairs = {(owner.get(e["source"]), owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert pairs == {("A", "RepoA"), ("B", "RepoB")}, pairs
+
+
+def test_field_destructured_from_this_types_the_local(tmp_path):
+    # `const { repo } = this` (also inside an arrow) and `{ repo: r } = this` read
+    # the field exactly as `this.repo` does.
+    calls, _ = _calls(tmp_path, {
+        "repo.ts": "export class Repo {\n  save(): number { return 1; }\n}\n",
+        "svc.ts": ('import { Repo } from "./repo";\n'
+                   "export class Svc {\n"
+                   "  private repo = new Repo();\n"
+                   "  a(): number { const { repo } = this; return repo.save(); }\n"
+                   "  b(): number { const { repo: r } = this; return [1].map(() => r.save())[0]; }\n"
+                   "}\n"),
+    })
+    assert _caller_hits(calls, "a", "save") and _caller_hits(calls, "b", "save"), calls
+
+
+def test_class_sharing_its_node_with_a_same_named_value_keeps_its_fields(tmp_path):
+    # `class Visitor` and `const visitor` fold into one node id; the class's
+    # fields must still type its `this.repo` calls.
+    calls, _ = _calls(tmp_path, {
+        "repo.ts": "export class Repo {\n  save(): number { return 1; }\n}\n",
+        "visitor.ts": ('import { Repo } from "./repo";\n'
+                       "export const visitor = 1;\n"
+                       "class Visitor {\n"
+                       "  private repo = new Repo();\n"
+                       "  a(): number { return this.repo.save(); }\n"
+                       "}\n"),
+    })
+    assert _caller_hits(calls, "a", "save"), calls
+
+
+_REPOS = ("export class RepoA {\n  save(): number { return 1; }\n}\n"
+          "export class RepoB {\n  save(): number { return 2; }\n}\n")
+
+
+def _class_pairs(r):
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    return {(owner.get(e["source"]), owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+
+
+def test_constructor_declared_fields_stay_with_their_class(tmp_path):
+    # Parameter properties and `this.repo = repo` in the constructor type the
+    # class's own `this.repo`; a class with an untyped field borrows nothing.
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class A {\n  constructor(private repo: RepoA) {}\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class B {\n  constructor(private repo: RepoB) {}\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class C {\n  private repo;\n  constructor(repo: RepoA) { this.repo = repo; }\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class D {\n  repo: any;\n  run(): number { return this.repo.save(); }\n}\n"),
+    })
+    pairs = _class_pairs(r)
+    assert {("A", "RepoA"), ("B", "RepoB"), ("C", "RepoA")} <= pairs, pairs
+    assert ("A", "RepoB") not in pairs and ("C", "RepoB") not in pairs, pairs
+    assert not {p for p in pairs if p[0] == "D"}, pairs
+
+
+def test_unnamed_class_field_still_types_this_field_calls(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export default class {\n  repo = new RepoA();\n  go(): number { return this.repo.save(); }\n}\n"),
+    })
+    assert any(s == "go()" and "save" in str(t) for s, t in calls), calls
+
+
+def test_field_declared_on_a_base_class_in_another_file(tmp_path):
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "base.ts": ('import { RepoA } from "./repos";\n'
+                    "export class Base {\n  constructor(protected repo: RepoA) {}\n}\n"),
+        "child.ts": ('import { Base } from "./base";\n'
+                     "export class Child extends Base {\n  run(): number { return this.repo.save(); }\n}\n"),
+    })
+    assert ("Child", "RepoA") in _class_pairs(r), _class_pairs(r)
+
+
+def test_accessor_types_this_field_calls(tmp_path):
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class G {\n  private _r = RepoA.make();\n"
+                   "  get repo(): RepoA { return this._r; }\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class H {\n  private _s: any;\n"
+                   "  set store(s: RepoB) { this._s = s; }\n  run(): number { return this.store.save(); }\n}\n"),
+    })
+    pairs = _class_pairs(r)
+    assert {("G", "RepoA"), ("H", "RepoB")} <= pairs, pairs
+
+
+def test_static_method_reads_static_fields(tmp_path):
+    # A static method's `this` is the class: `this.repo` there is the static field.
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class S {\n  private static repo?: RepoA;\n  repo: RepoB;\n"
+                   "  static shared(): number { return this.repo.save(); }\n"
+                   "  mine(): number { return this.repo.save(); }\n}\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    pairs = {(nodes[e["source"]]["label"], owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert (".shared()", "RepoA") in pairs and (".mine()", "RepoB") in pairs, pairs
+    assert (".shared()", "RepoB") not in pairs and (".mine()", "RepoA") not in pairs, pairs
+
+
+def test_inherited_field_of_a_package_type_emits_no_edge(tmp_path):
+    # `Base` holds a third-party `Repo`; the local `Repo` class is not it.
+    calls, _ = _calls(tmp_path, {
+        "repo.ts": "export class Repo {\n  save(): number { return 1; }\n}\n",
+        "base.ts": ('import { Repo } from "external-pkg";\n'
+                    "export class Base {\n  constructor(protected repo: Repo) {}\n}\n"),
+        "child.ts": ('import { Base } from "./base";\n'
+                     "export class Child extends Base {\n  run(): number { return this.repo.save(); }\n}\n"),
+    })
+    assert not any(s == ".run()" and "save" in str(t) for s, t in calls), calls
+
+
+# ── Assignments made after construction (#4473) ───────────────────────────────
+
+def test_instance_method_assignment_types_this_field_calls(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  init() { this.repo = new RepoA(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert ("Service", "RepoA") in _class_pairs(r), _class_pairs(r)
+    assert _caller_hits(calls, "run", "save")
+
+
+def test_static_method_assignment_types_static_this_field_calls(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  static init() { this.repo = new RepoA(); }\n"
+                   "  static run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    pairs = {(nodes[e["source"]]["label"], owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert (".run()", "RepoA") in pairs, pairs
+    assert not any(s == ".run()" and t != "RepoA" for s, t in pairs), pairs
+
+
+def test_conflicting_method_assignments_do_not_infer_a_field_type(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class Service {\n"
+                   "  initA() { this.repo = new RepoA(); }\n"
+                   "  initB() { this.repo = new RepoB(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert not any(s == ".run()" and "save" in str(t) for s, t in calls), calls
+    assert not any(owner == "Service" and target in ("RepoA", "RepoB")
+                   for owner, target in _class_pairs(r)), _class_pairs(r)
+
+
+def test_nested_plain_function_assignment_does_not_type_this_field(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  init() { function nested() { this.repo = new RepoA(); } }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert not any(s == ".run()" and "save" in str(t) for s, t in calls), calls
+
+
+def test_declared_and_constructor_field_types_precede_method_assignments(tmp_path):
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class Declared {\n"
+                   "  repo: RepoA;\n"
+                   "  init() { this.repo = new RepoB(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"
+                   "export class Constructed {\n"
+                   "  constructor() { this.repo = new RepoA(); }\n"
+                   "  init() { this.repo = new RepoB(); }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    pairs = _class_pairs(r)
+    assert ("Declared", "RepoA") in pairs and ("Declared", "RepoB") not in pairs, pairs
+    assert ("Constructed", "RepoA") in pairs and ("Constructed", "RepoB") not in pairs, pairs
+
+
+def test_method_assignment_from_typed_parameter_types_this_field(tmp_path):
+    _, r = _calls(tmp_path, {
+        "repos.ts": _REPOS,
+        "svc.ts": ('import { RepoA } from "./repos";\n'
+                   "export class Service {\n"
+                   "  init(repo: RepoA) { this.repo = repo; }\n"
+                   "  run(): number { return this.repo.save(); }\n"
+                   "}\n"),
+    })
+    assert ("Service", "RepoA") in _class_pairs(r), _class_pairs(r)

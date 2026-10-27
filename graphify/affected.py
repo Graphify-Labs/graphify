@@ -15,6 +15,12 @@ DEFAULT_AFFECTED_RELATIONS = (
     "references",
     "imports",
     "imports_from",
+    # `import('…')` — emitted by the Svelte/Astro/Vue rescue passes and (since
+    # #2575) by plain JS/TS too. Omitting it made every dynamic import
+    # invisible to blast-radius traversal even where the edge WAS in the
+    # graph, and dynamic import is precisely how codebases break require
+    # cycles, so the missing edges sat under the most load-bearing modules.
+    "dynamic_import",
     "re_exports",
     "inherits",
     "extends",
@@ -22,7 +28,21 @@ DEFAULT_AFFECTED_RELATIONS = (
     "uses",
     "mixes_in",
     "embeds",
+    # `defines` — emitted when a file declares a named symbol (class, function,
+    # type, etc.). Without it, `affected "<Symbol>"` is blind in languages
+    # where the only incoming edge to a symbol is its `defines` edge from the
+    # source file — Dart/Flutter, Python, Go, etc. — because every other
+    # relation (calls, references, imports) targets the *file* node, not the
+    # symbol node. The reverse walk follows `defines` from the symbol back to
+    # its defining file and then continues through `imports` to consumers.
+    "defines",
+    "requires",
 )
+
+
+# Edges from a type to the types it derives from. A method declared again in a
+# subtype overrides the supertype's same-named member.
+_SUPERTYPE_RELATIONS = frozenset({"inherits", "extends", "implements"})
 
 
 @dataclass(frozen=True)
@@ -60,6 +80,39 @@ def _normalize_label(label: str) -> str:
     return unicodedata.normalize("NFC", label).casefold()
 
 
+def _as_repo_relative(query: str, root: Path | None = None) -> str:
+    """Repo-relative form of a path query, for matching a stored `source_file`.
+
+    The graph stores repo-relative paths, so `./src/x.py` and
+    `/abs/repo/src/x.py` name the same file as `src/x.py` and yet matched
+    nothing. `affected` then printed an empty list and exited 0 — a blast-radius
+    tool answering "nothing depends on this" about a file with sixteen
+    dependents, and indistinguishable from a genuine zero or a typo.
+
+    An absolute path is anchored to `root` when given — the repo root derived
+    from the graph's own location — so a seed resolves regardless of the caller's
+    working directory (#2706: an absolute-path seed previously only matched when
+    cwd happened to be the analysed repo root, which no editor or script can
+    guarantee). `root` falls back to the current directory to preserve the prior
+    behaviour when a caller has no graph location to derive it from.
+
+    Non-path queries pass through unchanged: `Path("myFunc()").as_posix()` is
+    `"myFunc()"`, so label resolution is untouched. An absolute path rooted
+    outside `root` is left alone — no basename guessing.
+    """
+    path = Path(query)
+    if path.is_absolute():
+        anchor = root if root is not None else Path.cwd()
+        try:
+            return path.relative_to(anchor).as_posix()
+        except ValueError:
+            # Rooted outside the repo: nothing here can make it repo-relative,
+            # so leave it alone rather than guess at a basename that would match
+            # some unrelated file with the same name.
+            return query
+    return path.as_posix()
+
+
 def _prefer_file_node(
     graph: nx.Graph,
     node_ids: list[str],
@@ -75,6 +128,29 @@ def _prefer_file_node(
     ]
     if len(exact_file_nodes) == 1:
         return exact_file_nodes[0]
+
+    # #2032 relabels colliding basenames to their shortest unique path suffix
+    # ("alpha/hooks.py"), so neither pass above nor the one below matches a file
+    # node whose basename is shared. The label is still a path form of the
+    # node's OWN source_file, which is what _is_file_node_label encodes (the
+    # predicate build/analyze already treat as "this node names its file").
+    # Checked before the L1 fallback because a module docstring (a `rationale`
+    # node located on the docstring's line) or a one-line top-level definition
+    # can also sit on L1, leaving that fallback with more than one candidate
+    # (#4698).
+    from graphify.build import _is_file_node_label
+
+    path_file_nodes = [
+        node_id
+        for node_id in node_ids
+        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+        and _is_file_node_label(
+            str(graph.nodes[node_id].get("label", "")),
+            str(graph.nodes[node_id].get("source_file", "")),
+        )
+    ]
+    if len(path_file_nodes) == 1:
+        return path_file_nodes[0]
 
     l1_nodes = [
         node_id
@@ -95,7 +171,7 @@ def _prefer_file_node(
     return None
 
 
-def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str | None:
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
     # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).
@@ -121,15 +197,20 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
+    # Compare paths in repo-relative form. Only this branch is path-shaped; the
+    # label branches above keep the query verbatim.
+    query_path = _normalize_label(_as_repo_relative(query, root))
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if _normalize_label(str(data.get("source_file", ""))) == query_lower
+        if _normalize_label(str(data.get("source_file", ""))) in (query_lower, query_path)
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
     if exact_source_matches:
-        preferred_file_node = _prefer_file_node(graph, exact_source_matches, query)
+        preferred_file_node = _prefer_file_node(
+            graph, exact_source_matches, _as_repo_relative(query, root)
+        )
         if preferred_file_node is not None:
             return preferred_file_node
     contains_matches = [
@@ -140,6 +221,47 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     if len(contains_matches) == 1:
         return contains_matches[0]
     return None
+
+
+def _supertypes(graph: nx.DiGraph, type_id: str, cache: dict[str, list[str]]) -> list[str]:
+    """Every type ``type_id`` derives from, nearest first (cycles cut)."""
+    if type_id in cache:
+        return cache[type_id]
+    found: list[str] = []
+    seen = {type_id}
+    frontier = [type_id]
+    while frontier:
+        nxt = []
+        for t in frontier:
+            for _s, base, data in graph.out_edges(t, data=True):
+                base = str(base)
+                if str(data.get("relation", "")) in _SUPERTYPE_RELATIONS and base not in seen:
+                    seen.add(base)
+                    found.append(base)
+                    nxt.append(base)
+        frontier = nxt
+    cache[type_id] = found
+    return found
+
+
+def _overridden_members(graph: nx.DiGraph, node: str, cache: dict[str, list[str]]) -> list[str]:
+    """The supertype members ``node`` overrides: same-named methods of the types
+    its class derives from. A call bound to one of them can run ``node`` at
+    runtime (`visitor.head()` typed `NodeVisitor` runs `FormattingVisitor.head`)."""
+    owners = [str(s) for s, _t, d in graph.in_edges(node, data=True)
+              if str(d.get("relation", "")) == "method"]
+    if not owners:
+        return []
+    label = graph.nodes[node].get("label")
+    found: list[str] = []
+    for owner in owners:
+        for base in _supertypes(graph, owner, cache):
+            for _s, member, data in graph.out_edges(base, data=True):
+                member = str(member)
+                if (str(data.get("relation", "")) == "method" and member != node
+                        and graph.nodes[member].get("label") == label):
+                    found.append(member)
+    return found
 
 
 def affected_nodes(
@@ -175,10 +297,27 @@ def affected_nodes(
             seen.add(member)
             queue.append((member, 0))
 
+    supertype_cache: dict[str, list[str]] = {}
+    # Overridden members walked without being reported; one that a real edge
+    # also reaches (an overload calling the abstract one) is reported then.
+    stepping_stones: set[str] = set()
     while queue:
         current, current_depth = queue.popleft()
         if current_depth >= depth:
             continue
+        # A caller bound to the supertype member a method overrides depends on
+        # the override too, so walk that member's callers at the same depth. The
+        # member itself did not change: like the seed's members above, it is a
+        # stepping stone, not a hit. Needs edge direction, so directed graphs only
+        # (MultiDiGraph, what load_graph returns, is a DiGraph subclass).
+        if isinstance(graph, nx.DiGraph):
+            for overridden in _overridden_members(graph, current, supertype_cache):
+                if overridden not in seen:
+                    seen.add(overridden)
+                    stepping_stones.add(overridden)
+                    # front of the queue: same depth as `current`, so it must be
+                    # walked before the deeper nodes already queued
+                    queue.appendleft((overridden, current_depth))
         if hasattr(graph, "in_edges"):
             incoming = graph.in_edges(current, data=True)
         else:
@@ -192,7 +331,10 @@ def affected_nodes(
             if relation not in relation_set:
                 continue
             source = str(source)
-            if source in seen:
+            queued = source in stepping_stones
+            if queued:
+                stepping_stones.discard(source)  # walked already; report it now
+            elif source in seen:
                 continue
             seen.add(source)
             # Carry the matched edge's location (taken from the SAME edge dict
@@ -205,7 +347,8 @@ def affected_nodes(
                 via_location=str(data.get("source_location") or "") or None,
             )
             hits.append(hit)
-            queue.append((source, current_depth + 1))
+            if not queued:
+                queue.append((source, current_depth + 1))
 
     return hits
 
@@ -216,9 +359,10 @@ def format_affected(
     *,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
+    root: Path | None = None,
 ) -> str:
     relation_list = tuple(relations)
-    seed = resolve_seed(graph, query)
+    seed = resolve_seed(graph, query, root)
     if seed is None:
         return f"No unique node match for {query}"
 

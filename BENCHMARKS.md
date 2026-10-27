@@ -30,6 +30,7 @@ Highlights:
 | Memory | LOCOMO (300) | QA accuracy | 45.3% | supermemory 49.7% (11x ingest cost), bm25 31.3%, mem0 27.3% |
 | Memory | LOCOMO (300) | recall@10 | 0.497 | bm25 0.362, mem0 0.048 |
 | Memory | LongMemEval-S (50) | QA accuracy | 76% | dense RAG 76%, hybrid 74%, mem0 70% |
+| Code | ERPNext cross-tool (6) | key-fact coverage | 82.0% | grep/read baseline 70.8% |
 | Cost | LOCOMO ingest | USD | ~$1.40 | supermemory $15.67, mem0 $3.48 |
 | Cost | graph build | LLM credits | $0 | n/a |
 
@@ -147,6 +148,21 @@ graphify tool lifts key-fact coverage across the graded question set (n=6) from
 graphify pays for itself in accuracy against searching raw files, and avoids the
 context-stuffing anti-pattern of packing the whole repo into every turn (which
 costs roughly 20x the tokens for lower coverage).
+
+### INFERRED cross-file edge precision (FastAPI demo corpus)
+
+The README hero graph is the upstream [FastAPI](https://github.com/fastapi/fastapi)
+library extracted AST-only (no semantic pass). To check the `INFERRED` confidence
+tag on cross-file resolver edges, we manually audited every such edge
+(`calls`, `indirect_call`, `imports`, `imports_from`, `inherits`) whose source and
+target both live under `fastapi/` (production package sources, excluding the test
+tree). This is a dated manual spot-check, not a continuously-measured metric: on a
+fresh AST-only extract (2026-10-05) all 12 such edges were correct. Reproduce by
+running `graphify .` against a FastAPI checkout and inspecting the INFERRED
+cross-file edges whose endpoints both sit under `fastapi/`. Homonymous helpers in
+`tests/` produce noisier INFERRED `calls` edges; the tag is most meaningful on
+production cross-file resolution, where the resolver prefers no edge over a wrong
+one.
 
 ## Results: temporal (15 years of ERPNext)
 

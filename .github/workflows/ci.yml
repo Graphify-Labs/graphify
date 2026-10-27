@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v6
@@ -77,6 +77,29 @@ jobs:
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+
+  pi-guard:
+    # tests/pi.test.ts loads the real extension (Node built-ins only, no
+    # node_modules, as when installed) against the real installed Python CLI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Pi guard tests
+        run: GRAPHIFY_TEST_CLI=$PWD/.venv/bin/graphify bun test tests/pi.test.ts
 
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new

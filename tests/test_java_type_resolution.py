@@ -253,6 +253,174 @@ def test_java_user_types_still_emit_references(tmp_path: Path):
     assert "OrderDto" in ref_targets, "user type OrderDto must still emit references"
 
 
+def test_java_external_annotation_does_not_conflate_with_local_class(tmp_path: Path):
+    # #2504: Spring's @Component is EXTERNAL. A local `class Component` with the
+    # same simple name must not absorb the services' annotation/import edges —
+    # the bare-name stub used to collapse onto it and manufacture a false hub.
+    local = _write(
+        tmp_path / "src/com/example/model/Component.java",
+        "package com.example.model;\npublic class Component {}\n",
+    )
+    user = _write(
+        tmp_path / "src/com/example/service/UserService.java",
+        "package com.example.service;\n"
+        "import org.springframework.stereotype.Component;\n"
+        "@Component\npublic class UserService {}\n",
+    )
+    order = _write(
+        tmp_path / "src/com/example/service/OrderService.java",
+        "package com.example.service;\n"
+        "import org.springframework.stereotype.Component;\n"
+        "@Component\npublic class OrderService {}\n",
+    )
+    inventory = _write(
+        tmp_path / "src/com/example/app/Inventory.java",
+        "package com.example.app;\n"
+        "import com.example.model.Component;\n"
+        "public class Inventory {\n"
+        "    private Component part;\n"
+        "}\n",
+    )
+    result = extract([local, user, order, inventory], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+
+    local_id = next(
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Component" and "model" in n.get("source_file", "")
+    )
+
+    # No references/imports edge from the service files may land on the local class.
+    conflated = [
+        e for e in result["edges"]
+        if e.get("target") == local_id and "service" in e.get("source_file", "")
+    ]
+    assert not conflated, f"external @Component conflated with local class: {conflated}"
+
+    # The @Component attribute edges park on an external FQN-labeled stub.
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+        and "service" in e.get("source_file", "")
+    ]
+    assert len(attr) == 2, "expected one @Component attribute edge per service"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "org.springframework.stereotype.Component"
+        assert not tgt.get("source_file")
+
+    # The genuine internal use still resolves to the local class.
+    inv_edges = [
+        e for e in result["edges"]
+        if e.get("source_file", "").endswith("Inventory.java")
+        and e.get("target") == local_id
+    ]
+    assert inv_edges, "Inventory's use of the local Component must still resolve"
+
+
+def test_java_in_corpus_annotation_still_resolves(tmp_path: Path):
+    # #2504 guard: a locally-defined @interface used via an explicit import must
+    # still resolve to the real source-backed node, not get parked externally.
+    anno = _write(
+        tmp_path / "src/com/example/anno/Loggable.java",
+        "package com.example.anno;\npublic @interface Loggable {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/service/AuditService.java",
+        "package com.example.service;\n"
+        "import com.example.anno.Loggable;\n"
+        "@Loggable\npublic class AuditService {}\n",
+    )
+    result = extract([anno, svc], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+    ]
+    assert attr, "expected a @Loggable attribute edge"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "Loggable"
+        assert tgt.get("source_file"), "annotation must land on the real @interface node"
+        assert "anno" in tgt["source_file"]
+
+
+def test_java_same_package_annotation_resolves_without_import(tmp_path: Path):
+    # #2504 guard: same-package use (no import, no facts) keeps resolving via
+    # the legacy unique-label rewire.
+    anno = _write(
+        tmp_path / "src/com/example/anno/Loggable.java",
+        "package com.example.anno;\npublic @interface Loggable {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/anno/AuditService.java",
+        "package com.example.anno;\n"
+        "@Loggable\npublic class AuditService {}\n",
+    )
+    result = extract([anno, svc], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+    ]
+    assert attr, "expected a @Loggable attribute edge"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "Loggable"
+        assert tgt.get("source_file"), "annotation must land on the real @interface node"
+
+
+def test_java_qualified_inline_annotation_resolves_internally(tmp_path: Path):
+    # #2504 (qualified inline form): `@com.example.anno.Loggable` with no import
+    # must resolve to the real @interface node via its FQN.
+    anno = _write(
+        tmp_path / "src/com/example/anno/Loggable.java",
+        "package com.example.anno;\npublic @interface Loggable {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/service/AuditService.java",
+        "package com.example.service;\n"
+        "@com.example.anno.Loggable\npublic class AuditService {}\n",
+    )
+    result = extract([anno, svc], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+    ]
+    assert attr, "expected a qualified @Loggable attribute edge"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "Loggable"
+        assert tgt.get("source_file"), "qualified annotation must land on the real node"
+
+
+def test_java_qualified_inline_external_annotation_does_not_bind_local_class(tmp_path: Path):
+    # #2504 (qualified inline form): an external `@io.micrometer.core.annotation.Timed`
+    # must not bind to a same-named local class.
+    local = _write(
+        tmp_path / "src/com/example/model/Timed.java",
+        "package com.example.model;\npublic class Timed {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/service/MetricsService.java",
+        "package com.example.service;\n"
+        "public class MetricsService {\n"
+        "    @io.micrometer.core.annotation.Timed\n"
+        "    public void record() {}\n"
+        "}\n",
+    )
+    result = extract([local, svc], cache_root=tmp_path)
+    local_id = next(
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Timed" and n.get("source_file")
+    )
+    conflated = [
+        e for e in result["edges"]
+        if e.get("target") == local_id and "service" in e.get("source_file", "")
+    ]
+    assert not conflated, f"external qualified annotation bound to local class: {conflated}"
+
+
 def test_java_cross_file_constructor_call_resolves(tmp_path: Path):
     # #1373: `new Foo(...)` in a method body must produce a cross-file edge to the
     # Foo definition. Foo is NOT used as a return type here, so the edge can only

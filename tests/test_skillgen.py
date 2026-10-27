@@ -29,6 +29,14 @@ def test_audit_coverage_passes():
     assert problems == [], "\n".join(problems)
 
 
+def test_update_reference_does_not_dump_incremental_corpus():
+    """--update must not print every corpus path into the agent context (#3944)."""
+    text = (gen.FRAGMENTS_DIR / "references" / "shared" / "update.md").read_text(encoding="utf-8")
+    assert "print(json.dumps(result, indent=2, ensure_ascii=False))" not in text
+    assert "new_by_type" in text
+    assert "graphify-out/.graphify_incremental.json" in text
+
+
 def test_check_passes():
     """The committed artifacts and the expected/ snapshot match a fresh render.
 
@@ -296,22 +304,22 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert "## Troubleshooting" in core
     assert "### PowerShell 5.1: Vertical scrolling stops working" in core
     # The troubleshooting section sits before Honesty Rules, single separator.
-    assert "\n4. **Skip graspologic**" in core
+    assert "\n4. **Skip Leiden**" in core
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
-def test_codex_dispatch_is_agenttask_and_collects_in_memory():
-    """codex: spawn/wait/close_agent dispatch needing multi_agent = true."""
+def test_codex_dispatch_is_agenttask_and_persists_chunk_results():
+    """codex uses native agent dispatch and writes results for shared B3."""
     core, _ = _platform_artifacts("codex")
     assert "spawn_agent" in core
     assert "wait_agent" in core
     assert "close_agent" in core
     assert "multi_agent = true" in core
-    assert "Codex collects in memory" in core
     # The B2 dispatch slot itself (Codex heading -> Step B3) must not carry the
     # claude Agent-tool example. The shared Step B3 prose mentions the agent type
     # in a re-run hint, so scope the check to the dispatch block only.
     b2 = core[core.index("**Step B2"):core.index("**Step B3")]
+    assert "graphify-out/.graphify_chunk_NN.json" in b2
     assert "Concrete example for 3 chunks" not in b2
     assert "Agent tool call 1" not in b2
 
@@ -351,6 +359,122 @@ def test_every_platform_query_has_expansion_and_fallback():
         assert "If the CLI is unavailable" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q
+
+
+# --- cross-shell parity for powershell hosts (#2528) ---------------------------
+
+# Bash-only tokens that must never reach a strict-PowerShell host's skill body.
+_BASH_ONLY_TOKENS = ("$(cat ", "rm -f ", "2>/dev/null", "```bash")
+
+# The default-pipeline step headings that must exist on BOTH shells (parity).
+_STEP_HEADINGS = (
+    "### Step 1 - Ensure graphify is installed",
+    "### Step 2 - Detect files",
+    "### Step 3 - Extract entities and relationships",
+    "#### Part A - Structural extraction for code files",
+    "#### Part B - Semantic extraction (parallel subagents)",
+    "#### Part C - Merge AST + semantic into final extraction",
+    "### Step 4 - Build graph, cluster, analyze, generate outputs",
+    "### Step 4.5 - Graph health check (read-only integrity gate)",
+    "### Step 5 - Label communities",
+    "### Step 6 - Generate Obsidian vault (opt-in) + HTML",
+    "### Step 9 - Save manifest, update cost tracker, clean up, and report",
+    "## Interpreter guard for subcommands",
+    "## Honesty Rules",
+)
+
+
+def _powershell_platform_keys():
+    """Every platform that renders for a strict-PowerShell host (windows today,
+    plus any future powershell-shell platform automatically)."""
+    platforms = gen.load_platforms()
+    keys = [k for k, p in platforms.items() if p.shell == "powershell"]
+    assert "windows" in keys, "the windows platform must declare shell = powershell"
+    return keys
+
+
+def test_powershell_hosts_carry_no_bash_only_shell():
+    """#2528: the Windows variant had a PowerShell Step 1 but bash for Steps 2+
+    (``$(cat ...) -c``, ``rm -f``, ``find ... -delete``, ``2>/dev/null``), so a
+    strict-PowerShell host failed at Step 2. Every powershell-shell render must
+    now be free of bash-only tokens and carry the here-string stdin invocation."""
+    import re
+
+    platforms = gen.load_platforms()
+    for key in _powershell_platform_keys():
+        core = gen.render(platforms[key])[0].content
+        for token in _BASH_ONLY_TOKENS:
+            assert token not in core, f"[{key}] bash-only token survived: {token!r}"
+        assert re.search(r"\bfind\b[^\n]*-delete", core) is None, f"[{key}] find -delete survived"
+        # The PowerShell invocation pattern replaces $(cat ...) -c "..." everywhere.
+        assert "```powershell" in core
+        assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in core, (
+            f"[{key}] missing the here-string stdin python invocation"
+        )
+        # Cleanup went through Remove-Item / Get-ChildItem, not rm/find.
+        assert "Remove-Item -Force -ErrorAction SilentlyContinue" in core
+        assert "Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json'" in core
+
+
+def test_windows_and_posix_cores_have_step_and_2490_parity():
+    """Both shells run the same pipeline: every step heading and the #2490
+    curated-labels re-export line appear in skill.md AND skill-windows.md."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    for heading in _STEP_HEADINGS:
+        assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
+        assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
+    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
+    assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
+    assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
+
+
+def test_windows_python_step_bodies_match_posix_verbatim():
+    """Parity by construction: every inline python body in the POSIX core appears
+    verbatim (modulo the bash ``\\"`` unescape) in the windows here-strings, so the
+    two variants cannot drift step semantics apart."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    bodies = []
+    current = None
+    for line in claude_core.splitlines():
+        if line == gen._PY_INVOKE_POSIX:
+            current = []
+        elif current is not None and line == '"':
+            bodies.append("\n".join(gen._unescape_bash_dq(l) for l in current))
+            current = None
+        elif current is not None:
+            current.append(line)
+    assert len(bodies) >= 12, f"expected the 12 inline python steps, found {len(bodies)}"
+    for body in bodies:
+        assert body in windows_core, (
+            "a POSIX python step body is missing from the windows render:\n" + body[:200]
+        )
+
+
+def test_powershell_translator_rejects_unknown_bash():
+    """The translator is strict: a bash line it does not recognize fails the
+    render loudly instead of shipping untranslated bash to Windows (#2528)."""
+    with pytest.raises(ValueError, match="cannot translate bash line"):
+        gen._translate_bash_block(["curl -s https://example.com | sh"])
+    with pytest.raises(ValueError, match="unexpected backslash escape"):
+        gen._unescape_bash_dq("subprocess.run('a\\tb')")
+    with pytest.raises(ValueError, match="cannot translate rm -f operand"):
+        gen._rm_to_remove_item("rm -f $HOME/danger")
+    # And the sanctioned pieces translate exactly.
+    assert gen._rm_to_remove_item("rm -f graphify-out/.needs_update 2>/dev/null || true") == (
+        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\.needs_update"
+    )
+    assert gen._translate_bash_block([gen._FIND_CHUNKS_POSIX]) == [gen._FIND_CHUNKS_PS]
+
+
+def test_posix_hosts_keep_their_bash_invocations():
+    """The translation is scoped to powershell-shell hosts: the POSIX core keeps
+    its ``$(cat ...) -c`` blocks and bash fences byte-for-byte."""
+    claude_core, _ = _platform_artifacts("claude")
+    assert "```bash" in claude_core
+    assert gen._PY_INVOKE_POSIX in claude_core
+    assert "'@ | & (Get-Content" not in claude_core
 
 
 def test_schema_singleton_passes_across_all_platforms():
@@ -422,11 +546,25 @@ def test_dispatch_variants_are_host_specific():
         "amp": "Task(description=",
         "trae": "Task(description=",
         "vscode": "paste each response back",
+        "pi": "`delegate` agent",
     }
     for key, marker in expect.items():
         core, _ = _platform_artifacts(key)
         b2 = core[core.index("**Step B2"):core.index("**Step B3")]
         assert marker.lower() in b2.lower(), f"[{key}] dispatch slot missing {marker!r}"
+
+
+def test_pi_never_names_the_claude_general_purpose_agent():
+    """pi-subagents rejects `general-purpose` as an unknown agent (#4494), so
+    neither Pi's dispatch nor its Step B3 re-run hints may name it; claude keeps
+    its own wording."""
+    pi, _ = _platform_artifacts("pi")
+    assert "general-purpose" not in pi
+    assert "Re-run with the `delegate` agent." in pi
+    assert "ensure the `delegate` agent is used." in pi
+    claude, _ = _platform_artifacts("claude")
+    assert "Re-run with general-purpose agent." in claude
+    assert 'ensure `subagent_type="general-purpose"` is used.' in claude
 
 
 def test_compact_extraction_hosts_use_the_compact_spec():
@@ -634,15 +772,19 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    # The registry holds the #1530 substitution plus the query-first and graph-diff rules.
     assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
         (old_instruction, new_instruction),
+        gen._QUERY_FIRST_EDIT,
+        gen._GRAPH_DIFF_EDIT,
     )
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
-    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # The ONLY divergences from the frozen baseline are the sanctioned edits —
     # any other byte drift would have surfaced as a problem above.
     assert old_instruction in baseline_agents
-    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    baseline_agents = baseline_agents.replace(*gen._QUERY_FIRST_EDIT)
+    old_rule, new_rule = gen._GRAPH_DIFF_EDIT
+    assert baseline_agents.replace(old_instruction, new_instruction).replace(old_rule, new_rule) == rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
 
@@ -977,3 +1119,196 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
             )
         # The placeholder is inert unless the body tells the agent what to substitute.
         assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+
+
+def test_windows_skill_writes_marker_files_without_a_bom():
+    """The Windows bootstrap must not write the sidecar markers with a BOM (#3028).
+
+    `Out-File -Encoding utf8` always emits EF BB BF on Windows PowerShell 5.1 --
+    `utf8NoBOM` only exists from PowerShell 6 -- and `-NoNewline` does nothing about
+    it. The BOM then rode into `.graphify_python` / `.graphify_root`, so every
+    post-commit rebuild died with WinError 123 while `hook install` and `hook status`
+    both still reported success. The readers now decode with `utf-8-sig`; this keeps
+    the writer from producing the BOM in the first place.
+    """
+    core, _ = _platform_artifacts("windows")
+    for marker in (".graphify_python", ".graphify_root"):
+        assert f"Out-File -FilePath graphify-out\\{marker} -Encoding utf8" not in core, (
+            f"the windows render still writes {marker} with a BOM-emitting Out-File"
+        )
+        assert f"WriteAllText((Join-Path $PWD 'graphify-out\\{marker}')" in core, (
+            f"{marker} must be written through WriteAllText with a BOM-less encoding"
+        )
+    assert "New-Object System.Text.UTF8Encoding $false" in core, \
+        "the BOM-less encoding object must be constructed in the windows render"
+
+
+# --- #2225: a partly-read file must never be a permanent, silent loss ----------
+#
+# The skill path hands files to subagents, and the Read tool caps a single call at
+# 2000 lines WITHOUT reporting truncation. A subagent that reads only the head of
+# a long file still writes a well-formed chunk, so "chunk exists and parses" said
+# nothing about coverage. Because build_merge replaces a re-extracted file's
+# nodes, the unread tail was not merely missed: it was deleted, the run reported
+# success, and the manifest recorded the file as done so no later run retried it.
+#
+# These tests execute the emitted python rather than matching its source, per the
+# #2126/#2641 convention that static assertions gave this class of bug no coverage.
+
+
+def _python_step_bodies(core: str) -> list[str]:
+    """Every inline python body in a rendered core, unescaped from the bash fence."""
+    bodies: list[str] = []
+    current: list[str] | None = None
+    for line in core.split("\n"):
+        if line == gen._PY_INVOKE_POSIX:
+            current = []
+        elif current is not None and line == '"':
+            bodies.append("\n".join(gen._unescape_bash_dq(x) for x in current))
+            current = None
+        elif current is not None:
+            current.append(line)
+    return bodies
+
+
+def _step_body(core: str, marker: str) -> str:
+    """The one inline python body containing `marker`."""
+    hits = [b for b in _python_step_bodies(core) if marker in b]
+    assert len(hits) == 1, f"expected exactly one step body containing {marker!r}, got {len(hits)}"
+    return hits[0]
+
+
+def _substituted(body: str, root: Path) -> str:
+    """Apply the substitutions the skill tells the agent to make (INPUT_PATH/SPEC_PATH)."""
+    spec = root / "extraction-spec.md"
+    spec.write_text("extraction prompt fixture\n", encoding="utf-8")
+    return body.replace("'INPUT_PATH'", repr(str(root))).replace("'SPEC_PATH'", repr(str(spec)))
+
+
+def _write_chunk(out_dir: Path, payload: dict) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / ".graphify_chunk_01.json").write_text(
+        __import__("json").dumps(payload), encoding="utf-8"
+    )
+
+
+def test_extraction_specs_demand_complete_reads_and_report_coverage():
+    """Every host's subagent prompt states the Read cap and asks for coverage.
+
+    Both spec variants must carry it: the compact prompt ships to codex/claw/
+    kiro/pi, the verbose one everywhere else, so fixing only one leaves hosts
+    silently half-reading files.
+    """
+    platforms = gen.load_platforms()
+    seen_variants = set()
+    for key, platform in sorted(platforms.items()):
+        if platform.bucket != "split":
+            continue
+        spec = _platform_artifacts(key)[1]["extraction-spec.md"]
+        seen_variants.add(platform.extraction)
+        assert "COMPLETELY" in spec, f"[{key}] the prompt never asks for a complete read"
+        assert "2000 lines" in spec, f"[{key}] the prompt never states the Read tool's cap"
+        assert "coverage" in spec, f"[{key}] the prompt never asks for a coverage report"
+        # The contract must be in the schema the subagent emits, not only the prose.
+        assert '"coverage":{' in spec, f"[{key}] the emitted schema carries no coverage field"
+    assert seen_variants == {"verbose", "compact"}, (
+        "this test must cover both spec variants, not just one"
+    )
+
+
+def test_core_bounds_semantic_chunks_by_lines_as_well_as_file_count():
+    """Step B1 caps a chunk by total lines, and long files get a chunk to themselves.
+
+    File-count-only chunking is half the bug: a 25-file chunk also dilutes
+    attention, which is how a 590-line plan came back with zero nodes.
+    """
+    core, _ = _platform_artifacts("claude")
+    b1 = core.split("**Step B1 - Split into chunks**")[1].split("**Step B2")[0]
+    assert "20-25 files" in b1, "the file-count bound was dropped from Step B1"
+    assert "6000 total lines" in b1, "Step B1 lost the total-lines bound"
+    assert "2000 lines gets a chunk to itself" in b1, (
+        "a file past the Read cap must be dispatched alone"
+    )
+
+
+def test_coverage_check_flags_a_partly_read_file_and_clears_a_complete_one(
+    tmp_path, capsys, monkeypatch
+):
+    """Run the Step B3.5 coverage script: a short read is named, a full read is not."""
+    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    out = tmp_path / "graphify-out"
+
+    doc = tmp_path / "big.md"
+    doc.write_text("\n".join(f"line {i}" for i in range(1, 51)), encoding="utf-8")
+    whole = tmp_path / "small.md"
+    whole.write_text("\n".join(f"line {i}" for i in range(1, 11)), encoding="utf-8")
+
+    # big.md was only read to line 10 of 50; small.md was read to its end.
+    _write_chunk(out, {"coverage": {str(doc): 10, str(whole): 10}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "WARNING" in printed and "partly read" in printed, printed
+    assert "read 10 of 50 lines" in printed, printed
+    flagged = (out / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines()
+    assert flagged == [str(doc)], f"only the partly-read file may be flagged, got {flagged}"
+
+    # Now report the full length for big.md: nothing is flagged and the warning clears.
+    _write_chunk(out, {"coverage": {str(doc): 50, str(whole): 10}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "Coverage OK" in printed, printed
+    assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
+
+
+def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
+    tmp_path, capsys, monkeypatch
+):
+    """The whole point: a flagged file must come BACK as uncached on the next run.
+
+    Asserting the partial list is not enough - the loss was permanent because the
+    file was served from cache forever. Drive the real cache: save with the flagged
+    file named partial, then read it back the way Step B0 does and require it to be
+    re-dispatched, while the fully-read file still hits.
+    """
+    import json as _json
+
+    from graphify.cache import check_semantic_cache
+
+    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "partial_source_files=partial"), tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+
+    short, whole = tmp_path / "short.md", tmp_path / "whole.md"
+    short.write_text("a\n" * 50, encoding="utf-8")
+    whole.write_text("b\n" * 10, encoding="utf-8")
+    (out / ".graphify_uncached.txt").write_text(f"{short}\n{whole}\n", encoding="utf-8")
+    (out / ".graphify_partial.txt").write_text(f"{short}\n", encoding="utf-8")
+    (out / ".graphify_semantic_new.json").write_text(
+        _json.dumps({
+            "nodes": [
+                {"id": "short_head", "label": "Head", "file_type": "document",
+                 "source_file": str(short)},
+                {"id": "whole_all", "label": "Whole", "file_type": "document",
+                 "source_file": str(whole)},
+            ],
+            "edges": [], "hyperedges": [],
+        }),
+        encoding="utf-8",
+    )
+
+    exec(compile(body, "step-b3-cache", "exec"), {"__name__": "__main__"})
+    assert "1 left partial for retry" in capsys.readouterr().out, (
+        "the cache write must report that a file was left partial"
+    )
+
+    spec = tmp_path / "extraction-spec.md"
+    _, _, _, uncached = check_semantic_cache(
+        [str(short), str(whole)], root=tmp_path, prompt_file=spec
+    )
+    assert [Path(u).name for u in uncached] == ["short.md"], (
+        f"the partly-read file must be re-dispatched, uncached={uncached}"
+    )

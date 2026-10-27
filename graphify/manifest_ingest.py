@@ -1,7 +1,7 @@
 """Deterministic package-manifest ingestion (#1377).
 
-Package manifests (``apm.yml``, ``pyproject.toml``, ``go.mod``, ``pom.xml``)
-declare a package and its dependencies. Left to the LLM document path, the same
+Package manifests (``apm.yml``, ``pyproject.toml``, ``Cargo.toml``, ``go.mod``,
+``pom.xml``) declare a package and its dependencies. Left to the LLM document path, the same
 package gets a different file-anchored node id from its own manifest than from
 each dependent's dependency reference, so it splits into duplicate nodes. This
 module parses manifests deterministically and emits ONE canonical package node
@@ -29,11 +29,40 @@ PACKAGE_MANIFEST_NAMES: dict[str, str] = {
     "apm.yml": "apm",
     "apm.yaml": "apm",
     "pyproject.toml": "python",
+    "cargo.toml": "cargo",
     "go.mod": "go",
     "pom.xml": "maven",
 }
 
 _MAX_MANIFEST_BYTES = 2_000_000  # 2 MB cap — manifests are small; this rejects junk
+
+_TOMLI_REQUIRED = (
+    "Package-manifest ingestion on Python < 3.11 needs tomli. "
+    "Install with: pip install 'tomli' "
+    "(or reinstall graphifyy, which declares tomli for python_version < '3.11')."
+)
+
+
+def _load_toml_module():
+    """Return a tomllib-compatible module, or raise ImportError (#3283).
+
+    Returning ``None`` used to look identical to a virtual workspace root with
+    nothing to emit, so missing ``tomli`` on Python 3.10 silently dropped every
+    ``Cargo.toml`` / ``pyproject.toml``. Raise instead: the caller
+    (``extract_package_manifest``) surfaces this as a visible per-manifest error
+    rather than dropping the file silently. In practice the runtime ``tomli``
+    dependency (python_version < '3.11') keeps this path unreachable for a
+    standard install.
+    """
+    try:
+        import tomllib as _toml  # type: ignore[import-not-found]
+        return _toml
+    except ImportError:
+        try:
+            import tomli as _toml  # type: ignore[import-not-found,no-redef]
+            return _toml
+        except ImportError as exc:
+            raise ImportError(_TOMLI_REQUIRED) from exc
 
 
 def is_package_manifest_path(path: Path) -> bool:
@@ -62,6 +91,8 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
         info = _PARSERS[eco](text)
     except Exception as exc:  # noqa: BLE001 — a malformed manifest must not abort extraction
         return {"nodes": [], "edges": [], "error": f"manifest parse error: {exc}"}
+    if isinstance(info, dict) and info.get("skipped"):
+        return {"nodes": [], "edges": [], "skipped": info["skipped"]}
     if not info or not info.get("name"):
         return {"nodes": [], "edges": []}
 
@@ -143,8 +174,10 @@ def _parse_apm(text: str) -> dict | None:
 
 def _parse_apm_fallback(text: str) -> dict | None:
     """Minimal line parser for apm.yml when PyYAML is unavailable: a top-level
-    ``name:`` plus a simple ``dependencies:`` block (list items or a name map)."""
+    ``name:``/``version:`` plus a simple ``dependencies:`` block (list items or
+    a name map)."""
     name = None
+    version = None
     deps: list[str] = []
     in_deps = False
     for line in text.splitlines():
@@ -152,6 +185,13 @@ def _parse_apm_fallback(text: str) -> dict | None:
             m = re.match(r'^name:\s*["\']?([^"\'\s#]+)', line)
             if m:
                 name = m.group(1)
+                continue
+            # `version` is part of the manifest contract the YAML path already
+            # returns; dropping it here made a package node lose its version
+            # on every machine without PyYAML installed.
+            m = re.match(r'^version:\s*["\']?([^"\'\s#]+)', line)
+            if m:
+                version = m.group(1)
                 continue
         if re.match(r'^dependencies:\s*$', line):
             in_deps = True
@@ -163,7 +203,7 @@ def _parse_apm_fallback(text: str) -> dict | None:
                 deps.append(dm.group(1))
             elif re.match(r'^\S', line):  # next top-level key ends the block
                 in_deps = False
-    return {"name": name, "version": None, "deps": deps} if name else None
+    return {"name": name, "version": version, "deps": deps} if name else None
 
 
 def _pep508_name(spec: str) -> str:
@@ -172,13 +212,7 @@ def _pep508_name(spec: str) -> str:
 
 
 def _parse_pyproject(text: str) -> dict | None:
-    try:
-        import tomllib as _toml
-    except ImportError:
-        try:
-            import tomli as _toml  # type: ignore
-        except ImportError:
-            return None
+    _toml = _load_toml_module()
     data = _toml.loads(text)
     proj = data.get("project", {}) if isinstance(data.get("project"), dict) else {}
     poetry = (data.get("tool", {}) or {}).get("poetry", {}) if isinstance(data.get("tool"), dict) else {}
@@ -191,6 +225,39 @@ def _parse_pyproject(text: str) -> dict | None:
             if str(dep).lower() != "python":
                 deps.append(str(dep))
     return {"name": name, "version": proj.get("version") or (poetry.get("version") if isinstance(poetry, dict) else None), "deps": deps}
+
+
+def _parse_cargo(text: str) -> dict | None:
+    """Cargo.toml: name/version from ``[package]``, runtime deps from
+    ``[dependencies]`` plus every ``[target.<cfg>.dependencies]`` table (mirrors
+    ``_parse_pyproject``'s runtime-only scope; dev-/build-dependencies excluded)."""
+    _toml = _load_toml_module()
+    data = _toml.loads(text)
+    pkg = data.get("package", {}) if isinstance(data.get("package"), dict) else {}
+    name = pkg.get("name")
+    # A virtual workspace root (``[workspace]``, no ``[package]``) declares no
+    # package of its own — emit nothing rather than a fabricated node. ``name`` is
+    # never workspace-inheritable in Cargo, but guard on the type anyway.
+    if not isinstance(name, str) or not name:
+        if isinstance(data.get("workspace"), dict):
+            return {"name": None, "skipped": "virtual workspace root Cargo.toml"}
+        return None
+    # ``version`` may be workspace-inherited (``version.workspace = true``), which
+    # parses to a table; keep only a concrete string version.
+    version = pkg.get("version")
+    if not isinstance(version, str):
+        version = None
+    # A dependency value is a bare version string or an inline table; either way
+    # _coerce_deps keys it by the dependency NAME (the table/map key).
+    deps = _coerce_deps(data.get("dependencies"))
+    # Platform-conditional deps live under ``[target.<cfg>.dependencies]``; fold
+    # them in so a crate whose deps are entirely cfg-gated still emits its edges.
+    targets = data.get("target")
+    if isinstance(targets, dict):
+        for cfg in targets.values():
+            if isinstance(cfg, dict):
+                deps += _coerce_deps(cfg.get("dependencies"))
+    return {"name": name, "version": version, "deps": deps}
 
 
 def _parse_gomod(text: str) -> dict | None:
@@ -226,22 +293,48 @@ def _parse_pom(text: str) -> dict | None:
     text = re.sub(r'\sxmlns="[^"]*"', '', text, count=1)
     root = ET.fromstring(text)
     aid = root.findtext("artifactId")
-    gid = root.findtext("groupId")
+    gid = root.findtext("groupId") or root.findtext("parent/groupId")
+    version = root.findtext("version") or root.findtext("parent/version")
     if not aid:
         return None
+    props: dict[str, str] = {}
+    for prop in root.findall("properties/*"):
+        if isinstance(prop.tag, str) and prop.text:
+            props[prop.tag] = prop.text.strip()
+    for key, value in (
+        ("project.groupId", gid),
+        ("project.artifactId", aid),
+        ("project.version", version),
+        ("project.parent.groupId", root.findtext("parent/groupId")),
+        ("project.parent.version", root.findtext("parent/version")),
+    ):
+        if value:
+            props.setdefault(key, value.strip())
+
+    def _resolve(value: str | None) -> str | None:
+        if not value:
+            return value
+        return re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), value.strip())
+
+    gid = _resolve(gid)
+    version = _resolve(version)
     name = f"{gid}:{aid}" if gid else aid
     deps: list[str] = []
-    for dep in root.findall(".//dependencies/dependency"):
-        da = dep.findtext("artifactId")
-        dg = dep.findtext("groupId")
+    # Only the project's own <dependencies> (and those of its profiles) are
+    # dependencies. <dependencyManagement> only pins versions, and a plugin's
+    # <dependencies> belong to the build tool.
+    for dep in root.findall("dependencies/dependency") + root.findall("profiles/profile/dependencies/dependency"):
+        da = _resolve(dep.findtext("artifactId"))
+        dg = _resolve(dep.findtext("groupId"))
         if da:
             deps.append(f"{dg}:{da}" if dg else da)
-    return {"name": name, "version": root.findtext("version"), "deps": deps}
+    return {"name": name, "version": version, "deps": deps}
 
 
 _PARSERS = {
     "apm": _parse_apm,
     "python": _parse_pyproject,
+    "cargo": _parse_cargo,
     "go": _parse_gomod,
     "maven": _parse_pom,
 }

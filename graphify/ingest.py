@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import re
+import uuid
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
@@ -61,18 +62,24 @@ def _safe_filename(url: str, suffix: str) -> str:
     return name + suffix
 
 
+def _host_is(host: str, *domains: str) -> bool:
+    """True when *host* is one of *domains* or a subdomain of one."""
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
-    lower = url.lower()
-    if "twitter.com" in lower or "x.com" in lower:
-        return "tweet"
-    if "arxiv.org" in lower:
-        return "arxiv"
-    if "github.com" in lower:
-        return "github"
-    if "youtube.com" in lower or "youtu.be" in lower:
-        return "youtube"
     parsed = urllib.parse.urlparse(url)
+    # Match the host, not the URL text: dropbox.com and netflix.com contain "x.com".
+    host = (parsed.hostname or "").rstrip(".")
+    if _host_is(host, "twitter.com", "x.com"):
+        return "tweet"
+    if _host_is(host, "arxiv.org"):
+        return "arxiv"
+    if _host_is(host, "github.com"):
+        return "github"
+    if _host_is(host, "youtube.com", "youtu.be"):
+        return "youtube"
     path = parsed.path.lower()
     if path.endswith(".pdf"):
         return "pdf"
@@ -102,8 +109,15 @@ def _html_to_markdown(html: str, url: str) -> str:
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
-    # Normalize to twitter.com for oEmbed
-    oembed_url = url.replace("x.com", "twitter.com")
+    # Normalize to twitter.com for oEmbed. Rewrite the host only: a plain
+    # text replace also rewrote "x.com" wherever it appeared in the path or query.
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    if _host_is(host, "x.com"):
+        host = host[: -len("x.com")] + "twitter.com"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        parts = parts._replace(netloc=netloc)
+    oembed_url = urllib.parse.urlunsplit(parts)
     oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     try:
         data = json.loads(safe_fetch_text(oembed_api))
@@ -207,10 +221,28 @@ Source: {url}
     return content, filename
 
 
-def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
-    """Download a binary file (PDF, image) directly."""
-    filename = _safe_filename(url, suffix)
+def _free_capture_path(target_dir: Path, filename: str) -> Path:
+    """Pick *filename*, or the first free numbered variant, in *target_dir*.
+
+    Uses lstat so no existing directory entry is replaced, including a
+    dangling symlink that a write would otherwise follow out of the corpus.
+    Selection and writing are separate; concurrent captures are not atomic.
+    """
+    stem, suffix = Path(filename).stem, Path(filename).suffix
     out_path = target_dir / filename
+    counter = 1
+    while True:
+        try:
+            out_path.lstat()
+        except FileNotFoundError:
+            return out_path
+        out_path = target_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+
+
+def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
+    """Save a sequential capture without replacing an existing directory entry."""
+    out_path = _free_capture_path(target_dir, _safe_filename(url, suffix))
     out_path.write_bytes(safe_fetch(url))
     return out_path
 
@@ -256,14 +288,7 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"ingest: failed to fetch {url!r}: {exc}") from exc
 
-    out_path = target_dir / filename
-    # Avoid overwriting - append counter if needed
-    counter = 1
-    while out_path.exists() and counter < 1000:
-        stem = Path(filename).stem
-        out_path = target_dir / f"{stem}_{counter}.md"
-        counter += 1
-
+    out_path = _free_capture_path(target_dir, filename)
     out_path.write_text(content, encoding="utf-8")
     print(f"Saved {url_type}: {out_path.name}")
     return out_path
@@ -299,7 +324,11 @@ def save_query_result(
 
     now = datetime.now(timezone.utc)
     slug = re.sub(r"[^\w]", "_", question.lower())[:50].strip("_")
-    filename = f"query_{now.strftime('%Y%m%d_%H%M%S')}_{slug}.md"
+    # A second-granularity stamp plus a 50-char slug is not unique: two saves in
+    # the same second whose questions share a prefix resolve to one path, and the
+    # later write_text silently replaces the earlier one (#3301). The short uuid
+    # makes every save its own file; the query_ prefix and .md suffix are kept.
+    filename = f"query_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{slug}.md"
 
     frontmatter_lines = [
         "---",

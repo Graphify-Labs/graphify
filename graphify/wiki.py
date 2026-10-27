@@ -3,25 +3,63 @@
 from __future__ import annotations
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote
+import re
 import networkx as nx
 
 from graphify.build import edge_data
+from graphify.paths import stem_filename_budget, write_text_atomic_if_changed
+
+# Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
+# after _safe_filename has already capped the slug. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
+_SLUG_SUFFIX_RESERVE = 5
+
+# Characters a slug may not contain, because the article's LINK and its ON-DISK
+# NAME have to be the same string (#2597). Anything left here must be legal,
+# unescaped, in a CommonMark link destination:
+#   < > : " / \ | ? *   Windows-reserved in filenames (pre-existing set)
+#   ( )                 parentheses delimit/nest a link destination
+#   #                   starts a fragment, so `a#b.md` resolves to the file `a`
+#   %                   reads as the start of a percent-escape
+#   control chars       forbidden in a link destination, hostile in a filename
+#
+# Non-ASCII is deliberately NOT stripped. It is legal raw in a link destination
+# and resolves fine on every filesystem graphify targets; stripping it would
+# reduce a CJK, Cyrillic or accented wiki to a wall of underscores.
+_UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
-def _safe_filename(name: str) -> str:
-    """Make a label safe for use as a filename across platforms.
+# The navigation footer links the catalog by its fixed filename rather than via
+# the label resolver, so an article whose own label is "index" resolves to its
+# own (deduplicated) file instead of the catalog.
+_INDEX_LINK = "[index](index.md)"
+
+
+def _safe_filename(name: str, limit: int = 200) -> str:
+    """Make a label safe for use as a filename across platforms AND as a
+    markdown link destination.
 
     Substitutes characters that Windows reserves in filenames
-    (< > : " / \\ | ? *) and strips trailing dots/spaces, also reserved.
-    Falls back to 'unnamed' for empty results and caps length at 200
-    chars to stay well under common filesystem limits.
+    (< > : " / \\ | ? *) plus the ones that would make the emitted link stop
+    matching the file on disk, and strips trailing dots/spaces, also reserved.
+    Falls back to 'unnamed' for empty results and caps length at ``limit``
+    chars (default 200) to stay well under common filesystem limits; ``to_wiki``
+    lowers ``limit`` when the wiki directory leaves less than that inside
+    Windows' MAX_PATH window (#2655).
+
+    Parentheses are DROPPED rather than substituted: every callable node is
+    labelled ``foo()``, and substituting would leave a trailing ``foo__`` on
+    each of them — and would mangle Python dunders (``__init__()`` ->
+    ``_init_``) if the resulting runs were then collapsed. Dropping keeps
+    ``__init__`` intact. Two labels that collapse to one slug are still
+    separated by ``_unique_slug``.
     """
-    import re
     s = name.replace("/", "-").replace(" ", "_").replace(":", "-")
-    s = re.sub(r'[<>:"/\\|?*]', '_', s)
+    s = s.replace("(", "").replace(")", "")
+    s = _UNSAFE_SLUG_CHARS.sub('_', s)
     s = s.strip('. ')
-    return s[:200] if s else 'unnamed'
+    return s[:limit] if s else 'unnamed'
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
@@ -29,23 +67,44 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
 
     ``resolver`` maps an article's display label to the slug (filename stem) it
     was written under. When the label has an article, emit a standard
-    ``[label](slug.md)`` link, URL-encoding the target so any spaces, parens, &
-    or # in the slug survive every CommonMark renderer (GitHub, GitLab, VS Code
-    preview, a plain browser) and Obsidian alike. The old ``[[label]]`` form
-    only resolved inside Obsidian, because the on-disk filename differs from the
-    label — _safe_filename turns spaces into underscores and substitutes
-    reserved characters — so e.g. ``[[Domain Data Models]]`` pointed at a
-    non-existent ``Domain Data Models.md`` everywhere else.
+    ``[label](slug.md)`` link whose target is the on-disk name VERBATIM.
+
+    The target is deliberately not percent-encoded (#2597). ``quote()`` turned
+    ``_make_id().md`` into ``_make_id%28%29.md`` while the file stayed raw, so
+    the link pointed at a path that does not exist. Renderers hid it by
+    decoding before resolving, but the wiki's whole purpose is to be
+    agent-crawlable, and an agent that reads the target off disk verbatim got a
+    FileNotFoundError. ``_safe_filename`` now keeps the slug free of everything
+    that would need encoding, so raw emission and the filename are the same
+    string by construction — one source of truth instead of two spellings that
+    happened to agree only for URL-safe labels.
+
+    The old ``[[label]]`` form only resolved inside Obsidian, because the
+    on-disk filename differs from the label — _safe_filename turns spaces into
+    underscores and substitutes reserved characters — so e.g.
+    ``[[Domain Data Models]]`` pointed at a non-existent
+    ``Domain Data Models.md`` everywhere else.
 
     Labels with no article — most node-level links, since only communities and
     god nodes get article files — render as plain text instead of a dead link
     that points nowhere even inside Obsidian.
     """
+    return _md_link_to(label, resolver.get(label))
+
+
+def _md_link_to(label: str, slug: str | None) -> str:
+    """Render ``[label](slug.md)`` for a slug that is already known.
+
+    Same output as :func:`_md_link`, minus the label lookup. The index knows the
+    exact slug of every article it lists — two same-labelled articles have
+    distinct slugs — so it links by that slug instead of re-deriving one from the
+    label, which collapses duplicates onto whichever was registered first
+    (#3032/#3033). ``None`` means no article exists, rendered as plain text.
+    """
     text = label.replace("[", r"\[").replace("]", r"\]")
-    slug = resolver.get(label)
     if slug is None:
         return text
-    return f"[{text}]({quote(f'{slug}.md')})"
+    return f"[{text}]({slug}.md)"
 
 
 def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str], node_community: dict[str, int]) -> list[tuple[str, int]]:
@@ -73,12 +132,23 @@ def _community_article(
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
     cross = _cross_community_links(G, nodes, cid, labels, node_community or {})
 
-    # Edge confidence breakdown
-    conf_counts: Counter = Counter()
-    for nid in nodes:
-        for neighbor in G.neighbors(nid):
-            ed = edge_data(G, nid, neighbor)
-            conf_counts[ed.get("confidence", "EXTRACTED")] += 1
+    # Edge confidence breakdown, over every edge INCIDENT to the community (the
+    # cross-community ones included — those are disproportionately the uncertain
+    # edges, and AMBIGUOUS is what ARCHITECTURE.md flags for human review).
+    #
+    # ``G.edges(nbunch)`` reports each incident edge exactly once. Walking
+    # ``nodes x G.neighbors`` instead visited an edge once per endpoint inside
+    # the community, so an intra-community edge was counted TWICE while a
+    # crossing one was counted once. Intra-community edges are overwhelmingly
+    # the high-confidence EXTRACTED ones — that is what makes a community — so
+    # the split was biased towards confidence and understated the review
+    # burden. On a MultiGraph this also counts parallel edges individually
+    # rather than collapsing them to the first (``edge_data``), which is the
+    # same understatement: an AMBIGUOUS edge parallel to an EXTRACTED one used
+    # to be invisible here.
+    conf_counts: Counter = Counter(
+        d.get("confidence", "EXTRACTED") for *_, d in G.edges(nodes, data=True)
+    )
     total_edges = sum(conf_counts.values()) or 1
 
     sources = sorted({G.nodes[n].get("source_file") or "" for n in nodes} - {""})
@@ -125,7 +195,7 @@ def _community_article(
         lines.append(f"- {conf}: {n} ({pct}%)")
     lines.append("")
 
-    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
+    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_INDEX_LINK} to navigate.*"]
     return "\n".join(lines)
 
 
@@ -160,9 +230,18 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
         lines.append(f"### {rel}")
         for t in targets[:20]:
             lines.append(f"- {t}")
+        # The cap keeps god-node articles readable, but silently dropping the
+        # tail made the body disagree with the header's degree count with
+        # nothing telling the reader anything was cut (#3127). Entries are
+        # degree-sorted, so what is hidden is the low-degree tail.
+        if len(targets) > 20:
+            lines.append(
+                f"- *…and {len(targets) - 20} more `{rel}` "
+                f"connection(s) not listed (lowest-degree first to go)*"
+            )
         lines.append("")
 
-    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
+    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_INDEX_LINK} to navigate.*"]
     return "\n".join(lines)
 
 
@@ -172,9 +251,21 @@ def _index_md(
     god_nodes_data: list[dict],
     total_nodes: int,
     total_edges: int,
-    resolver: dict[str, str] | None = None,
+    community_slugs: dict[int, str],
+    god_articles: list[tuple[str, str]],
 ) -> str:
-    resolver = resolver or {}
+    """Render index.md.
+
+    Takes the slugs the articles were actually written under —
+    ``community_slugs`` (cid -> slug) and ``god_articles`` ((node_id, slug)) —
+    rather than the label -> slug resolver the articles use for prose links.
+    Two communities, or two god nodes, can share a label while owning separate
+    files, and a label lookup cannot tell them apart: it points every row at
+    whichever was registered first and orphans the rest (#3032/#3033).
+    """
+    # A node with no article of its own is absent here, so it renders as plain
+    # text rather than linking to a same-labelled article that isn't it.
+    god_slugs = dict(god_articles)
     lines: list[str] = [
         "# Knowledge Graph Index",
         "",
@@ -191,19 +282,21 @@ def _index_md(
 
     for cid, nodes in sorted(communities.items(), key=lambda x: -len(x[1])):
         label = labels.get(cid, f"Community {cid}")
-        lines.append(f"- {_md_link(label, resolver)} — {len(nodes)} nodes")
+        slug = community_slugs.get(cid)
+        lines.append(f"- {_md_link_to(label, slug)} — {len(nodes)} nodes")
     lines.append("")
 
     if god_nodes_data:
         lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
         for node in god_nodes_data:
-            lines.append(f"- {_md_link(node['label'], resolver)} — {node['degree']} connections")
+            slug = god_slugs.get(node.get("id"))
+            lines.append(f"- {_md_link_to(node['label'], slug)} — {node['degree']} connections")
         lines.append("")
 
     lines += [
         "---",
         "",
-        "*Generated by [graphify](https://github.com/safishamsi/graphify)*",
+        "*Generated by [graphify](https://github.com/Graphify-Labs/graphify)*",
     ]
     return "\n".join(lines)
 
@@ -257,14 +350,15 @@ def to_wiki(
             "Re-run `graphify extract .` to regenerate .graphify_analysis.json."
         )
 
-    # Clear stale .md files from previous runs to prevent orphan accumulation.
-    # Community labels are LLM-generated (per skill.md Step 5) and non-deterministic
-    # across runs — the same conceptual community may be named differently each time
-    # (e.g. "AutoAgent Skills" → "AutoAgent Methodology"), leaving the previous file
-    # as an orphan. Since to_wiki() owns wiki/ entirely (always writes the full set),
-    # it can safely clear .md files at the start of each call.
-    for old_article in out.glob("*.md"):
-        old_article.unlink()
+    # Orphans (from LLM-generated community labels that drift across runs, e.g.
+    # "AutoAgent Skills" → "AutoAgent Methodology") are swept at the END of the
+    # run, once the produced set is known — not by an up-front unlink of every
+    # *.md. Unlinking first forced a full rewrite of the identical page set on
+    # every export (an export re-runs on any graph.json change: tens of thousands
+    # of unchanged pages, disk + inotify + re-index churn, #3060) and opened a
+    # window where a reader saw an empty wiki/ mid-export. to_wiki() still owns
+    # wiki/ entirely, so anything it did not produce this run is still removed.
+    produced: set[str] = set()
 
     labels = community_labels or {cid: f"Community {cid}" for cid in communities}
     cohesion = cohesion or {}
@@ -275,7 +369,16 @@ def to_wiki(
     node_community: dict[str, int] = {n: cid for cid, nodes in communities.items() for n in nodes}
 
     count = 0
-    used_slugs: set[str] = set()
+    # "index" is reserved for the catalog written below: an article slugged
+    # "index" (a community named after an `index()` hub, an `Index` god node on a
+    # case-insensitive filesystem) would otherwise be overwritten by index.md.
+    used_slugs: set[str] = {"index"}
+
+    # Articles are capped against THIS wiki directory, not just NAME_MAX: on
+    # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
+    # MAX_PATH and write_text raises FileNotFoundError partway through the
+    # export (#2655). No-op on POSIX.
+    _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
         # Fold case in the collision check: two labels differing only by case
@@ -299,12 +402,12 @@ def to_wiki(
     # _md_link renders them as plain text. Communities are slugged before god nodes
     # (and setdefault keeps the first), preserving the filename-assignment order
     # the case-collision dedup relies on.
-    resolver: dict[str, str] = {"index": "index"}
+    resolver: dict[str, str] = {}
 
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
-        slug = _unique_slug(_safe_filename(label))
+        slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
         resolver.setdefault(label, slug)
 
@@ -312,7 +415,7 @@ def to_wiki(
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
-            slug = _unique_slug(_safe_filename(node_data['label']))
+            slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
             resolver.setdefault(node_data['label'], slug)
 
@@ -320,18 +423,33 @@ def to_wiki(
     for cid, nodes in communities.items():
         label = labels.get(cid, f"Community {cid}")
         article = _community_article(G, cid, nodes, label, labels, cohesion.get(cid), node_community, resolver)
-        (out / f"{community_slugs[cid]}.md").write_text(article, encoding="utf-8")
+        fname = f"{community_slugs[cid]}.md"
+        write_text_atomic_if_changed(out / fname, article)
+        produced.add(fname)
         count += 1
 
     for nid, slug in god_articles:
         article = _god_node_article(G, nid, labels, node_community, resolver)
-        (out / f"{slug}.md").write_text(article, encoding="utf-8")
+        fname = f"{slug}.md"
+        write_text_atomic_if_changed(out / fname, article)
+        produced.add(fname)
         count += 1
 
     # Index
-    (out / "index.md").write_text(
-        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver),
-        encoding="utf-8",
+    write_text_atomic_if_changed(
+        out / "index.md",
+        _index_md(
+            communities, labels, god_nodes_data,
+            G.number_of_nodes(), G.number_of_edges(),
+            community_slugs, god_articles,
+        ),
     )
+    produced.add("index.md")
+
+    # Sweep orphans: remove only the *.md this run did not produce, so a relabelled
+    # community's stale page is still cleaned up without rewriting the survivors.
+    for old_article in out.glob("*.md"):
+        if old_article.name not in produced:
+            old_article.unlink()
 
     return count

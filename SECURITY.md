@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | Yes       |
-| < 0.3   | No        |
+| Latest 0.9.x | Yes       |
+| < 0.9        | No        |
 
 ## Reporting a Vulnerability
 
@@ -18,26 +18,29 @@ Report security issues via GitHub's private vulnerability reporting, or email th
 - Potential impact
 - Suggested fix (if any)
 
-We will acknowledge receipt within 48 hours and aim to release a fix within 7 days for critical issues.
+We will acknowledge receipt as soon as possible and work with you to release a coordinated fix.
 
 ## Security Model
 
-graphify is a **local development tool**. It runs as a Claude Code skill and optionally as a local MCP stdio server. It makes no network calls during graph analysis - only during `ingest` (explicit URL fetch by the user).
+graphify is a **local development tool**. It runs as a Claude Code skill and optionally as a local MCP stdio server. Its network boundaries are: AST/code extraction is local and deterministic; semantic extraction may send content to a configured model/backend; `ingest` uses explicit outbound fetch; HTTP MCP is an opt-in network listener.
 
 ### Threat Surface
 
 | Vector | Mitigation |
 |--------|-----------|
-| SSRF via URL fetch | `security.validate_url()` allows only `http` and `https` schemes, blocks private/loopback/link-local IPs, and blocks cloud metadata endpoints. Redirect targets are re-validated. All fetch paths including tweet oEmbed go through `safe_fetch()`. |
+| SSRF via URL fetch | `security.validate_url()` allows only `http` and `https` schemes, blocks private/loopback/link-local IPs, and blocks cloud metadata endpoints. It also rejects embedded credentials, port 0, and missing hostnames. Redirect targets are re-validated. All fetch paths including tweet oEmbed go through `safe_fetch()`. |
 | Oversized downloads | `safe_fetch()` streams responses and aborts at 50 MB. `safe_fetch_text()` aborts at 10 MB. |
 | Non-2xx HTTP responses | `safe_fetch()` raises `HTTPError` on non-2xx status codes - error pages are not silently treated as content. |
 | Path traversal in MCP server | `security.validate_graph_path()` resolves paths and requires them to be inside `graphify-out/`. Also requires the `graphify-out/` directory to exist. |
-| XSS in graph HTML output | `security.sanitize_label()` strips control characters, caps at 256 chars, and HTML-escapes all node labels and edge titles before pyvis embeds them. |
+| XSS in graph HTML output | `security.sanitize_label()` strips control characters and caps at 256 chars. (Note: HTML escaping happens separately in the HTML exporter, not in `sanitize_label()`). |
 | Prompt injection via node labels | `sanitize_label()` also applied to MCP text output - node labels from user-controlled source files cannot break the text format returned to agents. |
 | Prompt injection via source file content | During the semantic pass, source files are attacker-controlled text mixed into the LLM context. `_read_files()` in `llm.py` wraps every file in a hash-stamped `<untrusted_source path=... sha256=...>` delimiter block, the extraction system prompt instructs the model to treat that block as inert data and never as instructions, and `_neutralise_injection_sentinels()` defangs known chat-template/jailbreak tokens (`<\|im_start\|>`, `[INST]`, `<<SYS>>`, forged `</untrusted_source>`, etc.) before insertion. This is the table-stakes defense (issue #1210): it does not make injection impossible, but changes it from "works on first try" to "requires evasion." |
 | YAML frontmatter injection | `_yaml_str()` escapes backslashes, double quotes, and newlines before embedding user-controlled strings (webpage titles, query questions) in YAML frontmatter. |
 | Encoding crashes on source files | All tree-sitter byte slices decoded with `errors="replace"` - non-UTF-8 source files degrade gracefully instead of crashing extraction. |
-| Symlink traversal | `os.walk(..., followlinks=False)` is explicit throughout `detect.py`. |
+| Symlink traversal | `os.walk(..., followlinks=False)` is parameterized to avoid unchecked traversal where appropriate. |
+| Symlink escape during ingest | `ingest` writes through `lstat` and refuses to replace an existing directory entry, including a symlink, so a crafted source tree cannot redirect writes outside the output directory. |
+| Credentials in persisted text | `security.redact_secrets()` replaces credential-shaped substrings in labels and rationale text before they are written to `graph.json`. |
+| Destructive uninstall | `uninstall --purge` refuses to delete the project folder, the home directory, or a filesystem root, including when `GRAPHIFY_OUT` points outside the project. |
 | Corrupted graph.json | `_load_graph()` in `serve.py` wraps `json.JSONDecodeError` and prints a clear recovery message instead of crashing. |
 
 ### What graphify does NOT do
