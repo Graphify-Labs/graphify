@@ -294,6 +294,12 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     links = data.get(key)
     if not isinstance(nodes, list) or not isinstance(links, list):
         return
+    # Match build_from_json's pre-validation alias folding before applying the
+    # raw-path persistence rules. An edge that still has no relation afterwards
+    # has no trustworthy semantic default and must not reach graph.json (#4809).
+    for edge in links:
+        if isinstance(edge, dict):
+            _fold_edge_aliases(edge)
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     norm_to_id = {_normalize_id(nid): nid for nid in declared if isinstance(nid, str)}
     # Alias index (#4670): the same old-stem spellings build_from_json resolves
@@ -330,9 +336,13 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     kept: list = []
     referenced: set = set()
+    dropped_schema_edges = 0
     for e in links:
         if not isinstance(e, dict):
             kept.append(e)
+            continue
+        if "relation" not in e:
+            dropped_schema_edges += 1
             continue
         attached = True
         for primary, alias in (("source", "from"), ("target", "to")):
@@ -350,6 +360,12 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
             referenced.add(e.get("source", e.get("from")))
             referenced.add(e.get("target", e.get("to")))
     links[:] = kept
+    if dropped_schema_edges:
+        print(
+            f"[graphify] WARNING: dropped {dropped_schema_edges} schema-invalid edge(s) "
+            "missing required field 'relation'.",
+            file=sys.stderr,
+        )
     for hyperedge in data.get("hyperedges", []) or []:
         if isinstance(hyperedge, dict):
             members = hyperedge.get("nodes", hyperedge.get("members", hyperedge.get("node_ids", [])))

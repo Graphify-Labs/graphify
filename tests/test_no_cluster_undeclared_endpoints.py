@@ -71,6 +71,26 @@ def test_finalize_raw_graph_endpoints_matches_build_from_json():
     ]
 
 
+def test_finalize_raw_graph_endpoints_drops_edge_still_missing_relation(capsys):
+    """#4809: raw graph writes must enforce the same relation invariant as the builder."""
+    from graphify.build import finalize_raw_graph_endpoints
+
+    data = {
+        "nodes": [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}],
+        "edges": [
+            {"source": "n1", "target": "n2"},
+            {"source": "n1", "target": "n3", "relationship": "mentions"},
+        ],
+    }
+
+    finalize_raw_graph_endpoints(data)
+
+    assert data["edges"] == [{"source": "n1", "target": "n3", "relation": "mentions"}]
+    err = capsys.readouterr().err
+    assert "dropped 1 schema-invalid edge(s)" in err
+    assert "missing required field 'relation'" in err
+
+
 def test_finalize_raw_graph_endpoints_resolves_an_old_stem_alias():
     """An import that names a real file by its bare basename lands on that file.
 
