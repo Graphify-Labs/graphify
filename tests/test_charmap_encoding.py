@@ -259,25 +259,12 @@ class TestSubstitutionValidation:
         prompt = llm._read_files([f], root=tmp_path)
 
         # UTF-8 must succeed (our fix)
-        try:
-            prompt.encode("utf-8")
-        except UnicodeEncodeError as e:
-            raise AssertionError(
-                f"UTF-8 encode must succeed but failed: {e}"
-            ) from e
+        encoded_utf8 = prompt.encode("utf-8")
+        assert len(encoded_utf8) > 0
 
-        # cp1252 must fail (confirming these chars are the failing surface)
-        try:
+        # cp1252 must fail (confirming these chars hit the pre-fix failure surface)
+        with pytest.raises(UnicodeEncodeError):
             prompt.encode("cp1252")
-            # If it doesn't fail, test content doesn't cover the issue —
-            # fail loudly so the test author knows to update _UNICODE_CHARS.
-            raise AssertionError(
-                "Expected cp1252 encode to fail for chars → ✅ ≥, but it "
-                "succeeded. Update _UNICODE_CHARS to include cp1252-incompatible "
-                "characters."
-            )
-        except UnicodeEncodeError:
-            pass  # Expected — confirms these chars hit the pre-fix failure surface
 
     def test_subprocess_encoding_kwarg_in_extract_files_direct(
         self, monkeypatch, tmp_path
