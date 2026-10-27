@@ -4,7 +4,7 @@ import networkx as nx
 import pytest
 
 from graphify.affected import load_graph
-from graphify.build import build, build_merge, prefix_graph_for_global
+from graphify.build import _refresh_matlab_inheritance, build, build_merge, prefix_graph_for_global
 from graphify.cross_repo_calls import link_cross_repo_member_calls
 from graphify.cross_repo_types import link_shared_type_declarations
 from graphify.export import to_json
@@ -102,16 +102,59 @@ def test_namespace_matlab_classes_do_not_join_native_or_matlab_types(tmp_path):
     assert merged.edges["native1::greeter", "native2::greeter"]["relation"] == "same_type_as"
 
 
+
+def test_matlab_inheritance_refresh_preserves_semantic_edges():
+    child_source, base_source = "+Shared/Child.m", "+Shared/Base.m"
+    nodes = [
+        _node(
+            "child_file", "Child.m", child_source, matlab=True, kind="file",
+            namespace="Shared", matlab_file_kind="class", matlab_primary_name="Child",
+        ),
+        _node(
+            "child", "Child", child_source, matlab=True, kind="class",
+            namespace="Shared", scope_chain=[],
+            matlab_superclasses=[{"name": "Shared.Base", "source_location": "L1"}],
+        ),
+        _node(
+            "base_file", "Base.m", base_source, matlab=True, kind="file",
+            namespace="Shared", matlab_file_kind="class", matlab_primary_name="Base",
+        ),
+        _node(
+            "base", "Base", base_source, matlab=True, kind="class",
+            namespace="Shared", scope_chain=[],
+        ),
+    ]
+    stale_ast = {
+        **_edge("child", "stale_base", "inherits", child_source),
+        "_origin": "ast",
+    }
+    semantic = {
+        **_edge("child", "semantic_base", "inherits", child_source),
+        "_origin": "semantic",
+    }
+
+    refreshed = _refresh_matlab_inheritance(nodes, [stale_ast, semantic])
+
+    assert semantic in refreshed
+    assert stale_ast not in refreshed
+    assert [
+        (edge["source"], edge["target"], edge["_origin"])
+        for edge in refreshed
+        if edge.get("relation") == "inherits" and edge.get("_origin") == "ast"
+    ] == [("child", "base", "ast")]
+
+
 def test_incremental_carry_forward_preserves_local_calls_and_source_inheritance(tmp_path):
     nodes = [
         _node("child_file", "Child.m", "+Shared/Child.m", matlab=True, kind="file",
-              matlab_file_kind="class", matlab_primary_name="Child"),
+              namespace="Shared", matlab_file_kind="class", matlab_primary_name="Child"),
         _node("child", "Child", "+Shared/Child.m", matlab=True, kind="class",
               namespace="Shared", scope_chain=[],
               matlab_superclasses=[{"name": "Shared.Base", "source_location": "L1"}]),
         _node("base_file", "Base.m", "+Shared/Base.m", matlab=True, kind="file",
-              matlab_file_kind="class", matlab_primary_name="Base"),
-        _node("base", "Base", "+Shared/Base.m", matlab=True, kind="class", namespace="Shared"),
+              namespace="Shared", matlab_file_kind="class", matlab_primary_name="Base"),
+        _node("base", "Base", "+Shared/Base.m", matlab=True, kind="class",
+              namespace="Shared", scope_chain=[]),
         _node("run", "run", "+Shared/Child.m", matlab=True, kind="method"),
         _node("helper", "helper", "+Shared/Child.m", matlab=True),
     ]

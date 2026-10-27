@@ -1251,8 +1251,8 @@ def _matlab_inheritance_edges(nodes: list[dict]) -> list[dict]:
         file_node, class_node = file_nodes[0], class_nodes[0]
         file_metadata, class_metadata = file_node["metadata"], class_node["metadata"]
         if (
-            file_node.get("type") != "file"
-            or class_node.get("type") != "class"
+            file_metadata.get("kind") != "matlab_file"
+            or class_metadata.get("kind") != "matlab_class"
             or file_node.get("file_type") != "code"
             or class_node.get("file_type") != "code"
             or file_node.get("external")

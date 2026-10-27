@@ -1971,6 +1971,45 @@ def test_objc_splits_inherits_and_implements():
     assert ("Dog", "Animal") in _edge_labels(r, "inherits")
     assert ("Animal", "SampleDelegate") in _edge_labels(r, "implements")
 
+def test_matlab_and_native_same_name_types_remain_distinct(tmp_path):
+    from graphify.extract import extract
+
+    (tmp_path / "Foo.h").write_text("@interface Foo : NSObject\n@end\n")
+    (tmp_path / "Foo.m").write_text("classdef Foo < Base\nend\n")
+    (tmp_path / "Base.m").write_text("classdef Base\nend\n")
+    (tmp_path / "Native.m").write_text(
+        "@interface NativeBase : NSObject\n@end\n"
+        "@interface NativeChild : NativeBase\n@end\n"
+    )
+    (tmp_path / "NativeCpp.mm").write_text(
+        "@interface NativeCpp : NSObject\n@end\n"
+        "@implementation NativeCpp\n@end\n"
+    )
+
+    result = extract(sorted(tmp_path.glob("*")), root=tmp_path, cache_root=tmp_path, parallel=False)
+    by_id = {node["id"]: node for node in result["nodes"]}
+    foo_nodes = [node for node in result["nodes"] if node.get("label") == "Foo"]
+    assert {node.get("source_file") for node in foo_nodes} == {"Foo.h", "Foo.m"}
+    assert len({node["id"] for node in foo_nodes}) == 2
+    matlab_foo = next(node for node in foo_nodes if node.get("source_file") == "Foo.m")
+    objc_foo = next(node for node in foo_nodes if node.get("source_file") == "Foo.h")
+    assert matlab_foo["metadata"]["language"] == "matlab"
+
+    inherits = {(edge["source"], edge["target"]) for edge in result["edges"]
+                if edge.get("relation") == "inherits"}
+    base = next(node for node in result["nodes"] if node.get("label") == "Base")
+    native_base = next(node for node in result["nodes"] if node.get("label") == "NativeBase")
+    native_child = next(node for node in result["nodes"] if node.get("label") == "NativeChild")
+    native_cpp = next(node for node in result["nodes"] if node.get("label") == "NativeCpp")
+    assert (matlab_foo["id"], base["id"]) in inherits
+    assert base["metadata"]["language"] == "matlab"
+    assert (objc_foo["id"], base["id"]) not in inherits
+    assert (native_child["id"], native_base["id"]) in inherits
+    assert not any(source == matlab_foo["id"] and target == objc_foo["id"]
+                   for source, target in inherits)
+    assert native_cpp.get("source_file") == "NativeCpp.mm"
+    assert by_id[native_cpp["id"]]["label"] == "NativeCpp"
+
 
 def test_objc_protocol_adopts_protocol():
     """`@protocol Derived <Base>` must emit an implements edge Derived->Base.

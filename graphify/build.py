@@ -990,6 +990,45 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     return out
 
 
+def _refresh_matlab_inheritance(nodes: list[dict], edges: list[dict]) -> list[dict]:
+    """Replace only source-owned MATLAB inheritance facts for the current nodes."""
+    from graphify.extractors.resolution import _matlab_inheritance_edges
+
+    matlab_sources: dict[str, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        metadata = node.get("metadata")
+        node_id = node.get("id")
+        source_file = node.get("source_file")
+        if not isinstance(metadata, dict) or metadata.get("language") != "matlab":
+            continue
+        if (
+            not isinstance(node_id, str)
+            or not isinstance(source_file, str)
+            or not source_file
+        ):
+            continue
+        matlab_sources[node_id] = source_file
+
+    def _is_matlab_inheritance(edge: dict) -> bool:
+        if not isinstance(edge, dict) or edge.get("relation") != "inherits":
+            return False
+        try:
+            source_file = matlab_sources.get(edge.get("source"))
+        except TypeError:
+            return False
+        return (
+            source_file is not None
+            and edge.get("source_file") == source_file
+            and _is_ast_tier(edge)
+        )
+
+    kept = [edge for edge in edges if not _is_matlab_inheritance(edge)]
+    refreshed = _matlab_inheritance_edges(nodes)
+    return kept + [{**edge, "_origin": "ast"} for edge in refreshed]
+
+
 def _old_file_stems(rel: Path) -> list[str]:
     """Pre-migration stem forms a semantic fragment may have used for ``rel``.
 
@@ -2350,6 +2389,9 @@ def merge_raw_extraction(
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
     if unverified_semantic_shrink:
         new["_unverified_semantic_shrink"] = unverified_semantic_shrink
+    new["edges"] = _refresh_matlab_inheritance(
+        dedupe_nodes(new.get("nodes", [])), new.get("edges", [])
+    )
     return new
 
 
@@ -2639,7 +2681,22 @@ def build_merge(
         if isinstance(n, dict) and n.get("id")
     } if had_graph else None
 
-    all_chunks = base + list(new_chunks)
+    all_chunks = base + [dict(chunk) for chunk in new_chunks]
+    if all_chunks:
+        resolver_nodes = dedupe_nodes([
+            node
+            for chunk in all_chunks
+            for node in chunk.get("nodes", [])
+            if isinstance(node, dict) and not _prune_match(node.get("source_file"))
+        ])
+        merged_edges = [
+            edge for chunk in all_chunks for edge in chunk.get("edges", [])
+        ]
+        all_chunks[0]["edges"] = _refresh_matlab_inheritance(
+            resolver_nodes, merged_edges
+        )
+        for chunk in all_chunks[1:]:
+            chunk["edges"] = []
     G = build(
         all_chunks,
         directed=directed,

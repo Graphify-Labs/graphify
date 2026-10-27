@@ -69,6 +69,7 @@ from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.yaml_config import extract_yaml  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
+from graphify.extractors.matlab import extract_matlab  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -133,6 +134,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _js_top_level_function_bodies,
     _load_tsconfig_aliases,
     _load_tsconfig_base_url,
+    _matlab_inheritance_edges,
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
@@ -9008,13 +9010,11 @@ def _get_extractor(path: Path) -> Any | None:
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
         if _is_cpp_header(path):
             return extract_cpp
-    # `.m` is Objective-C OR MATLAB. extract_objc unconditionally would force-parse
-    # MATLAB through the ObjC grammar into garbage (#1702). Route to extract_objc
-    # only when the file actually looks like Objective-C; otherwise leave it without
-    # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
-    # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
+    # `.m` is Objective-C OR MATLAB. Explicit remaps above retain priority, and
+    # Objective-C `.m` files keep their current extractor; all other `.m` files
+    # use the MATLAB frontend. `.mm` remains unambiguously Objective-C++.
     if suffix == ".m" and not _is_objc_source(path):
-        return None
+        return extract_matlab
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -11222,6 +11222,39 @@ def extract(
         _df = _item.get("definition_file")
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
+
+    # Resolve MATLAB inheritance only after IDs and source paths are canonical.
+    # Unchanged context contributes class/file candidates, never output edges.
+    _matlab_kinds = {"matlab_file", "matlab_class"}
+    _fresh_matlab_nodes = [
+        n for n in all_nodes
+        if isinstance(n.get("metadata"), dict)
+        and n["metadata"].get("language") == "matlab"
+        and n["metadata"].get("kind") in _matlab_kinds
+    ]
+    _fresh_matlab_class_ids = {
+        n["id"] for n in _fresh_matlab_nodes
+        if n["metadata"].get("kind") == "matlab_class"
+        and isinstance(n.get("id"), str)
+    }
+    if _fresh_matlab_class_ids:
+        _fresh_matlab_ids = {n.get("id") for n in _fresh_matlab_nodes}
+        _matlab_context_nodes = [
+            n for n in resolution_context_nodes or []
+            if isinstance(n.get("metadata"), dict)
+            and n["metadata"].get("language") == "matlab"
+            and n["metadata"].get("kind") in _matlab_kinds
+            and n.get("id") not in _fresh_matlab_ids
+        ]
+        _matlab_edges = [
+            edge for edge in _matlab_inheritance_edges(
+                _fresh_matlab_nodes + _matlab_context_nodes
+            )
+            if edge["source"] in _fresh_matlab_class_ids
+        ]
+        for edge in _matlab_edges:
+            edge["_origin"] = "ast"
+        all_edges.extend(_matlab_edges)
 
     return {
         "nodes": all_nodes,

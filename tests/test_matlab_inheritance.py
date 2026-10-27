@@ -15,7 +15,6 @@ def _class(source, name, *, namespace="", bases=(), repo=None):
         {
             **common,
             "id": f"{prefix}{source}:file",
-            "type": "file",
             "label": source,
             "metadata": {
                 "language": "matlab",
@@ -28,7 +27,6 @@ def _class(source, name, *, namespace="", bases=(), repo=None):
         {
             **common,
             "id": f"{prefix}{source}:class:{name}",
-            "type": "class",
             "label": name,
             "source_location": "L1",
             "metadata": {
@@ -213,15 +211,21 @@ def test_foreign_repository_and_untagged_candidates_cannot_fill_missing_bases():
 def test_nonsource_nodes_cannot_supply_class_targets():
     child = _class("Child.m", "Child", bases=("Base",))
     for field, value in (
-        ("external", True), ("file_type", "document"), ("id", None), ("type", "function")
+        ("external", True), ("file_type", "document"), ("id", None),
+        ("metadata.kind", "matlab_function"),
     ):
         base = _class("Base.m", "Base")
-        base[-1][field] = value
+        if field == "metadata.kind":
+            base[-1]["metadata"]["kind"] = value
+        else:
+            base[-1][field] = value
         assert _matlab_inheritance_edges(child + base) == []
 
 
 def test_non_file_nodes_cannot_establish_source_context():
     child = _class("Child.m", "Child", bases=("Base",))
     base = _class("Base.m", "Base")
-    base[0]["type"] = "module"
+    base[0]["metadata"]["kind"] = "matlab_class"
     assert _matlab_inheritance_edges(child + base) == []
+
+
