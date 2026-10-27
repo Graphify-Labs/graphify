@@ -408,19 +408,29 @@ _MAX_LABEL_LEN = 256
 
 # Credential shapes redacted from free text that is persisted into the graph
 # (rationale/comment labels). Shape-based only, so it is risk reduction rather
-# than a guarantee: vendor-prefixed tokens and PEM private-key headers.
+# than a guarantee: vendor-prefixed tokens, PEM private-key blocks and URL
+# userinfo. Boundaries are alphanumeric-only lookarounds rather than \b so a
+# token glued to an identifier by `_` (`token_ghp_...`, `AKIA..._prod`) still
+# matches.
 _SECRET_SHAPE_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
-    r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
-    r"|\bgh[pousr]_[A-Za-z0-9]{36,}"
-    r"|\bgithub_pat_[A-Za-z0-9_]{22,}"
-    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|\b[sr]k_(?:live|test)_[A-Za-z0-9]{10,}"
-    r"|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}"
-    r"|\bAIza[0-9A-Za-z_-]{35}\b"
-    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+    # Header through the END line, or to end of text when the block is cut off:
+    # the base64 body is the secret, not the header.
+    r"(?s:-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+    r"(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|.*))"
+    r"|(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}"
+    r"|(?<![A-Za-z0-9])xox[abeoprs]-[A-Za-z0-9-]{10,}"
+    r"|(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{10,}"
+    # Require a digit so hyphenated prose (`sk-learn-compatible-...`) is left alone.
+    r"|(?<![A-Za-z0-9])sk-(?:ant-|proj-)?(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}"
+    r"|(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}"
+    # Payload segment may be tiny (`e30` is `{}`).
+    r"|(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{10,}"
     r"|(?<=\bBearer )[A-Za-z0-9._~+/=-]{16,}"
-    r"|(?<=://)[^\s/:@]+:[^\s/@]+(?=@)"
+    # Userinfo up to the LAST `@` before the host: the user may be empty
+    # (`redis://:pw@host`) and the password may contain `@` or `/`.
+    r"|(?<=://)[^\s/@]*:[^\s?#]*(?=@[^\s@/?#]+)"
 )
 
 REDACTED_MARKER = "[redacted]"

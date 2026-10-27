@@ -2108,3 +2108,63 @@ def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
     got = [_unquote_git_path(l) for l in raw]
     assert sorted(got) == sorted(names)
     assert all((tmp_path / g).is_file() for g in got)
+
+
+def _watch_fn(name):
+    import graphify.watch as watch_mod
+
+    tree = ast.parse(Path(watch_mod.__file__).read_text(encoding="utf-8"))
+    return next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def test_watch_rebuild_timeout_arms_a_timer_without_sigalrm():
+    """`graphify watch` had no rebuild timeout at all, and the SIGALRM one the
+    hooks use is a no-op on Windows (#2173). Same shape as the hook test: the
+    Timer fallback sits in the else-branch of the SIGALRM check and kills
+    workers before os._exit, and the watch loop actually runs rebuilds in it."""
+    fn = _watch_fn("_rebuild_timeout")
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(fn)
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, "_rebuild_timeout has no else-branch for the missing-SIGALRM case (#2173)"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='Timer'" in dumped and "attr='_exit'" in dumped
+    bail = next(n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n.name == "_bail")
+    # statement position is execution order; ast.walk is breadth-first
+    order = [ast.dump(stmt) for stmt in bail.body]
+    kill_at = next(i for i, d in enumerate(order) if "attr='kill'" in d)
+    exit_at = next(i for i, d in enumerate(order) if "attr='_exit'" in d)
+    assert kill_at < exit_at, "_bail exits before killing workers"
+    loop = ast.dump(_watch_fn("watch"))
+    assert "_rebuild_timeout" in loop, "watch() does not wrap its rebuild in _rebuild_timeout (#2173)"
+
+
+def test_watch_rebuild_timeout_runs_off_the_main_thread():
+    """SIGALRM can only be armed from the main thread: signal.signal() raises
+    ValueError anywhere else. watch()'s dispatch loop runs in a worker thread
+    both under test and when embedded, so _rebuild_timeout must not reach for
+    SIGALRM there — otherwise the ValueError escapes the loop's
+    `except TimeoutError` guard and tears watch() down before the rebuild runs
+    (#4724 regressed gh-928). The context manager must yield (run its body)
+    cleanly off the main thread."""
+    import threading
+    import graphify.watch as watch_mod
+
+    ran: list[bool] = []
+    errors: list[BaseException] = []
+
+    def _body():
+        try:
+            with watch_mod._rebuild_timeout():
+                ran.append(True)
+        except BaseException as exc:  # noqa: BLE001 - record any escape
+            errors.append(exc)
+
+    t = threading.Thread(target=_body)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "_rebuild_timeout blocked the worker thread"
+    assert errors == [], f"_rebuild_timeout raised off the main thread: {errors!r}"
+    assert ran == [True], "_rebuild_timeout never ran its body off the main thread"

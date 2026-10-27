@@ -16,6 +16,7 @@ from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
+from .cargo_introspect import package_name
 from .security import redact_secrets
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
@@ -207,13 +208,27 @@ def _raise_recursion_limit() -> None:
         sys.setrecursionlimit(_RECURSION_LIMIT)
 
 
+def _redact_rationale_labels(result: dict) -> dict:
+    """Redact credential shapes from every rationale node label.
+
+    Rationale labels are free text copied out of comments and docstrings, so
+    this runs on every extractor's output (before it is cached) rather than
+    relying on each language extractor to call ``redact_secrets`` itself.
+    """
+    for node in result.get("nodes") or ():
+        label = node.get("label")
+        if node.get("file_type") == "rationale" and isinstance(label, str):
+            node["label"] = redact_secrets(label)
+    return result
+
+
 def _safe_extract(
     extractor: Callable, path: Path, *, scan_root: Path | None = None
 ) -> dict:
     try:
         if extractor is extract_python:
-            return extractor(path, root=scan_root)
-        return extractor(path)
+            return _redact_rationale_labels(extractor(path, root=scan_root))
+        return _redact_rationale_labels(extractor(path))
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
         return {"nodes": [], "edges": [], "error": "recursion_limit_exceeded"}
@@ -3930,8 +3945,104 @@ def _is_top_level_function_definition(node: dict) -> bool:
     )
 
 
-def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
+def _rewire_unique_stub_nodes(
+    nodes: list[dict], edges: list[dict], root: Path | None = None,
+) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
+    scan_root = Path(root).resolve() if root is not None else None
+    crate_by_dir: dict[Path, str | None] = {}
+
+    def crate_of(source_file: str) -> str | None:
+        """The crate a Rust file belongs to: its nearest Cargo.toml with a package
+        name, looking no higher than the scan root. A file under none has no crate."""
+        if not source_file:
+            return None
+        path = Path(source_file)
+        if not path.is_absolute() and scan_root is not None:
+            path = scan_root / path
+        directory = path.parent
+        walked: list[Path] = []
+        crate: str | None = None
+        while True:
+            if directory in crate_by_dir:
+                crate = crate_by_dir[directory]
+                break
+            walked.append(directory)
+            manifest = directory / "Cargo.toml"
+            if manifest.is_file() and (crate := package_name(manifest)):
+                break
+            if directory == scan_root or directory.parent == directory:
+                break
+            directory = directory.parent
+        for seen in walked:  # every directory below a hit shares its crate
+            crate_by_dir[seen] = crate
+        return crate
+
+    # The crates the corpus contains: a `use` naming one of these is an edge to
+    # follow, anything else is a dependency outside the scan (#4699).
+    workspace_crates: set[str] = set()
+    for node in nodes:
+        sf = str(node.get("source_file", ""))
+        if sf.endswith(".rs") and (crate := crate_of(sf)):
+            workspace_crates.add(crate)
+
+    # A crate can re-export another crate's item (`pub use core::Thing;`), so an
+    # import that names the re-exporting crate reaches the defining one (#4699).
+    # Keyed by (re-exporting crate, imported label) -> crates it re-exports from.
+    reexports: dict[tuple[str, str], set[str]] = {}
+    for edge in edges:
+        info = edge.get("_rust_pub_use")
+        owner = crate_of(str(edge.get("source_file", "")))
+        if not isinstance(info, dict) or owner is None:
+            continue
+        root = str(info.get("root", ""))
+        if root != "crate":
+            reexports.setdefault((owner, str(info.get("label", ""))), set()).add(root)
+    for _ in range(len(workspace_crates)):  # follow `pub use` chains across crates
+        changed = False
+        for (crate, label), targets in tuple(reexports.items()):
+            more = {
+                deep for root in tuple(targets)
+                for deep in reexports.get((root, label), ())
+            }
+            if not more <= targets:
+                targets |= more
+                changed = True
+        if not changed:
+            break
+
+    def in_stub_crate(stub: dict, candidates: list[dict]) -> list[dict]:
+        """Keep the candidates that live in a crate the stub's `use` names.
+
+        `_rust_use_roots` holds the first segment of every `use` binding the
+        stub's name, with `crate` standing for this file's own crate. A stub
+        with no Cargo.toml above it, or a candidate with none, keeps v8's
+        label-only binding: without a manifest there is no crate to scope by.
+        A crate the `use` names may re-export the item from another crate, so
+        those crates count too — but only after the named crate itself, which
+        always wins when it has the definition.
+        """
+        origin = str(stub.get("origin_file", ""))
+        own = crate_of(origin) if origin.endswith(".rs") else None
+        if own is None:
+            return candidates
+        roots = stub.get("_rust_use_roots") or ["crate"]
+        label = str(stub.get("label", ""))
+        named = {own if root == "crate" else root for root in roots} & workspace_crates
+        allowed = set(named)
+        for root in named:
+            allowed |= reexports.get((root, label), set())
+
+        def keep(crates: set[str]) -> list[dict]:
+            return [
+                candidate for candidate in candidates
+                if not str(candidate.get("source_file", "")).endswith(".rs")
+                or crate_of(str(candidate.get("source_file", ""))) in (crates | {None})
+            ]
+
+        scoped_named = keep(named)
+        return scoped_named if len(scoped_named) == 1 else keep(allowed)
+
     real_by_label: dict[str, list[dict]] = {}       # exact-case type-like (all languages)
     real_by_label_ci: dict[str, list[dict]] = {}    # case-INSENSITIVE-language reals only
     func_by_label: dict[str, list[dict]] = {}       # top-level function defs (#1781)
@@ -3988,7 +4099,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
             continue
-        candidates = real_by_label.get(_node_label_key(stub), [])
+        candidates = in_stub_crate(stub, real_by_label.get(_node_label_key(stub), []))
         if len(candidates) > 1 and all(
             _lang_family(c.get("source_file")) == "rust" for c in candidates
         ):
@@ -4007,12 +4118,13 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             # No unique exact type match — fall back to a case-insensitive match, but
             # only against case-insensitive-language definitions (so a case-sensitive
             # `PATH` can never absorb a `Path` reference).
-            candidates = real_by_label_ci.get(_node_label_key(stub, fold=True), [])
+            candidates = in_stub_crate(
+                stub, real_by_label_ci.get(_node_label_key(stub, fold=True), []))
         if len(candidates) != 1:
             # #1781: no unique type — try a unique top-level FUNCTION definition,
             # gated by (a) the stub not being used as a supertype and (b) a
             # language-family match with the stub's referrers.
-            fcands = func_by_label.get(_node_label_key(stub), [])
+            fcands = in_stub_crate(stub, func_by_label.get(_node_label_key(stub), []))
             if len(fcands) == 1 and stub_id not in supertype_stub_ids:
                 fams = stub_families.get(stub_id, set())
                 cand_fam = _lang_family(fcands[0].get("source_file"))
@@ -4093,6 +4205,19 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             and edge_fam != cand_fam
         )
 
+    def _scoped_by_a_use(stub: dict) -> bool:
+        """A `use` that names this crate or a scanned crate vouches for the stub."""
+        roots = stub.get("_rust_use_roots") or []
+        return "crate" in roots or bool(set(roots) & workspace_crates)
+
+    # A Rust stub bound by its label alone is a guess: no `use` that names a corpus
+    # crate vouches for it (#4699).
+    rust_by_name_only = {
+        stub_id for stub_id in remap
+        if str(by_id.get(stub_id, {}).get("origin_file", "")).endswith(".rs")
+        and not _scoped_by_a_use(by_id.get(stub_id, {}))
+    } - {edge.get("target") for edge in edges if edge.get("_rust_use_name")}
+
     for edge in edges:
         if edge.get("source") in matlab_ids:
             continue
@@ -4118,6 +4243,8 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
                 edge, str(target), remapped_target
             ) and not _cross_language_candidate(edge, remapped_target):
                 edge["target"] = remapped_target
+                if target in rust_by_name_only:
+                    edge["confidence"] = "INFERRED"
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
     drop_ids = {stub_id for stub_id in remap if stub_id not in referenced}
@@ -4818,13 +4945,23 @@ def _resolve_python_member_calls(
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
+    def _is_python_file(source_file: object) -> bool:
+        # The effective suffix honours a `.graphifyrc` language override. Only a
+        # suffix another extractor owns is rejected: an extensionless file (a
+        # shebang script), an unknown suffix, or a raw call that names no file
+        # passes, as before the gate.
+        suffix = effective_suffix(str(source_file or ""))
+        if suffix.lower() in (".py", ".pyi"):
+            return True
+        return suffix not in _DISPATCH and suffix.lower() not in _DISPATCH
+
     node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
 
     # A class owns methods: it is the source of one or more `method` edges. Index
     # class label -> owning class node ids (len != 1 is the god-node guard), and
     # (class_node_id, method_key) -> method_node_id.
     class_def_nids: dict[str, list[str]] = {}
-    method_index: dict[tuple[str, str], str] = {}
+    method_index: dict[tuple[str, str], list[str]] = {}
     owner_of: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
@@ -4833,11 +4970,29 @@ def _resolve_python_member_calls(
         if src and tgt:
             owner_of[tgt] = src
         cnode = node_by_id.get(src)
-        if cnode is not None:
+        # Only Python classes are candidates: a Swift `Inner` must not trip the
+        # single-definition guard for a Python `Inner`.
+        if cnode is not None and _is_python_file(cnode.get("source_file")):
             class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            slot = method_index.setdefault((src, _key(tnode.get("label", ""))), [])
+            if tgt not in slot:
+                slot.append(tgt)
+
+    def _method_of(cls: str, callee: str) -> "str | None":
+        # The key folds case and drops `_`, so `run()` and `_run()` of one class
+        # share it; Python names are exact. Among several, the one named exactly
+        # `callee` is the call's target, and none or two of them is no edge, as
+        # in the module arm below (#4577).
+        hits = method_index.get((cls, _key(callee)), [])
+        if len(hits) > 1:
+            hits = [
+                m for m in hits
+                if str(node_by_id.get(m, {}).get("label", "")).strip().lstrip(".").removesuffix("()") == callee
+            ]
+        return hits[0] if len(hits) == 1 else None
+
     # A class with N methods produced N entries; collapse to a unique set. (No
     # early return when there are no classes: the module arm below resolves
     # `module.func()` where the callable is a plain function, not a method.)
@@ -4955,10 +5110,19 @@ def _resolve_python_member_calls(
             parent = nid = up
         return None
 
+    resolved_call_sites: dict[tuple[str, tuple[int, ...]], set[str]] = {}
+
     def _emit_call(
         caller: str, target_nid: "str | None", rc: dict, inferred: bool = False
     ) -> None:
-        if not target_nid or target_nid == caller or (caller, target_nid) in existing_pairs:
+        if not target_nid or target_nid == caller:
+            return
+        target_file = node_by_id.get(target_nid, {}).get("source_file")
+        if target_file and not _is_python_file(target_file):
+            # Python callers bind Python definitions only: `Inner.go()` in a .py
+            # file must not reach a Swift `Inner`, nor `SwiftArray.make()` a
+            # Swift node labelled `Swift.Array`. Stubs and external modules
+            # carry no file.
             return
         if rc.get("_python_attr_read"):
             # An attribute read only runs a property getter, and only the one it
@@ -4967,6 +5131,13 @@ def _resolve_python_member_calls(
             label = str(target.get("label", "")).strip().lstrip(".").removesuffix("()")
             if not target.get("_py_property") or label != rc.get("callee"):
                 return
+        elif rc.get("_python_call_site"):
+            # Record the precise producer before pair deduplication. A same-line
+            # argument call must never stand in for the assigned factory itself.
+            site = (caller, tuple(rc["_python_call_site"]))
+            resolved_call_sites.setdefault(site, set()).add(target_nid)
+        if (caller, target_nid) in existing_pairs:
+            return
         existing_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
@@ -5019,7 +5190,7 @@ def _resolve_python_member_calls(
         while cls and cls not in seen:
             seen.add(cls)
             if not skip_own:
-                hit = method_index.get((cls, _key(callee)))
+                hit = _method_of(cls, callee)
                 if hit:
                     return hit
             skip_own = False
@@ -5040,10 +5211,16 @@ def _resolve_python_member_calls(
             cls = base
         return None
 
+    factory_receivers: list[dict] = []
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
         if not rc.get("is_member_call"):
+            continue
+        if not _is_python_file(rc.get("source_file")):
+            # Python callers only: a Swift `Inner.go()` must not bind a Python
+            # `Inner`, nor `SwiftArray.make()` a Swift `Swift.Array`; other
+            # languages bind their member calls in their own passes.
             continue
         receiver = rc.get("receiver")
         callee = rc.get("callee")
@@ -5063,10 +5240,13 @@ def _resolve_python_member_calls(
             if len(class_nids) == 1 and caller_file is not None and (
                     file_of_node.get(class_nids[0]) == caller_file
                     or class_nids[0] in imported_by_filenode.get(caller_file, ())):
-                method_nid = method_index.get((class_nids[0], _key(callee)))
+                method_nid = _method_of(class_nids[0], callee)
                 _emit_call(caller, method_nid, rc, inferred=True)
             continue
         if not receiver or not callee or not caller:
+            continue
+        if rc.get("_python_receiver_factory"):
+            factory_receivers.append(rc)
             continue
         # External modules have no parsed member definition. The extractor's
         # present-false lexical fact and one exact plain import are both needed;
@@ -5097,7 +5277,7 @@ def _resolve_python_member_calls(
                     imported = imported_by_filenode.get(fixture_file, set())
                     cls_file = _file_node(cls)
                     if cls_file == fixture_file or cls in imported or (cls_file is not None and cls_file in imported):
-                        _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+                        _emit_call(caller, _method_of(cls, callee), rc, inferred=True)
             continue
         receiver_type = rc.get("receiver_type")
         if receiver_type and not receiver[:1].isupper():
@@ -5116,7 +5296,7 @@ def _resolve_python_member_calls(
                 imported = imported_by_filenode.get(caller_file, set())
                 cls_file = _file_node(cls)
                 if cls_file == caller_file or cls in imported or (cls_file is not None and cls_file in imported):
-                    _emit_call(caller, method_index.get((cls, _key(callee))), rc, inferred=True)
+                    _emit_call(caller, _method_of(cls, callee), rc, inferred=True)
             continue
         if receiver[:1].isupper():
             # Class arm (#1446): a capitalized receiver is a class reference; an
@@ -5124,7 +5304,7 @@ def _resolve_python_member_calls(
             class_nids = class_def_nids.get(_key(receiver), [])
             if len(class_nids) != 1:  # absent or ambiguous -> bail (god-node guard)
                 continue
-            _emit_call(caller, method_index.get((class_nids[0], _key(callee))), rc)
+            _emit_call(caller, _method_of(class_nids[0], callee), rc)
         else:
             # Module arm (#1883): a lowercase receiver may be an imported module.
             # Resolve it against the modules imported into the caller's own file
@@ -5150,6 +5330,33 @@ def _resolve_python_member_calls(
             if len(children) != 1:  # absent or ambiguous callable -> bail
                 continue
             _emit_call(caller, children[0], rc)
+
+    # A local bound to a uniquely resolved method call may take the method's
+    # scalar return annotation. Container/union/unknown return types do not name
+    # one class here, and rebinding/shadowing was already rejected by the extractor.
+    return_classes: dict[str, set[str]] = {}
+    class_ids = {nid for group in class_def_nids.values() for nid in group}
+    for edge in all_edges:
+        if edge.get("relation") == "references" and edge.get("context") == "return_type":
+            # The AST must also identify one scalar class. Looking only at
+            # reference edges would misread `Task | int` as Task: builtins have
+            # no class node and are deliberately omitted from type references.
+            if not node_by_id.get(edge["source"], {}).get("_py_return_type"):
+                continue
+            return_classes.setdefault(edge["source"], set()).add(edge["target"])
+    for rc in factory_receivers:
+        site = (rc["caller_nid"], tuple(rc["_python_receiver_factory"]))
+        producers = resolved_call_sites.get(site, set())
+        if len(producers) != 1:
+            continue
+        classes = return_classes.get(next(iter(producers)), set())
+        if len(classes) != 1:
+            continue
+        cls = next(iter(classes))
+        if cls in class_ids:
+            # method_index is list-valued since #4734; resolve the exact-spelled
+            # method via _method_of rather than passing the raw candidate list.
+            _emit_call(rc["caller_nid"], _method_of(cls, rc["callee"]), rc, inferred=True)
 
 
 # Every suffix the TS/JS extractors claim, so a pure-ESM (`.mjs`) repo still activates
@@ -8174,7 +8381,17 @@ def _xaml_codebehind_path(path: Path) -> Path | None:
     if expected.exists():
         return expected
     try:
-        for sibling in path.parent.iterdir():
+        # On a case-sensitive filesystem more than one sibling can match
+        # case-insensitively (App.xaml.cs alongside app.xaml.CS), and iterdir()
+        # yields them in filesystem order. Picking whichever came first made
+        # the resolved codebehind -- and so the symbols and edges extracted
+        # from it -- depend on directory layout rather than on the inputs.
+        #
+        # key=name rather than a bare sorted(): WindowsPath comparison is
+        # case-insensitive, so sorting the paths themselves leaves two
+        # case-variant names comparing equal and a stable sort hands back the
+        # original filesystem order, which is the thing being fixed.
+        for sibling in sorted(path.parent.iterdir(), key=lambda p: p.name):
             if sibling.name.casefold() == expected.name.casefold():
                 return sibling
     except OSError:
@@ -9462,18 +9679,33 @@ def extract(
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
+    cache_hits = 0
+    no_extractor = 0
 
     for i, path in enumerate(paths):
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
+            no_extractor += 1
             continue
         bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:
                 per_file[i] = cached
+                cache_hits += 1
                 continue
         uncached_work.append((i, path))
+
+    # Report the hit rate against the file TOTAL. The "(100%)" on the progress
+    # lines below counts progress through the uncached work, and reads as a
+    # cache-hit rate, which it is not (#4740).
+    if total:
+        print(
+            f"  AST cache: {cache_hits}/{total} files served from cache "
+            f"({cache_hits * 100 // total}%); {len(uncached_work)} to extract"
+            + (f"; {no_extractor} without an extractor" if no_extractor else ""),
+            flush=True,
+        )
 
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
@@ -9644,7 +9876,7 @@ def extract(
     # syntax the Lua grammar can't parse, #2520) extracts partially — sometimes
     # to nothing but the file node — with no other signal. Neither warning
     # above fires (nodes exist, no error marker), so surface it explicitly,
-    # naming the first error line so the user can find the construct.
+    # naming the error region's line so the user can find the construct.
     _syntax_error_files: list[tuple[str, int | None]] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
@@ -9672,10 +9904,11 @@ def extract(
             # one that yielded most of its symbols and lost an ERROR region is
             # partial. "May be partially extracted" rendered both identically.
             _kept = max(len(_res.get("nodes", [])) - 1, 0)
-            _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept))
+            _line = _pe.get("lossy_error_line") or _pe.get("first_error_line")
+            _syntax_error_files.append((_rel, _line, _kept))
     if _syntax_error_files:
         def _describe_syntax_error(rel: str, line: "int | None", kept: int) -> str:
-            _where = f"first error at line {line}" if line else "syntax error"
+            _where = f"error region at line {line}" if line else "syntax error"
             _got = "no symbols extracted" if kept == 0 else f"{kept} symbol(s) extracted"
             return f"{rel} ({_where}, {_got})"
 
@@ -10354,13 +10587,17 @@ def extract(
     # a sourceless node under the same id. Lend the rewire one for each imported name
     # that has none; they are not kept, so an unresolved import dangles as before.
     _use_stubs = {
-        e["target"]: {"id": e["target"], "label": e["_rust_use_name"], "file_type": "code", "source_file": ""}
+        e["target"]: {
+            "id": e["target"], "label": e["_rust_use_name"], "file_type": "code",
+            "source_file": "", "origin_file": e.get("source_file"),
+            "_rust_use_roots": ["crate"],
+        }
         for e in all_edges
         if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _fresh_ids
     }
     _rewire_view = all_nodes + list(_use_stubs.values()) + [
         n for n in resolution_context_nodes or [] if n.get("id") not in _fresh_ids]
-    _rewire_unique_stub_nodes(_rewire_view, all_edges)
+    _rewire_unique_stub_nodes(_rewire_view, all_edges, root)
     _kept = {id(n) for n in _rewire_view} - {id(n) for n in _use_stubs.values()}
     all_nodes[:] = [n for n in all_nodes if id(n) in _kept]
 
@@ -11018,6 +11255,9 @@ def extract(
     for e in all_edges:
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
+        e.pop("_rust_pub_use", None)
+    for n in all_nodes:
+        n.pop("_rust_use_roots", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a

@@ -2690,11 +2690,13 @@ def _python_self_attr(node, source: bytes) -> str | None:
         return None
     return _read_text(attr, source)
 
-def _python_self_attr_bindings(body, source: bytes):
+def _python_self_attr_bindings(body, source: bytes, local_types: dict[str, str | None] | None = None):
     """Yield ``(attr, type_name)`` for every ``self.attr = ...`` in a method body
     (#2860). ``type_name`` is the annotation (``self.attr: T = ...``) or the bare
     class of ``self.attr = Ctor(...)``, and None for any other value so the
-    caller can poison the field; ``self.attr = None`` binds nothing."""
+    caller can poison the field; ``self.attr = None`` binds nothing. An unchanged
+    typed parameter/local also carries its class through ``self.attr = value``."""
+    local_types = local_types or {}
     stack = list(body.named_children)
     while stack:
         node = stack.pop()
@@ -2705,11 +2707,14 @@ def _python_self_attr_bindings(body, source: bytes):
         if left is None:
             continue
         value, right = node.child_by_field_name("type"), node.child_by_field_name("right")
+        bound_type = None
         if value is None and right is not None:
             if right.type == "none":
                 continue
+            if right.type == "identifier":
+                bound_type = local_types.get(_read_text(right, source))
             value = right.child_by_field_name("function") if right.type == "call" else None
-        name = _read_text(value, source) if value is not None else ""
+        name = _read_text(value, source) if value is not None else (bound_type or "")
         typed = name.isidentifier() and name[:1].isupper()
         for target in (left.named_children if left.type == "pattern_list" else [left]):
             attr = _python_self_attr(target, source)
@@ -3876,6 +3881,35 @@ def _js_value_is_require(value_node, source: bytes) -> bool:
     fn = call.child_by_field_name("function")
     return fn is not None and _read_text(fn, source) == "require"
 
+def _js_require_specifier(value_node, source: bytes) -> str | None:
+    """The string literal argument of a `require(...)` call, or None."""
+    call = _find_require_call(value_node)
+    if call is None:
+        return None
+    args = call.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for arg in args.children:
+        if arg.type == "string":
+            raw = _read_text(arg, source).strip("'\"` ")
+            if raw:
+                return raw
+    return None
+
+def _js_require_resolves_locally(value_node, source: bytes, str_path: str) -> bool:
+    """True when a `require(...)` binding's specifier resolves to a file in the
+    corpus. A require of an external package (`require('some-plugin')`) has no
+    file to redirect `new X()`/`extends X` to, so suppressing its local node the
+    same way as a resolvable require leaves the use with no edge at all (#4688)
+    -- the caller should only suppress the node for the resolvable case."""
+    raw = _js_require_specifier(value_node, source)
+    if raw is None:
+        return False
+    resolved = _resolve_js_import_target(raw, str_path)
+    # An unresolved specifier (external package) still returns a `ref:`-namespaced
+    # id with no resolved path -- only a real local-file resolution has one.
+    return resolved is not None and resolved[1] is not None
+
 
 def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:
     """Detect CommonJS require imports inside lexical_declaration / variable_declaration.
@@ -3978,6 +4012,8 @@ def _scan_js_nested_function_declarations(
     container_node, parent_nid: str, *, source: bytes, config,
     add_node, add_edge, callable_def_nids: set | None,
     local_bound_names: dict | None, function_bodies: list,
+    scope_parents: dict[str, str] | None = None,
+    lexical_nids_by_scope: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """Emit a node + `contains` edge for every named `function`/generator
     declaration lexically nested inside *container_node*, scoped under
@@ -4010,6 +4046,14 @@ def _scan_js_nested_function_declarations(
                 nested_nid = _make_id(parent_nid, func_name)
                 add_node(nested_nid, f"{func_name}()", line)
                 add_edge(parent_nid, nested_nid, "contains", line)
+                # Record the nesting so a call resolves to the nearest `inner`
+                # in scope, not to whichever same-named function the file-wide
+                # name map saw last (the Python #3405 scheme).
+                if scope_parents is not None:
+                    scope_parents[nested_nid] = parent_nid
+                if lexical_nids_by_scope is not None:
+                    lexical_nids_by_scope.setdefault(parent_nid, {})[func_name] = nested_nid
+                    lexical_nids_by_scope.setdefault(nested_nid, {})[func_name] = nested_nid
                 if callable_def_nids is not None:
                     callable_def_nids.add(nested_nid)
                 if local_bound_names is not None:
@@ -4023,6 +4067,8 @@ def _scan_js_nested_function_declarations(
                         callable_def_nids=callable_def_nids,
                         local_bound_names=local_bound_names,
                         function_bodies=function_bodies,
+                        scope_parents=scope_parents,
+                        lexical_nids_by_scope=lexical_nids_by_scope,
                     )
         elif child.type in _JS_FUNCTION_VALUE_TYPES:
             # An anonymous arrow/function expression is not itself a node, but a
@@ -4034,6 +4080,8 @@ def _scan_js_nested_function_declarations(
                 callable_def_nids=callable_def_nids,
                 local_bound_names=local_bound_names,
                 function_bodies=function_bodies,
+                scope_parents=scope_parents,
+                lexical_nids_by_scope=lexical_nids_by_scope,
             )
         else:
             _scan_js_nested_function_declarations(
@@ -4042,6 +4090,8 @@ def _scan_js_nested_function_declarations(
                 callable_def_nids=callable_def_nids,
                 local_bound_names=local_bound_names,
                 function_bodies=function_bodies,
+                scope_parents=scope_parents,
+                lexical_nids_by_scope=lexical_nids_by_scope,
             )
 
 
@@ -4320,7 +4370,9 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
                    closure_locals_by_body: dict | None = None,
-                   config=None, js_member_groups: dict | None = None) -> bool:
+                   config=None, js_member_groups: dict | None = None,
+                   scope_parents: dict | None = None,
+                   lexical_nids_by_scope: dict | None = None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -4535,6 +4587,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     callable_def_nids=callable_def_nids,
                                     local_bound_names=local_bound_names,
                                     function_bodies=function_bodies,
+                                    scope_parents=scope_parents,
+                                    lexical_nids_by_scope=lexical_nids_by_scope,
                                 )
                                 # #3408: `this.X = fn` members were captured only
                                 # when the enclosing function was a DECLARATION;
@@ -4553,7 +4607,14 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         # shadowed the class the required file exports, so
                         # `new X()` bound to the local node instead of the
                         # required one (#4621). `var` never produced one either.
-                        and not _js_value_is_require(value, source)
+                        # Only suppress it when the specifier actually resolves
+                        # to a file in the corpus -- a require of an external
+                        # package has no required class to redirect to, so
+                        # suppressing it there just drops the use entirely (#4688).
+                        and not (
+                            _js_value_is_require(value, source)
+                            and _js_require_resolves_locally(value, source, str_path)
+                        )
                         and (
                             is_exported_scalar_binding
                             or value.type in (
@@ -5180,6 +5241,28 @@ def _first_parse_error_line(root) -> int:
         node = child
 
 
+def _first_multiline_error_line(root) -> int:
+    """1-based line of the first ERROR that spans more than one line.
+
+    The #2551 warning gate selects on a multiline region (or a total loss), so
+    that region is the actionable location. Earlier single-line recoveries can
+    sit far above it: in a decorator-heavy TS file, `@(Link().toMany())` errors
+    on line 14 but keeps every symbol, while the multiline chain on line 33 is
+    the one the reader needs (#4711).
+    """
+    best = None
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "ERROR" and n.end_point[0] > n.start_point[0]:
+            if best is None or n.start_byte < best.start_byte:
+                best = n
+        stack.extend(c for c in n.children if c.has_error)
+    if best is None:
+        return _first_parse_error_line(root)
+    return best.start_point[0] + 1
+
+
 def _has_multiline_error(root) -> bool:
     """True if any materialized ERROR node spans more than one line (a
     recovery region large enough to plausibly drop symbols, vs a tiny
@@ -5317,7 +5400,9 @@ def _python_class_ref(node, source: bytes) -> str | None:
             return _python_class_ref(right, source)
     return None
 
-def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | None]:
+def _python_local_class_bindings(
+    body_node, source: bytes, *, factory_bindings: dict[str, list[int]] | None = None,
+) -> dict[str, str | None]:
     """Map ``name -> ClassName`` for the parameters and locals of one Python function.
 
     Typed from a class annotation on a parameter or local (``request: Request``,
@@ -5331,10 +5416,12 @@ def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | No
     inside a lambda or a nested class body are attributed to this function, so
     every name those bind is poisoned rather than typed.
     """
-    bindings: dict[str, str | None] = {}
+    # A member-call result is not a known class in this file. Keep only its exact
+    # AST call span for the corpus resolver; the same poison rules apply to it.
+    bindings: dict[str, str | tuple[int, int] | None] = {}
     poison_only = False
 
-    def bind(name: str, cls: str | None) -> None:
+    def bind(name: str, cls: str | tuple[int, int] | None) -> None:
         if poison_only or cls is None or bindings.get(name, cls) != cls:
             bindings[name] = None
         elif name not in bindings:
@@ -5404,7 +5491,12 @@ def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | No
                     if annotation is not None:
                         bind(name, _python_class_ref(annotation, source))
                     elif right is not None and right.type == "call":
-                        bind(name, _python_class_ref(right.child_by_field_name("function"), source))
+                        fn = right.child_by_field_name("function")
+                        cls = _python_class_ref(fn, source)
+                        if cls is None and factory_bindings is not None and fn is not None and fn.type == "attribute":
+                            bind(name, (right.start_byte, right.end_byte))
+                        else:
+                            bind(name, cls)
                     else:
                         bindings[name] = None
                 else:
@@ -5434,7 +5526,10 @@ def _python_local_class_bindings(body_node, source: bytes) -> dict[str, str | No
             visit(child)
 
     visit(body_node)
-    return bindings
+    if factory_bindings is not None:
+        factory_bindings.update({name: list(value) for name, value in bindings.items()
+                                 if isinstance(value, tuple)})
+    return {name: value if isinstance(value, str) else None for name, value in bindings.items()}
 
 def _ruby_local_class_bindings(body_node, source: bytes) -> dict[str, str | None]:
     """Map ``local_var -> ClassName`` for ``var = ClassName.new`` within one Ruby
@@ -8297,6 +8392,8 @@ def _extract_generic(
                         callable_def_nids=callable_def_nids,
                         local_bound_names=local_bound_names,
                         function_bodies=function_bodies,
+                        scope_parents=scope_parents,
+                        lexical_nids_by_scope=lexical_nids_by_scope,
                     )
                 if config.ts_module == "tree_sitter_python":
                     _scan_python_nested_function_declarations(
@@ -8455,7 +8552,9 @@ def _extract_generic(
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
                               closure_locals_by_body, config=config,
-                              js_member_groups=js_member_groups):
+                              js_member_groups=js_member_groups,
+                              scope_parents=scope_parents,
+                              lexical_nids_by_scope=lexical_nids_by_scope):
                 return
 
         # TS enum members, and namespace / module containers
@@ -8698,6 +8797,12 @@ def _extract_generic(
         if n["id"] not in scope_parents:
             label_to_nid[normalised] = n["id"]
             label_to_nid_ci[normalised.lower()] = n["id"]
+        elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+            # A JS/TS nested function is only visible inside its parent, and the
+            # scoped lookup already finds it there. Kept out of the file-wide map,
+            # a same-named call elsewhere (top-level, imported, or another
+            # function's inner) can no longer bind to it.
+            continue
         else:
             label_to_nid.setdefault(normalised, n["id"])
             label_to_nid_ci.setdefault(normalised.lower(), n["id"])
@@ -8832,7 +8937,16 @@ def _extract_generic(
         string names an ATTRIBUTE and is never shadowed by a local, so that path passes
         the name straight through. ``loc_node`` supplies the source line.
         """
-        ref_nid = label_to_nid.get(ident_name)
+        ref_nid = None
+        if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+            # A nested function in scope wins over the file-wide name map, the
+            # same lookup the direct-call path does.
+            curr_scope = scope_nid
+            while curr_scope and ref_nid is None:
+                ref_nid = lexical_nids_by_scope.get(curr_scope, {}).get(ident_name)
+                curr_scope = scope_parents.get(curr_scope)
+        if ref_nid is None:
+            ref_nid = label_to_nid.get(ident_name)
         # Defer to the cross-file resolver when the name is not defined in this file
         # (`from .h import fn`), or resolves to an import-surfaced FOREIGN symbol whose
         # definition (and callability) lives in another file (JS/TS named imports map
@@ -9740,7 +9854,9 @@ def _extract_generic(
                 ):
                     tgt_nid = None
                 else:
-                    if config.ts_module == "tree_sitter_python" and not is_member_call:
+                    if config.ts_module in (
+                        "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
+                    ) and not is_member_call:
                         curr_scope = caller_nid
                         tgt_nid = None
                         while curr_scope:
@@ -9880,10 +9996,14 @@ def _extract_generic(
                             _py_type = python_var_types.get(caller_nid, {}).get(member_receiver)
                             if _py_type:
                                 rc_entry["receiver_type"] = _py_type
+                            elif member_receiver in python_factory_bindings.get(caller_nid, {}):
+                                rc_entry["_python_receiver_factory"] = python_factory_bindings[caller_nid][member_receiver]
                             elif member_receiver in python_fixture_params.get(caller_nid, ()):
                                 # A fixture parameter: typed by the resolver from the
                                 # fixture pytest would pick for it.
                                 rc_entry["_python_fixture_param"] = True
+                        if config.ts_module == "tree_sitter_python":
+                            rc_entry["_python_call_site"] = [node.start_byte, node.end_byte]
                         # `super(Cls, obj).m()` starts the MRO after Cls, not after the
                         # caller's class; only bare `super()` may walk the caller's bases.
                         if member_receiver == "super" and config.ts_module == "tree_sitter_python":
@@ -10244,11 +10364,19 @@ def _extract_generic(
     # `self.X.m()` can resolve corpus-side (#2860). Conflicting or untypable
     # bindings poison the field to None.
     python_attr_types: dict[str, dict[str, str | None]] = {}
+    python_factory_bindings: dict[str, dict[str, list[int]]] = {}
     if config.ts_module == "tree_sitter_python":
         for caller_nid, body_node in function_bodies:
+            factories: dict[str, list[int]] = {}
+            python_var_types[caller_nid] = _python_local_class_bindings(
+                body_node, source, factory_bindings=factories,
+            )
+            python_factory_bindings[caller_nid] = factories
             if caller_nid in method_owner:
                 fields = python_attr_types.setdefault(method_owner[caller_nid], {})
-                for attr, type_name in _python_self_attr_bindings(body_node, source):
+                for attr, type_name in _python_self_attr_bindings(
+                    body_node, source, python_var_types[caller_nid],
+                ):
                     fields[attr] = type_name if fields.get(attr, type_name) == type_name else None
 
     if config.ts_module == "tree_sitter_ruby":
@@ -10260,10 +10388,12 @@ def _extract_generic(
         _py_node_by_id = {n["id"]: n for n in nodes}
         _py_test_module = _python_is_test_module(str_path)
         for caller_nid, body_node in function_bodies:
-            python_var_types[caller_nid] = _python_local_class_bindings(body_node, source)
             func = getattr(body_node, "parent", None)
             if func is None or func.type != "function_definition":
                 continue
+            return_class = _python_class_ref(func.child_by_field_name("return_type"), source)
+            if caller_nid in _py_node_by_id and return_class:
+                _py_node_by_id[caller_nid]["_py_return_type"] = return_class
             if caller_nid in _py_node_by_id and _python_is_property(func, source):
                 _py_node_by_id[caller_nid]["_py_property"] = True
             if not _py_test_module:
@@ -10455,10 +10585,15 @@ def _extract_generic(
     # error's line so extract() can warn instead of reporting silent success.
     # Rides on the result dict, so it survives the per-file AST cache.
     if root.has_error:
+        _multiline = _has_multiline_error(root)
         result["parse_errors"] = {
             "first_error_line": _first_parse_error_line(root),
-            "multiline_error": _has_multiline_error(root),
+            "multiline_error": _multiline,
         }
+        if _multiline:
+            # Report the region the warning gate selected on, not an earlier
+            # fully-recovered one that would send the reader elsewhere (#4711).
+            result["parse_errors"]["lossy_error_line"] = _first_multiline_error_line(root)
     # Kotlin (#2526/#2550): the declared package qualifies every node in the
     # file; the import-target and qualified-call resolvers key their per-package
     # symbol indexes off it.
@@ -10584,26 +10719,60 @@ def _python_decorator_name(deco_node, source: bytes) -> str | None:
         return None
     return None
 
+def _ts_decorator_target_name(expr, source: bytes) -> str | None:
+    """The symbol a decorator expression applies: the outermost call's name.
+
+    `f` -> f; `f()` / `x.f()` -> f; `@Component({...})` -> Component. A
+    parenthesized decorator is unwrapped first. tree-sitter-typescript 0.23.2
+    cannot parse a call chain in decorator position (`@(Link().toMany())`): it
+    wraps `Link().` in an ERROR and parses `toMany()` as a SIBLING of the ERROR
+    inside the parentheses. The applied decorator is still that outermost call,
+    which is the last named call child, never the one buried in the ERROR
+    (#4711). Without this the whole parenthesized decorator contributed no edge,
+    though most of its expression parsed.
+    """
+    if expr is None:
+        return None
+    if expr.type == "parenthesized_expression":
+        calls = [c for c in expr.named_children if c.type == "call_expression"]
+        if calls:
+            return _ts_decorator_target_name(calls[-1], source)
+        # A recovered non-call expression (an invalid `@(A, B)` sequence lands
+        # here as ERROR + `B`) is not a decorator name: do not guess one.
+        if any(c.type == "ERROR" for c in expr.named_children):
+            return None
+        named = [c for c in expr.named_children if c.type != "ERROR"]
+        return _ts_decorator_target_name(named[0], source) if named else None
+    if expr.type == "call_expression":
+        fn = expr.child_by_field_name("function")
+        if fn is None:
+            return None
+        if fn.type == "member_expression":
+            prop = fn.child_by_field_name("property")
+            return _read_text(prop, source) if prop else None
+        if fn.type == "identifier":
+            return _read_text(fn, source)
+        return None
+    if expr.type == "member_expression":
+        prop = expr.child_by_field_name("property")
+        return _read_text(prop, source) if prop else None
+    if expr.type == "identifier":
+        return _read_text(expr, source)
+    return None
+
+
 def _ts_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a TS `decorator` node.
 
     `@Injectable` -> the identifier; `@Component({...})` / `@Input()` -> the
     `function` of the call_expression; `@ng.Component()` / `@core.Injectable` ->
     the `property` of the member_expression (the imported symbol, not the
-    namespace alias).
+    namespace alias); `@(Link().toMany())` -> the outermost call, `toMany`.
     """
     for child in deco_node.children:
         if not child.is_named:
             continue
-        target = child
-        if target.type == "call_expression":
-            target = target.child_by_field_name("function") or target
-        if target.type == "member_expression":
-            prop = target.child_by_field_name("property")
-            return _read_text(prop, source) if prop else None
-        if target.type == "identifier":
-            return _read_text(target, source)
-        return None
+        return _ts_decorator_target_name(child, source)
     return None
 
 def _ts_method_name(method_node, source: bytes) -> str | None:

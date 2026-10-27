@@ -422,7 +422,16 @@ def _pnpm_workspace_globs(workspace_file: Path) -> list[str]:
             in_packages = True
             continue
         if in_packages and line.startswith("-"):
-            value = line[1:].strip().strip("'\"")
+            value = line[1:].strip()
+            if value[:1] in ("'", '"'):
+                # Quoted: the value ends at the closing quote, so a `# comment` after it is dropped.
+                end = value.find(value[0], 1)
+                if end < 0:
+                    continue
+                value = value[1:end].strip()
+            else:
+                # Unquoted: a `#` only starts a comment after whitespace.
+                value = re.split(r"(?:^|\s)#", value, maxsplit=1)[0].strip()
             if value and not value.startswith("!"):
                 globs.append(value)
             continue
@@ -465,7 +474,11 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
 
     packages: dict[str, Path] = {}
     for pattern in _workspace_globs(root):
-        package_dirs: list[Path] = [root] if pattern in (".", "./") else list(root.glob(pattern))
+        try:
+            package_dirs: list[Path] = [root] if pattern in (".", "./") else list(root.glob(pattern))
+        except (ValueError, NotImplementedError) as e:
+            print(f"  warning: skipped workspace glob {pattern!r} ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
+            continue
         for package_dir in package_dirs:
             manifest = package_dir / "package.json"
             if not manifest.is_file():

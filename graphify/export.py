@@ -15,7 +15,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
-from graphify.build import edge_data, has_parallel_links
+from graphify.build import edge_datas, has_parallel_links
 from graphify.paths import (
     os_replace_with_fallback,
     stem_filename_budget,
@@ -340,7 +340,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
                 for node_id, attrs in G.nodes(data=True)
             ]
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set())
+            folded: dict[str, str] = {}
+            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set(), folded)
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)
@@ -350,7 +351,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
-            if new_n < existing_n:
+            # A saved semantic node merged into an AST twin that was already
+            # saved is one node, not two; a reload-and-recluster folds it (#4389).
+            # A twin new to this run does not offset some other node's loss.
+            existing_ids = {n.get("id") for n in existing_nodes if isinstance(n, dict)}
+            merged = sum(twin in existing_ids for twin in folded.values())
+            if new_n < existing_n - merged:
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
@@ -889,11 +895,20 @@ def to_obsidian(
         if neighbors:
             lines.append("## Connections")
             for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
-                edata = edge_data(G, node_id, neighbor)
                 neighbor_label = node_filename[neighbor]
-                relation = edata.get("relation", "")
-                confidence = edata.get("confidence", "EXTRACTED")
-                lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
+                # One bullet per parallel edge, not per neighbour: graph.json is
+                # reloaded as a MultiGraph when it carries parallel edges
+                # (#4500), and `edge_data()` returns only the FIRST of them — so
+                # a pair joined by both `imports` and `calls` lost one relation
+                # from the note. Sorted so the note is byte-stable regardless of
+                # the order the parallel edges were inserted in.
+                for edata in sorted(
+                    edge_datas(G, node_id, neighbor),
+                    key=lambda d: (str(d.get("relation", "")), str(d.get("confidence", "EXTRACTED"))),
+                ):
+                    relation = edata.get("relation", "")
+                    confidence = edata.get("confidence", "EXTRACTED")
+                    lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
             lines.append("")
 
         # Inline tags at bottom of note body (for Obsidian tag panel)

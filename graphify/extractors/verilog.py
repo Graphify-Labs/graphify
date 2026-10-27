@@ -53,6 +53,14 @@ _SV_FUNC_RE = re.compile(
     re.MULTILINE,
 )
 
+# A class method declared `task` instead of `function` has no return type to
+# capture, otherwise the same header shape.
+_SV_TASK_RE = re.compile(
+    r"\btask\s+(\w+)\s*"
+    r"\((" + _SV_PARENS_INNER + r")\)\s*;",
+    re.MULTILINE,
+)
+
 _SV_PARAM_RE = re.compile(
     r"\s*(?:input|output|inout|ref|const\s+ref)?\s*"
     r"([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+\w+"
@@ -167,21 +175,30 @@ def _augment_systemverilog_semantics(
             for iface_name in _sv_split_type_list(impl.group(1)):
                 add_edge(class_nid, iface_name.split("#", 1)[0].strip(), "implements", line)
 
-        body_without_functions = re.sub(
+        # A `task` method's own locals (and any typed declaration inside its
+        # body) must not leak into the field scan below, exactly like a
+        # function's body already doesn't - so both get stripped the same way.
+        body_without_methods = re.sub(
             r"\bfunction\b.*?\bendfunction\b",
             lambda m: "\n" * m.group(0).count("\n"),
             body,
+            flags=re.DOTALL,
+        )
+        body_without_methods = re.sub(
+            r"\btask\b.*?\bendtask\b",
+            lambda m: "\n" * m.group(0).count("\n"),
+            body_without_methods,
             flags=re.DOTALL,
         )
         # Optional leading class-property qualifiers (rand/local/protected/etc.)
         # must be consumed: otherwise a qualified field like `rand Config x;`
         # (three tokens) fails the `<type> <name>;` shape and its type reference
         # is silently dropped.
-        for field in re.finditer(r"^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_functions, re.MULTILINE):
+        for field in re.finditer(r"^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_methods, re.MULTILINE):
             # Count to the start of the type token (group 1), not the match
             # start: `^\s*` consumes the leading newline(s), so field.start()
             # would resolve to the class's line instead of the field's.
-            field_line = line + body_without_functions.count("\n", 0, field.start(1))
+            field_line = line + body_without_methods.count("\n", 0, field.start(1))
             for ref_name, role in _sv_collect_type_refs(field.group(1), skip=type_params):
                 add_edge(class_nid, ref_name, "references", field_line, "generic_arg" if role == "generic_arg" else "field")
 
@@ -201,6 +218,21 @@ def _augment_systemverilog_semantics(
                     continue
                 for ref_name, role in _sv_collect_type_refs(pm.group(1), skip=type_params):
                     add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "parameter_type")
+
+        for tm in _SV_TASK_RE.finditer(body):
+            task_name, params = tm.group(1), tm.group(2)
+            task_line = line + body.count("\n", 0, tm.start())
+            task_nid = _make_id(class_nid, task_name)
+            add_node(task_nid, task_name, task_line)
+            edges.append({"source": class_nid, "target": task_nid, "relation": "method",
+                          "confidence": "EXTRACTED", "confidence_score": 1.0,
+                          "source_file": str_path, "source_location": f"L{task_line}", "weight": 1.0})
+            for param in _sv_split_type_list(params):
+                pm = _SV_PARAM_RE.match(param)
+                if not pm:
+                    continue
+                for ref_name, role in _sv_collect_type_refs(pm.group(1), skip=type_params):
+                    add_edge(task_nid, ref_name, "references", task_line, "generic_arg" if role == "generic_arg" else "parameter_type")
 
 def extract_verilog(path: Path) -> dict:
     """Extract modules, functions, tasks, package imports, instantiations, and
