@@ -110,17 +110,26 @@ def test_detect_warns_small_corpus():
     assert result["needs_graph"] is False
     assert result["warning"] is not None
 
-def test_detect_skips_noise_dot_dirs():
-    """Noise dot dirs (.next, .nuxt, .graphify cache, …) are skipped (#873).
-    Non-noise dot dirs (.github, .claude, …) are now allowed through."""
+@pytest.fixture
+def detected_fixture_paths():
     result = detect(FIXTURES)
-    for files in result["files"].values():
-        for f in files:
-            # graphify's own cache is always skipped
-            assert "/.graphify/" not in f
-            # well-known framework caches are always skipped
-            for noise in ("/.next/", "/.nuxt/", "/.turbo/", "/.angular/"):
-                assert noise not in f
+    return [
+        file_path
+        for files in result["files"].values()
+        for file_path in files
+    ]
+
+
+@pytest.mark.parametrize(
+    "noise_dir",
+    [".graphify", ".next", ".nuxt", ".turbo", ".angular"],
+)
+def test_detect_skips_noise_dot_dirs(noise_dir, detected_fixture_paths):
+    """Noise directories must not appear in detected source files (#873)."""
+    assert not any(
+        f"/{noise_dir}/" in file_path
+        for file_path in detected_fixture_paths
+    ), f"Directory {noise_dir} should be ignored"
 
 
 def test_detect_skips_obsidian_vault_metadata_dirs(tmp_path):
