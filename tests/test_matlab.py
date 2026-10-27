@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from graphify.build import build
+from graphify.extract import extract
 from graphify.extractors.base import set_active_scan_root
 from graphify.extractors.matlab import extract_matlab
 
@@ -300,6 +302,22 @@ function helper()
 end
 """)
     assert call_sites(result) == [("independent", "helper", "L8")]
+
+
+def test_unqualified_call_argument_inside_member_call_survives_build(tmp_path):
+    path = tmp_path / "main.m"
+    path.write_text(
+        "function main(obj)\nobj.run(helper());\nend\nfunction helper()\nend\n"
+    )
+    extraction = extract(
+        [path], root=tmp_path, cache_root=tmp_path / "cache", parallel=False,
+    )
+    assert call_sites(extraction) == [("main", "helper", "L2")]
+
+    graph = build([extraction], dedup=False, root=tmp_path)
+    main = next(node["id"] for node in extraction["nodes"] if node["label"] == "main")
+    helper = next(node["id"] for node in extraction["nodes"] if node["label"] == "helper")
+    assert graph.edges[main, helper]["relation"] == "calls"
 
 
 def test_indexing_qualified_dynamic_and_handle_forms_are_not_calls(tmp_path):

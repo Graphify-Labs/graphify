@@ -57,6 +57,25 @@ def test_persisted_matlab_native_homonyms_are_not_neighbors(
     assert reloaded.edges["native", "native_target"]["relation"] == relation
 
 
+@pytest.mark.parametrize(
+    ("source_file", "file_type"),
+    [("guide.md", "document"), ("settings.json", "code")],
+)
+def test_source_backed_docs_and_configs_reference_matlab(source_file, file_type):
+    graph = build([{
+        "nodes": [
+            {
+                "id": "source", "label": source_file, "source_file": source_file,
+                "file_type": file_type, "type": file_type,
+            },
+            _node("main", "main", "main.m", matlab=True),
+        ],
+        "edges": [_edge("source", "main", "references", source_file)],
+    }], dedup=False)
+
+    assert graph.edges["source", "main"]["relation"] == "references"
+
+
 def _type_graph(*, matlab=False, source="Greeter.m", method="-greet"):
     return build([{"nodes": [
         _node("greeter", "Greeter", source, matlab=matlab, kind="class", namespace="Shared"),
