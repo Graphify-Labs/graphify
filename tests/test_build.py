@@ -647,10 +647,6 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
     from graphify.extract import extract_js
     from graphify.export import to_json
 
-    def get_call_edges(graph_data):
-        edges = graph_data.get("links", graph_data.get("edges", []))
-        return [edge for edge in edges if edge.get("relation") == "calls"]
-
     # Callee `b` is defined before caller `a` so node insertion order
     # is b, a. An undirected Graph then yields the edge as (b, a) on
     # iteration, which is the wrong direction for `calls` (a calls b).
@@ -700,6 +696,10 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
         f"calls edge target flipped after build_merge round-trip: "
         f"expected {truth_tgt} (b), got {reloaded_calls[0]['target']}"
     )
+
+def get_call_edges(graph_data):
+    edges = graph_data.get("links", graph_data.get("edges", []))
+    return [edge for edge in edges if edge.get("relation") == "calls"]
 
 
 def test_build_merge_directed_edge_direction_survives_round_trip(tmp_path):
@@ -839,8 +839,7 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
     graph_path = tmp_path / "graph.json"
     assert to_json(G, {}, str(graph_path), force=True)
     saved = json.loads(graph_path.read_text())
-    saved_calls = [e for e in saved.get("links", saved.get("edges", []))
-                   if e.get("relation") == "calls"]
+    saved_calls = get_call_edges(saved)
     assert len(saved_calls) == 1
     assert saved_calls[0]["source"] == "a_handler", (
         f"calls edge source flipped on bidirectional collision: "
