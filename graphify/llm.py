@@ -508,7 +508,8 @@ def _resolve_max_retry_depth(default: int = 3) -> int:
 
 def _thinking_disabled_via_env() -> bool:
     """Opt-in (GRAPHIFY_DISABLE_THINKING) to send ``{"thinking": {"type": "disabled"}}``
-    to reasoning-capable OpenAI-compatible models such as ``deepseek-v4-flash``.
+    to reasoning-capable OpenAI-compatible models such as ``deepseek-v4-flash``, and
+    to the native Claude backend.
 
     Off by default and deliberately so (#1621): a thinking-on model can occasionally
     leak reasoning prose instead of JSON, but that response is caught and re-tried by
@@ -520,6 +521,36 @@ def _thinking_disabled_via_env() -> bool:
     (kimi) branch keeps disabling thinking unconditionally because that model returns
     empty content otherwise."""
     return os.environ.get("GRAPHIFY_DISABLE_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Claude models that 400 on `thinking: disabled` (Opus 5.5, Sonnet 5.5, Fable, or a
+# gateway behind ANTHROPIC_BASE_URL that rejects the field). The flag is global, so
+# one set for another backend must not break them; remember each after one retry.
+_CLAUDE_NO_DISABLED_THINKING: set[str] = set()
+
+
+def _create_claude_message(client, **kwargs):
+    """``client.messages.create`` that honours GRAPHIFY_DISABLE_THINKING (#4546).
+
+    Claude models that think by default (Haiku 5.5, Opus 5) spend those tokens out of
+    ``max_tokens``, so extraction truncates unless thinking is turned off."""
+    model = kwargs["model"]
+    if not _thinking_disabled_via_env() or model in _CLAUDE_NO_DISABLED_THINKING:
+        return client.messages.create(**kwargs)
+    import anthropic
+
+    try:
+        return client.messages.create(**kwargs, thinking={"type": "disabled"})
+    except anthropic.BadRequestError:
+        # Raises again if the 400 had another cause.
+        resp = client.messages.create(**kwargs)
+    _CLAUDE_NO_DISABLED_THINKING.add(model)
+    print(
+        f"[graphify] {model} does not accept disabled thinking; "
+        "GRAPHIFY_DISABLE_THINKING is ignored for it.",
+        file=sys.stderr,
+    )
+    return resp
 
 _EXTRACTION_SYSTEM = """\
 You are a graphify semantic extraction agent. Extract a knowledge graph fragment from the files provided.
@@ -1678,7 +1709,8 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
         timeout=_resolve_api_timeout(),
         max_retries=_resolve_max_retries(),
     )
-    resp = client.messages.create(
+    resp = _create_claude_message(
+        client,
         model=model,
         max_tokens=max_tokens,
         system=_extraction_system(deep=deep_mode),
@@ -3143,7 +3175,8 @@ def _call_llm(
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
         client = anthropic.Anthropic(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
-        resp = client.messages.create(
+        resp = _create_claude_message(
+            client,
             model=mdl,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],

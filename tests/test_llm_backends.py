@@ -1067,6 +1067,80 @@ def test_ollama_thinking_disabled_via_env_survives_num_ctx(monkeypatch):
     assert native["keep_alive"] == "30m"
 
 
+def _install_capturing_anthropic(monkeypatch, *, rejects=lambda kwargs: False):
+    """Fake anthropic SDK recording each messages.create() call; `rejects` decides
+    which calls get a 400."""
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    calls = []
+
+    class _BadRequestError(Exception):
+        pass
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if rejects(kwargs):
+                raise _BadRequestError("invalid_request_error")
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text='{"nodes":[{"id":"x"}],"edges":[]}')],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                stop_reason="end_turn",
+            )
+
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = lambda **_: SimpleNamespace(messages=_Messages())
+    mod.BadRequestError = _BadRequestError
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    monkeypatch.setattr(llm, "_CLAUDE_NO_DISABLED_THINKING", set())
+    return calls
+
+
+def test_claude_thinking_untouched_by_default(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_DISABLE_THINKING", raising=False)
+    calls = _install_capturing_anthropic(monkeypatch)
+
+    llm._call_claude("k", "claude-haiku-5-5", "u")
+
+    assert "thinking" not in calls[0]
+
+
+def test_claude_thinking_disabled_via_env(monkeypatch):
+    # Haiku 5.5 thinks by default and the thinking counts against max_tokens (#4546).
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    calls = _install_capturing_anthropic(monkeypatch)
+
+    llm._call_claude("k", "claude-haiku-5-5", "u")
+    llm._call_llm("label this", backend="claude", model="claude-haiku-5-5")
+
+    assert [c.get("thinking") for c in calls] == [{"type": "disabled"}] * 2
+
+
+def test_claude_model_that_rejects_disabled_thinking_runs_without_it(monkeypatch):
+    # Opus 5.5 and Sonnet 5.5 400 on it; a flag set for another backend must not
+    # break them, and the failed request is paid once per model, not per chunk.
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    calls = _install_capturing_anthropic(monkeypatch, rejects=lambda kw: "thinking" in kw)
+
+    first = llm._call_claude("k", "claude-opus-5-5", "u")
+    llm._call_claude("k", "claude-opus-5-5", "u")
+
+    assert first["nodes"]
+    assert ["thinking" in c for c in calls] == [True, False, False]
+
+
+def test_claude_bad_request_for_another_reason_still_raises(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    _install_capturing_anthropic(monkeypatch, rejects=lambda kw: True)
+
+    with pytest.raises(Exception, match="invalid_request_error"):
+        llm._call_claude("k", "claude-haiku-5-5", "u")
+    assert llm._CLAUDE_NO_DISABLED_THINKING == set()
+
+
 def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeypatch):
     # An explicit extra_body means "I own this request shape" — Ollama's
     # num_ctx auto-derive (a default) must step aside or we'd clobber it.
