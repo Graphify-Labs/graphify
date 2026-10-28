@@ -19,9 +19,8 @@ from tests.csharp_extension_harness import (
 FIXTURE_IDS = list(FIXTURES)
 
 # Stage 1: in-corpus receivers, scope, assignability, poison, arity.
-# Stage 2 adds: primitive_and_thirdparty, generic_wildcard, bcl_name_cost,
-#               static_class_receiver.
-# Stage 3 adds: issue_repro.
+# Stage 2: out-of-corpus receivers guarded by the BCL/regular-name rules.
+# Stage 3 adds: issue_repro (untyped/chained receivers).
 STAGE_FIXTURES = {
     "domain_cross_file",
     "same_file",
@@ -30,6 +29,9 @@ STAGE_FIXTURES = {
     "base_and_interface",
     "inner_scope_wins",
     "instance_wins",
+    # stage 2: out-of-corpus receivers (primitives, third-party types, `this T`)
+    "primitive_and_thirdparty",
+    "generic_wildcard",
 }
 
 
@@ -96,3 +98,45 @@ def test_out_of_scope_extension_binds_nothing():
 def test_unresolved_base_poisons_the_lookup():
     result = graph_bindings("unresolved_base_poison")
     assert not any(marker == "// E1" for marker, _target in result["bindings"])
+
+
+def test_out_of_corpus_receiver_binds_through_the_guarded_rung():
+    """`string.Mask()`, `int.Twice()` and a third-party receiver all bind."""
+    result = graph_bindings("primitive_and_thirdparty")
+    for marker, target in (
+        ("// E1", ("Ext.cs", "// D1")),
+        ("// E2", ("Ext.cs", "// D2")),
+        ("// E3", ("Ext.cs", "// D3")),
+    ):
+        assert (marker, target) in result["bindings"], marker
+
+
+def test_out_of_corpus_extension_edge_is_scored_lower():
+    from tests.csharp_extension_harness import corpus
+
+    data = corpus("primitive_and_thirdparty")
+    by_id = {n["id"]: n for n in data["nodes"]}
+    scores = {
+        by_id[e["target"]]["label"]: e["confidence_score"]
+        for e in data["edges"]
+        if e.get("relation") == "calls"
+        and by_id.get(e["target"], {}).get("metadata", {}).get("extension")
+    }
+    assert scores[".Mask()"] == 0.70
+    assert scores[".Twice()"] == 0.70
+
+
+def test_bcl_member_name_on_an_undeclared_type_is_not_bound():
+    """`PropertyInfo.GetValue(obj)` is an instance call; the corpus cannot prove
+    otherwise, so the deny-list refuses the same-named extension."""
+    result = graph_bindings("bcl_name_cost")
+    assert not any(marker == "// E1" for marker, _target in result["bindings"])
+
+
+def test_open_generic_extension_applies_only_as_a_wildcard():
+    result = graph_bindings("generic_wildcard")
+    assert ("// E1", ("Gen.cs", "// D1")) in result["bindings"]
+    # The concrete class T keeps winning over the generic `this T` declaration.
+    concrete = graph_bindings("type_param_vs_class")
+    assert ("// E1", ("T.cs", "// D1")) in concrete["bindings"]
+    assert ("// E1", ("T.cs", "// D2")) not in concrete["bindings"]
