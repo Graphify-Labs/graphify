@@ -4847,6 +4847,29 @@ def test_systemverilog_task_locals_do_not_leak_into_class_fields():
     assert ("DataProcessor", "Flag") not in _edge_labels(r, "references", "field")
 
 
+def test_systemverilog_constructor_method_gets_a_node():
+    """A `new` constructor has no return type, but the function-header regex
+    always required one (`function TYPE NAME(...)`), so `function new(...)` -
+    the single most common class method in SystemVerilog - matched nothing at
+    all: no node, no `method` edge, and its parameter types vanished too.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "new") in _edge_labels(r, "method")
+    assert ("new", "Config") in _edge_labels(r, "references", "parameter_type")
+
+
+def test_systemverilog_explicit_return_type_function_still_works():
+    """Control: a function with an explicit return type (the adjacent, already
+    working case) must still separate its return type from its name correctly
+    after the header regex's return type became optional."""
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "build") in _edge_labels(r, "method")
+    assert ("build", "Result") in _edge_labels(r, "references", "return_type")
+    assert ("build", "Payload") in _edge_labels(r, "references", "parameter_type")
+    # The return type must not be swallowed as part of the method name.
+    assert "Resultbuild" not in _labels(r)
+
+
 # ── Header/impl class merge + .h routing (#1547 C++, #1556 ObjC/Swift) ─────────
 from graphify.extract import (
     extract as _extract_corpus,
