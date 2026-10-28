@@ -3262,6 +3262,49 @@ def test_powershell_script_scope_walk_does_not_duplicate_function_calls(tmp_path
     callers |= {c["caller_nid"] for c in r["raw_calls"]}
     assert file_nid not in callers, f"File node became a caller; callers={callers}"
 
+
+# ── PowerShell: using statement ──────────────────────────────────────────────
+
+def test_powershell_using_module_with_extension_resolves_to_stem(tmp_path):
+    """`using module Helpers.psm1` must resolve to 'helpers', not the extension.
+
+    The value after `using module`/`using assembly` is a file or library name
+    (an extension to strip), not a dotted namespace path (a hierarchy to
+    descend) like `using namespace`. Splitting on the last '.' for every form
+    alike takes the extension instead of the name.
+    """
+    f = tmp_path / "main.ps1"
+    f.write_text("using module Helpers.psm1\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any("helpers" in t for t in targets), f"Missing using-module Helpers edge; targets={targets}"
+    assert not any(t.endswith("psm1") or t == "psm1" for t in targets), (
+        f"using-module edge resolved to the file extension instead of the name; targets={targets}"
+    )
+
+
+def test_powershell_using_assembly_with_extension_resolves_to_stem(tmp_path):
+    """`using assembly System.Data.dll` must resolve to the library name, not 'dll'."""
+    f = tmp_path / "main.ps1"
+    f.write_text("using assembly System.Data.dll\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert not any(t == "dll" for t in targets), (
+        f"using-assembly edge resolved to the file extension instead of the name; targets={targets}"
+    )
+
+
+def test_powershell_using_namespace_keeps_last_segment(tmp_path):
+    """Control: `using namespace` must keep taking the last dotted segment (unchanged)."""
+    f = tmp_path / "main.ps1"
+    f.write_text("using namespace System.Management.Automation\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any("automation" in t for t in targets), (
+        f"Missing using-namespace Automation edge; targets={targets}"
+    )
+
+
 # ── PowerShell manifest (.psd1) (#1331) ──────────────────────────────────────
 
 def test_powershell_psd1_dispatched():
