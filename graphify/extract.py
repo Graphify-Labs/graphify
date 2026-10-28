@@ -6842,6 +6842,246 @@ def _resolve_csharp_member_calls(
         })
 
 
+def _resolve_csharp_extension_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Bind C# extension-method calls (``recv.Ext()``) to their declaration (#4828).
+
+    An extension invocation is static dispatch: the receiver is the first
+    argument of a method declared on a *static class*, not a member of the
+    receiver's type. ``_resolve_csharp_member_calls`` therefore cannot see it —
+    it looks the name up on the receiver's type and its base chain, and an
+    extension lives on a sibling type — so a widely used helper had no callers
+    in the graph and looked dead.
+
+    The declaration side now records ``extended_type`` (plus arity and a
+    type-parameter marker) on the extension node; this pass joins call sites to
+    it. Every rule is a C# resolution rule, and anything unprovable is dropped:
+
+      * the receiver's declared type must be in the corpus and its base chain
+        fully resolved — an out-of-corpus base may declare an *instance* member
+        of that name, which always wins over an extension;
+      * the receiver type must declare no instance member of that name;
+      * the declaring static class's namespace must be visible at the call site,
+        walking the enclosing namespace declarations outward (a file-level
+        ``using`` belongs to the compilation unit, so an inner-namespace
+        extension wins);
+      * the extended type must be the receiver's type or one of its resolved
+        base types or interfaces;
+      * the declaration must accept the call's argument count, using the same
+        ``arity``/``min_arity`` facts #4584 already records (the receiver is one
+        parameter short of the call);
+      * more than one surviving declaration is ambiguous and binds nothing.
+
+    An open generic (``this T``) or ``this object`` declaration applies to any
+    receiver, but only when no exact/base match exists — C# prefers the
+    non-generic candidate.
+    """
+    def _key(label: str) -> str:
+        # Case and `_` are part of a C# name (#4415); drop only the `.M()` decoration.
+        return re.sub(r"\W+", "", str(label))
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+
+    type_def_nids: dict[str, list[str]] = {}
+    for nid in contained:
+        n = node_by_id.get(nid)
+        if (
+            n is not None
+            and _is_cs_file(n.get("source_file"))
+            and _is_type_like_definition(n)
+        ):
+            type_def_nids.setdefault(_key(n.get("label", "")), []).append(nid)
+
+    resolver = CsharpNameResolver(all_nodes, all_edges)
+
+    # Extension declarations, by the name a call site spells.
+    ext_by_name: dict[str, list[dict]] = {}
+    method_owner: dict[str, str] = {}
+    method_index: dict[tuple[str, str], list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        owner, method_nid = e.get("source"), e.get("target")
+        mnode = node_by_id.get(method_nid)
+        if mnode is None or not _is_cs_file(mnode.get("source_file")):
+            continue
+        method_owner.setdefault(method_nid, owner)
+        method_index.setdefault((owner, _key(mnode.get("label", ""))), []).append(method_nid)
+        meta = mnode.get("metadata") or {}
+        arity = meta.get("arity")
+        if not meta.get("extension") or not isinstance(arity, int):
+            continue
+        low = meta.get("min_arity")
+        ext_by_name.setdefault(_key(mnode.get("label", "")), []).append({
+            "method": method_nid,
+            "extended": str(meta.get("extended_type") or ""),
+            "ext_arity": meta.get("extended_type_arity") or 0,
+            "is_type_param": bool(meta.get("extended_is_type_param")),
+            "arity": arity,
+            "low": low if isinstance(low, int) else arity,
+            "variadic": bool(meta.get("variadic")),
+            "namespace": str(meta.get("namespace") or ""),
+        })
+    if not ext_by_name:
+        return
+
+    # Supertype graph. A target with no source_file is a placeholder for a type
+    # the corpus never declares: the chain through it is UNRESOLVED.
+    supers: dict[str, set[str]] = {}
+    for e in all_edges:
+        if e.get("relation") not in ("inherits", "implements"):
+            continue
+        if not _is_cs_file(e.get("source_file")):
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        if isinstance(src, str) and isinstance(tgt, str):
+            supers.setdefault(src, set()).add(tgt)
+
+    closure_cache: dict[str, tuple[set[str], bool]] = {}
+
+    def _closure(nid: str) -> tuple[set[str], bool]:
+        cached = closure_cache.get(nid)
+        if cached is not None:
+            return cached
+        out: set[str] = set()
+        unresolved = False
+        stack = [nid]
+        while stack:
+            cur = stack.pop()
+            if cur in out:
+                continue
+            out.add(cur)
+            for sup in supers.get(cur, ()):
+                snode = node_by_id.get(sup)
+                if snode is None or not snode.get("source_file"):
+                    unresolved = True
+                    continue
+                stack.append(sup)
+        closure_cache[nid] = (out, unresolved)
+        return out, unresolved
+
+    def _resolve_type_nid(type_name: str | None, caller_node: dict | None,
+                          src_file: str) -> str | None:
+        if not type_name:
+            return None
+        if caller_node is not None:
+            resolved, decisive = resolver.resolve_type_name(
+                type_name, caller_node, src_file
+            )
+            if resolved:
+                return resolved
+            if decisive:
+                return None
+        hits = type_def_nids.get(_key(type_name), [])
+        return hits[0] if len(hits) == 1 else None
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for result in per_file:
+        for rc in result.get("raw_calls") or []:
+            if rc.get("lang") != "csharp" or not rc.get("is_member_call"):
+                continue
+            caller = rc.get("caller_nid")
+            callee = rc.get("callee")
+            argc = rc.get("arity")
+            receiver = rc.get("receiver")
+            chain = rc.get("receiver_chain") or []
+            if not caller or not callee or not isinstance(argc, int):
+                continue
+            if receiver == "base":
+                continue  # base.M() is nominal dispatch, never an extension
+            src_file = str(rc.get("source_file") or "")
+            caller_node = node_by_id.get(caller)
+            if caller_node is None:
+                continue
+
+            recv_name = rc.get("receiver_type")
+            if not recv_name and chain:
+                if len(chain) > 1:
+                    # `x.F.M()` needs F's declared type, not x's: fail closed
+                    # rather than bind the extension to the root's type.
+                    continue
+                recv_name = chain[0]
+            if not recv_name and receiver == "this":
+                owner = method_owner.get(caller)
+                owner_node = node_by_id.get(owner) if owner else None
+                recv_name = (owner_node or {}).get("label")
+            if not recv_name:
+                continue
+
+            recv_nid = _resolve_type_nid(recv_name, caller_node, src_file)
+            if recv_nid is None:
+                continue
+
+            closure, unresolved = _closure(recv_nid)
+            if unresolved:
+                # An out-of-corpus base may declare this name as an instance
+                # member, which beats any extension. Not provable: no edge.
+                continue
+            if any(method_index.get((owner, _key(callee))) for owner in closure):
+                continue  # an instance member (or an override) wins
+
+            candidates = ext_by_name.get(_key(callee))
+            if not candidates:
+                continue
+
+            for visible in resolver.visible_namespaces(caller_node, src_file):
+                at_level = [d for d in candidates if d["namespace"] in visible]
+                if at_level:
+                    candidates = at_level
+                    break
+            else:
+                continue
+
+            exact = [
+                d for d in candidates
+                if not d["is_type_param"] and _key(d["extended"]) == _key(recv_name)
+            ]
+            inherited = [
+                d for d in candidates
+                if not d["is_type_param"]
+                and _key(d["extended"]) in {
+                    _key((node_by_id.get(c) or {}).get("label", "")) for c in closure
+                }
+            ]
+            applicable = exact or inherited
+            if not applicable:
+                applicable = [
+                    d for d in candidates
+                    if d["is_type_param"] or d["extended"].lower() in ("object", "dynamic")
+                ]
+            if not applicable:
+                continue
+
+            fits = [
+                d for d in applicable
+                if d["low"] <= argc and (argc <= d["arity"] - 1 or d["variadic"])
+            ]
+            if len(fits) != 1:
+                continue  # no declaration accepts this call shape, or ambiguous
+
+            method_nid = fits[0]["method"]
+            if method_nid == caller or (caller, method_nid) in existing_pairs:
+                continue
+            existing_pairs.add((caller, method_nid))
+            all_edges.append({
+                "source": caller,
+                "target": method_nid,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "INFERRED",
+                # Receiver typed from the extractor's declaration table, so the
+                # discrete INFERRED rung (0.85) rather than a source-named type.
+                "confidence_score": 0.85,
+                "source_file": src_file,
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+            })
+
+
 def _bind_member_field_tables(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -8878,6 +9118,12 @@ register_language_resolver(
 # bound to the receiver's declared type instead of a bare same-named match.
 register_language_resolver(
     LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
+)
+# C# extension-method calls (#4828): `recv.Ext()` where Ext is a `this`-parameter
+# method on a static class. Runs after the nominal pass so an instance member has
+# already won, and adds only the calls that pass could not bind.
+register_language_resolver(
+    LanguageResolver("csharp_extension_calls", frozenset({".cs"}), _resolve_csharp_extension_calls)
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
