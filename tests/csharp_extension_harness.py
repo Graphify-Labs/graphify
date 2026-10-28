@@ -855,7 +855,7 @@ def apply_strategy(
             if (caller, cand.method_id) in existing:
                 continue
             existing.add((caller, cand.method_id))
-            score = 0.85 if not (roc or recv_type is None) else 0.70
+            score = 0.85 if not (roc or recv_type is None) else 0.75
             added.append(_edge(caller, cand, rc, score))
     return added
 
