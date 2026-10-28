@@ -179,13 +179,33 @@ def _go_single_type_name(node, source: bytes) -> str | None:
     return name if name and name not in _GO_PREDECLARED_TYPES else None
 
 
+def _go_inferred_composite_bindings(names, values, source: bytes):
+    """Pair same-position declared names with composite-literal values.
+
+    Shared by `x := T{}` (`short_var_declaration`) and `var x = T{}` (a
+    type-less `var_spec`): both bind a name to the type of a same-position
+    `T{}` / `&T{}` value. Yields (name text, inferred type) for each pair
+    that is in fact a composite literal.
+    """
+    for name_node, value in zip(names, values):
+        if value.type == "unary_expression":
+            value = value.child_by_field_name("operand") or value
+        if value.type != "composite_literal":
+            continue
+        type_name = _go_single_type_name(value.child_by_field_name("type"), source)
+        if type_name:
+            yield _read_text(name_node, source), type_name
+
+
 def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
     """Collect ``name -> TypeName`` for every Go receiver whose type is written down.
 
-    Four sources: a struct field, a parameter (which covers the method receiver
-    `func (s *Server)`), `var x T`, and `x := T{}` / `x := &T{}`. Flat over the subtree it is
-    given, first binding wins — run over one function it is that function's own scope, and
-    over the file it is the fallback for a struct field. Children are pushed reversed so the
+    Five sources: a struct field, a parameter (which covers the method receiver
+    `func (s *Server)`), `var x T`, `x := T{}` / `x := &T{}`, and `var x = T{}` /
+    `var x = &T{}` (the same composite-literal inference, spelled with `var`
+    instead of `:=`). Flat over the subtree it is given, first binding wins —
+    run over one function it is that function's own scope, and over the file it
+    is the fallback for a struct field. Children are pushed reversed so the
     walk yields document order and "first" means first in the source.
     """
     table: dict[str, str] = {}
@@ -195,23 +215,28 @@ def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
         t = n.type
         if t in ("field_declaration", "parameter_declaration", "var_spec"):
             type_name = _go_single_type_name(n.child_by_field_name("type"), source)
-            for c in n.children if type_name else ():
-                if c.type in ("field_identifier", "identifier"):
-                    table.setdefault(_read_text(c, source), type_name)
+            if type_name:
+                for c in n.children:
+                    if c.type in ("field_identifier", "identifier"):
+                        table.setdefault(_read_text(c, source), type_name)
+            elif t == "var_spec":
+                value = n.child_by_field_name("value")
+                if value is not None:
+                    names = [c for c in n.children if c.type == "identifier"]
+                    values = [c for c in value.children if c.is_named]
+                    for name_text, inferred in _go_inferred_composite_bindings(
+                        names, values, source
+                    ):
+                        table.setdefault(name_text, inferred)
         elif t == "short_var_declaration":
             left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
             if left is not None and right is not None:
                 names = [c for c in left.children if c.type == "identifier"]
                 values = [c for c in right.children if c.is_named]
-                for name_node, value in zip(names, values):
-                    if value.type == "unary_expression":
-                        value = value.child_by_field_name("operand") or value
-                    if value.type != "composite_literal":
-                        continue
-                    type_name = _go_single_type_name(
-                        value.child_by_field_name("type"), source)
-                    if type_name:
-                        table.setdefault(_read_text(name_node, source), type_name)
+                for name_text, inferred in _go_inferred_composite_bindings(
+                    names, values, source
+                ):
+                    table.setdefault(name_text, inferred)
         stack.extend(reversed(n.children))
     return table
 
