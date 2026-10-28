@@ -46,7 +46,13 @@ _MD_PATH_MENTION_RE = re.compile(
     r'^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$'
 )
 _MD_BARE_MENTION_RE = re.compile(
-    r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
+    r'^(?:[A-Za-z_]\w*[.\\])*([A-Za-z_]\w*)(?:\(\))?$'
+)
+# ``Type::member`` (PHP, Rust, C++ docs) names a symbol by a ``::`` chain with
+# no file evidence, so it resolves like the dotted form. A ``path.ext::Name``
+# span is a path mention and is matched by ``_MD_PATH_MENTION_RE`` first.
+_MD_TYPE_MENTION_RE = re.compile(
+    r'^(?:[A-Za-z_]\w*::)*([A-Za-z_]\w*)(?:\(\))?$'
 )
 
 # An ATX heading (CommonMark): up to three spaces of indent (four is an indented
@@ -394,18 +400,23 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
     m = _MD_PATH_MENTION_RE.match(text)
     if m:
         return m.group(1), m.group(2).split("::")
+    m = _MD_TYPE_MENTION_RE.match(text)
+    if m:
+        # ``Type::member``: the ``::`` chain is qualifier evidence, the same as
+        # the dotted form. A ``Type::method()`` drops the trailing ``()``.
+        return None, text.rstrip("()").split("::")
     m = _MD_BARE_MENTION_RE.match(text)
     if not m:
         return None
-    if "." in text:
-        # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
-        # are files. A dotted span whose last segment is a code or document
-        # extension is the latter. Other file-like spans (``pyproject.toml``)
-        # classify as a mention and are rejected at resolution, where the
-        # qualifier ``pyproject`` matches no callable's file or owner.
-        if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
+    if "." in text or "\\" in text:
+        # ``a.b.Name`` / ``App\Services\Mailer`` is a qualified symbol;
+        # ``setup.py`` and ``README.md`` are files. A span whose last segment
+        # is a code or document extension is the latter. Other file-like spans
+        # (``pyproject.toml``) classify as a mention and are rejected at
+        # resolution, where the qualifier matches no callable's file or owner.
+        if "." in text and ("." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS):
             return None
-        return None, text.rstrip("()").split(".")
+        return None, re.split(r"[.\\]", text.rstrip("()"))
     return None, [m.group(1)]
 
 
