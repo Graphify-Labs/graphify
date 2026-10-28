@@ -132,17 +132,21 @@ class TestSubprocessEncoding:
             llm._call_claude_cli(_UNICODE_CONTENT, max_tokens=8192)
         _args, kwargs = mock_run.call_args
         # If text=True is present, encoding must also be set to 'utf-8'.
-        if kwargs.get("text") is True:
-            assert kwargs.get("encoding") == "utf-8", (
-                "text=True without encoding='utf-8' will use the locale codec "
-                "(cp1252 on Windows), causing UnicodeEncodeError on → ✅ ≥"
-            )
-        else:
-            # input must be bytes, not str
-            inp = kwargs.get("input") or (mock_run.call_args[0][1:2] or [None])[0]
-            assert isinstance(inp, bytes), (
-                "Without text=True, input must be bytes pre-encoded to UTF-8."
-            )
+        input_data = kwargs.get("input")
+
+        uses_utf8_text = (
+            kwargs.get("text") is True
+            and kwargs.get("encoding") == "utf-8"
+        )
+        uses_binary_input = (
+            kwargs.get("text") is not True
+            and isinstance(input_data, bytes)
+        )
+
+        assert uses_utf8_text or uses_binary_input, (
+            "Subprocess must use text=True with UTF-8 encoding "
+            "or receive pre-encoded bytes."
+        )
 
     def test_unicode_chars_survive_subprocess_roundtrip(self, monkeypatch, tmp_path):
         """Writing a file with → ✅ ≥ then passing its content through
