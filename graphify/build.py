@@ -1870,6 +1870,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             incoming_rel = attrs.get("relation")
             reverse = existing.get("_src") == tgt and existing.get("_tgt") == src
             if reverse and existing_rel == incoming_rel:
+                # For an import the dropped leg is the other half of a two-file
+                # cycle. Stamp the kept edge so find_import_cycles still sees it
+                # (#4839); a type-only or deferred import closes no cycle.
+                if (
+                    incoming_rel in ("imports_from", "re_exports")
+                    and not attrs.get("type_only")
+                    and not attrs.get("deferred")
+                ):
+                    existing["reverse_import"] = True
                 continue
             # Different relations in opposite directions are two facts that only
             # share a pair because the graph is undirected. A type's
