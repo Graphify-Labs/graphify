@@ -80,6 +80,107 @@ def test_build_tree_default_root_keeps_hierarchy():
     assert "a.py" in names and "sub" in names
 
 
+def _merged_graph(per_repo: dict[str, dict[str, str]]) -> dict:
+    """Node-link graph shaped like a merge-graphs result: every node is
+    repo-tagged and keeps its repo-relative source_file."""
+    nodes = []
+    for repo, files in sorted(per_repo.items()):
+        for src, label in sorted(files.items()):
+            nodes.append({
+                "id": f"{repo}::{label}", "label": label,
+                "source_file": src, "repo": repo,
+            })
+    return {"directed": False, "nodes": nodes, "links": []}
+
+
+def _by_name(node: dict) -> dict:
+    return {c["name"]: c for c in node["children"]}
+
+
+def test_build_tree_merged_graph_gets_one_root_per_repo():
+    graph = _merged_graph({
+        "repo-a": {"src/engine.py": "EngineA"},
+        "repo-b": {"lib/util.py": "UtilB"},
+    })
+    tree = build_tree(graph)
+    assert set(_by_name(tree)) == {"repo-a", "repo-b"}
+    assert tree["total_count"] == 2
+
+
+def test_build_tree_merged_graph_keeps_shared_relative_paths_separate():
+    """Same repo-relative path in two repos must not fuse into one file node."""
+    graph = _merged_graph({
+        "repo-a": {"src/engine.py": "EngineA"},
+        "repo-b": {"src/engine.py": "EngineB"},
+    })
+    repos = _by_name(build_tree(graph))
+    for tag, symbol in (("repo-a", "EngineA"), ("repo-b", "EngineB")):
+        engine = _by_name(_by_name(repos[tag])["src"])["engine.py"]
+        assert [c["name"] for c in engine["children"]] == [symbol]
+
+
+def test_build_tree_single_repo_tag_is_unchanged():
+    """One distinct repo tag keeps the pre-existing flat-root behaviour."""
+    graph = _merged_graph({"repo-a": {"pkg/a.py": "func_a", "pkg/sub/b.py": "func_b"}})
+    tree = build_tree(graph)
+    assert tree["name"] == "pkg"
+    assert {"a.py", "sub"} <= set(_by_name(tree))
+
+
+def test_build_tree_merged_graph_untagged_nodes_are_kept():
+    graph = _merged_graph({
+        "repo-a": {"a.py": "A"},
+        "repo-b": {"b.py": "B"},
+    })
+    graph["nodes"].append({"id": "x", "label": "X", "source_file": "x.py"})
+    assert set(_by_name(build_tree(graph))) == {"repo-a", "repo-b", "(no repo)"}
+
+
+def test_build_tree_partially_tagged_single_repo_is_not_a_merged_graph():
+    """One real repo tag plus untagged nodes is not a merged graph: it must
+    take the original single-root path, not grow a "(no repo)" sibling."""
+    graph = {"nodes": [
+        {"id": "a", "label": "A", "source_file": "pkg/a.py", "repo": "only-repo"},
+        {"id": "b", "label": "B", "source_file": "pkg/b.py"},
+    ]}
+    tree = build_tree(graph)
+    assert tree["name"] == "pkg"
+    assert set(_by_name(tree)) == {"a.py", "b.py"}
+
+
+def test_build_tree_untagged_graph_is_unchanged_by_repo_grouping():
+    graph = _graph({"pkg/a.py": "func_a", "pkg/sub/b.py": "func_b"})
+    assert "repo" not in graph["nodes"][0]
+    tree = build_tree(graph)
+    assert tree["name"] == "pkg"
+    assert {"a.py", "sub"} <= set(_by_name(tree))
+
+
+def test_build_tree_merged_graph_explicit_root_matching_nothing_raises():
+    graph = _merged_graph({
+        "repo-a": {"src/a.py": "A"},
+        "repo-b": {"src/b.py": "B"},
+    })
+    with pytest.raises(ValueError, match=r"matched 0 of 2 source files"):
+        build_tree(graph, root="/abs/checkout/elsewhere")
+
+
+def test_build_tree_merged_graph_uses_project_label_for_top_root():
+    graph = _merged_graph({"repo-a": {"a.py": "A"}, "repo-b": {"b.py": "B"}})
+    assert build_tree(graph, project_label="world")["name"] == "world"
+
+
+def test_tree_cli_merged_graph_renders_repo_roots(tmp_path):
+    out = _write_graph(tmp_path, _merged_graph({
+        "repo-a": {"src/engine.py": "EngineA"},
+        "repo-b": {"src/engine.py": "EngineB"},
+    }))
+    r = _run(["tree", "--graph", str(out / "graph.json")], tmp_path)
+    assert r.returncode == 0, r.stderr
+    html = (out / "GRAPH_TREE.html").read_text(encoding="utf-8")
+    assert "repo-a" in html and "repo-b" in html
+
+
 # ── CLI integration ───────────────────────────────────────────────────────────
 
 

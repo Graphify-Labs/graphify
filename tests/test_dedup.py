@@ -695,6 +695,101 @@ def test_cross_file_id_collision_does_not_mix_attributes(capsys):
     assert "WARNING" in capsys.readouterr().err
 
 
+def test_semantic_reference_stubs_from_issue_4738_are_namespaced():
+    """#4738: two citing documents can mint an ID derived from a third document.
+
+    The first two reported collisions have no defining node, so both records
+    must survive. The third includes a defining path and must retain the normal
+    definer-wins behavior.
+    """
+    logging_id = "specifications_20_architecture_operational_logging_document"
+    runtime_id = "functional_agent_runtime_doc"
+    license_id = "company_license_schedule_c"
+    nodes = [
+        {"id": logging_id, "label": "Logging", "file_type": "document",
+         "source_file": "specifications/20-architecture/delivery/change-policy.md",
+         "metadata": {"graphify_reference_stub": True}},
+        {"id": logging_id, "label": "Logging specification", "file_type": "document",
+         "source_file": ".github/instructions/rust.instructions.md",
+         "metadata": {"graphify_reference_stub": True}},
+        {"id": runtime_id, "label": "Agent runtime", "file_type": "document",
+         "source_file": "functional/agents/agent-operator.md",
+         "metadata": {"graphify_reference_stub": True}},
+        {"id": runtime_id, "label": "Agent Runtime and Subagent Contract (referenced)",
+         "file_type": "document", "source_file": "delivery/developer-interaction.md",
+         "metadata": {"graphify_reference_stub": True}},
+        {"id": license_id, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license.md",
+         "metadata": {"graphify_reference_stub": True}},
+        {"id": license_id, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license-schedule-c.md"},
+    ]
+
+    kept, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert {(node["id"], node["source_file"]) for node in kept} == {
+        ("specifications_20_architecture_delivery_change_policy__ref__" + logging_id,
+         "specifications/20-architecture/delivery/change-policy.md"),
+        ("github_instructions_rust_instructions__ref__" + logging_id,
+         ".github/instructions/rust.instructions.md"),
+        ("functional_agents_agent_operator__ref__" + runtime_id,
+         "functional/agents/agent-operator.md"),
+        ("delivery_developer_interaction__ref__" + runtime_id,
+         "delivery/developer-interaction.md"),
+        ("company_license__ref__" + license_id, "company/license.md"),
+        (license_id, "company/license-schedule-c.md"),
+    }
+
+
+def test_semantic_reference_stub_rewires_its_own_file_edges():
+    """The citing file's edge must follow its retained reference stub (#4738)."""
+    nid = "functional_agent_runtime_doc"
+    a_ref = "functional_agents_agent_operator__ref__" + nid
+    b_ref = "delivery_developer_interaction__ref__" + nid
+    nodes = [
+        {"id": "functional_agents_agent_operator", "label": "Agent operator",
+         "file_type": "document", "source_file": "functional/agents/agent-operator.md",
+         "_origin": "semantic"},
+        {"id": nid, "label": "Agent runtime", "file_type": "document",
+         "source_file": "functional/agents/agent-operator.md",
+         "metadata": {"graphify_reference_stub": True}},
+        {"id": "delivery_developer_interaction", "label": "Developer interaction",
+         "file_type": "document", "source_file": "delivery/developer-interaction.md",
+         "_origin": "semantic"},
+        {"id": nid, "label": "Agent Runtime and Subagent Contract (referenced)",
+         "file_type": "document", "source_file": "delivery/developer-interaction.md",
+         "metadata": {"graphify_reference_stub": True}},
+    ]
+    edges = [
+        {"source": "functional_agents_agent_operator", "target": nid,
+         "relation": "references", "source_file": "functional/agents/agent-operator.md"},
+        {"source": "delivery_developer_interaction", "target": nid,
+         "relation": "references", "source_file": "delivery/developer-interaction.md"},
+    ]
+
+    _, rewired = deduplicate_entities(nodes, edges, communities={})
+
+    assert {(edge["source_file"], edge["target"]) for edge in rewired} == {
+        ("functional/agents/agent-operator.md", a_ref),
+        ("delivery/developer-interaction.md", b_ref),
+    }
+
+
+def test_unmarked_nested_document_collision_keeps_existing_survivor():
+    """Path depth alone must not mark a record as a cross-document stub."""
+    nid = "docs_protocol_firmware_protocol"
+    canonical = {"id": nid, "label": "Firmware Protocol", "file_type": "document",
+                 "source_file": "docs/protocol.md"}
+    deeper = {"id": nid, "label": "Firmware protocol notes", "file_type": "document",
+              "source_file": "docs/protocol/firmware.md"}
+
+    kept, _ = deduplicate_entities([canonical, deeper], [], communities={})
+
+    assert [(node["id"], node["source_file"]) for node in kept] == [
+        (nid, "docs/protocol.md"),
+    ]
+
+
 def test_collision_survivor_is_order_independent():
     """#1851: definer + same-file relabel + cross-file reference. Across every
     insertion order the SAME node (source_file AND label) must survive — the
@@ -2084,9 +2179,7 @@ def test_lone_bare_id_without_a_top_level_file_is_left_to_build():
 
 
 def test_entity_described_in_two_documents_collapses_to_one_node(capsys):
-    """Case G, the shape of the reporter's warnings. `sender` is derived from neither
-    path and each document points at it, so the two copies are one entity: one node
-    with both edges, and the merge warning still prints (#4281)."""
+    """Unmarked document records retain the existing shared-entity behavior."""
     from graphify.build import build
 
     ext = {
@@ -2100,7 +2193,9 @@ def test_entity_described_in_two_documents_collapses_to_one_node(capsys):
     G = build([ext])
     assert sorted(G.nodes) == ["docs_a_doc", "docs_b_doc", "sender"]
     assert {frozenset(e) for e in G.edges} == {
-        frozenset(("docs_a_doc", "sender")), frozenset(("docs_b_doc", "sender"))}
+        frozenset(("docs_a_doc", "sender")),
+        frozenset(("docs_b_doc", "sender")),
+    }
     assert "node 'sender' is minted by two different files" in capsys.readouterr().err
 
 

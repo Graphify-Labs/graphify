@@ -53,6 +53,34 @@ def _out_from_env() -> str:
 GRAPHIFY_OUT = _out_from_env()
 
 
+def os_long_path(path: "str | Path") -> str:
+    r"""Return an OS path string safe for open()/stat() on Windows long paths.
+
+    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
+    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
+    (which also requires a fully-qualified path). Without it, _md5_file /
+    save_manifest / count_words silently fail to hash deeply-nested files, so
+    their manifest entry never stabilizes and detect_incremental re-flags them
+    as changed on every run (#1655), and cache entries under a deep root cannot
+    be written at all. cache._normalize_path strips this prefix for stable
+    KEYS; this adds it for I/O. Non-win32 and already-prefixed paths pass
+    through unchanged.
+    """
+    if sys.platform != "win32":
+        return str(path)
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return s
+    try:
+        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
+    except Exception:
+        return str(path)
+    if s.startswith("\\\\"):
+        # UNC share \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     """``os.replace(src, dst)``, falling back to a copy for a known set of
     Windows quirks (#3508) that raise even when ``src``/``dst`` are the same

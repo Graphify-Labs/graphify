@@ -149,7 +149,7 @@ Focus on the problem first, proposed behavior, alternatives, and compatibility c
 - **What should not be committed**: Local cache (`.graphify_cached.json`), generated node artifacts outside of the expected outputs.
 
 ## Getting Help
-- **Discord**: Join the [Graphify Discord](https://discord.gg/XDnKVpzdXB) for questions and discussion.
+- **Discord**: Join the [Graphify Discord](https://discord.gg/graphify) for questions and discussion.
 - **Issues**: Search [existing issues](https://github.com/Graphify-Labs/graphify/issues) before opening a new one.
 - **Discussions**: Use GitHub issues for bugs and feature requests, Discord for open-ended questions.
 

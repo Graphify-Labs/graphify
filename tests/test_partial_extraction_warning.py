@@ -60,11 +60,11 @@ def test_warning_names_the_file_and_how_much_survived(tmp_path, capsys):
         f"the warning does not say how much survived: {err!r}")
 
 
-def test_warning_still_reports_the_first_error_line(tmp_path, capsys):
-    """The line number was the one actionable thing the old message had; it must
+def test_warning_still_reports_the_error_region_line(tmp_path, capsys):
+    """The line number is the one actionable thing the old message had; it must
     survive the rewrite."""
     err = _run(tmp_path, [_partial_parse_fixture(tmp_path)], capsys)
-    assert re.search(r"first error at line \d+", err), err
+    assert re.search(r"error region at line \d+", err), err
 
 
 def test_syntax_warning_survives_cross_drive_paths_without_changing_the_graph(
@@ -95,7 +95,7 @@ def test_syntax_warning_survives_cross_drive_paths_without_changing_the_graph(
     warning = capsys.readouterr().err
     assert "partially extracted" in warning
     assert source.as_posix() in warning
-    assert re.search(r"first error at line \d+", warning)
+    assert re.search(r"error region at line \d+", warning)
     assert "yielded no symbols" not in warning
 
 
