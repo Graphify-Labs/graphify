@@ -455,6 +455,26 @@ def test_label_communities_salvages_truncated_reply(monkeypatch):
     assert labels[1] == "Community 1"         # truncated cid falls back to placeholder
 
 
+def test_parse_label_response_salvage_decodes_json_escapes():
+    """A salvaged pair from a truncated reply decodes its JSON escapes the same
+    way a complete reply does, instead of keeping literal backslashes."""
+    from graphify.llm import _parse_label_response
+
+    truncated = '{"0": "Caf\\u00e9 \\"Core\\" API", "1":'
+    complete = '{"0": "Caf\\u00e9 \\"Core\\" API"}'
+    assert _parse_label_response(complete, [0]) == {0: 'Café "Core" API'}
+    assert _parse_label_response(truncated, [0, 1]) == {0: 'Café "Core" API'}
+
+
+def test_parse_label_response_salvage_keeps_value_with_invalid_escape():
+    """A salvaged value that is not a valid JSON string body is kept as it
+    arrived rather than dropped."""
+    from graphify.llm import _parse_label_response
+
+    truncated = '{"0": "C:\\q Paths", "1":'
+    assert _parse_label_response(truncated, [0, 1]) == {0: "C:\\q Paths"}
+
+
 def test_label_communities_accumulates_token_usage(monkeypatch):
     # #1694: cluster-only mode reported zero labeling cost because token usage
     # from the naming LLM calls was never accumulated. label_communities now

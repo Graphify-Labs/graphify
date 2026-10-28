@@ -1008,6 +1008,31 @@ def test_deepseek_thinking_disabled_via_env(monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+def test_deepseek_uses_max_tokens_request_field(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("GRAPHIFY_MAX_OUTPUT_TOKENS", "12345")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm.extract_files_direct([source], backend="deepseek", root=tmp_path)
+
+    assert captured["max_tokens"] == 12345
+    assert "max_completion_tokens" not in captured
+
+
+def test_deepseek_labeling_uses_max_tokens_request_field(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_llm("Label this community", backend="deepseek", max_tokens=321)
+
+    assert captured["max_tokens"] == 321
+    assert "max_completion_tokens" not in captured
+
+
 def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
     # A provider-supplied extra_body is an explicit request-shape choice and must
     # take precedence over the env toggle.
@@ -1359,6 +1384,40 @@ def test_native_extraction_prompt_requests_rationale():
         assert "If the source does not explicitly provide a reason, omit this attribute" in prompt
         # Verify the node schema example includes rationale: null
         assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
+
+
+def test_native_extraction_prompt_pins_source_file_to_the_dispatched_file():
+    """The native-backend prompt must say what source_file means. Without it the
+    model attributes a document's entities to the files the document cites or
+    links, and the out-of-scope filter (#1895) drops them on incremental runs
+    (#2297, #3377), or a doc-described API lands on the code file (#2270), or a
+    path reconstructed from a mention reaches the graph (#2217).
+    """
+    for deep in (False, True):
+        # Collapse whitespace so reflowing the prompt doesn't break the asserts.
+        prompt = " ".join(llm._extraction_system(deep=deep).split())
+        assert "the `path` attribute of its enclosing <untrusted_source> block" in prompt, deep
+        assert "is a reference, not the source" in prompt, deep
+        assert "never use its path as source_file" in prompt, deep
+        assert '"graphify_reference_stub":true' in prompt.replace(" ", ""), deep
+        assert "never omit source_file" in prompt, deep
+
+
+def test_native_extraction_prompt_shares_skill_spec_source_file_rule_heading():
+    """Both extraction paths open their source_file rule with the same heading.
+    Only the heading is pinned: the rule bodies differ (the skill's covers
+    copying the FILE_LIST path verbatim, the native one adds the reference
+    clause), so this catches either side dropping or renaming the rule, not
+    drift in its wording."""
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    native = llm._EXTRACTION_SYSTEM
+    spec, native = (" ".join(text.split()) for text in (spec, native))
+    shared = "source_file RULE (every node, edge, and hyperedge)"
+    assert shared in spec, "skill extraction-spec changed its source_file rule heading"
+    assert shared in native, "native prompt lacks the skill's source_file rule heading"
 
 
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------

@@ -49,6 +49,49 @@ _MD_BARE_MENTION_RE = re.compile(
     r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
 )
 
+# An ATX heading (CommonMark): up to three spaces of indent (four is an indented
+# code block), 1-6 `#`, then whitespace and the text. An optional closing run of
+# `#` preceded by whitespace is not part of the text: `## Setup ##` is "Setup",
+# while `## C#` and `## Trailing \#` keep their `#`.
+_MD_ATX_HEADING_RE = re.compile(r'^ {0,3}(#{1,6})[ \t]+(.+)$')
+_MD_ATX_CLOSING_RE = re.compile(r'(?:^|[ \t]+)#+[ \t]*$')
+
+# A fenced code block line: a run of 3+ backticks or 3+ tildes, then the rest of
+# the line (an info string on an opener). Leading whitespace is accepted at any
+# depth, as before, so a fence inside a nested list item still counts.
+_MD_FENCE_RE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+
+
+def _fence_open(line: str) -> "tuple[str, int] | None":
+    """(fence char, run length) when ``line`` opens a fenced code block.
+
+    CommonMark: a backtick fence's info string may not contain a backtick, so
+    a line that starts with an inline ```` ```code``` ```` span is prose, not a
+    fence. Tilde fences have no such restriction.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return None
+    run, rest = m.group(1), m.group(2)
+    if run[0] == "`" and "`" in rest:
+        return None
+    return run[0], len(run)
+
+
+def _fence_closes(line: str, fence: "tuple[str, int]") -> bool:
+    """True when ``line`` closes the block opened by ``fence``.
+
+    CommonMark: the closing run uses the opener's character, is at least as
+    long, and carries nothing but whitespace after it. So ``` does not close a
+    ~~~ block, ``` does not close a ```` block (the usual way a doc shows a
+    fenced example), and ``` followed by text is content.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return False
+    run, rest = m.group(1), m.group(2)
+    return run[0] == fence[0] and len(run) >= fence[1] and not rest.strip()
+
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
 # must not be mistaken for one. Bounded so a file that opens a fence and never
@@ -139,15 +182,11 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
 _MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
 
 
-def _active_scan_root() -> "Path | None":
-    """The scan root of the extraction in flight, or None outside extract().
-
-    _safe_extract_with_xaml_root sets this for every extraction despite its
-    XAML-era name; a direct extract_markdown() call has no root and the
-    fallback stays off.
-    """
-    import graphify.extract as _extract
-    return getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+# The in-flight scan root now lives on extractors.base (correct import
+# direction: extract.py -> extractors/, never back), so a rename can no longer
+# silently disable link resolution the way the old getattr(graphify.extract, …,
+# None) could (#3666).
+from graphify.extractors.base import active_scan_root as _active_scan_root
 
 
 def _nfc(s: str) -> str:
@@ -215,6 +254,17 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
         c for c in candidates
         if c[1] == suffix or c[1].endswith("/" + suffix)
     ]
+    if not matches:
+        # Obsidian writes vault-relative paths, so scanning a folder below the
+        # vault root meets links that start with that folder's own path
+        # ([[Corp/wiki/Fox]] from inside Corp/, #4559). Drop the longest such
+        # leading run and match the rest from the scan root.
+        root_parts = [_nfc(p) for p in Path(root).parts]
+        for k in range(len(parts) - 1, 0, -1):
+            if parts[:k] == root_parts[-k:]:
+                rest = "/".join(parts[k:])
+                matches = [c for c in candidates if c[1] == rest]
+                break
     if not matches:
         return None
     return min(matches)[2]
@@ -400,8 +450,9 @@ def extract_markdown(path: Path) -> dict:
     cross-file call pass skips these raw_calls, so a mention never becomes a
     ``calls`` edge.
 
-    Fenced code blocks (``` ... ```) are skipped during parsing so their
-    contents don't get treated as headings, but no node is emitted for
+    Fenced code blocks (``` ... ``` or ~~~ ... ~~~, closed by a run of the
+    same character at least as long, per CommonMark) are skipped during
+    parsing so their contents don't get treated as headings, but no node is emitted for
     them — they were always orphans (only a single contains edge to the
     parent doc) and inflated the disconnected-component count (#1077).
 
@@ -514,19 +565,20 @@ def extract_markdown(path: Path) -> dict:
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
-    in_code_block = False
+    fence: "tuple[str, int] | None" = None  # (char, length) of the open fence
 
     for line_num_0, line_text in enumerate(lines):
         line_num = line_num_0 + 1
 
         # Skip over fenced code blocks so their contents are not parsed as
         # headings, but do not emit nodes/edges for them (#1077).
-        stripped = line_text.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
+        if fence is not None:
+            if _fence_closes(line_text, fence):
+                fence = None
             continue
-
-        if in_code_block:
+        opened = _fence_open(line_text)
+        if opened is not None:
+            fence = opened
             continue
 
         # Markdown links -> document references (#1376). Scanned on every
@@ -548,10 +600,10 @@ def extract_markdown(path: Path) -> dict:
             continue
 
         # Detect headings: # Heading, ## Heading, etc.
-        heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
-        if heading_match:
+        heading_match = _MD_ATX_HEADING_RE.match(line_text)
+        title = _MD_ATX_CLOSING_RE.sub("", heading_match.group(2).strip()) if heading_match else ""
+        if heading_match and title:
             level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
             h_nid = _make_id(stem, title)
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:

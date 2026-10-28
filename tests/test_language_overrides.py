@@ -91,6 +91,19 @@ def test_language_line_maps_an_extension_to_a_canonical_suffix(tmp_path):
     assert load_graphifyrc(tmp_path) == {"languages": {".inc": ".php"}}
 
 
+def test_a_utf8_bom_does_not_swallow_the_first_key(tmp_path):
+    """A .graphifyrc saved with a UTF-8 BOM (Windows PowerShell 5.1, older
+    Notepad) must not glue the BOM onto its first key, which then matched
+    nothing and was dropped without a warning."""
+    (tmp_path / ".graphifyrc").write_bytes(
+        "\ufefflanguage.inc=php\nviz_node_limit=500\n".encode("utf-8")
+    )
+    assert load_graphifyrc(tmp_path) == {
+        "languages": {".inc": ".php"},
+        "viz_node_limit": 500,
+    }
+
+
 @pytest.mark.parametrize("key", ["language.inc", "language..inc", "language.INC", "language. inc "])
 def test_the_extension_key_is_normalised(tmp_path, key):
     (tmp_path / ".graphifyrc").write_text(f"{key}=php\n", encoding="utf-8")

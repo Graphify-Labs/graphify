@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from graphify.hooks import (
     install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
+    _REWRITE_HOOK_MARKER,
 )
 
 
@@ -165,6 +166,59 @@ def test_status_shows_post_merge_hook(tmp_path):
     assert "post-merge: not installed" in result
 
 
+def test_install_creates_post_rewrite_hook(tmp_path):
+    # #4490: git runs post-rewrite once when a rebase (or pull --rebase) finishes;
+    # post-commit skips every replayed commit, so nothing else rebuilds after one.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-rewrite"
+    assert hook.exists()
+    assert _REWRITE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_rewrite_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-rewrite"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_rewrite_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    assert not (repo / ".git" / "hooks" / "post-rewrite").exists()
+
+
+def test_status_shows_post_rewrite_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    assert "post-rewrite: installed" in status(repo)
+
+    uninstall(repo)
+    assert "post-rewrite: not installed" in status(repo)
+
+
+def test_install_appends_to_a_user_post_rewrite_hook_and_uninstall_keeps_it(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    hook = repo / ".git" / "hooks" / "post-rewrite"
+    hook.write_text("#!/bin/sh\necho 'user rewrite hook'\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    assert "appended to existing post-rewrite hook" in install(repo)
+    content = hook.read_text(encoding="utf-8")
+    assert "echo 'user rewrite hook'" in content
+    assert _REWRITE_HOOK_MARKER in content
+
+    uninstall(repo)
+    content = hook.read_text(encoding="utf-8")
+    assert "echo 'user rewrite hook'" in content
+    assert _REWRITE_HOOK_MARKER not in content
+
+
 
 def test_hooks_dir_resolves_relative_git_hooks_path(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path)
@@ -272,6 +326,7 @@ from graphify.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
     _MERGE_SCRIPT,
+    _REWRITE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
@@ -281,6 +336,7 @@ _HOOK_SCRIPTS = [
     ("post-commit", _HOOK_SCRIPT),
     ("post-checkout", _CHECKOUT_SCRIPT),
     ("post-merge", _MERGE_SCRIPT),
+    ("post-rewrite", _REWRITE_SCRIPT),
 ]
 
 
@@ -1067,7 +1123,10 @@ def test_hooks_reuse_git_dir_from_env(name, script):
     """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
     when the script is invoked by hand — each extra git exec costs 1s+ on
     AV-scanned Windows machines and lands in the commit's foreground."""
-    assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"
+    # A script that never reads $GIT_DIR (post-rewrite) has no rev-parse fallback to guard.
+    assert "GIT_DIR=${GIT_DIR:-" in script or "$GIT_DIR" not in script, (
+        f"{name} always re-runs git rev-parse"
+    )
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -1152,6 +1211,74 @@ def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
                               capture_output=True, text=True)
     assert "RAN" in r_primary.stdout, "guard wrongly skipped the primary checkout"
     assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_anchor_to_the_top_level_after_the_worktree_guard(name, script):
+    """Every hook cds to the checkout's top level before anything reads
+    graphify-out/ or launches the rebuild (#3258), and does so after the
+    worktree guard, whose _GFY_GITDIR/_GFY_COMMONDIR it reuses."""
+    from graphify.hooks import _TOPLEVEL_ANCHOR, _WORKTREE_GUARD
+    assert script.count(_TOPLEVEL_ANCHOR) == 1, f"{name} anchor not present exactly once"
+    assert script.index(_WORKTREE_GUARD) < script.index(_TOPLEVEL_ANCHOR)
+    # The cheap "is there a graph here?" early exits may stay ahead of it: at
+    # worst they skip a rebuild. Choosing the interpreter and launching the
+    # rebuild (which reads .graphify_root) must not.
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    anchor_at = code.index(_TOPLEVEL_ANCHOR.splitlines()[0])
+    for later in ("GRAPHIFY_PYTHON", "_rebuild_code"):
+        assert anchor_at < code.index(later), f"{name} uses {later} before anchoring"
+
+
+def test_toplevel_anchor_runs_from_the_top_when_git_starts_the_hook_in_a_subdir(tmp_path):
+    """End-to-end against a real repo (#3258): with GIT_DIR exported and no
+    GIT_WORK_TREE, git runs hooks in the caller's cwd and `--show-toplevel`
+    echoes that subdirectory. The anchored snippet must still run at the
+    repository top, keep later git calls working, and leave a linked worktree
+    to the guard."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    primary = tmp_path / "primary"
+    primary.mkdir()
+
+    def _git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, text=True)
+
+    _git("init", "-q", ".", cwd=primary)
+    _git("config", "user.email", "t@t.co", cwd=primary)
+    _git("config", "user.name", "t", cwd=primary)
+    (primary / "a.txt").write_text("x")
+    _git("add", "-A", cwd=primary)
+    _git("commit", "-qm", "init", cwd=primary)
+    sub = primary / ".claude" / "worktrees"
+    sub.mkdir(parents=True)
+    linked = sub / "wt1"
+    _git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=primary)
+
+    from graphify.hooks import _TOPLEVEL_ANCHOR, _WORKTREE_GUARD
+    snippet = (_WORKTREE_GUARD + _TOPLEVEL_ANCHOR
+               + 'git rev-parse --verify -q HEAD >/dev/null && echo GIT_OK\n'
+               + ': > anchored.txt\n')
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    cases = [
+        ("top", primary, {}),
+        ("subdir", sub, {}),
+        ("subdir+GIT_DIR", sub, {"GIT_DIR": "../../.git"}),
+    ]
+    for label, cwd, extra in cases:
+        r = subprocess.run(["sh", "-c", snippet], cwd=cwd, env={**env, **extra},
+                           capture_output=True, text=True)
+        assert (primary / "anchored.txt").exists(), f"{label}: did not run at the top ({r.stderr})"
+        assert not (sub / "anchored.txt").exists(), f"{label}: ran in the subdirectory"
+        assert "GIT_OK" in r.stdout, f"{label}: git broke after the cd ({r.stderr})"
+        (primary / "anchored.txt").unlink()
+
+    r = subprocess.run(["sh", "-c", snippet], cwd=linked, env=env,
+                       capture_output=True, text=True)
+    assert not (linked / "anchored.txt").exists() and not (primary / "anchored.txt").exists(), \
+        "the linked worktree must still be skipped by the guard"
 
 
 # ── #1907: duplicate keys in .git/config must not trigger spurious warnings ──
@@ -1645,6 +1772,153 @@ def test_checkout_hook_still_skips_when_no_graph_was_built(tmp_path):
 
 
 @_SH_ONLY
+def test_rewrite_hook_rebuilds_when_graphify_out_is_renamed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "custom-out").mkdir()  # the configured output dir; no graphify-out/
+    result = _emitted_hook_run(repo, _REWRITE_SCRIPT, ["rebase"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+@_SH_ONLY
+def test_rewrite_hook_ignores_amend(tmp_path):
+    """amend already rebuilt through post-commit; a second rebuild would double it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    result = _emitted_hook_run(repo, _REWRITE_SCRIPT, ["amend"], {})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_rewrite_hook_runs_while_rebase_merge_is_still_on_disk(tmp_path):
+    """git runs post-rewrite before it removes rebase-merge/, so that dir is not a skip signal."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    (repo / ".git" / "rebase-merge").mkdir()
+    result = _emitted_hook_run(repo, _REWRITE_SCRIPT, ["rebase"], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+def _repo_with_code_commits(tmp_path: Path, names: tuple[str, ...]) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    for name in names:
+        (repo / name).write_text(f"def {name[0]}(): pass\n", encoding="utf-8")
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", name)
+    return repo
+
+
+def _head(repo: Path, rev: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", rev], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _write_sequencer(repo: Path, todo: str, head: str | None = None) -> None:
+    seq = repo / ".git" / "sequencer"
+    seq.mkdir()
+    (seq / "todo").write_text(todo, encoding="utf-8")
+    if head is not None:
+        (seq / "head").write_text(head + "\n", encoding="utf-8")
+
+
+def _changed_dump(tmp_path: Path, monkeypatch) -> Path:
+    """Make the emitted-hook stub record what the hook hands the rebuild launcher in
+    GRAPHIFY_CHANGED (it passes the find_spec probe like the stock stub; the probe runs
+    before GRAPHIFY_CHANGED is set, hence the guard)."""
+    dump = tmp_path / "changed.txt"
+
+    def dumping_stub(where: Path) -> Path:
+        py = where / "stubpy"
+        py.write_text(
+            f'#!/bin/sh\n[ -n "$GRAPHIFY_CHANGED" ] && printf %s "$GRAPHIFY_CHANGED" > "{dump}"\nexit 0\n',
+            encoding="utf-8", newline="\n",
+        )
+        py.chmod(0o755)
+        return py
+
+    monkeypatch.setattr(sys.modules[__name__], "_stub_python", dumping_stub)
+    return dump
+
+
+@_SH_ONLY
+def test_commit_hook_does_not_skip_on_cherry_pick_head(tmp_path):
+    """git leaves CHERRY_PICK_HEAD on disk while post-commit runs, so it is not a skip signal (#4490)."""
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py"))
+    (repo / ".git" / "CHERRY_PICK_HEAD").write_text("0" * 40 + "\n", encoding="utf-8")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+@_SH_ONLY
+def test_commit_hook_skips_a_pick_while_more_picks_are_pending(tmp_path):
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py"))
+    # The first todo line names the commit just made (HEAD's subject, "b.py"), so it is live.
+    _write_sequencer(repo, "pick aaaaaaa b.py\npick bbbbbbb c.py\n")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_skips_a_revert_step_while_more_steps_are_pending(tmp_path):
+    repo = _repo_with_code_commits(tmp_path, ("a.py",))
+    (repo / "x.py").write_text("def x(): pass\n", encoding="utf-8")
+    _git(repo, "add", "x.py")
+    _git(repo, "commit", "-q", "-m", 'Revert "x"')
+    _write_sequencer(repo, "revert aaaaaaa x\nrevert bbbbbbb y\n")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+@pytest.mark.parametrize("todo", [
+    "pick aaaaaaa some other commit\npick bbbbbbb c.py\n",   # first step is not the commit just made
+    "revert aaaaaaa b.py\nrevert bbbbbbb c.py\n",             # a revert step, but HEAD is not a Revert "..." commit
+    "squash aaaaaaa b.py\npick bbbbbbb c.py\n",               # a verb the hook does not recognise
+    "",                                                        # empty todo
+])
+def test_commit_hook_ignores_a_stale_sequencer(tmp_path, todo):
+    """An abandoned pick (git reset --hard instead of --abort) leaves sequencer/ behind;
+    trusting its pending steps would silence every later commit."""
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py"))
+    _write_sequencer(repo, todo)
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+@_SH_ONLY
+def test_commit_hook_rebuilds_on_the_last_pick_from_where_the_sequence_began(tmp_path, monkeypatch):
+    """On the last pick the changed set is everything since sequencer/head, not just HEAD~1..HEAD."""
+    dump = _changed_dump(tmp_path, monkeypatch)
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py", "c.py"))
+    _write_sequencer(repo, "pick ccccccc c.py\n", head=_head(repo, "HEAD~2"))
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    assert set(dump.read_text(encoding="utf-8").split()) == {"b.py", "c.py"}
+
+
+@_SH_ONLY
+def test_commit_hook_ignores_the_base_of_a_stale_sequencer(tmp_path, monkeypatch):
+    """A stale single-line todo must not widen the changed set to everything since its head."""
+    dump = _changed_dump(tmp_path, monkeypatch)
+    repo = _repo_with_code_commits(tmp_path, ("a.py", "b.py", "c.py"))
+    _write_sequencer(repo, "pick ccccccc not-the-last-commit\n", head=_head(repo, "HEAD~2"))
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert _LAUNCH_LINE in result.stdout, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    assert set(dump.read_text(encoding="utf-8").split()) == {"c.py"}
+
+
+@_SH_ONLY
 def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_path):
     repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
     result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
@@ -1652,6 +1926,46 @@ def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_pa
     assert _LAUNCH_LINE not in result.stdout, (
         "post-commit launched a rebuild for a commit that only touched the configured "
         f"output dir\nstdout={result.stdout!r}"
+    )
+
+
+@_SH_ONLY
+def test_post_merge_hook_runs_after_a_real_merge(tmp_path):
+    # git writes MERGE_HEAD before running post-merge and deletes it only
+    # after, so a MERGE_HEAD guard here exited on every non-fast-forward
+    # merge and the rebuild never launched (#4463).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),  # keeps the rebuild log out of the real ~/.cache
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.co",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.co",
+    }
+    quiet = {**env, "GRAPHIFY_SKIP_HOOK": "1"}  # no rebuilds during setup
+
+    def git(*args, env=env):
+        return subprocess.run(["git", *args], cwd=repo, env=env,
+                              capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    (repo / "graphify-out").mkdir()
+    (repo / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    (repo / "a.py").write_text("def a(): pass\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "init", env=quiet)
+    install(repo)
+    git("checkout", "-qb", "feat", env=quiet)
+    (repo / "b.py").write_text("def b(): pass\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "b", env=quiet)
+    git("checkout", "-q", "main", env=quiet)
+
+    out = git("merge", "--no-ff", "-m", "merge feat", "feat")
+
+    assert _LAUNCH_LINE in out.stdout + out.stderr, (
+        "post-merge exited before the launch\n"
+        f"stdout={out.stdout!r}\nstderr={out.stderr!r}"
     )
 
 
@@ -1794,3 +2108,63 @@ def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
     got = [_unquote_git_path(l) for l in raw]
     assert sorted(got) == sorted(names)
     assert all((tmp_path / g).is_file() for g in got)
+
+
+def _watch_fn(name):
+    import graphify.watch as watch_mod
+
+    tree = ast.parse(Path(watch_mod.__file__).read_text(encoding="utf-8"))
+    return next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def test_watch_rebuild_timeout_arms_a_timer_without_sigalrm():
+    """`graphify watch` had no rebuild timeout at all, and the SIGALRM one the
+    hooks use is a no-op on Windows (#2173). Same shape as the hook test: the
+    Timer fallback sits in the else-branch of the SIGALRM check and kills
+    workers before os._exit, and the watch loop actually runs rebuilds in it."""
+    fn = _watch_fn("_rebuild_timeout")
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(fn)
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, "_rebuild_timeout has no else-branch for the missing-SIGALRM case (#2173)"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='Timer'" in dumped and "attr='_exit'" in dumped
+    bail = next(n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n.name == "_bail")
+    # statement position is execution order; ast.walk is breadth-first
+    order = [ast.dump(stmt) for stmt in bail.body]
+    kill_at = next(i for i, d in enumerate(order) if "attr='kill'" in d)
+    exit_at = next(i for i, d in enumerate(order) if "attr='_exit'" in d)
+    assert kill_at < exit_at, "_bail exits before killing workers"
+    loop = ast.dump(_watch_fn("watch"))
+    assert "_rebuild_timeout" in loop, "watch() does not wrap its rebuild in _rebuild_timeout (#2173)"
+
+
+def test_watch_rebuild_timeout_runs_off_the_main_thread():
+    """SIGALRM can only be armed from the main thread: signal.signal() raises
+    ValueError anywhere else. watch()'s dispatch loop runs in a worker thread
+    both under test and when embedded, so _rebuild_timeout must not reach for
+    SIGALRM there — otherwise the ValueError escapes the loop's
+    `except TimeoutError` guard and tears watch() down before the rebuild runs
+    (#4724 regressed gh-928). The context manager must yield (run its body)
+    cleanly off the main thread."""
+    import threading
+    import graphify.watch as watch_mod
+
+    ran: list[bool] = []
+    errors: list[BaseException] = []
+
+    def _body():
+        try:
+            with watch_mod._rebuild_timeout():
+                ran.append(True)
+        except BaseException as exc:  # noqa: BLE001 - record any escape
+            errors.append(exc)
+
+    t = threading.Thread(target=_body)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "_rebuild_timeout blocked the worker thread"
+    assert errors == [], f"_rebuild_timeout raised off the main thread: {errors!r}"
+    assert ran == [True], "_rebuild_timeout never ran its body off the main thread"
