@@ -320,6 +320,34 @@ class CsharpNameResolver:
                 _append_unique(scopes, namespace)
         return scopes
 
+    def visible_namespaces(self, source_node: dict, source_file: str) -> list[set[str]]:
+        """Namespaces visible to extension-method lookup, innermost level first.
+
+        C# 12.8.10.3: for each enclosing namespace declaration — innermost first,
+        ending with the compilation unit — consider that namespace and the
+        ``using namespace`` directives declared at that level. A file-level
+        using belongs to the compilation unit, so it is only considered at the
+        outermost level; that is why an extension declared in an inner namespace
+        wins over one imported at the top of the file (#4828).
+
+        A namespace-scoped using is treated as visible at every level inside it.
+        That is coarser than the spec but only ever adds candidates at a deeper
+        level than the directive's own, and the caller drops ties.
+        """
+        chain = [part for part in self._namespace(source_node).split(".") if part]
+        usings = self.namespace_usings_by_file.get(source_file, [])
+        levels: list[set[str]] = []
+        for i in range(len(chain), -1, -1):
+            visible = {".".join(chain[:i])}
+            for target_fqn, scope_kind, scope_id in usings:
+                if scope_kind == "file":
+                    if i == 0:
+                        visible.add(target_fqn)
+                elif self._using_in_scope(scope_kind, scope_id, source_node):
+                    visible.add(target_fqn)
+            levels.append(visible)
+        return levels
+
     def _resolve_alias(self, label: str, source_node: dict, source_file: str) -> str | None:
         hits = set()
         for target_fqn, scope_kind, scope_id in self.aliases_by_file.get(source_file, {}).get(label, []):
