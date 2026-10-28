@@ -6247,7 +6247,7 @@ def _resolve_csharp_extension_calls(
     third-party type) cannot have its instance members enumerated, so the
     instance-wins rule is replaced by two conservative proofs: the member name
     is not one a BCL type owns (``ToString``, ``GetValue``, …), and no regular
-    method anywhere in the corpus has that name. Such an edge is INFERRED 0.70,
+    method anywhere in the corpus has that name. Such an edge is INFERRED 0.75,
     one tier below a receiver whose declaration table typed it.
 
     A chained receiver (``v.ToString().Mask()``) has no type at all: typing it
@@ -6491,10 +6491,10 @@ def _resolve_csharp_extension_calls(
                 "context": "call",
                 "confidence": "INFERRED",
                 # 0.85 when the extractor's declaration table typed the receiver;
-                # 0.70 when the receiver's type is out of corpus and the binding
-                # rests on the BCL/regular-name guards (the discrete rubric has
-                # no 0.75, see references/extraction-spec.md).
-                "confidence_score": 0.70 if roc else 0.85,
+                # 0.75 when the receiver's type is out of corpus (or absent) and
+                # the binding rests on the BCL/regular-name guards — the discrete
+                # INFERRED rubric in references/extraction-spec.md.
+                "confidence_score": 0.75 if roc else 0.85,
                 "source_file": src_file,
                 "source_location": rc.get("source_location"),
                 "weight": 1.0,

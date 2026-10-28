@@ -124,8 +124,8 @@ def test_out_of_corpus_extension_edge_is_scored_lower():
         if e.get("relation") == "calls"
         and by_id.get(e["target"], {}).get("metadata", {}).get("extension")
     }
-    assert scores[".Mask()"] == 0.70
-    assert scores[".Twice()"] == 0.70
+    assert scores[".Mask()"] == 0.75
+    assert scores[".Twice()"] == 0.75
 
 
 def test_bcl_member_name_on_an_undeclared_type_is_not_bound():
