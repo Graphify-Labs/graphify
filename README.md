@@ -240,6 +240,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
+| ZCode | `graphify install --platform zcode` |
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
@@ -249,7 +250,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Google Antigravity | `graphify antigravity install` |
 | Google Antigravity (Windows) | `graphify antigravity install` (auto-detected on Windows) |
 
-Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
+Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism. ZCode uses the Agent tool for parallel subagent dispatch (claude's skill bundle); the skill lands in `~/.zcode/skills/` (user) or `.zcode/skills/` (project). A `--project` install also registers a SessionStart reminder hook in `.zcode/config.json` (runs `graphify hook-guard zcode`; needs `graphify` on PATH; ZCode snapshots hook config per session, so it fires from the next session after install) — AGENTS.md rules alone proved too easy to skip in practice, and the passive rule needs an active nudge.
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design: use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
 

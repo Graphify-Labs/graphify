@@ -750,6 +750,17 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "claude",
     },
+    "zcode": {
+        # Rides claude's split bundle (shares skill.md): ZCode dispatches
+        # parallel extraction subagents through an Agent tool like Claude Code,
+        # and reads AGENTS.md natively. Global: ~/.zcode/skills; project:
+        # ./.zcode/skills — the generic _platform_skill_destination fallthrough
+        # covers both. https://zcode.z.ai/en/docs/skill
+        "skill_file": "skill.md",
+        "skill_dst": Path(".zcode") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "claude",
+    },
     "amp": {
         # Amp searches .agents/skills (project) and ~/.config/agents/skills (user),
         # not .amp/skills. The user-scope path is set in _platform_skill_destination.
@@ -1941,6 +1952,125 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     _write_settings_with_backup(hooks_path, existing)
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
+_ZCODE_HOOK_STATUS = "graphify reminder"
+
+
+def _is_graphify_zcode_hook_entry(entry: object) -> bool:
+    """True for a SessionStart hook entry graphify's zcode install wrote.
+
+    ZCode hook entries are ``{"type": "process", "command": ..., "args": [...]}``
+    argument vectors, so the ``type: "command"`` + command-string matcher behind
+    ``_is_graphify_hook_entry`` cannot see them; ours are the process entries
+    whose args invoke ``hook-guard zcode``.
+    """
+    if not isinstance(entry, dict) or entry.get("type") != "process":
+        return False
+    args = entry.get("args")
+    return isinstance(args, list) and "hook-guard" in args and "zcode" in args
+
+
+def _strip_graphify_zcode_hook_entries(groups: "list") -> "list":
+    """Drop graphify's SessionStart entries from ZCode event groups.
+
+    Same contract as _strip_graphify_hooks, for ZCode's ``[{"hooks": [...]}]``
+    group form: only graphify's own entries are removed, a group survives while
+    it still holds foreign hooks, and untouched groups pass through unchanged.
+    """
+    kept: "list" = []
+    for group in groups:
+        if not isinstance(group, dict):
+            kept.append(group)
+            continue
+        entries = group.get("hooks")
+        if not isinstance(entries, list):
+            kept.append(group)
+            continue
+        remaining = [e for e in entries if not _is_graphify_zcode_hook_entry(e)]
+        if len(remaining) == len(entries):
+            kept.append(group)
+        elif remaining:
+            kept.append({**group, "hooks": remaining})
+        # else: the group held only graphify entries -- drop it entirely.
+    return kept
+
+
+def _install_zcode_hook(project_dir: Path) -> None:
+    """Add a SessionStart reminder hook to the project's .zcode/config.json.
+
+    Reached only from _agents_install("zcode", project=True): a global zcode
+    install stays skill-only, because the knowledge graph is per-project and
+    the hook should be too. ZCode runs config-file hooks only when the file
+    sets ``hooks.enabled``, and snapshots hook config per session, so the
+    reminder first fires in the NEXT session. Like a project-scoped Claude/
+    Codex hook (#3129), a committed config must not embed the installing
+    machine's paths: the entry runs the bare ``graphify`` command and passes
+    ``${CLAUDE_PROJECT_DIR}`` for ZCode to expand per session (hook-guard zcode
+    itself falls back to the env vars / cwd when it arrives unexpanded).
+    """
+    settings_path = project_dir / ".zcode" / "config.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = _read_settings_for_merge(settings_path)
+
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(settings_path)
+    events = hooks.setdefault("events", {})
+    if not isinstance(events, dict):
+        _refuse_to_modify(settings_path)
+    session_start = events.setdefault("SessionStart", [])
+    if not isinstance(session_start, list):
+        _refuse_to_modify(settings_path)
+
+    if not hooks.get("enabled"):
+        hooks["enabled"] = True
+        print("  hooks.enabled       ->  true (ZCode config-file hooks are off by default)")
+    events["SessionStart"] = _strip_graphify_zcode_hook_entries(session_start)
+    events["SessionStart"].append({
+        "hooks": [{
+            "type": "process",
+            "command": "graphify",
+            "args": ["hook-guard", "zcode", "${CLAUDE_PROJECT_DIR}"],
+            "timeoutMs": 10000,
+            "statusMessage": _ZCODE_HOOK_STATUS,
+        }]
+    })
+    _write_settings_with_backup(settings_path, settings)
+    print("  .zcode/config.json  ->  SessionStart reminder hook registered")
+    print("     (fires from the next ZCode session; needs graphify on PATH)")
+
+
+def _uninstall_zcode_hook(project_dir: Path) -> None:
+    """Remove graphify's SessionStart reminder hook from .zcode/config.json."""
+    settings_path = project_dir / ".zcode" / "config.json"
+    if not settings_path.exists():
+        return
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    events = hooks.get("events")
+    if not isinstance(events, dict):
+        return
+    session_start = events.get("SessionStart")
+    if not isinstance(session_start, list):
+        return
+    filtered = _strip_graphify_zcode_hook_entries(session_start)
+    if filtered == session_start:
+        return
+    if filtered:
+        events["SessionStart"] = filtered
+    else:
+        del events["SessionStart"]
+        if not events:
+            del hooks["events"]
+            # "enabled" is ours to remove only when nothing else needs it.
+            if set(hooks.keys()) <= {"enabled"}:
+                del settings["hooks"]
+    _write_settings_with_backup(settings_path, settings)
+    print("  .zcode/config.json  ->  SessionStart reminder hook removed")
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
@@ -1966,13 +2096,17 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         _install_opencode_plugin(project_dir or Path("."))
     elif platform == "kilo":
         _install_kilo_plugin(project_dir or Path("."))
+    elif platform == "zcode":
+        # Project installs only (global zcode never reaches _agents_install),
+        # matching the per-project knowledge graph the reminder points at.
+        _install_zcode_hook(project_dir or Path("."))
 
     print()
     print(
         f"{platform.capitalize()} will now check the knowledge graph before answering"
     )
     print("codebase questions and rebuild it after code changes.")
-    if platform not in ("codex", "opencode", "kilo"):
+    if platform not in ("codex", "opencode", "kilo", "zcode"):
         print()
         print("Note: unlike Claude Code, there is no PreToolUse hook equivalent for")
         print(
@@ -2035,7 +2169,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "zcode"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name, project=True)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -2043,6 +2177,8 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
             hint_paths.append(project_dir / ".opencode")
         elif platform_name == "codex":
             hint_paths.append(project_dir / ".codex")
+        elif platform_name == "zcode":
+            hint_paths.append(project_dir / ".zcode")
         _print_project_git_add_hint(hint_paths)
     elif platform_name == "devin":
         skill_dst = _copy_skill_file("devin", project=True, project_dir=project_dir)
@@ -2076,11 +2212,13 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "zcode"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
             _uninstall_codex_hook(project_dir)
+        elif platform_name == "zcode":
+            _uninstall_zcode_hook(project_dir)
     elif platform_name == "antigravity":
         _antigravity_uninstall(project_dir, project=True)
     elif platform_name == "devin":
@@ -2306,7 +2444,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
     _antigravity_uninstall(pd)
-    # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
+    # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot, zcode
     _agents_uninstall(pd)
     # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
     # AGENTS.md cleanup above does not touch.
@@ -2314,8 +2452,11 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # zcode's user-scope skill (~/.zcode/skills) rides no other cleanup either.
+    _remove_skill_file("zcode")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
+    _uninstall_zcode_hook(pd)
 
     # Git hook
     try:
