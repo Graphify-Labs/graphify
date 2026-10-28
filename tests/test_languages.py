@@ -5166,6 +5166,41 @@ def test_cl_crossfile_superclass_inherits_edge_survives(tmp_path):
 
 
 @_needs_commonlisp
+def test_cl_forward_referenced_superclass_binds_to_local_node(tmp_path):
+    """A superclass listed before its own defclass form, in the same file,
+    must still bind to that file's local node instead of a sourceless stub.
+
+    ensure_class_ref used to check only seen_ids, which is populated in file
+    order as _walk_forms reaches each form. A subclass appearing above its
+    parent asked before the parent's node existed, so it got the external-stub
+    treatment meant for a genuinely different file, splitting "parent" into
+    two unconnected nodes in the same file.
+    """
+    f = tmp_path / "fwd.lisp"
+    f.write_text(
+        "(defclass child (parent) ())\n"
+        "(defclass parent () ())\n"
+    )
+    r = extract_commonlisp(f)
+    assert "error" not in r
+    parent_nodes = [n for n in r["nodes"] if n["label"] == "parent"]
+    assert len(parent_nodes) == 1, "forward-referenced parent must not split into two nodes"
+    assert parent_nodes[0]["source_file"] == str(f)
+
+    id_to_node = {n["id"]: n for n in r["nodes"]}
+    inherits = {
+        (id_to_node[e["source"]]["label"], id_to_node[e["target"]]["label"])
+        for e in r["edges"]
+        if e["relation"] == "inherits"
+        and e["source"] in id_to_node and e["target"] in id_to_node
+    }
+    assert ("child", "parent") in inherits
+    assert id_to_node[
+        next(e["target"] for e in r["edges"] if e["relation"] == "inherits")
+    ]["source_file"] == str(f), "inherits edge must target the local parent node, not a stub"
+
+
+@_needs_commonlisp
 def test_cl_imports():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
