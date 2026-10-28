@@ -1654,42 +1654,57 @@ def test_ignored_dir_pruned_walk_never_lists_contents(tmp_path, monkeypatch):
     ignored = as_posix_list(result["ignored"])
     assert sum("graphify-notes" in p for p in ignored) == 1
 
+@pytest.fixture
+def scan_ignore_tree(tmp_path):
+    """Prepare ignored and retained files for the scan-cost test."""
+    n_ignored_dirs = 100
+    n_ignored_files_per_dir = 20
 
-def test_scan_ignore_cost_is_per_directory_not_per_file(tmp_path, monkeypatch):
-    """On a 2,000-file tree under an ignored dir, ignore evaluation is O(dirs).
+    (tmp_path / ".graphifyignore").write_text(
+        "graphify-notes/\n", encoding="utf-8"
+    )
 
-    Counts _is_scan_ignored and _is_ignored invocations during detect(): the
-    ignored subtree must cost exactly one directory-level check — never one
-    per contained file (the 29k-file defect shape).
-    """
-    import graphify.detect as det
-
-    n_ignored_dirs, n_ignored_files_per_dir = 100, 20  # 2,000 ignored files
-    (tmp_path / ".graphifyignore").write_text("graphify-notes/\n")
     for d in range(n_ignored_dirs):
         sub = tmp_path / "graphify-notes" / f"note-dir-{d:03d}"
         sub.mkdir(parents=True)
+
         for f in range(n_ignored_files_per_dir):
-            (sub / f"note-{f:02d}.md").write_text("# note")
+            (sub / f"note-{f:02d}.md").write_text(
+                "# note", encoding="utf-8"
+            )
+
     kept = 0
+
     for d in range(5):
         sub = tmp_path / "src" / f"pkg{d}"
         sub.mkdir(parents=True)
+
         for f in range(10):
-            (sub / f"mod{f}.py").write_text("x = 1")
+            (sub / f"mod{f}.py").write_text(
+                "x = 1", encoding="utf-8"
+            )
             kept += 1
 
+    return kept, n_ignored_dirs
+
+@pytest.fixture
+def scan_ignore_call_counts(monkeypatch):
+    """Monitor calls to the scan and ignore functions."""
+    import graphify.detect as det
+
     scan_calls = {"total": 0, "under_ignored": 0}
+    ignored_calls = {"total": 0}
+
     real_scan = det._is_scan_ignored
+    real_is_ignored = det._is_ignored
 
     def counting_scan(path, *args, **kwargs):
         scan_calls["total"] += 1
+
         if "graphify-notes" in path.parts:
             scan_calls["under_ignored"] += 1
-        return real_scan(path, *args, **kwargs)
 
-    ignored_calls = {"total": 0}
-    real_is_ignored = det._is_ignored
+        return real_scan(path, *args, **kwargs)
 
     def counting_is_ignored(*args, **kwargs):
         ignored_calls["total"] += 1
@@ -1697,23 +1712,38 @@ def test_scan_ignore_cost_is_per_directory_not_per_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(det, "_is_scan_ignored", counting_scan)
     monkeypatch.setattr(det, "_is_ignored", counting_is_ignored)
+
+    return scan_calls, ignored_calls
+
+
+def test_scan_ignore_cost_is_per_directory_not_per_file(
+    tmp_path, scan_ignore_tree, scan_ignore_call_counts
+):
+    """Ignore evaluation must scale with directories, not ignored files."""
+    import graphify.detect as det
+
+    kept, n_ignored_dirs = scan_ignore_tree
+    scan_calls, ignored_calls = scan_ignore_call_counts
+
     result = det.detect(tmp_path)
 
     assert result["total_files"] == kept
-    # Exactly ONE ignore evaluation for the whole ignored subtree.
+
     assert scan_calls["under_ignored"] == 1, (
         f"{scan_calls['under_ignored']} evaluations under the ignored dir — "
         "expected 1 (the directory itself); per-file evaluation regressed"
     )
-    # Overall evaluation count scales with kept entries + dirs, not with the
-    # 2,000 files inside the ignored dir.
+
     budget = 4 * (kept + n_ignored_dirs)
+
     assert scan_calls["total"] < budget, (
         f"{scan_calls['total']} _is_scan_ignored calls, expected < {budget}"
     )
+
     assert ignored_calls["total"] < 2 * budget, (
         f"{ignored_calls['total']} _is_ignored calls, expected < {2 * budget}"
     )
+
 
 
 def test_is_ignored_no_per_pattern_path_construction(monkeypatch):
