@@ -1561,20 +1561,26 @@ def test_is_ignored_cache_matches_uncached_results(tmp_path):
     assert not _is_ignored(tmp_path / "logs" / "keep.log", tmp_path, patterns)
     assert _is_ignored(tmp_path / "logs" / "drop.log", tmp_path, patterns)
 
+@pytest.fixture
+def counting_ignore_cache():
+    """Create a cache that records how often each path is evaluated."""
+    eval_counts = {}
 
-def test_is_ignored_cache_evaluates_each_dir_once():
-    """Siblings under the same subtree must share the cached parent result (#1235).
+    class CountingCache(dict):
+        def __setitem__(self, key, value):
+            eval_counts[key] = eval_counts.get(key, 0) + 1
+            super().__setitem__(key, value)
 
-    Counts how many times each unique target path is evaluated through the
-    cache: every directory (ancestor) should be evaluated exactly once across
-    a multi-file subtree rather than once per descendant file.
-    """
+    return CountingCache(), eval_counts
+
+
+def test_is_ignored_cache_evaluates_each_dir_once(counting_ignore_cache):
+    """Siblings under the same subtree must share cached parent results (#1235)."""
     from graphify.detect import _is_ignored
 
     root = Path("/repo")
-    patterns = [(root, "*.tmp")]  # non-empty so _eval runs
+    patterns = [(root, "*.tmp")]
 
-    # A subtree where many files share the same ancestor directories.
     files = [
         root / "a" / "b" / "f1.py",
         root / "a" / "b" / "f2.py",
@@ -1583,29 +1589,20 @@ def test_is_ignored_cache_evaluates_each_dir_once():
         root / "a" / "c" / "f5.py",
     ]
 
-    eval_counts: dict[Path, int] = {}
+    cache, eval_counts = counting_ignore_cache
 
-    # A dict subclass records every cache write. Since _eval writes to the
-    # cache exactly once per computed target (and reads short-circuit before
-    # any write), one write == one evaluation of that path.
-    class CountingCache(dict):
-        def __setitem__(self, key, value):
-            eval_counts[key] = eval_counts.get(key, 0) + 1
-            super().__setitem__(key, value)
-
-    cache = CountingCache()
     for f in files:
         _is_ignored(f, root, patterns, _cache=cache)
 
-    # Each unique path (files + ancestor dirs) must be computed exactly once.
     for target, count in eval_counts.items():
-        assert count == 1, f"{target} evaluated {count} times, expected 1 (cache miss)"
+        assert count == 1, (
+            f"{target} evaluated {count} times, expected 1 (cache miss)"
+        )
 
-    # Shared ancestors must be present and counted only once each.
     assert eval_counts[root / "a"] == 1
     assert eval_counts[root / "a" / "b"] == 1
     assert eval_counts[root / "a" / "c"] == 1
-    # All five distinct files are computed once each.
+
     for f in files:
         assert eval_counts[f] == 1
 
