@@ -6445,6 +6445,18 @@ def _resolve_cpp_member_calls(
         })
 
 
+# C# predefined/BCL type names that are never declared in the scanned corpus.
+# A receiver of one of these types can still be the target of an extension method
+# (`this string`), so the extractor now stamps the type name (#4828) — but the
+# type is not a cross-repo candidate, so a failed instance lookup must not park it
+# as one (#3152).
+_CSHARP_WELL_KNOWN_TYPES = frozenset({
+    "bool", "byte", "char", "decimal", "double", "dynamic", "float", "int",
+    "long", "nint", "nuint", "object", "sbyte", "short", "string", "uint",
+    "ulong", "ushort", "void",
+})
+
+
 def _csharp_overload_index(nodes: list[dict], edges: list[dict]) -> dict:
     """Method nodes by id and their owning type, for C# methods with an arity."""
     node_by_id = {n.get("id"): n for n in nodes}
@@ -6652,8 +6664,15 @@ def _resolve_csharp_member_calls(
         ``_resolve_type_name_nid`` collapses "absent", "ambiguous" and "scoping was
         decisive" into one ``None``, and only the first is a cross-repo candidate,
         so re-check the bare-name index instead of trusting the ``None``.
+
+        A well-known BCL name is NOT a cross-repo candidate: ``string``/``int``
+        receivers are typed now that extension methods need their declared type
+        (#4828), and parking every ``x.ToString()`` would stamp a useless
+        ``unresolved_calls`` payload on most caller nodes in a .NET corpus.
         """
         if type_name and not type_def_nids.get(_key(type_name)):
+            if str(type_name).lower() in _CSHARP_WELL_KNOWN_TYPES:
+                return
             _park_unresolved_member_call(
                 caller_node, rc.get("callee"), type_name, "csharp", rc,
             )
