@@ -299,7 +299,7 @@ Both bounds matter. The line bound is not only about the 2000-line Read cap: a s
 
 Call the Agent tool multiple times IN THE SAME RESPONSE - one call per chunk. This is the only way they run in parallel. If you make one Agent call, wait, then make another, you are doing it sequentially and defeating the purpose.
 
-**IMPORTANT - subagent type:** Always use `subagent_type="general-purpose"`. Do NOT use `Explore` - it is read-only and cannot write chunk files to disk, which silently drops extraction results. General-purpose has Write and Bash access which the subagent needs.
+**IMPORTANT - subagent type:** the extraction subagent MUST have Write and Bash access - it builds the chunk file on disk itself. Default to `subagent_type="general-purpose"`. Do NOT use `Explore` - it is read-only and cannot write chunk files to disk, which silently drops extraction results. If this host's dispatch policy restricts or refuses `general-purpose` (an org policy hook, a curated persona registry), dispatch any available type that lists Write and Bash access instead - that is a host policy constraint, not a graphify requirement. Never downgrade to a read-only type to satisfy a policy; that trades a loud failure for a silent one.
 
 Concrete example for 3 chunks:
 ```
@@ -326,10 +326,10 @@ See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, 
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as a read-only type (e.g. Explore) — print a warning: "chunk N missing from disk — subagent may have been dispatched without Write and Bash access. Re-run with general-purpose agent. On a host whose dispatch policy restricts that type, use any permitted type with both tools instead." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used. On a host whose dispatch policy restricts that type, any permitted type with Write and Bash access is fine instead.
 
 **Step B3.5 - Verify each reported file was actually read to its end**
 
