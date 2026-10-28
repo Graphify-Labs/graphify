@@ -1130,54 +1130,83 @@ def test_build_merge_prune_windows_backslash_paths(tmp_path):
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
 
 
-def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
-    """Re-extracting a CHANGED file must REPLACE its prior nodes/edges, not
-    accumulate them. build_merge previously only grew the graph, so an edge that
-    disappeared from a file's new version survived forever (only exact-duplicate
-    edges collapsed). The new-chunk source_file may be an absolute win32 path
-    while the stored graph keeps relative posix — both forms must match."""
+@pytest.fixture
+def stale_edges_graph(tmp_path):
+    """Create an initial graph with stale and unchanged file contributions."""
     import networkx as nx
 
     root = tmp_path / "corpus"
     root.mkdir()
     graph_path = tmp_path / "graph.json"
 
-    # First build: changed.md contributed A, B and edge A->B; keep.md is unrelated.
-    chunk0 = {"nodes": [
-        {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
-        {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
-        {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
-    ], "edges": [
-        {"source": "A", "target": "B", "relation": "references", "confidence": "EXTRACTED",
-         "source_file": "changed.md", "weight": 1.0},
-        {"source": "K", "target": "A", "relation": "references", "confidence": "EXTRACTED",
-         "source_file": "keep.md", "weight": 1.0},
-    ]}
-    G0 = build([chunk0], dedup=False)
-    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+    chunk = {
+        "nodes": [
+            {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
+            {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
+            {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
+        ],
+        "edges": [
+            {
+                "source": "A", "target": "B", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": "changed.md",
+                "weight": 1.0,
+            },
+            {
+                "source": "K", "target": "A", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": "keep.md",
+                "weight": 1.0,
+            },
+        ],
+    }
 
-    # changed.md edited: re-extraction now yields A, C and edge A->C (B dropped).
-    # source_file arrives as an absolute win32-style path (as detect emits on Windows).
+    initial_graph = build([chunk], dedup=False)
+    graph_path.write_text(
+        json.dumps(nx.node_link_data(initial_graph, edges="edges")),
+        encoding="utf-8",
+    )
+
+    return root, graph_path
+
+
+def test_build_merge_replaces_changed_file_stale_edges(stale_edges_graph):
+    """Re-extracting a changed file replaces stale nodes and edges."""
+    root, graph_path = stale_edges_graph
+
+    # The changed file now contributes A and C instead of A and B.
     abs_changed = str(root / "changed.md").replace("/", "\\")
-    new_chunk = {"nodes": [
-        {"id": "A", "label": "A", "file_type": "document", "source_file": abs_changed},
-        {"id": "C", "label": "C", "file_type": "document", "source_file": abs_changed},
-    ], "edges": [
-        {"source": "A", "target": "C", "relation": "references", "confidence": "EXTRACTED",
-         "source_file": abs_changed, "weight": 1.0},
-    ]}
-    G1 = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    new_chunk = {
+        "nodes": [
+            {
+                "id": "A", "label": "A", "file_type": "document",
+                "source_file": abs_changed,
+            },
+            {
+                "id": "C", "label": "C", "file_type": "document",
+                "source_file": abs_changed,
+            },
+        ],
+        "edges": [
+            {
+                "source": "A", "target": "C", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": abs_changed,
+                "weight": 1.0,
+            },
+        ],
+    }
 
-    labels = {d["label"] for _, d in G1.nodes(data=True)}
-    edges = {(u, v) for u, v in G1.edges()}
+    merged_graph = build_merge(
+        [new_chunk], graph_path, dedup=False, root=root
+    )
 
-    # Stale contribution from the old version of changed.md is gone.
+    labels = {data["label"] for _, data in merged_graph.nodes(data=True)}
+    edges = {(source, target) for source, target in merged_graph.edges()}
+
     assert "B" not in labels, "stale node from changed file's old version must be dropped"
     assert ("A", "B") not in edges and ("B", "A") not in edges, "stale edge must be dropped"
-    # Fresh contribution is present.
+
     assert "C" in labels, "re-extracted node must be present"
     assert ("A", "C") in edges, "re-extracted edge must be present"
-    # An unchanged file is untouched.
+
     assert "K" in labels, "unchanged file's node must survive"
     assert ("K", "A") in edges, "unchanged file's edge must survive"
 
