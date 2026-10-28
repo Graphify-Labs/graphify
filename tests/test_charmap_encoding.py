@@ -52,6 +52,48 @@ _ENVELOPE = {
 }
 
 
+@pytest.fixture
+def unicode_subprocess_result():
+    """Simulate a successful Claude CLI response."""
+    envelope = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": json.dumps({
+            "nodes": [
+                {
+                    "id": "u_chunk",
+                    "label": "Unicode Chunk",
+                    "file_type": "document",
+                    "source_file": "unicode_chunk.md",
+                }
+            ],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }),
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+        "modelUsage": {
+            "claude-opus-4-7": {
+                "inputTokens": 1,
+                "outputTokens": 1,
+            },
+        },
+    }
+
+    return MagicMock(
+        returncode=0,
+        stdout=json.dumps(envelope),
+        stderr="",
+    )
+
 # ── Test A: subprocess encoding ───────────────────────────────────────────────
 
 class TestSubprocessEncoding:
@@ -267,51 +309,35 @@ class TestSubstitutionValidation:
             prompt.encode("cp1252")
 
     def test_subprocess_encoding_kwarg_in_extract_files_direct(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, unicode_subprocess_result
     ):
-        """End-to-end path: write unicode file → extract_files_direct → subprocess.
-
-        Subprocess must receive encoding='utf-8', not the locale default.
-        """
+        """Subprocess must receive UTF-8 encoding and preserve Unicode input."""
         f = tmp_path / "unicode_chunk.md"
         f.write_text(self._UNICODE_CHARS, encoding="utf-8")
 
-        _ENVELOPE_SIMPLE = {
-            "type": "result", "subtype": "success", "is_error": False,
-            "result": json.dumps({
-                "nodes": [{"id": "u_chunk", "label": "Unicode Chunk",
-                           "file_type": "document",
-                           "source_file": "unicode_chunk.md"}],
-                "edges": [], "hyperedges": [],
-                "input_tokens": 1, "output_tokens": 1,
-            }),
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": 1, "output_tokens": 1,
-                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-            },
-            "modelUsage": {
-                "claude-opus-4-7": {"inputTokens": 1, "outputTokens": 1},
-            },
-        }
-        completed = MagicMock(
-            returncode=0, stdout=json.dumps(_ENVELOPE_SIMPLE), stderr=""
+        monkeypatch.setattr(
+            llm, "_response_is_hollow", lambda raw, parsed: False
         )
-        monkeypatch.setattr(llm, "_response_is_hollow", lambda raw, parsed: False)
 
         with patch("shutil.which", return_value="/fake/bin/claude"), \
-             patch("subprocess.run", return_value=completed) as mock_run:
+             patch(
+                 "subprocess.run",
+                 return_value=unicode_subprocess_result,
+             ) as mock_run:
             result = llm.extract_files_direct(
-                files=[f], backend="claude-cli", root=tmp_path
+                files=[f],
+                backend="claude-cli",
+                root=tmp_path,
             )
 
         assert mock_run.called
+
         _args, kwargs = mock_run.call_args
         assert kwargs.get("encoding") == "utf-8", (
             "subprocess.run must be called with encoding='utf-8'; "
             f"got {kwargs.get('encoding')!r}"
         )
-        # Confirm the unicode content was in the input (not truncated/replaced)
+
         inp = kwargs.get("input", "")
         assert "→" in inp or "✅" in inp or "≥" in inp
         assert len(result["nodes"]) >= 1
