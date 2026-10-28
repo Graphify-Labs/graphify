@@ -6249,6 +6249,14 @@ def _resolve_csharp_extension_calls(
     is not one a BCL type owns (``ToString``, ``GetValue``, …), and no regular
     method anywhere in the corpus has that name. Such an edge is INFERRED 0.70,
     one tier below a receiver whose declaration table typed it.
+
+    A chained receiver (``v.ToString().Mask()``) has no type at all: typing it
+    needs the inner call's return type, which for a BCL call the corpus does not
+    know. The same two proofs apply, with no type-compatibility filter — only a
+    name that is unique enough to survive them binds (``v.ToString().Mask()``
+    does; anything named like an ordinary member does not). A capitalized
+    untyped receiver is a type name (``Convert.ToInt32(x)``), never a value an
+    extension can apply to, so it is skipped.
     """
     def _key(label: str) -> str:
         # Case and `_` are part of a C# name (#4415); drop only the `.M()` decoration.
@@ -6395,17 +6403,23 @@ def _resolve_csharp_extension_calls(
                 owner = method_owner.get(caller)
                 owner_node = node_by_id.get(owner) if owner else None
                 recv_name = (owner_node or {}).get("label")
-            if not recv_name:
-                continue
-
-            recv_nid, decisive = _resolve_type_nid(recv_name, caller_node, src_file)
-            if recv_nid is None and decisive:
-                continue  # the receiver's own type is ambiguous here
-            roc = recv_nid is None  # receiver type declared nowhere in the corpus
 
             candidates = ext_by_name.get(_key(callee))
             if not candidates:
                 continue
+
+            closure: set[str] = set()
+            if not recv_name:
+                # A capitalized untyped receiver is a type named in source
+                # (`Convert.ToInt32(x)`), not a value an extension applies to.
+                if receiver and not rc.get("receiver_type") and str(receiver)[:1].isupper():
+                    continue
+                roc = True
+            else:
+                recv_nid, decisive = _resolve_type_nid(recv_name, caller_node, src_file)
+                if recv_nid is None and decisive:
+                    continue  # the receiver's own type is ambiguous here
+                roc = recv_nid is None  # receiver type declared nowhere in the corpus
 
             if not roc:
                 closure, unresolved = _closure(recv_nid)
@@ -6432,25 +6446,30 @@ def _resolve_csharp_extension_calls(
             else:
                 continue
 
-            exact = [
-                d for d in candidates
-                if not d["is_type_param"] and _key(d["extended"]) == _key(recv_name)
-            ]
-            inherited = []
-            if not roc:
-                inherited = [
+            if not recv_name:
+                # No type to be compatible with: the guarded name rules above are
+                # the whole proof, and a tie stays unbound.
+                applicable = candidates
+            else:
+                exact = [
                     d for d in candidates
-                    if not d["is_type_param"]
-                    and _key(d["extended"]) in {
-                        _key((node_by_id.get(c) or {}).get("label", "")) for c in closure
-                    }
+                    if not d["is_type_param"] and _key(d["extended"]) == _key(recv_name)
                 ]
-            applicable = exact or inherited
-            if not applicable:
-                applicable = [
-                    d for d in candidates
-                    if d["is_type_param"] or d["extended"].lower() in ("object", "dynamic")
-                ]
+                inherited = []
+                if not roc:
+                    inherited = [
+                        d for d in candidates
+                        if not d["is_type_param"]
+                        and _key(d["extended"]) in {
+                            _key((node_by_id.get(c) or {}).get("label", "")) for c in closure
+                        }
+                    ]
+                applicable = exact or inherited
+                if not applicable:
+                    applicable = [
+                        d for d in candidates
+                        if d["is_type_param"] or d["extended"].lower() in ("object", "dynamic")
+                    ]
             if not applicable:
                 continue
 

@@ -428,6 +428,26 @@ FIXTURES: dict[str, Fixture] = {
         forbid_pairs={"// B1": ("E.cs", "// D2")},
         note="B1 is a correct baseline static call; it must never be re-bound to the extension",
     ),
+    # A chained receiver with no type: the untyped rung's name proofs are the
+    # whole evidence. Here a regular method elsewhere spells the name, so the
+    # conservative rule refuses, and the call stays unbound (documented miss).
+    "untyped_regular_name": Fixture(
+        files={
+            "Cache.cs": "public class Cache {\n  public void Flush() { } // D1\n}\n",
+            "E.cs": (
+                "public static class Ext {\n"
+                "  public static void Flush(this string s) { } // D2\n"
+                "}\n"
+            ),
+            "U.cs": (
+                "public class U {\n"
+                "  public void A(long v) { v.ToString().Flush(); } // F1\n"
+                "}\n"
+            ),
+        },
+        forbid=["// F1"],
+        note="the regular-name guard refuses this binding on purpose",
+    ),
     # The #1609 regression the fail-closed guard prevents: a member call on a type
     # that declares no such member must not bind to an unrelated same-named method.
     "god_node_control": Fixture(

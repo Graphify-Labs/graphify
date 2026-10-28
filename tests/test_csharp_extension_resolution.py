@@ -20,7 +20,7 @@ FIXTURE_IDS = list(FIXTURES)
 
 # Stage 1: in-corpus receivers, scope, assignability, poison, arity.
 # Stage 2: out-of-corpus receivers guarded by the BCL/regular-name rules.
-# Stage 3 adds: issue_repro (untyped/chained receivers).
+# Stage 3: untyped/chained receivers.
 STAGE_FIXTURES = {
     "domain_cross_file",
     "same_file",
@@ -32,6 +32,8 @@ STAGE_FIXTURES = {
     # stage 2: out-of-corpus receivers (primitives, third-party types, `this T`)
     "primitive_and_thirdparty",
     "generic_wildcard",
+    # stage 3: untyped/chained receivers
+    "issue_repro",
 }
 
 
@@ -140,3 +142,22 @@ def test_open_generic_extension_applies_only_as_a_wildcard():
     concrete = graph_bindings("type_param_vs_class")
     assert ("// E1", ("T.cs", "// D1")) in concrete["bindings"]
     assert ("// E1", ("T.cs", "// D2")) not in concrete["bindings"]
+
+
+def test_chained_receiver_binds_when_the_name_is_unique():
+    """The issue's `v.ToString().Mask()` line: no receiver type to check, so the
+    guarded untyped rung is the only possible proof."""
+    result = graph_bindings("issue_repro")
+    assert ("// E1", ("Ext.cs", "// D1")) in result["bindings"]
+    assert ("// E2", ("Ext.cs", "// D1")) in result["bindings"]
+
+
+def test_untyped_rung_refuses_a_name_a_regular_method_uses():
+    result = graph_bindings("untyped_regular_name")
+    assert not any(marker == "// F1" for marker, _target in result["bindings"])
+
+
+def test_untyped_rung_refuses_a_capitalized_type_receiver():
+    """`Conv.ToInt32(x)` names a type; the extension must not be considered."""
+    result = graph_bindings("static_class_receiver")
+    assert ("// B1", ("E.cs", "// D2")) not in result["bindings"]
