@@ -6450,6 +6450,20 @@ def _resolve_cpp_member_calls(
 # (`this string`), so the extractor now stamps the type name (#4828) — but the
 # type is not a cross-repo candidate, so a failed instance lookup must not park it
 # as one (#3152).
+# Member names a BCL type owns. A receiver whose type is *not* declared in the
+# corpus could be a BCL type, and if it is, an instance method of that name beats
+# any extension. Without a BCL symbol table the graph cannot prove the negative,
+# so these names are never bound through an out-of-corpus receiver (#4828). A
+# generic (`this T`) or `this object` declaration is still subject to this rule.
+_CSHARP_BCL_MEMBER_NAMES = frozenset({
+    "Add", "Any", "Cast", "Clear", "Compare", "CompareTo", "Concat", "Contains",
+    "CopyTo", "Count", "Dispose", "Equals", "First", "ForEach", "Format",
+    "GetEnumerator", "GetHashCode", "GetType", "GetValue", "IndexOf", "Insert",
+    "Join", "Keys", "Last", "Length", "Parse", "Remove", "Replace", "Select",
+    "Split", "Substring", "ToArray", "ToDictionary", "ToLower", "ToList",
+    "ToString", "ToUpper", "Trim", "TryParse", "Values", "Where",
+})
+
 _CSHARP_WELL_KNOWN_TYPES = frozenset({
     "bool", "byte", "char", "decimal", "double", "dynamic", "float", "int",
     "long", "nint", "nuint", "object", "sbyte", "short", "string", "uint",
@@ -6878,6 +6892,13 @@ def _resolve_csharp_extension_calls(
     An open generic (``this T``) or ``this object`` declaration applies to any
     receiver, but only when no exact/base match exists — C# prefers the
     non-generic candidate.
+
+    A receiver whose type the corpus never declares (``string``, ``int``, a
+    third-party type) cannot have its instance members enumerated, so the
+    instance-wins rule is replaced by two conservative proofs: the member name
+    is not one a BCL type owns (``ToString``, ``GetValue``, …), and no regular
+    method anywhere in the corpus has that name. Such an edge is INFERRED 0.70,
+    one tier below a receiver whose declaration table typed it.
     """
     def _key(label: str) -> str:
         # Case and `_` are part of a C# name (#4415); drop only the `.M()` decoration.
@@ -6929,6 +6950,16 @@ def _resolve_csharp_extension_calls(
     if not ext_by_name:
         return
 
+    # `ext_by_name` covers only extension declarations; this is every *other*
+    # C# method name, used to prove a name is not an ordinary member (#4828).
+    ext_method_ids = {d["method"] for decls in ext_by_name.values() for d in decls}
+    regular_method_names = {
+        key
+        for (_owner, key), mids in method_index.items()
+        for mid in mids
+        if mid not in ext_method_ids
+    }
+
     # Supertype graph. A target with no source_file is a placeholder for a type
     # the corpus never declares: the chain through it is UNRESOLVED.
     supers: dict[str, set[str]] = {}
@@ -6965,19 +6996,24 @@ def _resolve_csharp_extension_calls(
         return out, unresolved
 
     def _resolve_type_nid(type_name: str | None, caller_node: dict | None,
-                          src_file: str) -> str | None:
+                          src_file: str) -> tuple[str | None, bool]:
+        """(definition nid, decisive). ``(None, True)`` means ambiguous or
+        scoping-known-and-unresolvable; ``(None, False)`` means declared nowhere
+        in this corpus — the out-of-corpus rung."""
         if not type_name:
-            return None
+            return None, False
         if caller_node is not None:
             resolved, decisive = resolver.resolve_type_name(
                 type_name, caller_node, src_file
             )
             if resolved:
-                return resolved
+                return resolved, True
             if decisive:
-                return None
+                return None, True
         hits = type_def_nids.get(_key(type_name), [])
-        return hits[0] if len(hits) == 1 else None
+        if len(hits) == 1:
+            return hits[0], True
+        return None, bool(hits)
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for result in per_file:
@@ -7012,21 +7048,31 @@ def _resolve_csharp_extension_calls(
             if not recv_name:
                 continue
 
-            recv_nid = _resolve_type_nid(recv_name, caller_node, src_file)
-            if recv_nid is None:
-                continue
-
-            closure, unresolved = _closure(recv_nid)
-            if unresolved:
-                # An out-of-corpus base may declare this name as an instance
-                # member, which beats any extension. Not provable: no edge.
-                continue
-            if any(method_index.get((owner, _key(callee))) for owner in closure):
-                continue  # an instance member (or an override) wins
+            recv_nid, decisive = _resolve_type_nid(recv_name, caller_node, src_file)
+            if recv_nid is None and decisive:
+                continue  # the receiver's own type is ambiguous here
+            roc = recv_nid is None  # receiver type declared nowhere in the corpus
 
             candidates = ext_by_name.get(_key(callee))
             if not candidates:
                 continue
+
+            if not roc:
+                closure, unresolved = _closure(recv_nid)
+                if unresolved:
+                    # An out-of-corpus base may declare this name as an instance
+                    # member, which beats any extension. Not provable: no edge.
+                    continue
+                if any(method_index.get((owner, _key(callee))) for owner in closure):
+                    continue  # an instance member (or an override) wins
+            else:
+                # Instance members of an undeclared type cannot be enumerated;
+                # refuse a name a BCL type owns, and a name any regular method
+                # in the corpus already spells.
+                if callee in _CSHARP_BCL_MEMBER_NAMES:
+                    continue
+                if _key(callee) in regular_method_names:
+                    continue
 
             for visible in resolver.visible_namespaces(caller_node, src_file):
                 at_level = [d for d in candidates if d["namespace"] in visible]
@@ -7040,13 +7086,15 @@ def _resolve_csharp_extension_calls(
                 d for d in candidates
                 if not d["is_type_param"] and _key(d["extended"]) == _key(recv_name)
             ]
-            inherited = [
-                d for d in candidates
-                if not d["is_type_param"]
-                and _key(d["extended"]) in {
-                    _key((node_by_id.get(c) or {}).get("label", "")) for c in closure
-                }
-            ]
+            inherited = []
+            if not roc:
+                inherited = [
+                    d for d in candidates
+                    if not d["is_type_param"]
+                    and _key(d["extended"]) in {
+                        _key((node_by_id.get(c) or {}).get("label", "")) for c in closure
+                    }
+                ]
             applicable = exact or inherited
             if not applicable:
                 applicable = [
@@ -7073,9 +7121,11 @@ def _resolve_csharp_extension_calls(
                 "relation": "calls",
                 "context": "call",
                 "confidence": "INFERRED",
-                # Receiver typed from the extractor's declaration table, so the
-                # discrete INFERRED rung (0.85) rather than a source-named type.
-                "confidence_score": 0.85,
+                # 0.85 when the extractor's declaration table typed the receiver;
+                # 0.70 when the receiver's type is out of corpus and the binding
+                # rests on the BCL/regular-name guards (the discrete rubric has
+                # no 0.75, see references/extraction-spec.md).
+                "confidence_score": 0.70 if roc else 0.85,
                 "source_file": src_file,
                 "source_location": rc.get("source_location"),
                 "weight": 1.0,
