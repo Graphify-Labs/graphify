@@ -5,6 +5,8 @@ import sys
 from unittest.mock import patch
 import pytest
 
+from graphify.install import _PLATFORM_CONFIG
+
 
 PLATFORMS = {
     "claude": (".claude/skills/graphify/SKILL.md",),
@@ -762,6 +764,25 @@ def test_uninstall_project_without_platform_removes_project_installs(tmp_path, m
     assert user_skill.exists()
     assert not (project / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (project / ".claude" / "CLAUDE.md").exists()
+
+
+@pytest.mark.parametrize("platform", sorted(_PLATFORM_CONFIG))
+def test_uninstall_removes_every_platform_user_skill(tmp_path, monkeypatch, platform):
+    """Bare `graphify uninstall` removes the user-scope skill `install --platform X`
+    wrote for every platform, not only claude/codebuddy/amp/agents."""
+    from graphify.__main__ import main
+    from graphify.install import _platform_skill_destination
+    home = tmp_path / "home"
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", platform])
+        main()
+        skill = _platform_skill_destination(platform)
+        assert skill.exists()
+        monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])
+        main()
+    assert not skill.parent.exists()
+    assert not (home / ".config" / "kilo" / "command" / "graphify.md").exists()
 
 
 def test_antigravity_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
