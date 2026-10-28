@@ -465,15 +465,9 @@ FIXTURES: dict[str, Fixture] = {
     ),
 }
 
-# Names that a BCL instance member owns. Without a BCL symbol table these cannot
-# be proven not to be instance calls, so the guarded rungs refuse them.
-BCL_MEMBER_NAMES = frozenset({
-    "Add", "Any", "Clear", "CompareTo", "Concat", "Contains", "CopyTo", "Count",
-    "Dispose", "Equals", "First", "ForEach", "Format", "GetEnumerator",
-    "GetHashCode", "GetType", "GetValue", "IndexOf", "Join", "Keys", "Length",
-    "Parse", "Remove", "Replace", "Select", "Split", "Substring", "ToArray",
-    "ToLower", "ToString", "ToUpper", "Trim", "TryParse", "Values", "Where",
-})
+# The production deny-list, so the A/B record cannot drift from the rule the
+# fix actually applies.
+from graphify.extract import _CSHARP_BCL_MEMBER_NAMES as BCL_MEMBER_NAMES  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
