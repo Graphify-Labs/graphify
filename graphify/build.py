@@ -33,6 +33,7 @@ import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
+from .security import redact_secrets, sanitize_label
 from .validate import VALID_CONFIDENCES, validate_extraction
 
 
@@ -1306,6 +1307,58 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
+def _degraded_passes(payload: dict | None) -> list[dict]:
+    """Return canonical, safe resolver-failure records from an extraction/graph."""
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("degraded_passes")
+    if not isinstance(raw, list):
+        graph_meta = payload.get("graph")
+        raw = graph_meta.get("degraded_passes") if isinstance(graph_meta, dict) else None
+    if not isinstance(raw, list):
+        return []
+
+    by_name: dict[str, dict] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = sanitize_label(redact_secrets(str(item.get("resolver") or ""))).strip()
+        if not name:
+            continue
+        suffixes = item.get("suffixes")
+        if not isinstance(suffixes, list):
+            suffixes = []
+        clean = {
+            "resolver": name,
+            "suffixes": sorted({
+                sanitize_label(redact_secrets(str(value)))
+                for value in suffixes if value is not None
+            }),
+        }
+        error = item.get("error")
+        if error:
+            clean["error"] = sanitize_label(redact_secrets(str(error)))
+        by_name[name] = clean
+    return [by_name[name] for name in sorted(by_name)]
+
+
+def _merge_degraded_passes(existing: list[dict], chunks: Iterable[dict]) -> list[dict]:
+    """Carry unresolved failures forward; a successful rerun clears its own failure."""
+    state = {item["resolver"]: item for item in _degraded_passes({"degraded_passes": existing})}
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        failures = {item["resolver"]: item for item in _degraded_passes(chunk)}
+        successes = {
+            str(name) for name in (chunk.get("_successful_resolution_passes") or [])
+            if name
+        }
+        for name in successes - failures.keys():
+            state.pop(name, None)
+        state.update(failures)
+    return [state[name] for name in sorted(state)]
+
+
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None,
                     dedup: bool = True) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
@@ -1984,6 +2037,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 f"will be emptied on the next export.",
                 file=sys.stderr,
             )
+    degraded_passes = _degraded_passes(extraction)
+    if degraded_passes:
+        G.graph["degraded_passes"] = degraded_passes
+
     # Runs LAST, after the alias-competition above (which relies on file-node
     # labels still being bare basenames): give colliding-basename file nodes a
     # directory-qualified display label so lookup/discovery can disambiguate
@@ -2020,6 +2077,9 @@ def build(
     """
     from graphify.dedup import deduplicate_entities
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    degraded_passes = _merge_degraded_passes([], extractions)
+    if degraded_passes:
+        combined["degraded_passes"] = degraded_passes
     for ext in extractions:
         combined["nodes"].extend(ext.get("nodes", []))
         combined["edges"].extend(ext.get("edges", []))
@@ -2144,8 +2204,8 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
-    """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
+def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool, list[dict]] | None":
+    """Load (nodes, edges, hyperedges, directed, degraded_passes) from graph.json for
     an incremental merge, accepting both the ``links`` and ``edges`` spellings.
 
     Reads the JSON directly instead of going through node_link_graph().
@@ -2188,6 +2248,7 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
         edges,
         list(data.get("hyperedges", [])),
         bool(data.get("directed", False)),
+        _degraded_passes(data),
     )
 
 
@@ -2298,7 +2359,7 @@ def merge_raw_extraction(
     loaded = _load_existing_graph(graph_path)
     if loaded is None:
         return new
-    existing_nodes, existing_edges, existing_hyperedges, _ = loaded
+    existing_nodes, existing_edges, existing_hyperedges, _, existing_degraded = loaded
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
@@ -2391,6 +2452,12 @@ def merge_raw_extraction(
             if prior_count > 1 and fresh_count < prior_count:
                 unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
 
+    merged_degraded = _merge_degraded_passes(existing_degraded, [new])
+    if merged_degraded:
+        new["degraded_passes"] = merged_degraded
+    else:
+        new.pop("degraded_passes", None)
+
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
     new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
@@ -2441,13 +2508,14 @@ def build_merge(
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
+        existing_nodes, existing_edges, existing_hyperedges, existing_directed, existing_degraded = _loaded
         had_graph = True
     else:
         existing_nodes = []
         existing_edges = []
         existing_hyperedges = []
         existing_directed = False
+        existing_degraded = []
         had_graph = False
     if directed is None:
         directed = existing_directed if had_graph else False
@@ -2696,6 +2764,11 @@ def build_merge(
         root=_eff_root,
         protected_ids=_protected_ids,
     )
+    merged_degraded = _merge_degraded_passes(existing_degraded, new_chunks)
+    if merged_degraded:
+        G.graph["degraded_passes"] = merged_degraded
+    else:
+        G.graph.pop("degraded_passes", None)
 
     # Runs after every merge, not only under prune_sources: re-extraction strands
     # placeholders too, e.g. per-file stubs re-pointed at a shared node (#4247)

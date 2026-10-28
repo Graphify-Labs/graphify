@@ -71,7 +71,10 @@ graphify-out/
 
 The persisted graph includes `graph.schema_version` so integrations can detect
 incompatible format changes, plus `graph.graphify_version` identifying the
-Graphify release that produced it.
+Graphify release that produced it. If a language-resolution pass crashes, Graphify
+still writes the usable partial graph but records a top-level `degraded_passes`
+entry; the same warning appears under **Graph Health** in `GRAPH_REPORT.md` and in
+`graphify diagnose`, so an incomplete call layer cannot be mistaken for a healthy one.
 
 **One install, any assistant, any OS.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 20+ more, on macOS, Linux, and Windows: [pick your platform](#install).
 

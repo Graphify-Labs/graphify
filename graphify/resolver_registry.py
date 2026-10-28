@@ -17,10 +17,12 @@ its own, separate from the multi-thousand-line ``extract`` module.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from .security import redact_secrets, sanitize_label
 
 _LOG = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ class LanguageResolver:
     """
 
     name: str
-    suffixes: frozenset
+    suffixes: frozenset[str]
     resolve: Callable
 
 
@@ -56,6 +58,24 @@ def registered_resolvers() -> list[LanguageResolver]:
     return list(_REGISTRY)
 
 
+def resolution_status_record(
+    resolver: str,
+    suffixes: Iterable[str],
+    *,
+    error: Exception | None = None,
+) -> dict:
+    """Return a bounded, secret-redacted status record for one resolution pass."""
+    record = {
+        "resolver": resolver,
+        "status": "failed" if error is not None else "ok",
+        "suffixes": sorted({str(s) for s in suffixes}),
+    }
+    if error is not None:
+        message = sanitize_label(redact_secrets(f"{type(error).__name__}: {error}"))
+        record["error"] = message
+    return record
+
+
 def run_language_resolvers(
     paths: Sequence[Path],
     per_file: list[dict],
@@ -63,6 +83,7 @@ def run_language_resolvers(
     all_edges: list[dict],
     *,
     resolvers: Sequence[LanguageResolver] | None = None,
+    status: list[dict] | None = None,
 ) -> None:
     """Run every resolver whose suffix appears in ``paths``.
 
@@ -86,3 +107,10 @@ def run_language_resolvers(
             resolver.resolve(per_file, all_nodes, all_edges)
         except Exception as exc:
             _LOG.warning("%s resolution failed, skipping: %s", resolver.name, exc)
+            if status is not None:
+                status.append(
+                    resolution_status_record(resolver.name, resolver.suffixes, error=exc)
+                )
+        else:
+            if status is not None:
+                status.append(resolution_status_record(resolver.name, resolver.suffixes))

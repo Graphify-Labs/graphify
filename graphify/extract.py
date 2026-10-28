@@ -23,6 +23,7 @@ from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
     LanguageResolver,
     register as register_language_resolver,
+    resolution_status_record,
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
@@ -9536,6 +9537,14 @@ def extract(
             fresh results are appended to the returned nodes/edges.
     """
     paths = [Path(p) for p in paths]
+    _resolution_status: list[dict] = []
+
+    def _resolution_ok(name: str, suffixes) -> None:
+        _resolution_status.append(resolution_status_record(name, suffixes))
+
+    def _resolution_failed(name: str, suffixes, exc: Exception) -> None:
+        _resolution_status.append(resolution_status_record(name, suffixes, error=exc))
+
     anchor_root = Path(root) if root is not None else None
     _check_tree_sitter_version()
     _raise_recursion_limit()
@@ -10487,6 +10496,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("PHP type-reference resolution failed, skipping: %s", exc)
+            _resolution_failed("php_type_references", _php_exts, exc)
+        else:
+            _resolution_ok("php_type_references", _php_exts)
     # Java package/import disambiguation must likewise run BEFORE the rewire
     # (#2504): an EXTERNAL import (`org.springframework.stereotype.Component`)
     # leaves a bare `Component` stub that the rewire would collapse onto the only
@@ -10502,6 +10514,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
+            _resolution_failed("java_type_references", {".java"}, exc)
+        else:
+            _resolution_ok("java_type_references", {".java"})
     # Resolve internal Go pkg.Type references exactly and park external ones
     # before the generic bare-label stub rewire can manufacture a collision.
     _go_sel = [(r, p) for r, p in zip(per_file, paths) if effective_suffix(p) == ".go"]
@@ -10517,6 +10532,9 @@ def extract(
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
+            _resolution_failed("go_type_references", {".go"}, exc)
+        else:
+            _resolution_ok("go_type_references", {".go"})
     # Cross-file Python import resolution and type-reference repointing (#3252)
     py_paths = [p for p in paths if effective_suffix(p) == ".py"]
     if py_paths:
@@ -10530,6 +10548,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+            _resolution_failed("python_cross_file_imports", {".py"}, exc)
+        else:
+            _resolution_ok("python_cross_file_imports", {".py"})
     # An incremental build re-extracts only the changed files, so the rewire also
     # needs the unchanged ones as candidates, or it resolves less than a full build.
     _fresh_ids = {n.get("id") for n in all_nodes}
@@ -10560,6 +10581,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
+            _resolution_failed("java_cross_file_imports", {".java"}, exc)
+        else:
+            _resolution_ok("java_cross_file_imports", {".java"})
 
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the
@@ -10573,11 +10597,17 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# type-reference resolution failed, skipping: %s", exc)
+            _resolution_failed("csharp_type_references", _DOTNET_TYPE_EXTS, exc)
+        else:
+            _resolution_ok("csharp_type_references", _DOTNET_TYPE_EXTS)
         try:
             _resolve_cross_file_csharp_imports(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+            _resolution_failed("csharp_cross_file_imports", _DOTNET_TYPE_EXTS, exc)
+        else:
+            _resolution_ok("csharp_cross_file_imports", _DOTNET_TYPE_EXTS)
         _drop_shadowed_csharp_partial_bases(all_nodes, all_edges)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
@@ -10623,6 +10653,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Bash cross-file call resolution failed, skipping: %s", exc)
+            _resolution_failed("bash_source_calls", {".sh", ".bash"}, exc)
+        else:
+            _resolution_ok("bash_source_calls", {".sh", ".bash"})
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
@@ -10692,16 +10725,33 @@ def extract(
     run_language_resolvers(
         paths, per_file, all_nodes, all_edges,
         resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER],
+        status=_resolution_status,
     )
 
     # C/C++/ObjC quoted include resolution (#4354): resolve quoted include edges
     # outside the including file's directory to canonical header file nodes.
     # Runs after node-ID disambiguation and before import-evidence indexing.
+    # The resolver itself remains a harmless no-op on non-C scans, but resolver
+    # HEALTH must only be recorded when this batch actually contains C-family
+    # input. Otherwise an unrelated Python-only update could falsely clear a
+    # previously persisted C include failure (#3667).
+    _c_include_suffixes = {
+        ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
+        ".m", ".mm", ".cu", ".cuh", ".metal",
+    }
+    _c_include_active = any(
+        effective_suffix(path).lower() in _c_include_suffixes for path in paths
+    )
     try:
         _resolve_c_include_edges(all_edges, resolution_nodes, root)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("C include resolution failed, skipping: %s", exc)
+        if _c_include_active:
+            _resolution_failed("c_include_resolution", _c_include_suffixes, exc)
+    else:
+        if _c_include_active:
+            _resolution_ok("c_include_resolution", _c_include_suffixes)
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
@@ -11186,11 +11236,15 @@ def extract(
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
         _n0, _e0 = len(_rl_nodes), len(_rl_edges)
-        run_language_resolvers(paths, per_file, _rl_nodes, _rl_edges)
+        run_language_resolvers(
+            paths, per_file, _rl_nodes, _rl_edges, status=_resolution_status
+        )
         all_nodes.extend(_rl_nodes[_n0:])
         all_edges.extend(_rl_edges[_e0:])
     else:
-        run_language_resolvers(paths, per_file, all_nodes, all_edges)
+        run_language_resolvers(
+            paths, per_file, all_nodes, all_edges, status=_resolution_status
+        )
 
     # A Rust `use` group keeps one edge per binding; its v8 edge only served the calls above.
     all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
@@ -11405,7 +11459,30 @@ def extract(
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
 
-    return {
+    # #3667: resolver failures used to exist only as transient stderr warnings.
+    # Collapse repeated status by resolver name (last run wins), persist failures,
+    # and return successes only as run-scoped merge state so an incremental build
+    # can clear a stale failure once that same pass recovers.
+    _status_by_resolver = {
+        str(record.get("resolver")): record
+        for record in _resolution_status
+        if record.get("resolver")
+    }
+    _degraded_passes = sorted(
+        [
+            {key: value for key, value in record.items() if key != "status"}
+            for record in _status_by_resolver.values()
+            if record.get("status") == "failed"
+        ],
+        key=lambda record: record["resolver"],
+    )
+    _successful_resolution_passes = sorted(
+        name
+        for name, record in _status_by_resolver.items()
+        if record.get("status") == "ok"
+    )
+
+    result = {
         "nodes": all_nodes,
         "edges": all_edges,
         "input_tokens": 0,
@@ -11423,14 +11500,21 @@ def extract(
         # rather than guessing ownership from node["source_file"] (#3411).
         "extracted_sources": [str(p) for p in paths],
     }
+    if _degraded_passes:
+        result["degraded_passes"] = _degraded_passes
+    if _successful_resolution_passes:
+        result["_successful_resolution_passes"] = _successful_resolution_passes
+    return result
 
 
-# Keys of an extract() result that only steer the current run (#2543, #3411).
-# They hold the absolute paths of this run's inputs, so a writer that dumps the
-# raw extraction as graph.json (--no-cluster) must leave them out: they put the
-# checkout path and OS username into the graph, and differ between the first
-# build and a rebuild of the same tree.
-RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources", "skipped_sources"})
+# Keys of an extract() result that only steer the current run (#2543, #3411, #3667).
+# They hold paths or success-state that is meaningful only while reconciling this
+# extraction, so a writer that dumps the raw extraction as graph.json must leave
+# them out. Durable resolver failures live under ``degraded_passes`` instead.
+RUN_ONLY_EXTRACTION_KEYS = frozenset({
+    "extracted_sources", "failed_sources", "skipped_sources",
+    "_successful_resolution_passes",
+})
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
