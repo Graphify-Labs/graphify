@@ -81,10 +81,7 @@ def test_builtin_append_does_not_bind_to_user_method(builtin_shadow_repo):
     assert method_ids, "the user's append method must still be extracted as a node"
 
     worker_ids = {n["id"] for n in _nodes_by_file(result, "worker.go")}
-    phantom = [
-        e for e in result["edges"]
-        if e.get("target") in method_ids and e.get("source") in worker_ids
-    ]
+    phantom = _edges_between(result, worker_ids, method_ids)
     assert phantom == [], (
         f"builtin append() in worker.go bound to the user method in history.go: {phantom}"
     )
