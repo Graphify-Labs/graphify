@@ -723,7 +723,10 @@ def test_codebuddy_uninstall_removes_hook(tmp_path):
 
 def test_codebuddy_uninstall_noop_if_not_installed(tmp_path):
     from graphify.__main__ import codebuddy_uninstall
-    codebuddy_uninstall(tmp_path)  # should not raise
+
+    codebuddy_uninstall(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
