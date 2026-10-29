@@ -2257,6 +2257,82 @@ def _tier_replacement_sources(
     return new_ast_sources, new_sem_sources
 
 
+def _rewire_edges_through_replaced_nodes(
+    edges: list[dict],
+    replaced_nodes: list[dict],
+    fresh_chunks: "Iterable[dict]",
+    root: "str | None",
+) -> int:
+    """Re-point a surviving edge's endpoint onto its re-extracted replacement (#1711).
+
+    ``replaced_nodes`` are nodes just dropped because their OWN source_file
+    was re-extracted this run (tier-scoped replace-per-source); ``edges`` are
+    edges that survived that same filter because THEIR OWN source_file was
+    untouched. An edge from an unchanged file into one of those dropped nodes
+    still names the dropped id, and extraction is not id-stable across runs
+    (#1695), so the id it names may simply no longer exist under that
+    spelling even though the symbol itself is still there.
+
+    Re-resolves each such endpoint by (source_file, label) against the fresh
+    chunks' own nodes — the exact identity :func:`build_from_json`'s ghost
+    merge already trusts for AST/LLM twin detection — matching the OWN
+    source_file string first, then its :func:`_norm_source_file` form, so a
+    chunk carrying an absolute path still matches a stored relative one.
+    Rewrites ``edges`` in place and returns how many were rewired. Mutates
+    only an edge whose (source_file, label) pair resolves to EXACTLY ONE
+    fresh node; 0 or 2+ candidates leave the edge as it was, so it still
+    reaches the ordinary dangling-edge drop exactly like before this fix —
+    this only rescues what classifies unambiguously.
+    """
+    replaced_by_id: dict[object, tuple[str, str]] = {}
+    for n in replaced_nodes:
+        if not isinstance(n, dict) or n.get("id") is None:
+            continue
+        replaced_by_id[n["id"]] = (str(n.get("source_file") or ""), str(n.get("label") or ""))
+    if not replaced_by_id:
+        return 0
+
+    fresh_by_key: dict[tuple[str, str], set] = {}
+    for chunk in fresh_chunks:
+        if not isinstance(chunk, dict):
+            continue
+        for n in chunk.get("nodes", []):
+            if not isinstance(n, dict) or n.get("id") is None:
+                continue
+            sf = str(n.get("source_file") or "")
+            label = str(n.get("label") or "")
+            if not sf or not label:
+                continue
+            fresh_by_key.setdefault((sf, label), set()).add(n["id"])
+            norm_sf = _norm_source_file(sf, root)
+            if norm_sf and norm_sf != sf:
+                fresh_by_key.setdefault((norm_sf, label), set()).add(n["id"])
+
+    def _resolve(endpoint):
+        key = replaced_by_id.get(endpoint)
+        if key is None:
+            return endpoint
+        candidates = fresh_by_key.get(key)
+        if not candidates:
+            norm_sf = _norm_source_file(key[0], root)
+            if norm_sf:
+                candidates = fresh_by_key.get((norm_sf, key[1]))
+        if candidates and len(candidates) == 1:
+            return next(iter(candidates))
+        return endpoint
+
+    rescued = 0
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        new_src = _resolve(e.get("source"))
+        new_tgt = _resolve(e.get("target"))
+        if new_src != e.get("source") or new_tgt != e.get("target"):
+            e["source"], e["target"] = new_src, new_tgt
+            rescued += 1
+    return rescued
+
+
 def merge_raw_extraction(
     new: dict,
     graph_path: str | Path,
@@ -2352,6 +2428,15 @@ def merge_raw_extraction(
                     prune_sources, _prune_root, new_sources
                 )
 
+    def _replaced(item: dict) -> bool:
+        # Superseded specifically because ITS OWN tier re-extracted its
+        # source — as opposed to a deletion/exclusion prune. Split out of
+        # _dropped below so #1711's edge rewiring, which must never apply to
+        # a genuinely pruned endpoint, can tell the two apart.
+        sf = item.get("source_file")
+        own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
+        return sf in own or _norm_source_file(sf, _eff_root) in own
+
     def _dropped(item: dict) -> bool:
         if not isinstance(item, dict):
             return True
@@ -2360,8 +2445,7 @@ def merge_raw_extraction(
         # re-extracted its source. Hyperedges are semantic-tier (no _origin,
         # null source_location), so an AST-only re-extract carries them.
         # Deletion pruning below stays tier-blind.
-        own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
-        if sf in own or _norm_source_file(sf, _eff_root) in own:
+        if _replaced(item):
             return True  # re-extracted this run — replaced by the new chunk
         if not sf:
             return False  # unowned — carry forward
@@ -2392,7 +2476,19 @@ def merge_raw_extraction(
                 unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
 
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
-    new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
+    _kept_edges = [e for e in existing_edges if not _dropped(e)]
+    _replaced_nodes = [n for n in existing_nodes if isinstance(n, dict) and _replaced(n)]
+    if _replaced_nodes:
+        _rescued = _rewire_edges_through_replaced_nodes(
+            _kept_edges, _replaced_nodes, [new], _eff_root
+        )
+        if _rescued:
+            print(
+                f"[graphify] Rewired {_rescued} edge(s) onto their "
+                f"re-extracted endpoint(s).",
+                file=sys.stderr,
+            )
+    new["edges"] = _kept_edges + list(new.get("edges", []))
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
@@ -2548,6 +2644,7 @@ def build_merge(
             sf = item.get("source_file")
             own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
             return sf not in own and _norm_source_file(sf, _replace_root) not in own
+        _replaced_nodes = [n for n in existing_nodes if isinstance(n, dict) and not _kept(n)]
         existing_nodes = [n for n in existing_nodes if _kept(n)]
         existing_edges = [e for e in existing_edges if _kept(e)]
         replaced_n = _disk_n - len(existing_nodes)
@@ -2557,6 +2654,31 @@ def build_merge(
                 f"source file(s).",
                 file=sys.stderr,
             )
+        # #1711: an edge whose OWN source_file was untouched survived the
+        # filter above, but can still dangle when one of ITS endpoints just
+        # got dropped because that endpoint's file WAS re-extracted (its
+        # id is not guaranteed to be stable across runs - see #1695). Left
+        # alone, such an edge reaches build()'s generic dangling-edge drop,
+        # which has no memory of what the dropped node used to be and so
+        # cannot tell "legitimately gone" from "renamed" - an unchanged doc
+        # citing a function that got requalified this run loses that
+        # citation forever, since the doc is never re-extracted on its own
+        # to re-emit it. Re-resolve each such endpoint against the fresh
+        # chunks by (source_file, label), the same identity build_from_json's
+        # own ghost-merge already trusts for AST/LLM twin detection, and
+        # rewrite the edge onto it when exactly one fresh node claims that
+        # pair. Ambiguous (0 or 2+ matches) is left exactly as before: the
+        # edge still reaches the ordinary dangling drop.
+        if _replaced_nodes:
+            _rescued = _rewire_edges_through_replaced_nodes(
+                existing_edges, _replaced_nodes, new_chunks, _replace_root
+            )
+            if _rescued:
+                print(
+                    f"[graphify] Rewired {_rescued} edge(s) onto their "
+                    f"re-extracted endpoint(s).",
+                    file=sys.stderr,
+                )
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
