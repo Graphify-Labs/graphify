@@ -185,10 +185,19 @@ def _project_with_graph(tmp_path, node_count: int, name: str = "proj") -> str:
 
 def _init_session(client) -> dict:
     init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
-    assert init.status_code == 200
     headers = {**_MCP_HEADERS, "mcp-session-id": init.headers.get("mcp-session-id")}
     client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     return headers
+
+
+def test_init_session(tmp_path):
+    """Session initialization over HTTP returns 200 and attaches mcp-session-id."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
+        assert init.status_code == 200
+        headers = _init_session(client)
+        assert headers.get("mcp-session-id")
 
 
 def _call_tool(client, headers, name, arguments, rid) -> str:
@@ -196,8 +205,24 @@ def _call_tool(client, headers, name, arguments, rid) -> str:
         "jsonrpc": "2.0", "id": rid, "method": "tools/call",
         "params": {"name": name, "arguments": arguments},
     })
-    assert resp.status_code == 200
     return resp.json()["result"]["content"][0]["text"]
+
+
+def test_call_tool(tmp_path):
+    """Calling a tool over HTTP returns the expected JSON-RPC text payload."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        text = _call_tool(client, headers, "graph_stats", {}, rid=2)
+        assert "Nodes: 2" in text
+
+
+def _tools_missing_project_path(tools: list[dict]) -> list[str]:
+    return [t["name"] for t in tools if "project_path" not in t["inputSchema"].get("properties", {})]
+
+
+def _tools_requiring_project_path(tools: list[dict]) -> list[str]:
+    return [t["name"] for t in tools if "project_path" in t["inputSchema"].get("required", [])]
 
 
 def test_project_path_is_optional_on_every_tool(tmp_path):
@@ -208,10 +233,10 @@ def test_project_path_is_optional_on_every_tool(tmp_path):
         headers = _init_session(client)
         resp = client.post("/mcp", headers=headers,
                             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        for tool in resp.json()["result"]["tools"]:
-            props = tool["inputSchema"].get("properties", {})
-            assert "project_path" in props, f"{tool['name']} missing project_path"
-            assert "project_path" not in tool["inputSchema"].get("required", [])
+        tools = resp.json()["result"]["tools"]
+        assert tools
+        assert _tools_missing_project_path(tools) == []
+        assert _tools_requiring_project_path(tools) == []
 
 
 def test_project_path_routes_to_that_projects_graph(tmp_path):
@@ -227,16 +252,27 @@ def test_project_path_routes_to_that_projects_graph(tmp_path):
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=4)
 
 
+def test_max_server_contexts_defaults_when_unset(monkeypatch):
+    """Unset GRAPHIFY_MAX_CONTEXTS falls back to the default server context cap."""
+    monkeypatch.delenv("GRAPHIFY_MAX_CONTEXTS", raising=False)
+    assert serve_mod._max_server_contexts() == 8
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, 8), ("", 8), ("bad", 8), ("0", 1), ("-4", 1), ("3", 3)],
+    [("", 8), ("bad", 8), ("0", 1), ("-4", 1), ("3", 3)],
 )
 def test_max_server_contexts_parsing(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv("GRAPHIFY_MAX_CONTEXTS", raising=False)
-    else:
-        monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", value)
+    """Configured GRAPHIFY_MAX_CONTEXTS values are parsed and clamped to >= 1."""
+    monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", value)
     assert serve_mod._max_server_contexts() == expected
+
+
+def _projects_with_graphs(tmp_path, count: int) -> list[str]:
+    return [
+        _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
+        for i in range(count)
+    ]
 
 
 def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypatch):
@@ -251,10 +287,7 @@ def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypat
         return original_load(path)
 
     monkeypatch.setattr(serve_mod, "_load_graph", counting_load)
-    projects = [
-        _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
-        for i in range(3)
-    ]
+    projects = _projects_with_graphs(tmp_path, count=3)
     default_graph = _graph_file(tmp_path)
     app = serve_mod._build_http_app(default_graph, json_response=True)
     with _client(app) as client:
