@@ -235,15 +235,19 @@ def test_project_path_routes_to_that_projects_graph(tmp_path):
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=4)
 
 
+def test_max_server_contexts_defaults_when_unset(monkeypatch):
+    """Unset GRAPHIFY_MAX_CONTEXTS falls back to the default server context cap."""
+    monkeypatch.delenv("GRAPHIFY_MAX_CONTEXTS", raising=False)
+    assert serve_mod._max_server_contexts() == 8
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, 8), ("", 8), ("bad", 8), ("0", 1), ("-4", 1), ("3", 3)],
+    [("", 8), ("bad", 8), ("0", 1), ("-4", 1), ("3", 3)],
 )
 def test_max_server_contexts_parsing(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv("GRAPHIFY_MAX_CONTEXTS", raising=False)
-    else:
-        monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", value)
+    """Configured GRAPHIFY_MAX_CONTEXTS values are parsed and clamped to >= 1."""
+    monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", value)
     assert serve_mod._max_server_contexts() == expected
 
 
