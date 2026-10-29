@@ -2793,6 +2793,84 @@ def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
     assert stub["source_file"] == ""
 
 
+def test_fortran_subroutine_call_to_another_module_is_sourceless(tmp_path):
+    """A `call` to a subroutine implemented in another module resolves to a
+    sourceless stub the corpus rewire can collapse, never a dangling edge.
+
+    The target id used to be computed directly from this file's own stem
+    (`_make_id(stem, callee)`), which never matched the callee's real node in
+    its own file, so every cross-file `call` dangled permanently."""
+    src = tmp_path / "caller.f90"
+    src.write_text(
+        "program caller\n"
+        "  use greeter_mod\n"
+        "  call greet()\n"
+        "end program caller\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids and e["target"] in node_ids, e
+    stub = next(n for n in r["nodes"] if n["label"] == "greet")
+    assert stub["source_file"] == ""
+    assert ("caller", "greet") in _edge_labels(r, "calls")
+
+
+def test_fortran_subroutine_call_resolves_across_files(tmp_path):
+    """End to end: a cross-file `call` lands on the callee's real node, not a
+    dangling stub, once the corpus rewire runs over both files together."""
+    from graphify.extract import extract
+
+    mod = tmp_path / "greeter_mod.f90"
+    mod.write_text(
+        "module greeter_mod\n"
+        "contains\n"
+        "  subroutine greet()\n"
+        "    print *, \"hello\"\n"
+        "  end subroutine greet\n"
+        "end module greeter_mod\n",
+        encoding="utf-8",
+    )
+    caller = tmp_path / "caller.f90"
+    caller.write_text(
+        "program caller\n"
+        "  use greeter_mod\n"
+        "  call greet()\n"
+        "end program caller\n",
+        encoding="utf-8",
+    )
+    result = extract([mod, caller], cache_root=tmp_path / "cache")
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_edges = [
+        (labels.get(e["source"]), labels.get(e["target"]))
+        for e in result["edges"] if e["relation"] == "calls"
+    ]
+    assert ("caller", "greet()") in call_edges, call_edges
+    # the target really is the subroutine's own sourced node, not a leftover stub
+    real_greet = next(n for n in result["nodes"] if n["label"] == "greet()")
+    assert real_greet["source_file"].endswith("greeter_mod.f90")
+
+
+def test_fortran_same_file_subroutine_call_is_unaffected(tmp_path):
+    """Control: a same-file call must keep resolving to its own file's node."""
+    src = tmp_path / "samefile.f90"
+    src.write_text(
+        "program samefile\n"
+        "  call helper()\n"
+        "contains\n"
+        "  subroutine helper()\n"
+        "    print *, \"hi\"\n"
+        "  end subroutine helper\n"
+        "end program samefile\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert ("samefile", "helper") in _edge_labels(r, "calls")
+    helper = next(n for n in r["nodes"] if n["label"] == "helper()")
+    assert helper["source_file"] != ""
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():
@@ -3614,6 +3692,38 @@ def test_markdown_contains_edges():
     assert len(contains_edges) >= 5, f"expected >= 5 contains edges, got {len(contains_edges)}"
 
 
+def _atx_headings(tmp_path, src: str) -> list[tuple[str, str]]:
+    path = tmp_path / "doc.md"
+    path.write_text(src, encoding="utf-8")
+    return [(n["label"], n["source_location"]) for n in extract_markdown(path)["nodes"]
+            if n.get("node_kind") == "heading"]
+
+
+def test_markdown_heading_closing_sequence_is_not_part_of_the_label(tmp_path):
+    """CommonMark: `## Setup ##` is the heading "Setup". The closing run of `#`
+    used to stay in the label (and so in GRAPH_REPORT.md, query and explain)."""
+    src = "# Title #\n\n## Setup ##   \n\n### Deep ###########\n"
+    assert _atx_headings(tmp_path, src) == [("Title", "L1"), ("Setup", "L3"), ("Deep", "L5")]
+
+
+def test_markdown_heading_keeps_a_hash_that_is_part_of_the_text(tmp_path):
+    """Only a whitespace-separated closing run is stripped: `C#` and an escaped
+    `\\#` stay, and a heading made of nothing but hashes yields no node."""
+    src = "## C# Guide\n\n## Uses C#\n\n## Trailing \\#\n\n## ##\n"
+    assert _atx_headings(tmp_path, src) == [
+        ("C# Guide", "L1"), ("Uses C#", "L3"), ("Trailing \\#", "L5"),
+    ]
+
+
+def test_markdown_heading_indented_up_to_three_spaces_is_a_heading(tmp_path):
+    """CommonMark allows 0-3 spaces before an ATX heading; four make an indented
+    code block. One to three spaces used to drop the heading entirely."""
+    src = "# Top\n\n   ## Three Spaces\n\n ### One Space\n\n    #### Four Is Code\n"
+    assert _atx_headings(tmp_path, src) == [
+        ("Top", "L1"), ("Three Spaces", "L3"), ("One Space", "L5"),
+    ]
+
+
 def test_markdown_fenced_heading_not_parsed():
     """A '## heading' inside a fenced block must not produce a heading node (#1077).
 
@@ -3644,6 +3754,62 @@ def test_markdown_fenced_heading_not_parsed():
     assert any("Another Real Heading" in l for l in labels), f"'Another Real Heading' missing: {labels}"
     assert not any("Not A Heading" in l for l in labels), \
         f"fenced '## Not A Heading' was incorrectly parsed as a node: {labels}"
+
+
+def _md_heading_labels(tmp_path, src: str) -> list[str]:
+    path = tmp_path / "doc.md"
+    path.write_text(src, encoding="utf-8")
+    r = extract_markdown(path)
+    return [n["label"] for n in r["nodes"] if n.get("node_kind") == "heading"]
+
+
+def test_markdown_tilde_fence_contents_are_not_headings(tmp_path):
+    """CommonMark `~~~` fences are code blocks too; their `## ...` lines were
+    parsed as headings because only ``` toggled the fence."""
+    labels = _md_heading_labels(tmp_path, "# Top\n\n~~~\n## Not A Heading\n~~~\n\n## After\n")
+    assert labels == ["Top", "After"]
+
+
+def test_markdown_longer_fence_is_not_closed_by_a_shorter_inner_fence(tmp_path):
+    """A doc showing a fenced example wraps it in a longer fence. The inner ```
+    lines must not toggle the block: a closing run needs the opener's length."""
+    src = (
+        "# Guide\n\n"
+        "````markdown\n"
+        "```bash\n"
+        "# Not A Heading\n"
+        "```\n"
+        "````\n\n"
+        "## After\n"
+    )
+    assert _md_heading_labels(tmp_path, src) == ["Guide", "After"]
+
+
+def test_markdown_backtick_run_inside_a_tilde_fence_is_content(tmp_path):
+    """``` inside a ~~~ block neither opens nor closes anything; the ~~~ closes
+    the block and the heading after it is real."""
+    src = "# Top\n\n~~~\n```\n~~~\n\n## After\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "After"]
+
+
+def test_markdown_fence_run_followed_by_text_does_not_close(tmp_path):
+    """A closing fence carries no info string; ``` followed by text is content."""
+    src = "# Top\n\n```js\n``` not a close\n# Still Code\n```\n\n## End\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "End"]
+
+
+def test_markdown_inline_triple_backtick_span_does_not_open_a_fence(tmp_path):
+    """A line that starts with an inline ```code``` span is prose: a backtick
+    fence's info string cannot contain a backtick. Treating it as an opener hid
+    every heading after it."""
+    src = "# Top\n\n```x``` is inline code\n\n## Next\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "Next"]
+
+
+def test_markdown_indented_fence_in_a_list_still_skips_its_contents(tmp_path):
+    """Fences nested in list items are indented; they keep working."""
+    src = "# Top\n\n1. Step\n\n    ```bash\n    # Not A Heading\n    ```\n\n## After\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "After"]
 
 def test_markdown_no_dangling_edges():
     r = extract_markdown(FIXTURES / "deploy_guide.md")
@@ -4660,6 +4826,27 @@ def test_systemverilog_no_dangling_edges():
         assert e["target"] in node_ids, f"dangling target: {e}"
 
 
+def test_systemverilog_class_task_method_gets_a_node():
+    """A class method declared `task` instead of `function` must get the same
+    treatment a `function` method does: its own node and a `method` edge from
+    the class. The function-only harvest silently dropped every task method.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "reset") in _edge_labels(r, "method")
+    assert ("reset", "Config") in _edge_labels(r, "references", "parameter_type")
+
+
+def test_systemverilog_task_locals_do_not_leak_into_class_fields():
+    """A task method's own local declarations must not be scanned as class
+    fields, exactly like a function's already aren't. Only `function...
+    endfunction` bodies were stripped before the field regex ran, so a type
+    declared purely as a task-local variable (`Flag`, never a real field)
+    showed up as a false `references`/`field` edge from the class.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "Flag") not in _edge_labels(r, "references", "field")
+
+
 # ── Header/impl class merge + .h routing (#1547 C++, #1556 ObjC/Swift) ─────────
 from graphify.extract import (
     extract as _extract_corpus,
@@ -5470,6 +5657,79 @@ def test_zig_tagged_union_variants_emit_case_of_nodes(tmp_path):
     assert not any(src_lbl == "rectangle" for src_lbl, _ in case_of)
 
 
+@_needs_zig
+def test_zig_bare_call_does_not_cross_resolve_to_a_same_named_method(tmp_path):
+    """A bare call (`helper()`) must bind to the free function of that name,
+    never to an unrelated struct's method sharing the name.
+
+    `is_member_call` was computed but never consulted: the lookup matched
+    either `f"{callee}()"` or `f".{callee}()"` for every call regardless of
+    whether it was written with a receiver, so a bare call landed on whichever
+    of the two happened to come first in the file's own node list.
+    """
+    src = (
+        "const Box = struct {\n"
+        "    pub fn helper(self: Box) i32 {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() i32 {\n"
+        "    return 2;\n"
+        "}\n"
+        "\n"
+        "fn caller() i32 {\n"
+        "    return helper();\n"
+        "}\n"
+    )
+    f = tmp_path / "zigtest.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("caller()", "helper()") in calls
+    assert ("caller()", ".helper()") not in calls
+
+
+@_needs_zig
+def test_zig_member_call_does_not_cross_resolve_to_a_same_named_free_function(tmp_path):
+    """The reverse control: a member call (`b.helper()`) must bind to the
+    receiver's own method, never to an unrelated free function of the same
+    name."""
+    src = (
+        "const Box = struct {\n"
+        "    pub fn helper(self: Box) i32 {\n"
+        "        return 1;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() i32 {\n"
+        "    return 2;\n"
+        "}\n"
+        "\n"
+        "fn caller(b: Box) i32 {\n"
+        "    return b.helper();\n"
+        "}\n"
+    )
+    f = tmp_path / "zigtest.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("caller()", ".helper()") in calls
+    assert ("caller()", "helper()") not in calls
+
+
 @_needs_commonlisp
 def test_cl_ids_are_path_qualified_across_directories(tmp_path):
     """Two same-named .lisp files in DIFFERENT directories must mint distinct
@@ -5639,6 +5899,58 @@ def test_robot_keyword_matching_is_case_space_underscore_insensitive(tmp_path):
                     if e["relation"] == "calls" and e["source"] == tc_id]
     assert styled_calls, "no call edges extracted"
     assert all(e["target"] == def_id for e in styled_calls), styled_calls
+
+
+@_needs_robot
+def test_robot_duplicate_test_case_names_get_separate_nodes(tmp_path):
+    # Robot only WARNS on a duplicate test case name in one suite, it still
+    # runs both - unlike a duplicate keyword definition, which Robot itself
+    # rejects. Stem-qualifying by name alone collapsed both onto one node, so
+    # the second test's own calls landed on the first test's id and line.
+    suite = tmp_path / "dupe.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Test\n"
+        "    Click Button\n"
+        "\n"
+        "Login Test\n"
+        "    Open Browser\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    from graphify.extractors.robot import _kw_id
+    tc_nodes = [n for n in r["nodes"] if n["label"] == "Login Test"]
+    assert len(tc_nodes) == 2, tc_nodes
+    assert {n["source_location"] for n in tc_nodes} == {"L2", "L5"}
+    by_loc = {n["source_location"]: n["id"] for n in tc_nodes}
+    first_calls = {e["target"] for e in r["edges"]
+                   if e["relation"] == "calls" and e["source"] == by_loc["L2"]}
+    second_calls = {e["target"] for e in r["edges"]
+                    if e["relation"] == "calls" and e["source"] == by_loc["L5"]}
+    assert first_calls == {_kw_id("Click Button")}
+    assert second_calls == {_kw_id("Open Browser")}
+
+
+@_needs_robot
+def test_robot_unique_test_case_name_keeps_the_plain_id(tmp_path):
+    # Control: a file with no duplicate test case name is completely
+    # unaffected by the duplicate-name salting above.
+    suite = tmp_path / "plain.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Test\n"
+        "    Click Button\n"
+        "\n"
+        "Logout Test\n"
+        "    Open Browser\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    from graphify.extractors.base import _make_id, _file_stem
+    stem = _file_stem(suite)
+    tc_id = next(n["id"] for n in r["nodes"] if n["label"] == "Login Test")
+    assert tc_id == _make_id(stem, "Login Test")
 
 
 def test_robot_extractor_degrades_gracefully_without_robotframework():

@@ -221,22 +221,28 @@ Source: {url}
     return content, filename
 
 
-def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
-    """Save a sequential capture without replacing an existing directory entry.
+def _free_capture_path(target_dir: Path, filename: str) -> Path:
+    """Pick *filename*, or the first free numbered variant, in *target_dir*.
 
+    Uses lstat so no existing directory entry is replaced, including a
+    dangling symlink that a write would otherwise follow out of the corpus.
     Selection and writing are separate; concurrent captures are not atomic.
     """
-    filename = _safe_filename(url, suffix)
-    stem = Path(filename).stem
+    stem, suffix = Path(filename).stem, Path(filename).suffix
     out_path = target_dir / filename
     counter = 1
     while True:
         try:
             out_path.lstat()
         except FileNotFoundError:
-            break
+            return out_path
         out_path = target_dir / f"{stem}_{counter}{suffix}"
         counter += 1
+
+
+def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
+    """Save a sequential capture without replacing an existing directory entry."""
+    out_path = _free_capture_path(target_dir, _safe_filename(url, suffix))
     out_path.write_bytes(safe_fetch(url))
     return out_path
 
@@ -282,14 +288,7 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"ingest: failed to fetch {url!r}: {exc}") from exc
 
-    out_path = target_dir / filename
-    # Avoid overwriting - append counter if needed
-    counter = 1
-    while out_path.exists() and counter < 1000:
-        stem = Path(filename).stem
-        out_path = target_dir / f"{stem}_{counter}.md"
-        counter += 1
-
+    out_path = _free_capture_path(target_dir, filename)
     out_path.write_text(content, encoding="utf-8")
     print(f"Saved {url_type}: {out_path.name}")
     return out_path

@@ -448,8 +448,34 @@ def to_wiki(
 
     # Sweep orphans: remove only the *.md this run did not produce, so a relabelled
     # community's stale page is still cleaned up without rewriting the survivors.
+    #
+    # Compare folded names, and rename a case-only change before judging it. On a
+    # case-preserving, case-insensitive filesystem (APFS, NTFS) an existing entry
+    # keeps its old case, so `write_text_atomic_if_changed(out / "Groups.md")`
+    # rewrites the contents of `groups.md` without renaming it. The exact-name
+    # check then saw `"groups.md" not in {"Groups.md"}`, unlinked the file this run
+    # had just written, and left `index.md` pointing at `Groups.md` with nothing
+    # behind it (#4508).
+    produced_by_fold = {name.casefold(): name for name in produced}
     for old_article in out.glob("*.md"):
-        if old_article.name not in produced:
+        wanted = produced_by_fold.get(old_article.name.casefold())
+        if wanted is None:
             old_article.unlink()
+        elif old_article.name != wanted:
+            # Case-only relabel. On a case-SENSITIVE filesystem (ext4, most Linux
+            # CI and production hosts) this run already wrote the correct content
+            # to `out / wanted` as a DISTINCT file, so the lower-case `old_article`
+            # is just a stale twin: unlink it, never rename it over the fresh file
+            # (doing so would silently restore the stale body). Only on a
+            # case-INSENSITIVE filesystem (APFS, NTFS) are the two the same inode,
+            # where a two-step rename through a temporary name is needed to make
+            # the new case reach disk so the index.md link resolves.
+            target = out / wanted
+            if target.exists() and not target.samefile(old_article):
+                old_article.unlink()
+            else:
+                temp = out / f".{wanted}.case-tmp"
+                old_article.rename(temp)
+                temp.rename(target)
 
     return count

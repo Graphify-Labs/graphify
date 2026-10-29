@@ -456,6 +456,50 @@ def test_query_terms_drops_question_stopwords():
     assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
 
 
+def test_query_terms_drops_get_question_filler():
+    assert _query_terms("how does payroll.approve get authorized") == [
+        "payroll", "approve", "authorized",
+    ]
+
+
+@pytest.mark.parametrize("verb", ["gets", "got", "getting"])
+def test_query_terms_drops_get_variants(verb):
+    assert _query_terms(f"payroll {verb} authorized") == ["payroll", "authorized"]
+
+
+@pytest.mark.parametrize(("question", "expected"), [
+    ("get", ["get"]),
+    ("how do I get it", ["how", "get"]),
+])
+def test_query_terms_get_only_falls_back_to_unfiltered(question, expected):
+    assert _query_terms(question) == expected
+
+
+def test_pick_seeds_get_question_ignores_framework_hub():
+    # #4684: unlike the short, low-degree leaves guarded by #1602, a framework
+    # decorator hub must not become a seed just because the question says get.
+    G = nx.DiGraph()
+    G.add_node("get", label="Get")
+    G.add_node("approve", label="approvePayroll", source_file="src/payroll.ts")
+    G.add_node("authorize", label="authorize", source_file="src/auth.ts")
+    G.add_edge("approve", "authorize")
+    for i in range(20):
+        controller = f"controller_{i}"
+        G.add_node(controller, label=f"Controller{i}")
+        G.add_edge(controller, "get", relation="imports")
+
+    terms = _query_terms("how does payroll approve get authorized")
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term,
+        term_order=qs.term_order,
+    )
+    assert "get" not in seeds
+    assert "approve" in seeds
+    # Node lookup remains unfiltered even when get is a query stopword.
+    assert _find_node(G, "Get") == ["get"]
+
+
 def test_query_terms_all_stopwords_falls_back_to_unfiltered():
     # An all-stopword query keeps its terms rather than seeding on nothing.
     assert _query_terms("how does it work") == ["how", "does", "work"]
@@ -1780,6 +1824,59 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     nid, err = _resolve_single_node(G, "nonexistent")
     assert nid is None
     assert "No node matching" in err
+
+
+def test_resolve_single_node_reports_a_substring_near_miss_as_such():
+    """`MailController` must not come back as `EmailController` (#3917)."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    nid, err = _resolve_single_node(G, "mailcontroller")
+    assert nid is None
+    assert err.startswith("No exact match for 'mailcontroller'")
+    assert "EmailController" in err
+    assert "Controller/EmailController.php L12" in err
+    assert "Controller/EmailController.php::EmailController" in err
+
+
+def test_resolve_single_node_still_takes_a_prefix_shorthand():
+    """Prefix matching is how a caller starts typing a name, so it still resolves."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    assert _resolve_single_node(G, "email") == ("mail", None)
+
+
+def test_resolve_single_node_prefers_an_exact_name_over_a_substring():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="MailController", source_file="Controller/MailController.php")
+    G.add_node("email", label="EmailController", source_file="Controller/EmailController.php")
+
+    assert _resolve_single_node(G, "mailcontroller") == ("mail", None)
+
+
+def test_near_miss_lists_at_most_five_candidates():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    for i in range(7):
+        G.add_node(f"c{i}", label=f"A{i}PostController", source_file=f"Controller/Post{i}.php")
+
+    nid, err = _resolve_single_node(G, "post")
+    assert nid is None
+    assert "A0PostController" in err
+    assert "A4PostController" in err
+    assert "A5PostController" not in err
+    assert "... and 2 more" in err
+
 
 
 # --- rationale attribute scoring (#2293) ---

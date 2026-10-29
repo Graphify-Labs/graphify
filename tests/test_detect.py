@@ -4570,6 +4570,76 @@ def test_real_git_repo_and_worktree_are_vcs_roots(tmp_path):
     assert detect_mod._find_vcs_root(tmp_path / "wt") == (tmp_path / "wt").resolve()
 
 
+def _git_workspace_with_worktree(tmp_path):
+    """ws/ holding a repo and a linked worktree of it as siblings (#4683)."""
+    ws = tmp_path / "ws"
+    app = ws / "app"
+    (app / "src").mkdir(parents=True)
+    _git(app, "init", "-q")
+    (app / "src" / "a.py").write_text("x = 1\n")
+    _git(app, "add", ".")
+    _git(app, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    _git(app, "worktree", "add", "-q", str(ws / "app-feature"))
+    return ws, app, ws / "app-feature"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_prunes_sibling_linked_worktree(tmp_path):
+    """A linked worktree whose main checkout is also inside the scan root is a
+    second copy of the same repo — it is pruned, not indexed (#4683). The
+    workspace root has no .git (info/exclude cannot cover this) and the
+    worktree dir name is arbitrary (the name-based rules cannot either)."""
+    ws, _app, _wt = _git_workspace_with_worktree(tmp_path)
+    result = detect(ws)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("app/src/a.py" in f for f in all_files), "main checkout was dropped"
+    assert not any("app-feature/" in f for f in all_files), "linked worktree indexed as a second copy"
+    assert any("app-feature" in p for p in result["pruned_noise_dirs"])
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_indexes_worktree_as_scan_root(tmp_path):
+    """Scanning the linked worktree itself still indexes it (#4683)."""
+    _ws, _app, wt = _git_workspace_with_worktree(tmp_path)
+    result = detect(wt)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("src/a.py" in f for f in all_files)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_keeps_worktree_whose_main_is_outside_root(tmp_path):
+    """A worktree whose main checkout is outside the scan root is the only
+    copy in the corpus — it stays indexed (#4683)."""
+    main = tmp_path / "main"
+    (main / "src").mkdir(parents=True)
+    _git(main, "init", "-q")
+    (main / "src" / "a.py").write_text("x = 1\n")
+    _git(main, "add", ".")
+    _git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    only = tmp_path / "only"
+    only.mkdir()
+    _git(main, "worktree", "add", "-q", str(only / "wt"))
+    result = detect(only)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("src/a.py" in f for f in all_files)
+
+
+def test_detect_keeps_submodule_gitdir_without_commondir(tmp_path):
+    """A submodule's .git file points at <super>/.git/modules/<name>, which
+    carries no commondir — it is not a linked worktree and stays indexed
+    (#4683)."""
+    ws = tmp_path / "ws"
+    sub = ws / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    gitdir = ws / "super" / ".git" / "modules" / "sub"
+    gitdir.mkdir(parents=True)
+    (sub / ".git").write_text(f"gitdir: {gitdir}\n")
+    (sub / "mod.py").write_text("x = 1\n")
+    result = detect(ws)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("sub/mod.py" in f for f in all_files)
+
+
 def test_git_dir_symlink_is_followed(tmp_path):
     real = tmp_path / "real-git"
     _make_git_dir(tmp_path / "x")
