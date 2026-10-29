@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.9.96"
+version = "0.9.97"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
@@ -67,7 +67,11 @@ Issues = "https://github.com/Graphify-Labs/graphify/issues"
 # constructor-callback API (registration is picked at runtime in
 # _build_server), lifting the <2 cap 0.9.30 introduced for #2277/#2279/#2291;
 # cap below 3 as the tested range. starlette stays capped below its next major.
-mcp = ["mcp>=1,<3", "starlette>=1.3.1,<2"]
+# anyio arrives transitively through mcp/starlette/httpx; floor it above the
+# CVE-2026-63374 fix (IDNA 2003 vs 2008 hostname validation let a MITM on a
+# non-ASCII domain pass a cert for a different ASCII host; patched in 4.14.2) so
+# a future re-resolution cannot drop below it. The lock already picks 4.15.1.
+mcp = ["mcp>=1,<3", "starlette>=1.3.1,<2", "anyio>=4.14.2"]
 neo4j = ["neo4j"]
 falkordb = ["falkordb"]
 pdf = ["pypdf>=6.19.0", "markdownify"]
@@ -125,7 +129,7 @@ vbnet = ["tree-sitter-vb-dotnet==0.3.0"]
 r = ["tree-sitter-language-pack==0.11.0"]
 erlang = ["tree-sitter-language-pack==0.11.0"]
 solidity = ["tree-sitter-solidity==1.2.13"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.19.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "graspologic-native>=1.3.1,<2; python_version >= '3.13'", "python-docx", "openpyxl", "psycopg[binary]", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.7.4", "matplotlib", "pillow>=13.0.0; python_version >= '3.11'", "pillow>=12.3.0; python_version < '3.11'", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba; python_version < '3.12'", "jieba-py>=0.46.12,<1; python_version >= '3.12'", "tree-sitter-dm>=0.25,<0.26", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0", "tree-sitter-vb-dotnet==0.3.0", "tree-sitter-language-pack==0.11.0", "tree-sitter-solidity==1.2.13"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "anyio>=4.14.2", "neo4j", "falkordb", "pypdf>=6.19.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "graspologic-native>=1.3.1,<2; python_version >= '3.13'", "python-docx", "openpyxl", "psycopg[binary]", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.7.4", "matplotlib", "pillow>=13.0.0; python_version >= '3.11'", "pillow>=12.3.0; python_version < '3.11'", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba; python_version < '3.12'", "jieba-py>=0.46.12,<1; python_version >= '3.12'", "tree-sitter-dm>=0.25,<0.26", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0", "tree-sitter-vb-dotnet==0.3.0", "tree-sitter-language-pack==0.11.0", "tree-sitter-solidity==1.2.13"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"

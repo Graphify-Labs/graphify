@@ -70,6 +70,7 @@ def _lost_saved_semantic_nodes(
     saved_nodes: list,
     new_nodes: list,
     deleted_sources: set[str] | None = None,
+    folded: dict[str, str] | None = None,
 ) -> list[dict]:
     """Saved semantic nodes whose ids are absent from the new graph.
 
@@ -80,6 +81,10 @@ def _lost_saved_semantic_nodes(
     An auto-minted import stub (``external`` true, or ``type`` ``external``) is
     rebuilt from the import edges of this run. Dropping one is not a lost
     rationale or document node.
+
+    ``folded`` (when given) maps each saved node id that build_from_json merged
+    into an AST twin to that twin's id, so a caller comparing node counts can
+    discount it.
     """
     deleted = {
         norm
@@ -89,8 +94,10 @@ def _lost_saved_semantic_nodes(
     new_ids = {node.get("id") for node in new_nodes if isinstance(node, dict)}
     # A semantic ghost deduplicated into its AST twin (#1145) loses its id but
     # the symbol survives at the same (source_file, label).
-    new_ast_loc_nodes: set[tuple[str, str]] = set()
+    new_ast_loc_nodes: dict[tuple[str, str], str] = {}
     ast_loc_collisions: set[tuple[str, str]] = set()
+    # AST file nodes, for the label-only fold of build_from_json Pass 2b (#3344).
+    new_ast_file_nodes: list[tuple[str, str]] = []
     for node in new_nodes:
         # Match build_from_json's strict canonical-AST check (#2334).
         if not isinstance(node, dict) or node.get("_origin") != "ast":
@@ -101,13 +108,15 @@ def _lost_saved_semantic_nodes(
         lbl = str(node.get("label", "")).strip()
         if not lbl:
             continue
+        if _is_file_node_label(lbl, sf):
+            new_ast_file_nodes.append((str(node.get("id")), sf))
         norm_sf = _norm_source_file(sf)
         if not norm_sf:
             continue
         key = (norm_sf, lbl)
         if key in new_ast_loc_nodes:
             ast_loc_collisions.add(key)
-        new_ast_loc_nodes.add(key)
+        new_ast_loc_nodes[key] = str(node.get("id"))
     # cluster-only and build_from_json rewrite a legacy semantic id to its
     # canonical stem, then fold a bare doc id into its `_doc` twin. That id
     # is the same node. A missing rationale id has no such successor.
@@ -142,7 +151,17 @@ def _lost_saved_semantic_nodes(
         if source and lbl:
             loc_key = (source, lbl)
             if loc_key in new_ast_loc_nodes and loc_key not in ast_loc_collisions:
+                if folded is not None:
+                    folded[str(node_id)] = new_ast_loc_nodes[loc_key]
                 continue
+        # A document that names a file stamps the file's name as label but its
+        # own path as source_file; Pass 2b folds it into the one AST file node
+        # that label names. Two or more matches stay unmerged there.
+        file_twins = [nid for nid, sf in new_ast_file_nodes if _is_file_node_label(lbl, sf)] if lbl else []
+        if len(file_twins) == 1:
+            if folded is not None:
+                folded[str(node_id)] = file_twins[0]
+            continue
         if source and source in deleted:
             continue
         lost.append(node)
@@ -294,6 +313,12 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     links = data.get(key)
     if not isinstance(nodes, list) or not isinstance(links, list):
         return
+    # Match build_from_json's pre-validation alias folding before applying the
+    # raw-path persistence rules. An edge that still has no relation afterwards
+    # has no trustworthy semantic default and must not reach graph.json (#4809).
+    for edge in links:
+        if isinstance(edge, dict):
+            _fold_edge_aliases(edge)
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     norm_to_id = {_normalize_id(nid): nid for nid in declared if isinstance(nid, str)}
     # Alias index (#4670): the same old-stem spellings build_from_json resolves
@@ -330,9 +355,13 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     kept: list = []
     referenced: set = set()
+    dropped_schema_edges = 0
     for e in links:
         if not isinstance(e, dict):
             kept.append(e)
+            continue
+        if "relation" not in e:
+            dropped_schema_edges += 1
             continue
         attached = True
         for primary, alias in (("source", "from"), ("target", "to")):
@@ -350,6 +379,12 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
             referenced.add(e.get("source", e.get("from")))
             referenced.add(e.get("target", e.get("to")))
     links[:] = kept
+    if dropped_schema_edges:
+        print(
+            f"[graphify] WARNING: dropped {dropped_schema_edges} schema-invalid edge(s) "
+            "missing required field 'relation'.",
+            file=sys.stderr,
+        )
     for hyperedge in data.get("hyperedges", []) or []:
         if isinstance(hyperedge, dict):
             members = hyperedge.get("nodes", hyperedge.get("members", hyperedge.get("node_ids", [])))
@@ -1665,6 +1700,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
+    dropped_schema_edges = 0
     for edge in sorted(
         extraction.get("edges", []),
         key=lambda e: (
@@ -1757,6 +1793,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
+        # Relation aliases are folded before validation, but a still-missing
+        # relation has no trustworthy default. Other historically tolerated edge
+        # gaps have repair/default paths elsewhere in this builder; relation does
+        # not. Fail closed rather than persist an uninterpretable edge (#4809).
+        if "relation" not in attrs:
+            dropped_schema_edges += 1
+            continue
         if attrs.get("definition_file"):
             # Same portability rule as source_file (#3223); heals a graph
             # written before the fix on its next rebuild.
@@ -1880,6 +1923,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     ):
                         continue
         G.add_edge(src, tgt, **attrs)
+    if dropped_schema_edges:
+        print(
+            f"[graphify] WARNING: dropped {dropped_schema_edges} schema-invalid edge(s) "
+            "missing required field 'relation'.",
+            file=sys.stderr,
+        )
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
         # Relativize hyperedge source_file the same way nodes and edges are

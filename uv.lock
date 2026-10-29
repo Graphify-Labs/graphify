@@ -1582,7 +1582,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.95"
+version = "0.9.96"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1625,6 +1625,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "anthropic" },
+    { name = "anyio" },
     { name = "boto3" },
     { name = "falkordb" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11'" },
@@ -1699,6 +1700,7 @@ leiden = [
     { name = "graspologic-native", marker = "python_full_version >= '3.13'" },
 ]
 mcp = [
+    { name = "anyio" },
     { name = "mcp" },
     { name = "starlette", version = "1.7.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "starlette", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1791,6 +1793,8 @@ dev = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'all'" },
     { name = "anthropic", marker = "extra == 'anthropic'" },
+    { name = "anyio", marker = "extra == 'all'", specifier = ">=4.14.2" },
+    { name = "anyio", marker = "extra == 'mcp'", specifier = ">=4.14.2" },
     { name = "boto3", marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'bedrock'" },
     { name = "falkordb", marker = "extra == 'all'" },
@@ -2039,8 +2043,8 @@ resolution-markers = [
     "python_full_version >= '3.11' and python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "h11", marker = "python_full_version >= '3.11'" },
-    { name = "truststore", marker = "python_full_version >= '3.11'" },
+    { name = "h11", marker = "(python_full_version >= '3.11' and sys_platform != 'emscripten') or (python_full_version >= '3.13' and sys_platform == 'emscripten')" },
+    { name = "truststore", marker = "(python_full_version >= '3.11' and sys_platform != 'emscripten') or (python_full_version >= '3.13' and sys_platform == 'emscripten')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/61/afa9d6b7452f9eca73f73d45324eb0bb52f098fd5e6049bf6b8263be9b4e/httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643", size = 69886, upload-time = "2026-10-21T07:09:45.31Z" }
 wheels = [
@@ -6938,8 +6942,8 @@ name = "uvicorn"
 version = "0.54.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "python_full_version < '3.11' or python_full_version >= '3.13' or sys_platform != 'emscripten'" },
+    { name = "h11", marker = "python_full_version < '3.11' or python_full_version >= '3.13' or sys_platform != 'emscripten'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }

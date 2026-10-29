@@ -262,6 +262,10 @@ def _is_searchable(term: str) -> bool:
 # to query terms only — node text is never filtered, so a symbol literally named
 # `work` stays findable via explain/path. `work`/`works`/`working` are included
 # because "how does X work" / "how X works" is the most common question phrasing.
+# `get` is likewise a filler verb in questions ("how does X get authorized")
+# that, unfiltered, exact-matches framework hubs such as a NestJS `Get` decorator
+# import with the exact-match bonus (#4684); #1602 guards short low-degree leaves,
+# not hubs.
 #
 # Non-English question words are just as damaging (#1900): in a mostly-English
 # code corpus, German "wie"/"funktioniert" are rare, so they get HIGH IDF weight
@@ -286,6 +290,7 @@ _QUERY_STOPWORDS = frozenset({
     "without", "into", "onto", "off", "that", "this", "these", "those", "there",
     "here", "its", "their", "them", "they", "about", "any", "all", "some",
     "work", "works", "working",
+    "get", "gets", "got", "getting",
     # German (articles/conjunctions/question words/auxiliaries/prepositions)
     "der", "die", "das", "den", "dem", "ein", "eine", "und", "oder", "nicht",
     "wie", "wer", "wann", "wo", "warum", "wieso",

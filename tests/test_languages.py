@@ -2793,6 +2793,84 @@ def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
     assert stub["source_file"] == ""
 
 
+def test_fortran_subroutine_call_to_another_module_is_sourceless(tmp_path):
+    """A `call` to a subroutine implemented in another module resolves to a
+    sourceless stub the corpus rewire can collapse, never a dangling edge.
+
+    The target id used to be computed directly from this file's own stem
+    (`_make_id(stem, callee)`), which never matched the callee's real node in
+    its own file, so every cross-file `call` dangled permanently."""
+    src = tmp_path / "caller.f90"
+    src.write_text(
+        "program caller\n"
+        "  use greeter_mod\n"
+        "  call greet()\n"
+        "end program caller\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids and e["target"] in node_ids, e
+    stub = next(n for n in r["nodes"] if n["label"] == "greet")
+    assert stub["source_file"] == ""
+    assert ("caller", "greet") in _edge_labels(r, "calls")
+
+
+def test_fortran_subroutine_call_resolves_across_files(tmp_path):
+    """End to end: a cross-file `call` lands on the callee's real node, not a
+    dangling stub, once the corpus rewire runs over both files together."""
+    from graphify.extract import extract
+
+    mod = tmp_path / "greeter_mod.f90"
+    mod.write_text(
+        "module greeter_mod\n"
+        "contains\n"
+        "  subroutine greet()\n"
+        "    print *, \"hello\"\n"
+        "  end subroutine greet\n"
+        "end module greeter_mod\n",
+        encoding="utf-8",
+    )
+    caller = tmp_path / "caller.f90"
+    caller.write_text(
+        "program caller\n"
+        "  use greeter_mod\n"
+        "  call greet()\n"
+        "end program caller\n",
+        encoding="utf-8",
+    )
+    result = extract([mod, caller], cache_root=tmp_path / "cache")
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_edges = [
+        (labels.get(e["source"]), labels.get(e["target"]))
+        for e in result["edges"] if e["relation"] == "calls"
+    ]
+    assert ("caller", "greet()") in call_edges, call_edges
+    # the target really is the subroutine's own sourced node, not a leftover stub
+    real_greet = next(n for n in result["nodes"] if n["label"] == "greet()")
+    assert real_greet["source_file"].endswith("greeter_mod.f90")
+
+
+def test_fortran_same_file_subroutine_call_is_unaffected(tmp_path):
+    """Control: a same-file call must keep resolving to its own file's node."""
+    src = tmp_path / "samefile.f90"
+    src.write_text(
+        "program samefile\n"
+        "  call helper()\n"
+        "contains\n"
+        "  subroutine helper()\n"
+        "    print *, \"hi\"\n"
+        "  end subroutine helper\n"
+        "end program samefile\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert ("samefile", "helper") in _edge_labels(r, "calls")
+    helper = next(n for n in r["nodes"] if n["label"] == "helper()")
+    assert helper["source_file"] != ""
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():
@@ -3614,6 +3692,38 @@ def test_markdown_contains_edges():
     assert len(contains_edges) >= 5, f"expected >= 5 contains edges, got {len(contains_edges)}"
 
 
+def _atx_headings(tmp_path, src: str) -> list[tuple[str, str]]:
+    path = tmp_path / "doc.md"
+    path.write_text(src, encoding="utf-8")
+    return [(n["label"], n["source_location"]) for n in extract_markdown(path)["nodes"]
+            if n.get("node_kind") == "heading"]
+
+
+def test_markdown_heading_closing_sequence_is_not_part_of_the_label(tmp_path):
+    """CommonMark: `## Setup ##` is the heading "Setup". The closing run of `#`
+    used to stay in the label (and so in GRAPH_REPORT.md, query and explain)."""
+    src = "# Title #\n\n## Setup ##   \n\n### Deep ###########\n"
+    assert _atx_headings(tmp_path, src) == [("Title", "L1"), ("Setup", "L3"), ("Deep", "L5")]
+
+
+def test_markdown_heading_keeps_a_hash_that_is_part_of_the_text(tmp_path):
+    """Only a whitespace-separated closing run is stripped: `C#` and an escaped
+    `\\#` stay, and a heading made of nothing but hashes yields no node."""
+    src = "## C# Guide\n\n## Uses C#\n\n## Trailing \\#\n\n## ##\n"
+    assert _atx_headings(tmp_path, src) == [
+        ("C# Guide", "L1"), ("Uses C#", "L3"), ("Trailing \\#", "L5"),
+    ]
+
+
+def test_markdown_heading_indented_up_to_three_spaces_is_a_heading(tmp_path):
+    """CommonMark allows 0-3 spaces before an ATX heading; four make an indented
+    code block. One to three spaces used to drop the heading entirely."""
+    src = "# Top\n\n   ## Three Spaces\n\n ### One Space\n\n    #### Four Is Code\n"
+    assert _atx_headings(tmp_path, src) == [
+        ("Top", "L1"), ("Three Spaces", "L3"), ("One Space", "L5"),
+    ]
+
+
 def test_markdown_fenced_heading_not_parsed():
     """A '## heading' inside a fenced block must not produce a heading node (#1077).
 
@@ -3644,6 +3754,62 @@ def test_markdown_fenced_heading_not_parsed():
     assert any("Another Real Heading" in l for l in labels), f"'Another Real Heading' missing: {labels}"
     assert not any("Not A Heading" in l for l in labels), \
         f"fenced '## Not A Heading' was incorrectly parsed as a node: {labels}"
+
+
+def _md_heading_labels(tmp_path, src: str) -> list[str]:
+    path = tmp_path / "doc.md"
+    path.write_text(src, encoding="utf-8")
+    r = extract_markdown(path)
+    return [n["label"] for n in r["nodes"] if n.get("node_kind") == "heading"]
+
+
+def test_markdown_tilde_fence_contents_are_not_headings(tmp_path):
+    """CommonMark `~~~` fences are code blocks too; their `## ...` lines were
+    parsed as headings because only ``` toggled the fence."""
+    labels = _md_heading_labels(tmp_path, "# Top\n\n~~~\n## Not A Heading\n~~~\n\n## After\n")
+    assert labels == ["Top", "After"]
+
+
+def test_markdown_longer_fence_is_not_closed_by_a_shorter_inner_fence(tmp_path):
+    """A doc showing a fenced example wraps it in a longer fence. The inner ```
+    lines must not toggle the block: a closing run needs the opener's length."""
+    src = (
+        "# Guide\n\n"
+        "````markdown\n"
+        "```bash\n"
+        "# Not A Heading\n"
+        "```\n"
+        "````\n\n"
+        "## After\n"
+    )
+    assert _md_heading_labels(tmp_path, src) == ["Guide", "After"]
+
+
+def test_markdown_backtick_run_inside_a_tilde_fence_is_content(tmp_path):
+    """``` inside a ~~~ block neither opens nor closes anything; the ~~~ closes
+    the block and the heading after it is real."""
+    src = "# Top\n\n~~~\n```\n~~~\n\n## After\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "After"]
+
+
+def test_markdown_fence_run_followed_by_text_does_not_close(tmp_path):
+    """A closing fence carries no info string; ``` followed by text is content."""
+    src = "# Top\n\n```js\n``` not a close\n# Still Code\n```\n\n## End\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "End"]
+
+
+def test_markdown_inline_triple_backtick_span_does_not_open_a_fence(tmp_path):
+    """A line that starts with an inline ```code``` span is prose: a backtick
+    fence's info string cannot contain a backtick. Treating it as an opener hid
+    every heading after it."""
+    src = "# Top\n\n```x``` is inline code\n\n## Next\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "Next"]
+
+
+def test_markdown_indented_fence_in_a_list_still_skips_its_contents(tmp_path):
+    """Fences nested in list items are indented; they keep working."""
+    src = "# Top\n\n1. Step\n\n    ```bash\n    # Not A Heading\n    ```\n\n## After\n"
+    assert _md_heading_labels(tmp_path, src) == ["Top", "After"]
 
 def test_markdown_no_dangling_edges():
     r = extract_markdown(FIXTURES / "deploy_guide.md")
@@ -4658,6 +4824,27 @@ def test_systemverilog_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e}"
         assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+def test_systemverilog_class_task_method_gets_a_node():
+    """A class method declared `task` instead of `function` must get the same
+    treatment a `function` method does: its own node and a `method` edge from
+    the class. The function-only harvest silently dropped every task method.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "reset") in _edge_labels(r, "method")
+    assert ("reset", "Config") in _edge_labels(r, "references", "parameter_type")
+
+
+def test_systemverilog_task_locals_do_not_leak_into_class_fields():
+    """A task method's own local declarations must not be scanned as class
+    fields, exactly like a function's already aren't. Only `function...
+    endfunction` bodies were stripped before the field regex ran, so a type
+    declared purely as a task-local variable (`Flag`, never a real field)
+    showed up as a false `references`/`field` edge from the class.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "Flag") not in _edge_labels(r, "references", "field")
 
 
 # ── Header/impl class merge + .h routing (#1547 C++, #1556 ObjC/Swift) ─────────

@@ -1291,3 +1291,34 @@ def test_to_obsidian_lists_every_parallel_relation(tmp_path):
         "- [[b.py]] - `calls` [INFERRED]",
         "- [[b.py]] - `imports` [EXTRACTED]",
     ], connections
+
+
+def test_cluster_only_accepts_file_mention_folded_into_ast_twin(tmp_path):
+    """#4389 follow-up: a saved document mention of a file folds into that
+    file's AST node on reload. That is one node, not a lost one, so cluster-only
+    must write instead of refusing."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {"id": "src_config", "label": "config.php", "source_file": "src/config.php",
+             "file_type": "code", "source_location": "L1", "_origin": "ast"},
+            {"id": "readme_config", "label": "src/config.php", "source_file": "README.md",
+             "file_type": "code", "_origin": "semantic"},
+            {"id": "readme", "label": "README.md", "source_file": "README.md",
+             "file_type": "document", "_origin": "semantic"},
+        ],
+        "links": [{"source": "readme", "target": "readme_config", "relation": "describes",
+                   "confidence": "EXTRACTED", "source_file": "README.md"}],
+    }), encoding="utf-8")
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    assert "NOT written" not in r.stderr, r.stderr
+    assert (out / "GRAPH_REPORT.md").exists()
+    ids = {n["id"] for n in json.loads((out / "graph.json").read_text(encoding="utf-8"))["nodes"]}
+    assert ids == {"readme", "src_config"}

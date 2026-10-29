@@ -25,6 +25,11 @@ class DataProcessor extends BaseProcessor implements Processor;
   function Result #(Payload) build(Payload input);
     return current;
   endfunction
+
+  task reset(Config cfg);
+    Flag local_flag;
+    local_flag = cfg;
+  endtask
 endclass
 
 module leaf;
