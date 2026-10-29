@@ -1312,3 +1312,225 @@ def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
     assert [Path(u).name for u in uncached] == ["short.md"], (
         f"the partly-read file must be re-dispatched, uncached={uncached}"
     )
+
+
+# --- #2225 follow-up: a file the subagent never reported is unread, not complete ---
+#
+# Step B3.5 compares REPORTED counts with real length, so a file with no coverage
+# entry passed it: a subagent that never opened a file could still emit nodes for
+# it, guessed from its name, and those nodes were cached and stamped as complete.
+# Step B3.5 now also treats a missing (or 0) entry as unread: it drops what the
+# chunks attribute to that file by source_file and flags it partial so it is retried
+# (graphify.cache.drop_unreported_chunk_sources).
+
+def _unreported_fixture(tmp_path: Path) -> dict:
+    """A chunk where read.md was read, never.md/zero.md were not, plus edge cases."""
+    import json as _json
+
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    files = {
+        "read": tmp_path / "read.md",
+        "never": tmp_path / "never.md",
+        "zero": tmp_path / "zero.md",
+        "empty": tmp_path / "empty.md",
+        "pic": tmp_path / "pic.png",
+    }
+    files["read"].write_text("r\n" * 10, encoding="utf-8")
+    files["never"].write_text("n\n" * 20, encoding="utf-8")
+    files["zero"].write_text("z\n" * 5, encoding="utf-8")
+    files["empty"].write_text("", encoding="utf-8")
+    files["pic"].write_bytes(b"\x89PNG")
+    deleted = tmp_path / "deleted.md"  # dispatched, then deleted before Step B3 ran
+    dispatched = [files[k] for k in ("read", "never", "zero", "empty", "pic")] + [deleted]
+    (out / ".graphify_uncached.txt").write_text(
+        "\n".join(str(p) for p in dispatched), encoding="utf-8"
+    )
+
+    def node(node_id, src):
+        return {"id": node_id, "label": node_id, "file_type": "document", "source_file": str(src)}
+
+    def edge(s, t, src):
+        return {"source": s, "target": t, "relation": "references", "confidence": "INFERRED",
+                "confidence_score": 0.75, "source_file": str(src)}
+
+    def hyper(hid, ids, src):
+        return {"id": hid, "label": hid, "nodes": ids, "relation": "form",
+                "confidence": "INFERRED", "confidence_score": 0.75, "source_file": str(src)}
+
+    r, n, z, p = files["read"], files["never"], files["zero"], files["pic"]
+    _write_chunk(out, {
+        "nodes": [
+            node("read_a", r),
+            node("shared", r),          # the same deterministic id minted by a read file...
+            node("shared", n),          # ...and by an unread one: the read copy must survive
+            node("never_guess", n),
+            node("zero_guess", z),
+            node("pic_p", p),
+        ],
+        "edges": [
+            edge("read_a", "never_guess", r),   # points at a dropped node -> dropped
+            edge("read_a", "shared", r),        # the shared id survives -> kept
+            edge("read_a", "pic_p", n),         # guessed by the unread file -> dropped
+            edge("read_a", "src_main_run", r),  # an AST node outside the chunks -> kept
+        ],
+        "hyperedges": [
+            hyper("h_zero", ["read_a", "zero_guess", "pic_p"], r),  # touches a dropped node
+            hyper("h_kept", ["read_a", "shared", "pic_p"], r),
+            hyper("h_never", ["read_a", "shared", "pic_p"], n),     # attributed to an unread file
+        ],
+        "coverage": {str(r): 10, str(z): 0},
+        "input_tokens": 0, "output_tokens": 0,
+    })
+    # Part A's AST output: never.md also guessed the code id src_lib_util, so read.md's
+    # edge to that real AST node must survive even though never.md's copy is dropped.
+    (out / ".graphify_ast.json").write_text(_json.dumps({"nodes": [
+        {"id": "src_main_run", "label": "run", "file_type": "code", "source_file": "src/main.py"},
+        {"id": "src_lib_util", "label": "util", "file_type": "code", "source_file": "src/lib.py"},
+    ], "edges": []}), encoding="utf-8")
+    d = _json.loads((out / ".graphify_chunk_01.json").read_text(encoding="utf-8"))
+    d["nodes"].append(node("src_lib_util", n))
+    d["edges"].append(edge("read_a", "src_lib_util", r))
+    (out / ".graphify_chunk_01.json").write_text(_json.dumps(d), encoding="utf-8")
+    files["chunk"] = out / ".graphify_chunk_01.json"
+    files["out"] = out
+    return files
+
+
+def test_drop_unreported_chunk_sources_drops_by_source_file_and_returns_unread(tmp_path):
+    """The library helper: unread files found, their items dropped, read files untouched."""
+    import json as _json
+
+    from graphify.cache import drop_unreported_chunk_sources
+
+    f = _unreported_fixture(tmp_path)
+    unread, dropped = drop_unreported_chunk_sources(f["out"], tmp_path)
+    assert unread == [str(f["never"]), str(f["zero"])], (
+        f"only unread files may be returned (not the image, the empty or the deleted file), got {unread}"
+    )
+    assert dropped == 8, dropped  # 4 nodes, 2 edges, 2 hyperedges
+
+    d = _json.loads(f["chunk"].read_text(encoding="utf-8"))
+    kept_nodes = sorted((n["id"], Path(n["source_file"]).name) for n in d["nodes"])
+    assert kept_nodes == [("pic_p", "pic.png"), ("read_a", "read.md"), ("shared", "read.md")], kept_nodes
+    assert sorted((e["source"], e["target"]) for e in d["edges"]) == [
+        ("read_a", "shared"), ("read_a", "src_lib_util"), ("read_a", "src_main_run"),
+    ], d["edges"]
+    assert [h["id"] for h in d["hyperedges"]] == ["h_kept"], d["hyperedges"]
+
+    # Idempotent: a second call finds the same files and drops nothing more.
+    assert drop_unreported_chunk_sources(f["out"], tmp_path) == (unread, 0)
+
+
+def test_drop_unreported_chunk_sources_without_a_dispatch_list_is_a_no_op(tmp_path):
+    """No .graphify_uncached.txt (nothing dispatched): nothing is unread, nothing is touched."""
+    from graphify.cache import drop_unreported_chunk_sources
+
+    f = _unreported_fixture(tmp_path)
+    (f["out"] / ".graphify_uncached.txt").unlink()
+    before = f["chunk"].read_bytes()
+    assert drop_unreported_chunk_sources(f["out"], tmp_path) == ([], 0)
+    assert f["chunk"].read_bytes() == before
+
+
+def test_drop_unreported_chunk_sources_ignores_chunks_without_a_coverage_contract(tmp_path):
+    """No chunk reports coverage at all (an older producer): nothing is judged or dropped."""
+    import json as _json
+
+    from graphify.cache import drop_unreported_chunk_sources
+
+    f = _unreported_fixture(tmp_path)
+    d = _json.loads(f["chunk"].read_text(encoding="utf-8"))
+    del d["coverage"]
+    f["chunk"].write_text(_json.dumps(d), encoding="utf-8")
+    before = f["chunk"].read_bytes()
+    assert drop_unreported_chunk_sources(f["out"], tmp_path) == ([], 0)
+    assert f["chunk"].read_bytes() == before
+
+
+def test_drop_unreported_chunk_sources_leaves_a_chunk_without_coverage_unjudged(tmp_path):
+    """Mixed run: a second chunk that wrote no coverage map keeps its files' items."""
+    import json as _json
+
+    from graphify.cache import drop_unreported_chunk_sources
+
+    f = _unreported_fixture(tmp_path)
+    other = tmp_path / "other.md"
+    other.write_text("o\n" * 8, encoding="utf-8")
+    with (f["out"] / ".graphify_uncached.txt").open("a", encoding="utf-8") as fh:
+        fh.write(f"\n{other}")
+    second = f["out"] / ".graphify_chunk_02.json"
+    second.write_text(_json.dumps({
+        "nodes": [{"id": "other_x", "label": "x", "file_type": "document", "source_file": str(other)}],
+        "edges": [], "hyperedges": [],
+    }), encoding="utf-8")
+
+    unread, _ = drop_unreported_chunk_sources(f["out"], tmp_path)
+    assert str(other) not in unread, unread
+    assert unread == [str(f["never"]), str(f["zero"])], unread
+    assert [n["id"] for n in _json.loads(second.read_text(encoding="utf-8"))["nodes"]] == ["other_x"]
+
+
+def test_coverage_step_flags_unreported_files_alongside_partly_read_ones(tmp_path, capsys, monkeypatch):
+    """Run the rendered Step B3.5: one write holds both kinds of flag, each once."""
+    import json as _json
+
+    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    f = _unreported_fixture(tmp_path)
+    d = _json.loads(f["chunk"].read_text(encoding="utf-8"))
+    d["coverage"][str(f["read"])] = 4  # read.md was only partly read (4 of 10 lines)
+    f["chunk"].write_text(_json.dumps(d), encoding="utf-8")
+
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "2 file(s) reported no coverage" in printed, printed
+    assert "read 4 of 10 lines" in printed, printed
+    flagged = (f["out"] / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines()
+    # zero.md is both short (0 of 5) and unread: it must appear once.
+    assert sorted(flagged) == sorted(str(f[k]) for k in ("read", "never", "zero")), flagged
+    assert len(flagged) == len(set(flagged)), f"a file was flagged twice: {flagged}"
+
+
+def test_an_unreported_file_is_retried_instead_of_cached_as_complete(tmp_path, capsys, monkeypatch):
+    """End to end through the real merge and cache steps: the unread files come back as misses.
+
+    Before this, the never-opened file's guessed nodes were merged, cached as a complete
+    entry and served from the cache on every later --update.
+    """
+    from graphify.cache import check_semantic_cache
+
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    markers = ("covered[src] = max(", "Merged {len(chunks)} chunks", "partial_source_files=partial")
+    f = _unreported_fixture(tmp_path)
+    for marker in markers:
+        body = _substituted(_step_body(core, marker), tmp_path)
+        exec(compile(body, marker, "exec"), {"__name__": "__main__"})
+    assert "2 left partial for retry" in capsys.readouterr().out
+
+    spec = tmp_path / "extraction-spec.md"
+    _, _, _, uncached = check_semantic_cache(
+        [str(f["read"]), str(f["never"]), str(f["zero"])], root=tmp_path, prompt_file=spec
+    )
+    assert sorted(Path(u).name for u in uncached) == ["never.md", "zero.md"], (
+        f"never-read files must be re-dispatched and the read one must hit, uncached={uncached}"
+    )
+
+
+def test_extraction_specs_require_a_coverage_entry_for_every_file():
+    """Both spec variants ask for an entry per file, 0 for unopened, and pages for a PDF."""
+    platforms = gen.load_platforms()
+    seen_variants = set()
+    for key, platform in sorted(platforms.items()):
+        if platform.bucket != "split":
+            continue
+        spec = _platform_artifacts(key)[1]["extraction-spec.md"]
+        seen_variants.add(platform.extraction)
+        assert "EVERY" in spec and "never opened" in spec, f"[{key}] no entry rule for unopened files"
+        assert "never derive" in spec.lower(), f"[{key}] no rule against nodes from file names"
+        assert "PDF" in spec, f"[{key}] no coverage unit for files read as pages"
+    assert seen_variants == {"verbose", "compact"}, (
+        "this test must cover both spec variants, not just one"
+    )
