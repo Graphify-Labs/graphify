@@ -97,14 +97,13 @@ def test_a_missing_id_that_never_parses_keeps_the_labels_already_had(monkeypatch
     batch_cids = [42, 99, 137, 201]
     batch_lines = [f"Community {cid}: node_{cid}" for cid in batch_cids]
     prompts: list[list[int]] = []
-
-    def fake_call_llm(prompt: str, **_kwargs) -> str:
-        prompts.append([int(m) for m in re.findall(r"Community (\d+):", prompt)])
-        if len(prompts) == 1:
-            return '{"42":"Label 42","99":"Label 99"'
-        return _labels_for(prompt, unparseable={137})
-
-    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        llm_mod,
+        "_call_llm",
+        _make_sequenced_llm_stub(
+            '{"42":"Label 42","99":"Label 99"', prompts, unparseable={137}
+        ),
+    )
 
     result = llm_mod._label_batch_with_retry(
         batch_cids, batch_lines, backend="gemini", model=None,
