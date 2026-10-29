@@ -85,7 +85,8 @@ def prepare_terraform(result: dict, path: Path, root: Path) -> None:
         relative = directory.relative_to(root).as_posix()
     except ValueError:
         return
-    old, new = _scope_id(directory.as_posix()), _scope_id(relative)
+    old = result.pop("_terraform_scope", _scope_id(directory.as_posix()))
+    new = _scope_id(relative)
     for node in result.get("nodes", []):
         nid = node["id"]
         if nid.startswith(old + "_"):
@@ -508,4 +509,4 @@ def extract_terraform(path: Path) -> dict:
                 nodes_by_id[owner]["attributes"] = attrs
             _collect_refs(blk_body, owner, "references")
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "_terraform_scope": scope}
