@@ -215,9 +215,10 @@ def test_global_add_persists_stored_direction(tmp_path):
     assert _marker_arcs(saved) == {(f"proj::{s}", f"proj::{t}") for s, t in TRUE_ARCS}
 
 
-def test_global_add_dedup_remaps_direction_markers(tmp_path):
-    """Two repos share an external `requests` node. B's copy is deduplicated
-    onto A::requests, so the markers on B's edge must follow it there."""
+def test_global_add_keeps_each_repos_external_stub_in_stored_direction(tmp_path):
+    """Two repos each name an external `requests`. They are kept apart (#3415:
+    no cross-repo dedup), and each edge's stored direction survives the
+    undirected reload pointing at its own repo's stub."""
 
     def repo(name: str, fn: str) -> Path:
         # The external node is listed first, the order an undirected load flips.
@@ -232,6 +233,6 @@ def test_global_add_dedup_remaps_direction_markers(tmp_path):
 
     saved = _global_add(tmp_path, (repo("A", "fa"), "A"), (repo("B", "fb"), "B"))
     arcs = _marker_arcs(saved)
-    assert arcs == {("A::fa", "A::requests"), ("B::fb", "A::requests")}
+    assert arcs == {("A::fa", "A::requests"), ("B::fb", "B::requests")}
     ids = {n["id"] for n in saved["nodes"]}
     assert all(end in ids for arc in arcs for end in arc)
