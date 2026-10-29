@@ -21,6 +21,12 @@ One ``key=value`` per line, ``#`` comments, blank lines ignored. Keys:
     depending on the project; ``.m`` is Objective-C or MATLAB; ``.h`` is C or
     C++) has no single correct global mapping, so the project declares it.
 
+``generated.<artifact>=<source>[,<source>...]``
+    Declare a checked-in generated code artifact and the canonical source files
+    that produced it. Paths are exact repo-relative paths; globs and parent
+    traversal are rejected. The generated file remains an artifact node but
+    its copied symbols do not participate in canonical resolution.
+
 The parser imports :mod:`graphify.detect` lazily only when it must validate
 an explicit extension.  This avoids a module-level import cycle while keeping
 typos from silently disabling classification.
@@ -82,6 +88,28 @@ def _normalise_ext(raw: str) -> str:
     return ext
 
 
+def _normalise_project_path(raw: str) -> str:
+    """Return one exact, portable repo-relative path for ``.graphifyrc``.
+
+    Generated-source declarations are intentionally conservative: no globs,
+    no absolute paths, and no ``.`` / ``..`` traversal components. Backslashes
+    are accepted for Windows ergonomics but canonicalized to POSIX separators.
+    """
+    value = raw.strip().replace("\\", "/")
+    if not value:
+        raise ValueError("empty project path")
+    if value.startswith(("/", "./", "//")):
+        raise ValueError(f"{raw!r} must be a repo-relative path")
+    if len(value) >= 3 and value[0].isalpha() and value[1:3] == ":/":
+        raise ValueError(f"{raw!r} must be a repo-relative path")
+    if any(ch in value for ch in "*?[]"):
+        raise ValueError(f"{raw!r} must be an exact path, not a glob")
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError(f"{raw!r} contains an empty or traversal path component")
+    return "/".join(parts)
+
+
 def parse_language_value(value: str) -> str:
     """Resolve the right-hand side of ``language.<ext>=`` to a canonical suffix.
 
@@ -112,8 +140,10 @@ def parse_language_value(value: str) -> str:
 def load_graphifyrc(root: Path) -> dict:
     """Parse ``<root>/.graphifyrc``. Returns ``{}`` when absent.
 
-    Returned keys: ``viz_node_limit`` (int) and ``languages``
-    (``{".inc": ".php", ...}``) — each present only when the file sets it.
+    Returned keys: ``viz_node_limit`` (int), ``languages``
+    (``{".inc": ".php", ...}``), and ``generated``
+    (``{"deploy/bundle.js": ["src/a.js", ...]}``); each present only when
+    the file sets it.
     Unknown keys are ignored so a newer graphify's options do not break an
     older one. Malformed lines raise ``ValueError`` naming the line.
     """
@@ -123,6 +153,7 @@ def load_graphifyrc(root: Path) -> dict:
 
     cfg: dict = {}
     languages: dict[str, str] = {}
+    generated: dict[str, list[str]] = {}
     # utf-8-sig: Windows PowerShell 5.1 (`Set-Content -Encoding UTF8`) and older
     # Notepad save UTF-8 with a BOM. Read as plain utf-8, the BOM became part of
     # the first key, which then matched nothing and was ignored without a word.
@@ -161,8 +192,25 @@ def load_graphifyrc(root: Path) -> dict:
                     f"Invalid {key} in {rc_path} at line {line_num}: {exc}"
                 ) from None
             languages[_normalise_ext(ext_part)] = target
+        elif key.startswith("generated."):
+            artifact_raw = key[len("generated."):].strip()
+            try:
+                artifact = _normalise_project_path(artifact_raw)
+                raw_sources = [part.strip() for part in val.split(",")]
+                if not raw_sources or any(not part for part in raw_sources):
+                    raise ValueError("expected one or more comma-separated source paths")
+                sources = [_normalise_project_path(part) for part in raw_sources]
+                if artifact in sources:
+                    raise ValueError("generated artifact cannot list itself as a source")
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid {key} in {rc_path} at line {line_num}: {exc}"
+                ) from None
+            generated[artifact] = list(dict.fromkeys(sources))
     if languages:
         cfg["languages"] = languages
+    if generated:
+        cfg["generated"] = generated
     return cfg
 
 
@@ -192,6 +240,56 @@ def _active() -> dict[str, str]:
         got = {}
         _local.active = got
     return got
+
+
+def _active_generated() -> tuple[Path | None, dict[str, tuple[str, ...]]]:
+    root = getattr(_local, "generated_root", None)
+    mapping = getattr(_local, "generated", None)
+    if mapping is None:
+        mapping = {}
+        _local.generated = mapping
+    return root, mapping
+
+
+def _set_generated_sources(root: Path, mapping: dict[str, list[str]] | None) -> None:
+    """Replace this thread's exact generated-artifact declarations."""
+    try:
+        _local.generated_root = Path(root).resolve()
+    except (OSError, RuntimeError):
+        _local.generated_root = Path(root)
+    _local.generated = {
+        artifact: tuple(sources)
+        for artifact, sources in (mapping or {}).items()
+    }
+
+
+def generated_sources_for(path: Path | str) -> tuple[str, ...] | None:
+    """Canonical sources declared for ``path``, or ``None`` when it is not generated."""
+    root, mapping = _active_generated()
+    if root is None or not mapping:
+        return None
+    candidate = Path(path)
+    try:
+        if candidate.is_absolute():
+            rel = candidate.resolve().relative_to(root).as_posix()
+        else:
+            # Manifest/cache callers may pass either repo-relative or cwd-relative
+            # paths. Prefer the declaration spelling when it matches exactly;
+            # otherwise try the caller's cwd first, then the active scan root.
+            raw = candidate.as_posix()
+            if raw in mapping:
+                return mapping[raw]
+            for candidate_path in (candidate, root / candidate):
+                try:
+                    rel = candidate_path.resolve().relative_to(root).as_posix()
+                except (ValueError, OSError, RuntimeError):
+                    continue
+                if rel in mapping:
+                    return mapping[rel]
+            return None
+    except (ValueError, OSError, RuntimeError):
+        return None
+    return mapping.get(rel)
 
 
 def set_language_overrides(mapping: dict[str, str] | None) -> None:
@@ -224,6 +322,7 @@ def activate_language_overrides(root: Path) -> dict[str, str]:
             print(f"[graphify] warning: ignoring {RC_FILENAME}: {exc}", file=sys.stderr)
         cfg = {}
     set_language_overrides(cfg.get("languages"))
+    _set_generated_sources(Path(root), cfg.get("generated"))
     return get_language_overrides()
 
 
@@ -245,7 +344,7 @@ def cache_salt(path: Path | str) -> str | None:
     """Extra cache-key material for a remapped file, else ``None``.
 
     An AST cache entry is keyed by content, and the same bytes parse to a
-    different graph under a different extractor — so a ``.inc`` cached as
+    different graph under a different extractor ? so a ``.inc`` cached as
     Pascal must not be served once the project declares it PHP.
     """
     active = _active()

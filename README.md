@@ -404,6 +404,15 @@ viz_node_limit=0
 
 The declaration flows through classification, extractor selection, grammar and resolution, imports, `graphify watch`, and the AST cache (a file re-parsed under a different language never reuses the old entry), and the same `.graphifyrc` is read by `extract`, `update`, the hooks, the MCP server, and the `/graphify` skill. A typo is reported once on stderr and the scan continues with the defaults. How declarations interact with caching, incremental rebuilds, and import resolution: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+**Generated source provenance.** Checked-in bundles and deployment aggregates can repeat declarations from canonical source files. Ignoring those artifacts loses build/deployment provenance, while extracting their copied declarations as peer symbols can make resolution ambiguous. Declare the relationship explicitly with exact repo-relative paths:
+
+```ini
+# Keep deploy/bundle.js as an artifact node, but source symbols come from src/.
+generated.deploy/bundle.js=src/a.js,src/b.js
+```
+
+The generated file remains in the graph at file level with `generated_from` edges to its declared source file nodes; its internal AST symbols are intentionally omitted from structural resolution in this first explicit-provenance model. Declarations are exact and deterministic: no globs, absolute paths, or `..` traversal. A declared source that is missing from the structural corpus produces a warning and no provenance edge; Graphify does not invent a target.
+
 ---
 
 ## Team setup
