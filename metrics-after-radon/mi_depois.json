@@ -1,0 +1,1738 @@
+{
+  "graphify/affected.py": {
+    "mi": 48.51574989126693,
+    "rank": "A"
+  },
+  "graphify/analyze.py": {
+    "mi": 20.28922286781858,
+    "rank": "A"
+  },
+  "graphify/benchmark.py": {
+    "mi": 56.060590179920624,
+    "rank": "A"
+  },
+  "graphify/build.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/cache.py": {
+    "mi": 1.8058265268679288,
+    "rank": "C"
+  },
+  "graphify/callflow_html.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/cargo_introspect.py": {
+    "mi": 54.92090504645551,
+    "rank": "A"
+  },
+  "graphify/cli.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/cluster.py": {
+    "mi": 39.885855257165794,
+    "rank": "A"
+  },
+  "graphify/cross_repo_calls.py": {
+    "mi": 57.04071449006382,
+    "rank": "A"
+  },
+  "graphify/cross_repo_types.py": {
+    "mi": 76.8277419306872,
+    "rank": "A"
+  },
+  "graphify/csharp_dispatch.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "graphify/dedup.py": {
+    "mi": 1.651191911730866,
+    "rank": "C"
+  },
+  "graphify/detect.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/diagnostics.py": {
+    "mi": 32.099952339737825,
+    "rank": "A"
+  },
+  "graphify/export.py": {
+    "mi": 9.154766297015202,
+    "rank": "B"
+  },
+  "graphify/extract.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/file_slice.py": {
+    "mi": 58.15661587772914,
+    "rank": "A"
+  },
+  "graphify/global_graph.py": {
+    "mi": 53.867803783533304,
+    "rank": "A"
+  },
+  "graphify/google_workspace.py": {
+    "mi": 46.12804218324168,
+    "rank": "A"
+  },
+  "graphify/hooks.py": {
+    "mi": 33.68990255957316,
+    "rank": "A"
+  },
+  "graphify/ids.py": {
+    "mi": 44.324369909644176,
+    "rank": "A"
+  },
+  "graphify/ingest.py": {
+    "mi": 39.322082930193524,
+    "rank": "A"
+  },
+  "graphify/install.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/interface_dispatch.py": {
+    "mi": 67.40941350194217,
+    "rank": "A"
+  },
+  "graphify/llm.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/manifest.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "graphify/manifest_ingest.py": {
+    "mi": 43.75136318466043,
+    "rank": "A"
+  },
+  "graphify/markdown_resolution.py": {
+    "mi": 54.37544477845419,
+    "rank": "A"
+  },
+  "graphify/mcp_ingest.py": {
+    "mi": 56.23845896753423,
+    "rank": "A"
+  },
+  "graphify/multigraph_compat.py": {
+    "mi": 50.09417386319632,
+    "rank": "A"
+  },
+  "graphify/pascal_resolution.py": {
+    "mi": 70.09179498246887,
+    "rank": "A"
+  },
+  "graphify/paths.py": {
+    "mi": 44.68151544838403,
+    "rank": "A"
+  },
+  "graphify/pg_introspect.py": {
+    "mi": 72.5301375884523,
+    "rank": "A"
+  },
+  "graphify/prs.py": {
+    "mi": 3.5152722781009933,
+    "rank": "C"
+  },
+  "graphify/querylog.py": {
+    "mi": 64.60720173171634,
+    "rank": "A"
+  },
+  "graphify/reflect.py": {
+    "mi": 23.128891688992255,
+    "rank": "A"
+  },
+  "graphify/report.py": {
+    "mi": 38.33115944848242,
+    "rank": "A"
+  },
+  "graphify/resolver_registry.py": {
+    "mi": 83.11808470673839,
+    "rank": "A"
+  },
+  "graphify/ruby_resolution.py": {
+    "mi": 29.005761694204608,
+    "rank": "A"
+  },
+  "graphify/scip_ingest.py": {
+    "mi": 54.002685178617895,
+    "rank": "A"
+  },
+  "graphify/security.py": {
+    "mi": 50.749156967093754,
+    "rank": "A"
+  },
+  "graphify/semantic_cleanup.py": {
+    "mi": 48.14454361212884,
+    "rank": "A"
+  },
+  "graphify/serve.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/swift_dispatch.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "graphify/symbol_resolution.py": {
+    "mi": 36.37908294050733,
+    "rank": "A"
+  },
+  "graphify/transcribe.py": {
+    "mi": 62.23560857792101,
+    "rank": "A"
+  },
+  "graphify/tree_html.py": {
+    "mi": 50.28569285702178,
+    "rank": "A"
+  },
+  "graphify/validate.py": {
+    "mi": 59.962545708089586,
+    "rank": "A"
+  },
+  "graphify/watch.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/wiki.py": {
+    "mi": 49.47512163457857,
+    "rank": "A"
+  },
+  "graphify/_minhash.py": {
+    "mi": 60.119388617445445,
+    "rank": "A"
+  },
+  "graphify/__init__.py": {
+    "mi": 84.73345644923813,
+    "rank": "A"
+  },
+  "graphify/__main__.py": {
+    "mi": 39.00078960215536,
+    "rank": "A"
+  },
+  "graphify/exporters/base.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "graphify/exporters/graphdb.py": {
+    "mi": 60.49496252777494,
+    "rank": "A"
+  },
+  "graphify/exporters/html.py": {
+    "mi": 38.29974493895786,
+    "rank": "A"
+  },
+  "graphify/exporters/__init__.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "graphify/extractors/apex.py": {
+    "mi": 35.30075096644684,
+    "rank": "A"
+  },
+  "graphify/extractors/base.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "graphify/extractors/bash.py": {
+    "mi": 45.74479423280734,
+    "rank": "A"
+  },
+  "graphify/extractors/blade.py": {
+    "mi": 71.79502772113551,
+    "rank": "A"
+  },
+  "graphify/extractors/cobol.py": {
+    "mi": 38.160204663357874,
+    "rank": "A"
+  },
+  "graphify/extractors/commonlisp.py": {
+    "mi": 41.197380020780024,
+    "rank": "A"
+  },
+  "graphify/extractors/csharp.py": {
+    "mi": 21.608925449590686,
+    "rank": "A"
+  },
+  "graphify/extractors/dart.py": {
+    "mi": 21.565634904808675,
+    "rank": "A"
+  },
+  "graphify/extractors/dm.py": {
+    "mi": 8.63503841948664,
+    "rank": "C"
+  },
+  "graphify/extractors/elixir.py": {
+    "mi": 45.43360148454706,
+    "rank": "A"
+  },
+  "graphify/extractors/engine.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/extractors/erlang.py": {
+    "mi": 24.602406489691703,
+    "rank": "A"
+  },
+  "graphify/extractors/fortran.py": {
+    "mi": 48.01800520255452,
+    "rank": "A"
+  },
+  "graphify/extractors/go.py": {
+    "mi": 36.71831195289906,
+    "rank": "A"
+  },
+  "graphify/extractors/json_config.py": {
+    "mi": 58.7543088893998,
+    "rank": "A"
+  },
+  "graphify/extractors/julia.py": {
+    "mi": 47.75113070735892,
+    "rank": "A"
+  },
+  "graphify/extractors/markdown.py": {
+    "mi": 44.10901189363249,
+    "rank": "A"
+  },
+  "graphify/extractors/models.py": {
+    "mi": 65.4072371397294,
+    "rank": "A"
+  },
+  "graphify/extractors/objc.py": {
+    "mi": 41.52217841349867,
+    "rank": "A"
+  },
+  "graphify/extractors/ocaml.py": {
+    "mi": 51.316689329514425,
+    "rank": "A"
+  },
+  "graphify/extractors/pascal.py": {
+    "mi": 34.92186706862962,
+    "rank": "A"
+  },
+  "graphify/extractors/pascal_forms.py": {
+    "mi": 59.82930677329342,
+    "rank": "A"
+  },
+  "graphify/extractors/powershell.py": {
+    "mi": 40.03991931503935,
+    "rank": "A"
+  },
+  "graphify/extractors/r.py": {
+    "mi": 27.847978588707754,
+    "rank": "A"
+  },
+  "graphify/extractors/razor.py": {
+    "mi": 38.88483018854524,
+    "rank": "A"
+  },
+  "graphify/extractors/resolution.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "graphify/extractors/robot.py": {
+    "mi": 57.322153476912035,
+    "rank": "A"
+  },
+  "graphify/extractors/rust.py": {
+    "mi": 29.141508576726828,
+    "rank": "A"
+  },
+  "graphify/extractors/sln.py": {
+    "mi": 58.32475130432749,
+    "rank": "A"
+  },
+  "graphify/extractors/solidity.py": {
+    "mi": 20.207986586896705,
+    "rank": "A"
+  },
+  "graphify/extractors/sql.py": {
+    "mi": 34.8622701308468,
+    "rank": "A"
+  },
+  "graphify/extractors/terraform.py": {
+    "mi": 27.685015456349376,
+    "rank": "A"
+  },
+  "graphify/extractors/vbnet.py": {
+    "mi": 31.712850154217794,
+    "rank": "A"
+  },
+  "graphify/extractors/verilog.py": {
+    "mi": 42.67034626346177,
+    "rank": "A"
+  },
+  "graphify/extractors/zig.py": {
+    "mi": 47.63151682013554,
+    "rank": "A"
+  },
+  "graphify/extractors/__init__.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "tests/bench_extract.py": {
+    "mi": 62.975477187698665,
+    "rank": "A"
+  },
+  "tests/bench_query_scoring.py": {
+    "mi": 51.68886659805377,
+    "rank": "A"
+  },
+  "tests/conftest.py": {
+    "mi": 79.33014476355571,
+    "rank": "A"
+  },
+  "tests/test_affected_cli.py": {
+    "mi": 40.72594049218659,
+    "rank": "A"
+  },
+  "tests/test_affected_member_seed.py": {
+    "mi": 79.82651349607185,
+    "rank": "A"
+  },
+  "tests/test_agents_platform.py": {
+    "mi": 53.07643231674105,
+    "rank": "A"
+  },
+  "tests/test_analyze.py": {
+    "mi": 10.671755459667732,
+    "rank": "B"
+  },
+  "tests/test_anthropic_custom_endpoint.py": {
+    "mi": 82.96825779844073,
+    "rank": "A"
+  },
+  "tests/test_antigravity_install.py": {
+    "mi": 72.64986952885255,
+    "rank": "A"
+  },
+  "tests/test_apm_fallback_version.py": {
+    "mi": 78.84458263629361,
+    "rank": "A"
+  },
+  "tests/test_architecture_doc.py": {
+    "mi": 74.92293603550965,
+    "rank": "A"
+  },
+  "tests/test_astro_extraction.py": {
+    "mi": 51.2392003765771,
+    "rank": "A"
+  },
+  "tests/test_astro_import_ids.py": {
+    "mi": 56.624292637589726,
+    "rank": "A"
+  },
+  "tests/test_atomic_canvas_export.py": {
+    "mi": 54.92836666595439,
+    "rank": "A"
+  },
+  "tests/test_atomic_version_stamp.py": {
+    "mi": 45.10222742216577,
+    "rank": "A"
+  },
+  "tests/test_atomic_writes.py": {
+    "mi": 45.83705181187997,
+    "rank": "A"
+  },
+  "tests/test_backend_env_isolation.py": {
+    "mi": 73.5288159318838,
+    "rank": "A"
+  },
+  "tests/test_backend_extras.py": {
+    "mi": 75.14833888662191,
+    "rank": "A"
+  },
+  "tests/test_benchmark.py": {
+    "mi": 50.43517787217805,
+    "rank": "A"
+  },
+  "tests/test_benchmark_raw_graph.py": {
+    "mi": 65.76232035368444,
+    "rank": "A"
+  },
+  "tests/test_blade_extractor.py": {
+    "mi": 86.5456708849074,
+    "rank": "A"
+  },
+  "tests/test_build.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_build_located_semantic_identity.py": {
+    "mi": 47.705025639467536,
+    "rank": "A"
+  },
+  "tests/test_build_merge_dedup_scope.py": {
+    "mi": 49.44155889726768,
+    "rank": "A"
+  },
+  "tests/test_build_merge_hyperedges_and_prune.py": {
+    "mi": 49.32405612403934,
+    "rank": "A"
+  },
+  "tests/test_build_merge_shrink_guard.py": {
+    "mi": 54.27055493895476,
+    "rank": "A"
+  },
+  "tests/test_builtin_global_type_refs.py": {
+    "mi": 70.7009846365027,
+    "rank": "A"
+  },
+  "tests/test_cache.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_callflow_html.py": {
+    "mi": 40.579931563134686,
+    "rank": "A"
+  },
+  "tests/test_cargo_introspect.py": {
+    "mi": 28.76794134538172,
+    "rank": "A"
+  },
+  "tests/test_cargo_missing_manifest.py": {
+    "mi": 68.566135339531,
+    "rank": "A"
+  },
+  "tests/test_carried_hyperedge_remap.py": {
+    "mi": 64.78459204695382,
+    "rank": "A"
+  },
+  "tests/test_case_sensitive_resolution.py": {
+    "mi": 66.22851443031396,
+    "rank": "A"
+  },
+  "tests/test_charmap_encoding.py": {
+    "mi": 56.29745805301994,
+    "rank": "A"
+  },
+  "tests/test_chunking.py": {
+    "mi": 26.94784513248805,
+    "rank": "A"
+  },
+  "tests/test_cjs_module_extension.py": {
+    "mi": 75.76948684989372,
+    "rank": "A"
+  },
+  "tests/test_claude_cli_backend.py": {
+    "mi": 44.53108937994512,
+    "rank": "A"
+  },
+  "tests/test_claude_md.py": {
+    "mi": 45.261104612610865,
+    "rank": "A"
+  },
+  "tests/test_cli_broken_pipe.py": {
+    "mi": 91.3601746894157,
+    "rank": "A"
+  },
+  "tests/test_cli_export.py": {
+    "mi": 13.468680351915516,
+    "rank": "B"
+  },
+  "tests/test_cli_help.py": {
+    "mi": 83.74969907247022,
+    "rank": "A"
+  },
+  "tests/test_cluster.py": {
+    "mi": 48.6203514213711,
+    "rank": "A"
+  },
+  "tests/test_cluster_exclude_hubs.py": {
+    "mi": 73.66583237725014,
+    "rank": "A"
+  },
+  "tests/test_cobol_extractor.py": {
+    "mi": 53.666387444991436,
+    "rank": "A"
+  },
+  "tests/test_codebuddy.py": {
+    "mi": 39.37671252448001,
+    "rank": "A"
+  },
+  "tests/test_community_hub_labels.py": {
+    "mi": 66.88399341771192,
+    "rank": "A"
+  },
+  "tests/test_community_labels_skill.py": {
+    "mi": 61.637836560644594,
+    "rank": "A"
+  },
+  "tests/test_confidence.py": {
+    "mi": 48.44635329706941,
+    "rank": "A"
+  },
+  "tests/test_corrupt_graph_json.py": {
+    "mi": 85.03456381745711,
+    "rank": "A"
+  },
+  "tests/test_cpp_method_declarations.py": {
+    "mi": 73.59331584834587,
+    "rank": "A"
+  },
+  "tests/test_cpp_nested_and_cli.py": {
+    "mi": 37.319073887775026,
+    "rank": "A"
+  },
+  "tests/test_cpp_objc_cross_file_calls.py": {
+    "mi": 46.430121757728294,
+    "rank": "A"
+  },
+  "tests/test_cpp_preprocess.py": {
+    "mi": 68.95035234969072,
+    "rank": "A"
+  },
+  "tests/test_cross_extension_reexport_self_cycle.py": {
+    "mi": 51.81251501326556,
+    "rank": "A"
+  },
+  "tests/test_cross_language_call_resolution.py": {
+    "mi": 74.70341935158419,
+    "rank": "A"
+  },
+  "tests/test_cross_repo_external_call_guards.py": {
+    "mi": 45.624293893999074,
+    "rank": "A"
+  },
+  "tests/test_cross_repo_member_calls.py": {
+    "mi": 43.65454313859895,
+    "rank": "A"
+  },
+  "tests/test_cross_repo_shared_types.py": {
+    "mi": 63.57615108552326,
+    "rank": "A"
+  },
+  "tests/test_csharp_call_site_generic_args.py": {
+    "mi": 60.03492889325586,
+    "rank": "A"
+  },
+  "tests/test_csharp_enum_members.py": {
+    "mi": 58.56149089292472,
+    "rank": "A"
+  },
+  "tests/test_csharp_field_generic_args.py": {
+    "mi": 59.9639294886155,
+    "rank": "A"
+  },
+  "tests/test_csharp_generic_callsites.py": {
+    "mi": 73.08152256137159,
+    "rank": "A"
+  },
+  "tests/test_csharp_interface_dispatch.py": {
+    "mi": 53.94361416748827,
+    "rank": "A"
+  },
+  "tests/test_csharp_member_calls.py": {
+    "mi": 26.249800098168915,
+    "rank": "A"
+  },
+  "tests/test_csharp_member_nodes.py": {
+    "mi": 62.1351589093655,
+    "rank": "A"
+  },
+  "tests/test_csharp_object_creation.py": {
+    "mi": 53.64844109002864,
+    "rank": "A"
+  },
+  "tests/test_csharp_partial_classes.py": {
+    "mi": 44.50927063814782,
+    "rank": "A"
+  },
+  "tests/test_csharp_tuple_type_refs.py": {
+    "mi": 75.43624767940172,
+    "rank": "A"
+  },
+  "tests/test_csharp_type_resolution.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_dart.py": {
+    "mi": 9.244751964512721,
+    "rank": "B"
+  },
+  "tests/test_dedup.py": {
+    "mi": 5.729891198991488,
+    "rank": "C"
+  },
+  "tests/test_dedup_remaps_hyperedges.py": {
+    "mi": 69.466644991533,
+    "rank": "A"
+  },
+  "tests/test_dedup_shrink_refuses_force_write.py": {
+    "mi": 49.63522210012005,
+    "rank": "A"
+  },
+  "tests/test_dedup_survivor_richness.py": {
+    "mi": 58.262258907359076,
+    "rank": "A"
+  },
+  "tests/test_definition_file_portability.py": {
+    "mi": 61.64421328387347,
+    "rank": "A"
+  },
+  "tests/test_detect.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_devin.py": {
+    "mi": 43.914908552431754,
+    "rank": "A"
+  },
+  "tests/test_docx_to_markdown.py": {
+    "mi": 56.673255230609506,
+    "rank": "A"
+  },
+  "tests/test_dotnet.py": {
+    "mi": 2.6195604524161515,
+    "rank": "C"
+  },
+  "tests/test_duplicate_annotation_edges.py": {
+    "mi": 68.7912211211321,
+    "rank": "A"
+  },
+  "tests/test_elixir_import_resolution.py": {
+    "mi": 56.959050159561386,
+    "rank": "A"
+  },
+  "tests/test_elixir_unqualified_call_scope.py": {
+    "mi": 56.58174981374087,
+    "rank": "A"
+  },
+  "tests/test_erlang_extractor.py": {
+    "mi": 53.09360930253959,
+    "rank": "A"
+  },
+  "tests/test_evidence_binding.py": {
+    "mi": 52.73707965081157,
+    "rank": "A"
+  },
+  "tests/test_explain_cli.py": {
+    "mi": 40.485602209142115,
+    "rank": "A"
+  },
+  "tests/test_export.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_export_control_characters.py": {
+    "mi": 67.2197926857732,
+    "rank": "A"
+  },
+  "tests/test_export_direction.py": {
+    "mi": 55.47382106302702,
+    "rank": "A"
+  },
+  "tests/test_export_idempotent_writes.py": {
+    "mi": 62.181187245059505,
+    "rank": "A"
+  },
+  "tests/test_export_path_length.py": {
+    "mi": 51.2143893054847,
+    "rank": "A"
+  },
+  "tests/test_external_stub_endpoints.py": {
+    "mi": 62.60656652406475,
+    "rank": "A"
+  },
+  "tests/test_extract.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_extraction_spec_ids.py": {
+    "mi": 75.67817321756708,
+    "rank": "A"
+  },
+  "tests/test_extractors_registry.py": {
+    "mi": 84.88916018223489,
+    "rank": "A"
+  },
+  "tests/test_extract_cache_location.py": {
+    "mi": 66.09225806639304,
+    "rank": "A"
+  },
+  "tests/test_extract_cli.py": {
+    "mi": 7.310326047897514,
+    "rank": "C"
+  },
+  "tests/test_extract_code_only_cli.py": {
+    "mi": 36.574698323610896,
+    "rank": "A"
+  },
+  "tests/test_extract_php_closures.py": {
+    "mi": 43.50802026000117,
+    "rank": "A"
+  },
+  "tests/test_falkordb_integration.py": {
+    "mi": 72.6193351893282,
+    "rank": "A"
+  },
+  "tests/test_file_label_disambiguation.py": {
+    "mi": 59.477052192358386,
+    "rank": "A"
+  },
+  "tests/test_file_node_id_spec.py": {
+    "mi": 61.322611969324,
+    "rank": "A"
+  },
+  "tests/test_file_slice.py": {
+    "mi": 49.42915267910086,
+    "rank": "A"
+  },
+  "tests/test_file_truncation_warning.py": {
+    "mi": 69.8498144133483,
+    "rank": "A"
+  },
+  "tests/test_forwarding_review_findings.py": {
+    "mi": 41.40343685316338,
+    "rank": "A"
+  },
+  "tests/test_gemini_hook.py": {
+    "mi": 66.6223437373867,
+    "rank": "A"
+  },
+  "tests/test_global_add_tag_inference.py": {
+    "mi": 57.34912860705299,
+    "rank": "A"
+  },
+  "tests/test_global_graph.py": {
+    "mi": 35.12812576559844,
+    "rank": "A"
+  },
+  "tests/test_god_nodes_cli.py": {
+    "mi": 67.3910060437518,
+    "rank": "A"
+  },
+  "tests/test_god_nodes_exclude_hubs.py": {
+    "mi": 62.61587838769207,
+    "rank": "A"
+  },
+  "tests/test_google_workspace.py": {
+    "mi": 36.46023275559702,
+    "rank": "A"
+  },
+  "tests/test_go_builtin_call_targets.py": {
+    "mi": 63.3702371686274,
+    "rank": "A"
+  },
+  "tests/test_go_import_repoint.py": {
+    "mi": 65.42596345631844,
+    "rank": "A"
+  },
+  "tests/test_go_interface_methods.py": {
+    "mi": 40.875907794188684,
+    "rank": "A"
+  },
+  "tests/test_go_qualified_resolution.py": {
+    "mi": 34.59044156177062,
+    "rank": "A"
+  },
+  "tests/test_graphdb_push_indexes.py": {
+    "mi": 56.93372501372849,
+    "rank": "A"
+  },
+  "tests/test_hollow_chunks_arm_shrink_guard.py": {
+    "mi": 63.836517472559116,
+    "rank": "A"
+  },
+  "tests/test_home_sandbox.py": {
+    "mi": 79.12748271762989,
+    "rank": "A"
+  },
+  "tests/test_hooks.py": {
+    "mi": 1.2731767532031646,
+    "rank": "C"
+  },
+  "tests/test_hook_chain_survives_skip.py": {
+    "mi": 61.50644897042095,
+    "rank": "A"
+  },
+  "tests/test_hook_guard.py": {
+    "mi": 49.72805435477466,
+    "rank": "A"
+  },
+  "tests/test_hook_guard_token_match.py": {
+    "mi": 76.52212409206581,
+    "rank": "A"
+  },
+  "tests/test_hook_out_of_project_paths.py": {
+    "mi": 68.5226117641843,
+    "rank": "A"
+  },
+  "tests/test_hook_strict.py": {
+    "mi": 45.62022920486097,
+    "rank": "A"
+  },
+  "tests/test_hyperedge_member_shapes.py": {
+    "mi": 70.072809150171,
+    "rank": "A"
+  },
+  "tests/test_hyperedge_roundtrip.py": {
+    "mi": 69.00345604622312,
+    "rank": "A"
+  },
+  "tests/test_hypergraph.py": {
+    "mi": 45.700912195842996,
+    "rank": "A"
+  },
+  "tests/test_id_normalization_contract.py": {
+    "mi": 62.296526920906416,
+    "rank": "A"
+  },
+  "tests/test_ignore_file_encoding.py": {
+    "mi": 62.72496286572454,
+    "rank": "A"
+  },
+  "tests/test_image_vision.py": {
+    "mi": 31.002254266126563,
+    "rank": "A"
+  },
+  "tests/test_imported_export_forwarding.py": {
+    "mi": 31.8269979666636,
+    "rank": "A"
+  },
+  "tests/test_import_extension_resolution.py": {
+    "mi": 41.935671579064476,
+    "rank": "A"
+  },
+  "tests/test_import_self_loops.py": {
+    "mi": 49.74126101099053,
+    "rank": "A"
+  },
+  "tests/test_incomplete_build_guard.py": {
+    "mi": 58.168288404128674,
+    "rank": "A"
+  },
+  "tests/test_incremental.py": {
+    "mi": 31.436040676263186,
+    "rank": "A"
+  },
+  "tests/test_incremental_mtime_collision.py": {
+    "mi": 63.435045483772264,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_arrow_single_param_shadow.py": {
+    "mi": 75.59532874051695,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_block_scoped_shadow.py": {
+    "mi": 70.47254516138777,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_catch_binding_shadow.py": {
+    "mi": 75.12048162665424,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_external_import_shadow.py": {
+    "mi": 68.33300120553749,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_for_of_binding_shadow.py": {
+    "mi": 77.8899093418416,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_function_expression_shadow.py": {
+    "mi": 61.85949149803941,
+    "rank": "A"
+  },
+  "tests/test_indirect_call_nested_closure_shadow.py": {
+    "mi": 68.09599340643202,
+    "rank": "A"
+  },
+  "tests/test_indirect_dispatch.py": {
+    "mi": 34.006367117779995,
+    "rank": "A"
+  },
+  "tests/test_indirect_dispatch_assign_return.py": {
+    "mi": 61.37315203471444,
+    "rank": "A"
+  },
+  "tests/test_indirect_dispatch_getattr.py": {
+    "mi": 63.465122065742854,
+    "rank": "A"
+  },
+  "tests/test_inferred_confidence_rubric.py": {
+    "mi": 61.009874841296146,
+    "rank": "A"
+  },
+  "tests/test_ingest.py": {
+    "mi": 51.53680054792612,
+    "rank": "A"
+  },
+  "tests/test_ingest_url_type.py": {
+    "mi": 69.25598417805044,
+    "rank": "A"
+  },
+  "tests/test_inherited_field_receivers.py": {
+    "mi": 62.04894163999413,
+    "rank": "A"
+  },
+  "tests/test_injection_sentinel_coverage.py": {
+    "mi": 81.10741463110645,
+    "rank": "A"
+  },
+  "tests/test_install.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_install_references.py": {
+    "mi": 33.871378578373005,
+    "rank": "A"
+  },
+  "tests/test_install_roundtrip.py": {
+    "mi": 43.02155651546555,
+    "rank": "A"
+  },
+  "tests/test_install_strings.py": {
+    "mi": 70.09545116231698,
+    "rank": "A"
+  },
+  "tests/test_install_upgrade.py": {
+    "mi": 52.993322947406234,
+    "rank": "A"
+  },
+  "tests/test_install_version_stamp.py": {
+    "mi": 79.03771270682468,
+    "rank": "A"
+  },
+  "tests/test_install_version_warning.py": {
+    "mi": 64.48788715039281,
+    "rank": "A"
+  },
+  "tests/test_issue_3405_python_resolution.py": {
+    "mi": 51.708803626550385,
+    "rank": "A"
+  },
+  "tests/test_issue_3472_source_file_collision.py": {
+    "mi": 52.69365664908465,
+    "rank": "A"
+  },
+  "tests/test_java_enum_members.py": {
+    "mi": 63.05243439144833,
+    "rank": "A"
+  },
+  "tests/test_java_member_calls.py": {
+    "mi": 35.64267795870945,
+    "rank": "A"
+  },
+  "tests/test_java_type_resolution.py": {
+    "mi": 31.279430032335746,
+    "rank": "A"
+  },
+  "tests/test_jsconfig_baseurl.py": {
+    "mi": 54.362861865284394,
+    "rank": "A"
+  },
+  "tests/test_json_schema_config.py": {
+    "mi": 65.31140654865467,
+    "rank": "A"
+  },
+  "tests/test_jsx_component_usage_calls.py": {
+    "mi": 62.77568928222416,
+    "rank": "A"
+  },
+  "tests/test_js_callback_calls.py": {
+    "mi": 64.72521986590154,
+    "rank": "A"
+  },
+  "tests/test_js_destructured_export.py": {
+    "mi": 68.06962422017182,
+    "rank": "A"
+  },
+  "tests/test_js_dynamic_imports.py": {
+    "mi": 56.43185297561452,
+    "rank": "A"
+  },
+  "tests/test_js_dynamic_import_affected.py": {
+    "mi": 65.09412616336375,
+    "rank": "A"
+  },
+  "tests/test_js_exported_fn_call_resolution.py": {
+    "mi": 73.88552052719125,
+    "rank": "A"
+  },
+  "tests/test_js_exported_scalar_bindings.py": {
+    "mi": 48.79496355265009,
+    "rank": "A"
+  },
+  "tests/test_js_import_resolution.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_js_module_level_anonymous_calls.py": {
+    "mi": 80.67897193072353,
+    "rank": "A"
+  },
+  "tests/test_js_this_member_expressions.py": {
+    "mi": 64.02564160598547,
+    "rank": "A"
+  },
+  "tests/test_kotlin_grammar.py": {
+    "mi": 22.14806878423617,
+    "rank": "A"
+  },
+  "tests/test_kotlin_object_literal.py": {
+    "mi": 55.897954377950626,
+    "rank": "A"
+  },
+  "tests/test_labeling.py": {
+    "mi": 22.07767967301527,
+    "rank": "A"
+  },
+  "tests/test_label_retry.py": {
+    "mi": 64.51279903214177,
+    "rank": "A"
+  },
+  "tests/test_languages.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_language_resolvers.py": {
+    "mi": 75.28265842455143,
+    "rank": "A"
+  },
+  "tests/test_llm_backends.py": {
+    "mi": 5.793360548575711,
+    "rank": "C"
+  },
+  "tests/test_llm_parser.py": {
+    "mi": 66.59984525517505,
+    "rank": "A"
+  },
+  "tests/test_llm_parser_reasoning.py": {
+    "mi": 67.21734440169067,
+    "rank": "A"
+  },
+  "tests/test_long_path_hashing.py": {
+    "mi": 81.6629064637167,
+    "rank": "A"
+  },
+  "tests/test_loose_sibling_import_resolution.py": {
+    "mi": 53.93441096106701,
+    "rank": "A"
+  },
+  "tests/test_lua_import.py": {
+    "mi": 61.883894019698566,
+    "rank": "A"
+  },
+  "tests/test_lua_method_calls.py": {
+    "mi": 74.85824625537832,
+    "rank": "A"
+  },
+  "tests/test_manifest_ingest.py": {
+    "mi": 44.60358518310761,
+    "rank": "A"
+  },
+  "tests/test_manifest_tomli_required.py": {
+    "mi": 49.70586455660475,
+    "rank": "A"
+  },
+  "tests/test_markdown_code_spans.py": {
+    "mi": 39.163354025602615,
+    "rank": "A"
+  },
+  "tests/test_mcp_ingest.py": {
+    "mi": 33.427867178604984,
+    "rank": "A"
+  },
+  "tests/test_merge_chunks_validation.py": {
+    "mi": 51.08388758024341,
+    "rank": "A"
+  },
+  "tests/test_merge_graphs_cli.py": {
+    "mi": 37.473581325393354,
+    "rank": "A"
+  },
+  "tests/test_minhash.py": {
+    "mi": 55.69805182166381,
+    "rank": "A"
+  },
+  "tests/test_multigraph_compat.py": {
+    "mi": 55.740646277648466,
+    "rank": "A"
+  },
+  "tests/test_multigraph_diagnostics.py": {
+    "mi": 15.995515714456944,
+    "rank": "B"
+  },
+  "tests/test_multilang.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_node_id_canonical.py": {
+    "mi": 57.18671648536312,
+    "rank": "A"
+  },
+  "tests/test_non_regular_files.py": {
+    "mi": 63.15268101168962,
+    "rank": "A"
+  },
+  "tests/test_non_string_node_ids.py": {
+    "mi": 64.44008935806232,
+    "rank": "A"
+  },
+  "tests/test_no_dedup_flag.py": {
+    "mi": 65.00150496556198,
+    "rank": "A"
+  },
+  "tests/test_objc_category_interfaces.py": {
+    "mi": 67.02328828916144,
+    "rank": "A"
+  },
+  "tests/test_objc_enum_declarations.py": {
+    "mi": 75.48512380191809,
+    "rank": "A"
+  },
+  "tests/test_objc_field_table_remap.py": {
+    "mi": 63.03079819136851,
+    "rank": "A"
+  },
+  "tests/test_objc_member_calls.py": {
+    "mi": 71.44693984222283,
+    "rank": "A"
+  },
+  "tests/test_objc_property_ivar_receivers.py": {
+    "mi": 55.64460955221717,
+    "rank": "A"
+  },
+  "tests/test_obsidian_dangling_member.py": {
+    "mi": 73.59027285771424,
+    "rank": "A"
+  },
+  "tests/test_obsidian_filename_cap.py": {
+    "mi": 66.72546158572672,
+    "rank": "A"
+  },
+  "tests/test_obsidian_unicode_tags.py": {
+    "mi": 68.480914160604,
+    "rank": "A"
+  },
+  "tests/test_obsidian_vault_migration.py": {
+    "mi": 59.36088028352444,
+    "rank": "A"
+  },
+  "tests/test_ocaml.py": {
+    "mi": 51.290846918355406,
+    "rank": "A"
+  },
+  "tests/test_office_incremental.py": {
+    "mi": 74.63305938481477,
+    "rank": "A"
+  },
+  "tests/test_office_limits.py": {
+    "mi": 67.6864030216163,
+    "rank": "A"
+  },
+  "tests/test_ollama.py": {
+    "mi": 57.90415774201839,
+    "rank": "A"
+  },
+  "tests/test_ollama_retry_cap.py": {
+    "mi": 74.38061194346447,
+    "rank": "A"
+  },
+  "tests/test_openai_custom_endpoint.py": {
+    "mi": 77.46403442179397,
+    "rank": "A"
+  },
+  "tests/test_out_dir_evidence.py": {
+    "mi": 54.923900685265316,
+    "rank": "A"
+  },
+  "tests/test_oversized_document_slicing.py": {
+    "mi": 71.53024050867899,
+    "rank": "A"
+  },
+  "tests/test_owned_type_sources.py": {
+    "mi": 48.53222330646812,
+    "rank": "A"
+  },
+  "tests/test_package_json_subpath_imports.py": {
+    "mi": 67.37232525466689,
+    "rank": "A"
+  },
+  "tests/test_partial_cache.py": {
+    "mi": 55.114265483906784,
+    "rank": "A"
+  },
+  "tests/test_partial_extraction_warning.py": {
+    "mi": 61.8802324250308,
+    "rank": "A"
+  },
+  "tests/test_pascal.py": {
+    "mi": 22.494120010101916,
+    "rank": "A"
+  },
+  "tests/test_pascal_call_scoping.py": {
+    "mi": 63.23935995902366,
+    "rank": "A"
+  },
+  "tests/test_pascal_resolution.py": {
+    "mi": 72.064422305849,
+    "rank": "A"
+  },
+  "tests/test_paths.py": {
+    "mi": 74.75176289280678,
+    "rank": "A"
+  },
+  "tests/test_path_cli.py": {
+    "mi": 40.214249221640415,
+    "rank": "A"
+  },
+  "tests/test_pdf_extra_warning.py": {
+    "mi": 77.7794282131535,
+    "rank": "A"
+  },
+  "tests/test_pdf_slicing.py": {
+    "mi": 53.628844871529985,
+    "rank": "A"
+  },
+  "tests/test_pdf_token_estimate.py": {
+    "mi": 57.45770927047764,
+    "rank": "A"
+  },
+  "tests/test_pg_introspect.py": {
+    "mi": 47.268814194833745,
+    "rank": "A"
+  },
+  "tests/test_phantom_cross_package_call.py": {
+    "mi": 71.26248136988396,
+    "rank": "A"
+  },
+  "tests/test_phantom_external_import.py": {
+    "mi": 59.36958423284951,
+    "rank": "A"
+  },
+  "tests/test_php_language_construct_calls.py": {
+    "mi": 45.28524440051457,
+    "rank": "A"
+  },
+  "tests/test_php_object_creation.py": {
+    "mi": 67.51368122679561,
+    "rank": "A"
+  },
+  "tests/test_php_type_resolution.py": {
+    "mi": 45.16788315372849,
+    "rank": "A"
+  },
+  "tests/test_pin_hash_seed.py": {
+    "mi": 64.08393052683883,
+    "rank": "A"
+  },
+  "tests/test_pipeline.py": {
+    "mi": 49.96792203412305,
+    "rank": "A"
+  },
+  "tests/test_provider_registry.py": {
+    "mi": 47.64281760501301,
+    "rank": "A"
+  },
+  "tests/test_prs.py": {
+    "mi": 24.504227180489995,
+    "rank": "A"
+  },
+  "tests/test_prune_sweeps_orphans.py": {
+    "mi": 65.49265891805216,
+    "rank": "A"
+  },
+  "tests/test_python_decorators.py": {
+    "mi": 57.60713658532365,
+    "rank": "A"
+  },
+  "tests/test_python_import_resolution.py": {
+    "mi": 21.04197129338455,
+    "rank": "A"
+  },
+  "tests/test_python_parse_memoization.py": {
+    "mi": 70.28877819015707,
+    "rank": "A"
+  },
+  "tests/test_python_underscore_resolution.py": {
+    "mi": 50.39308874617653,
+    "rank": "A"
+  },
+  "tests/test_querylog.py": {
+    "mi": 50.27618161386689,
+    "rank": "A"
+  },
+  "tests/test_query_cli.py": {
+    "mi": 62.48790057799657,
+    "rank": "A"
+  },
+  "tests/test_query_induced_edges.py": {
+    "mi": 55.22636738828668,
+    "rank": "A"
+  },
+  "tests/test_query_mcp_direction.py": {
+    "mi": 66.501105143011,
+    "rank": "A"
+  },
+  "tests/test_query_names_its_graph.py": {
+    "mi": 59.62680181407616,
+    "rank": "A"
+  },
+  "tests/test_rationale.py": {
+    "mi": 23.759097053371672,
+    "rank": "A"
+  },
+  "tests/test_read_hook.py": {
+    "mi": 56.41131746741144,
+    "rank": "A"
+  },
+  "tests/test_reflect.py": {
+    "mi": 11.895006169072074,
+    "rank": "B"
+  },
+  "tests/test_relation_collapse_precedence.py": {
+    "mi": 61.13448849527196,
+    "rank": "A"
+  },
+  "tests/test_replace_or_append_section.py": {
+    "mi": 75.07763200259718,
+    "rank": "A"
+  },
+  "tests/test_report.py": {
+    "mi": 48.76464612401758,
+    "rank": "A"
+  },
+  "tests/test_report_gap_thresholds.py": {
+    "mi": 61.786762214173166,
+    "rank": "A"
+  },
+  "tests/test_resolve_memoization.py": {
+    "mi": 70.88170997727666,
+    "rank": "A"
+  },
+  "tests/test_ruby_bare_self_send_calls.py": {
+    "mi": 67.33983482007287,
+    "rank": "A"
+  },
+  "tests/test_ruby_resolution.py": {
+    "mi": 4.744727853281708,
+    "rank": "C"
+  },
+  "tests/test_rust_anonymous_const.py": {
+    "mi": 61.96001744894219,
+    "rank": "A"
+  },
+  "tests/test_rust_builtin_type_hubs.py": {
+    "mi": 63.4368677230447,
+    "rank": "A"
+  },
+  "tests/test_rust_macro_rules.py": {
+    "mi": 70.92404085358795,
+    "rank": "A"
+  },
+  "tests/test_rust_self_member_calls.py": {
+    "mi": 39.5094706778972,
+    "rank": "A"
+  },
+  "tests/test_r_extractor.py": {
+    "mi": 47.17305270875901,
+    "rank": "A"
+  },
+  "tests/test_scala_abstract_methods.py": {
+    "mi": 68.36044105527459,
+    "rank": "A"
+  },
+  "tests/test_scala_context_bounds.py": {
+    "mi": 53.514346494604844,
+    "rank": "A"
+  },
+  "tests/test_scala_self_type.py": {
+    "mi": 66.58368968448067,
+    "rank": "A"
+  },
+  "tests/test_scala_top_level_binding.py": {
+    "mi": 66.90486541035541,
+    "rank": "A"
+  },
+  "tests/test_scala_type_definition.py": {
+    "mi": 69.0392842796077,
+    "rank": "A"
+  },
+  "tests/test_scip_ingest.py": {
+    "mi": 6.56501190248458,
+    "rank": "C"
+  },
+  "tests/test_search_hook.py": {
+    "mi": 52.384145595053035,
+    "rank": "A"
+  },
+  "tests/test_security.py": {
+    "mi": 32.728296154098864,
+    "rank": "A"
+  },
+  "tests/test_semantic_cache_basename_recovery.py": {
+    "mi": 69.32464387034453,
+    "rank": "A"
+  },
+  "tests/test_semantic_cache_out_root.py": {
+    "mi": 62.34196275839828,
+    "rank": "A"
+  },
+  "tests/test_semantic_cleanup.py": {
+    "mi": 40.105747263805426,
+    "rank": "A"
+  },
+  "tests/test_semantic_fragment_sanitize.py": {
+    "mi": 73.50184441469528,
+    "rank": "A"
+  },
+  "tests/test_semantic_id_remap_root.py": {
+    "mi": 75.87372477165134,
+    "rank": "A"
+  },
+  "tests/test_semantic_similarity.py": {
+    "mi": 58.35749177147715,
+    "rank": "A"
+  },
+  "tests/test_serve.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_serve_http.py": {
+    "mi": 31.66038154792782,
+    "rank": "A"
+  },
+  "tests/test_settings_merge.py": {
+    "mi": 55.465617398588925,
+    "rank": "A"
+  },
+  "tests/test_skillgen.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_skillgen_input_path_injection.py": {
+    "mi": 52.39335366258958,
+    "rank": "A"
+  },
+  "tests/test_skill_auto_refresh.py": {
+    "mi": 34.78216827772288,
+    "rank": "A"
+  },
+  "tests/test_skill_semantic_all_cached.py": {
+    "mi": 61.89496552614754,
+    "rank": "A"
+  },
+  "tests/test_skill_version_warning.py": {
+    "mi": 74.96846573326934,
+    "rank": "A"
+  },
+  "tests/test_solidity_extractor.py": {
+    "mi": 54.95124658494527,
+    "rank": "A"
+  },
+  "tests/test_sourceless_call_targets.py": {
+    "mi": 48.98893880308843,
+    "rank": "A"
+  },
+  "tests/test_source_key_memoization.py": {
+    "mi": 70.73616909519195,
+    "rank": "A"
+  },
+  "tests/test_src_layout_import_resolution.py": {
+    "mi": 36.758374123079776,
+    "rank": "A"
+  },
+  "tests/test_stale_prune.py": {
+    "mi": 66.06150197406302,
+    "rank": "A"
+  },
+  "tests/test_stat_index_husk.py": {
+    "mi": 72.82298070293042,
+    "rank": "A"
+  },
+  "tests/test_stat_index_multi_root.py": {
+    "mi": 66.89274718091802,
+    "rank": "A"
+  },
+  "tests/test_stat_index_portability.py": {
+    "mi": 49.62062538445934,
+    "rank": "A"
+  },
+  "tests/test_svelte_extraction.py": {
+    "mi": 49.573895279266516,
+    "rank": "A"
+  },
+  "tests/test_swift_builtin_noise.py": {
+    "mi": 68.08478028609996,
+    "rank": "A"
+  },
+  "tests/test_swift_computed_properties.py": {
+    "mi": 71.70780080478607,
+    "rank": "A"
+  },
+  "tests/test_swift_cross_file_calls.py": {
+    "mi": 37.33121836983111,
+    "rank": "A"
+  },
+  "tests/test_swift_import_resolution.py": {
+    "mi": 67.76314939734256,
+    "rank": "A"
+  },
+  "tests/test_swift_protocol_dispatch.py": {
+    "mi": 54.93240736742364,
+    "rank": "A"
+  },
+  "tests/test_swift_protocol_requirements.py": {
+    "mi": 62.92028311882842,
+    "rank": "A"
+  },
+  "tests/test_symbol_resolution.py": {
+    "mi": 23.56533580080795,
+    "rank": "A"
+  },
+  "tests/test_terraform.py": {
+    "mi": 30.689280687636614,
+    "rank": "A"
+  },
+  "tests/test_terraform_modules.py": {
+    "mi": 25.69533559111912,
+    "rank": "A"
+  },
+  "tests/test_trailing_newline_not_a_syntax_error.py": {
+    "mi": 70.84890487364287,
+    "rank": "A"
+  },
+  "tests/test_transcribe.py": {
+    "mi": 55.794754182520286,
+    "rank": "A"
+  },
+  "tests/test_tree_html.py": {
+    "mi": 62.167574255785055,
+    "rank": "A"
+  },
+  "tests/test_ts_abstract_methods.py": {
+    "mi": 70.3234307506058,
+    "rank": "A"
+  },
+  "tests/test_ts_decorators.py": {
+    "mi": 62.65459531016367,
+    "rank": "A"
+  },
+  "tests/test_ts_generators.py": {
+    "mi": 70.22335074390776,
+    "rank": "A"
+  },
+  "tests/test_ts_import_require.py": {
+    "mi": 68.16754605777032,
+    "rank": "A"
+  },
+  "tests/test_ts_import_type_arguments.py": {
+    "mi": 44.79431622897499,
+    "rank": "A"
+  },
+  "tests/test_ts_inheritance.py": {
+    "mi": 62.451911197791475,
+    "rank": "A"
+  },
+  "tests/test_ts_namespace.py": {
+    "mi": 66.90135868233706,
+    "rank": "A"
+  },
+  "tests/test_ts_new_expression_calls.py": {
+    "mi": 59.4294476026239,
+    "rank": "A"
+  },
+  "tests/test_ts_parse_warning.py": {
+    "mi": 70.21886490864499,
+    "rank": "A"
+  },
+  "tests/test_ts_receiver_member_calls.py": {
+    "mi": 55.773155097828926,
+    "rank": "A"
+  },
+  "tests/test_typescript_enum_members.py": {
+    "mi": 60.16093495517022,
+    "rank": "A"
+  },
+  "tests/test_typescript_module_extensions.py": {
+    "mi": 67.94694271540499,
+    "rank": "A"
+  },
+  "tests/test_type_only_import_cycles.py": {
+    "mi": 66.92026645925678,
+    "rank": "A"
+  },
+  "tests/test_uninstall_scope.py": {
+    "mi": 58.8842395788957,
+    "rank": "A"
+  },
+  "tests/test_uninstall_symlink.py": {
+    "mi": 72.59796593239045,
+    "rank": "A"
+  },
+  "tests/test_unmapped_at_alias_resolution.py": {
+    "mi": 41.138144590630674,
+    "rank": "A"
+  },
+  "tests/test_unverified_semantic_shrink.py": {
+    "mi": 39.89267768071806,
+    "rank": "A"
+  },
+  "tests/test_validate.py": {
+    "mi": 57.422800373056155,
+    "rank": "A"
+  },
+  "tests/test_vbnet_extractor.py": {
+    "mi": 54.128671513319695,
+    "rank": "A"
+  },
+  "tests/test_vue_extraction.py": {
+    "mi": 50.37013112902244,
+    "rank": "A"
+  },
+  "tests/test_walk_python_tree_iterative.py": {
+    "mi": 76.94205984647613,
+    "rank": "A"
+  },
+  "tests/test_watch.py": {
+    "mi": 0.0,
+    "rank": "C"
+  },
+  "tests/test_watch_manifest_location.py": {
+    "mi": 58.566257871168744,
+    "rank": "A"
+  },
+  "tests/test_wheel_packaging.py": {
+    "mi": 70.02291550622786,
+    "rank": "A"
+  },
+  "tests/test_wiki.py": {
+    "mi": 38.06297204376207,
+    "rank": "A"
+  },
+  "tests/test_wiki_link_filename_parity.py": {
+    "mi": 65.72048986250152,
+    "rank": "A"
+  },
+  "tests/test_wiki_truncation_indicator.py": {
+    "mi": 77.9110181448972,
+    "rank": "A"
+  },
+  "tests/test_word_count_cache.py": {
+    "mi": 65.13164768928506,
+    "rank": "A"
+  },
+  "tests/test_zero_node_no_cache.py": {
+    "mi": 78.9532751679278,
+    "rank": "A"
+  },
+  "tests/__init__.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "tests/fixtures/sample.py": {
+    "mi": 100.0,
+    "rank": "A"
+  },
+  "tests/fixtures/sample_calls.py": {
+    "mi": 68.454013396497,
+    "rank": "A"
+  }
+}
