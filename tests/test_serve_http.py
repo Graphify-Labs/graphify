@@ -251,6 +251,13 @@ def test_max_server_contexts_parsing(monkeypatch, value, expected):
     assert serve_mod._max_server_contexts() == expected
 
 
+def _projects_with_graphs(tmp_path, count: int) -> list[str]:
+    return [
+        _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
+        for i in range(count)
+    ]
+
+
 def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypatch):
     """Project contexts hit, promote, and evict without evicting the default."""
     monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", "2")
@@ -263,10 +270,7 @@ def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypat
         return original_load(path)
 
     monkeypatch.setattr(serve_mod, "_load_graph", counting_load)
-    projects = [
-        _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
-        for i in range(3)
-    ]
+    projects = _projects_with_graphs(tmp_path, count=3)
     default_graph = _graph_file(tmp_path)
     app = serve_mod._build_http_app(default_graph, json_response=True)
     with _client(app) as client:
