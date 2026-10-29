@@ -1091,13 +1091,23 @@ print(output)
 
 Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
 
-After writing the answer, save it back into the graph so it improves future queries:
+After writing the answer, save it back into the graph so it improves future queries. Write the question, answer, and cited node labels to temp files with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'`, so no escaping is needed even if the text contains quotes, backticks, or `$(...)` - then pass the files to `save-result`:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+cat > graphify-out/.sr_question <<'GRAPHIFY_EOF'
+QUESTION
+GRAPHIFY_EOF
+cat > graphify-out/.sr_answer <<'GRAPHIFY_EOF'
+ANSWER
+GRAPHIFY_EOF
+cat > graphify-out/.sr_nodes <<'GRAPHIFY_EOF'
+NODE1
+NODE2
+GRAPHIFY_EOF
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.sr_question --answer-file graphify-out/.sr_answer --type query --nodes-file graphify-out/.sr_nodes
 ```
 
-Replace `QUESTION` with the question, `ANSWER` with your full answer text, `SOURCE_NODES` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+Replace `QUESTION` with the question, `ANSWER` with your full answer text, and the `NODE1`/`NODE2` lines with one node label per line (one line per node you cited - add or remove lines as needed). This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
 ---
 
@@ -1166,10 +1176,20 @@ except nx.NodeNotFound as e:
 
 Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back. Write the answer (and the two node names, in case either contains shell metacharacters) to temp files with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'` - then pass the files to `save-result`:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+cat > graphify-out/.sr_question <<'GRAPHIFY_EOF'
+Path from NODE_A to NODE_B
+GRAPHIFY_EOF
+cat > graphify-out/.sr_answer <<'GRAPHIFY_EOF'
+ANSWER
+GRAPHIFY_EOF
+cat > graphify-out/.sr_nodes <<'GRAPHIFY_EOF'
+NODE_A
+NODE_B
+GRAPHIFY_EOF
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.sr_question --answer-file graphify-out/.sr_answer --type path_query --nodes-file graphify-out/.sr_nodes
 ```
 
 ---
@@ -1232,37 +1252,35 @@ for neighbor in G.neighbors(nid):
 
 Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back. Write the answer to a temp file with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'` - then pass the files to `save-result`:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+cat > graphify-out/.sr_question <<'GRAPHIFY_EOF'
+Explain NODE_NAME
+GRAPHIFY_EOF
+cat > graphify-out/.sr_answer <<'GRAPHIFY_EOF'
+ANSWER
+GRAPHIFY_EOF
+cat > graphify-out/.sr_nodes <<'GRAPHIFY_EOF'
+NODE_NAME
+GRAPHIFY_EOF
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.sr_question --answer-file graphify-out/.sr_answer --type explain --nodes-file graphify-out/.sr_nodes
 ```
 
 ---
 
 ## For /graphify add
 
-Fetch a URL and add it to the corpus, then update the graph.
+Fetch a URL and add it to the corpus, then update the graph. Write the URL and optional author/contributor as a JSON payload file with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'`, so no shell escaping is needed for any field - then pass the file to `graphify add`:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import sys
-from graphify.ingest import ingest
-from pathlib import Path
-
-try:
-    out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')
-    print(f'Saved to {out}')
-except ValueError as e:
-    print(f'error: {e}', file=sys.stderr)
-    sys.exit(1)
-except RuntimeError as e:
-    print(f'error: {e}', file=sys.stderr)
-    sys.exit(1)
-"
+cat > graphify-out/.add_payload.json <<'GRAPHIFY_EOF'
+{"url": "URL", "author": "AUTHOR", "contributor": "CONTRIBUTOR"}
+GRAPHIFY_EOF
+$(cat graphify-out/.graphify_python) -m graphify add --from-file graphify-out/.add_payload.json
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
+Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided (omit the `"author"` key entirely if not provided), `CONTRIBUTOR` likewise (omit if not provided). This one line is parsed as JSON, not executed by the shell, so only JSON's own escaping rules apply: escape a literal `"` as `\"` and a literal `\` as `\\` inside any field. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
 
 Supported URL types (auto-detected):
 - Twitter/X → fetched via oEmbed, saved as `.md` with tweet text and author

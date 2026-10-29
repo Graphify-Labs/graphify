@@ -1344,6 +1344,73 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+_SKILL_INJECTION_FIX_LINES = frozenset({
+    "out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')",
+    "print(f'Saved to {out}')",
+    "print(f'error: {e}', file=sys.stderr)",
+    "sys.exit(1)",
+    "import sys",
+    "from graphify.ingest import ingest",
+    "try:",
+    "except ValueError as e:",
+    "except RuntimeError as e:",
+    "Fetch a URL and add it to the corpus, then update the graph.",
+    "After writing the answer, save it back into the graph so it improves future queries:",
+    "After writing the explanation, save it back:",
+    'Replace `QUESTION` with the question, `ANSWER` with your full answer text, `SOURCE_NODES` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME',
+    "Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.",
+    "Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.",
+    "After writing the answer, save it back into the graph so it improves future queries. Write the question, answer, and cited node labels to temp files with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'`, so no escaping is needed even if the text contains quotes, backticks, or `$(...)` - then pass the files to `save-result`:",
+    "cat > graphify-out/.sr_question <<'GRAPHIFY_EOF'",
+    "cat > graphify-out/.sr_answer <<'GRAPHIFY_EOF'",
+    "cat > graphify-out/.sr_nodes <<'GRAPHIFY_EOF'",
+    "GRAPHIFY_EOF",
+    "QUESTION",
+    "ANSWER",
+    "NODE1",
+    "NODE2",
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.sr_question --answer-file graphify-out/.sr_answer --type query --nodes-file graphify-out/.sr_nodes',
+    'Replace `QUESTION` with the question, `ANSWER` with your full answer text, and the `NODE1`/`NODE2` lines with one node label per line (one line per node you cited - add or remove lines as needed). This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.',
+    "Replace the `NODE1`/`NODE2` lines with one node label per line (one line per node you cited - add or remove lines as needed).",
+    "After writing the explanation, save it back. Write the answer (and the two node names, in case either contains shell metacharacters) to temp files with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'` - then pass the files to `save-result`:",
+    "Path from NODE_A to NODE_B",
+    "NODE_A",
+    "NODE_B",
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.sr_question --answer-file graphify-out/.sr_answer --type path_query --nodes-file graphify-out/.sr_nodes',
+    "After writing the explanation, save it back. Write the answer to a temp file with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'` - then pass the files to `save-result`:",
+    "Explain NODE_NAME",
+    "NODE_NAME",
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.sr_question --answer-file graphify-out/.sr_answer --type explain --nodes-file graphify-out/.sr_nodes',
+    "Fetch a URL and add it to the corpus, then update the graph. Write the URL and optional author/contributor as a JSON payload file with a quoted heredoc - bash performs zero expansion inside `<<'GRAPHIFY_EOF'`, so no shell escaping is needed for any field - then pass the file to `graphify add`:",
+    "cat > graphify-out/.add_payload.json <<'GRAPHIFY_EOF'",
+    '{"url": "URL", "author": "AUTHOR", "contributor": "CONTRIBUTOR"}',
+    '$(cat graphify-out/.graphify_python) -m graphify add --from-file graphify-out/.add_payload.json',
+    'Replace `URL` with the actual URL, `AUTHOR` with the user\'s name if provided (omit the `"author"` key entirely if not provided), `CONTRIBUTOR` likewise (omit if not provided). This one line is parsed as JSON, not executed by the shell, so only JSON\'s own escaping rules apply: escape a literal `"` as `\\"` and a literal `\\` as `\\\\` inside any field. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.',
+    'Replace `URL` with the actual URL, `AUTHOR` with the user\'s name if provided (omit the `"author"` key entirely if not provided), `CONTRIBUTOR` likewise (omit if not provided). This one line is parsed as JSON, not executed by the shell, so only JSON\'s own escaping rules apply: escape a literal `"` as `\\"` and a literal `\\` as `\\\\` inside any field. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.',
+})
+
+
+def _is_skill_injection_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin save-result/add injection fix (#3640).
+
+    The aider/devin monoliths have no disk-write tool and built `save-result`
+    and `graphify add` from free text (a verbatim question, an LLM-generated
+    answer, a URL/author/contributor) substituted directly into a
+    double-quoted shell argument or a Python string literal inside `-c "..."`.
+    Embedded `$(...)`/backticks or a stray quote in that free text let it run
+    as shell or Python rather than being treated as data. The fix writes the
+    free text to disk first via a single-quoted heredoc (`<<'GRAPHIFY_EOF'`,
+    which bash does not expand at all) and dispatches through `save-result
+    --question-file/--answer-file/--nodes-file` and `add --from-file <json>`,
+    neither of which has an injection surface. Both the removed
+    inline-substitution lines and the added file-based ones match here.
+    """
+    return line.strip() in _SKILL_INJECTION_FIX_LINES
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1373,6 +1440,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_skill_injection_fix_line,
 )
 
 
