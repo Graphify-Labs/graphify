@@ -1870,6 +1870,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             incoming_rel = attrs.get("relation")
             reverse = existing.get("_src") == tgt and existing.get("_tgt") == src
             if reverse and existing_rel == incoming_rel:
+                # nx.Graph can store only one edge for a node pair.  Preserve the
+                # existence of a dropped reverse *runtime* file import so cycle
+                # analysis can reconstruct two-file cycles without changing the
+                # persisted graph to a directed/multigraph representation (#4839).
+                if (
+                    incoming_rel in ("imports_from", "re_exports")
+                    and not attrs.get("type_only")
+                    and not attrs.get("deferred")
+                ):
+                    existing["reverse_runtime_import"] = True
                 continue
             # Different relations in opposite directions are two facts that only
             # share a pair because the graph is undirected. A type's

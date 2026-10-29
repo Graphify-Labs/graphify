@@ -755,14 +755,14 @@ def find_import_cycles(
         if rel not in ("imports_from", "re_exports"):
             continue
 
-        # Deferred `import(...)` edges are real dependencies but do not form a
-        # hard file-level cycle, so they are excluded from cycle detection (#1241).
-        if data.get("deferred"):
-            continue
-        # Type-only imports/re-exports (`import type` / `export type ... from`)
-        # are erased at compile time - a cycle that closes through one cannot
-        # exist at runtime (#3123). The edge itself stays in the graph.
-        if data.get("type_only"):
+        # Deferred `import(...)` edges and type-only imports/re-exports are real
+        # dependencies but do not form hard runtime cycles (#1241, #3123).
+        # An undirected build may nevertheless have collapsed a runtime import in
+        # the opposite direction into this same edge; #4839 preserves that fact as
+        # `reverse_runtime_import`, so do not discard the record before restoring it.
+        primary_runtime = not data.get("deferred") and not data.get("type_only")
+        reverse_runtime = bool(data.get("reverse_runtime_import"))
+        if not primary_runtime and not reverse_runtime:
             continue
 
         src_file_attr = data.get("source_file", "")
@@ -787,7 +787,10 @@ def find_import_cycles(
         if not tgt_file:
             continue
 
-        file_graph.add_edge(src_file_attr, tgt_file)
+        if primary_runtime:
+            file_graph.add_edge(src_file_attr, tgt_file)
+        if reverse_runtime:
+            file_graph.add_edge(tgt_file, src_file_attr)
 
     if not file_graph.edges():
         return []

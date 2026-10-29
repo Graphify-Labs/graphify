@@ -103,9 +103,10 @@ def test_plain_imports_are_untouched(tmp_path):
 
 def _cycles(tmp_path, files, directed=True, raw=False):
     r = _extract(tmp_path, files)
-    # directed=True mirrors a --directed build; in the default undirected
-    # graph two module edges between one file pair collapse to a single
-    # stored edge, so a synthetic 2-cycle needs distinct endpoints anyway.
+    # In the default undirected graph two module edges between one file pair
+    # collapse to a single stored edge. build_from_json preserves a marker when
+    # the dropped reverse leg is a runtime import so cycle analysis can restore
+    # that direction (#4839).
     # raw=True takes the `update --no-cluster` route: edges are deduplicated
     # before the graph is built from that graph.json (`cluster-only`).
     edges = dedupe_edges(r["edges"]) if raw else r["edges"]
@@ -125,11 +126,12 @@ def test_the_reporters_two_file_cycle_is_gone(tmp_path):
     assert cycles == [], cycles
 
 
-def test_a_real_runtime_cycle_is_still_reported(tmp_path):
+@pytest.mark.parametrize("directed", [True, False])
+def test_a_real_runtime_cycle_is_still_reported(tmp_path, directed):
     cycles = _cycles(tmp_path, {
         "a.ts": 'import { b } from "./b.js";\nexport const a = 1;\n',
         "b.ts": 'import { a } from "./a.js";\nexport const b = 2;\n',
-    })
+    }, directed=directed)
     assert len(cycles) == 1
     assert sorted(Path(f).name for f in cycles[0]["cycle"]) == ["a.ts", "b.ts"]
 
