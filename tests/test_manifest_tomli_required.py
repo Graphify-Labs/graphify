@@ -29,8 +29,9 @@ def test_load_toml_module_raises_when_tomli_missing(monkeypatch):
     monkeypatch.setattr(
         builtins, "__import__", _make_missing_toml_importer(builtins.__import__),
     )
-    with pytest.raises(ImportError, match="tomli"):
+    with pytest.raises(ImportError) as exc_info:
         _load_toml_module()
+    assert str(exc_info.value) == _TOMLI_REQUIRED
 
 
 def test_parse_pyproject_surfaces_missing_parser(monkeypatch):
