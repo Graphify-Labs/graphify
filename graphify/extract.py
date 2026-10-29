@@ -9595,7 +9595,10 @@ def extract(
     for _input_path in paths:
         try:
             if _input_path.is_absolute():
-                _rel_input = _input_path.relative_to(root).as_posix()
+                try:
+                    _rel_input = _input_path.relative_to(root).as_posix()
+                except ValueError:
+                    _rel_input = _input_path.resolve().relative_to(root).as_posix()
             else:
                 _raw_input = _input_path.as_posix()
                 if _raw_input in _generated_cfg:

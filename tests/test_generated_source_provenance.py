@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from graphify.extract import extract
-from graphify.rcfile import load_graphifyrc
+from graphify.rcfile import activate_language_overrides, generated_sources_for, load_graphifyrc
 
 
 def _write_project(root: Path) -> tuple[Path, Path, Path]:
@@ -55,6 +55,48 @@ def test_graphifyrc_rejects_unsafe_generated_paths(tmp_path, line):
     (tmp_path / ".graphifyrc").write_text(line, encoding="utf-8")
     with pytest.raises(ValueError):
         load_graphifyrc(tmp_path)
+
+
+def test_generated_artifact_absolute_paths_under_symlinked_root(tmp_path):
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    _write_project(real_root)
+    linked_root = tmp_path / "linked"
+    try:
+        linked_root.symlink_to(real_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    result = extract(
+        [
+            linked_root / "src" / "a.js",
+            linked_root / "src" / "b.js",
+            linked_root / "deploy" / "bundle.js",
+        ],
+        root=linked_root,
+        cache_root=linked_root,
+        parallel=False,
+    )
+
+    generated_nodes = [
+        node for node in result["nodes"]
+        if node.get("source_file") == "deploy/bundle.js"
+    ]
+    assert [node.get("label") for node in generated_nodes] == ["bundle.js"]
+    assert generated_nodes[0]["generated"] is True
+
+
+def test_generated_sources_for_accepts_cwd_relative_path(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    _write_project(root)
+    activate_language_overrides(root)
+    try:
+        monkeypatch.chdir(tmp_path)
+        candidate = Path(root.name) / "deploy" / "bundle.js"
+        assert generated_sources_for(candidate) == ("src/a.js", "src/b.js")
+    finally:
+        activate_language_overrides(tmp_path)
 
 
 def test_generated_artifact_keeps_file_node_but_not_copied_symbols(tmp_path):

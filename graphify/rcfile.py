@@ -275,12 +275,18 @@ def generated_sources_for(path: Path | str) -> tuple[str, ...] | None:
         else:
             # Manifest/cache callers may pass either repo-relative or cwd-relative
             # paths. Prefer the declaration spelling when it matches exactly;
-            # otherwise resolve against the active scan root.
+            # otherwise try the caller's cwd first, then the active scan root.
             raw = candidate.as_posix()
             if raw in mapping:
-                rel = raw
-            else:
-                rel = (root / candidate).resolve().relative_to(root).as_posix()
+                return mapping[raw]
+            for candidate_path in (candidate, root / candidate):
+                try:
+                    rel = candidate_path.resolve().relative_to(root).as_posix()
+                except (ValueError, OSError, RuntimeError):
+                    continue
+                if rel in mapping:
+                    return mapping[rel]
+            return None
     except (ValueError, OSError, RuntimeError):
         return None
     return mapping.get(rel)
