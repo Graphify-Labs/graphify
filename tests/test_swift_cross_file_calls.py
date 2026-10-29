@@ -273,6 +273,45 @@ def test_extension_does_not_merge_into_same_named_foreign_type(tmp_path: Path):
             assert e.get("target") not in swift_nids, "the TS Store came to own a Swift node"
 
 
+def test_extension_of_builtin_type_does_not_absorb_other_references(tmp_path: Path):
+    # #4574: `private extension String` in one file is left untouched by the
+    # merge (String has no corpus declaration to fold into), but it still
+    # carries the label String. A field typed String anywhere else in the
+    # corpus must not bind its reference onto that one file's extension.
+    files = [
+        _write(tmp_path / "src/Helpers.swift", (
+            "private extension String {\n"
+            "    var trimmed: String { trimmingCharacters(in: .whitespaces) }\n"
+            "}\n"
+        )),
+        _write(tmp_path / "src/Models.swift", "struct Person {\n    let name: String\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=tmp_path / "src", parallel=False)
+
+    extension_nid = next(n["id"] for n in result["nodes"]
+                          if n.get("label") == "String" and n.get("source_file"))
+    for e in result["edges"]:
+        if e.get("relation") == "references" and _label(result, e["source"]) == "Person":
+            assert e["target"] != extension_nid, "Person.name bound onto the extension, not left unresolved"
+
+
+def test_extension_of_in_corpus_type_still_resolves_references(tmp_path: Path):
+    # Control for #4574: a field typed as something an extension genuinely
+    # extends, where that type IS defined in the corpus, must still resolve
+    # normally — the new guard must not block the ordinary merged case.
+    files = [
+        _write(tmp_path / "src/Widget.swift", "struct Widget {\n    var id: Int\n}\n"),
+        _write(tmp_path / "src/Helpers.swift", "extension Widget {\n    func reset() {}\n}\n"),
+        _write(tmp_path / "src/Models.swift", "struct Person {\n    let gadget: Widget\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=tmp_path / "src", parallel=False)
+
+    widget_defs = [n["id"] for n in result["nodes"] if n.get("label") == "Widget"]
+    assert len(widget_defs) == 1, f"extension of an in corpus type must still fold, got {widget_defs}"
+    edges = _edge_labels(result, relations=("references",))
+    assert ("Person", "references", "Widget") in edges
+
+
 # ── #2561: attribute-argument and factory-returned receiver types ─────────────
 
 def test_environment_attribute_typed_receiver_resolves(tmp_path: Path):

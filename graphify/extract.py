@@ -4046,6 +4046,15 @@ def _rewire_unique_stub_nodes(
         if not key:
             continue
         if node.get("source_file"):
+            if (node.get("metadata") or {}).get("swift_extension"):
+                # #4574: a node still marked this way survived
+                # `_merge_swift_extensions` untouched, which only happens for an
+                # extension of a type outside the corpus or an ambiguous label
+                # the merge refused to guess at -- never a genuine sole
+                # declaration of its label. Treating it as the real definition
+                # here let a bare reference to a builtin name like `String`
+                # bind onto whichever file happened to extend it.
+                continue
             if _is_type_like_definition(node):
                 # Match stubs case-SENSITIVELY: a `Path` reference must not rewire to a
                 # `PATH` env var (#1581). Fold only for genuinely case-insensitive
