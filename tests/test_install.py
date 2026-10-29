@@ -1321,7 +1321,9 @@ def test_gemini_uninstall_removes_hook(tmp_path):
 def test_gemini_uninstall_noop_if_not_installed(tmp_path):
     from graphify.__main__ import gemini_uninstall
 
-    gemini_uninstall(tmp_path)  # should not raise
+    gemini_uninstall(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_amp_user_install_lands_in_config_agents(tmp_path, monkeypatch):
