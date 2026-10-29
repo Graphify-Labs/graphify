@@ -194,7 +194,8 @@ def test_relative_pdf_cache_is_scoped_to_its_corpus(tmp_path, monkeypatch):
         root.mkdir()
         pdf = root / "paper.pdf"
         _make_pdf(pdf, [text], compress=False)
-        os.utime(pdf, ns=(1_700_000_000_000_000_000,) * 2)
+        timestamp = 1_700_000_000_000_000_000
+        os.utime(pdf, ns=(timestamp, timestamp))
     assert (roots[0] / "paper.pdf").stat().st_size == (roots[1] / "paper.pdf").stat().st_size
 
     monkeypatch.chdir(roots[0])
