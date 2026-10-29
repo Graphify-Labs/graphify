@@ -11,6 +11,7 @@ from graphify.extractors.base import (
     _read_source_bytes,
     _read_text,
 )
+from graphify.extractors.resolution import _go_import_path_for_file
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -167,12 +168,19 @@ def _go_strip_generic_args(type_text: str) -> str:
 def _go_single_type_name(node, source: bytes) -> str | None:
     """The one declared type a Go type expression names, or None.
 
-    Only `Greeter` and `*Greeter` qualify. A slice, map or channel element is not the
-    receiver of `x.M()`, and a `qualified_type` (`pkg.Greeter`) names a type no bare
-    local name can stand for.
+    `Greeter`, `*Greeter`, `pkg.Greeter` and `*pkg.Greeter` qualify. A slice, map or
+    channel element is not the receiver of `x.M()`. A qualified type keeps its package
+    qualifier as written (`pkg.Greeter`): no bare local name can stand for it, so the
+    resolver binds it only through the file's import of `pkg`.
     """
     if node is not None and node.type == "pointer_type":
         node = next((c for c in node.children if c.is_named), None)
+    if node is not None and node.type == "qualified_type":
+        package = node.child_by_field_name("package")
+        name_node = node.child_by_field_name("name")
+        if package is None or name_node is None:
+            return None
+        return f"{_read_text(package, source)}.{_read_text(name_node, source)}"
     if node is None or node.type != "type_identifier":
         return None
     name = _read_text(node, source)
@@ -802,4 +810,8 @@ def extract_go(path: Path) -> dict:
         "raw_calls": raw_calls,
         "go_imports": dict(go_imported_pkgs),
         "go_type_table": {"path": str_path, "table": type_table},
+        # This file's own import path, from its go.mod. A `pkg.T` receiver resolves only
+        # to a `T` whose file reports the path the caller imports `pkg` from; read here
+        # because the path is still the one the file was opened by.
+        "go_package_path": _go_import_path_for_file(path.absolute(), path.absolute().parent),
     }
