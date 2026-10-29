@@ -1692,8 +1692,15 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     )
     raw_content = _anthropic_response_text(resp.content)
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = (resp.usage.input_tokens or 0) if resp.usage else 0
-    result["output_tokens"] = (resp.usage.output_tokens or 0) if resp.usage else 0
+    # Anthropic reports the cached system prompt in its own cache_* fields, not
+    # in input_tokens; add them back so cost.json still counts the whole prompt.
+    usage = resp.usage
+    result["input_tokens"] = (
+        (usage.input_tokens or 0)
+        + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    ) if usage else 0
+    result["output_tokens"] = (usage.output_tokens or 0) if usage else 0
     result["model"] = model
     # Normalise Anthropic's `stop_reason` to the OpenAI-compat `finish_reason`
     # vocabulary so the adaptive-retry layer doesn't have to know which

@@ -948,7 +948,7 @@ def test_openai_compat_forces_non_streaming_response(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _install_capturing_anthropic(monkeypatch):
+def _install_capturing_anthropic(monkeypatch, usage=None):
     """Inject a stub `anthropic` module that records each messages.create() call."""
     import sys
     import types
@@ -962,7 +962,7 @@ def _install_capturing_anthropic(monkeypatch):
             return SimpleNamespace(
                 content=[SimpleNamespace(
                     type="text", text='{"nodes":[{"id":"x"}],"edges":[],"hyperedges":[]}')],
-                usage=SimpleNamespace(input_tokens=100, output_tokens=100),
+                usage=usage or SimpleNamespace(input_tokens=100, output_tokens=100),
                 stop_reason="end_turn",
             )
 
@@ -993,6 +993,20 @@ def test_claude_system_block_same_across_files(monkeypatch):
     llm._call_claude("sk-ant-test", "claude-sonnet-4-6", "second file")
 
     assert calls[0]["system"] == calls[1]["system"]
+
+
+def test_claude_input_tokens_include_cached_prompt(monkeypatch):
+    """Anthropic reports cached prompt tokens outside input_tokens; cost.json needs the total."""
+    from types import SimpleNamespace
+
+    _install_capturing_anthropic(monkeypatch, usage=SimpleNamespace(
+        input_tokens=24, output_tokens=7,
+        cache_creation_input_tokens=1505, cache_read_input_tokens=3010,
+    ))
+
+    result = llm._call_claude("sk-ant-test", "claude-sonnet-4-6", "u")
+
+    assert result["input_tokens"] == 24 + 1505 + 3010
 
 
 # ---------------------------------------------------------------------------
