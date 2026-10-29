@@ -118,10 +118,7 @@ def test_non_builtin_cross_file_call_still_resolves(tmp_path):
         "}\n"
     )
     result = _extract_go(tmp_path)
-    target_ids = {
-        n["id"] for n in _nodes_by_file(result, "engine.go")
-        if (n.get("label") or "").strip(".()") == "process"
-    }
+    target_ids = _node_ids_by_label(result, "engine.go", "process")
     runner_ids = {n["id"] for n in _nodes_by_file(result, "runner.go")}
     resolved = [
         e for e in result["edges"]
