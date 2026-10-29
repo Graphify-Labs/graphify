@@ -617,9 +617,13 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     Cross-reference to a defining node: the structural entity and its edges survive;
     foreign-file attributes stay isolated, so no collision warning is needed. Same
     file, different labels: the extractor emitted two labels for one entity and one is
-    discarded — note it. Two files that both encode this ID: they are distinct entities
-    and one is genuinely lost — warn, and point at the extraction split that keeps them
-    apart (#1504).
+    discarded — note it. Two files that mint one ID: the loser is merged into the
+    survivor, so its own label and attributes are dropped and its edges stay on the
+    kept node (the ids are equal). What the warning says about that depends on the ID:
+    derived from a file path (``_defines_id`` for either node), the loser is either a
+    reference to the kept file or a separate document, and the text says both, with the
+    extraction split that keeps documents apart (#1504); derived from neither path,
+    the ID most likely names one entity described in both files (#4281).
     """
     # A module/namespace node (`import Foundation`) is one shared entity that every
     # importing file legitimately mints — the same rule the extractors apply when
@@ -649,15 +653,27 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
         elif _defines_id(survivor) and not _defines_id(loser):
             continue  # the loser only references the entity the survivor defines
         else:
-            print(
-                f"[graphify] WARNING: node '{nid}' is minted by two different files — "
-                f"keeping '{keep_label}' from '{keep_file}', dropping '{lose_label}' "
-                f"from '{lose_file}'. An ID is derived from the source path plus the "
-                f"entity name, so this one does not identify a single entity and the "
-                f"dropped node is lost. To keep them distinct, run 'graphify extract' "
-                f"per subfolder and merge with 'graphify merge-graphs'.",
-                file=sys.stderr,
+            head = (
+                f"[graphify] WARNING: node '{nid}' is minted by two different files: "
+                f"kept '{keep_label}' from '{keep_file}', merged '{lose_label}' "
+                f"from '{lose_file}' into it. "
             )
+            if _defines_id(survivor) or _defines_id(loser):
+                tail = (
+                    "The id comes from a file path, so the merged node is either a "
+                    "reference to the kept file (then the merge is right) or a separate "
+                    "document (then its own label and attributes are lost; its edges "
+                    "stay on the kept node). To keep separate documents apart, run "
+                    "'graphify extract' per subfolder and merge with "
+                    "'graphify merge-graphs'."
+                )
+            else:
+                tail = (
+                    "The id comes from neither path, so this is probably one entity "
+                    "described in both files. The merged node's own label and "
+                    "attributes are not kept; its edges stay on the kept node."
+                )
+            print(head + tail, file=sys.stderr)
 
 
 def _full_stem(source_file: str) -> str:
