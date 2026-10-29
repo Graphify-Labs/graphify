@@ -52,6 +52,24 @@ def _norm(label: str | None) -> str:
     return "".join(out)
 
 
+def _strip_trailing_qualifier(label: str | None) -> str:
+    """Drop one trailing ``(...)`` qualifier from a concept label (#3568).
+
+    A concept re-mentioned from a different source often keeps its own name
+    but grows a parenthetical gloss describing where it was mentioned from
+    (``"Registry Resolver"`` vs ``"Registry Resolver (port-registry-resolution
+    doc concept)"``) — the LLM node-ID rule derives the ID from the label, so
+    that gloss forks a second ID for a concept that already has one. Only the
+    trailing group is removed, and only when something is left afterward, so
+    a label that is entirely parenthetical is returned unchanged rather than
+    collapsing to an empty string.
+    """
+    if not isinstance(label, str):
+        return "" if label is None else str(label)
+    stripped = re.sub(r"\s*\([^()]*\)\s*$", "", label)
+    return stripped if stripped.strip() else label
+
+
 def _entropy(label: str) -> float:
     """Shannon entropy in bits/char of the normalised label."""
     s = _norm(label)
@@ -1153,7 +1171,16 @@ def deduplicate_entities(
         # distinct same-named symbols are never merged by string similarity (#1205).
         if _is_code(node):
             continue
-        key = _norm(node.get("label", node.get("id", "")))
+        label = node.get("label", node.get("id", ""))
+        # #3568: a concept re-mentioned from another source keeps its own name
+        # but can grow a trailing parenthetical gloss, which must not fork a
+        # second normalization key for the same concept. Only `concept` nodes
+        # get this treatment — the cross-file union below already restricts
+        # who actually merges on a shared key, so widening the key here only
+        # widens who is ELIGIBLE, not who merges.
+        if node.get("file_type") == "concept":
+            label = _strip_trailing_qualifier(label)
+        key = _norm(label)
         if key:
             norm_to_nodes[key].append(node)
 
