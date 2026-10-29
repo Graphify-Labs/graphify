@@ -120,10 +120,7 @@ def test_non_builtin_cross_file_call_still_resolves(tmp_path):
     result = _extract_go(tmp_path)
     target_ids = _node_ids_by_label(result, "engine.go", "process")
     runner_ids = {n["id"] for n in _nodes_by_file(result, "runner.go")}
-    resolved = [
-        e for e in result["edges"]
-        if e.get("target") in target_ids and e.get("source") in runner_ids
-    ]
+    resolved = _edges_between(result, runner_ids, target_ids)
     assert resolved, "a genuine cross-file method call must still resolve"
 
 
