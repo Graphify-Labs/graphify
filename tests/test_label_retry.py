@@ -142,8 +142,9 @@ def test_a_batch_that_never_parses_still_raises(monkeypatch):
         llm_mod, "_call_llm", lambda prompt, **_kwargs: "{not json at all",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         llm_mod._label_batch_with_retry(
             [1, 2, 3], ["Community 1: a", "Community 2: b", "Community 3: c"],
             backend="gemini", model=None,
         )
+    assert "not parseable JSON" in str(exc_info.value)
