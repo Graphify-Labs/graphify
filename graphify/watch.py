@@ -2057,6 +2057,12 @@ def _rebuild_code(
                 f"[graphify watch] {len(_unclassified)} file(s) not classified "
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
+        # #2942: when that count is a large SHARE of the corpus, the count
+        # alone reads as routine noise; say plainly that the graph is missing
+        # a structurally significant part of the codebase.
+        _unclassified_warning = detected.get("unclassified_warning") if isinstance(detected, dict) else None
+        if _unclassified_warning:
+            print(f"[graphify watch] warning: {_unclassified_warning}")
 
         # #4740: stop before extraction when nothing that reaches the code graph
         # has changed. The only no-change exit today sits at the very end of the
@@ -2664,6 +2670,7 @@ def _rebuild_code(
             "total_files": len(code_files),
             "total_words": detected.get("total_words", 0),
             "unclassified": detected.get("unclassified", []),
+            "unclassified_warning": detected.get("unclassified_warning"),
         }
 
         # Inherit the existing graph's directed flag (#2342) so `graphify
