@@ -1869,6 +1869,161 @@ def dispatch_command(cmd: str) -> None:
             print("God nodes (most connected):")
             for rank, n in enumerate(gods, 1):
                 print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
+    elif cmd == "heal":
+        if len(sys.argv) < 3:
+            print("Usage: graphify heal \"<test-cmd>\" [--graph path] [--depth N] [--backend B] [--model M] [--max-iters N] [--dry-run] [--json]", file=sys.stderr)
+            sys.exit(1)
+
+        test_cmd = sys.argv[2]
+        graph_path = _default_graph_path()
+        depth = 2
+        max_iters = 3
+        backend_arg = None
+        model_arg = None
+        dry_run = "--dry-run" in sys.argv
+        as_json = "--json" in sys.argv
+
+        args = sys.argv[3:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]; i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]; i += 1
+            elif args[i] == "--depth" and i + 1 < len(args):
+                try: depth = int(args[i + 1])
+                except ValueError: print("error: --depth must be an integer", file=sys.stderr); sys.exit(1)
+                i += 2
+            elif args[i].startswith("--depth="):
+                try: depth = int(args[i].split("=", 1)[1])
+                except ValueError: print("error: --depth must be an integer", file=sys.stderr); sys.exit(1)
+                i += 1
+            elif args[i] == "--max-iters" and i + 1 < len(args):
+                try: max_iters = int(args[i + 1])
+                except ValueError: print("error: --max-iters must be an integer", file=sys.stderr); sys.exit(1)
+                i += 2
+            elif args[i].startswith("--max-iters="):
+                try: max_iters = int(args[i].split("=", 1)[1])
+                except ValueError: print("error: --max-iters must be an integer", file=sys.stderr); sys.exit(1)
+                i += 1
+            elif args[i] == "--backend" and i + 1 < len(args):
+                backend_arg = args[i + 1]; i += 2
+            elif args[i].startswith("--backend="):
+                backend_arg = args[i].split("=", 1)[1]; i += 1
+            elif args[i] == "--model" and i + 1 < len(args):
+                model_arg = args[i + 1]; i += 2
+            elif args[i].startswith("--model="):
+                model_arg = args[i].split("=", 1)[1]; i += 1
+            else:
+                i += 1
+
+        def _log(msg: str):
+            if as_json:
+                print(msg, file=sys.stderr)
+            else:
+                print(msg)
+
+        from graphify.heal.engine import (
+            execute_and_capture_test_failure,
+            build_nx_graph_from_graphify,
+            extract_blast_radius_subgraph,
+            resolve_remediation_target,
+            build_healing_prompt,
+            extract_code_patch,
+            apply_patch_to_file,
+        )
+        from graphify.llm import detect_backend, _call_llm
+
+        _log(f"Running test suite: {test_cmd}...")
+        failures = execute_and_capture_test_failure(test_cmd)
+        if not failures:
+            if as_json:
+                print(json.dumps({"status": "clean", "failures": []}))
+            else:
+                print("All tests passed! Nothing to heal.")
+            sys.exit(0)
+
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+
+        _log(f"Detected {len(failures)} test failure(s). Ingesting graph: {gp.name}...")
+        G = build_nx_graph_from_graphify(gp)
+
+        triage_results = []
+        for fail in failures:
+            blast_slice = extract_blast_radius_subgraph(G, fail.test_file, depth=depth)
+            target_to_patch = resolve_remediation_target(fail, blast_slice)
+            triage_results.append({
+                "test": f"{fail.test_file}::{fail.test_node}",
+                "target_file": str(target_to_patch),
+                "error": fail.error_message,
+                "blast_radius_nodes": len(blast_slice.get("nodes", [])),
+                "blast_radius_edges": len(blast_slice.get("relationships", [])),
+                "context": blast_slice,
+            })
+
+        if as_json:
+            print(json.dumps(triage_results, indent=2))
+        else:
+            for item in triage_results:
+                test_label = item["test"]
+                error_label = item["error"]
+                n_nodes = item["blast_radius_nodes"]
+                n_edges = item["blast_radius_edges"]
+                target_f = item["target_file"]
+                print(f"\n[Failure] {test_label}")
+                print(f"  Reason: {error_label}")
+                print(f"  Target for remediation: {target_f}")
+                print(f"  Blast Radius: {n_nodes} nodes, {n_edges} relationships")
+
+        if dry_run:
+            _log("\nDry-run active: diagnostic graph slice complete.")
+            sys.exit(0)
+
+        selected_backend = backend_arg or detect_backend()
+        if not selected_backend:
+            print("error: no LLM backend configured. Provide --backend or set an API key.", file=sys.stderr)
+            sys.exit(1)
+
+        _log(f"\nInitiating active healing loop with backend: {selected_backend} (max {max_iters} iterations)")
+        for iteration in range(1, max_iters + 1):
+            target_fail = failures[0]
+            blast_slice = extract_blast_radius_subgraph(G, target_fail.test_file, depth=depth)
+            target_path = resolve_remediation_target(target_fail, blast_slice)
+            if not target_path.exists():
+                print(f"error: target file {target_path} not found", file=sys.stderr)
+                sys.exit(1)
+
+            source_code = target_path.read_text(encoding="utf-8")
+            prompt = build_healing_prompt(target_fail, blast_slice, source_code, target_path.name)
+
+            _log(f"Iteration {iteration}/{max_iters}: Querying {selected_backend} for code patch to {target_path.name}...")
+            try:
+                response = _call_llm(
+                    prompt,
+                    backend=selected_backend,
+                    model=model_arg,
+                    max_tokens=4096,
+                )
+                patch = extract_code_patch(response)
+            except Exception as e:
+                print(f"error: LLM patch synthesis rejected or failed: {e}", file=sys.stderr)
+                sys.exit(1)
+
+            apply_patch_to_file(target_path, patch)
+            _log(f"Patch applied to {target_path.name}. Re-running test suite...")
+
+            failures = execute_and_capture_test_failure(test_cmd)
+            if not failures:
+                _log(f"\n[SUCCESS] Suite fully healed after {iteration} iteration(s)!")
+                sys.exit(0)
+            _log(f"Iteration {iteration} incomplete: {len(failures)} failure(s) remain.")
+
+        print(f"\nHealing loop exhausted after {max_iters} attempts.", file=sys.stderr)
+        sys.exit(1)
+
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
