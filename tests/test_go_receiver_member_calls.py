@@ -185,3 +185,105 @@ def test_a_parameter_binds_only_inside_its_own_function(tmp_path):
             targets.setdefault(label_of.get(e["source"]), set()).add(source_of[e["target"]])
     assert len(targets["Run()"]) == 1 and targets["Run()"].pop().endswith("greeter.go"), targets
     assert len(targets["Also()"]) == 1 and targets["Also()"].pop().endswith("other.go"), targets
+
+
+# Package-qualified receiver types. Dependency injection in Go almost always crosses a
+# package: a field typed `*svc.Greeter` or `plugins.Client` held by a type in another
+# package. These resolve through the caller's import of the package, matched against the
+# import path each declaring file gets from go.mod.
+
+GO_MOD = "module example.com/app\n\ngo 1.22\n"
+SVC_IMPORT = "import \"example.com/app/svc\"\n\n"
+
+
+def _greet_targets(result) -> dict[str, set[str]]:
+    source_of = {n["id"]: str(n.get("source_file") or "") for n in result["nodes"]}
+    label_of = {n["id"]: n["label"] for n in result["nodes"]}
+    targets: dict[str, set[str]] = {}
+    for e in result["edges"]:
+        if e["relation"] == "calls" and label_of.get(e["target"]) == ".Greet()":
+            targets.setdefault(label_of.get(e["source"]), set()).add(
+                source_of[e["target"]].replace("\\", "/"))
+    return targets
+
+
+def test_a_qualified_struct_field_types_the_receiver(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\n" + SVC_IMPORT
+                      + "type App struct {\n\tgreeter *svc.Greeter\n}\n\n"
+                      "func (a *App) Run() { a.greeter.Greet() }\n",
+    })
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
+
+
+def test_a_qualified_parameter_types_the_receiver(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\n" + SVC_IMPORT + "func Run(g *svc.Greeter) { g.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+@pytest.mark.parametrize("binding", ["var g svc.Greeter", "g := &svc.Greeter{}"])
+def test_a_qualified_local_binding_types_the_receiver(tmp_path, binding):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\n" + SVC_IMPORT
+                      + f"func Run() {{\n\t{binding}\n\tg.Greet()\n}}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_an_aliased_import_types_the_receiver(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\nimport greet \"example.com/app/svc\"\n\n"
+                      "func Run(g *greet.Greeter) { g.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_qualified_interface_field_reaches_the_interface_method(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": "package svc\n\ntype Greeter interface {\n\tGreet()\n}\n",
+        "api/app.go": "package api\n\n" + SVC_IMPORT
+                      + "type App struct {\n\tgreeter svc.Greeter\n}\n\n"
+                      "func (a *App) Run() { a.greeter.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_the_import_picks_one_of_two_packages_declaring_the_type(tmp_path):
+    # Bare `Greeter` with two declarations stays unresolved (the single-definition guard);
+    # `b.Greeter` names one of them through the import, so it is exact.
+    _, result = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "a/greeter.go": GREETER.replace("package svc", "package a"),
+        "b/greeter.go": GREETER.replace("package svc", "package b"),
+        "api/app.go": "package api\n\nimport \"example.com/app/b\"\n\n"
+                      "func Run(g *b.Greeter) { g.Greet() }\n",
+    })
+    targets = _greet_targets(result)
+    assert targets.get("Run()") and all(t.endswith("b/greeter.go") for t in targets["Run()"]), targets
+
+
+def test_a_qualifier_never_binds_a_same_named_type_at_another_path(tmp_path):
+    # `other.Greeter` is imported from a module this corpus does not contain; the local
+    # `svc.Greeter` shares the name but not the path, so nothing binds and nothing is parked.
+    calls, result = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\nimport \"example.org/other\"\n\n"
+                      "func Run(g *other.Greeter) { g.Greet() }\n",
+    })
+    assert _greet_edge(calls) is None, calls
+    assert not [n for n in result["nodes"] if n["label"] == "Run()"
+                and (n.get("metadata") or {}).get("unresolved_calls")], result["nodes"]
