@@ -16,15 +16,19 @@ from graphify.manifest_ingest import (
 )
 
 
-def test_load_toml_module_raises_when_tomli_missing(monkeypatch):
-    real_import = builtins.__import__
-
+def _make_missing_toml_importer(real_import):
     def fake_import(name, *args, **kwargs):
         if name in ("tomllib", "tomli"):
             raise ImportError(f"blocked {name}")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    return fake_import
+
+
+def test_load_toml_module_raises_when_tomli_missing(monkeypatch):
+    monkeypatch.setattr(
+        builtins, "__import__", _make_missing_toml_importer(builtins.__import__),
+    )
     with pytest.raises(ImportError, match="tomli"):
         _load_toml_module()
 
