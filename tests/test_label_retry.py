@@ -69,25 +69,21 @@ def test_label_batch_recovers_when_json_is_valid_but_incomplete(monkeypatch):
     """A truncated object can salvage valid pairs without covering the batch."""
     batch_cids = [42, 99, 137, 201]
     batch_lines = [f"Community {cid}: node_{cid}" for cid in batch_cids]
-    call_count = {"n": 0}
-
-    def fake_call_llm(prompt: str, **_kwargs) -> str:
-        call_count["n"] += 1
-        cids_in_prompt = [int(m) for m in re.findall(r"Community (\d+):", prompt)]
-        if call_count["n"] == 1:
-            # The salvage parser can recover these pairs, but the response is
-            # incomplete and must still enter the existing split-retry path.
-            return '{"42":"Label 42","99":"Label 99","137":"Label 137"'
-        return json.dumps({str(cid): f"Label {cid}" for cid in cids_in_prompt})
-
-    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+    prompts: list[list[int]] = []
+    monkeypatch.setattr(
+        llm_mod,
+        "_call_llm",
+        _make_sequenced_llm_stub(
+            '{"42":"Label 42","99":"Label 99","137":"Label 137"', prompts
+        ),
+    )
 
     result = llm_mod._label_batch_with_retry(
         batch_cids, batch_lines, backend="gemini", model=None,
     )
 
     assert result == {cid: f"Label {cid}" for cid in batch_cids}
-    assert call_count["n"] == 2
+    assert len(prompts) == 2
 
 
 def test_a_missing_id_that_never_parses_keeps_the_labels_already_had(monkeypatch):
