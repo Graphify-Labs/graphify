@@ -31,6 +31,10 @@ def _label(node):
     return (node.get("label") or "").strip(".()")
 
 
+def _node_ids_by_label(result, suffix, label):
+    return {n["id"] for n in _nodes_by_file(result, suffix) if _label(n) == label}
+
+
 def _edges_between(result, source_ids, target_ids):
     return [
         e for e in result["edges"]
@@ -73,10 +77,7 @@ def builtin_shadow_repo(tmp_path):
 def test_builtin_append_does_not_bind_to_user_method(builtin_shadow_repo):
     """A builtin `append` call must not create an edge to the user's method."""
     result = _extract_go(builtin_shadow_repo)
-    method_ids = {
-        n["id"] for n in _nodes_by_file(result, "history.go")
-        if (n.get("label") or "").strip(".()") == "append"
-    }
+    method_ids = _node_ids_by_label(result, "history.go", "append")
     assert method_ids, "the user's append method must still be extracted as a node"
 
     worker_ids = {n["id"] for n in _nodes_by_file(result, "worker.go")}
