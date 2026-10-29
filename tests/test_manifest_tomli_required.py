@@ -49,8 +49,9 @@ def test_parse_cargo_surfaces_missing_parser(monkeypatch):
         "graphify.manifest_ingest._load_toml_module",
         lambda: (_ for _ in ()).throw(ImportError(_TOMLI_REQUIRED)),
     )
-    with pytest.raises(ImportError, match="tomli"):
+    with pytest.raises(ImportError) as exc_info:
         _parse_cargo('[package]\nname = "x"\nversion = "0.1.0"\n')
+    assert str(exc_info.value) == _TOMLI_REQUIRED
 
 
 def test_extract_package_manifest_reports_missing_tomli(tmp_path, monkeypatch):
