@@ -220,7 +220,7 @@ Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'
 
 Before dispatching subagents, print a timing estimate:
 - Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25 files, capped at ~6000 total lines)
+- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25 files, capped at ~6000 total lines), or `ceil(uncached_non_code_files / 12)` if `DEEP_MODE=true` (chunk size is 10-15 files, same line cap — see Step B1)
 - Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
 - Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
 
@@ -263,9 +263,11 @@ Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt
 
 **Step B1 - Split into chunks**
 
-Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks bounded by BOTH limits: at most 20-25 files AND at most ~6000 total lines per chunk. A text file longer than 2000 lines gets a chunk to itself - that is past the Read tool's single-call cap, so sharing a chunk with other files guarantees it is only partly read. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
+Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks bounded by BOTH limits: at most 20-25 files (10-15 if `DEEP_MODE=true` — deep mode extracts materially more INFERRED edges per file, so the same file count produces much more output) AND at most ~6000 total lines per chunk. A text file longer than 2000 lines gets a chunk to itself - that is past the Read tool's single-call cap, so sharing a chunk with other files guarantees it is only partly read. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
 
 Both bounds matter. The line bound is not only about the 2000-line Read cap: a subagent holding 25 files splits its attention across all of them and skims the dense ones, and a 590-line plan can come back with zero nodes that way. Bounding content as well as file count is what keeps a chunk's coverage honest (#2225).
+
+Each subagent must write its entire chunk's extraction in a single `Write` call within a single turn, and a turn's output is capped (~64k output tokens). This is a separate concern from the line bound above: that bound limits how much a subagent reads, not how much it produces, and deep mode's extra INFERRED edges per file mean a chunk well within both bounds can still generate more output than the `Write` call allows. A chunk whose expected output is too large for one turn doesn't get truncated — the subagent's turn simply ends before the `Write` call happens, so `.graphify_chunk_NN.json` never appears at all (see #1758). If a corpus is unusually dense (long files, heavy cross-referencing) even at the reduced deep-mode chunk size, tell the subagent explicitly to prioritize the most cross-referenced entities and keep extraction proportionate (e.g. "~60 nodes / ~80 edges for this chunk") rather than exhaustively extracting everything.
 
 **Step B2 - Dispatch ALL subagents in a single message**
 
@@ -295,10 +297,10 @@ See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, 
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, there are two possible causes and you cannot tell them apart from the missing file alone: the subagent may have been dispatched as read-only (Explore type), or — more likely for large/deep-mode chunks — its output exceeded the model's per-turn token limit while generating the chunk (see #1758). Print a warning covering both: "chunk N missing from disk — subagent may have been read-only, or its output exceeded the per-turn limit. Re-run with general-purpose agent." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used. If the missing chunks were large or `DEEP_MODE=true`, also suggest reducing chunk size (e.g. halving it).
 
 **Step B3.5 - Verify each reported file was actually read to its end**
 
