@@ -68,4 +68,6 @@ def test_extract_package_manifest_reports_missing_tomli(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.version_info >= (3, 11), reason="stdlib tomllib present")
 def test_tomli_is_importable_on_py310():
-    import tomli  # noqa: F401
+    import tomli
+
+    assert callable(tomli.loads)
