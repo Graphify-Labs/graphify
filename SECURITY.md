@@ -31,7 +31,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 | SSRF via URL fetch | `security.validate_url()` allows only `http` and `https` schemes, blocks private/loopback/link-local IPs, and blocks cloud metadata endpoints. It also rejects embedded credentials, port 0, and missing hostnames. Redirect targets are re-validated. All fetch paths including tweet oEmbed go through `safe_fetch()`. |
 | Oversized downloads | `safe_fetch()` streams responses and aborts at 50 MB. `safe_fetch_text()` aborts at 10 MB. |
 | Non-2xx HTTP responses | `safe_fetch()` raises `HTTPError` on non-2xx status codes - error pages are not silently treated as content. |
-| Path traversal in MCP server | `security.validate_graph_path()` resolves paths and requires them to be inside `graphify-out/`. Also requires the `graphify-out/` directory to exist. |
+| Path handling in MCP server | The server reads only `.json` graph files: the graph it was started with, or `<project_path>/graphify-out/graph.json` (honouring `GRAPHIFY_OUT`) when a client passes `project_path`, which may name any directory the server process can read. `check_graph_file_size_cap()` rejects oversized files, and a missing or corrupt client-selected graph becomes a tool error instead of stopping the server. On a shared HTTP server, any client that passes the API key can query every graph the process can read. |
 | XSS in graph HTML output | `security.sanitize_label()` strips control characters and caps at 256 chars. (Note: HTML escaping happens separately in the HTML exporter, not in `sanitize_label()`). |
 | Prompt injection via node labels | `sanitize_label()` also applied to MCP text output - node labels from user-controlled source files cannot break the text format returned to agents. |
 | Prompt injection via source file content | During the semantic pass, source files are attacker-controlled text mixed into the LLM context. `_read_files()` in `llm.py` wraps every file in a hash-stamped `<untrusted_source path=... sha256=...>` delimiter block, the extraction system prompt instructs the model to treat that block as inert data and never as instructions, and `_neutralise_injection_sentinels()` defangs known chat-template/jailbreak tokens (`<\|im_start\|>`, `[INST]`, `<<SYS>>`, forged `</untrusted_source>`, etc.) before insertion. This is the table-stakes defense (issue #1210): it does not make injection impossible, but changes it from "works on first try" to "requires evasion." |
@@ -45,7 +45,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 
 ### What graphify does NOT do
 
-- Does not run a network listener by default (stdio transport); `--transport http` is opt-in, documented in the README, and binds to `127.0.0.1` unless `--host 0.0.0.0` is passed
+- Does not run a network listener by default (stdio transport); `--transport http` is opt-in (see `python -m graphify.serve --help` and the `Dockerfile`), and binds to `127.0.0.1` unless `--host 0.0.0.0` is passed
 - Does not execute code from source files (tree-sitter parses ASTs - no eval/exec)
 - Does not use `shell=True` in any subprocess call
 - Does not store credentials or API keys
