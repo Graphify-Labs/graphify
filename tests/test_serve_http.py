@@ -200,6 +200,14 @@ def _call_tool(client, headers, name, arguments, rid) -> str:
     return resp.json()["result"]["content"][0]["text"]
 
 
+def _tools_missing_project_path(tools: list[dict]) -> list[str]:
+    return [t["name"] for t in tools if "project_path" not in t["inputSchema"].get("properties", {})]
+
+
+def _tools_requiring_project_path(tools: list[dict]) -> list[str]:
+    return [t["name"] for t in tools if "project_path" in t["inputSchema"].get("required", [])]
+
+
 def test_project_path_is_optional_on_every_tool(tmp_path):
     """Multi-project support is additive: every tool gains an optional
     project_path, and none of them makes it required."""
@@ -208,10 +216,10 @@ def test_project_path_is_optional_on_every_tool(tmp_path):
         headers = _init_session(client)
         resp = client.post("/mcp", headers=headers,
                             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        for tool in resp.json()["result"]["tools"]:
-            props = tool["inputSchema"].get("properties", {})
-            assert "project_path" in props, f"{tool['name']} missing project_path"
-            assert "project_path" not in tool["inputSchema"].get("required", [])
+        tools = resp.json()["result"]["tools"]
+        assert tools
+        assert _tools_missing_project_path(tools) == []
+        assert _tools_requiring_project_path(tools) == []
 
 
 def test_project_path_routes_to_that_projects_graph(tmp_path):
