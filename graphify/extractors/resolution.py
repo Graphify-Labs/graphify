@@ -853,6 +853,22 @@ def _resolve_package_import(raw: str, start_dir: Path) -> "Path | None":
     resolved = _resolve_js_import_path(candidate)
     return resolved if resolved.is_file() else None
 
+def _strip_js_specifier_suffix(raw: str) -> str:
+    """Strip a `?query` / `#fragment` suffix from a relative JS/TS specifier.
+
+    Vite-style resource queries (`./foo.js?v=134`) and in-file anchors
+    (`./foo.js#section`) are not part of the module path: resolving the raw
+    specifier mints a phantom node for a file that does not exist (#4860).
+    Mirrors the markdown link resolver, which drops the anchor/query before
+    resolving so `#section` links land on the same node as the plain target.
+
+    Only ever applied to relative specifiers (those starting with "."):
+    `#`-prefixed Node subpath imports (`#services/foo`) are package imports,
+    not fragments, and bare/aliased specifiers keep their own resolution.
+    """
+    return raw.split("#", 1)[0].split("?", 1)[0]
+
+
 def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> Path | None:
     """Resolve a JS/TS module path or specifier to a local source file.
 
@@ -866,7 +882,7 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     if start_dir is None:
         return _resolve_js_import_path(Path(raw))
     if raw.startswith("."):
-        return _resolve_js_import_path(start_dir / raw)
+        return _resolve_js_import_path(start_dir / _strip_js_specifier_suffix(raw))
 
     aliases = _load_tsconfig_aliases(start_dir)
     hit = _resolve_tsconfig_alias(raw, aliases,
