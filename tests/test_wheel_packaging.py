@@ -82,3 +82,8 @@ def test_skill_artifact_ships_in_wheel(artifact: Path, wheel_namelist: set[str])
         f"`graphify install` would hard-exit for this host. Check the "
         f"[tool.setuptools.package-data] globs in pyproject.toml."
     )
+
+
+@pytest.mark.parametrize("body", ["skill-reasonix.md", "skill-reasonix-windows.md"])
+def test_reasonix_shell_variants_ship_in_wheel(body: str, wheel_namelist: set[str]) -> None:
+    assert f"graphify/{body}" in wheel_namelist
