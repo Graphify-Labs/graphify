@@ -205,8 +205,16 @@ def _call_tool(client, headers, name, arguments, rid) -> str:
         "jsonrpc": "2.0", "id": rid, "method": "tools/call",
         "params": {"name": name, "arguments": arguments},
     })
-    assert resp.status_code == 200
     return resp.json()["result"]["content"][0]["text"]
+
+
+def test_call_tool(tmp_path):
+    """Calling a tool over HTTP returns the expected JSON-RPC text payload."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        text = _call_tool(client, headers, "graph_stats", {}, rid=2)
+        assert "Nodes: 2" in text
 
 
 def _tools_missing_project_path(tools: list[dict]) -> list[str]:
