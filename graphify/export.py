@@ -242,11 +242,11 @@ def _git_head(cwd: "str | Path | None" = None) -> str | None:
 MALFORMED_GRAPH = object()
 
 
-def existing_graph_node_count(path: "str | Path"):
-    """Node count of an existing graph.json.
+def _load_existing_graph_nodes(path: "str | Path"):
+    """The raw ``nodes`` list of an existing graph.json, or a sentinel.
 
     Returns:
-      - an ``int`` node count when the file parses;
+      - a ``list`` of node dicts when the file parses;
       - ``None`` when there is verifiably nothing to protect — absent, empty, or
         over the size cap (matching how :func:`to_json` lets the new graph
         replace an empty/oversized file);
@@ -254,8 +254,9 @@ def existing_graph_node_count(path: "str | Path"):
         unparseable — the caller must treat this as fail-closed (refuse to
         overwrite), mirroring to_json's #479 handling of a corrupt/mid-write file.
 
-    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
-    guard that :func:`to_json` applies inline for the clustered path.
+    Shared loading logic for :func:`existing_graph_node_count` and
+    :func:`existing_graph_node_counts_by_source`, which differ only in how
+    they summarize this same list.
     """
     p = Path(path)
     if not p.exists():
@@ -281,7 +282,46 @@ def existing_graph_node_count(path: "str | Path"):
     except Exception:
         return MALFORMED_GRAPH
     nodes = data.get("nodes") if isinstance(data, dict) else None
-    return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
+    return nodes if isinstance(nodes, list) else MALFORMED_GRAPH
+
+
+def existing_graph_node_count(path: "str | Path"):
+    """Node count of an existing graph.json.
+
+    Returns an ``int``, ``None``, or :data:`MALFORMED_GRAPH` — see
+    :func:`_load_existing_graph_nodes` for what each means.
+
+    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
+    guard that :func:`to_json` applies inline for the clustered path.
+    """
+    nodes = _load_existing_graph_nodes(path)
+    if not isinstance(nodes, list):
+        return nodes
+    return len(nodes)
+
+
+def existing_graph_node_counts_by_source(path: "str | Path"):
+    """Per-``source_file`` node counts of an existing graph.json.
+
+    Returns a ``dict`` mapping ``source_file`` to its node count, or ``None``/
+    :data:`MALFORMED_GRAPH` under the same conditions as
+    :func:`existing_graph_node_count` — see :func:`_load_existing_graph_nodes`.
+
+    Used by the #3412 self-explained shrink exemption to check the shrink
+    per source rather than as one net total (#3412 review): a net total can
+    be masked by unrelated growth elsewhere, letting a genuine unflagged
+    loss slip through the very guard this exemption exists to narrow, not
+    weaken.
+    """
+    nodes = _load_existing_graph_nodes(path)
+    if not isinstance(nodes, list):
+        return nodes
+    counts: dict[str, int] = {}
+    for n in nodes:
+        if isinstance(n, dict):
+            sf = n.get("source_file") or ""
+            counts[sf] = counts.get(sf, 0) + 1
+    return counts
 
 
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
