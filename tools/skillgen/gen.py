@@ -145,7 +145,7 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
 ENUM_VALUES = "code|document|paper|image|rationale|concept"
 ENUM_PROSE = "`code`, `document`, `paper`, `image`, `rationale`, `concept`"
 
-# The eight on-demand references every split platform renders. Six are
+# The nine on-demand references every split platform renders. Seven are
 # shared-verbatim; two (extraction-spec, hooks) are variant-selected and resolved
 # per platform from the extraction/hooks_variant fields.
 _SHARED_REFERENCES = {
@@ -154,6 +154,7 @@ _SHARED_REFERENCES = {
     "github-and-merge": "references/shared/github-and-merge.md",
     "transcribe": "references/shared/transcribe.md",
     "add-watch": "references/shared/add-watch.md",
+    "bundle-exclusion": "references/shared/bundle-exclusion.md",
 }
 _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
@@ -1344,6 +1345,48 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+def _is_bundle_exclusion_offer_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin bundle exclusion offer (#4425).
+
+    ``detect()`` already drops ``dist/``/``build/``/``target/`` by directory name,
+    but a single-file bundle committed elsewhere went through extraction
+    unchanged, minting a second node next to its real definition for everything
+    it bundles. Step 2a now scans the detected code files for a minified name, an
+    oversized single JS/MJS/CJS file, or a known bundler banner, and offers to
+    exclude any match via ``.graphifyignore`` before extraction. The two
+    monoliths read/write their detect and candidate sidecars at their own
+    established paths (aider has no ``graphify-out/`` prefix, devin does), so
+    both variants of those two lines are listed explicitly.
+    """
+    s = line.strip()
+    return (
+        s == "- Otherwise: proceed directly to Step 2a."
+        or s == "### Step 2a - Offer to exclude committed bundles (#4425)"
+        or s.startswith("`detect()` already prunes `dist/`/`build/`/`target/` by name")
+        or s in (
+            "d = json.loads(Path('.graphify_detect.json').read_text(encoding='utf-8'))",
+            "d = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding='utf-8'))",
+            "marks = ('webpackBootstrap', '__webpack_require__', 'System.register(', 'For license information')",
+            "hits = []",
+            "for rel in d['files'].get('code', []):",
+            "p = Path(rel)",
+            "reasons = []",
+            "if '.min.' in p.name: reasons.append('minified filename')",
+            "size = p.stat().st_size if p.exists() else 0",
+            "if size > 300_000 and p.suffix in ('.js', '.mjs', '.cjs'): reasons.append(f'{size:,} bytes')",
+            "if (not reasons or size > 300_000) and any(m in p.read_text(encoding='utf-8', errors='ignore')[:4000] for m in marks): reasons.append('bundler banner')",
+            "if reasons: hits.append({'path': rel, 'reasons': reasons})",
+            "print(json.dumps(hits))",
+            '" > .graphify_bundle_candidates.json',
+            '" > graphify-out/.graphify_bundle_candidates.json',
+        )
+        or s.startswith("Read `.graphify_bundle_candidates.json` silently.")
+        or s.startswith("Read `graphify-out/.graphify_bundle_candidates.json` silently.")
+        or s.startswith("Otherwise list each path with its reason(s)")
+        or s == "- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not."
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1373,6 +1416,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_bundle_exclusion_offer_fix_line,
 )
 
 
@@ -1391,7 +1435,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the bundle exclusion offer (#4425).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
