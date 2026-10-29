@@ -185,10 +185,19 @@ def _project_with_graph(tmp_path, node_count: int, name: str = "proj") -> str:
 
 def _init_session(client) -> dict:
     init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
-    assert init.status_code == 200
     headers = {**_MCP_HEADERS, "mcp-session-id": init.headers.get("mcp-session-id")}
     client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     return headers
+
+
+def test_init_session(tmp_path):
+    """Session initialization over HTTP returns 200 and attaches mcp-session-id."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
+        assert init.status_code == 200
+        headers = _init_session(client)
+        assert headers.get("mcp-session-id")
 
 
 def _call_tool(client, headers, name, arguments, rid) -> str:
