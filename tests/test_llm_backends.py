@@ -943,6 +943,59 @@ def test_openai_compat_forces_non_streaming_response(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Claude prompt caching (#4835): the extraction system prompt goes out as one
+# content block marked cache_control=ephemeral, identical on every call.
+# ---------------------------------------------------------------------------
+
+
+def _install_capturing_anthropic(monkeypatch):
+    """Inject a stub `anthropic` module that records each messages.create() call."""
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    calls = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                content=[SimpleNamespace(
+                    type="text", text='{"nodes":[{"id":"x"}],"edges":[],"hyperedges":[]}')],
+                usage=SimpleNamespace(input_tokens=100, output_tokens=100),
+                stop_reason="end_turn",
+            )
+
+    fake_module = types.ModuleType("anthropic")
+    fake_module.Anthropic = lambda **_: SimpleNamespace(messages=_Messages())
+    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+    return calls
+
+
+@pytest.mark.parametrize("deep_mode", [False, True], ids=["normal", "deep"])
+def test_claude_system_prompt_marked_cacheable(monkeypatch, deep_mode):
+    calls = _install_capturing_anthropic(monkeypatch)
+
+    llm._call_claude("sk-ant-test", "claude-sonnet-4-6", "u", deep_mode=deep_mode)
+
+    assert calls[0]["system"] == [{
+        "type": "text",
+        "text": llm._extraction_system(deep=deep_mode),
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
+def test_claude_system_block_same_across_files(monkeypatch):
+    """The cache only hits when every call sends a byte-identical prefix."""
+    calls = _install_capturing_anthropic(monkeypatch)
+
+    llm._call_claude("sk-ant-test", "claude-sonnet-4-6", "first file")
+    llm._call_claude("sk-ant-test", "claude-sonnet-4-6", "second file")
+
+    assert calls[0]["system"] == calls[1]["system"]
+
+
+# ---------------------------------------------------------------------------
 # Custom-provider extra_body: lets providers.json route around the moonshot-only
 # default. Self-hosted Qwen3 served by vLLM needs
 # `chat_template_kwargs.enable_thinking=false` or the model emits chain-of-thought

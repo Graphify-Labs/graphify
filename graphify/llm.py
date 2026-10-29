@@ -1681,7 +1681,13 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=_extraction_system(deep=deep_mode),
+        # The system prompt is identical on every per-file call, so mark it
+        # cacheable: later calls bill it as a cache read, not full input (#4835).
+        system=[{
+            "type": "text",
+            "text": _extraction_system(deep=deep_mode),
+            "cache_control": {"type": "ephemeral"},
+        }],
         messages=[{"role": "user", "content": _anthropic_content(user_message, images or [])}],
     )
     raw_content = _anthropic_response_text(resp.content)
