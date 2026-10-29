@@ -1220,7 +1220,9 @@ def test_cursor_uninstall_noop_if_not_installed(tmp_path):
     """cursor uninstall does nothing if rule was never written."""
     from graphify.__main__ import _cursor_uninstall
 
-    _cursor_uninstall(tmp_path)  # should not raise
+    _cursor_uninstall(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 # ── Gemini CLI ────────────────────────────────────────────────────────────────
