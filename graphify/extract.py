@@ -11232,6 +11232,18 @@ def extract(
         try:
             rel = sf_path.relative_to(root)
         except ValueError:
+            # `root` was resolved above but sf_path was not: under a symlinked
+            # scan path (macOS /var -> /private/var, a symlinked checkout) the
+            # raw form is never "under" root, and the out-of-root branch kept
+            # only the basename, so every page.tsx read as one file (#4624).
+            # Retry with the DIRECTORY resolved before calling it out-of-root.
+            # Only the parent: resolving the file itself would follow a file
+            # symlink onto its target and merge the two sources (#2832).
+            try:
+                rel = (_resolved(sf_path.parent) / sf_path.name).relative_to(root)
+            except (ValueError, OSError, RuntimeError):
+                rel = None
+        if rel is None:
             portable = _portable_out_of_root_sf(sf_path)
             canonical_id = _make_id("ext", portable)
             new_sf = portable
