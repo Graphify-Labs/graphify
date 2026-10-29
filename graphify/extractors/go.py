@@ -12,6 +12,7 @@ from graphify.extractors.base import (
     _read_source_bytes,
     _read_text,
 )
+from graphify.extractors.resolution import _go_import_path_for_file
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -175,13 +176,22 @@ def _go_strip_generic_args(type_text: str) -> str:
 def _go_single_type_name(node, source: bytes) -> str | None:
     """The one declared type a Go type expression names, or None.
 
-    Generic arguments do not change the receiver's base type. A slice, map or channel
-    element is not the receiver, and a qualified type cannot bind by bare local name.
+    `Greeter`, `*Greeter`, `pkg.Greeter` and `*pkg.Greeter` qualify, and generic
+    arguments do not change the receiver's base type. A slice, map or channel
+    element is not the receiver of `x.M()`. A qualified type keeps its package
+    qualifier as written (`pkg.Greeter`): no bare local name can stand for it, so
+    the resolver binds it only through the file's import of `pkg`.
     """
     while node is not None and node.type in ("pointer_type", "parenthesized_type", "generic_type"):
         node = node.child_by_field_name("type") or next(
             (c for c in node.children if c.is_named), None,
         )
+    if node is not None and node.type == "qualified_type":
+        package = node.child_by_field_name("package")
+        name_node = node.child_by_field_name("name")
+        if package is None or name_node is None:
+            return None
+        return f"{_read_text(package, source)}.{_read_text(name_node, source)}"
     if node is None or node.type != "type_identifier":
         return None
     name = _read_text(node, source)
@@ -792,21 +802,36 @@ def extract_go(path: Path) -> dict:
     walk(root)
 
     # A type carries both markers, as in the tree-sitter engine: `_callable_class` is
-    # the narrowing, not a separate kind.
+    # the narrowing, not a separate kind. A type also carries its import path from go.mod:
+    # a `pkg.T` receiver binds only to a `T` declared at the path the caller imports `pkg`
+    # from, and on an incremental rebuild an unchanged declaring file reaches the resolver
+    # only as its nodes.
+    package_path = _go_import_path_for_file(path.absolute(), path.absolute().parent)
     for n in nodes:
         if n["id"] in callable_nids or n["id"] in callable_class_nids:
             n["_callable"] = True
             if n["id"] in callable_class_nids:
                 n["_callable_class"] = True
+                if package_path:
+                    n["_go_package_path"] = package_path
 
     # The field types of the structs this file declares ride on the file node, keyed by
     # struct id, so a method in a sibling file can type `s.field` (#3368). Not on the
     # struct node: every file holding a method of the struct emits that id too, so an
     # incremental rebuild of a method file would shadow the declaring file's copy.
-    struct_fields = {
-        type_symbol_nid(name): dict(sorted(fields.items()))
-        for name, fields in _go_struct_field_types(root, source).items()
-    }
+    # A `pkg.T` field is stored as `<import path>.T`: the method file reading it may not
+    # import `pkg` at all, so the qualifier is settled by this file's imports.
+    struct_fields: dict[str, dict[str, str]] = {}
+    for name, fields in _go_struct_field_types(root, source).items():
+        typed: dict[str, str] = {}
+        for field, type_name in fields.items():
+            alias, dot, bare = type_name.partition(".")
+            if not dot:
+                typed[field] = type_name
+            elif alias in go_imported_pkgs:
+                typed[field] = f"{go_imported_pkgs[alias]}.{bare}"
+        if typed:
+            struct_fields[type_symbol_nid(name)] = dict(sorted(typed.items()))
     if struct_fields:
         file_node = next(n for n in nodes if n["id"] == file_nid)
         file_node["_go_fields"] = dict(sorted(struct_fields.items()))

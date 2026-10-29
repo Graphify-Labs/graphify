@@ -7686,6 +7686,10 @@ def _resolve_go_member_calls(
 
     A receiver typed to a type this corpus declares nowhere is parked on the caller for
     a merged graph to finish (#3152).
+
+    A package-qualified type (`plugins.Client`, `*svc.Greeter`), the usual shape of a
+    dependency injected from another package, resolves through the caller's import of
+    that package: only a declaration whose file sits at the imported path qualifies.
     """
     raw = [
         rc
@@ -7697,10 +7701,12 @@ def _resolve_go_member_calls(
     if not raw:
         return
     package_vars_by_file: dict[str, dict[str, str | None]] = {}
+    imports_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         tt = result.get("go_type_table")
         if tt and tt.get("path"):
             package_vars_by_file[tt["path"]] = tt.get("package_vars", {})
+            imports_by_file[tt["path"]] = result.get("go_imports") or {}
 
     def _key(label: object) -> str:
         return str(label or "").strip().removeprefix(".").removesuffix("()")
@@ -7715,10 +7721,16 @@ def _resolve_go_member_calls(
     # Owner fields may be declared in a sibling file. Duplicate owner declarations
     # provide no unique field type.
     fields_by_type: dict[str, list[dict[str, str]]] = {}
+    # A Go type node id folds in only the package directory's name, which says nothing
+    # about the import path (`api/v1` and `web/v1` even share one); the files that declare
+    # the node do, so a node keeps every path it is declared at.
+    package_paths_by_nid: dict[str, set[str]] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
         if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+            if n.get("_go_package_path"):
+                package_paths_by_nid.setdefault(n["id"], set()).add(n["_go_package_path"])
         for struct_nid, fields in (n.get("_go_fields") or {}).items():
             fields_by_type.setdefault(struct_nid, []).append(fields)
 
@@ -7735,18 +7747,39 @@ def _resolve_go_member_calls(
     # One edge survives per pair, so direct calls must take priority over method values.
     for rc in sorted(raw, key=lambda call: bool(call.get("indirect"))):
         receiver, callee, caller = rc["member_receiver"], rc["callee"], rc["caller_nid"]
+        # The enclosing method's own receiver is typed by its declaration (the
+        # scoped `receiver_type`), which already covers params and locals. A field
+        # receiver is typed from its owning struct's declaration instead.
         type_name = rc.get("receiver_type")
+        from_sibling = False
         if rc.get("field_owner"):
             type_name = None
             owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
             declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
             if len(declared) == 1:
                 type_name = declared[0].get(receiver)
+                from_sibling = True
         elif not type_name and not rc.get("receiver_bound"):
             type_name = package_vars_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
-        type_defs = type_def_nids.get(_key(type_name), [])
+        if "." in type_name:
+            # `pkg.T`: bind only to the `T` declared at the path this file imports `pkg`
+            # from. That is exact import evidence, so it also settles two packages that
+            # both declare `T`. No match means stdlib or a module outside this corpus,
+            # which stays unresolved as before rather than being parked. A sibling file's
+            # field already carries the import path in place of `pkg`.
+            if from_sibling:
+                import_path, _, bare = type_name.rpartition(".")
+            else:
+                alias, _, bare = type_name.partition(".")
+                import_path = imports_by_file.get(rc.get("source_file", ""), {}).get(alias)
+            type_defs = [nid for nid in type_def_nids.get(_key(bare), [])
+                         if import_path and import_path in package_paths_by_nid.get(nid, ())]
+            if not type_defs:
+                continue
+        else:
+            type_defs = type_def_nids.get(_key(type_name), [])
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
