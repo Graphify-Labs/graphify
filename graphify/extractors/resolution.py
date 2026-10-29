@@ -1463,9 +1463,11 @@ def _apply_symbol_resolution_facts(
                 type_only=star_fact.type_only,
             )
 
+    namespace_targets: dict[tuple[Path, str], Path] = {}
     for namespace_fact in facts.namespace_exports:
         source_path = _resolve_cached(namespace_fact.file_path)
         target_path = _resolve_cached(namespace_fact.target_path)
+        namespace_targets[(source_path, namespace_fact.exported_name)] = target_path
         namespace_id = ensure_symbol_node(
             namespace_fact.file_path,
             namespace_fact.exported_name,
@@ -1770,6 +1772,21 @@ def _apply_symbol_resolution_facts(
         if unresolved_origin is not None:
             origin_path, origin_symbol = resolve_exported_origin(*unresolved_origin)
             target_id = symbol_nodes.get((origin_path, origin_symbol))
+        elif "." in use_fact.local_name:
+            # `ns.fn()`: `ns` is a namespace import (`import * as ns`), or a
+            # name a barrel re-exports with `export * as ns` -- either way a
+            # module, and `fn` must be one of that module's exports.
+            namespace_name, _, member_name = use_fact.local_name.partition(".")
+            binding = local_aliases_by_file.get(file_path, {}).get(namespace_name)
+            module_path = None
+            if binding is not None and binding[1] == "*":
+                module_path = binding[0]
+            elif binding is not None:
+                module_path = namespace_targets.get(resolve_exported_origin(*binding))
+            if module_path is not None:
+                candidates, _ = exported_candidates((module_path, member_name), frozenset())
+                if len(candidates) == 1:
+                    target_id = symbol_nodes.get(next(iter(candidates)))
         if target_id is None and use_fact.relation in ("inherits", "implements"):
             # Same-file fallback for HERITAGE only: a base declared in the same
             # file (`class X extends Y`, `interface A extends B`) has no import
@@ -1956,6 +1973,24 @@ def _js_default_import_name(node, source: bytes) -> str | None:
             for sub in child.children:
                 if sub.type == "identifier":
                     return _read_text(sub, source)
+    return None
+
+def _js_namespace_import_name(node, source: bytes) -> str | None:
+    """Local binding of a namespace import: the `ns` in `import * as ns from './x'`.
+
+    Found in the `namespace_import` child of the import_clause, so it is also
+    picked up from the mixed form `import D, * as ns from './x'`. `import type
+    * as ns` is erased at compile time and binds no value, so it returns None.
+    """
+    if any(child.type == "type" and not child.is_named for child in node.children):
+        return None
+    for child in node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type == "namespace_import":
+                    for ident in sub.children:
+                        if ident.type == "identifier":
+                            return _read_text(ident, source)
     return None
 
 def _js_default_export_name(node, source: bytes) -> str | None:
@@ -2279,6 +2314,20 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         default_local,
                         target_path,
                         "default",
+                        node.start_point[0] + 1,
+                    )
+                )
+            # `import * as ns` binds the whole module; "*" marks it so a
+            # member call `ns.fn()` can look `fn` up among the module's exports.
+            # "*" is never an export name, so a bare call to `ns` resolves to nothing.
+            namespace_local = _js_namespace_import_name(node, source)
+            if namespace_local is not None:
+                facts.imports.append(
+                    _SymbolImportFact(
+                        path,
+                        namespace_local,
+                        target_path,
+                        "*",
                         node.start_point[0] + 1,
                     )
                 )
@@ -2901,6 +2950,28 @@ def _collect_python_symbol_resolution_facts(
                     )
                 )
 
+def _collect_js_namespace_call_facts(raw_calls: list[dict], facts: _SymbolResolutionFacts) -> None:
+    """Turn `ns.fn()` calls the extractor stamped with the module their receiver
+    names (`ts_import_module`) into use facts named `ns.fn`; the import and export
+    facts resolve them like any other imported name."""
+    for raw_call in raw_calls:
+        if not raw_call.get("ts_import_module"):
+            continue
+        receiver, callee = raw_call.get("receiver"), raw_call.get("callee")
+        location = str(raw_call.get("source_location", ""))
+        if not (receiver and callee and raw_call.get("caller_nid") and raw_call.get("source_file")):
+            continue
+        facts.uses.append(
+            _SymbolUseFact(
+                Path(raw_call["source_file"]),
+                raw_call["caller_nid"],
+                f"{receiver}.{callee}",
+                "calls",
+                "call",
+                int(location[1:]) if location[1:].isdigit() else 0,
+            )
+        )
+
 def _augment_symbol_resolution_edges(
     paths: list[Path],
     nodes: list[dict],
@@ -2908,9 +2979,11 @@ def _augment_symbol_resolution_edges(
     root: Path,
     ambiguous_python_modules: set[str] | None = None,
     resolution_context_nodes: list[dict] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
+    _collect_js_namespace_call_facts(raw_calls or [], facts)
     _collect_python_symbol_resolution_facts(
         paths, root, facts,
         ambiguous_python_modules=ambiguous_python_modules,
