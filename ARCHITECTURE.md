@@ -88,7 +88,7 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
 2. Register the file suffix in `extract()`'s dispatch table and in `collect_files()` (both in `extract.py`).
-3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` and `_WATCHED_EXTENSIONS` in `watch.py`.
+3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` (`_WATCHED_EXTENSIONS` in `watch.py` is derived from it).
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
 
