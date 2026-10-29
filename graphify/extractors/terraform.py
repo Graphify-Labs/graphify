@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from graphify.extractors.base import _make_id, _read_source_bytes
 from graphify.security import (
+    REDACTED_MARKER,
     _CONTROL_CHAR_RE,
     _METADATA_MAX_ATTRIBUTES,
     _METADATA_MAX_LIST_ITEMS,
@@ -31,7 +32,7 @@ _SENSITIVE_KEY_RE = re.compile(
     r"sas[-_]?token|auth|passphrase)",
     re.IGNORECASE,
 )
-_REDACTED = "[redacted]"
+_REDACTED = REDACTED_MARKER
 _PAIRED_VALUE_KEYS = frozenset({"value", "valuefrom", "value_from"})
 
 
@@ -257,7 +258,7 @@ def extract_terraform(path: Path) -> dict:
                 labels.append(_label_text(c))
         return btype, labels
 
-    def _ref_address(expr):
+    def _head_and_attrs(expr) -> tuple[str, list[str]]:
         head = _read(expr)
         parent = expr.parent
         attrs: list[str] = []
@@ -278,6 +279,10 @@ def extract_terraform(path: Path) -> dict:
                     attrs.append(name)
                 elif seen_self and c.type not in ("get_attr",):
                     break
+        return head, attrs
+
+    def _ref_address(expr):
+        head, attrs = _head_and_attrs(expr)
         if head in _TF_META_HEADS or not head:
             return None
         if head == "var":
@@ -290,21 +295,36 @@ def extract_terraform(path: Path) -> dict:
             return f"data.{attrs[0]}.{attrs[1]}" if len(attrs) >= 2 else None
         return f"{head}.{attrs[0]}" if attrs else None
 
-    def _collect_refs(node, owner_nid: str, relation: str) -> None:
+    def _provider_ref_address(expr):
+        # A `provider = aws.west` value names a provider BLOCK by type and
+        # alias, the same `head.attr` shape `_ref_address` already reads for
+        # a resource reference (`aws_instance.web.id` -> `aws_instance.web`).
+        # Without this, `aws.west` fell through to that generic reading and
+        # pointed at a node that was never minted.
+        head, attrs = _head_and_attrs(expr)
+        if not head:
+            return None
+        return f"provider.{head}.{attrs[0]}" if attrs else f"provider.{head}"
+
+    def _collect_refs(node, owner_nid: str, relation: str, in_provider_attr: bool = False) -> None:
         rel = relation
+        provider_attr = in_provider_attr
         if node.type == "attribute":
             key_node = node.child_by_field_name("key") or (
                 node.children[0] if node.children else None
             )
-            if key_node is not None and _read(key_node) == "depends_on":
-                rel = "depends_on"
+            if key_node is not None:
+                key_text = _read(key_node)
+                if key_text == "depends_on":
+                    rel = "depends_on"
+                provider_attr = key_text == "provider"
         if node.type == "variable_expr":
-            addr = _ref_address(node)
+            addr = _provider_ref_address(node) if provider_attr else _ref_address(node)
             if addr:
                 _add_edge(owner_nid, addr, rel, node.start_point[0] + 1)
         for c in node.children:
             if c.is_named:
-                _collect_refs(c, owner_nid, rel)
+                _collect_refs(c, owner_nid, rel, provider_attr)
 
     def _clean_val_str(text: str) -> str:
         text = _CONTROL_CHAR_RE.sub("", str(text))
@@ -428,7 +448,29 @@ def extract_terraform(path: Path) -> dict:
         elif btype == "output" and labels:
             owner = _add_node(f"output.{labels[0]}", f"output.{labels[0]}", line)
         elif btype == "provider" and labels:
-            owner = _add_node(f"provider.{labels[0]}", f"provider.{labels[0]}", line)
+            # An aliased provider block (`provider "aws" { alias = "west" }`)
+            # configures a SECOND, distinct provider of the same type. Without
+            # the alias in the id, a second `provider "aws" {...}` block for a
+            # different alias collapsed onto the same node as the first,
+            # silently losing its own attributes to whichever block the walk
+            # reached last.
+            alias = None
+            if blk_body is not None:
+                for attr in blk_body.children:
+                    if attr.type != "attribute":
+                        continue
+                    k_node = attr.children[0] if attr.children else None
+                    if k_node is None or _read(k_node) != "alias":
+                        continue
+                    v_node = attr.named_children[-1] if attr.named_children else None
+                    if v_node is None:
+                        continue
+                    alias_val = _parse_attr_value(v_node)
+                    if isinstance(alias_val, str) and alias_val:
+                        alias = alias_val
+                    break
+            address = f"provider.{labels[0]}.{alias}" if alias else f"provider.{labels[0]}"
+            owner = _add_node(address, address, line)
         elif btype == "locals" and blk_body is not None:
             for attr in blk_body.children:
                 if attr.type != "attribute":
@@ -438,7 +480,14 @@ def extract_terraform(path: Path) -> dict:
                     continue
                 key = _read(key_node)
                 lnid = _add_node(f"local.{key}", f"local.{key}", attr.start_point[0] + 1)
-                _collect_refs(attr, lnid, "references")
+                # Walk the VALUE only, not the attribute itself -- the local's
+                # own name sits in the same `key` slot `_collect_refs` reads to
+                # detect a `provider = ...`/`depends_on = ...` attribute, so a
+                # local literally named either would otherwise be misread as
+                # one.
+                value_node = attr.named_children[-1] if attr.named_children else None
+                if value_node is not None:
+                    _collect_refs(value_node, lnid, "references")
             continue
         else:
             continue

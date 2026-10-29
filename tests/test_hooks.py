@@ -1213,6 +1213,74 @@ def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
     assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
 
 
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_anchor_to_the_top_level_after_the_worktree_guard(name, script):
+    """Every hook cds to the checkout's top level before anything reads
+    graphify-out/ or launches the rebuild (#3258), and does so after the
+    worktree guard, whose _GFY_GITDIR/_GFY_COMMONDIR it reuses."""
+    from graphify.hooks import _TOPLEVEL_ANCHOR, _WORKTREE_GUARD
+    assert script.count(_TOPLEVEL_ANCHOR) == 1, f"{name} anchor not present exactly once"
+    assert script.index(_WORKTREE_GUARD) < script.index(_TOPLEVEL_ANCHOR)
+    # The cheap "is there a graph here?" early exits may stay ahead of it: at
+    # worst they skip a rebuild. Choosing the interpreter and launching the
+    # rebuild (which reads .graphify_root) must not.
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    anchor_at = code.index(_TOPLEVEL_ANCHOR.splitlines()[0])
+    for later in ("GRAPHIFY_PYTHON", "_rebuild_code"):
+        assert anchor_at < code.index(later), f"{name} uses {later} before anchoring"
+
+
+def test_toplevel_anchor_runs_from_the_top_when_git_starts_the_hook_in_a_subdir(tmp_path):
+    """End-to-end against a real repo (#3258): with GIT_DIR exported and no
+    GIT_WORK_TREE, git runs hooks in the caller's cwd and `--show-toplevel`
+    echoes that subdirectory. The anchored snippet must still run at the
+    repository top, keep later git calls working, and leave a linked worktree
+    to the guard."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    primary = tmp_path / "primary"
+    primary.mkdir()
+
+    def _git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, text=True)
+
+    _git("init", "-q", ".", cwd=primary)
+    _git("config", "user.email", "t@t.co", cwd=primary)
+    _git("config", "user.name", "t", cwd=primary)
+    (primary / "a.txt").write_text("x")
+    _git("add", "-A", cwd=primary)
+    _git("commit", "-qm", "init", cwd=primary)
+    sub = primary / ".claude" / "worktrees"
+    sub.mkdir(parents=True)
+    linked = sub / "wt1"
+    _git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=primary)
+
+    from graphify.hooks import _TOPLEVEL_ANCHOR, _WORKTREE_GUARD
+    snippet = (_WORKTREE_GUARD + _TOPLEVEL_ANCHOR
+               + 'git rev-parse --verify -q HEAD >/dev/null && echo GIT_OK\n'
+               + ': > anchored.txt\n')
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    cases = [
+        ("top", primary, {}),
+        ("subdir", sub, {}),
+        ("subdir+GIT_DIR", sub, {"GIT_DIR": "../../.git"}),
+    ]
+    for label, cwd, extra in cases:
+        r = subprocess.run(["sh", "-c", snippet], cwd=cwd, env={**env, **extra},
+                           capture_output=True, text=True)
+        assert (primary / "anchored.txt").exists(), f"{label}: did not run at the top ({r.stderr})"
+        assert not (sub / "anchored.txt").exists(), f"{label}: ran in the subdirectory"
+        assert "GIT_OK" in r.stdout, f"{label}: git broke after the cd ({r.stderr})"
+        (primary / "anchored.txt").unlink()
+
+    r = subprocess.run(["sh", "-c", snippet], cwd=linked, env=env,
+                       capture_output=True, text=True)
+    assert not (linked / "anchored.txt").exists() and not (primary / "anchored.txt").exists(), \
+        "the linked worktree must still be skipped by the guard"
+
+
 # ── #1907: duplicate keys in .git/config must not trigger spurious warnings ──
 
 def _append_duplicate_config_entries(repo: Path) -> None:
@@ -2040,3 +2108,63 @@ def test_post_commit_changed_list_matches_real_non_ascii_files(tmp_path):
     got = [_unquote_git_path(l) for l in raw]
     assert sorted(got) == sorted(names)
     assert all((tmp_path / g).is_file() for g in got)
+
+
+def _watch_fn(name):
+    import graphify.watch as watch_mod
+
+    tree = ast.parse(Path(watch_mod.__file__).read_text(encoding="utf-8"))
+    return next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def test_watch_rebuild_timeout_arms_a_timer_without_sigalrm():
+    """`graphify watch` had no rebuild timeout at all, and the SIGALRM one the
+    hooks use is a no-op on Windows (#2173). Same shape as the hook test: the
+    Timer fallback sits in the else-branch of the SIGALRM check and kills
+    workers before os._exit, and the watch loop actually runs rebuilds in it."""
+    fn = _watch_fn("_rebuild_timeout")
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(fn)
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, "_rebuild_timeout has no else-branch for the missing-SIGALRM case (#2173)"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='Timer'" in dumped and "attr='_exit'" in dumped
+    bail = next(n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n.name == "_bail")
+    # statement position is execution order; ast.walk is breadth-first
+    order = [ast.dump(stmt) for stmt in bail.body]
+    kill_at = next(i for i, d in enumerate(order) if "attr='kill'" in d)
+    exit_at = next(i for i, d in enumerate(order) if "attr='_exit'" in d)
+    assert kill_at < exit_at, "_bail exits before killing workers"
+    loop = ast.dump(_watch_fn("watch"))
+    assert "_rebuild_timeout" in loop, "watch() does not wrap its rebuild in _rebuild_timeout (#2173)"
+
+
+def test_watch_rebuild_timeout_runs_off_the_main_thread():
+    """SIGALRM can only be armed from the main thread: signal.signal() raises
+    ValueError anywhere else. watch()'s dispatch loop runs in a worker thread
+    both under test and when embedded, so _rebuild_timeout must not reach for
+    SIGALRM there — otherwise the ValueError escapes the loop's
+    `except TimeoutError` guard and tears watch() down before the rebuild runs
+    (#4724 regressed gh-928). The context manager must yield (run its body)
+    cleanly off the main thread."""
+    import threading
+    import graphify.watch as watch_mod
+
+    ran: list[bool] = []
+    errors: list[BaseException] = []
+
+    def _body():
+        try:
+            with watch_mod._rebuild_timeout():
+                ran.append(True)
+        except BaseException as exc:  # noqa: BLE001 - record any escape
+            errors.append(exc)
+
+    t = threading.Thread(target=_body)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "_rebuild_timeout blocked the worker thread"
+    assert errors == [], f"_rebuild_timeout raised off the main thread: {errors!r}"
+    assert ran == [True], "_rebuild_timeout never ran its body off the main thread"

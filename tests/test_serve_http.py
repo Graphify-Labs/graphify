@@ -536,3 +536,20 @@ def test_graph_stats_commit_follows_project_path(tmp_path):
         default = _call_tool(client, headers, "graph_stats", {}, rid=3)
     assert scoped == _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n"
     assert default == _STATS_NO_COMMIT
+
+
+@pytest.mark.parametrize("host_header", ["[::1]:8080", "[::1]"])
+def test_ipv6_loopback_bind_accepts_bracketed_host_header(tmp_path, host_header):
+    """An IPv6 bind is reached as http://[::1]:8080, whose Host header is
+    bracketed; the DNS-rebinding allowlist must use that form, not bare ::1."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), host="::1", port=8080, json_response=True)
+    with _client(app) as client:
+        resp = client.post("/mcp", headers={**_MCP_HEADERS, "Host": host_header}, json=_INIT_BODY)
+        assert resp.status_code == 200
+
+
+def test_ipv6_loopback_bind_still_rejects_foreign_host_header(tmp_path):
+    app = serve_mod._build_http_app(_graph_file(tmp_path), host="::1", port=8080, json_response=True)
+    with _client(app) as client:
+        resp = client.post("/mcp", headers={**_MCP_HEADERS, "Host": "evil.example:8080"}, json=_INIT_BODY)
+        assert resp.status_code == 421

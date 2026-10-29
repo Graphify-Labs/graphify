@@ -61,6 +61,21 @@ def _get_tokenizer():
 # Cached at import time. None if tiktoken is unavailable; consumers must handle.
 _TOKENIZER = _get_tokenizer()
 
+# Anything past Latin Extended (CJK, Devanagari, Cyrillic, Arabic, ...).
+_NON_LATIN_RE = re.compile(r"[^\u0000-ɏ]")
+
+
+def _estimate_prompt_tokens(text: str) -> int:
+    """Rough token count for sizing a local model's context window.
+
+    chars/4 holds for English and code but not other scripts: on qwen2.5 a
+    Chinese doc came out 2.8x larger than chars/4 and a Hindi one 3.7x, so
+    num_ctx was too small and Ollama cut the prompt. Count non-Latin
+    characters as one token each, which errs on the safe side for both.
+    """
+    non_latin = len(_NON_LATIN_RE.findall(text))
+    return (len(text) - non_latin) // _CHARS_PER_TOKEN + non_latin
+
 
 def _resolve_ollama_base_url(default: str) -> str:
     """Resolve the Ollama base URL. Honors an explicit OLLAMA_BASE_URL first
@@ -342,6 +357,13 @@ def _resolve_max_tokens(default: int) -> int:
     return default
 
 
+def _openai_max_tokens_kwarg(backend: str, max_tokens: int) -> dict[str, int]:
+    """Map the output cap to the OpenAI-compatible field accepted by the backend."""
+    # DeepSeek documents max_tokens and ignores max_completion_tokens.
+    key = "max_tokens" if backend == "deepseek" else "max_completion_tokens"
+    return {key: max_tokens}
+
+
 # Model-name fragments for OpenAI-compatible "reasoning" models that reject an
 # explicit temperature: the API returns 400 "Unsupported value: 'temperature'
 # does not support 0 with this model. Only the default (1) value is supported."
@@ -525,7 +547,10 @@ source (a markdown or wiki link, a backticked path, a "Source:" or "Related:"
 line, a module or class a design doc specifies) is a reference, not the source:
 never use its path as source_file. Model the referenced file or entity as a node
 attributed to the enclosing file and link to it with a `references` or `cites`
-edge. Never invent, shorten or rewrite a path, and never omit source_file.
+edge. Add `"metadata":{"graphify_reference_stub":true}` to every node created
+solely for such a cross-document reference. Never add this marker to a node
+defined by the enclosing source. Never invent, shorten or rewrite a path, and
+never omit source_file.
 
 Node ID format: lowercase, only [a-z0-9_], no dots or slashes.
 Format: {stem}_{entity} where stem = full repo-relative path with the extension dropped, every segment joined with _ (e.g. src/auth/session.py -> src_auth_session); entity = symbol name (both normalised). Top-level files use just the filename stem (setup.py -> setup).
@@ -792,7 +817,16 @@ def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root
         # No evidence. Flag only a node the model itself presented as solid
         # (EXTRACTED/unset) — one it already hedged (INFERRED/AMBIGUOUS) needs no
         # second flag. Idempotent: never overwrites an existing verification.
-        if n.get("confidence") in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
+        # Matched case-insensitively, the way build._fold_confidence (#4529)
+        # reads it: a mis-cased enum value IS that enum value there and is
+        # corrected to the canonical spelling, so a node the model wrote as
+        # `"extracted"` reaches graph.json just as solid as `"EXTRACTED"` and
+        # must be evidence-checked the same. A hedged spelling in any case
+        # ("inferred", "ambiguous") still falls through unflagged.
+        _conf = n.get("confidence")
+        if isinstance(_conf, str):
+            _conf = _conf.upper()
+        if _conf in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
             n[_VERIFICATION_FIELD] = _UNVERIFIED_VALUE
             downgraded += 1
     return downgraded
@@ -1392,7 +1426,8 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
     )
 
 
-def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dict:
+def _ollama_request_extras(user_message: str, max_completion_tokens: int,
+                           system_prompt: str = "") -> dict:
     """num_ctx/keep_alive for an Ollama request, sized to the prompt."""
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
@@ -1400,12 +1435,14 @@ def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dic
     # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
     # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
     # hollow-200 symptom — just from a different direction (#798 follow-up).
-    # Formula: actual input tokens + output cap + system prompt headroom.
+    # Formula: input tokens (user message + system prompt) + output cap + margin.
     # Capped at 131072 (enough for the default 60k token_budget); env var wins.
     num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
     # Auto-derive num_ctx from actual chunk size regardless — used as the
     # fallback and for the mismatch check below.
-    estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
+    # The system prompt is measured rather than assumed: a flat 400 was short
+    # of the ~760 tokens the extraction prompt really takes.
+    estimated_input = _estimate_prompt_tokens(user_message) + _estimate_prompt_tokens(system_prompt)
     auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 131072)
     auto_num_ctx = max(auto_num_ctx, 8192)
     if num_ctx_raw:
@@ -1432,8 +1469,6 @@ def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dic
                     file=sys.stderr,
                 )
     else:
-        # Estimate input tokens: user_message chars / 4 (standard BPE
-        # heuristic) + 400 for the system prompt, then add output headroom.
         num_ctx = auto_num_ctx
     keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
     return {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
@@ -1554,7 +1589,7 @@ def _call_openai_compat(
             {"role": "system", "content": _extraction_system(deep=deep_mode)},
             {"role": "user", "content": _openai_content(user_message, images or [])},
         ],
-        "max_completion_tokens": max_completion_tokens,
+        **_openai_max_tokens_kwarg(backend, max_completion_tokens),
         "stream": False,
     }
     if temperature is not None:
@@ -1583,7 +1618,8 @@ def _call_openai_compat(
         # above, and replacing it here made the flag silently inert on ollama (#3988).
         kwargs["extra_body"] = {
             **kwargs.get("extra_body", {}),
-            **_ollama_request_extras(user_message, max_completion_tokens),
+            **_ollama_request_extras(user_message, max_completion_tokens,
+                                     kwargs["messages"][0]["content"]),
         }
     native = None
     if backend == "ollama" and extra_body is None:
@@ -2772,6 +2808,9 @@ def extract_corpus_parallel(
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
     }
     total = len(chunks)
+    # Files whose chunk raised before returning a response. The #1890
+    # reconciliation below must not describe them as omitted by the model (#3616).
+    failed_files: set[Path] = set()
 
     def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
@@ -2853,6 +2892,7 @@ def extract_corpus_parallel(
             if exc is not None:
                 print(f"[graphify] chunk {idx + 1}/{total} failed: {exc}", file=sys.stderr)
                 merged["failed_chunks"] += 1
+                failed_files.update(unit_path(f) for f in chunk)
                 continue
             assert result is not None
             _merge_into(merged, result)
@@ -2878,6 +2918,7 @@ def extract_corpus_parallel(
                         file=sys.stderr,
                     )
                     merged["failed_chunks"] += 1
+                    failed_files.update(unit_path(f) for f in chunks[idx])
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
@@ -2991,11 +3032,25 @@ def extract_corpus_parallel(
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     _stamp_semantic_origin(merged)
-    if uncovered:
-        shown = ", ".join(p.name for p in uncovered[:5])
-        more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
+    # Split the gap by cause (#3616): a file whose chunk raised never got a
+    # response, so only the rest were actually omitted by the model.
+    unanswered = [p for p in uncovered if p in failed_files]
+    omitted = [p for p in uncovered if p not in failed_files]
+    if unanswered:
+        shown = ", ".join(p.name for p in unanswered[:5])
+        more = f" (+{len(unanswered) - 5} more)" if len(unanswered) > 5 else ""
         print(
-            f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
+            f"[graphify] WARNING: {len(unanswered)}/{len(dispatched)} dispatched file(s) "
+            f"produced no nodes and are absent from the graph: {shown}{more}. Their "
+            "chunk failed before returning a response (see errors above); a re-run "
+            "will retry them.",
+            file=sys.stderr,
+        )
+    if omitted:
+        shown = ", ".join(p.name for p in omitted[:5])
+        more = f" (+{len(omitted) - 5} more)" if len(omitted) > 5 else ""
+        print(
+            f"[graphify] WARNING: {len(omitted)}/{len(dispatched)} dispatched file(s) "
             f"produced no nodes and are absent from the graph: {shown}{more}. The model "
             "returned a response but omitted them; a re-run will retry them.",
             file=sys.stderr,
@@ -3209,7 +3264,7 @@ def _call_llm(
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": max_tokens,
+        **_openai_max_tokens_kwarg(backend, max_tokens),
         # Force a single non-streamed response: some OpenAI-compatible gateways
         # default to SSE streaming when `stream` is omitted, but the result here
         # is always read as resp.choices[0]. Same fix as _call_openai_compat

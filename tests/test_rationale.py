@@ -665,3 +665,29 @@ def test_ordinary_rationale_untouched(tmp_path):
     labels = _labels(extract_python(path))
     assert any("chunked processing because the dataset exceeds RAM" in label for label in labels)
     assert not any("[redacted]" in label for label in labels)
+
+
+@pytest.mark.skipif(
+    __import__("importlib.util").util.find_spec("tree_sitter_commonlisp") is None,
+    reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
+)
+def test_commonlisp_docstring_secret_redacted(tmp_path):
+    # Common Lisp builds rationale labels itself rather than via
+    # _shorten_rationale_label; the token must still not reach the label.
+    from graphify.extract import extract
+    path = tmp_path / "deploy.lisp"
+    path.write_text(f'(defun deploy () "token {_GH_TOKEN} for CI" (push))\n')
+    result = extract([path])
+    labels = _labels(result)
+    assert labels and not any("ghp_a1B2" in label for label in labels)
+
+
+def test_redact_rationale_labels_covers_any_extractor():
+    from graphify.extract import _redact_rationale_labels
+    result = {"nodes": [
+        {"id": "r", "label": f"WHY: {_GH_TOKEN}", "file_type": "rationale"},
+        {"id": "c", "label": "deploy", "file_type": "code"},
+    ]}
+    out = _redact_rationale_labels(result)
+    assert out["nodes"][0]["label"] == "WHY: [redacted]"
+    assert out["nodes"][1]["label"] == "deploy"
