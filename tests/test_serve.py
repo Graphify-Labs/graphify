@@ -2003,6 +2003,79 @@ def test_dotted_python_symbol_same_file_tie_is_refused_by_path_endpoint():
     G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
     nid, _, err = _resolve_path_endpoint(G, "pkg.mod.run")
     assert nid is None and err.startswith("Ambiguous")
+def _type_member_graph() -> nx.Graph:
+    """The #4884 repro: two classes with a same-named method, plus a call into one."""
+    G = nx.Graph()
+    G.add_node("cs", label="Report.cs", source_file="Report.cs", source_location="L1")
+    for owner in ("pdf", "csv"):
+        G.add_node(owner, label=f"{owner.capitalize()}Report", source_file="Report.cs", source_location="L2")
+        G.add_node(f"{owner}_build", label=".Build()", source_file="Report.cs", source_location="L3")
+        G.add_edge("cs", owner, relation="contains", _src="cs", _tgt=owner)
+        # The stored arc can read either way round in an undirected graph.
+        G.add_edge(f"{owner}_build", owner, relation="method", _src=owner, _tgt=f"{owner}_build")
+    return G
+
+
+@pytest.mark.parametrize("query", ["PdfReport.Build", "pdfreport.build()", "Ns.PdfReport.Build"])
+def test_type_member_query_resolves_to_the_method_not_the_type(query):
+    """`Type.Method` used to score onto the class and return a misleading route (#4884)."""
+    from graphify.serve import _resolve_path_endpoint
+    assert _resolve_path_endpoint(_type_member_graph(), query) == ("pdf_build", [], None)
+
+
+def test_type_member_query_is_refused_when_two_types_share_the_name():
+    from graphify.serve import _resolve_path_endpoint
+    G = _type_member_graph()
+    G.add_node("pdf2", label="PdfReport", source_file="Other.cs", source_location="L1")
+    G.add_node("pdf2_build", label=".Build()", source_file="Other.cs", source_location="L2")
+    G.add_edge("pdf2", "pdf2_build", relation="method", _src="pdf2", _tgt="pdf2_build")
+    nid, _, err = _resolve_path_endpoint(G, "PdfReport.Build")
+    assert nid is None and err.startswith("Ambiguous")
+
+
+def test_type_member_overloads_in_one_file_are_refused():
+    from graphify.serve import _resolve_path_endpoint
+    G = _type_member_graph()
+    G.add_node("pdf_build2", label=".Build()", source_file="Report.cs", source_location="L9")
+    G.add_edge("pdf", "pdf_build2", relation="method", _src="pdf", _tgt="pdf_build2")
+    nid, _, err = _resolve_path_endpoint(G, "PdfReport.Build")
+    assert nid is None and err.startswith("Ambiguous")
+
+
+def test_type_member_query_with_no_such_member_does_not_fall_back_to_the_type():
+    from graphify.serve import _resolve_path_endpoint
+    nid, scored, err = _resolve_path_endpoint(_type_member_graph(), "PdfReport.Nope")
+    assert (nid, scored) == (None, [])
+    assert err.startswith("No node matching") and "defines no 'Nope'" in err
+
+
+def test_dotted_query_on_an_unknown_type_still_reaches_the_scorer():
+    from graphify.serve import _resolve_path_endpoint
+    G = nx.Graph()
+    G.add_node("n", label="settings.loader helper", source_file="a.md", source_location="L1")
+    nid, scored, err = _resolve_path_endpoint(G, "settings.loader")
+    assert nid == "n" and err is None
+
+
+def test_type_member_query_ignores_a_call_edge_and_an_unknown_member():
+    from graphify.serve import _resolve_type_member
+    G = _type_member_graph()
+    G.add_edge("pdf", "csv_build", relation="calls", _src="pdf", _tgt="csv_build")
+    assert _resolve_type_member(G, "PdfReport", "Build") == ["pdf_build"]
+    assert _resolve_type_member(G, "PdfReport", "Nope") == []
+
+
+def test_module_path_wins_over_a_type_member():
+    """`pkg.mod.run` keeps its #4366 meaning when a type is also called `mod`."""
+    from graphify.serve import _resolve_path_endpoint
+    G = nx.Graph()
+    G.add_node("f", label="run()", source_file="pkg/mod.py", source_location="L1")
+    G.add_node("t", label="mod", source_file="other.py", source_location="L1")
+    G.add_node("m", label=".run()", source_file="other.py", source_location="L2")
+    G.add_edge("t", "m", relation="method", _src="t", _tgt="m")
+    assert _resolve_path_endpoint(G, "pkg.mod.run") == ("f", [], None)
+
+
 # --- parallel-edge preservation (#4500) ---
 
 def _parallel_edge_graph_json(tmp_path):
