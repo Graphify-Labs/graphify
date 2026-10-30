@@ -15,12 +15,18 @@ import os
 from pathlib import Path
 
 import pytest
+import networkx as nx
 from networkx.readwrite import json_graph
 
 import graphify.__main__ as mainmod
 from graphify.cli import EXIT_AMBIGUOUS, EXIT_NOT_FOUND
 from graphify.extract import extract
-from graphify.serve import _resolve_path_endpoint, _resolve_single_node, _shortest_path_text
+from graphify.serve import (
+    _find_node_tiers,
+    _resolve_path_endpoint,
+    _resolve_single_node,
+    _shortest_path_text,
+)
 
 _REPORT_CS = (
     "public interface IReport { string Build(); }\n"
@@ -220,3 +226,92 @@ def test_dotted_label_and_non_type_owner_keep_their_old_resolution(tmp_path):
     # No type called `release` owns members, so the query still scores.
     nid, scored, err = _resolve_path_endpoint(G, "release.notes")
     assert (nid, err) == ("helper", None) and scored
+
+
+def _file_name_graph(tmp_path) -> Path:
+    """A `Utils` type and a `Config` type with a `Json()` member, next to the
+    files `src/utils.py` (its file node carries the directory-qualified label of
+    #2032) and `config.json` (keys only, no file node)."""
+    return _write_nodes(tmp_path, [
+        ("src_utils", "src/utils.py", "src/utils.py", "L1"),
+        ("src_utils_helper", "helper()", "src/utils.py", "L3"),
+        ("utils", "Utils", "Utils.cs", "L1"),
+        ("utils_run", ".Run()", "Utils.cs", "L2"),
+        ("config_port", "port", "config.json", "L2"),
+        ("cfg", "Config", "Config.cs", "L1"),
+        ("cfg_json", ".Json()", "Config.cs", "L2"),
+    ], [
+        ("src_utils", "src_utils_helper", "contains"),
+        ("utils", "utils_run", "method"),
+        ("cfg", "cfg_json", "method"),
+    ])
+
+
+def test_file_name_endpoint_is_not_refused_as_a_missing_member(monkeypatch, tmp_path, capsys):
+    """`utils.py` has the `Type.Member` shape and a `Utils` type exists, but the
+    query names a file: it must keep its ordinary match, not be refused."""
+    gp = _file_name_graph(tmp_path)
+    code, out, err = _path(monkeypatch, capsys, gp, "utils.py", "helper()")
+    assert code == 0, err
+    assert "Shortest path (1 hops):" in out
+    assert "src/utils.py --contains [EXTRACTED]--> helper()" in out
+    assert _resolve_path_endpoint(_load(gp), "utils.py")[::2] == ("src_utils", None)
+
+
+def test_file_name_beats_a_same_shaped_member(tmp_path):
+    """`config.json` names the file even though `Config` declares `Json()`."""
+    G = _load(_file_name_graph(tmp_path))
+    assert _resolve_path_endpoint(G, "config.json")[0] == "config_port"
+    assert _resolve_single_node(G, "config.json") == ("config_port", None)
+    assert _resolve_path_endpoint(G, "Utils.Run")[0] == "utils_run"
+
+
+def test_exact_dotted_node_id_is_not_refused_as_a_missing_member(monkeypatch, tmp_path, capsys):
+    """A node whose id is `Report.Build` is named by that id, though the type
+    `Report` declares no `Build`."""
+    gp = _write_nodes(tmp_path, [
+        ("Report.Build", "build step", "ci.yml", "L4"),
+        ("ci_deploy", "deploy step", "ci.yml", "L9"),
+        ("report", "Report", "Report.cs", "L1"),
+        ("report_render", ".Render()", "Report.cs", "L2"),
+    ], [
+        ("Report.Build", "ci_deploy", "calls"),
+        ("report", "report_render", "method"),
+    ])
+    code, out, err = _path(monkeypatch, capsys, gp, "Report.Build", "ci_deploy")
+    assert code == 0, err
+    assert "build step --calls [EXTRACTED]--> deploy step" in out
+    assert _resolve_single_node(_load(gp), "Report.Build") == ("Report.Build", None)
+
+
+def _undirected(markers: bool) -> nx.Graph:
+    """Builder owns `.Report()`; Inner owns `.Go()`. Without markers an undirected
+    edge cannot say which end is the owner."""
+    G = nx.Graph()
+    for nid, label in [("builder", "Builder"), ("builder_report", ".Report()"),
+                       ("inner", "Inner"), ("inner_go", ".Go()")]:
+        G.add_node(nid, label=label, source_file="A.cs", source_location="L1")
+    for owner, member in [("builder", "builder_report"), ("inner", "inner_go")]:
+        attrs = {"_src": owner, "_tgt": member} if markers else {}
+        # Added member-first, so iteration order is no hint of the owner either.
+        G.add_edge(member, owner, relation="method", **attrs)
+    return G
+
+
+def test_undirected_edge_without_markers_names_no_owner():
+    """A member must not pose as its type's owner: `.Report()` does not own
+    `Builder`, and `.Go()` is no type whose missing member gets refused."""
+    G = _undirected(markers=False)
+    assert _find_node_tiers(G, "Report.Builder")[1] == []
+    assert _find_node_tiers(G, "Inner.Go")[1] == []
+    _nid, _, err = _resolve_path_endpoint(G, "Go.Missing")
+    assert err is None
+
+
+def test_undirected_edge_with_markers_keeps_its_direction():
+    G = _undirected(markers=True)
+    assert _resolve_path_endpoint(G, "Inner.Go")[::2] == ("inner_go", None)
+    assert _resolve_path_endpoint(G, "Builder.Report")[::2] == ("builder_report", None)
+    assert _find_node_tiers(G, "Report.Builder")[1] == []
+    _nid, _, err = _resolve_path_endpoint(G, "Go.Missing")
+    assert err is None

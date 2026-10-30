@@ -1666,9 +1666,11 @@ def _named_nodes(G: nx.Graph, name: str) -> list[str]:
 def _membership_neighbors(G: nx.Graph, nid: str, *, members: bool) -> list[str]:
     """The members of *nid* (``members=True``) or the nodes that own it.
 
-    Direction is the stored arc, or the `_src`/`_tgt` markers of a legacy
-    canonicalized file (#2309). An undirected graph without markers cannot tell
-    owner from member, so there every membership neighbour counts both ways.
+    Direction comes from the edge's `_src`/`_tgt` markers (#2309, and the CLI
+    loaders that read a graph undirected stamp them on every link), else from
+    the stored arc of a directed graph. An undirected edge without markers says
+    nothing about which end owns the other, so it is skipped: counting it both
+    ways would let a member pose as its type's owner.
     """
     if isinstance(G, nx.DiGraph):
         edges = list(G.out_edges(nid, data=True)) + list(G.in_edges(nid, data=True))
@@ -1678,13 +1680,15 @@ def _membership_neighbors(G: nx.Graph, nid: str, *, members: bool) -> list[str]:
     for u, v, d in edges:
         if d.get("relation") not in _TYPE_MEMBER_RELATIONS:
             continue
-        if G.is_directed() or "_src" in d:
-            owner, member = d.get("_src", u), d.get("_tgt", v)
-            if (owner if members else member) != nid:
-                continue
-            other = member if members else owner
+        if "_src" in d and "_tgt" in d:
+            owner, member = d["_src"], d["_tgt"]
+        elif isinstance(G, nx.DiGraph):
+            owner, member = u, v
         else:
-            other = v if u == nid else u
+            continue
+        if (owner if members else member) != nid:
+            continue
+        other = member if members else owner
         if other != nid:
             found.setdefault(other)
     return list(found)
@@ -1718,14 +1722,33 @@ def _members_named(G: nx.Graph, owners: list[str], member: str) -> list[str]:
     return list(hits)
 
 
+def _names_source_file(G: nx.Graph, label: str) -> bool:
+    """Is *label* a file name (`utils.py`) or path some node was extracted from?
+
+    Case-insensitive, like the `source_exact` tier's own path match.
+    """
+    def fold(text: str) -> str:
+        return _strip_diacritics(text.strip().replace("\\", "/")).lower()
+
+    query = fold(label)
+    for _nid, d in G.nodes(data=True):
+        source = fold(str(d.get("source_file") or ""))
+        if source and (source == query or source.endswith("/" + query)):
+            return True
+    return False
+
+
 def _resolve_qualified_member(G: nx.Graph, label: str) -> list[str]:
     """Member nodes named by `Type.Member` through their declaring type (#4884).
 
-    A namespace qualifier (`Acme.Io.Type.Member`) matches nothing: the file, not
-    the namespace node, owns the type, so only enclosing types can qualify it.
+    A file name such as `config.json` has the same shape, and names the file
+    even when a `Config` type declares a `Json` member, so it resolves nothing.
+    A namespace qualifier (`Acme.Io.Type.Member`) matches nothing either: the
+    file, not the namespace node, owns the type, so only enclosing types can
+    qualify it.
     """
     split = _split_qualified_member(label)
-    if not split:
+    if not split or _names_source_file(G, label):
         return []
     qualifiers, member = split
     return _members_named(G, _qualified_member_owners(G, qualifiers), member)
@@ -1735,12 +1758,17 @@ def _no_member_match_message(G: nx.Graph, label: str) -> str | None:
     """Refusal for a `Type.Member` endpoint whose type declares no such member (#4884).
 
     Scoring the query instead lands on the type itself, so a path to the type
-    reads as a path to the member. Returns None when no type of that name owns
-    members, leaving the query to ordinary scoring. Same-named members of a type
-    with that bare name (a namespace-qualified query, say) are listed for a retry.
+    reads as a path to the member. Returns None when the query is a node's own
+    id or label, or a file name, or when no type of that name owns members:
+    those keep their ordinary match. Same-named members of a type with that bare
+    name (a namespace-qualified query, say) are listed for a retry.
     """
     split = _split_qualified_member(label)
     if not split:
+        return None
+    term = " ".join(_search_tokens(label))
+    norm_query = _strip_diacritics(label).lower().strip()
+    if _label_has_literal_exact_match(G, term, norm_query) or _names_source_file(G, label):
         return None
     qualifiers, member = split
     bare_owners = _qualified_member_owners(G, qualifiers[-1:])
@@ -1811,14 +1839,6 @@ def _find_node_tiers(
         scoped = _resolve_python_qualified(G, label)
         if scoped:
             return scoped, [], [], []
-        # `Type.Member` names a member through its declaring type (#4884). The
-        # member's own label is `.Build()`, so the tiers below match nothing and
-        # scoring picks the type. Returned as the exact tier, so several members
-        # under that name (one per implementing type, or overloads) are refused
-        # with their candidates rather than one of them guessed.
-        members = _resolve_qualified_member(G, label)
-        if members:
-            return [], members, [], []
 
     if not term:
         return [], [], [], []
@@ -1860,6 +1880,17 @@ def _find_node_tiers(
             prefix.append(nid)
         elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
+
+    # `Type.Member` names a member through its declaring type (#4884). The
+    # member's own label is `.Build()`, so no tier above matched it and scoring
+    # picked the type. Tried only once no node's own id, label or source path
+    # matched exactly, so those keep precedence. Returned as the exact tier, so
+    # several members under that name (one per implementing type, or overloads)
+    # are refused with their candidates rather than one of them guessed.
+    if not (source_exact or exact):
+        members = _resolve_qualified_member(G, label)
+        if members:
+            return [], members, [], []
 
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
