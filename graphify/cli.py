@@ -94,6 +94,33 @@ EXIT_AMBIGUOUS = 3
 EXIT_NOT_FOUND = 4
 
 
+def _parse_cluster_option(flag: str, raw: str) -> float:
+    from graphify.watch import _valid_cluster_value
+
+    key = "cluster_resolution" if flag == "--resolution" else "cluster_exclude_hubs_percentile"
+    try:
+        return _valid_cluster_value(key, raw)
+    except ValueError as exc:
+        print(f"error: {flag}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _finish_cluster_adoption(out: Path, explicit: dict) -> None:
+    from graphify.watch import _adopt_cluster_settings
+
+    try:
+        outcome = _adopt_cluster_settings(out, explicit)
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if outcome == "adopted_after_error":
+        print(
+            "warning: clustering settings were adopted despite a reported config write error; "
+            "inspect .graphify_build.json if retrying",
+            file=sys.stderr,
+        )
+
+
 def _nudge_for_out(nudge: str) -> str:
     """Name the effective graph.json in a hook-guard reminder (#4040).
 
@@ -2433,8 +2460,7 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[2:]
         watch_path: Path | None = None
         graph_override: Path | None = None
-        co_resolution: float = 1.0
-        co_exclude_hubs: float | None = None
+        cluster_explicit: dict[str, float] = {}
         label_max_concurrency: int = 4
         label_batch_size: int = 100
         # #2534: defaults make presence undetectable for these, so track whether
@@ -2457,13 +2483,16 @@ def dispatch_command(cmd: str) -> None:
             elif a.startswith("--model="):
                 label_model = a.split("=", 1)[1]; i_arg += 1
             elif a == "--resolution" and i_arg + 1 < len(args):
-                co_resolution = float(args[i_arg + 1]); i_arg += 2
+                cluster_explicit["cluster_resolution"] = _parse_cluster_option(a, args[i_arg + 1]); i_arg += 2
             elif a.startswith("--resolution="):
-                co_resolution = float(a.split("=", 1)[1]); i_arg += 1
+                cluster_explicit["cluster_resolution"] = _parse_cluster_option("--resolution", a.split("=", 1)[1]); i_arg += 1
             elif a == "--exclude-hubs" and i_arg + 1 < len(args):
-                co_exclude_hubs = float(args[i_arg + 1]); i_arg += 2
+                cluster_explicit["cluster_exclude_hubs_percentile"] = _parse_cluster_option(a, args[i_arg + 1]); i_arg += 2
             elif a.startswith("--exclude-hubs="):
-                co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
+                cluster_explicit["cluster_exclude_hubs_percentile"] = _parse_cluster_option("--exclude-hubs", a.split("=", 1)[1]); i_arg += 1
+            elif a in ("--resolution", "--exclude-hubs"):
+                print(f"error: {a} requires a value", file=sys.stderr)
+                sys.exit(2)
             elif a == "--max-concurrency" and i_arg + 1 < len(args):
                 label_max_concurrency = int(args[i_arg + 1]); label_max_concurrency_explicit = True; i_arg += 2
             elif a.startswith("--max-concurrency="):
@@ -2483,6 +2512,18 @@ def dispatch_command(cmd: str) -> None:
         if watch_path is None:
             watch_path = Path(".")
         graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
+        # The graph inside another graphify-out owns its own build options (#1747).
+        _out_name = Path(_GRAPHIFY_OUT).name
+        if graph_override is not None and graph_json.parent.name == _out_name:
+            out = graph_json.parent
+        else:
+            out = watch_path / _GRAPHIFY_OUT
+        from graphify.watch import _cluster_settings
+        try:
+            co_resolution, co_exclude_hubs = _cluster_settings(out, cluster_explicit)
+        except (OSError, UnicodeError) as exc:
+            print(f"error: cannot read clustering settings: {exc}", file=sys.stderr)
+            sys.exit(1)
         if not graph_json.exists():
             print(
                 f"error: no graph found at {graph_json} — run /graphify first",
@@ -2550,11 +2591,6 @@ def dispatch_command(cmd: str) -> None:
         # before re-clustering (#934) — fall back to the CWD's graphify-out/,
         # which is the restore-into-place workflow that test pins. The default
         # (no --graph) case already has graph_json under watch_path/graphify-out.
-        _out_name = Path(_GRAPHIFY_OUT).name
-        if graph_override is not None and graph_json.parent.name == _out_name:
-            out = graph_json.parent
-        else:
-            out = watch_path / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
         existing_labels: dict[int, str] = {}
@@ -2798,6 +2834,8 @@ def dispatch_command(cmd: str) -> None:
             _wta(
                 labels_path.parent / (labels_path.name + ".sig"),
                 json.dumps({str(k): v for k, v in _cms(communities).items()}))
+
+        _finish_cluster_adoption(out, cluster_explicit)
 
         # Mirror watch.py pattern: gate to_html so core outputs (graph.json +
         # GRAPH_REPORT.md) always land. Honor --no-viz explicitly; otherwise
@@ -3771,8 +3809,7 @@ def dispatch_command(cmd: str) -> None:
         cli_max_concurrency: int | None = None
         cli_api_timeout: float | None = None
         # Clustering tuning knobs
-        cli_resolution: float = 1.0
-        cli_exclude_hubs: float | None = None
+        cluster_explicit: dict[str, float] = {}
         cli_excludes: list[str] = []
         cli_timing: bool = False
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
@@ -3857,13 +3894,16 @@ def dispatch_command(cmd: str) -> None:
             elif a.startswith("--api-timeout="):
                 cli_api_timeout = _parse_float("--api-timeout", a.split("=", 1)[1]); i += 1
             elif a == "--resolution" and i + 1 < len(args):
-                cli_resolution = _parse_float("--resolution", args[i + 1]); i += 2
+                cluster_explicit["cluster_resolution"] = _parse_cluster_option(a, args[i + 1]); i += 2
             elif a.startswith("--resolution="):
-                cli_resolution = _parse_float("--resolution", a.split("=", 1)[1]); i += 1
+                cluster_explicit["cluster_resolution"] = _parse_cluster_option("--resolution", a.split("=", 1)[1]); i += 1
             elif a == "--exclude-hubs" and i + 1 < len(args):
-                cli_exclude_hubs = float(args[i + 1]); i += 2
+                cluster_explicit["cluster_exclude_hubs_percentile"] = _parse_cluster_option(a, args[i + 1]); i += 2
             elif a.startswith("--exclude-hubs="):
-                cli_exclude_hubs = float(a.split("=", 1)[1]); i += 1
+                cluster_explicit["cluster_exclude_hubs_percentile"] = _parse_cluster_option("--exclude-hubs", a.split("=", 1)[1]); i += 1
+            elif a in ("--resolution", "--exclude-hubs"):
+                print(f"error: {a} requires a value", file=sys.stderr)
+                sys.exit(2)
             elif a == "--exclude" and i + 1 < len(args):
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
@@ -3924,6 +3964,20 @@ def dispatch_command(cmd: str) -> None:
         # the skill.md pipeline.
         out_root = (out_dir.resolve() if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
+        from graphify.watch import _cluster_settings
+        if no_cluster:
+            if cluster_explicit:
+                print(
+                    "warning: --no-cluster ignores clustering flags; settings were not adopted",
+                    file=sys.stderr,
+                )
+            cli_resolution, cli_exclude_hubs = 1.0, None
+        else:
+            try:
+                cli_resolution, cli_exclude_hubs = _cluster_settings(graphify_out, cluster_explicit)
+            except (OSError, UnicodeError) as exc:
+                print(f"error: cannot read clustering settings: {exc}", file=sys.stderr)
+                sys.exit(1)
         graphify_out.mkdir(parents=True, exist_ok=True)
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
@@ -5247,6 +5301,7 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
+        _finish_cluster_adoption(graphify_out, cluster_explicit)
         cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
         print(
             f"[graphify extract] wrote {graph_json_path}: "

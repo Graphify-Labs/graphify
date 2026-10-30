@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import posixpath
 import multiprocessing
@@ -107,6 +108,126 @@ def _drain_pending_full(out_dir: Path) -> bool:
 # and would silently re-include excluded paths unless the patterns are persisted
 # (#1886). We store them beside the graph so any rebuild driver can re-apply them.
 _BUILD_CONFIG_FILENAME = ".graphify_build.json"
+_CLUSTER_DEFAULTS = {"cluster_resolution": 1.0, "cluster_exclude_hubs_percentile": None}
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON value {value}")
+
+
+def _same_json_object(left: object, right: object) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    return (
+        json.dumps(left, sort_keys=True, separators=(",", ":"))
+        == json.dumps(right, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def _valid_cluster_value(name: str, value: object) -> float:
+    """Validate the two public clustering knobs before they reach the algorithms."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{name} must be a finite number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number")
+    if name == "cluster_resolution" and number <= 0:
+        raise ValueError("cluster_resolution must be > 0")
+    if name == "cluster_exclude_hubs_percentile" and not 0 <= number <= 100:
+        raise ValueError("cluster_exclude_hubs_percentile must be between 0 and 100")
+    return number
+
+
+def _read_build_config(out_dir: Path, *, strict_io: bool = False) -> dict:
+    """Read the output-local options. A real read error must block adoption."""
+    path = out_dir / _BUILD_CONFIG_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError):
+        if strict_io:
+            raise
+        logger.warning("Cannot read %s; using build defaults", path)
+        return {}
+    try:
+        config = json.loads(raw, parse_constant=_reject_json_constant)
+    except (UnicodeError, ValueError):
+        logger.warning("Invalid %s; using build defaults", path)
+        return {}
+    if not isinstance(config, dict):
+        logger.warning("Invalid %s: expected an object; using build defaults", path)
+        return {}
+    return config
+
+
+def _cluster_settings(out_dir: Path, explicit: dict | None = None) -> tuple[float, float | None]:
+    """Resolve explicit values, then valid flat saved values, then defaults."""
+    config = _read_build_config(out_dir, strict_io=True)
+    values = dict(_CLUSTER_DEFAULTS)
+    for name in values:
+        if name in config:
+            try:
+                if not isinstance(config[name], (int, float)) or isinstance(config[name], bool):
+                    raise ValueError("expected a JSON number")
+                values[name] = _valid_cluster_value(name, config[name])
+            except ValueError as exc:
+                logger.warning("Ignoring invalid %s in %s: %s", name, out_dir / _BUILD_CONFIG_FILENAME, exc)
+    for name, value in (explicit or {}).items():
+        values[name] = _valid_cluster_value(name, value)
+    return values["cluster_resolution"], values["cluster_exclude_hubs_percentile"]
+
+
+def _adopt_cluster_settings(out_dir: Path, explicit: dict) -> str:
+    """Persist only explicit settings after core outputs succeed.
+
+    A replacement exception is classified by reading the actual destination:
+    Windows fallback cleanup can fail after the intended object was installed.
+    """
+    if not explicit:
+        return "unchanged"
+    from graphify.paths import write_json_atomic
+
+    prior = _read_build_config(out_dir, strict_io=True)
+    intended = dict(prior)
+    for name in _CLUSTER_DEFAULTS:
+        if name in intended:
+            try:
+                if not isinstance(intended[name], (int, float)) or isinstance(intended[name], bool):
+                    raise ValueError("expected a JSON number")
+                intended[name] = _valid_cluster_value(name, intended[name])
+            except ValueError:
+                del intended[name]
+    for name, value in explicit.items():
+        intended[name] = _valid_cluster_value(name, value)
+    try:
+        json.dumps(intended, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "graph updated; clustering settings were not adopted because the "
+            "existing config contains a non-serializable value; inspect .graphify_build.json"
+        ) from exc
+    try:
+        write_json_atomic(out_dir / _BUILD_CONFIG_FILENAME, intended)
+    except Exception as exc:
+        try:
+            actual = json.loads(
+                (out_dir / _BUILD_CONFIG_FILENAME).read_text(encoding="utf-8"),
+                parse_constant=_reject_json_constant,
+            )
+        except (OSError, UnicodeError, ValueError):
+            actual = None
+        if _same_json_object(actual, intended):
+            return "adopted_after_error"
+        if _same_json_object(actual, prior):
+            raise RuntimeError("graph updated; clustering settings were not adopted; retry") from exc
+        raise RuntimeError(
+            "graph updated; clustering config is uncertain; inspect .graphify_build.json before retry"
+        ) from exc
+    return "adopted"
 
 
 def _write_build_config(
@@ -124,45 +245,34 @@ def _write_build_config(
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / _BUILD_CONFIG_FILENAME
-        try:
-            config = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-        except (OSError, json.JSONDecodeError):
-            config = {}
-        if not isinstance(config, dict):
-            config = {}
+        config = _read_build_config(out_dir, strict_io=True)
         if excludes:
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
-        path.write_text(json.dumps(config), encoding="utf-8")
+        try:
+            payload = json.dumps(config, allow_nan=False)
+        except (TypeError, ValueError):
+            logger.warning("Cannot persist build options in %s; existing config contains a non-serializable value", path)
+            return
+        path.write_text(payload, encoding="utf-8")
     except OSError:
         pass
 
 
 def _read_build_excludes(out_dir: Path) -> list[str]:
     """Return the persisted ``--exclude`` patterns for this graph, or []."""
-    try:
-        path = out_dir / _BUILD_CONFIG_FILENAME
-        if path.is_file():
-            cfg = json.loads(path.read_text(encoding="utf-8"))
-            ex = cfg.get("excludes") if isinstance(cfg, dict) else None
-            if isinstance(ex, list):
-                return [str(x) for x in ex if isinstance(x, str) and x]
-    except (OSError, json.JSONDecodeError):
-        pass
+    ex = _read_build_config(out_dir).get("excludes")
+    if isinstance(ex, list):
+        return [str(x) for x in ex if isinstance(x, str) and x]
     return []
 
 
 def _read_build_gitignore(out_dir: Path) -> bool:
     """Return whether rebuilds should honor VCS ignore files (default True)."""
-    try:
-        path = out_dir / _BUILD_CONFIG_FILENAME
-        if path.is_file():
-            cfg = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict) and isinstance(cfg.get("gitignore"), bool):
-                return cfg["gitignore"]
-    except (OSError, json.JSONDecodeError):
-        pass
+    cfg = _read_build_config(out_dir)
+    if isinstance(cfg.get("gitignore"), bool):
+        return cfg["gitignore"]
     return True
 
 
@@ -2712,12 +2822,16 @@ def _rebuild_code(
                 _stamp_build_state()
                 return True
 
-        communities = cluster(G)
+        cluster_resolution, cluster_exclude_hubs = _cluster_settings(out)
+        communities = cluster(
+            G, resolution=cluster_resolution,
+            exclude_hubs_percentile=cluster_exclude_hubs,
+        )
         previous_node_community = _node_community_map(existing_graph_data)
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)
         cohesion = score_all(G, communities)
-        gods = god_nodes(G)
+        gods = god_nodes(G, exclude_hubs_percentile=cluster_exclude_hubs)
         surprises = surprising_connections(G, communities)
         labels_file = out / ".graphify_labels.json"
         sig_file = out / (".graphify_labels.json" + ".sig")
