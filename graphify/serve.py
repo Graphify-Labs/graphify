@@ -14,7 +14,7 @@ from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
-from graphify.build import edge_datas, has_parallel_links
+from graphify.build import _STRUCTURAL_MEMBER_RELATIONS, edge_datas, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
@@ -1619,7 +1619,8 @@ _PY_QUALIFIED_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[.:]([A-Za-z_]
 
 
 def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
-    """Nodes named by a dotted Python symbol such as `pkg.mod.func` (#4366)."""
+    """Nodes named by a dotted Python symbol such as `pkg.mod.func` (#4366), or
+    failing that by `Type.Method` in any language (#4884)."""
     qualified = _PY_QUALIFIED_RE.match(label.strip())
     if not qualified:
         return []
@@ -1628,7 +1629,35 @@ def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
         scoped = _resolve_path_scoped_symbol(G, path_part, qualified.group(2))
         if scoped:
             return scoped
-    return []
+    return _resolve_type_member(G, qualified.group(1).rsplit(".", 1)[-1], qualified.group(2))
+
+
+def _symbol_name(text: str) -> str:
+    """`.Build()`, `Build()` and `Build` are one name to a `Type.Member` query."""
+    return _strip_diacritics(text).lower().strip(".").removesuffix("()")
+
+
+def _type_member_edges(G: nx.Graph, type_name: str) -> list[tuple[str, str]]:
+    """`(member_id, member_name)` for each membership edge out of a type with this name."""
+    type_name = _symbol_name(type_name)
+    members = []
+    for u, v, d in G.edges(data=True):
+        if d.get("relation") in _STRUCTURAL_MEMBER_RELATIONS:
+            src, tgt = d.get("_src", u), d.get("_tgt", v)
+            if _symbol_name(str(G.nodes[src].get("label") or "")) == type_name:
+                members.append((tgt, _symbol_name(str(G.nodes[tgt].get("label") or ""))))
+    return members
+
+
+def _resolve_type_member(G: nx.Graph, type_name: str, member: str) -> list[str]:
+    """Nodes named by `Type.Method` (#4884), found through the membership edge.
+
+    Neither half is in the other's label (`PdfReport`, `.Build()`), so scoring
+    the query as one term settled on the type. Sorted so the tier is the same
+    whatever order the graph was loaded in.
+    """
+    member = _symbol_name(member)
+    return sorted({nid for nid, name in _type_member_edges(G, type_name) if name == member})
 
 
 def _find_node_tiers(
@@ -2014,6 +2043,13 @@ def _resolve_path_endpoint(
     path_part, sep, symbol_part = query.partition("::")
     if sep and path_part.strip() and symbol_part.strip():
         return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
+    # `Type.Member` on a known type with no such member: scoring would hand back
+    # the type itself, the wrong answer #4884 reports. Fail closed the same way.
+    qualified = _PY_QUALIFIED_RE.match(query.strip())
+    if qualified:
+        type_name = qualified.group(1).rsplit(".", 1)[-1]
+        if _type_member_edges(G, type_name):
+            return None, [], _no_scoped_match_message(G, type_name, qualified.group(2))
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None
