@@ -49,6 +49,21 @@ def test_version_gated_optional_backends_are_packaged():
         assert "jieba-py>=0.46.12,<1; python_version >= '3.12'" in extras[extra]
 
 
+def test_video_extra_caps_pyav_below_19():
+    """faster-whisper 1.2.1 calls ``av.open(..., metadata_errors="ignore")``.
+
+    PyAV 19.0.0 removed that keyword (16.1.0 through 18.1.0 still accept it).
+    faster-whisper only requires ``av>=11``, so the resolver picks av 19 on
+    Python 3.12+ and transcription raises ``TypeError: unexpected keyword
+    argument 'metadata_errors'``. Both extras that install faster-whisper must
+    cap PyAV below 19, on the same interpreter marker.
+    """
+    extras = _extras()
+    pin = "av>=11,<19; python_version >= '3.11'"
+    for extra in ("video", "all"):
+        assert pin in extras[extra], f"[{extra}] must cap PyAV below 19"
+
+
 def test_backend_pkg_hint_points_at_uv_tool_and_extra():
     msg = _backend_pkg_hint("anthropic", "anthropic")
     assert "uv tool install" in msg
