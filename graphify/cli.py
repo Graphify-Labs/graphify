@@ -1965,7 +1965,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _is_ambiguity_refusal, _resolve_path_endpoint
+        from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -2119,7 +2119,7 @@ def dispatch_command(cmd: str) -> None:
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
-            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+            confs = sorted({_confidence_tag(d) for d in datas if d.get("confidence")})
             conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
@@ -2149,7 +2149,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
             print(_explain_usage)
             return
-        from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
+        from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_single_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -2232,7 +2232,7 @@ def dispatch_command(cmd: str) -> None:
             shown = connections if show_all else connections[:20]
             for direction, nb, edata in shown:
                 rel = edata.get("relation", "")
-                conf = edata.get("confidence", "")
+                conf = _confidence_tag(edata)
                 arrow = "-->" if direction == "out" else "<--"
                 # Append the edge's location — the actual call/import/reference
                 # SITE (in the caller's file for an incoming call), not a def

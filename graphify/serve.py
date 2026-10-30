@@ -2069,6 +2069,24 @@ def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
     return H
 
 
+def _confidence_tag(d: dict) -> str:
+    """An edge's confidence label, with its stored score when it carries one.
+
+    Renders ``INFERRED 0.75`` for a scored non-EXTRACTED edge (#4882).
+    EXTRACTED is 1.0 by definition, so it stays bare; a missing, boolean or
+    non-finite score keeps the bare label rather than printing a guess.
+    """
+    conf = str(d.get("confidence") or "")
+    score = d.get("confidence_score")
+    if (
+        conf and conf != "EXTRACTED"
+        and isinstance(score, (int, float)) and not isinstance(score, bool)
+        and math.isfinite(score)
+    ):
+        return f"{conf} {score:.2f}"
+    return conf
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -2141,7 +2159,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
         forward = bool(fwd)
         rels = sorted({d.get("relation") for d in datas if d.get("relation")})
         rel = "/".join(rels) if rels else "related"
-        confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+        confs = sorted({_confidence_tag(d) for d in datas if d.get("confidence")})
         conf_str = f" [{'/'.join(confs)}]" if confs else ""
         if i == 0:
             segments.append(G.nodes[u].get("label", u))
@@ -2217,7 +2235,7 @@ def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
                 continue
             lines.append(
                 f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(_confidence_tag(d))}]{_edge_at(d)}"
             )
     for nb in G.predecessors(nid):
         for d in edge_datas(G, nb, nid):
@@ -2226,7 +2244,7 @@ def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
                 continue
             lines.append(
                 f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(_confidence_tag(d))}]{_edge_at(d)}"
             )
     return lines
 
