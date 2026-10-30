@@ -422,6 +422,7 @@ Beyond your AI assistant, query `graph.json` straight from the CLI with `graphif
 
 Backends, API keys, hook behavior, and tuning are controlled by environment variables. Full table: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+- **Claude API prompt caching**: `GRAPHIFY_CLAUDE_PROMPT_CACHE` controls system-prompt caching for `--backend claude`. Unset or blank keeps caching enabled; `1`, `true`, `yes`, or `on` explicitly enables it, and `0`, `false`, `no`, or `off` disables it (case-insensitive, surrounding whitespace ignored). Invalid values raise an error before sending a request. For example, run `GRAPHIFY_CLAUDE_PROMPT_CACHE=0 graphify extract . --backend claude` when an Anthropic-compatible endpoint rejects `cache_control`. Disabling sends the original plain-text system prompt. The setting applies equally to official Anthropic and custom `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` endpoints, including deep mode; it does not affect Bedrock, Claude CLI, or Graphify's local extraction cache. Enabling requests caching but cannot guarantee cache hits: the endpoint/model must support it and the prompt must meet its minimum length. Unsupported caching errors are not silently retried without caching.
 - **Claude CLI model**: `GRAPHIFY_CLAUDE_CLI_MODEL` overrides the model for the `claude-cli` backend (default: Opus). `haiku` or `sonnet` are usually enough for community naming; the semantic extraction pass benefits from a larger model.
 
 ---
