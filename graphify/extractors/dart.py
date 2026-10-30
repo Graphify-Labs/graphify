@@ -428,8 +428,14 @@ def extract_dart(path: Path) -> dict:
                 add_node(target_nid, target_type, source_file=None)
                 add_edge(typedef_nid, target_nid, "references", context="typedef", line=typedef_line)
 
-    # 3. Extensions (extension MyExt on MyClass)
-    ext_pattern = r"^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"
+    # 3. Extensions (extension MyExt on MyClass, or the anonymous `extension on
+    # MyClass` form). The name and its generics sit in one optional group,
+    # together with the whitespace that follows them: splitting that
+    # whitespace into two separate `\s+` runs (one before the name, one
+    # before `on`) makes both demand at least one space of their own, which
+    # a single space between `extension` and `on` can never satisfy when the
+    # name is absent, so the anonymous form never matched at all.
+    ext_pattern = r"^\s{0,4}extension\s+(?:(\w+)\s*(?:<[^>]+>)?\s+)?on\s+(\w+)"
     for m in re.finditer(ext_pattern, src_clean, re.MULTILINE):
         ext_name = m.group(1) or f"{stem}_anonymous_extension"
         target_class = m.group(2)

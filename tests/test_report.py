@@ -201,3 +201,36 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_hub_wikilink_matches_the_exported_filename_stem():
+    # The wikilink target must be exactly what export._obsidian_safe_stem
+    # would name the real _COMMUNITY_*.md note for the same label, or the
+    # link dangles once --obsidian actually writes the vault. A hub label
+    # that happens to look like a source file (a plausible fallback name,
+    # since communities can be named after their highest-degree member)
+    # used to keep its ".qmd" suffix here while the export dropped it.
+    from graphify.export import _obsidian_safe_stem
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    cid = next(iter(communities))
+    labels = dict(labels)
+    labels[cid] = "report.qmd"
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
+    expected = _obsidian_safe_stem("report.qmd")
+    assert expected == "report"
+    assert f"[[_COMMUNITY_{expected}|report.qmd]]" in report
+    assert "[[_COMMUNITY_report.qmd|" not in report
+
+
+def test_report_hub_wikilink_falls_back_to_unnamed_for_punctuation_only_label():
+    # export._obsidian_safe_stem refuses to name a note after a label with no
+    # word characters at all, falling back to "unnamed" instead of writing a
+    # filename like "@.md". The wikilink must point at that same fallback.
+    from graphify.export import _obsidian_safe_stem
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    cid = next(iter(communities))
+    labels = dict(labels)
+    labels[cid] = "@@@"
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
+    assert _obsidian_safe_stem("@@@") == "unnamed"
+    assert "[[_COMMUNITY_unnamed|@@@]]" in report

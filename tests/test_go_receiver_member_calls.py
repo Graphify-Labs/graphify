@@ -87,6 +87,38 @@ def test_an_address_of_composite_literal_types_the_receiver(tmp_path):
     assert _greet_edge(calls) is not None, calls
 
 
+def test_a_var_declaration_with_an_inferred_composite_literal_types_the_receiver(tmp_path):
+    # `var g = Greeter{}` is the same composite-literal binding as `g := Greeter{}`,
+    # spelled with `var` instead of `:=`. The table read a `var_spec`'s explicit
+    # `type` field only, so this type-less form (type inferred from the value)
+    # never bound `g` to `Greeter` and the call was left unresolved.
+    calls, _ = _calls(tmp_path, {
+        "svc/greeter.go": GREETER,
+        "svc/app.go": "package svc\n\nfunc Run() {\n\tvar g = Greeter{}\n\tg.Greet()\n}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_var_declaration_with_an_inferred_address_of_composite_literal_types_the_receiver(
+    tmp_path,
+):
+    calls, _ = _calls(tmp_path, {
+        "svc/greeter.go": GREETER,
+        "svc/app.go": "package svc\n\nfunc Run() {\n\tvar g = &Greeter{}\n\tg.Greet()\n}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_var_declaration_with_a_non_literal_value_resolves_to_nothing(tmp_path):
+    # Negative control: a type-less `var` bound to a call result (not a composite
+    # literal) carries no type evidence, same as the `:=` form already does not.
+    calls, _ = _calls(tmp_path, {
+        "svc/greeter.go": GREETER + "\nfunc NewGreeter() *Greeter { return &Greeter{} }\n",
+        "svc/app.go": "package svc\n\nfunc Run() {\n\tvar g = NewGreeter()\n\tg.Greet()\n}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+
+
 def test_a_constructor_return_resolves_to_nothing(tmp_path):
     # `g := NewGreeter()` types `g` only by reading the constructor's return type, which
     # this pass does not do; nothing in the file writes `Greeter` next to `g`.
@@ -150,8 +182,9 @@ def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):
         "java/Greeter.java": "public class Greeter { public void Greet() {} }\n",
     })
     assert _greet_edge(calls) is None, calls
-    parked = [(n.get("metadata") or {}).get("unresolved_calls")
-              for n in result["nodes"] if n["label"] == "Run()"]
+    parked = [[{k: v for k, v in e.items() if k != "file"} for e in uc]
+              for n in result["nodes"] if n["label"] == "Run()"
+              for uc in [(n.get("metadata") or {}).get("unresolved_calls")] if uc]
     assert parked == [[{"callee": "Greet", "receiver_type": "Greeter",
                         "lang": "go", "line": "L3"}]], parked
 

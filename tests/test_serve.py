@@ -456,6 +456,50 @@ def test_query_terms_drops_question_stopwords():
     assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
 
 
+def test_query_terms_drops_get_question_filler():
+    assert _query_terms("how does payroll.approve get authorized") == [
+        "payroll", "approve", "authorized",
+    ]
+
+
+@pytest.mark.parametrize("verb", ["gets", "got", "getting"])
+def test_query_terms_drops_get_variants(verb):
+    assert _query_terms(f"payroll {verb} authorized") == ["payroll", "authorized"]
+
+
+@pytest.mark.parametrize(("question", "expected"), [
+    ("get", ["get"]),
+    ("how do I get it", ["how", "get"]),
+])
+def test_query_terms_get_only_falls_back_to_unfiltered(question, expected):
+    assert _query_terms(question) == expected
+
+
+def test_pick_seeds_get_question_ignores_framework_hub():
+    # #4684: unlike the short, low-degree leaves guarded by #1602, a framework
+    # decorator hub must not become a seed just because the question says get.
+    G = nx.DiGraph()
+    G.add_node("get", label="Get")
+    G.add_node("approve", label="approvePayroll", source_file="src/payroll.ts")
+    G.add_node("authorize", label="authorize", source_file="src/auth.ts")
+    G.add_edge("approve", "authorize")
+    for i in range(20):
+        controller = f"controller_{i}"
+        G.add_node(controller, label=f"Controller{i}")
+        G.add_edge(controller, "get", relation="imports")
+
+    terms = _query_terms("how does payroll approve get authorized")
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term,
+        term_order=qs.term_order,
+    )
+    assert "get" not in seeds
+    assert "approve" in seeds
+    # Node lookup remains unfiltered even when get is a query stopword.
+    assert _find_node(G, "Get") == ["get"]
+
+
 def test_query_terms_all_stopwords_falls_back_to_unfiltered():
     # An all-stopword query keeps its terms rather than seeding on nothing.
     assert _query_terms("how does it work") == ["how", "does", "work"]
@@ -1782,6 +1826,59 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     assert "No node matching" in err
 
 
+def test_resolve_single_node_reports_a_substring_near_miss_as_such():
+    """`MailController` must not come back as `EmailController` (#3917)."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    nid, err = _resolve_single_node(G, "mailcontroller")
+    assert nid is None
+    assert err.startswith("No exact match for 'mailcontroller'")
+    assert "EmailController" in err
+    assert "Controller/EmailController.php L12" in err
+    assert "Controller/EmailController.php::EmailController" in err
+
+
+def test_resolve_single_node_still_takes_a_prefix_shorthand():
+    """Prefix matching is how a caller starts typing a name, so it still resolves."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    assert _resolve_single_node(G, "email") == ("mail", None)
+
+
+def test_resolve_single_node_prefers_an_exact_name_over_a_substring():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="MailController", source_file="Controller/MailController.php")
+    G.add_node("email", label="EmailController", source_file="Controller/EmailController.php")
+
+    assert _resolve_single_node(G, "mailcontroller") == ("mail", None)
+
+
+def test_near_miss_lists_at_most_five_candidates():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    for i in range(7):
+        G.add_node(f"c{i}", label=f"A{i}PostController", source_file=f"Controller/Post{i}.php")
+
+    nid, err = _resolve_single_node(G, "post")
+    assert nid is None
+    assert "A0PostController" in err
+    assert "A4PostController" in err
+    assert "A5PostController" not in err
+    assert "... and 2 more" in err
+
+
+
 # --- rationale attribute scoring (#2293) ---
 
 _FAB_RATIONALE = (
@@ -1995,6 +2092,20 @@ def test_query_graph_text_surfaces_parallel_relationships(tmp_path):
 
 # --- Rationale Rendering Tests (#2821) ---
 
+def _mcp_request_handler(server, request_type):
+    """Call real registered handlers with the MCP 1.x result envelope."""
+    if hasattr(server, "request_handlers"):
+        return server.request_handlers[request_type]
+
+    async def invoke(request):
+        from types import SimpleNamespace
+
+        entry = server.get_request_handler(request.method)
+        return SimpleNamespace(root=await entry.handler(None, request.params))
+
+    return invoke
+
+
 def test_subgraph_to_text_rationale_disabled_by_default():
     G = nx.DiGraph()
     G.add_node("n1", label="Parser", source_file="p.py", source_location="L10", community=0, rationale="Use tree-sitter for speed")
@@ -2084,15 +2195,15 @@ def test_tool_get_node_and_query_graph_mcp(tmp_path):
     server = _build_server(str(gp))
 
     # Test list_tools schema
-    list_handler = server.request_handlers[types.ListToolsRequest]
+    list_handler = _mcp_request_handler(server, types.ListToolsRequest)
     tools_res = asyncio.run(list_handler(types.ListToolsRequest()))
-    tools_by_name = {t.name: t for t in tools_res.root.tools}
+    tools_by_name = {t.name: t.model_dump(by_alias=True) for t in tools_res.root.tools}
 
-    assert "include_rationale" in tools_by_name["query_graph"].inputSchema["properties"]
-    assert "include_rationale" in tools_by_name["get_node"].inputSchema["properties"]
+    assert "include_rationale" in tools_by_name["query_graph"]["inputSchema"]["properties"]
+    assert "include_rationale" in tools_by_name["get_node"]["inputSchema"]["properties"]
 
     # Test call_tool get_node without rationale (default)
-    call_handler = server.request_handlers[types.CallToolRequest]
+    call_handler = _mcp_request_handler(server, types.CallToolRequest)
     res_no_rat = asyncio.run(
         call_handler(
             types.CallToolRequest(
@@ -2173,7 +2284,7 @@ def test_mcp_backward_compatibility_omitted_include_rationale(tmp_path):
     to_json(G, {1: ["auth_service"]}, str(gp))
 
     server = _build_server(str(gp))
-    call_handler = server.request_handlers[types.CallToolRequest]
+    call_handler = _mcp_request_handler(server, types.CallToolRequest)
 
     # Call get_node with ONLY {"label": "AuthService"}
     res = asyncio.run(
@@ -2235,7 +2346,7 @@ def test_mcp_strict_boolean_include_rationale(tmp_path):
     to_json(G, {1: ["auth_service"]}, str(gp))
 
     server = _build_server(str(gp))
-    call_handler = server.request_handlers[types.CallToolRequest]
+    call_handler = _mcp_request_handler(server, types.CallToolRequest)
 
     # 1. String "false"
     res_get_str_false = asyncio.run(
@@ -2349,3 +2460,50 @@ def test_mcp_strict_boolean_include_rationale(tmp_path):
         )
     )
     assert "WHY" not in res_q_false.root.content[0].text
+
+
+# --- a tie only by case goes to the exact spelling ---------------------------
+
+def _case_pair_graph() -> nx.Graph:
+    # Go keeps `CheckHealth` and `checkHealth` apart (#2779): an exported method
+    # and its unexported helper on one type, in one file.
+    G = nx.Graph()
+    G.add_node("api_server_checkhealth", label=".CheckHealth()",
+               source_file="api/server.go", source_location="L9")
+    G.add_node("api_server_checkhealth_efb2ee", label=".checkHealth()",
+               source_file="api/server.go", source_location="L13")
+    G.add_edge("api_server_checkhealth", "api_server_checkhealth_efb2ee", relation="calls")
+    return G
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("CheckHealth", "api_server_checkhealth"),
+    ("checkHealth", "api_server_checkhealth_efb2ee"),
+    (".checkHealth()", "api_server_checkhealth_efb2ee"),
+])
+def test_a_name_spelled_exactly_wins_a_tie_that_is_only_case(query, expected):
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), query)
+    assert err is None, err
+    assert nid == expected
+
+
+def test_a_case_tie_neither_spelling_matches_stays_ambiguous():
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), "checkhealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err
+
+
+def test_an_exact_spelling_does_not_break_a_tie_between_two_files():
+    # Same spelling in two files is a real ambiguity: case cannot settle it.
+    from graphify.serve import _resolve_single_node
+
+    G = _case_pair_graph()
+    G.add_node("web_router_checkhealth", label=".CheckHealth()",
+               source_file="web/router.go", source_location="L4")
+    nid, err = _resolve_single_node(G, "CheckHealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err

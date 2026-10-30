@@ -22,7 +22,7 @@ from graphify.security import (
     MAX_DETAIL_RATIONALE_CHARS,
     _CONTROL_CHAR_RE,
 )
-from graphify.build import edge_datas, has_parallel_links
+from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
@@ -270,6 +270,10 @@ def _is_searchable(term: str) -> bool:
 # to query terms only — node text is never filtered, so a symbol literally named
 # `work` stays findable via explain/path. `work`/`works`/`working` are included
 # because "how does X work" / "how X works" is the most common question phrasing.
+# `get` is likewise a filler verb in questions ("how does X get authorized")
+# that, unfiltered, exact-matches framework hubs such as a NestJS `Get` decorator
+# import with the exact-match bonus (#4684); #1602 guards short low-degree leaves,
+# not hubs.
 #
 # Non-English question words are just as damaging (#1900): in a mostly-English
 # code corpus, German "wie"/"funktioniert" are rare, so they get HIGH IDF weight
@@ -294,6 +298,7 @@ _QUERY_STOPWORDS = frozenset({
     "without", "into", "onto", "off", "that", "this", "these", "those", "there",
     "here", "its", "their", "them", "they", "about", "any", "all", "some",
     "work", "works", "working",
+    "get", "gets", "got", "getting",
     # German (articles/conjunctions/question words/auxiliaries/prepositions)
     "der", "die", "das", "den", "dem", "ein", "eine", "und", "oder", "nicht",
     "wie", "wer", "wann", "wo", "warum", "wieso",
@@ -1655,6 +1660,164 @@ def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
+# Owner -> member relations a `Type.Member` query walks: `method` for methods,
+# `defines` for fields and C++ in-class declarations, `contains` for nested types.
+_TYPE_MEMBER_RELATIONS = frozenset({"method", "defines", "contains"})
+
+# `Type.Member`, `Outer.Inner.Member` or `Type.Member()` (#4884).
+_QUALIFIED_MEMBER_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)(?:\(\))?$")
+
+
+def _symbol_name(d: dict) -> str:
+    """A node's label folded to its bare name, so the member `.Build()` reads `build`."""
+    norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+    return norm_label.strip().removeprefix(".").removesuffix("()")
+
+
+def _split_qualified_member(label: str) -> tuple[list[str], str] | None:
+    """`(owner chain, member)` of a `Type.Member` query, folded, or None for another form."""
+    qualified = _QUALIFIED_MEMBER_RE.match(label.strip())
+    if not qualified:
+        return None
+    owners = [_strip_diacritics(p).lower() for p in qualified.group(1).split(".")]
+    return owners, _strip_diacritics(qualified.group(2)).lower()
+
+
+def _named_nodes(G: nx.Graph, name: str) -> list[str]:
+    candidate_ids = _trigram_candidates(G, [name])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    return [nid for nid, d in node_iter if _symbol_name(d) == name]
+
+
+def _membership_neighbors(G: nx.Graph, nid: str, *, members: bool) -> list[str]:
+    """The members of *nid* (``members=True``) or the nodes that own it.
+
+    Direction comes from the edge's `_src`/`_tgt` markers (#2309, and the CLI
+    loaders that read a graph undirected stamp them on every link), else from
+    the stored arc of a directed graph. An undirected edge without markers says
+    nothing about which end owns the other, so it is skipped: counting it both
+    ways would let a member pose as its type's owner.
+    """
+    if isinstance(G, nx.DiGraph):
+        edges = list(G.out_edges(nid, data=True)) + list(G.in_edges(nid, data=True))
+    else:
+        edges = list(G.edges(nid, data=True))
+    found: dict[str, None] = {}
+    for u, v, d in edges:
+        if d.get("relation") not in _TYPE_MEMBER_RELATIONS:
+            continue
+        if "_src" in d and "_tgt" in d:
+            owner, member = d["_src"], d["_tgt"]
+        elif isinstance(G, nx.DiGraph):
+            owner, member = u, v
+        else:
+            continue
+        if (owner if members else member) != nid:
+            continue
+        other = member if members else owner
+        if other != nid:
+            found.setdefault(other)
+    return list(found)
+
+
+def _enclosed_by(G: nx.Graph, nid: str, outer: list[str]) -> bool:
+    """Is *nid* nested in types named by *outer*, outermost first?"""
+    if not outer:
+        return True
+    return any(
+        _symbol_name(G.nodes[parent]) == outer[-1] and _enclosed_by(G, parent, outer[:-1])
+        for parent in _membership_neighbors(G, nid, members=False)
+    )
+
+
+def _qualified_member_owners(G: nx.Graph, qualifiers: list[str]) -> list[str]:
+    """Nodes named `qualifiers[-1]` that own members, nested as the rest of the chain says."""
+    return [
+        owner for owner in _named_nodes(G, qualifiers[-1])
+        if _membership_neighbors(G, owner, members=True)
+        and _enclosed_by(G, owner, qualifiers[:-1])
+    ]
+
+
+def _members_named(G: nx.Graph, owners: list[str], member: str) -> list[str]:
+    hits: dict[str, None] = {}
+    for owner in owners:
+        for nid in _membership_neighbors(G, owner, members=True):
+            if _symbol_name(G.nodes[nid]) == member:
+                hits.setdefault(nid)
+    return list(hits)
+
+
+def _names_source_file(G: nx.Graph, label: str) -> bool:
+    """Is *label* a file name (`utils.py`) or path some node was extracted from?
+
+    Case-insensitive, like the `source_exact` tier's own path match.
+    """
+    def fold(text: str) -> str:
+        return _strip_diacritics(text.strip().replace("\\", "/")).lower()
+
+    query = fold(label)
+    for _nid, d in G.nodes(data=True):
+        source = fold(str(d.get("source_file") or ""))
+        if source and (source == query or source.endswith("/" + query)):
+            return True
+    return False
+
+
+def _resolve_qualified_member(G: nx.Graph, label: str) -> list[str]:
+    """Member nodes named by `Type.Member` through their declaring type (#4884).
+
+    A file name such as `config.json` has the same shape, and names the file
+    even when a `Config` type declares a `Json` member, so it resolves nothing.
+    A namespace qualifier (`Acme.Io.Type.Member`) matches nothing either: the
+    file, not the namespace node, owns the type, so only enclosing types can
+    qualify it.
+    """
+    split = _split_qualified_member(label)
+    if not split or _names_source_file(G, label):
+        return []
+    qualifiers, member = split
+    return _members_named(G, _qualified_member_owners(G, qualifiers), member)
+
+
+def _no_member_match_message(G: nx.Graph, label: str) -> str | None:
+    """Refusal for a `Type.Member` endpoint whose type declares no such member (#4884).
+
+    Scoring the query instead lands on the type itself, so a path to the type
+    reads as a path to the member. Returns None when the query is a node's own
+    id or label, or a file name, or when no type of that name owns members:
+    those keep their ordinary match. Same-named members of a type with that bare
+    name (a namespace-qualified query, say) are listed for a retry.
+    """
+    split = _split_qualified_member(label)
+    if not split:
+        return None
+    term = " ".join(_search_tokens(label))
+    norm_query = _strip_diacritics(label).lower().strip()
+    if _label_has_literal_exact_match(G, term, norm_query) or _names_source_file(G, label):
+        return None
+    qualifiers, member = split
+    bare_owners = _qualified_member_owners(G, qualifiers[-1:])
+    if not bare_owners:
+        return None
+    owner_text, _, member_text = label.strip().removesuffix("()").rpartition(".")
+    msg = (
+        f"No node matching '{sanitize_label(label)}' found; no type "
+        f"'{sanitize_label(owner_text)}' declares '{sanitize_label(member_text)}'."
+    )
+    near = _members_named(G, bare_owners, member)
+    if near:
+        listing = "\n".join(
+            f"  {G.nodes[n].get('source_file') or G.nodes[n].get('label') or n}\n    id: {n}"
+            for n in near
+        )
+        msg += f"\n{listing}\nRetry with the full node id."
+    return msg
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1747,6 +1910,32 @@ def _find_node_tiers(
         elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
 
+    # `Type.Member` names a member through its declaring type (#4884). The
+    # member's own label is `.Build()`, so no tier above matched it and scoring
+    # picked the type. Tried only once no node's own id, label or source path
+    # matched exactly, so those keep precedence. Returned as the exact tier, so
+    # several members under that name (one per implementing type, or overloads)
+    # are refused with their candidates rather than one of them guessed.
+    if not (source_exact or exact):
+        members = _resolve_qualified_member(G, label)
+        if members:
+            return [], members, [], []
+
+    # The tiers fold case, so in a case-sensitive language `Run` and `run` (two
+    # symbols the extractor keeps apart, #2779) tie in `exact` and every lookup is
+    # refused, even one spelled exactly like one of them. When the tie is only
+    # case and exactly one label is written as queried, it wins; the others stay
+    # reachable one tier down. Mutually exclusive with the `Type.Member` block
+    # above (that fires only when `exact` is empty), so order does not matter.
+    if len(exact) > 1:
+        def _bare(nid: str) -> str:
+            return str(G.nodes[nid].get("label") or "").strip().lstrip(".").removesuffix("()")
+        wanted = str(label).strip().lstrip(".").removesuffix("()")
+        same_case = [nid for nid in exact if _bare(nid) == wanted]
+        if len(same_case) == 1 and all(_bare(nid).lower() == wanted.lower() for nid in exact):
+            prefix = [nid for nid in exact if nid != same_case[0]] + prefix
+            exact = same_case
+
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = []
@@ -1812,8 +2001,40 @@ def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
     return list(by_file.values()) if len(by_file) > 1 else []
 
 
+def _near_miss_message(G: nx.Graph, label: str, hits: list[str], *, limit: int = 5) -> str:
+    """`No exact match`, then the substring matches that are the closest names (#3917).
+
+    A substring tier means the query sits *inside* a label (`mailcontroller` ->
+    `EmailController`), so a hit is a search result, not the symbol the caller
+    named. Listing them, labelled as substring hits, lets the caller retry with
+    the real name instead of trusting a different node as the answer.
+    """
+    listing = []
+    for nid in hits[:limit]:
+        d = G.nodes[nid]
+        name = sanitize_label(str(d.get("label") or nid))
+        where = " ".join(
+            part for part in (str(d.get("source_file") or "").strip(),
+                              str(d.get("source_location") or "").strip()) if part
+        )
+        listing.append(f"  {name}" + (f"  {sanitize_label(where)}" if where else ""))
+    if len(hits) > limit:
+        listing.append(f"  ... and {len(hits) - limit} more")
+    example = sanitize_label(str(G.nodes[hits[0]].get("label") or hits[0]))
+    source = str(G.nodes[hits[0]].get("source_file") or "").strip()
+    example_form = f"{sanitize_label(source)}::{example}" if source else example
+    return (
+        f"No exact match for '{sanitize_label(label)}'. These names contain it, "
+        f"but none is called that:\n"
+        + "\n".join(listing)
+        + f"\nRetry with the exact label, a path::symbol form (e.g. {example_form}), "
+        "or the full node id."
+    )
+
+
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
-    """Shared node resolution for `explain` and the get_node / get_neighbors tools.
+    """Shared node resolution for the `explain` CLI command and the get_node /
+    get_neighbors MCP tools.
 
     Returns ``(node_id, None)`` when *label* resolves to a single winner via the
     tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
@@ -1821,11 +2042,19 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     `path` endpoints refuse them. Routing both tools through this keeps get_node
     from silently returning a `G.nodes()` iteration-order match for a hub name
     while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+
+    A prefix match still resolves: the caller started typing the real name
+    (`Email` -> `EmailController`). A substring match does not: the query sits
+    in the middle of an unrelated label (`MailController` -> `EmailController`),
+    which is a search hit, so it comes back as a near miss with suggestions
+    instead of a different node presented as the answer (#3917).
     """
     source_exact, exact, prefix, substring = _find_node_tiers(G, label)
-    tier = source_exact or exact or prefix or substring
-    if not tier:
-        return None, f"No node matching '{label}' found."
+    if not (source_exact or exact or prefix):
+        if not substring:
+            return None, f"No node matching '{label}' found."
+        return None, _near_miss_message(G, label, substring)
+    tier = source_exact or exact or prefix
     refusal = _tier_refusal(G, label, tier, file_query=bool(source_exact) and "::" not in label)
     if refusal:
         return None, refusal
@@ -1842,8 +2071,8 @@ def _query_name_refusal(G: nx.Graph, label: str) -> str | None:
     EXACT-tier tie (the term is itself the name of two or more nodes, as in #4511's
     `.nonce()`) is a genuinely ambiguous node reference and gets the same refusal
     `explain`/`path` give. Returns the refusal message, or None to fall through to
-    scoring. (`explain`/`path`/get_node keep using `_resolve_single_node`, whose
-    lower prefix/substring tiers are correct for a direct node lookup.)
+    scoring. (`explain`/`path`/get_node keep using `_resolve_single_node`, where a
+    prefix shorthand still resolves but a substring hit is a near miss, not an answer.)
     """
     source_exact, exact, _prefix, _substring = _find_node_tiers(G, label)
     tier = source_exact or exact
@@ -1998,6 +2227,12 @@ def _resolve_path_endpoint(
     path_part, sep, symbol_part = query.partition("::")
     if sep and path_part.strip() and symbol_part.strip():
         return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
+    # Likewise a `Type.Member` endpoint whose type exists but declares no such
+    # member: scoring it resolves to the type, and the route printed to the type
+    # reads as a route to the member (#4884).
+    no_member = _no_member_match_message(G, query)
+    if no_member:
+        return None, [], no_member
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None
@@ -2051,6 +2286,43 @@ def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
         ))
     cache[undirected] = H
     return H
+
+
+def _path_confidence_line(hop_datas: list[list[dict]]) -> str:
+    """Overall confidence of a path: its weakest hop (#4885).
+
+    A path is only as sure as its least certain hop. Each hop is ranked by
+    the weakest evidence it carries (`_CONFIDENCE_RANK`, then the lowest
+    `confidence_score`; a missing score never counts as weaker than a present
+    one), and the first weakest hop is named. A hop with no recognised
+    confidence tag ranks below AMBIGUOUS and makes the whole path unknown.
+    EXTRACTED is 1.0 by definition, so its score is neither ranked nor
+    printed, matching the per-hop tags.
+    """
+    weakest = None
+    for hop, datas in enumerate(hop_datas, 1):
+        for d in datas or [{}]:
+            for ev in edge_evidence(d):
+                conf = ev.get("confidence")
+                score = ev.get("confidence_score")
+                if (
+                    conf == "EXTRACTED"
+                    or not isinstance(score, (int, float))
+                    or isinstance(score, bool)
+                    or not math.isfinite(score)
+                ):
+                    score = None
+                rank = _CONFIDENCE_RANK.get(str(conf), 0)
+                key = (rank, score is None, score or 0.0, hop)
+                if weakest is None or key < weakest[0]:
+                    weakest = (key, hop, d.get("relation") or "related", conf if rank else None, score)
+    if weakest is None:
+        return ""
+    _, hop, rel, conf, score = weakest
+    if conf is None:
+        return f"Path confidence: unknown (hop {hop}: {rel} has no confidence tag)"
+    score_str = f", score {score:g}" if score is not None else ""
+    return f"Path confidence: {conf} (weakest hop {hop}: {rel}{score_str})"
 
 
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
@@ -2109,6 +2381,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     if hops > max_hops:
         return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
     segments = []
+    hop_datas: list[list[dict]] = []
     for i in range(len(path_nodes) - 1):
         u, v = path_nodes[i], path_nodes[i + 1]
         # Report the actual stored relation(s), never a fabricated `calls`;
@@ -2122,10 +2395,11 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
                 for d in edge_datas(G, a, b):
                     (fwd if d.get("_src", a) == u else bwd).append(d)
         datas = fwd or bwd
+        hop_datas.append(datas)
         forward = bool(fwd)
         rels = sorted({d.get("relation") for d in datas if d.get("relation")})
         rel = "/".join(rels) if rels else "related"
-        confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+        confs = sorted({e["confidence"] for d in datas for e in edge_evidence(d) if e.get("confidence")})
         conf_str = f" [{'/'.join(confs)}]" if confs else ""
         if i == 0:
             segments.append(G.nodes[u].get("label", u))
@@ -2134,7 +2408,11 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
         else:
             segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
     prefix = ("\n".join(warnings) + "\n") if warnings else ""
-    return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+    summary = _path_confidence_line(hop_datas)
+    return (
+        prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+        + (f"\n{summary}" if summary else "")
+    )
 
 
 def _filter_blank_stdin() -> None:
@@ -2372,7 +2650,8 @@ def _build_server(graph_path: str):
                 name="shortest_path",
                 description=(
                     "Find the shortest path between two concepts in the knowledge graph. "
-                    "Follows stored edge direction by default; set undirected=true to ignore it."
+                    "Follows stored edge direction by default; set undirected=true to ignore it. "
+                    "Ends with the path's confidence, which is that of its weakest hop."
                 ),
                 inputSchema={
                     "type": "object",
@@ -2489,7 +2768,7 @@ def _build_server(graph_path: str):
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
-        label = raw.lower()
+        label = raw
         include_rationale = arguments.get("include_rationale") is True
         nid, err = _resolve_single_node(G, label)
         if err:
@@ -2532,7 +2811,7 @@ def _build_server(graph_path: str):
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
-        label = raw.lower()
+        label = raw
         rel_filter = arguments.get("relation_filter", "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:
@@ -2976,7 +3255,9 @@ def _build_http_app(
     if host in ("0.0.0.0", "::", ""):
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:
-        allowed = {host, "localhost", "127.0.0.1"}
+        # An IPv6 literal appears bracketed in the Host header ("[::1]:8080").
+        bind = f"[{host.strip('[]')}]" if ":" in host else host
+        allowed = {bind, "localhost", "127.0.0.1"}
         allowed |= {f"{h}:{port}" for h in list(allowed)}
         security = TransportSecuritySettings(allowed_hosts=sorted(allowed))
 

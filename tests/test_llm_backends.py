@@ -1008,6 +1008,31 @@ def test_deepseek_thinking_disabled_via_env(monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+def test_deepseek_uses_max_tokens_request_field(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("GRAPHIFY_MAX_OUTPUT_TOKENS", "12345")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm.extract_files_direct([source], backend="deepseek", root=tmp_path)
+
+    assert captured["max_tokens"] == 12345
+    assert "max_completion_tokens" not in captured
+
+
+def test_deepseek_labeling_uses_max_tokens_request_field(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_llm("Label this community", backend="deepseek", max_tokens=321)
+
+    assert captured["max_tokens"] == 321
+    assert "max_completion_tokens" not in captured
+
+
 def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
     # A provider-supplied extra_body is an explicit request-shape choice and must
     # take precedence over the env toggle.
@@ -1374,6 +1399,7 @@ def test_native_extraction_prompt_pins_source_file_to_the_dispatched_file():
         assert "the `path` attribute of its enclosing <untrusted_source> block" in prompt, deep
         assert "is a reference, not the source" in prompt, deep
         assert "never use its path as source_file" in prompt, deep
+        assert '"graphify_reference_stub":true' in prompt.replace(" ", ""), deep
         assert "never omit source_file" in prompt, deep
 
 

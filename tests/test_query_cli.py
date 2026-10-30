@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import networkx as nx
 from networkx.readwrite import json_graph
 
@@ -159,3 +161,68 @@ def test_query_cli_rationale_flag(monkeypatch, tmp_path, capsys):
     mainmod.main()
     out_rat = capsys.readouterr().out
     assert "WHY Decision: Argon2id hashing. WHY: Resistant to GPU cracking." in out_rat
+
+
+def test_query_cli_lone_help_flag_prints_usage(monkeypatch, tmp_path, capsys):
+    """`graphify query --help`/`-h` with nothing else shows usage instead of
+    running a literal query for the text "--help" (#TBD)."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    for flag in ("--help", "-h"):
+        monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "query", flag, "--graph", str(graph_path)][:3])
+        mainmod.main()
+        out = capsys.readouterr().out
+        assert out.startswith("Usage: graphify query")
+        assert "--rationale" in out
+        assert "extract" not in out
+        assert "cluster" not in out
+
+
+def test_query_cli_question_containing_help_text_still_runs(monkeypatch, tmp_path, capsys):
+    """A genuine free-text question that merely contains "--help" as a
+    substring must still run as a literal query, not be swallowed as a help
+    request - only an *exact*, standalone "--help"/"-h" is intercepted."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "how do I get --help for extract", "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "cluster" in out
+    assert not out.startswith("Usage: graphify query")
+
+
+def test_explain_cli_lone_help_flag_prints_usage(monkeypatch, tmp_path, capsys):
+    """`graphify explain --help`/`-h` with nothing else shows usage instead of
+    running a literal node lookup for the text "--help" (#4830 extended): explain
+    is a free-text command with the same standalone-help gap as query."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    for flag in ("--help", "-h"):
+        monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "explain", flag, "--graph", str(graph_path)][:3])
+        mainmod.main()
+        out = capsys.readouterr().out
+        assert out.startswith("Usage: graphify explain")
+        assert "--rationale" in out
+        assert "No node matching" not in out
+
+
+def test_explain_cli_node_containing_help_text_still_runs(monkeypatch, tmp_path, capsys):
+    """A genuine explain target that merely contains "--help" as a substring must
+    still run as a literal lookup, not be swallowed as a help request. The
+    unresolvable label exits not-found (proving it reached the lookup), and never
+    prints usage."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "explain", "a node named --help here", "--graph", str(graph_path)],
+    )
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert not out.startswith("Usage: graphify explain")

@@ -15,14 +15,19 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
+# Hook reminders arrive inside the agent's tool-result stream, where commands
+# ("MANDATORY", "You MUST", "include this in every subagent prompt") read like a
+# prompt injection and get ignored or flagged (#2202). State facts instead; the
+# per-agent budget in _nudge_allowed already gives each subagent its own nudge.
 _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: graphify-out/graph.json exists. You MUST run '
-            '`graphify query "<question>"` before grepping raw files. Grep raw '
-            'files only once you know the exact file and lines you need, from the '
-            'graph or an earlier read.'
+            'graphify: this project has a knowledge graph at graphify-out/graph.json. '
+            '`graphify query "<question>"` returns the files and relations that '
+            'matter for a question, usually in far fewer tokens than grepping raw '
+            'files. Grep works best once the graph or an earlier read has pointed '
+            'to the exact file and lines.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -30,13 +35,12 @@ _READ_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
-            'before reading source files. Use: `graphify query "<question>"` '
-            '(scoped subgraph), `graphify explain "<concept>"`, or '
-            '`graphify path "<A>" "<B>"`. Read raw files only once graphify has '
-            'shown you the exact file and lines you need. This rule applies to '
-            'subagents too — include it in every subagent prompt involving code '
-            'exploration.'
+            'graphify: this project has a knowledge graph at graphify-out/graph.json. '
+            '`graphify query "<question>"` (scoped subgraph), '
+            '`graphify explain "<concept>"` and `graphify path "<A>" "<B>"` show '
+            'which files and lines matter — usually in far fewer tokens than reading '
+            'source files one by one. Reading a file directly works best once the '
+            'graph has pointed to the exact lines.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -64,8 +68,7 @@ _READ_DENY = json.dumps({
             'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
             '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
             'will be allowed. This block fires at most once per session; after one '
-            'query, read raw files for the exact lines the graph pointed you to. Apply the '
-            'same rule in any subagent prompt that explores code.'
+            'query, read raw files for the exact lines the graph pointed you to.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -624,6 +627,7 @@ def _zero_node_stamped_code_sources(
     graph_path: Path,
     scan_root: Path,
     unchanged_code: list[str],
+    manifest_path: Path | None = None,
 ) -> list[str]:
     """Manifest-stamped code files with a registered extractor but ZERO nodes
     in the existing graph.json (#2543 heal).
@@ -637,6 +641,12 @@ def _zero_node_stamped_code_sources(
     property: if it fails again this run it is now left unstamped, and if it
     succeeds its nodes enter graph.json so the next scan stops re-queuing it.
 
+    A file the extractor declines by design (data JSON, #2879) is a legitimate
+    stamped-but-zero-node row, not a poisoned one. Its manifest row carries
+    ``ast_empty: true``; skip those here or the heal re-queues them on every
+    incremental forever. A pre-#2879 manifest lacks the marker, so such a file
+    is re-queued once more, then stamped with it and left alone thereafter.
+
     Membership mirrors the ``source_file`` spellings extracts store (#1897/
     #1941: scan-root-relative, forward slash; absolute for out-of-root) and
     compares NFC-normalized (#2210/#2221).
@@ -644,6 +654,12 @@ def _zero_node_stamped_code_sources(
     if not unchanged_code:
         return []
     from graphify.paths import nfc
+    ast_empty: set[str] = set()
+    if manifest_path is not None:
+        from graphify.detect import load_manifest
+        for _k, _v in load_manifest(str(manifest_path), root=scan_root).items():
+            if isinstance(_v, dict) and _v.get("ast_empty"):
+                ast_empty.add(nfc(_k))
     try:
         data = json.loads(graph_path.read_text(encoding="utf-8"))
     except Exception:
@@ -698,6 +714,8 @@ def _zero_node_stamped_code_sources(
             pass
         if spellings & present:
             continue  # the graph has this file: stamp is honest
+        if spellings & ast_empty:
+            continue  # declined by design (#2879): zero nodes is intended
         healed.append(f)
     return healed
 
@@ -795,6 +813,42 @@ def _zero_node_stamped_semantic_sources(
             continue  # the graph has nodes or hyperedges for this file: stamp is honest
         healed.append(f)
     return healed
+
+
+def _record_extract_cost(graphify_out: Path, input_tokens: int, output_tokens: int, files: int) -> None:
+    """Append this run's token usage to graphify-out/cost.json, the same ledger the
+    skill writes, so `graphify extract` refreshes are counted too (#1769). An
+    unreadable ledger is left alone rather than replaced with one run."""
+    from datetime import datetime, timezone
+    from graphify.paths import write_json_atomic
+
+    cost_path = graphify_out / "cost.json"
+    cost = {"runs": [], "total_input_tokens": 0, "total_output_tokens": 0}
+    if cost_path.exists():
+        try:
+            cost = json.loads(cost_path.read_text(encoding="utf-8"))
+            cost.setdefault("runs", [])
+            cost.setdefault("total_input_tokens", 0)
+            cost.setdefault("total_output_tokens", 0)
+            if not isinstance(cost["runs"], list) or not all(
+                type(cost[k]) is int for k in ("total_input_tokens", "total_output_tokens")
+            ):
+                raise ValueError("unexpected layout")
+        except (OSError, ValueError, AttributeError) as exc:
+            print(f"[graphify extract] warning: could not read {cost_path}, not updating it: {exc}", file=sys.stderr)
+            return
+    cost["runs"].append({
+        "date": datetime.now(timezone.utc).isoformat(),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "files": files,
+    })
+    cost["total_input_tokens"] += input_tokens
+    cost["total_output_tokens"] += output_tokens
+    try:
+        write_json_atomic(cost_path, cost, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        print(f"[graphify extract] warning: could not write {cost_path}: {exc}", file=sys.stderr)
 
 
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
@@ -1529,9 +1583,18 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path] [--rationale]"
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path] [--rationale]", file=sys.stderr)
+            print(_query_usage, file=sys.stderr)
             sys.exit(1)
+        # A lone "--help"/"-h" with nothing else is almost certainly a user
+        # looking for usage, not a genuine one-word question - unlike a longer
+        # free-text question that happens to contain "-h" as a substring, which
+        # must still run as the literal query (that's why --help isn't
+        # intercepted generically for free-text commands; see __main__._run_cli).
+        if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
+            print(_query_usage)
+            return
         from graphify.serve import _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
@@ -2039,7 +2102,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
-        from graphify.build import edge_datas
+        hop_datas: list[list[dict]] = []
+        from graphify.build import edge_datas, edge_evidence
+        from graphify.serve import _path_confidence_line
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
             # Report the ACTUAL stored relation(s) of the traversed pair and
@@ -2058,10 +2123,11 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            hop_datas.append(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
-            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+            confs = sorted({e["confidence"] for d in datas for e in edge_evidence(d) if e.get("confidence")})
             conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
@@ -2070,6 +2136,9 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        _summary = _path_confidence_line(hop_datas)
+        if _summary:
+            print(_summary)
         from graphify import querylog
         querylog.log_query(
             kind="path",
@@ -2080,9 +2149,17 @@ def dispatch_command(cmd: str) -> None:
         _touch_query_stamp(gp)
 
     elif cmd == "explain":
+        _explain_usage = 'Usage: graphify explain "<node>" [--all] [--graph path] [--rationale]'
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--all] [--graph path] [--rationale]', file=sys.stderr)
+            print(_explain_usage, file=sys.stderr)
             sys.exit(1)
+        # A lone "--help"/"-h" prints usage, mirroring `query` (#4830). explain
+        # is also a free-text command exempt from the generic --help intercept
+        # (see __main__._run_cli), so a standalone help flag would otherwise run
+        # as a literal node query ("No node matching '--help' found").
+        if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
+            print(_explain_usage)
+            return
         from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
         from networkx.readwrite import json_graph
 
@@ -3994,6 +4071,7 @@ def dispatch_command(cmd: str) -> None:
                 existing_graph_path,
                 target,
                 detection.get("unchanged_files", {}).get("code", []),
+                manifest_path,
             )
             if _healed_sources:
                 print(
@@ -4349,7 +4427,7 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
-                            "_py_fixture",
+                            "_py_fixture", "_py_return_type",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4387,7 +4465,8 @@ def dispatch_command(cmd: str) -> None:
                         if _edge.get("relation") not in (
                             "contains", "method", "inherits", "imports", "imports_from"
                         ):
-                            continue
+                            if not (_edge.get("relation") == "references" and _edge.get("context") == "return_type"):
+                                continue
                         if not _ctx_is_ast_tier(_edge):
                             continue
                         _sf = _edge.get("source_file")
@@ -4399,6 +4478,8 @@ def dispatch_command(cmd: str) -> None:
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
                         }
+                        if _edge.get("context") == "return_type":
+                            _ctx_edge["context"] = "return_type"
                         _edge_metadata = _edge.get("metadata")
                         if (
                             isinstance(_edge_metadata, dict)
@@ -4746,6 +4827,10 @@ def dispatch_command(cmd: str) -> None:
         # #2543: also drop AST sources that failed (missing optional extra /
         # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        # #2879: code files the extractor declined by design this run. They ARE
+        # stamped (not failures) but have zero nodes, so the manifest marks the
+        # emptiness intentional and the #2543 heal stops re-queuing them.
+        _ast_empty_sources = list(ast_result.get("skipped_sources") or [])
         _manifest_files = _stamped_manifest_files(
             files_by_type,
             sem_result,
@@ -4833,7 +4918,7 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -4890,6 +4975,8 @@ def dispatch_command(cmd: str) -> None:
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            from graphify.build import qualify_csharp_method_labels_in_nodes as _qualify_cs_methods
+            _qualify_cs_methods(merged["nodes"], merged["edges"])
             # Same endpoint rules as build_from_json (#2873): an import of an
             # external module gets a typed stub node, and any other edge without
             # two declared endpoints is dropped instead of shipping a phantom.
@@ -4966,9 +5053,13 @@ def dispatch_command(cmd: str) -> None:
                     f"{merged['output_tokens']:,} out, "
                     f"est. cost: ${cost:.4f}"
                 )
+                _record_extract_cost(
+                    graphify_out, merged["input_tokens"], merged["output_tokens"],
+                    detection.get("total_files", 0),
+                )
             try:
                 if has_path:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -5180,7 +5271,7 @@ def dispatch_command(cmd: str) -> None:
         _wja(analysis_path, analysis, indent=2)
         try:
             if has_path:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
@@ -5207,6 +5298,10 @@ def dispatch_command(cmd: str) -> None:
                 f"{merged['input_tokens']:,} in / "
                 f"{merged['output_tokens']:,} out, "
                 f"est. cost (~{backend}): ${cost:.4f}"
+            )
+            _record_extract_cost(
+                graphify_out, merged["input_tokens"], merged["output_tokens"],
+                detection.get("total_files", 0),
             )
         # extract intentionally stops at graph.json + analysis; the report and
         # community labels are produced by `cluster-only` (or an agent's Step 5).
