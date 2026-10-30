@@ -72,9 +72,9 @@ def _html_styles() -> str:
   #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
   #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--text-2); user-select: none; }
   #legend-controls label:hover { color: var(--text); }
-  .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid var(--input-border); border-radius: 3px; background: var(--bg); cursor: pointer; position: relative; flex-shrink: 0; }
-  .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
-  .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  .legend-cb, #select-all-cb, #hide-orphans-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid var(--input-border); border-radius: 3px; background: var(--bg); cursor: pointer; position: relative; flex-shrink: 0; }
+  .legend-cb:checked, #select-all-cb:checked, #hide-orphans-cb:checked { background: #4E79A7; border-color: #4E79A7; }
+  .legend-cb:checked::after, #select-all-cb:checked::after, #hide-orphans-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
   #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
   #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
   #theme-wrap { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
@@ -400,6 +400,18 @@ document.addEventListener('click', e => {{
 }});
 
 const hiddenCommunities = new Set();
+let hideOrphans = false;
+
+// A node is hidden when its community is filtered out or, with "Hide orphans"
+// on, when it has no edges in the rendered graph.
+function isNodeHidden(n) {{
+  return hiddenCommunities.has(n.community) || (hideOrphans && n.degree === 0);
+}}
+
+function setHideOrphans(hide) {{
+  hideOrphans = hide;
+  nodesDS.update(RAW_NODES.filter(n => n.degree === 0).map(n => ({{ id: n.id, hidden: isNodeHidden(n) }})));
+}}
 
 const selectAllCb = document.getElementById('select-all-cb');
 
@@ -420,7 +432,7 @@ function toggleAllCommunities(hide) {{
   LEGEND.forEach(c => {{
     if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
   }});
-  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
+  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: isNodeHidden(n) }}));
   nodesDS.update(updates);
   updateSelectAllState();
 }}
@@ -444,7 +456,7 @@ LEGEND.forEach(c => {{
     }}
     const updates = RAW_NODES
       .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
+      .map(n => ({{ id: n.id, hidden: isNodeHidden(n) }}));
     nodesDS.update(updates);
     updateSelectAllState();
   }});
@@ -517,7 +529,8 @@ def to_html(
     """Generate an interactive vis.js HTML visualization of the graph.
 
     Features: node size by degree, click-to-inspect panel, search box,
-    community filter, physics clustering by community, confidence-styled edges.
+    community filter, orphan filter, physics clustering by community,
+    confidence-styled edges.
     Raises ValueError if graph exceeds MAX_NODES_FOR_VIZ.
 
     If member_counts is provided (aggregated community view), node sizes are
@@ -767,6 +780,7 @@ def to_html(
     <h3>Communities</h3>
     <div id="legend-controls">
       <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+      <label><input type="checkbox" id="hide-orphans-cb" onchange="setHideOrphans(this.checked)">Hide orphans</label>
     </div>
     <div id="legend"></div>
   </div>
