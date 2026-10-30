@@ -5410,9 +5410,14 @@ def dispatch_command(cmd: str) -> None:
             # Coerce token counts: a chunk is untrusted, so a non-numeric
             # input_tokens/output_tokens must not abort the whole merge with a
             # TypeError after other chunks already merged.
+            # A null count is "the host did not report usage" and makes the
+            # total unknown rather than zero (#2786).
             for _tok in ("input_tokens", "output_tokens"):
                 _v = chunk.get(_tok, 0)
-                merged[_tok] += _v if isinstance(_v, (int, float)) else 0
+                if _v is None or merged[_tok] is None:
+                    merged[_tok] = None
+                elif isinstance(_v, (int, float)):
+                    merged[_tok] += _v
         if not valid_chunks:
             print(
                 f"[graphify merge-chunks] error: no valid chunks to merge; "
@@ -5430,7 +5435,11 @@ def dispatch_command(cmd: str) -> None:
         )
         print(
             f"Merged {chunk_summary}: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
-            f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
+            + (
+                "token usage unavailable"
+                if merged["input_tokens"] is None or merged["output_tokens"] is None
+                else f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
+            )
         )
 
     elif cmd == "merge-semantic":

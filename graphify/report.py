@@ -108,6 +108,15 @@ def _learning_section(lines: list, learning: dict | None, top_n: int = 10) -> No
                          + (f" -> {nodes}" if nodes else ""))
 
 
+def _token_cost_line(token_cost: dict) -> str:
+    """A null count means the host ran the semantic subagents but did not
+    report their usage. Printing 0 would claim the work was free (#2786)."""
+    tokens_in, tokens_out = token_cost.get("input", 0), token_cost.get("output", 0)
+    if tokens_in is None or tokens_out is None:
+        return "- Token cost: unavailable (the host did not report token usage)"
+    return f"- Token cost: {tokens_in:,} input · {tokens_out:,} output"
+
+
 def generate(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -217,7 +226,7 @@ def generate(
         + (f" ({shown_count} shown, {thin_count_summary} thin omitted)" if thin_count_summary else ""),
         f"- Extraction: {ext_pct}% EXTRACTED · {inf_pct}% INFERRED · {amb_pct}% AMBIGUOUS"
         + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
-        f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
+        _token_cost_line(token_cost),
     ]
 
     if built_at_commit:

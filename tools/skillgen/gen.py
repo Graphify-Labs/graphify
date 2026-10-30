@@ -1319,6 +1319,31 @@ def _is_code_only_fast_path_fix_line(line: str) -> bool:
     )
 
 
+def _is_unknown_token_usage_fix_line(line: str) -> bool:
+    """Whether a line is part of the unknown-token-usage fix (#2786).
+
+    A host that exposes no subagent usage (Codex returns only the completion
+    text) left the chunk's placeholder zeros in place, so the report and
+    cost.json claimed a semantic run was free. The parent now writes null for
+    such a chunk, the B3 merge keeps a null total, and the cost tracker records
+    the run without adding it to the all-time totals. These are the old
+    summing/printing lines (removed) and the null-aware ones (added), plus the
+    instruction paragraph above the merge, which gained the null sentence.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith(("total_in += d.get('input_tokens', 0)", "total_out += d.get('output_tokens', 0)"))
+        or stripped.startswith(("cost['total_input_tokens'] += input_tok", "cost['total_output_tokens'] += output_tok"))
+        or "usage_unknown" in stripped
+        or stripped == "'input_tokens': total_in, 'output_tokens': total_out,"
+        or stripped.startswith(("measured = input_tok is not None", "cost['unmeasured_runs'] ="))
+        or stripped == "if not measured:"
+        or stripped.startswith(("cost['total_input_tokens'] += input_tok", "cost['total_output_tokens'] += output_tok"))
+        or stripped.startswith(("print(f'Merged {len(chunks)} chunks: ", "print(f'This run: {input_tok:,} input tokens", "print(f'All time: {cost["))
+        or ("the chunk JSON itself always has placeholder zeros." in line and "read the real token counts" in line)
+    )
+
+
 def _is_update_detect_populate_fix_line(line: str) -> bool:
     """Whether a line is part of the aider/devin ``--update`` detect block (found while fixing #4447).
 
@@ -1372,6 +1397,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
+    _is_unknown_token_usage_fix_line,
     _is_update_detect_populate_fix_line,
 )
 
