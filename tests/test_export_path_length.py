@@ -98,6 +98,48 @@ def test_budget_ignores_extended_length_paths(monkeypatch):
     assert stem_filename_budget(r"\\?\C:\very\deep" + "\\x" * 100, reserve=4) == 200
 
 
+def _fake_name_max(monkeypatch, name_max):
+    """Make every POSIX filesystem report ``name_max`` bytes per component."""
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(os, "pathconf", lambda _path, _name: name_max)
+
+
+def test_budget_shrinks_to_a_low_posix_name_max(monkeypatch):
+    # #2109: eCryptfs reports NAME_MAX=143. The longest name the budget allows
+    # (stem + reserved suffix/prefix + ".md") has to fit in those 143 bytes.
+    _fake_name_max(monkeypatch, 143)
+    budget = stem_filename_budget("/home/me/vault", reserve=5)
+    assert budget + 5 + len(".md") == 143
+
+
+def test_budget_is_unchanged_at_the_conventional_name_max(monkeypatch):
+    _fake_name_max(monkeypatch, 255)
+    assert stem_filename_budget("/home/me/vault", reserve=16) == 200
+
+
+def test_budget_asks_the_nearest_existing_ancestor(tmp_path, monkeypatch):
+    # The export directory may not exist yet when the budget is computed.
+    monkeypatch.setattr(os, "name", "posix")
+
+    def pathconf(path, _name):
+        if not os.path.isdir(path):
+            raise FileNotFoundError(path)
+        return 143
+
+    monkeypatch.setattr(os, "pathconf", pathconf)
+    assert stem_filename_budget(tmp_path / "not" / "yet", reserve=5) == 135
+
+
+def test_budget_keeps_the_limit_when_name_max_is_unavailable(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+
+    def pathconf(_path, _name):
+        raise OSError("pathconf unsupported")
+
+    monkeypatch.setattr(os, "pathconf", pathconf)
+    assert stem_filename_budget("/home/me/vault", reserve=5) == 200
+
+
 # ---------------------------------------------------------------------------
 # The stem helpers honour an explicit limit
 # ---------------------------------------------------------------------------
