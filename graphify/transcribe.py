@@ -31,6 +31,17 @@ def _get_whisper():
         ) from exc
 
 
+_DEFAULT_YTDLP_MAX_BYTES = 1024 * 1024 * 1024  # 1 GiB
+
+
+def _ytdlp_max_filesize() -> int:
+    """Max bytes yt-dlp may download. Override with GRAPHIFY_YTDLP_MAX_FILESIZE."""
+    raw = os.environ.get("GRAPHIFY_YTDLP_MAX_FILESIZE", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return _DEFAULT_YTDLP_MAX_BYTES
+
+
 def _get_yt_dlp():
     try:
         import yt_dlp
@@ -70,12 +81,20 @@ def download_audio(url: str, output_dir: Path) -> Path:
             print(f"  cached audio: {candidate.name}")
             return candidate
 
+    # NOTE: validate_url() above only vets the INITIAL url. yt-dlp resolves hosts
+    # and follows redirects itself, so an open redirect or DNS rebinding could
+    # still reach an internal host — full SSRF isolation needs a network sandbox
+    # (egress allowlist), which is out of scope here. max_filesize reduces the
+    # blast radius of a malicious/oversized target — best-effort: yt-dlp aborts
+    # when the announced size (Content-Length) exceeds the cap, but cannot
+    # hard-stop a stream of unknown/chunked size.
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': out_template,
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
+        'max_filesize': _ytdlp_max_filesize(),
         'postprocessors': [],  # no ffmpeg needed — use native audio
     }
 
