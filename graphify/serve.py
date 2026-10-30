@@ -1631,6 +1631,136 @@ def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
+# Owner -> member relations a `Type.Member` query walks: `method` for methods,
+# `defines` for fields and C++ in-class declarations, `contains` for nested types.
+_TYPE_MEMBER_RELATIONS = frozenset({"method", "defines", "contains"})
+
+# `Type.Member`, `Outer.Inner.Member` or `Type.Member()` (#4884).
+_QUALIFIED_MEMBER_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)(?:\(\))?$")
+
+
+def _symbol_name(d: dict) -> str:
+    """A node's label folded to its bare name, so the member `.Build()` reads `build`."""
+    norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+    return norm_label.strip().removeprefix(".").removesuffix("()")
+
+
+def _split_qualified_member(label: str) -> tuple[list[str], str] | None:
+    """`(owner chain, member)` of a `Type.Member` query, folded, or None for another form."""
+    qualified = _QUALIFIED_MEMBER_RE.match(label.strip())
+    if not qualified:
+        return None
+    owners = [_strip_diacritics(p).lower() for p in qualified.group(1).split(".")]
+    return owners, _strip_diacritics(qualified.group(2)).lower()
+
+
+def _named_nodes(G: nx.Graph, name: str) -> list[str]:
+    candidate_ids = _trigram_candidates(G, [name])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    return [nid for nid, d in node_iter if _symbol_name(d) == name]
+
+
+def _membership_neighbors(G: nx.Graph, nid: str, *, members: bool) -> list[str]:
+    """The members of *nid* (``members=True``) or the nodes that own it.
+
+    Direction is the stored arc, or the `_src`/`_tgt` markers of a legacy
+    canonicalized file (#2309). An undirected graph without markers cannot tell
+    owner from member, so there every membership neighbour counts both ways.
+    """
+    if isinstance(G, nx.DiGraph):
+        edges = list(G.out_edges(nid, data=True)) + list(G.in_edges(nid, data=True))
+    else:
+        edges = list(G.edges(nid, data=True))
+    found: dict[str, None] = {}
+    for u, v, d in edges:
+        if d.get("relation") not in _TYPE_MEMBER_RELATIONS:
+            continue
+        if G.is_directed() or "_src" in d:
+            owner, member = d.get("_src", u), d.get("_tgt", v)
+            if (owner if members else member) != nid:
+                continue
+            other = member if members else owner
+        else:
+            other = v if u == nid else u
+        if other != nid:
+            found.setdefault(other)
+    return list(found)
+
+
+def _enclosed_by(G: nx.Graph, nid: str, outer: list[str]) -> bool:
+    """Is *nid* nested in types named by *outer*, outermost first?"""
+    if not outer:
+        return True
+    return any(
+        _symbol_name(G.nodes[parent]) == outer[-1] and _enclosed_by(G, parent, outer[:-1])
+        for parent in _membership_neighbors(G, nid, members=False)
+    )
+
+
+def _qualified_member_owners(G: nx.Graph, qualifiers: list[str]) -> list[str]:
+    """Nodes named `qualifiers[-1]` that own members, nested as the rest of the chain says."""
+    return [
+        owner for owner in _named_nodes(G, qualifiers[-1])
+        if _membership_neighbors(G, owner, members=True)
+        and _enclosed_by(G, owner, qualifiers[:-1])
+    ]
+
+
+def _members_named(G: nx.Graph, owners: list[str], member: str) -> list[str]:
+    hits: dict[str, None] = {}
+    for owner in owners:
+        for nid in _membership_neighbors(G, owner, members=True):
+            if _symbol_name(G.nodes[nid]) == member:
+                hits.setdefault(nid)
+    return list(hits)
+
+
+def _resolve_qualified_member(G: nx.Graph, label: str) -> list[str]:
+    """Member nodes named by `Type.Member` through their declaring type (#4884).
+
+    A namespace qualifier (`Acme.Io.Type.Member`) matches nothing: the file, not
+    the namespace node, owns the type, so only enclosing types can qualify it.
+    """
+    split = _split_qualified_member(label)
+    if not split:
+        return []
+    qualifiers, member = split
+    return _members_named(G, _qualified_member_owners(G, qualifiers), member)
+
+
+def _no_member_match_message(G: nx.Graph, label: str) -> str | None:
+    """Refusal for a `Type.Member` endpoint whose type declares no such member (#4884).
+
+    Scoring the query instead lands on the type itself, so a path to the type
+    reads as a path to the member. Returns None when no type of that name owns
+    members, leaving the query to ordinary scoring. Same-named members of a type
+    with that bare name (a namespace-qualified query, say) are listed for a retry.
+    """
+    split = _split_qualified_member(label)
+    if not split:
+        return None
+    qualifiers, member = split
+    bare_owners = _qualified_member_owners(G, qualifiers[-1:])
+    if not bare_owners:
+        return None
+    owner_text, _, member_text = label.strip().removesuffix("()").rpartition(".")
+    msg = (
+        f"No node matching '{sanitize_label(label)}' found; no type "
+        f"'{sanitize_label(owner_text)}' declares '{sanitize_label(member_text)}'."
+    )
+    near = _members_named(G, bare_owners, member)
+    if near:
+        listing = "\n".join(
+            f"  {G.nodes[n].get('source_file') or G.nodes[n].get('label') or n}\n    id: {n}"
+            for n in near
+        )
+        msg += f"\n{listing}\nRetry with the full node id."
+    return msg
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1681,6 +1811,14 @@ def _find_node_tiers(
         scoped = _resolve_python_qualified(G, label)
         if scoped:
             return scoped, [], [], []
+        # `Type.Member` names a member through its declaring type (#4884). The
+        # member's own label is `.Build()`, so the tiers below match nothing and
+        # scoring picks the type. Returned as the exact tier, so several members
+        # under that name (one per implementing type, or overloads) are refused
+        # with their candidates rather than one of them guessed.
+        members = _resolve_qualified_member(G, label)
+        if members:
+            return [], members, [], []
 
     if not term:
         return [], [], [], []
@@ -2014,6 +2152,12 @@ def _resolve_path_endpoint(
     path_part, sep, symbol_part = query.partition("::")
     if sep and path_part.strip() and symbol_part.strip():
         return None, [], _no_scoped_match_message(G, path_part.strip(), symbol_part.strip())
+    # Likewise a `Type.Member` endpoint whose type exists but declares no such
+    # member: scoring it resolves to the type, and the route printed to the type
+    # reads as a route to the member (#4884).
+    no_member = _no_member_match_message(G, query)
+    if no_member:
+        return None, [], no_member
     scored = _score_nodes(G, [t.lower() for t in query.split()])
     if not scored:
         return None, [], None
