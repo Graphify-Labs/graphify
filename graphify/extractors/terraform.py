@@ -79,13 +79,16 @@ def _scope_id(directory: str) -> str:
 
 
 def prepare_terraform(result: dict, path: Path, root: Path) -> None:
-    """Make cached directory-scoped IDs portable before the common merge passes."""
+    """Make cached directory-scoped IDs portable before the common merge passes.
+
+    Consume the internal scope metadata even when the file is outside root.
+    """
     directory = path.parent.resolve()
+    old = result.pop("_terraform_scope", _scope_id(directory.as_posix()))
     try:
         relative = directory.relative_to(root).as_posix()
     except ValueError:
         return
-    old = result.pop("_terraform_scope", _scope_id(directory.as_posix()))
     new = _scope_id(relative)
     for node in result.get("nodes", []):
         nid = node["id"]

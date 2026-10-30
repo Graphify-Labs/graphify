@@ -149,6 +149,69 @@ def test_prepare_terraform_is_idempotent_with_or_without_scope(tmp_path, with_sc
     assert result == first
 
 
+def _assert_outside_preparation(path, root, cached):
+    from graphify.cache import load_cached, save_cached
+    from graphify.extractors.terraform import prepare_terraform
+
+    result = extract_terraform(path)
+    assert "error" not in result
+    cache_root = root.parent / "cache"
+    if cached:
+        save_cached(path, result, root=root, cache_root=cache_root)
+        result = load_cached(path, root=root, cache_root=cache_root)
+        assert result is not None
+    expected = copy.deepcopy(result)
+    scope = expected.pop("_terraform_scope")
+    prepare_terraform(result, path, root)
+    assert result == expected
+    prepare_terraform(result, path, root)
+    assert result == expected
+    if cached:
+        stored = load_cached(path, root=root, cache_root=cache_root)
+        assert stored is not None
+        assert stored["_terraform_scope"] == scope
+
+
+@pytest.mark.parametrize("suffix", [".tf", ".hcl", ".tfvars"])
+@pytest.mark.parametrize("cached", [False, True], ids=["fresh", "cached"])
+def test_prepare_terraform_discards_scope_outside_root(tmp_path, suffix, cached):
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = _write(tmp_path, f"outside/main{suffix}",
+                  'variable "name" {}\noutput "name" { value = var.name }\n'
+                  'module "app" { source = "../repo" }\n')
+    _assert_outside_preparation(path, root, cached)
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["fresh", "cached"])
+def test_prepare_terraform_discards_scope_for_symlink_escape(
+    tmp_path, requires_symlinks, cached,
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = _write(tmp_path, "outside/main.tf",
+                     'variable "name" {}\noutput "name" { value = var.name }\n'
+                     'module "app" { source = "../repo" }\n')
+    alias = root / "alias"
+    alias.symlink_to(outside.parent, target_is_directory=True)
+    _assert_outside_preparation(alias / "main.tf", root, cached)
+
+
+def test_prepare_terraform_without_scope_outside_root_is_unchanged(tmp_path):
+    from graphify.extractors.terraform import prepare_terraform
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = _write(tmp_path, "outside/main.tf", 'variable "name" {}\n')
+    result = extract_terraform(path)
+    result.pop("_terraform_scope")
+    expected = copy.deepcopy(result)
+    prepare_terraform(result, path, root)
+    assert result == expected
+    prepare_terraform(result, path, root)
+    assert result == expected
+
+
 def test_terraform_cache_without_scope_is_reextracted(tmp_path, monkeypatch):
     import graphify.cache as cache
 
