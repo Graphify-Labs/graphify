@@ -1,8 +1,10 @@
 """Local Terraform module topology, including incremental graph reconciliation."""
 from __future__ import annotations
 
+import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +45,194 @@ def _assert_integrity(result):
     for e in result.get("links", result.get("edges", [])):
         assert e["source"] in ids, e
         assert e["target"] in ids, e
+
+
+@pytest.mark.parametrize("suffix", [".tf", ".hcl", ".tfvars"])
+@pytest.mark.parametrize("directory", ["", "deploy"])
+@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
+def test_copied_ast_cache_preserves_terraform_ids(
+    tmp_path, monkeypatch, capsys, suffix, directory, parallel,
+):
+    import graphify.extract as ex
+
+    roots = [tmp_path / name for name in ("original", "copied", "clean")]
+    original, copied, clean = roots
+    paths = [
+        _write(original, f"{directory}/vars{suffix}".lstrip("/"),
+               'variable "REGISTRY" { default = "example" }\n'),
+        _write(original, f"{directory}/outputs{suffix}".lstrip("/"),
+               'output "registry" { value = var.REGISTRY }\n'),
+    ]
+    paths.sort()
+    pool_runs = []
+    run_parallel = ex._extract_parallel
+
+    def checked_parallel(*args, **kwargs):
+        completed = run_parallel(*args, **kwargs)
+        pool_runs.append(completed)
+        return completed
+
+    monkeypatch.setattr(ex, "_PARALLEL_THRESHOLD", 1)
+    monkeypatch.setattr(ex, "_extract_parallel", checked_parallel)
+
+    def scan(root):
+        return extract(
+            [root / path.relative_to(original) for path in paths],
+            root=root, cache_root=root, parallel=parallel, max_workers=2,
+        )
+
+    first = scan(original)
+    _assert_integrity(first)
+    variable = _node(first, "var.REGISTRY")
+    output = _node(first, "output.registry")
+    assert any(e["source"] == output["id"] and e["target"] == variable["id"]
+               and e["relation"] == "references" for e in first["edges"])
+    shutil.copytree(original, copied)
+    shutil.copytree(original, clean, ignore=shutil.ignore_patterns("graphify-out"))
+    cold = scan(clean)
+    assert first["nodes"] == cold["nodes"]
+    assert first["edges"] == cold["edges"]
+    assert pool_runs == ([True, True] if parallel else [])
+
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("copied AST cache should avoid parsing unchanged files")
+
+    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", unexpected_parse)
+    capsys.readouterr()
+    warm = scan(copied)
+    assert "AST cache: 2/2 files served from cache" in capsys.readouterr().out
+    _assert_integrity(warm)
+    assert first["nodes"] == warm["nodes"]
+    assert first["edges"] == warm["edges"]
+    assert "_terraform_scope" not in warm
+    assert all("_terraform_scope" not in item for item in warm["nodes"] + warm["edges"])
+
+
+def test_copied_ast_cache_preserves_module_topology(tmp_path, monkeypatch):
+    import graphify.extract as ex
+
+    original, copied = [tmp_path / name for name in ("original", "copied")]
+    _write(original, "main.tf", 'module "app" { source = "./app" }\n')
+    for directory in ("app", "a-b/app", "a_b/app"):
+        _write(original, f"{directory}/vars.tf", 'variable "name" {}\n')
+        _write(original, f"{directory}/use.tf", 'output "name" { value = var.name }\n')
+    first = _extract(original)
+    shutil.copytree(original, copied)
+
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("copied AST cache should avoid parsing unchanged files")
+
+    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", unexpected_parse)
+    warm = _extract(copied)
+    _assert_integrity(warm)
+    assert first["nodes"] == warm["nodes"]
+    assert first["edges"] == warm["edges"]
+    variables = [n for n in warm["nodes"] if n["label"] == "var.name"]
+    assert len({n["id"] for n in variables}) == 3
+    assert len(_module_edges(warm)) == 1
+    assert _module_edges(warm)[0]["target"] == _node(warm, "Terraform module: app")["id"]
+
+
+@pytest.mark.parametrize("with_scope", [False, True])
+def test_prepare_terraform_is_idempotent_with_or_without_scope(tmp_path, with_scope):
+    from graphify.extractors.terraform import prepare_terraform
+
+    path = _write(tmp_path, "deploy/main.tf",
+                  'variable "name" {}\noutput "name" { value = var.name }\n')
+    result = extract_terraform(path)
+    if not with_scope:
+        result.pop("_terraform_scope", None)
+    prepare_terraform(result, path, tmp_path)
+    assert "_terraform_scope" not in result
+    first = copy.deepcopy(result)
+    prepare_terraform(result, path, tmp_path)
+    assert result == first
+
+
+def _assert_outside_preparation(path, root, cached):
+    from graphify.cache import load_cached, save_cached
+    from graphify.extractors.terraform import prepare_terraform
+
+    result = extract_terraform(path)
+    assert "error" not in result
+    cache_root = root.parent / "cache"
+    if cached:
+        save_cached(path, result, root=root, cache_root=cache_root)
+        result = load_cached(path, root=root, cache_root=cache_root)
+        assert result is not None
+    expected = copy.deepcopy(result)
+    scope = expected.pop("_terraform_scope")
+    prepare_terraform(result, path, root)
+    assert result == expected
+    prepare_terraform(result, path, root)
+    assert result == expected
+    if cached:
+        stored = load_cached(path, root=root, cache_root=cache_root)
+        assert stored is not None
+        assert stored["_terraform_scope"] == scope
+
+
+@pytest.mark.parametrize("suffix", [".tf", ".hcl", ".tfvars"])
+@pytest.mark.parametrize("cached", [False, True], ids=["fresh", "cached"])
+def test_prepare_terraform_discards_scope_outside_root(tmp_path, suffix, cached):
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = _write(tmp_path, f"outside/main{suffix}",
+                  'variable "name" {}\noutput "name" { value = var.name }\n'
+                  'module "app" { source = "../repo" }\n')
+    _assert_outside_preparation(path, root, cached)
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["fresh", "cached"])
+def test_prepare_terraform_discards_scope_for_symlink_escape(
+    tmp_path, requires_symlinks, cached,
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = _write(tmp_path, "outside/main.tf",
+                     'variable "name" {}\noutput "name" { value = var.name }\n'
+                     'module "app" { source = "../repo" }\n')
+    alias = root / "alias"
+    alias.symlink_to(outside.parent, target_is_directory=True)
+    _assert_outside_preparation(alias / "main.tf", root, cached)
+
+
+def test_prepare_terraform_without_scope_outside_root_is_unchanged(tmp_path):
+    from graphify.extractors.terraform import prepare_terraform
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = _write(tmp_path, "outside/main.tf", 'variable "name" {}\n')
+    result = extract_terraform(path)
+    result.pop("_terraform_scope")
+    expected = copy.deepcopy(result)
+    prepare_terraform(result, path, root)
+    assert result == expected
+    prepare_terraform(result, path, root)
+    assert result == expected
+
+
+def test_terraform_cache_without_scope_is_reextracted(tmp_path, monkeypatch):
+    import graphify.cache as cache
+
+    path = _write(tmp_path, "main.tf", 'variable "name" {}\n')
+    legacy = extract_terraform(path)
+    legacy.pop("_terraform_scope", None)
+    with monkeypatch.context() as old:
+        old.setattr(cache, "_AST_CACHE_SCHEMA", 29)
+        old.setattr(cache, "_cleaned_ast_dirs", set())
+        cache.save_cached(path, legacy, root=tmp_path)
+        cache.save_cached(path, legacy, root=tmp_path, kind="semantic")
+        old_dir = cache.cache_dir(tmp_path, "ast")
+
+    assert cache.load_cached(path, root=tmp_path) is None
+    assert not old_dir.exists()
+    assert cache.load_cached(path, root=tmp_path, kind="semantic") is not None
+    fresh = _extract(tmp_path)
+    cached = cache.load_cached(path, root=tmp_path)
+    assert cached is not None
+    assert cached.get("_terraform_scope")
+    assert fresh["nodes"] == _extract(tmp_path)["nodes"]
 
 
 def test_environment_application_base_topology_and_source_provenance(tmp_path):
