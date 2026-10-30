@@ -640,6 +640,16 @@ def extract_go(path: Path) -> dict:
                                          elem.start_point[0] + 1, context="generic_arg")
             return
 
+        if t == "var_declaration" and node.parent is not None and node.parent.type == "source_file":
+            # A package-level `var` initialiser runs at package init and has no enclosing
+            # function, so its calls, including those inside a `var f = func() {...}`
+            # closure, are credited to the file, the owner a module-level call already
+            # gets elsewhere. Without this they were never walked and the callee lost the
+            # caller (#2360).
+            function_bodies.append(
+                (file_nid, node, None, None, _go_receiver_type_table(node, source)))
+            return
+
         if t == "import_declaration":
             for child in node.children:
                 if child.type == "import_spec_list":
