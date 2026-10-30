@@ -90,7 +90,7 @@ def test_explain_prints_scores(report_graph, monkeypatch, capsys):
     out = _cli(monkeypatch, capsys, "explain", "report_ireport_build",
                "--graph", str(report_graph))
     assert out.count("[dispatches_to] [INFERRED 0.75]") == 2
-    assert "<-- .Run() [calls] [INFERRED 0.85]" in out
+    assert "<-- Exporter.Run() [calls] [INFERRED 0.85]" in out
     assert "[method] [EXTRACTED]" in out
     assert "[INFERRED]" not in out
 
@@ -98,20 +98,20 @@ def test_explain_prints_scores(report_graph, monkeypatch, capsys):
 def test_cli_path_prints_scores(report_graph, monkeypatch, capsys):
     out = _cli(monkeypatch, capsys, "path", "report_exporter_run",
                "report_pdfreport_build", "--graph", str(report_graph))
-    assert ("--calls [INFERRED 0.85]--> .Build() "
-            "--dispatches_to [INFERRED 0.75]--> .Build()") in out
+    assert ("--calls [INFERRED 0.85]--> IReport.Build() "
+            "--dispatches_to [INFERRED 0.75]--> PdfReport.Build()") in out
 
 
 def test_mcp_path_prints_scores(report_graph):
     out = _shortest_path_text(_load(report_graph), {
         "source": "report_exporter_run", "target": "report_pdfreport_build",
     })
-    assert ("--calls [INFERRED 0.85]--> .Build() "
-            "--dispatches_to [INFERRED 0.75]--> .Build()") in out
+    assert ("--calls [INFERRED 0.85]--> IReport.Build() "
+            "--dispatches_to [INFERRED 0.75]--> PdfReport.Build()") in out
 
 
 def test_mcp_neighbors_print_scores(report_graph):
     lines = _neighbor_lines(_load(report_graph), "report_ireport_build")
     assert sum("[dispatches_to] [INFERRED 0.75]" in ln for ln in lines) == 2
-    assert any(ln.startswith("  <-- .Run() [calls] [INFERRED 0.85]") for ln in lines)
+    assert any(ln.startswith("  <-- Exporter.Run() [calls] [INFERRED 0.85]") for ln in lines)
     assert any("[method] [EXTRACTED] " in ln for ln in lines)

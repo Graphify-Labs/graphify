@@ -2097,7 +2097,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
-        from graphify.build import edge_datas
+        hop_datas: list[list[dict]] = []
+        from graphify.build import edge_datas, edge_evidence
+        from graphify.serve import _path_confidence_line
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
             # Report the ACTUAL stored relation(s) of the traversed pair and
@@ -2116,10 +2118,16 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            hop_datas.append(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
-            confs = sorted({_confidence_tag(d) for d in datas if d.get("confidence")})
+            confs = sorted({
+                _confidence_tag(e)
+                for d in datas
+                for e in edge_evidence(d)
+                if e.get("confidence")
+            })
             conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
@@ -2128,6 +2136,9 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        _summary = _path_confidence_line(hop_datas)
+        if _summary:
+            print(_summary)
         from graphify import querylog
         querylog.log_query(
             kind="path",
@@ -4947,6 +4958,8 @@ def dispatch_command(cmd: str) -> None:
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            from graphify.build import qualify_csharp_method_labels_in_nodes as _qualify_cs_methods
+            _qualify_cs_methods(merged["nodes"], merged["edges"])
             # Same endpoint rules as build_from_json (#2873): an import of an
             # external module gets a typed stub node, and any other edge without
             # two declared endpoints is dropped instead of shipping a phantom.

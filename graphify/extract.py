@@ -59,6 +59,7 @@ from graphify.extractors.csharp import (
     _is_dotnet_source_file,
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
+    bare_csharp_method_labels_in_nodes,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
@@ -9536,6 +9537,10 @@ def extract(
             fresh results are appended to the returned nodes/edges.
     """
     paths = [Path(p) for p in paths]
+    if resolution_context_nodes:
+        # Persisted C# method labels carry their owner (#4883); the resolvers
+        # match the bare `.Name()` form a fresh extraction produces.
+        resolution_context_nodes = bare_csharp_method_labels_in_nodes(resolution_context_nodes)
     anchor_root = Path(root) if root is not None else None
     _check_tree_sitter_version()
     _raise_recursion_limit()

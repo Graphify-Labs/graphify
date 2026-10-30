@@ -564,7 +564,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
             (data.get("file_type", "unknown") or "unknown").capitalize(),
             "Entity",
         )
-        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
+        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}'}}) SET n.label = '{label}';")
     lines.append("")
     for u, v, data in G.edges(data=True):
         u, v = data.get("_src", u), data.get("_tgt", v)

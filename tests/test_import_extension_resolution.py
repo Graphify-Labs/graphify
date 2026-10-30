@@ -352,6 +352,64 @@ def test_named_imports_emit_symbol_edges_after_resolution(tmp_path):
     )
 
 
+# ── #4860 — relative specifiers with a ?query / #fragment suffix ─────────────
+
+
+def test_resolve_relative_specifier_with_query_string(tmp_path):
+    """`./foo.js?v=123` must resolve to the real `foo.js`."""
+    target = _write(tmp_path / "foo.js", "export const foo = 1")
+    assert _resolve_js_module_path("./foo.js?v=123", tmp_path) == target
+
+
+def test_resolve_relative_specifier_with_fragment(tmp_path):
+    """`./foo.js#frag` must resolve to the real `foo.js`."""
+    target = _write(tmp_path / "foo.js", "export const foo = 1")
+    assert _resolve_js_module_path("./foo.js#frag", tmp_path) == target
+
+
+def test_resolve_relative_specifier_with_query_and_fragment(tmp_path):
+    """Both suffixes together (`./foo.js?v=1#frag`) must be stripped."""
+    target = _write(tmp_path / "foo.js", "export const foo = 1")
+    assert _resolve_js_module_path("./foo.js?v=1#frag", tmp_path) == target
+
+
+def test_query_string_import_resolves_and_emits_no_phantom(tmp_path):
+    """The #4860 reproducer: `import { foo } from './lib/foo.js?v=134'`
+    must produce an `imports_from` edge to the real file and a per-symbol
+    `imports` edge for `foo`, with no phantom `ref_..._v_134` target."""
+    target = _write(tmp_path / "lib" / "foo.js", "export const foo = 1")
+    importer = _write(tmp_path / "page.js",
+                      "import { foo } from './lib/foo.js?v=134'\n")
+    result = extract_js(importer)
+    expected = _make_id(str(target))
+    targets = _import_targets(result)
+    assert expected in targets, (
+        f"Query-string import must resolve to the real file node; "
+        f"expected {expected}; got {targets}"
+    )
+    assert not any("_v_134" in t for t in targets), (
+        f"No phantom `_v_134` node should take the edge; got {targets}"
+    )
+    sym_targets = {str(e.get("target") or "") for e in result["edges"]
+                   if e.get("relation") == "imports"}
+    assert any("_foo" in t for t in sym_targets), (
+        f"Per-symbol `imports` edge for `foo` missing after resolution; "
+        f"got {sym_targets}"
+    )
+
+
+def test_query_string_does_not_affect_external_module(tmp_path):
+    """A bare (non-relative) specifier is untouched by the query-strip branch,
+    so external modules still fall through to the external reference path."""
+    importer = _write(tmp_path / "page.js",
+                      "import _ from 'lodash-es'\n")
+    targets = _import_targets(extract_js(importer))
+    assert any("lodash" in t for t in targets), (
+        f"External module specifier should still resolve externally; "
+        f"got {targets}"
+    )
+
+
 def test_alias_directory_import_resolves_to_index_ts(tmp_path):
     """`from '$lib/queue'` where queue/ is a directory under src/lib/."""
     src = tmp_path / "src"

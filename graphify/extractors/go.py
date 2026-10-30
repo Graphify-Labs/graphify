@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from graphify.ids import DeclIdRegistry
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -179,13 +180,33 @@ def _go_single_type_name(node, source: bytes) -> str | None:
     return name if name and name not in _GO_PREDECLARED_TYPES else None
 
 
+def _go_inferred_composite_bindings(names, values, source: bytes):
+    """Pair same-position declared names with composite-literal values.
+
+    Shared by `x := T{}` (`short_var_declaration`) and `var x = T{}` (a
+    type-less `var_spec`): both bind a name to the type of a same-position
+    `T{}` / `&T{}` value. Yields (name text, inferred type) for each pair
+    that is in fact a composite literal.
+    """
+    for name_node, value in zip(names, values):
+        if value.type == "unary_expression":
+            value = value.child_by_field_name("operand") or value
+        if value.type != "composite_literal":
+            continue
+        type_name = _go_single_type_name(value.child_by_field_name("type"), source)
+        if type_name:
+            yield _read_text(name_node, source), type_name
+
+
 def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
     """Collect ``name -> TypeName`` for every Go receiver whose type is written down.
 
-    Four sources: a struct field, a parameter (which covers the method receiver
-    `func (s *Server)`), `var x T`, and `x := T{}` / `x := &T{}`. Flat over the subtree it is
-    given, first binding wins — run over one function it is that function's own scope, and
-    over the file it is the fallback for a struct field. Children are pushed reversed so the
+    Five sources: a struct field, a parameter (which covers the method receiver
+    `func (s *Server)`), `var x T`, `x := T{}` / `x := &T{}`, and `var x = T{}` /
+    `var x = &T{}` (the same composite-literal inference, spelled with `var`
+    instead of `:=`). Flat over the subtree it is given, first binding wins —
+    run over one function it is that function's own scope, and over the file it
+    is the fallback for a struct field. Children are pushed reversed so the
     walk yields document order and "first" means first in the source.
     """
     table: dict[str, str] = {}
@@ -195,23 +216,28 @@ def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
         t = n.type
         if t in ("field_declaration", "parameter_declaration", "var_spec"):
             type_name = _go_single_type_name(n.child_by_field_name("type"), source)
-            for c in n.children if type_name else ():
-                if c.type in ("field_identifier", "identifier"):
-                    table.setdefault(_read_text(c, source), type_name)
+            if type_name:
+                for c in n.children:
+                    if c.type in ("field_identifier", "identifier"):
+                        table.setdefault(_read_text(c, source), type_name)
+            elif t == "var_spec":
+                value = n.child_by_field_name("value")
+                if value is not None:
+                    names = [c for c in n.children if c.type == "identifier"]
+                    values = [c for c in value.children if c.is_named]
+                    for name_text, inferred in _go_inferred_composite_bindings(
+                        names, values, source
+                    ):
+                        table.setdefault(name_text, inferred)
         elif t == "short_var_declaration":
             left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
             if left is not None and right is not None:
                 names = [c for c in left.children if c.type == "identifier"]
                 values = [c for c in right.children if c.is_named]
-                for name_node, value in zip(names, values):
-                    if value.type == "unary_expression":
-                        value = value.child_by_field_name("operand") or value
-                    if value.type != "composite_literal":
-                        continue
-                    type_name = _go_single_type_name(
-                        value.child_by_field_name("type"), source)
-                    if type_name:
-                        table.setdefault(_read_text(name_node, source), type_name)
+                for name_text, inferred in _go_inferred_composite_bindings(
+                    names, values, source
+                ):
+                    table.setdefault(name_text, inferred)
         stack.extend(reversed(n.children))
     return table
 
@@ -282,6 +308,7 @@ def extract_go(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = type_symbol_nid(name)
@@ -446,21 +473,20 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             _scan_declarations(child)
 
-    def symbol_nid(plain_nid: str, name: str) -> str:
+    def symbol_nid(plain_nid: str, name: str, kind: str = "fn") -> str:
+        nid = plain_nid
         names = case_groups.get(plain_nid) or set()
-        if len(names) < 2:
-            return plain_nid
-        exported = [n for n in names if n[:1].isupper()]
-        if len(exported) == 1 and name == exported[0]:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
+        if len(names) >= 2 and not (len([n for n in names if n[:1].isupper()]) == 1
+                                    and name == [n for n in names if n[:1].isupper()][0]):
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(plain_nid, salt)
+        return decl_registry.resolve(nid, name, kind, seen_ids)
 
     def type_symbol_nid(name: str) -> str:
         plain_nid = _make_id(pkg_scope, name)
         if name not in case_groups.get(plain_nid, ()):
-            return plain_nid
-        return symbol_nid(plain_nid, name)
+            return decl_registry.resolve(plain_nid, name, "type", seen_ids)
+        return symbol_nid(plain_nid, name, "type")
 
     def walk(node) -> None:
         t = node.type

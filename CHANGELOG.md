@@ -2,6 +2,26 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.98 (2026-10-30)
+
+- Fix: **build** when duplicate same-relation edges collapse, the losing (weaker-confidence) copy's provenance is kept in an `also_seen` list on the surviving edge instead of being discarded, so the weaker evidence is not silently lost; the field is serialized to graph.json and is idempotent across rebuilds (#4881, #4891, thanks @SyedFahad7).
+- Fix: **csharp** a C# method node is labelled with its owning type (`MyClass.Method`) instead of a bare `Method`, so same-named methods across types are distinguishable; node ids and edges are unchanged (display label only) (#4883, #4889, thanks @SyedFahad7).
+- Feat: **path** `graphify path` and the MCP shortest-path output report the overall path confidence as the weakest hop (lowest confidence tier, then lowest score), with a summary line naming that hop (#4885, #4892, thanks @SyedFahad7).
+- Fix: **path** an endpoint written `Type.Member` resolves to the member node, not the containing type, so `graphify path "Exporter.Run" "PdfReport.Build"` finds the real call route; exact names and file names still win first, and a `Type.Member` whose member does not exist fails closed (#4884, #4893, thanks @SyedFahad7).
+- Fix: **extract** file ids and per-declaration ids are kept distinct, so a top-level declaration whose name matches its file (for example `class Js` in `a.js`) is no longer silently dropped on an id collision; cross-file references bind to the declared id (#4854, #4857, thanks @Deepjyoti-Sarmah).
+- Fix: **dedup** when a cross-file document mention and an AST node collide on a defining id, the AST node keeps the id instead of being dropped, while same-file enrichment, extension twins and single-definer cases are left as-is (#4859, #4872, thanks @TanmayShah29; duplicate approach in #4871 by @ayushcodes10).
+- Fix: **build** a two-file import cycle (a imports b, b imports a) is reported in the default undirected build, and the stamp is cleared correctly on incremental/watch rebuilds so a dropped import no longer leaves a stale cycle (#4839, #4841, thanks @Mpasha17; duplicate approach in #4852 by @legendteddy).
+- Fix: **extract** a relative JS/TS import carrying a `?query` or `#fragment` suffix (`./mod.js?v=1`) resolves to the real module instead of a phantom node; Node `#subpath` imports are left untouched (#4860, #4876, thanks @Jitendarmahara; duplicate approach in #4869 by @mirzasnowy).
+- Fix: **go** a receiver bound with `var x = T{}` or `var x = &T{}` (a composite literal) is typed as `T`, matching the `x := T{}` form, so its member calls resolve (#4843, thanks @ayushcodes10).
+- Fix: **verilog** a SystemVerilog class constructor (`function new(...)`, which has no return type) gets its own node, `method` edge and parameter-type references (#4848, thanks @ayushcodes10).
+- Fix: **powershell** `using module`/`using assembly` drops a real file extension (`Helpers.psm1` to `helpers`) but keeps a dotted module name with no extension intact (`Az.Accounts`) (#4847, thanks @ayushcodes10).
+- Fix: **solidity** a free-function `using {a, b} for T` set emits `uses` edges for each named function, not just the single-library `using Lib for T` form (#4846, thanks @ayushcodes10).
+- Fix: **commonlisp** a `defclass` whose superclass is defined later in the same file binds to that local node instead of minting a sourceless stub (#4845, thanks @ayushcodes10).
+- Fix: **pascal** `inherited` and `inline` form component blocks (.lfm/.dfm) are recognised, so a later `object` block keeps its correct parent instead of being re-parented by a corrupted nesting stack (#4844, thanks @ayushcodes10).
+- Fix: **serve** when two nodes tie in a lookup and differ only by case, the one spelled exactly as queried wins (the others stay reachable one tier down) instead of every spelling being refused as ambiguous (#4870, thanks @nothariharan).
+- Fix: **export** the Cypher text export keys `MERGE` on the stable node id and sets the label separately, so re-importing after a label change updates the node instead of creating a duplicate (#4878, thanks @oleksii-tumanov).
+- Fix: **pdf** the converted-text cache is keyed on the resolved source path, so two PDFs with the same relative name in different roots do not poison each other within one process (#4851, thanks @xunguangzlj-cloud).
+
 ## 0.9.97 (2026-10-27)
 
 - Security: **rationale redaction** credential redaction for rationale labels moves to a single pre-cache choke point (`_redact_rationale_labels` inside `_safe_extract`), so no extractor can skip it, and it now covers more leak shapes: URL userinfo with an empty user or with `/`/`@` in the password, PEM private-key bodies, tokens glued to surrounding text by `_` (for example `ghp_...`), Slack `xoxe-` refresh tokens, short JWTs, and Common Lisp docstrings that previously built labels without redacting. Benign strings (hashes, `sk-` prose, URLs without userinfo) are left alone (#4647, thanks @0xkaushik-ai).

@@ -3262,6 +3262,67 @@ def test_powershell_script_scope_walk_does_not_duplicate_function_calls(tmp_path
     callers |= {c["caller_nid"] for c in r["raw_calls"]}
     assert file_nid not in callers, f"File node became a caller; callers={callers}"
 
+
+# ── PowerShell: using statement ──────────────────────────────────────────────
+
+def test_powershell_using_module_with_extension_resolves_to_stem(tmp_path):
+    """`using module Helpers.psm1` must resolve to 'helpers', not the extension.
+
+    The value after `using module`/`using assembly` is a file or library name
+    (an extension to strip), not a dotted namespace path (a hierarchy to
+    descend) like `using namespace`. Splitting on the last '.' for every form
+    alike takes the extension instead of the name.
+    """
+    f = tmp_path / "main.ps1"
+    f.write_text("using module Helpers.psm1\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any("helpers" in t for t in targets), f"Missing using-module Helpers edge; targets={targets}"
+    assert not any(t.endswith("psm1") or t == "psm1" for t in targets), (
+        f"using-module edge resolved to the file extension instead of the name; targets={targets}"
+    )
+
+
+def test_powershell_using_assembly_with_extension_resolves_to_stem(tmp_path):
+    """`using assembly System.Data.dll` must resolve to the library name, not 'dll'."""
+    f = tmp_path / "main.ps1"
+    f.write_text("using assembly System.Data.dll\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert not any(t == "dll" for t in targets), (
+        f"using-assembly edge resolved to the file extension instead of the name; targets={targets}"
+    )
+
+
+def test_powershell_using_namespace_keeps_last_segment(tmp_path):
+    """Control: `using namespace` must keep taking the last dotted segment (unchanged)."""
+    f = tmp_path / "main.ps1"
+    f.write_text("using namespace System.Management.Automation\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert any("automation" in t for t in targets), (
+        f"Missing using-namespace Automation edge; targets={targets}"
+    )
+
+
+def test_powershell_using_module_without_extension_keeps_full_name(tmp_path):
+    """A dotted module name with no file extension must keep its full name.
+
+    Only a real module/assembly extension (.psm1/.psd1/.ps1/.dll/.exe) is a file
+    suffix; a dotted name like `Az.Accounts` is the module name itself, so the
+    last segment must not be stripped (it would otherwise resolve to 'az')."""
+    f = tmp_path / "main.ps1"
+    f.write_text("using module Az.Accounts\n")
+    r = extract_powershell(f)
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports_from"}
+    assert not any(t == "az" for t in targets), (
+        f"using-module dropped the dotted name's last segment; targets={targets}"
+    )
+    assert any("accounts" in t for t in targets), (
+        f"using-module lost the Az.Accounts name; targets={targets}"
+    )
+
+
 # ── PowerShell manifest (.psd1) (#1331) ──────────────────────────────────────
 
 def test_powershell_psd1_dispatched():
@@ -4847,6 +4908,29 @@ def test_systemverilog_task_locals_do_not_leak_into_class_fields():
     assert ("DataProcessor", "Flag") not in _edge_labels(r, "references", "field")
 
 
+def test_systemverilog_constructor_method_gets_a_node():
+    """A `new` constructor has no return type, but the function-header regex
+    always required one (`function TYPE NAME(...)`), so `function new(...)` -
+    the single most common class method in SystemVerilog - matched nothing at
+    all: no node, no `method` edge, and its parameter types vanished too.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "new") in _edge_labels(r, "method")
+    assert ("new", "Config") in _edge_labels(r, "references", "parameter_type")
+
+
+def test_systemverilog_explicit_return_type_function_still_works():
+    """Control: a function with an explicit return type (the adjacent, already
+    working case) must still separate its return type from its name correctly
+    after the header regex's return type became optional."""
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "build") in _edge_labels(r, "method")
+    assert ("build", "Result") in _edge_labels(r, "references", "return_type")
+    assert ("build", "Payload") in _edge_labels(r, "references", "parameter_type")
+    # The return type must not be swallowed as part of the method name.
+    assert "Resultbuild" not in _labels(r)
+
+
 # ── Header/impl class merge + .h routing (#1547 C++, #1556 ObjC/Swift) ─────────
 from graphify.extract import (
     extract as _extract_corpus,
@@ -5163,6 +5247,41 @@ def test_cl_crossfile_superclass_inherits_edge_survives(tmp_path):
     assert ("service-dog", "base-animal") in inherits
     base = next(n for n in r["nodes"] if n["label"] == "base-animal")
     assert base["source_file"] == "", "cross-file superclass must be a sourceless stub"
+
+
+@_needs_commonlisp
+def test_cl_forward_referenced_superclass_binds_to_local_node(tmp_path):
+    """A superclass listed before its own defclass form, in the same file,
+    must still bind to that file's local node instead of a sourceless stub.
+
+    ensure_class_ref used to check only seen_ids, which is populated in file
+    order as _walk_forms reaches each form. A subclass appearing above its
+    parent asked before the parent's node existed, so it got the external-stub
+    treatment meant for a genuinely different file, splitting "parent" into
+    two unconnected nodes in the same file.
+    """
+    f = tmp_path / "fwd.lisp"
+    f.write_text(
+        "(defclass child (parent) ())\n"
+        "(defclass parent () ())\n"
+    )
+    r = extract_commonlisp(f)
+    assert "error" not in r
+    parent_nodes = [n for n in r["nodes"] if n["label"] == "parent"]
+    assert len(parent_nodes) == 1, "forward-referenced parent must not split into two nodes"
+    assert parent_nodes[0]["source_file"] == str(f)
+
+    id_to_node = {n["id"]: n for n in r["nodes"]}
+    inherits = {
+        (id_to_node[e["source"]]["label"], id_to_node[e["target"]]["label"])
+        for e in r["edges"]
+        if e["relation"] == "inherits"
+        and e["source"] in id_to_node and e["target"] in id_to_node
+    }
+    assert ("child", "parent") in inherits
+    assert id_to_node[
+        next(e["target"] for e in r["edges"] if e["relation"] == "inherits")
+    ]["source_file"] == str(f), "inherits edge must target the local parent node, not a stub"
 
 
 @_needs_commonlisp
