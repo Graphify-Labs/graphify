@@ -985,6 +985,85 @@ def test_claude_system_prompt_marked_cacheable(monkeypatch, deep_mode):
     }]
 
 
+@pytest.mark.parametrize("base_url", [
+    "https://api.anthropic.com",
+    "https://opencode.ai/zen",
+])
+@pytest.mark.parametrize("deep_mode", [False, True], ids=["normal", "deep"])
+@pytest.mark.parametrize("setting,enabled", [
+    (None, True), ("", True), ("  ", True),
+    ("1", True), ("true", True), ("yes", True), (" ON ", True),
+    ("0", False), ("false", False), ("no", False), (" OFF ", False),
+])
+def test_claude_prompt_cache_override(monkeypatch, base_url, deep_mode, setting, enabled):
+    calls = _install_capturing_anthropic(monkeypatch)
+    monkeypatch.setitem(llm.BACKENDS["claude"], "base_url", base_url)
+    if setting is not None:
+        monkeypatch.setenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", setting)
+
+    result = llm._call_claude("test-key", "custom-model", "u", deep_mode=deep_mode)
+
+    prompt = llm._extraction_system(deep=deep_mode)
+    assert calls[0]["system"] == ([{
+        "type": "text", "text": prompt, "cache_control": {"type": "ephemeral"},
+    }] if enabled else prompt)
+    assert result["input_tokens"] == 100  # Compatible APIs may omit cache usage.
+    assert result["nodes"] == [{"id": "x"}]
+
+
+def test_claude_prompt_cache_invalid_override(monkeypatch):
+    calls = _install_capturing_anthropic(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", "flase")
+
+    with pytest.raises(ValueError, match="GRAPHIFY_CLAUDE_PROMPT_CACHE"):
+        llm._call_claude("test-key", "custom-model", "u")
+
+    assert calls == []
+
+
+def test_claude_prompt_cache_unsupported_endpoint(monkeypatch):
+    """An endpoint rejecting cache metadata works when caching is disabled."""
+    from types import SimpleNamespace
+
+    _install_capturing_anthropic(monkeypatch)
+    import anthropic
+
+    requests = []
+    clients = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        if isinstance(kwargs["system"], list):
+            raise ValueError("cache_control is unsupported")
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text='{"nodes":[],"edges":[]}')],
+            usage=SimpleNamespace(input_tokens=12, output_tokens=3),
+            stop_reason="end_turn",
+        )
+
+    def client(**kwargs):
+        clients.append(kwargs)
+        return SimpleNamespace(messages=SimpleNamespace(create=create))
+
+    monkeypatch.setattr(anthropic, "Anthropic", client)
+    endpoint = "https://gateway.example/anthropic"
+    monkeypatch.setitem(llm.BACKENDS["claude"], "base_url", endpoint)
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", "1")
+    with pytest.raises(ValueError, match="cache_control is unsupported"):
+        llm._call_claude("test-key", "custom-model", "u")
+    assert len(requests) == 1  # No silent retry or endpoint/model guessing.
+
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", "0")
+    result = llm._call_claude("test-key", "custom-model", "u")
+
+    assert len(requests) == 2
+    assert requests[1]["system"] == llm._extraction_system()
+    assert requests[1]["model"] == "custom-model"
+    assert result["input_tokens"] == 12
+    assert result["output_tokens"] == 3
+    assert all(c["base_url"] == endpoint and c["api_key"] == "test-key" for c in clients)
+
+
 def test_claude_system_block_same_across_files(monkeypatch):
     """The cache only hits when every call sends a byte-identical prefix."""
     calls = _install_capturing_anthropic(monkeypatch)

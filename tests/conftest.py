@@ -72,6 +72,7 @@ def _isolate_backend_env(monkeypatch):
     reads before each test; a test that wants one sets it with monkeypatch."""
     from graphify.llm import backend_detection_env_vars
 
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", raising=False)
     for key in backend_detection_env_vars():
         monkeypatch.delenv(key, raising=False)
 
