@@ -28,13 +28,21 @@ from graphify.security import (
 )
 
 
+@pytest.fixture
+def public_dns(monkeypatch):
+    """validate_url resolves the host, which would make these tests need a network."""
+    monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
+
+
 # ---------------------------------------------------------------------------
 # validate_url
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("public_dns")
 def test_validate_url_accepts_http():
     assert validate_url("http://example.com/page") == "http://example.com/page"
 
+@pytest.mark.usefixtures("public_dns")
 def test_validate_url_accepts_https():
     assert validate_url("https://arxiv.org/abs/1706.03762") == "https://arxiv.org/abs/1706.03762"
 
@@ -107,6 +115,7 @@ def test_safe_fetch_rejects_ftp_url():
     with pytest.raises(ValueError, match="ftp"):
         safe_fetch("ftp://example.com/file.zip")
 
+@pytest.mark.usefixtures("public_dns")
 def test_safe_fetch_returns_bytes(tmp_path):
     mock_resp = _make_mock_response(b"hello world")
     with patch("graphify.security._build_opener") as mock_opener_fn:
@@ -116,6 +125,7 @@ def test_safe_fetch_returns_bytes(tmp_path):
         result = safe_fetch("https://example.com/")
     assert result == b"hello world"
 
+@pytest.mark.usefixtures("public_dns")
 def test_safe_fetch_raises_on_non_2xx():
     mock_resp = _make_mock_response(b"Not Found", status=404)
     with patch("graphify.security._build_opener") as mock_opener_fn:
@@ -125,6 +135,7 @@ def test_safe_fetch_raises_on_non_2xx():
         with pytest.raises(urllib.error.HTTPError):
             safe_fetch("https://example.com/missing")
 
+@pytest.mark.usefixtures("public_dns")
 def test_safe_fetch_raises_on_size_exceeded():
     # Build a response larger than max_bytes
     big_chunk = b"x" * 65_537
@@ -148,6 +159,7 @@ def test_safe_fetch_raises_on_size_exceeded():
 # safe_fetch_text
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("public_dns")
 def test_safe_fetch_text_decodes_utf8():
     content = "héllo wörld".encode("utf-8")
     mock_resp = _make_mock_response(content)
@@ -158,6 +170,7 @@ def test_safe_fetch_text_decodes_utf8():
         result = safe_fetch_text("https://example.com/")
     assert result == "héllo wörld"
 
+@pytest.mark.usefixtures("public_dns")
 def test_safe_fetch_text_replaces_bad_bytes():
     bad = b"hello \xff world"
     mock_resp = _make_mock_response(bad)
