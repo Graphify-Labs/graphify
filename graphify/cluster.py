@@ -269,6 +269,23 @@ def cluster(
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
 
+    # PRINTS_LOG edges should not act as artificial coupling hubs between
+    # otherwise independent communities. Strip them from the partition graph
+    # and re-attach log nodes to their caller's community afterwards.
+    log_callers: dict[str, str] = {}
+    has_prints_log = any(d.get("relation") == "PRINTS_LOG" for _, _, d in G.edges(data=True))
+    if has_prints_log:
+        G = G.copy()
+        prints_log_edges = []
+        for u, v, d in G.edges(data=True):
+            if d.get("relation") == "PRINTS_LOG":
+                prints_log_edges.append((u, v))
+                log_node = v if G.nodes[v].get("type") == "log" else u
+                caller = u if log_node == v else v
+                if log_node not in log_callers:
+                    log_callers[log_node] = caller
+        G.remove_edges_from(prints_log_edges)
+
     # #4199 — scale AMBIGUOUS edge weights so they do not warp partitioning.
     # Env override lets `GRAPHIFY_AMBIGUOUS_SCALE=1.0 graphify ...` restore the
     # pre-fix behavior without a code change. Malformed values are ignored.
@@ -360,6 +377,20 @@ def cluster(
             best = min(votes, key=lambda c: (-votes[c], c))
             raw[best].append(node)
             node_community[node] = best
+
+    # Reattach log nodes to their caller's community
+    if log_callers:
+        node_community = {n: cid for cid, nodes in raw.items() for n in nodes}
+        for log_node, caller in sorted(log_callers.items(), key=lambda x: str(x[0])):
+            caller_cid = node_community.get(caller)
+            curr_cid = node_community.get(log_node)
+            if caller_cid is not None and curr_cid is not None and curr_cid != caller_cid:
+                if log_node in raw.get(curr_cid, []):
+                    raw[curr_cid].remove(log_node)
+                    if not raw[curr_cid]:
+                        del raw[curr_cid]
+                raw.setdefault(caller_cid, []).append(log_node)
+                node_community[log_node] = caller_cid
 
     # Split oversized communities
     max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))

@@ -349,6 +349,8 @@ graphify parses ~40 programming languages locally with tree-sitter AST, and maps
 /graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
+graphify extract . --enable-logging               # extract AST logging statements (PRINTS_LOG edges)
+graphify extract . --enable-logging --logging-config logging_config.yaml # with custom logging rules
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
 
 /graphify query "what connects auth to the database?"

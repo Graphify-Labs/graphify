@@ -140,6 +140,8 @@ def god_nodes(G: nx.Graph, top_n: int = 10,
             continue
         if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
             continue
+        if G.nodes[node_id].get("type") == "log":
+            continue
         if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:
             continue
         result.append({
