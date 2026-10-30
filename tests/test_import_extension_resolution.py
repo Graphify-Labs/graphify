@@ -353,11 +353,6 @@ def test_named_imports_emit_symbol_edges_after_resolution(tmp_path):
 
 
 # ── #4860 — relative specifiers with a ?query / #fragment suffix ─────────────
-# A cache-busting query (`./foo.js?v=123`) or fragment (`./foo.js#frag`) on a
-# relative specifier must be stripped before resolution, exactly as browsers
-# and bundlers do and as the Markdown extractor already does (markdown.py).
-# Before the fix, `start_dir / raw` kept the suffix, so the file never resolved
-# and a phantom `ref_..._v_...` node took the edge instead.
 
 
 def test_resolve_relative_specifier_with_query_string(tmp_path):
