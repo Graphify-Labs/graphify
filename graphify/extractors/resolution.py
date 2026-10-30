@@ -866,7 +866,11 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     if start_dir is None:
         return _resolve_js_import_path(Path(raw))
     if raw.startswith("."):
-        return _resolve_js_import_path(start_dir / raw)
+        # Strip a cache-busting query / fragment (`./foo.js?v=1`, `./foo.js#frag`)
+        # before resolving, mirroring the Markdown extractor (#4860). Browsers and
+        # bundlers resolve the module as if the suffix were absent.
+        specifier = raw.split("#", 1)[0].split("?", 1)[0]
+        return _resolve_js_import_path(start_dir / specifier)
 
     aliases = _load_tsconfig_aliases(start_dir)
     hit = _resolve_tsconfig_alias(raw, aliases,
