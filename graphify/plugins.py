@@ -391,6 +391,8 @@ def extract_one(plugin: ExtractorPlugin, path: Path, root: Path) -> dict:
     """Run a per-file plugin on one file. Never raises."""
     ctx = PluginContext(root=root, paths=[path])
     try:
+        if plugin.extract is None:
+            raise TypeError("plugin has no `extract` function")
         res = normalise(_call(plugin.extract, path, ctx=ctx), path, plugin)
         if plugin.post_process and "error" not in res:
             res = normalise(_call(plugin.post_process, res, path, ctx=ctx) or res, path, plugin)
@@ -416,6 +418,8 @@ def run_batches(paths: list[Path], root: Path) -> dict[str, dict]:
         plugin = plugins[name]
         ctx = PluginContext(root=root, paths=files)
         try:
+            if plugin.extract_batch is None:
+                raise TypeError("plugin has no `extract_batch` function")
             raw = _call(plugin.extract_batch, files, ctx=ctx)
             if not isinstance(raw, dict):
                 raise TypeError(f"extract_batch returned {type(raw).__name__}, expected {{path: result}}")
