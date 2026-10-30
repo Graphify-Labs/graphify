@@ -575,11 +575,19 @@ def suggest_questions(
         and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
+        has_semantic_layer = any(
+            G.nodes[n].get("file_type") in ("document", "paper", "image")
+            for n in G.nodes()
+        )
+        reason = (
+            "possible documentation gaps or missing edges" if has_semantic_layer
+            else "possible missing edges"
+        )
         labels = [G.nodes[n].get("label", n) for n in isolated[:3]]
         questions.append({
             "type": "isolated_nodes",
             "question": f"What connects {', '.join(f'`{l}`' for l in labels)} to the rest of the system?",
-            "why": f"{len(isolated)} weakly-connected nodes found - possible documentation gaps or missing edges.",
+            "why": f"{len(isolated)} weakly-connected nodes found - {reason}.",
         })
 
     # 5. Low-cohesion communities → structural questions
