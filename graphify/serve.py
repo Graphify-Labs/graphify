@@ -14,7 +14,7 @@ from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
-from graphify.build import edge_datas, edge_evidence, has_parallel_links
+from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
@@ -2069,6 +2069,36 @@ def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
     return H
 
 
+def _path_confidence_line(hop_datas: list[list[dict]]) -> str:
+    """Overall confidence of a path: its weakest hop (#4885).
+
+    A path is only as sure as its least certain hop. Each hop is ranked by
+    the weakest evidence it carries (`_CONFIDENCE_RANK`, then the lowest
+    `confidence_score`; a missing score never counts as weaker than a present
+    one), and the first weakest hop is named. A hop with no recognised
+    confidence tag ranks below AMBIGUOUS and makes the whole path unknown.
+    """
+    weakest = None
+    for hop, datas in enumerate(hop_datas, 1):
+        for d in datas or [{}]:
+            for ev in edge_evidence(d):
+                conf = ev.get("confidence")
+                score = ev.get("confidence_score")
+                if not isinstance(score, (int, float)) or isinstance(score, bool):
+                    score = None
+                rank = _CONFIDENCE_RANK.get(str(conf), 0)
+                key = (rank, score is None, score or 0.0, hop)
+                if weakest is None or key < weakest[0]:
+                    weakest = (key, hop, d.get("relation") or "related", conf if rank else None, score)
+    if weakest is None:
+        return ""
+    _, hop, rel, conf, score = weakest
+    if conf is None:
+        return f"Path confidence: unknown (hop {hop}: {rel} has no confidence tag)"
+    score_str = f", score {score:g}" if score is not None else ""
+    return f"Path confidence: {conf} (weakest hop {hop}: {rel}{score_str})"
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -2125,6 +2155,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     if hops > max_hops:
         return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
     segments = []
+    hop_datas: list[list[dict]] = []
     for i in range(len(path_nodes) - 1):
         u, v = path_nodes[i], path_nodes[i + 1]
         # Report the actual stored relation(s), never a fabricated `calls`;
@@ -2138,6 +2169,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
                 for d in edge_datas(G, a, b):
                     (fwd if d.get("_src", a) == u else bwd).append(d)
         datas = fwd or bwd
+        hop_datas.append(datas)
         forward = bool(fwd)
         rels = sorted({d.get("relation") for d in datas if d.get("relation")})
         rel = "/".join(rels) if rels else "related"
@@ -2150,7 +2182,11 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
         else:
             segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
     prefix = ("\n".join(warnings) + "\n") if warnings else ""
-    return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+    summary = _path_confidence_line(hop_datas)
+    return (
+        prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+        + (f"\n{summary}" if summary else "")
+    )
 
 
 def _filter_blank_stdin() -> None:
@@ -2378,7 +2414,8 @@ def _build_server(graph_path: str):
                 name="shortest_path",
                 description=(
                     "Find the shortest path between two concepts in the knowledge graph. "
-                    "Follows stored edge direction by default; set undirected=true to ignore it."
+                    "Follows stored edge direction by default; set undirected=true to ignore it. "
+                    "Ends with the path's confidence, which is that of its weakest hop."
                 ),
                 inputSchema={
                     "type": "object",
