@@ -1665,6 +1665,18 @@ def _call_openai_compat(
     return result
 
 
+def _claude_prompt_cache_enabled() -> bool:
+    """Keep prompt caching on by default; allow incompatible endpoints to opt out."""
+    raw = os.environ.get("GRAPHIFY_CLAUDE_PROMPT_CACHE", "").strip().lower()
+    if raw in ("", "1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(
+        "GRAPHIFY_CLAUDE_PROMPT_CACHE must be 1/true/yes/on or 0/false/no/off"
+    )
+
+
 def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Anthropic Claude directly (not via OpenAI compat layer)."""
     try:
@@ -1672,6 +1684,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
+    cache_enabled = _claude_prompt_cache_enabled()
     client = anthropic.Anthropic(
         api_key=api_key,
         base_url=BACKENDS["claude"]["base_url"],
@@ -1687,7 +1700,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
             "type": "text",
             "text": _extraction_system(deep=deep_mode),
             "cache_control": {"type": "ephemeral"},
-        }],
+        }] if cache_enabled else _extraction_system(deep=deep_mode),
         messages=[{"role": "user", "content": _anthropic_content(user_message, images or [])}],
     )
     raw_content = _anthropic_response_text(resp.content)
