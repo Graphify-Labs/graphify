@@ -4548,11 +4548,67 @@ def dispatch_command(cmd: str) -> None:
             if uncached_paths:
                 _via = f"{backend}" + (f", {backend_source}" if backend_source else "")
                 print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {_via}...")
+                known_node_ids = {
+                    node["id"]
+                    for node in cached_nodes
+                    if isinstance(node, dict)
+                    and isinstance(node.get("id"), str)
+                    and node["id"]
+                }
+                # A standard incremental pass checks the semantic cache only for
+                # changed files, so ``cached_nodes`` does not include unchanged
+                # live documents.  Keep their persisted node IDs as read-only
+                # resolution context: a changed file may legitimately reference
+                # one after a foreign same-ID stub is removed (#3377).  Scope the
+                # context to live unchanged semantic sources, and exclude every
+                # file being re-extracted so stale definitions cannot validate
+                # themselves.  Deep mode already widens ``semantic_files`` to the
+                # full live corpus and obtains the same IDs through cache hits.
+                if incremental_mode and not deep_mode and existing_graph_path.exists():
+                    try:
+                        from graphify.security import (
+                            check_graph_file_size_cap as _sem_ctx_size_cap,
+                        )
+                        _sem_ctx_size_cap(existing_graph_path)
+                        _sem_ctx_graph = json.loads(
+                            existing_graph_path.read_text(encoding="utf-8")
+                        )
+                        _sem_ctx_root = Path(os.path.abspath(target))
+                        from graphify.llm import (
+                            _provenance_path_identity as _sem_ctx_key,
+                            _resolve_provenance_path as _sem_ctx_path,
+                        )
+
+                        def _sem_ctx_identity(source_file) -> str | None:
+                            if not source_file:
+                                return None
+                            return _sem_ctx_key(_sem_ctx_path(str(source_file), _sem_ctx_root))
+
+                        _sem_ctx_live = {
+                            _sem_ctx_identity(path)
+                            for kind in ("document", "paper", "image")
+                            for path in detection.get("unchanged_files", {}).get(kind, [])
+                        }
+                        _sem_ctx_live.discard(None)
+                        _sem_ctx_live.difference_update(
+                            _sem_ctx_identity(path) for path in uncached_paths
+                        )
+                        known_node_ids.update(
+                            node["id"]
+                            for node in _sem_ctx_graph.get("nodes", [])
+                            if isinstance(node, dict)
+                            and isinstance(node.get("id"), str)
+                            and node["id"]
+                            and _sem_ctx_identity(node.get("source_file")) in _sem_ctx_live
+                        )
+                    except Exception:
+                        pass
                 corpus_kwargs: dict = {
                     "backend": backend,
                     "model": model,
                     "root": target,
                     "cache_root": out_root,
+                    "known_node_ids": known_node_ids,
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
@@ -4633,6 +4689,7 @@ def dispatch_command(cmd: str) -> None:
                 # written as a complete cache entry, re-promoting it (#1950).
                 from graphify.llm import (
                     _partial_source_files as _partial_sf,
+                    _semantic_cache_edges as _cache_edges,
                     _strip_partial_markers as _strip_partial,
                 )
                 _partial_semantic_files = set(_partial_sf(fresh))
@@ -4679,7 +4736,7 @@ def dispatch_command(cmd: str) -> None:
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
-                        fresh.get("edges", []),
+                        _cache_edges(fresh),
                         fresh.get("hyperedges", []),
                         root=target,
                         cache_root=out_root,

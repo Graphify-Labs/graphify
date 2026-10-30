@@ -12,10 +12,11 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
+from graphify.paths import nfc
 
 from graphify.extractors.base import _read_source_text
 from graphify.file_slice import (
@@ -2450,6 +2451,14 @@ def _merged_partial_files(*results: dict) -> list[str]:
     return sorted(out)
 
 
+def _merged_out_of_chunk_node_ids(*results: dict) -> list[str]:
+    """Union foreign node IDs deferred until the corpus merge can resolve them."""
+    out: set[str] = set()
+    for result in results:
+        out.update(result.get("_out_of_chunk_node_ids", []) or [])
+    return sorted(out)
+
+
 def _partial_source_files(result: dict) -> list[str]:
     """Source files known partial: those carrying a ``_partial`` item marker, plus
     any recorded in ``_partial_files`` (a chunk that truncated to an empty parse
@@ -2464,8 +2473,16 @@ def _partial_source_files(result: dict) -> list[str]:
     return sorted(seen)
 
 
+def _semantic_cache_edges(result: dict) -> list:
+    """Keep graph relations from a partial foreign producer out of another cache."""
+    return [
+        edge for edge in result.get("edges", [])
+        if not isinstance(edge, dict) or not edge.get("_provenance_partial")
+    ]
+
+
 def _strip_partial_markers(result: dict) -> None:
-    """Remove the internal ``_partial`` marker from every item in ``result``.
+    """Remove internal partial and cache-eligibility markers from every item.
 
     Call this only AFTER the semantic cache has been saved (the save consumes the
     marker to stamp affected entries ``partial: True``). Stripping it keeps the
@@ -2475,6 +2492,135 @@ def _strip_partial_markers(result: dict) -> None:
         for item in result.get(bucket, []):
             if isinstance(item, dict):
                 item.pop("_partial", None)
+                item.pop("_provenance_partial", None)
+
+
+def _resolve_provenance_path(value: "str | Path", root: Path) -> Path:
+    """Resolve a source claim with the same portable spelling as the cache.
+
+    Preserve walked symlink identity and existing literal entries, including
+    POSIX backslash names. Otherwise accept the cache's portable slash spelling.
+    """
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    path = Path(os.path.abspath(path))
+    if os.path.lexists(path):
+        return path
+    from graphify.cache import _normalize_source_file_value
+    path = Path(_normalize_source_file_value(value, Path(os.path.abspath(root))))
+    if not path.is_absolute():
+        path = root / path
+    return Path(os.path.abspath(path))
+
+
+def _provenance_path_identity(path: Path) -> str:
+    """Use actual walked spelling only when the filesystem proves an alias.
+
+    APFS can look up an NFD directory entry through its NFC spelling. Exact
+    entry names win so distinct Unicode files, hardlinks and symlinks remain
+    distinct on filesystems that allow both spellings.
+    """
+    if path.as_posix().isascii():
+        return os.path.normcase(path.as_posix())
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        if not part.isascii():
+            try:
+                entries = {entry.name: entry for entry in current.iterdir()}
+                if part not in entries:
+                    source = (current / part).lstat()
+                    aliases = []
+                    for name, entry in entries.items():
+                        if nfc(name) == nfc(part):
+                            candidate = entry.lstat()
+                            if (candidate.st_dev, candidate.st_ino) == (source.st_dev, source.st_ino):
+                                aliases.append(name)
+                    if len(aliases) == 1:
+                        part = aliases[0]
+            except (OSError, RuntimeError):
+                pass
+        current = current / part
+    return os.path.normcase(current.as_posix())
+
+
+def _chunk_provenance_mismatch(
+    result: dict,
+    chunk: "Sequence[Path | FileSlice]",
+    root: Path,
+) -> tuple[list[Path], list[Path]]:
+    """Return foreign node/hyperedge attributions and uncovered dispatched files.
+
+    A clean result is suspicious when it names an existing file that was not
+    dispatched in this chunk. ``uncovered`` mirrors corpus reconciliation and
+    is returned for diagnostics, but is not required for a mismatch: a foreign
+    stub can poison later deduplication even when the current chunk also has a
+    valid node. This keeps legitimate attribution within one chunk and non-file
+    concept labels out of the recovery path. Binary edges remain provisional
+    until the corpus merge can apply the kept-endpoint exception (#2276).
+    """
+    if result.get("finish_reason") not in (None, "", "stop"):
+        return [], []
+
+    dispatched = {
+        _provenance_path_identity(path): path
+        for unit in chunk
+        for path in [_resolve_provenance_path(unit_path(unit), root)]
+    }
+    returned_real: dict[str, Path] = {}
+    covered_by_nodes: set[str] = set()
+    for bucket in ("nodes", "hyperedges"):
+        for item in result.get(bucket, []) or []:
+            if not isinstance(item, dict):
+                continue
+            source_file = item.get("source_file")
+            if not source_file:
+                continue
+            path = _resolve_provenance_path(source_file, root)
+            if path.is_file():
+                identity = _provenance_path_identity(path)
+                returned_real[identity] = path
+                if bucket == "nodes":
+                    covered_by_nodes.add(identity)
+
+    outside = sorted(
+        (returned_real[key] for key in returned_real.keys() - dispatched.keys()), key=str,
+    )
+    # Corpus reconciliation treats a file as covered only when a node names it;
+    # edge or hyperedge metadata cannot stand in for a missing file node.
+    uncovered = sorted(
+        (dispatched[key] for key in dispatched.keys() - covered_by_nodes), key=str,
+    )
+    return outside, uncovered
+
+
+def _drop_outside_chunk_provenance(
+    result: dict, outside: "list[Path]", root: Path,
+) -> tuple[int, set[str]]:
+    """Remove foreign definitions; defer binary-edge acceptance to corpus merge."""
+    outside_set = {_provenance_path_identity(path) for path in outside}
+
+    def _outside(item: dict) -> bool:
+        source_file = item.get("source_file")
+        if not source_file:
+            return False
+        return _provenance_path_identity(_resolve_provenance_path(source_file, root)) in outside_set
+
+    nodes = result.get("nodes", []) or []
+    dropped_ids = {
+        item.get("id")
+        for item in nodes
+        if isinstance(item, dict) and _outside(item) and item.get("id") is not None
+    }
+    result["nodes"] = [
+        item for item in nodes
+        if not isinstance(item, dict) or not _outside(item)
+    ]
+    result["hyperedges"] = [
+        item for item in result.get("hyperedges", []) or []
+        if not isinstance(item, dict) or not _outside(item)
+    ]
+    return len(nodes) - len(result["nodes"]), {str(node_id) for node_id in dropped_ids}
 
 
 def _extract_with_adaptive_retry(
@@ -2487,12 +2633,13 @@ def _extract_with_adaptive_retry(
     _depth: int = 0,
     *,
     deep_mode: bool = False,
+    _recovery_accounting: bool = False,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`),
     the API rejects the prompt as too large for the model's context window, or
     the call times out, split the chunk in half and recurse.
 
-    Four signals drive the retry, all funnelled through the same code:
+    Five signals drive the retry, all funnelled through the same code:
 
     - `finish_reason == "length"` — the model accepted the input but ran out of
       `max_completion_tokens` mid-output. The truncated JSON is unparseable, so
@@ -2520,6 +2667,12 @@ def _extract_with_adaptive_retry(
       `botocore.exceptions.ReadTimeoutError` / `ConnectTimeoutError`) are raised.
       Adaptive bisection splits the chunk so smaller pieces finish within the timeout.
 
+    - provenance mismatches — a clean response attributes items to a real file
+      outside this chunk. The exact chunk is retried once, without consuming
+      bisection depth. Persistent foreign items are removed before chunk merge
+      or cache writes, and every dispatched file is marked partial for the next
+      run.
+
     Recursion is capped at `max_depth` to bound worst-case cost. A chunk of N
     files can split into up to 2**max_depth pieces — at depth=3 that's 8x. If
     still failing at the cap, we surface the (likely empty) result with a
@@ -2530,12 +2683,38 @@ def _extract_with_adaptive_retry(
     non-splittable file (e.g. one huge code file) can't be made smaller than
     itself, so we return what we got and warn.
     """
+    observed_usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def _extract_once() -> dict:
+        response = extract_files_direct(
+            chunk, backend=backend, api_key=api_key, model=model, root=root,
+            deep_mode=deep_mode,
+        )
+        for key in observed_usage:
+            observed_usage[key] += response.get(key, 0)
+        return response
+
+    def _finish(response: dict, *, includes_children: bool = False) -> dict:
+        if not _recovery_accounting:
+            return response
+        # Each invocation owns its direct calls; children already own theirs.
+        # Do not mutate provider responses, which callers may retain or reuse.
+        return {
+            **response,
+            **{
+                key: observed_usage[key] + (response.get(key, 0) if includes_children else 0)
+                for key in observed_usage
+            },
+        }
+
     def _merge_two(left_units, right_units) -> dict:
         left = _extract_with_adaptive_retry(
-            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
         right = _extract_with_adaptive_retry(
-            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2546,6 +2725,10 @@ def _extract_with_adaptive_retry(
             "model": model,
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
+            "_out_of_chunk_dropped": (
+                left.get("_out_of_chunk_dropped", 0) + right.get("_out_of_chunk_dropped", 0)
+            ),
+            "_out_of_chunk_node_ids": _merged_out_of_chunk_node_ids(left, right),
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
@@ -2556,9 +2739,10 @@ def _extract_with_adaptive_retry(
         return None
 
     try:
-        result = extract_files_direct(
-            chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
-        )
+        result = _extract_once()
+        attempts = 1
+        provenance_retry_available = max_depth > 0
+        hollow_delays = iter(_HOLLOW_BACKOFF_S if max_depth > 0 else ())
         # A hollow response is retried as-is, with backoff — see _mark_hollow.
         # Bounded by a fixed number of attempts, so one misbehaving backend
         # costs at most _HOLLOW_BACKOFF_S + 1 calls per chunk instead of the
@@ -2568,18 +2752,75 @@ def _extract_with_adaptive_retry(
         # so it has to hold for the hollow path too: one call per chunk, full
         # stop. Bounding only the bisection depth would still let a misbehaving
         # backend triple the call count of a run that asked for no retries.
-        for _delay in (_HOLLOW_BACKOFF_S if max_depth > 0 else ()):
+        while True:
+            outside, uncovered = _chunk_provenance_mismatch(result, chunk, root)
+            if outside:
+                outside_names = ", ".join(path.name for path in outside[:5])
+                uncovered_note = ""
+                if uncovered:
+                    uncovered_names = ", ".join(path.name for path in uncovered[:5])
+                    uncovered_note = f" while leaving {uncovered_names} uncovered"
+                if provenance_retry_available:
+                    provenance_retry_available = False
+                    _recovery_accounting = True
+                    print(
+                        f"[graphify] retrying the same chunk of {len(chunk)} after a provenance "
+                        f"mismatch: returned {outside_names} outside the chunk{uncovered_note}",
+                        file=sys.stderr,
+                    )
+                    result = _extract_once()
+                    attempts += 1
+                    continue
+                print(
+                    f"[graphify] provenance mismatch persisted after {attempts} attempt(s): "
+                    f"returned {outside_names} outside the chunk{uncovered_note}. "
+                    "The out-of-scope definitions will be filtered before merge and cache writes, and "
+                    "the dispatched files marked for re-extraction.",
+                    file=sys.stderr,
+                )
+                dropped_count, dropped_ids = _drop_outside_chunk_provenance(
+                    result, outside, root,
+                )
+                result["_out_of_chunk_dropped"] = (
+                    result.get("_out_of_chunk_dropped", 0) + dropped_count
+                )
+                result["_out_of_chunk_node_ids"] = sorted(
+                    set(result.get("_out_of_chunk_node_ids", []) or []) | dropped_ids
+                )
+                _mark_partial(result)
+                # A provisional edge's attribution must not mark another chunk's
+                # authoritative file partial. The dispatched files remain partial
+                # through _partial_files; cache writes keep their source allowlist.
+                chunk_sources = {
+                    _provenance_path_identity(_resolve_provenance_path(unit_path(unit), root))
+                    for unit in chunk
+                }
+                for edge in result.get("edges", []):
+                    if not isinstance(edge, dict) or not edge.get("source_file"):
+                        continue
+                    edge_path = _resolve_provenance_path(edge["source_file"], root)
+                    if edge_path.is_file() and _provenance_path_identity(edge_path) not in chunk_sources:
+                        edge["_provenance_partial"] = True
+                        edge.pop("_partial", None)
+                result["_partial_files"] = sorted(
+                    set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
+                )
+                break
+
             if result.get("finish_reason") != "hollow":
                 break
+            try:
+                delay = next(hollow_delays)
+            except StopIteration:
+                break
             print(
-                f"[graphify] retrying the same chunk of {len(chunk)} in {_delay:g}s "
+                f"[graphify] retrying the same chunk of {len(chunk)} in {delay:g}s "
                 f"after a hollow response",
                 file=sys.stderr,
             )
-            time.sleep(_delay)
-            result = extract_files_direct(
-                chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
-            )
+            time.sleep(delay)
+            result = _extract_once()
+            attempts += 1
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow or timeout
         is_timeout = _looks_like_timeout(exc)
         if not (_looks_like_context_exceeded(exc) or is_timeout):
@@ -2593,14 +2834,14 @@ def _extract_with_adaptive_retry(
                     f"depth {_depth}; splitting the slice and retrying",
                     file=sys.stderr,
                 )
-                return _merge_two([halves[0]], [halves[1]])
+                return _finish(_merge_two([halves[0]], [halves[1]]), includes_children=True)
             fail_desc = "timed out" if is_timeout else "exceeds model context"
             print(
                 f"[graphify] single-file chunk {unit_path(chunk[0])} {fail_desc} "
                 f"and cannot be split further: {exc}",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            return _finish({"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"})
         if _depth >= max_depth:
             persist_desc = "still times out" if is_timeout else "still overflows context"
             print(
@@ -2608,7 +2849,7 @@ def _extract_with_adaptive_retry(
                 f"recursion depth {_depth} (max {max_depth}) — dropping",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            return _finish({"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"})
         print(
             f"[graphify] chunk of {len(chunk)} {reason} at depth "
             f"{_depth} ({type(exc).__name__}); splitting in half and retrying",
@@ -2616,12 +2857,14 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+            _recovery_accounting=_recovery_accounting,
         )
-        return {
+        return _finish({
             "nodes": left.get("nodes", []) + right.get("nodes", []),
             "edges": left.get("edges", []) + right.get("edges", []),
             "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
@@ -2630,17 +2873,20 @@ def _extract_with_adaptive_retry(
             "model": model,
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
-        }
+            "_out_of_chunk_dropped": (
+                left.get("_out_of_chunk_dropped", 0) + right.get("_out_of_chunk_dropped", 0)
+            ),
+            "_out_of_chunk_node_ids": _merged_out_of_chunk_node_ids(left, right),
+        }, includes_children=True)
 
     if result.get("finish_reason") == "hollow":
         # Still hollow after every retry. Fail the chunk loudly rather than
         # bisecting into a fan-out that cannot converge (#2880): the files are
         # marked partial so the next run re-dispatches them, and they are not
         # promoted to the semantic cache as authoritative.
-        _attempts = (len(_HOLLOW_BACKOFF_S) + 1) if max_depth > 0 else 1
         print(
             f"[graphify] chunk of {len(chunk)} still hollow after "
-            f"{_attempts} attempt(s) — giving up on this chunk. "
+            f"{attempts} attempt(s) — giving up on this chunk. "
             f"Its files are marked for re-extraction on the next run. A hollow "
             f"response usually means a rate limit, a transport hiccup, a refusal, "
             f"or a model that answered in prose rather than JSON.",
@@ -2651,10 +2897,10 @@ def _extract_with_adaptive_retry(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
         result["finish_reason"] = "stop"
-        return result
+        return _finish(result)
 
     if result.get("finish_reason") != "length":
-        return result
+        return _finish(result)
 
     if len(chunk) <= 1:
         halves = _split_lone_slice()
@@ -2664,7 +2910,7 @@ def _extract_with_adaptive_retry(
                 f"splitting the slice and retrying",
                 file=sys.stderr,
             )
-            return _merge_two([halves[0]], [halves[1]])
+            return _finish(_merge_two([halves[0]], [halves[1]]), includes_children=True)
         print(
             f"[graphify] single-file chunk {unit_path(chunk[0])} truncated at "
             f"max_completion_tokens — partial result kept (not cached as complete)",
@@ -2678,7 +2924,7 @@ def _extract_with_adaptive_retry(
         result["_partial_files"] = sorted(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
-        return result
+        return _finish(result)
 
     if _depth >= max_depth:
         print(
@@ -2694,7 +2940,7 @@ def _extract_with_adaptive_retry(
         result["_partial_files"] = sorted(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
-        return result
+        return _finish(result)
 
     print(
         f"[graphify] chunk of {len(chunk)} truncated at depth {_depth}, "
@@ -2704,13 +2950,15 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+        _recovery_accounting=_recovery_accounting,
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode,
+        _recovery_accounting=_recovery_accounting,
     )
 
-    return {
+    return _finish({
         "nodes": left.get("nodes", []) + right.get("nodes", []),
         "edges": left.get("edges", []) + right.get("edges", []),
         "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
@@ -2722,7 +2970,11 @@ def _extract_with_adaptive_retry(
         # logical unit.
         "finish_reason": "stop",
         "_partial_files": _merged_partial_files(left, right),
-    }
+        "_out_of_chunk_dropped": (
+            left.get("_out_of_chunk_dropped", 0) + right.get("_out_of_chunk_dropped", 0)
+        ),
+        "_out_of_chunk_node_ids": _merged_out_of_chunk_node_ids(left, right),
+    }, includes_children=True)
 
 
 def extract_corpus_parallel(
@@ -2738,6 +2990,7 @@ def extract_corpus_parallel(
     max_retry_depth: int | None = None,
     deep_mode: bool = False,
     cache_root: "Path | None" = None,
+    known_node_ids: "set[str] | None" = None,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -2774,6 +3027,11 @@ def extract_corpus_parallel(
     chunk's submission index so callers can correlate progress. The
     callback fires once per top-level chunk; recursive splits are merged
     transparently before the callback is invoked.
+
+    `known_node_ids` supplies authoritative IDs already loaded from semantic
+    cache. A fresh chunk may reference one of those IDs after its foreign stub
+    is removed; include the cached IDs when deciding whether that reference is
+    resolved.
 
     Returns merged dict with nodes, edges, hyperedges, input_tokens,
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
@@ -2864,7 +3122,7 @@ def extract_corpus_parallel(
             # entries — and a later standard run never serves deep ones (#1894).
             _scs(
                 result.get("nodes", []),
-                result.get("edges", []),
+                _semantic_cache_edges(result),
                 result.get("hyperedges", []),
                 root=root,
                 cache_root=cache_root,
@@ -2955,27 +3213,20 @@ def extract_corpus_parallel(
     # Runs BEFORE the #1890 covered/uncovered reconciliation so that diff
     # reflects the post-filter graph.
     def _resolve_against_root(value: "str | Path") -> Path:
-        p = Path(value)
-        if not p.is_absolute():
-            p = root / p
-        try:
-            return p.resolve()
-        except (OSError, RuntimeError):
-            return p
+        return _resolve_provenance_path(value, root)
 
-    _dispatched_resolved = {_resolve_against_root(p) for p in dispatched}
+    _dispatched_resolved = {_provenance_path_identity(_resolve_against_root(p)) for p in dispatched}
 
     def _out_of_scope(item: dict) -> bool:
         sf = item.get("source_file")
         if not sf:
             return False
         p = _resolve_against_root(sf)
-        return p.is_file() and p not in _dispatched_resolved
+        return p.is_file() and _provenance_path_identity(p) not in _dispatched_resolved
 
     dropped_ids: set = set()
     dropped_files: set[str] = set()
     kept_nodes: list[dict] = []
-    kept_ids: set = set()
     for n in merged.get("nodes", []):
         if _out_of_scope(n):
             if n.get("id") is not None:
@@ -2983,33 +3234,43 @@ def extract_corpus_parallel(
             dropped_files.add(str(n.get("source_file")))
             continue
         kept_nodes.append(n)
-        if n.get("id") is not None:
-            kept_ids.add(n.get("id"))
     dropped_node_count = len(merged.get("nodes", [])) - len(kept_nodes)
-    merged["out_of_scope_dropped"] = dropped_node_count
+    merged["out_of_scope_dropped"] = merged.pop("_out_of_chunk_dropped", 0) + dropped_node_count
+    deferred_node_ids = set(merged.pop("_out_of_chunk_node_ids", []) or [])
     if dropped_node_count:
         merged["nodes"] = kept_nodes
-        # Keep the graph consistent: drop an edge that references a dropped
-        # node's id. An edge attributed to an undispatched file is kept when
-        # both endpoints are kept nodes (#2276). Hyperedges stay on the
-        # out-of-scope predicate.
-        merged["edges"] = [
-            e for e in merged.get("edges", [])
-            if e.get("source") not in dropped_ids
-            and e.get("target") not in dropped_ids
-            and (
-                not _out_of_scope(e)
-                or (
-                    e.get("source") in kept_ids
-                    and e.get("target") in kept_ids
-                )
+    surviving_node_ids = {
+        node["id"] for node in kept_nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str) and node["id"]
+    }
+    surviving_node_ids.update(
+        node_id for node_id in known_node_ids or set()
+        if isinstance(node_id, str) and node_id
+    )
+    unresolved_node_ids = (set(map(str, dropped_ids)) | deferred_node_ids) - surviving_node_ids
+    # Binary edges can name an undispatched file when both endpoints have real
+    # surviving definitions (#2276). Delay this decision until all chunks and
+    # validated cache/live context are available, even if no node was dropped.
+    merged["edges"] = [
+        edge for edge in merged.get("edges", [])
+        if str(edge.get("source")) not in unresolved_node_ids
+        and str(edge.get("target")) not in unresolved_node_ids
+        and (
+            not _out_of_scope(edge)
+            or (
+                isinstance(edge.get("source"), str)
+                and isinstance(edge.get("target"), str)
+                and edge["source"] in surviving_node_ids
+                and edge["target"] in surviving_node_ids
             )
-        ]
-        merged["hyperedges"] = [
-            h for h in merged.get("hyperedges", [])
-            if not _out_of_scope(h)
-            and not (dropped_ids & set(h.get("nodes", []) or []))
-        ]
+        )
+    ]
+    merged["hyperedges"] = [
+        hyperedge for hyperedge in merged.get("hyperedges", [])
+        if not _out_of_scope(hyperedge)
+        and not (unresolved_node_ids & set(map(str, hyperedge.get("nodes", []) or [])))
+    ]
+    if dropped_node_count:
         shown = ", ".join(sorted(Path(f).name for f in dropped_files)[:5])
         more = f" (+{len(dropped_files) - 5} more)" if len(dropped_files) > 5 else ""
         print(
@@ -3020,15 +3281,14 @@ def extract_corpus_parallel(
             file=sys.stderr,
         )
 
-    covered: set[Path] = set()
+    covered: set[str] = set()
     for n in merged.get("nodes", []):
         sf = n.get("source_file")
         if sf:
-            p = Path(sf)
-            covered.add(p if p.is_absolute() else (root / p))
+            covered.add(_provenance_path_identity(_resolve_against_root(sf)))
     uncovered = sorted(
         p for p in dispatched
-        if p.resolve() not in {c.resolve() for c in covered}
+        if _provenance_path_identity(_resolve_against_root(p)) not in covered
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     _stamp_semantic_origin(merged)
@@ -3091,6 +3351,10 @@ def _merge_into(merged: dict, result: dict) -> None:
         merged["_partial_files"] = sorted(
             set(merged.get("_partial_files", []) or []) | set(incoming)
         )
+    merged["_out_of_chunk_dropped"] = (
+        merged.get("_out_of_chunk_dropped", 0) + result.get("_out_of_chunk_dropped", 0)
+    )
+    merged["_out_of_chunk_node_ids"] = _merged_out_of_chunk_node_ids(merged, result)
 
 
 def _call_llm(
