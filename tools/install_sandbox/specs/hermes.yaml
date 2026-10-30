@@ -1,0 +1,23 @@
+limitations:
+  - Normal Linux Hermes behavior is validated; Windows %LOCALAPPDATA% installation is not verified.
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .hermes/skills/graphify/SKILL.md
+        source: graphify/skill-claw.md
+        reference_bundle: claw
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .hermes/skills/graphify/SKILL.md
+        source: graphify/skill-claw.md
+        reference_bundle: claw
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md
