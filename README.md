@@ -490,6 +490,8 @@ New here? Say hi on [Discord](https://discord.gg/graphify) or in [GitHub Discuss
 
 Made with [contrib.rocks](https://contrib.rocks).
 
+Who has worked on each core area, and each core contributor's title: [docs/CONTRIBUTORS.md](docs/CONTRIBUTORS.md).
+
 ---
 
 ## Translations
