@@ -989,6 +989,7 @@ def _run_cli() -> None:
         print("    --global                also merge the resulting graph into the global graph")
         print("    --as <tag>              repo tag for --global (default: target directory name)")
         print("  provider [list|show|add|remove]  manage custom LLM providers")
+        print("  plugins [--json]                 list installed extractor plugins (entry point group graphify.extractors)")
         print("  global add <graph.json>  add/update a project graph in the global graph (~/.graphify/global-graph.json)")
         print("    --as <tag>               repo tag (default: parent directory name)")
         print("  global remove <tag>      remove a repo's nodes from the global graph")

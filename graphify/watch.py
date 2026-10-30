@@ -407,6 +407,14 @@ _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAG
 _CODE_EXTENSIONS = CODE_EXTENSIONS
 
 
+def _is_code(path: Path) -> bool:
+    """Code by extension, or claimed as code by an extractor plugin."""
+    from graphify.plugins import file_type_for
+
+    suffix = effective_suffix(path).lower()
+    return suffix in _CODE_EXTENSIONS or file_type_for(path, suffix) == "code"
+
+
 def _report_root_label(watch_path: Path) -> str:
     if watch_path.is_absolute():
         return watch_path.name or str(watch_path)
@@ -3021,7 +3029,7 @@ def _notify_only(watch_path: Path) -> None:
 
 
 def _has_non_code(changed_paths: list[Path]) -> bool:
-    return any(effective_suffix(p).lower() not in _CODE_EXTENSIONS for p in changed_paths)
+    return any(not _is_code(p) for p in changed_paths)
 
 
 def _batch_triggers_rebuild(batch: list[Path]) -> bool:
@@ -3033,7 +3041,7 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     this, a doc-only deletion batch would sit behind the needs_update flag
     until the next code event or a manual `graphify update` (#2580).
     """
-    has_code = any(effective_suffix(p).lower() in _CODE_EXTENSIONS for p in batch)
+    has_code = any(_is_code(p) for p in batch)
     has_deletion = any(not p.exists() for p in batch)
     return has_code or has_deletion
 
@@ -3176,7 +3184,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return
             set_language_overrides(override_snapshot)
-            if effective_suffix(path).lower() not in _WATCHED_EXTENSIONS:
+            if effective_suffix(path).lower() not in _WATCHED_EXTENSIONS and not _is_code(path):
                 return
             try:
                 filter_parts = path.relative_to(watch_root_for_ignore).parts

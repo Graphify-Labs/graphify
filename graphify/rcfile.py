@@ -248,8 +248,14 @@ def cache_salt(path: Path | str) -> str | None:
     different graph under a different extractor — so a ``.inc`` cached as
     Pascal must not be served once the project declares it PHP.
     """
+    from graphify.plugins import salt_for
+
+    parts = []
     active = _active()
-    if not active:
-        return None
-    target = active.get(Path(path).suffix.lower())
-    return f"language={target}" if target else None
+    target = active.get(Path(path).suffix.lower()) if active else None
+    if target:
+        parts.append(f"language={target}")
+    plugin = salt_for(path)  # a plugin's output depends on the plugin and its version
+    if plugin:
+        parts.append(plugin)
+    return ";".join(parts) or None

@@ -571,6 +571,11 @@ def classify_file(path: Path) -> FileType | None:
         return FileType.DOCUMENT
     if ext in VIDEO_EXTENSIONS:
         return FileType.VIDEO
+    # Extractor plugins (graphify.plugins) can claim extensions graphify lacks.
+    from graphify.plugins import file_type_for
+    plugin_type = file_type_for(path, ext)
+    if plugin_type is not None:
+        return FileType(plugin_type)
     return None
 
 

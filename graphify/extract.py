@@ -9142,7 +9142,45 @@ def _is_cpp_header(path: Path) -> bool:
 
 
 def _get_extractor(path: Path) -> Any | None:
-    """Return the correct extractor function for a file, or None if unsupported."""
+    """Return the extractor for a file (plugin or built-in), or None if unsupported.
+
+    A plugin runs first only when it sets ``override_builtin``; otherwise built-in
+    extractors keep their files and plugins add the languages graphify lacks.
+    """
+    from graphify import plugins
+
+    plugin = plugins.match(path, effective_suffix(path).lower())
+    if plugin is not None and plugin.override_builtin:
+        return _plugin_extractor(plugin)
+    builtin = _builtin_extractor(path)
+    if builtin is not None:
+        return builtin
+    return _plugin_extractor(plugin) if plugin is not None else None
+
+
+def _plugin_extractor(plugin: Any) -> Any:
+    """Adapt a plugin to graphify's ``extractor(path) -> dict`` shape."""
+    from graphify import plugins
+
+    if plugin.batch:
+        def _from_batch(path: Path) -> dict:
+            return plugins.batch_result(path) or {
+                "nodes": [], "edges": [],
+                "error": f"plugin {plugin.name}: no batch result for {path} (extract() runs batch plugins first)",
+            }
+        return _from_batch
+    return lambda path: plugins.extract_one(plugin, path, active_scan_root() or Path("."))
+
+
+def _bypass_cache(path: Path) -> bool:
+    """JS/TS resolve across files, so do cross-file and batch plugins: no per-file cache."""
+    from graphify import plugins
+
+    return effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES or plugins.is_cross_file(path)
+
+
+def _builtin_extractor(path: Path) -> Any | None:
+    """The built-in extractor for a file, or None."""
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -9236,7 +9274,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+    bypass_cache = _bypass_cache(path)
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
@@ -9469,7 +9507,7 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = _bypass_cache(path)
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
@@ -9626,6 +9664,12 @@ def extract(
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
 
+    # Plugins that analyse many files at once (e.g. a cross-file resolver) run
+    # here, once, in this process. Their files never go to the worker pool.
+    from graphify import plugins as _plugins
+
+    batch_results = _plugins.run_batches(paths, root)
+
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
@@ -9633,11 +9677,14 @@ def extract(
     no_extractor = 0
 
     for i, path in enumerate(paths):
+        if str(Path(path).resolve()) in batch_results:
+            per_file[i] = batch_results[str(Path(path).resolve())]
+            continue
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
             no_extractor += 1
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = _bypass_cache(path)
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:

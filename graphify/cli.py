@@ -2909,6 +2909,31 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
+    elif cmd == "plugins":
+        import json as _json
+        from graphify import plugins as _plugins
+        reg = _plugins.registry()
+        rows = [
+            {
+                "name": p.name, "matches": list(p.suffixes + p.filenames + p.globs + p.shebangs),
+                "mode": "batch" if p.batch else "per-file", "file_type": p.file_type,
+                "priority": p.priority, "override_builtin": p.override_builtin,
+                "cache_key": p.cache_key, "source": p.source,
+            }
+            for p in _plugins.all_plugins()
+        ]
+        errors = [{"source": src, "message": msg} for src, msg in reg.errors]
+        if "--json" in sys.argv[2:]:
+            print(_json.dumps({"api": _plugins.API_VERSION, "plugins": rows, "errors": errors}, indent=2))
+        else:
+            if not rows:
+                print("No extractor plugins installed.")
+                print(f"  A package adds one via the '{_plugins.ENTRY_POINT_GROUP}' entry-point group; see graphify/plugins.py.")
+            for r in rows:
+                print(f"  {r['name']}  [{r['mode']}, {r['file_type']}]  {' '.join(r['matches'])}")
+                print(f"      from {r['source']}")
+            for e in errors:
+                print(f"  problem: {e['source']}: {e['message']}", file=sys.stderr)
     elif cmd == "hook-check":
         # Codex Desktop rejects hookSpecificOutput.additionalContext on PreToolUse.
         # Keep this as a cross-platform no-op so installed hooks never break Bash
