@@ -364,6 +364,34 @@ def _openai_max_tokens_kwarg(backend: str, max_tokens: int) -> dict[str, int]:
     return {key: max_tokens}
 
 
+def _provider_extra_headers(raw: object, name: str = "") -> dict[str, str] | None:
+    """Validate a custom provider's providers.json ``extra_headers`` map (#3680).
+
+    Some OpenAI-compatible gateways need request headers beyond Authorization
+    (OpenCode Go rejects a request without ``x-opencode-session``). They are
+    passed to the OpenAI client as ``default_headers``, the header counterpart
+    of ``extra_body``. Only string-to-string entries are kept, and an
+    ``Authorization`` entry is dropped: the API key always comes from the
+    provider's ``env_key``, so the config cannot swap in a different credential.
+    Returns None when nothing usable remains.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        print(f"[graphify] WARNING: provider {name!r} extra_headers is not an object; ignoring.", file=sys.stderr)
+        return None
+    headers: dict[str, str] = {}
+    for key, value in raw.items():
+        if not (isinstance(key, str) and isinstance(value, str)):
+            print(f"[graphify] WARNING: provider {name!r} extra_headers entry {key!r} is not a string pair; ignoring it.", file=sys.stderr)
+            continue
+        if key.strip().lower() == "authorization":
+            print(f"[graphify] WARNING: provider {name!r} extra_headers cannot set Authorization; ignoring it.", file=sys.stderr)
+            continue
+        headers[key] = value
+    return headers or None
+
+
 # Model-name fragments for OpenAI-compatible "reasoning" models that reject an
 # explicit temperature: the API returns 400 "Unsupported value: 'temperature'
 # does not support 0 with this model. Only the default (1) value is supported."
@@ -1557,6 +1585,7 @@ def _call_openai_compat(
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
     extra_body: dict | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
@@ -1582,7 +1611,8 @@ def _call_openai_compat(
     if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
         _retries = 0
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
-                    max_retries=_retries)
+                    max_retries=_retries,
+                    **({"default_headers": extra_headers} if extra_headers else {}))
     kwargs: dict = {
         "model": model,
         "messages": [
@@ -2214,6 +2244,7 @@ def extract_files_direct(
             deep_mode=deep_mode,
             images=image_refs,
             extra_body=cfg.get("extra_body"),
+            extra_headers=_provider_extra_headers(cfg.get("extra_headers"), backend),
         )
 
     # Verify code-typed nodes against the source the model read and downgrade the
@@ -3260,7 +3291,9 @@ def _call_llm(
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+    _headers = _provider_extra_headers(cfg.get("extra_headers"), backend)
+    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries(),
+                    **({"default_headers": _headers} if _headers else {}))
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
