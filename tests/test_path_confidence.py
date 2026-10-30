@@ -85,6 +85,29 @@ def test_all_extracted_without_scores_names_first_hop():
     assert _path_confidence_line(hops) == "Path confidence: EXTRACTED (weakest hop 1: imports)"
 
 
+def test_extracted_score_is_neither_printed_nor_ranked():
+    """EXTRACTED stays bare, like the hop tags; a stored 1.0 must not pick the hop."""
+    hops = [[_e("imports", "EXTRACTED")], [_e("calls", "EXTRACTED", 1.0)]]
+    assert _path_confidence_line(hops) == "Path confidence: EXTRACTED (weakest hop 1: imports)"
+
+
+def test_extracted_path_from_built_graph_prints_no_score():
+    G = build_from_json({
+        "nodes": [_node("report_exporter", "Exporter"), _node("report_exporter_run", ".Run()")],
+        "edges": [{"source": "report_exporter", "target": "report_exporter_run",
+                   "relation": "method", "confidence": "EXTRACTED", "confidence_score": 1.0,
+                   "source_file": "Report.cs", "source_location": "L7"}],
+        "hyperedges": [],
+    })
+    out = _shortest_path_text(G, {"source": "report_exporter", "target": "report_exporter_run"})
+    assert out.splitlines()[-1] == "Path confidence: EXTRACTED (weakest hop 1: method)"
+
+
+def test_non_finite_score_is_treated_as_missing():
+    hops = [[_e("calls", "INFERRED", float("nan"))], [_e("calls", "INFERRED", 0.7)]]
+    assert _path_confidence_line(hops) == "Path confidence: INFERRED (weakest hop 2: calls, score 0.7)"
+
+
 def test_parallel_edges_and_also_seen_count_toward_their_hop():
     hops = [
         [_e("calls", "EXTRACTED"), _e("references", "INFERRED", 0.7)],

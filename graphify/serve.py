@@ -2077,6 +2077,8 @@ def _path_confidence_line(hop_datas: list[list[dict]]) -> str:
     `confidence_score`; a missing score never counts as weaker than a present
     one), and the first weakest hop is named. A hop with no recognised
     confidence tag ranks below AMBIGUOUS and makes the whole path unknown.
+    EXTRACTED is 1.0 by definition, so its score is neither ranked nor
+    printed, matching the per-hop tags.
     """
     weakest = None
     for hop, datas in enumerate(hop_datas, 1):
@@ -2084,7 +2086,12 @@ def _path_confidence_line(hop_datas: list[list[dict]]) -> str:
             for ev in edge_evidence(d):
                 conf = ev.get("confidence")
                 score = ev.get("confidence_score")
-                if not isinstance(score, (int, float)) or isinstance(score, bool):
+                if (
+                    conf == "EXTRACTED"
+                    or not isinstance(score, (int, float))
+                    or isinstance(score, bool)
+                    or not math.isfinite(score)
+                ):
                     score = None
                 rank = _CONFIDENCE_RANK.get(str(conf), 0)
                 key = (rank, score is None, score or 0.0, hop)
