@@ -2088,3 +2088,50 @@ def test_query_graph_text_surfaces_parallel_relationships(tmp_path):
     text = _query_graph_text(G, "applySeed", token_budget=2000)
     assert "--contains " in text, text
     assert "--calls " in text, text
+
+
+# --- a tie only by case goes to the exact spelling ---------------------------
+
+def _case_pair_graph() -> nx.Graph:
+    # Go keeps `CheckHealth` and `checkHealth` apart (#2779): an exported method
+    # and its unexported helper on one type, in one file.
+    G = nx.Graph()
+    G.add_node("api_server_checkhealth", label=".CheckHealth()",
+               source_file="api/server.go", source_location="L9")
+    G.add_node("api_server_checkhealth_efb2ee", label=".checkHealth()",
+               source_file="api/server.go", source_location="L13")
+    G.add_edge("api_server_checkhealth", "api_server_checkhealth_efb2ee", relation="calls")
+    return G
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("CheckHealth", "api_server_checkhealth"),
+    ("checkHealth", "api_server_checkhealth_efb2ee"),
+    (".checkHealth()", "api_server_checkhealth_efb2ee"),
+])
+def test_a_name_spelled_exactly_wins_a_tie_that_is_only_case(query, expected):
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), query)
+    assert err is None, err
+    assert nid == expected
+
+
+def test_a_case_tie_neither_spelling_matches_stays_ambiguous():
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), "checkhealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err
+
+
+def test_an_exact_spelling_does_not_break_a_tie_between_two_files():
+    # Same spelling in two files is a real ambiguity: case cannot settle it.
+    from graphify.serve import _resolve_single_node
+
+    G = _case_pair_graph()
+    G.add_node("web_router_checkhealth", label=".CheckHealth()",
+               source_file="web/router.go", source_location="L4")
+    nid, err = _resolve_single_node(G, "CheckHealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err

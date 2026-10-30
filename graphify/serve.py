@@ -1723,6 +1723,20 @@ def _find_node_tiers(
         elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
 
+    # The tiers fold case, so in a case-sensitive language `Run` and `run` (two
+    # symbols the extractor keeps apart, #2779) tie in `exact` and every lookup is
+    # refused, even one spelled exactly like one of them. When the tie is only
+    # case and exactly one label is written as queried, it wins; the others stay
+    # reachable one tier down.
+    if len(exact) > 1:
+        def _bare(nid: str) -> str:
+            return str(G.nodes[nid].get("label") or "").strip().lstrip(".").removesuffix("()")
+        wanted = str(label).strip().lstrip(".").removesuffix("()")
+        same_case = [nid for nid in exact if _bare(nid) == wanted]
+        if len(same_case) == 1 and all(_bare(nid).lower() == wanted.lower() for nid in exact):
+            prefix = [nid for nid in exact if nid != same_case[0]] + prefix
+            exact = same_case
+
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = []
@@ -2493,7 +2507,7 @@ def _build_server(graph_path: str):
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
-        label = raw.lower()
+        label = raw
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
@@ -2526,7 +2540,7 @@ def _build_server(graph_path: str):
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
-        label = raw.lower()
+        label = raw
         rel_filter = arguments.get("relation_filter", "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:
