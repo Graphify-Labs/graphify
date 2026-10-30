@@ -7434,8 +7434,10 @@ def _resolve_go_member_calls(
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
-            # says who is asking, so no suffix sniff is needed.
-            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
+            # says who is asking, so no suffix sniff is needed. A method value is not
+            # parked: `f(x.y)` may just as well pass a field, which is no call at all.
+            if not rc.get("indirect"):
+                _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
             continue
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
@@ -7446,11 +7448,14 @@ def _resolve_go_member_calls(
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
+        indirect = bool(rc.get("indirect"))
         all_edges.append({
             "source": caller,
             "target": target,
-            "relation": "calls",
-            "context": "call",
+            # A method value (`routing.Wrap(s.Handle)`) hands the method over to be
+            # called later, as an `indirect_call` does in the other languages (#1566).
+            "relation": "indirect_call" if indirect else "calls",
+            "context": rc.get("context", "argument") if indirect else "call",
             "confidence": "INFERRED",
             # The rubric's discrete INFERRED scale (references/extraction-spec.md):
             # a single-definition type-table hit is the high-confidence rung.

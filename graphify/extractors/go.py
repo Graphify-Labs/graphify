@@ -783,6 +783,37 @@ def extract_go(path: Path) -> dict:
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
+            # A method value passed as an argument (`routing.Wrap(s.Handle)`,
+            # `r.Get("/p", s.Handle)`) is how Go registers a handler or callback. It is
+            # not a call here, so it never reached the branch above and the method had
+            # no caller. Record it for the member-call resolver as an indirect call
+            # through the receiver's declared type (#1566).
+            args = node.child_by_field_name("arguments")
+            for arg in args.children if args is not None else ():
+                if arg.type != "selector_expression":
+                    continue
+                operand = arg.child_by_field_name("operand")
+                field = arg.child_by_field_name("field")
+                if operand is None or field is None or operand.type != "identifier":
+                    continue
+                name = _read_text(operand, source)
+                if name in go_imported_pkgs:
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": _read_text(field, source),
+                    "is_member_call": True,
+                    "indirect": True,
+                    "context": "argument",
+                    "language": "go",
+                    "receiver": None,
+                    "member_receiver": name,
+                    "receiver_type": self_type if self_name and name == self_name
+                    else scope_types.get(name),
+                    "import_path": None,
+                    "source_file": str_path,
+                    "source_location": f"L{arg.start_point[0] + 1}",
+                })
         for child in node.children:
             walk_calls(child, caller_nid, self_name, self_type, scope_types)
 
