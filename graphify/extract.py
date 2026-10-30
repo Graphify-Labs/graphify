@@ -7407,10 +7407,17 @@ def _resolve_go_member_calls(
     # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
+    # A struct's fields, by struct id, from the file node that declares it: a method in
+    # one file of the package and the struct in another is the common Go layout, and the
+    # caller's flat table holds only what its own file declares. An id two files declare
+    # has no single answer.
+    fields_by_type: dict[str, list[dict[str, str]]] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
         if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+        for struct_nid, fields in (n.get("_go_fields") or {}).items():
+            fields_by_type.setdefault(struct_nid, []).append(fields)
 
     method_index: dict[tuple[str, str], list[str]] = {}
     for e in all_edges:
@@ -7428,6 +7435,11 @@ def _resolve_go_member_calls(
         # flat table: two types in one file may both name their receiver `s`.
         type_name = rc.get("receiver_type") or type_table_by_file.get(
             rc.get("source_file", ""), {}).get(receiver)
+        if not type_name and rc.get("field_owner"):
+            owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
+            declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
+            if len(declared) == 1:
+                type_name = declared[0].get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])

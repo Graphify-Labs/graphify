@@ -216,6 +216,41 @@ def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
     return table
 
 
+def _go_struct_field_types(root, source: bytes) -> dict[str, dict[str, str]]:
+    """``struct name -> {field name -> TypeName}`` for every struct this file declares.
+
+    Only a named field whose type `_go_single_type_name` accepts is kept, the same rule
+    the flat receiver table applies. Unlike that table it stays keyed by the struct, so a
+    method in another file of the package can read the fields of its own receiver.
+    """
+    fields_by_struct: dict[str, dict[str, str]] = {}
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("function_declaration", "method_declaration"):
+            continue
+        if n.type == "type_spec":
+            name_node = n.child_by_field_name("name")
+            body = n.child_by_field_name("type")
+            if name_node is not None and body is not None and body.type == "struct_type":
+                fields: dict[str, str] = {}
+                for fdl in body.children:
+                    if fdl.type != "field_declaration_list":
+                        continue
+                    for field in fdl.children:
+                        if field.type != "field_declaration":
+                            continue
+                        type_name = _go_single_type_name(field.child_by_field_name("type"), source)
+                        for c in field.children if type_name else ():
+                            if c.type == "field_identifier":
+                                fields.setdefault(_read_text(c, source), type_name)
+                if fields:
+                    fields_by_struct[_read_text(name_node, source)] = fields
+            continue
+        stack.extend(n.children)
+    return fields_by_struct
+
+
 def extract_go(path: Path) -> dict:
     """Extract functions, methods, type declarations, and imports from a .go file."""
     try:
@@ -684,6 +719,18 @@ def extract_go(path: Path) -> dict:
             if n["id"] in callable_class_nids:
                 n["_callable_class"] = True
 
+    # The field types of the structs this file declares ride on the file node, keyed by
+    # struct id, so a method in a sibling file can type `s.field` (#3368). Not on the
+    # struct node: every file holding a method of the struct emits that id too, so an
+    # incremental rebuild of a method file would shadow the declaring file's copy.
+    struct_fields = {
+        type_symbol_nid(name): dict(sorted(fields.items()))
+        for name, fields in _go_struct_field_types(root, source).items()
+    }
+    if struct_fields:
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        file_node["_go_fields"] = dict(sorted(struct_fields.items()))
+
     type_table = _go_receiver_type_table(root, source)
 
     label_to_nid: dict[str, str] = {}
@@ -707,6 +754,7 @@ def extract_go(path: Path) -> dict:
             package_receiver: str | None = None
             member_receiver: str | None = None
             member_receiver_type: str | None = None
+            field_owner: str | None = None
             import_path: str | None = None
             if func_node:
                 if func_node.type == "identifier":
@@ -737,6 +785,7 @@ def extract_go(path: Path) -> dict:
                                 and _read_text(inner, source) == self_name):
                             member_receiver = _read_text(
                                 operand.child_by_field_name("field"), source)
+                            field_owner = self_type
                     if field:
                         callee_name = _read_text(field, source)
             if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
@@ -779,6 +828,10 @@ def extract_go(path: Path) -> dict:
                         # declarations are in scope here; the flat table is the fallback for
                         # a struct field, and must not answer a name this scope rebinds.
                         "receiver_type": member_receiver_type,
+                        # The struct whose field `member_receiver` is, for `s.field.M()`:
+                        # the struct may be declared in another file of the package, where
+                        # this file's flat table cannot see its fields.
+                        "field_owner": field_owner,
                         "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",

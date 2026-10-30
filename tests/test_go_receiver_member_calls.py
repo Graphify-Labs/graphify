@@ -185,3 +185,53 @@ def test_a_parameter_binds_only_inside_its_own_function(tmp_path):
             targets.setdefault(label_of.get(e["source"]), set()).add(source_of[e["target"]])
     assert len(targets["Run()"]) == 1 and targets["Run()"].pop().endswith("greeter.go"), targets
     assert len(targets["Also()"]) == 1 and targets["Also()"].pop().endswith("other.go"), targets
+
+
+# The struct in one file of the package and its methods in another is the usual Go
+# layout (`HTTPServer` declared in http_server.go, its handlers in datasources.go).
+SIBLING_FILES = {
+    "svc/greeter.go": GREETER,
+    "svc/types.go": "package svc\n\ntype App struct {\n\tgreeter *Greeter\n}\n",
+    "svc/run.go": "package svc\n\nfunc (a *App) Run() { a.greeter.Greet() }\n",
+}
+
+
+def test_a_struct_field_declared_in_a_sibling_file_types_the_receiver(tmp_path):
+    # run.go declares no `greeter`, so its own table cannot answer; the struct's can.
+    calls, _ = _calls(tmp_path, SIBLING_FILES)
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
+
+
+def test_a_sibling_files_struct_field_survives_a_rebuild_of_the_method_file_only(tmp_path):
+    # An update re-extracts only the changed file, and the struct's unchanged file reaches
+    # the resolver only as its graph.json nodes, so the field types must persist there.
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    for name, body in SIBLING_FILES.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    assert _rebuild_code(tmp_path, no_cluster=True, acquire_lock=False, force=True)
+    run = tmp_path / "svc" / "run.go"
+    run.write_text(run.read_text(encoding="utf-8") + "// touched\n", encoding="utf-8")
+    assert _rebuild_code(tmp_path, changed_paths=[run], no_cluster=True, acquire_lock=False)
+
+    g = json.loads((tmp_path / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    label = {n["id"]: n["label"] for n in g["nodes"]}
+    calls = {(label.get(e["source"]), label.get(e["target"]))
+             for e in g.get("links", g.get("edges", [])) if e["relation"] == "calls"}
+    assert (".Run()", ".Greet()") in calls, calls
+
+
+def test_a_sibling_files_field_of_another_struct_does_not_type_the_receiver(tmp_path):
+    # `greeter` is a field of `Other`, not of `App`: the owner decides, not the name.
+    calls, _ = _calls(tmp_path, {
+        **SIBLING_FILES,
+        "svc/types.go": "package svc\n\ntype App struct{}\n\n"
+                        "type Other struct {\n\tgreeter *Greeter\n}\n",
+    })
+    assert _greet_edge(calls) is None, calls
