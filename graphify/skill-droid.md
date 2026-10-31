@@ -56,6 +56,21 @@ If no path was given, use `.` (current directory). Do not ask the user for a pat
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
+### Is a graph worth it here?
+
+Building costs real time and tokens: AST extraction on code is free and fast, but semantic extraction on docs/papers/images dispatches subagents (minutes, tens of thousands of tokens), and a full pipeline run is overhead you pay once per corpus state. Don't pay it reflexively.
+
+If `graphify-out/graph.json` already exists for this corpus, always query it rather than re-deriving the answer by reading files or rebuilding — that cost is already sunk and querying is cheap. Jump straight to `## For /graphify query`.
+
+If no graph exists yet, check whether the request is a single, targeted lookup a plain code search would answer just as well — "where is X defined", "what calls Y", "find the function that does Z" on a codebase of ordinary size. For these, grep/ripgrep/Read is faster, free, and exact. Say so and just search directly; offer to build the full graph instead only if the user wants it.
+
+Building (or updating) the graph earns its cost when:
+
+- You expect many future questions against this corpus — the build cost amortizes.
+- The corpus is large or unfamiliar and the user needs orientation (god nodes, communities).
+- The question needs cross-file or cross-type connections text search can't see (doc ↔ code, cross-doc semantic duplicates).
+- The question is structural/architectural, not textual (cohesion, bridging nodes, import cycles).
+
 Follow these steps in order unless the fast path above applies.
 
 ### Step 0 - GitHub repos and multi-path merge (only if a URL or several paths)
