@@ -3221,7 +3221,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.cross_repo_calls import link_cross_repo_member_calls as _link_calls
         call_links = _link_calls(merged)
         if call_links:
-            print(f"  resolved {call_links} member call(s) across repos")
+            print(f"  linked {call_links} edge(s) across repos (calls and imports)")
         if previous_path is not None:
             _restored = 0
             for _nid, _data in merged.nodes(data=True):
@@ -3697,8 +3697,8 @@ def dispatch_command(cmd: str) -> None:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
                           f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
                     if result.get("cross_repo_calls"):
-                        print(f"  resolved {result['cross_repo_calls']} "
-                              f"member call(s) across repos")
+                        print(f"  linked {result['cross_repo_calls']} "
+                              f"edge(s) across repos (calls and imports)")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
