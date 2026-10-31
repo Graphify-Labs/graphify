@@ -275,6 +275,9 @@ def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
 
     # 4 chunks dispatched, 1 failed → 3 chunks contributed nodes
     assert len(result["nodes"]) == 3
+    assert result["chunks_total"] == 4
+    assert result["failed_chunks"] == 1
+    assert result["chunk_errors"] == ["simulated API error"]
     err = capsys.readouterr().err
     assert "failed" in err and "simulated API error" in err
 
@@ -459,6 +462,8 @@ def test_files_of_a_failed_chunk_are_not_reported_as_model_omissions(
         )
 
     assert result["failed_chunks"] == 1
+    assert result["chunks_total"] == 3
+    assert result["chunk_errors"] == ["OpenAI package not installed."]
     assert {Path(p).name for p in result["uncovered_files"]} == {"failed.md", "omitted.md"}
     lines = [line for line in capsys.readouterr().err.splitlines() if "produced no nodes" in line]
     failed_lines = [line for line in lines if "failed.md" in line]
