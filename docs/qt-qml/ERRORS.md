@@ -743,3 +743,103 @@ package script, CMake/rcc process, additional source read or network request is
 introduced. Rejected candidates, including forced retry, must preserve the prior
 graph/manifest/report/Qt-state cohort; corrected input then recovers and settles.
 Actual graph-write failures remain owned by existing publication/recovery code.
+
+
+## Qt 6.12 corrective source profile — INC-QML-61 onward
+
+Existing diagnostic owners/codes remain in force; no new logging framework or
+runtime exception translation is introduced. Successful source-only enum,
+annotation, tooling/property and build-export analysis adds facts, not SDK/runtime
+success claims. Every unsupported source relationship retains its own reason.
+
+`QT_CPP_SYNTAX` now also rejects malformed new annotation arguments, invalid
+class/namespace marker scope and a preceding local `define`/`undef` that defeats
+Qt spelling authority. These rejections carry the original safe byte/row/column
+span where available, without raw source text. Restore a supported annotation or
+retain the old graph while extending the profile; force is not a bypass. Ordinary
+same-spelled C++ declarations and preprocessing definition bodies remain data.
+
+`QML_SYNTAX` rejects conflicting/duplicate virtual/override/final property modifiers.
+Valid modifiers have `modifier_status=source_only`; actual inheritance enforcement
+requires the QML engine and remains unverified. The existing 100,000-node/depth256
+`QML_LIMIT` gate runs before compatibility traversal and on a recovered tree;
+exceeding it is not mislabeled as a missing parser.
+
+`QML_TYPES_UNSUPPORTED` includes invalid field owner/type/integer/list/enum values,
+access-semantics mismatch, opaque creation/export conflicts and contradictory
+constant-property fields. `QML_PROJECT_LIMIT` owns the 384-byte UTF-8 lossless
+literal and 10,000-entry/fact limits. Tooling file/line hints never trigger reads.
+C++ duplicate/value-bearing property modifiers retain explicit unsupported status
+instead of swallowing an accessor name or asserting runtime enforcement.
+
+`QML_METADATA`/`QT_METADATA` rejection prefixes protect new enum/export/singleton
+transport ownership, type, span and contextual identity. The existing join failure
+channel withholds publication rather than borrowing a filename, global engine or
+nearby class. External singleton reasons distinguish API/conditional/declaration,
+literal-name, duplicate/prior-use/reset, load/order, provider lifetime and canonical
+registration/type failures. Accepted setup retains `runtime_success=unverified`
+and `lifetime_status=unverified`; retrying analysis is not runtime initialization.
+
+C# fields exceeding lossless type-literal bounds remain source fields with
+`type_status=unsupported` and `field_type_literal_limit`; no truncated type becomes
+lookup authority. Actual read/cache/serialization/replacement failures keep their
+existing publication owners. New ordinary regressions exercise previous-product
+retention, repeated rejection, corrected recovery and no-change application.
+
+`QT_CPP_CONTEXT` (severity: error; owner: `cpp_test_context`) rejects a changed
+target, admitted include/build-file hash, absence/shadow witness or semantic
+negative-effect proof after the per-run QtTest source snapshot was accepted.
+Omitted or malformed promised build transport also rejects, including removal of
+all proof fields while retaining positive activations. Fresh semantic resolution
+at both publication checkpoints is required; a checksum/flag is not replacement
+evidence. Its safe message identifies the source-context stage and asks for a
+retry of admitted inputs; relative source context and original include spans are
+included where available, without raw source or external paths. Successful context
+validation adds no success diagnostic. An unsupported/ambiguous/cyclic include
+profile supplies no activation and remains unavailable, rather than becoming an
+integrity failure. A real hash mismatch fails the candidate, preserves the prior
+graph/manifest/report/Qt-state cohort under the existing update owner, and requires a
+fresh snapshot on retry. Force cannot authorize stale context. Failure during
+retention/recovery remains an explicit existing persistence error, not context
+success. No SDK include, corpus build or component executes.
+
+`CPP_SOURCE_VIEW_MISMATCH` (severity: error; owner: `cpp_source_views`) rejects an
+unaligned or nonbyte original/parse view at the internal C++ producer boundary.
+Original and normalized buffers must have equal byte lengths and exact CR/LF
+positions before original source can authorize a declaration/signature. This is
+an integrity failure, not missing-parser or malformed-Qt-source status. Successful
+validation emits no success diagnostic; the default absent-original argument
+keeps the existing caller contract. Rejection supplies a bounded stage/recovery
+message and enters the existing Qt/source-integrity channel so prior
+graph/manifest/report/state products remain accepted; no normalized fallback may
+lend authority. Correct the adapter/view alignment and retry. Persistence or
+recovery failure retains its existing owner and cannot become source-view success.
+
+### SOURCE_RELATIONSHIPS_INVALID
+
+- Severity: error. Owner: source relationship transport/storage adoption.
+- Trigger: malformed promised local-function/profile metadata, contradictory
+  persisted multigraph flag, duplicate logical storage identity, or inconsistent
+  explicit direction markers. Source context is the accepted graph boundary;
+  diagnostics contain no raw source, private names or credentials.
+- Outcome: reject before adoption/publication. JSON export returns failure; direct
+  graph/adoption APIs raise `ValueError`. Previous graph/manifest/report products
+  remain accepted. This does not promise rollback of unrelated syntax caches.
+- Recovery: re-extract or repair the corrupt source artifact, then retry through
+  the ordinary validated writer. Corrupt transport is not an optional-parser
+  absence or a recoverable success. Successful valid storage adds no warning.
+- Legacy absence: unpromised falsy graph-metadata carriers remain accepted without
+  a marker or warning. A typed promise with a non-None nonmapping carrier, an
+  invalid nonempty carrier or a malformed reserved marker still rejects. Every
+  promised source fact is validated before this compatibility decision.
+
+
+INC-QML-98 uses existing `QT_CPP_SYNTAX` (error; native Qt syntax owner) when a
+source-local define/undef precedes a recovered emission prefix. The bounded
+message and original marker span identify unsupported annotation identity without
+printing source. Whole-unit Qt overlays reject; a compatibility parse cannot turn
+that prefix into a bare signal call. Valid ordinary same-spelled functions/calls
+and preprocessing directives are preserved. Successful admission adds no warning.
+Correct the unsupported source and retry; normal CLI/watch rejection retains
+accepted products, corrected recovery and repeated application use the existing
+writer. A write/rollback failure retains its separate persistence diagnostic.

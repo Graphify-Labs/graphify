@@ -11,11 +11,11 @@ from graphify.qt_qml_bridge_members import QtMemberViews
 class QtQmlBridgeIndex(QtMemberViews):
     """Build one source/provider table over an already accepted corpus."""
 
-    def __init__(self, nodes, edges=(), *, root: Path, project_index=None):
+    def __init__(self, nodes, edges=None, *, root: Path, project_index=None, unknown_metaobject_ownership=()):
         nodes = list(nodes)
         self.nodes = {node["id"]: node for node in nodes if node.get("id") and source_path(node, Path(root)) is not None}
         self.provider_records, self.modules, self.unresolved, self.module_bounds = {}, {}, {}, {}
-        super().__init__(self.nodes.values())
+        super().__init__(self.nodes.values(), edges, unknown_metaobject_ownership=unknown_metaobject_ownership)
         classes = {}
         for node in self.nodes.values():
             md = qt_metadata(node)
@@ -109,5 +109,6 @@ class QtQmlBridgeIndex(QtMemberViews):
         return answer(candidates, reason="native_type_unavailable", evidence=evidence)
 
 
-def build_qt_qml_bridge(nodes, edges=(), *, root, project_index=None):
-    return QtQmlBridgeIndex(nodes, edges, root=Path(root), project_index=project_index)
+def build_qt_qml_bridge(nodes, edges=None, *, root, project_index=None, unknown_metaobject_ownership=()):
+    return QtQmlBridgeIndex(nodes, edges, root=Path(root), project_index=project_index,
+                           unknown_metaobject_ownership=unknown_metaobject_ownership)

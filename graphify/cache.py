@@ -38,11 +38,11 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-# Schema 32 combines upstream 31's declaration/file identity, alias and
-# generic-call corrections with the Qt fork's schema 23 source, callable
-# and nested-reference contracts. Neither predecessor namespace proves
-# this producer; semantic entries retain their independent lifetime.
-_AST_CACHE_SCHEMA = 32  # Retain #4854 declaration/file separation plus Qt identities.
+# Schema 33 retains schema 32's upstream/Qt identity union and adds source-owned
+# declaration/enum/member and Qt6.12 annotation contracts. Unchanged source bytes
+# cannot accept earlier omitted or differently classified facts. Independent
+# semantic entries retain their existing lifetime and are not recomputed here.
+_AST_CACHE_SCHEMA = 33  # Retire pre-audit syntax facts; preserve the #4854 ID-domain repair.
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is

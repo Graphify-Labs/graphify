@@ -4,6 +4,7 @@ from __future__ import annotations
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.qt_cpp_mapping import normalize_type
 from graphify.qml_resolution_types import Resolution, answer
+from graphify.qt_metaobject import QtMetaobjectIndex
 import re
 
 
@@ -19,8 +20,10 @@ def value_type(value):
 class QtEventIndex:
     """Class-qualified declarations, never a repository-wide member-name table."""
 
-    def __init__(self, nodes):
+    def __init__(self, nodes, edges=None, *, unknown_metaobject_ownership=()):
+        nodes = list(nodes)
         self.nodes = {node["id"]: node for node in nodes}
+        self.metaobjects = QtMetaobjectIndex(nodes, edges, unknown_metaobject_ownership=unknown_metaobject_ownership)
         self.classes, self.members, self.callables = {}, {}, {}
         for node in nodes:
             metadata = qt_metadata(node)
@@ -155,7 +158,22 @@ class QtEventIndex:
         if endpoint.get("form") == "member_pointer":
             candidates = [node for node in candidates if qt_metadata(node).get("access") == "public"
                           or qt_metadata(node).get("class_name") == owner_class]
-        return answer([node["id"] for node in candidates], reason="member_not_proven", evidence=("source_type", "declared_signature"))
+        # Signals and string-based endpoints require their declaring class's
+        # own metaobject. Typed receiver member pointers can target ordinary
+        # C++ functions or slot-marked methods without that class's moc code.
+        accepted, evidence, rejected = [], ["source_type", "declared_signature"], None
+        for node in candidates:
+            md = qt_metadata(node)
+            if role == "signal" or endpoint.get("form") == "legacy" or "signal" in md.get("roles", []):
+                proof = self.metaobjects.resolve(md.get("class_id"))
+                if proof.status != "resolved":
+                    rejected = proof
+                    continue
+                evidence.extend(proof.evidence)
+            accepted.append(node)
+        if candidates and not accepted and rejected is not None:
+            return rejected
+        return answer([node["id"] for node in accepted], reason="member_not_proven", evidence=tuple(dict.fromkeys(evidence)))
 
     def emission(self, metadata):
         expression = {"form": "legacy", "member_name": metadata.get("member_name"), "selector": False}

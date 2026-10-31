@@ -15,7 +15,7 @@ validated Qt/QML fork. AST schema 32 and Qt policy 26 apply to this source.
 Earlier verified checkpoints below remain revision-bound historical evidence;
 they do not establish full or hosted acceptance of the new integration.
 
-The Qt/QML catalog contains twenty-one requirements and eighty-five stable acceptance
+The Qt/QML catalog contains twenty-two requirements and ninety-one stable acceptance
 criteria. INC-QML-00–07 evidence describes the original bounded Qt 6/QML profile;
 later corrections and adoption extend that profile without renumbering it.
 Current source, update, consumer and installed evidence is assigned individually
@@ -682,6 +682,34 @@ those system results. Exact evidence and limitations belong to
 and traceability.
 The existing HTML publication and canonical graph contracts remain authoritative.
 
+### REQ-QML-022 — Versioned Qt 6.12 source coverage
+
+The maintained Qt 6.12 profile accounts for documented APIs and preserves admitted
+source declarations without confusing generic syntax, tooling metadata and native
+Qt authority. Support decisions use versioned documentation and independently
+executed source/graph evidence; an inventory count is not semantic coverage.
+
+**Acceptance Criteria**
+
+1 - The audit inventory records the Qt release, official source URLs, retrieval identity and content hashes. Classes, namespaced/conversion-operator names, function/member anchors, QML types/value types and their documented members have explicit dispositions. Duplicate owners/overloads remain distinct; failed, external/unversioned, oversized or missing pages remain explicit gaps rather than disappearing from completeness totals. (`REQ-QML-022-AC01`)
+
+2 - Admitted class/component declarations, member variables (including C# class fields and explicit indexers in the mixed-language audit), methods, C# local functions in method/constructor/nested-local source scopes, and enum members retain their actual owning scope, distinct identities and original-byte locations. Allocated declaration IDs govern member provenance, including file/class name collisions. Reference/pointer/callback declarators cannot silently disappear or become callable merely because their syntax contains a function declarator; destructor prototypes remain distinct from constructors. Runtime delegate parameters/locals cannot authorize a concrete unrelated method; local-variable graph nodes, synthesized accessors/record members and local functions in unsupported accessor/top-level owners are not required by this bounded member/function criterion. Enum values/static references use accepted declaration identity and preserve uncertainty for unsupported expressions. (`REQ-QML-022-AC02`)
+
+3 - Qt annotation recovery preserves valid ordinary C++ identifiers that share macro spellings and follows the documented access changes of actual annotations. Explicit later access labels take precedence; source-only gadget/namespace annotations do not establish QObject, registration or runtime authority. A conventional whole-file inclusion guard preserves declarations in this static profile while feature branches remain uncertain; QtTest syntax context is direct or proven through admitted literal includes, including supported unambiguous literal target-owned build include roots. Positive build profiles cannot borrow built-in command identity when any caller-admitted metadata file declares a conflicting command definition. Source Windows SDK calling-convention syntax retains its bounded direct-header/guard profile and supplies no ABI/runtime authority. A locally redefined emission prefix cannot be erased into a bare call: unsupported prefixed source rejects the whole Qt overlay, while genuine ordinary same-spelled function declarations/calls remain intact and have no SDK annotation role. Native keyword recovery preserves preprocessing directives and continued definition bodies byte-for-byte, including a UTF8 BOM immediately before the first directive; a midstream BOM cannot supply directive authority. Malformed, unknown or shadowed forms retain bounded diagnostics and original source provenance. (`REQ-QML-022-AC03`)
+
+4 - Valid Qt 6.12 tooling descriptions and property modifiers are admitted with bounded typed fields, source provenance and explicit semantic status. Opaque/tooling-only descriptions, file/line hints and modifier text alone cannot authorize creation, native ownership or cross-root reads. Corrupted, contradictory or unknown metadata rejects without replacing accepted output. (`REQ-QML-022-AC04`)
+
+5 - Supported literal QML source type-name/version/internal metadata and engine-specific external-singleton setup preserve the actual exported type and receiver engine. Accepted canonical declarations and module/instance evidence govern joins; filename/resource aliases, another engine, unknown callbacks and dynamic values cannot supply missing authority. No analyzed build, constructor, factory or QML component executes. (`REQ-QML-022-AC05`)
+
+6 - Every changed producer/resolver contract has direct, facade, serialized/reloaded and relevant cold/warm/full/incremental regression evidence, including rejection/failure retention and recovery. Private reference-corpus findings become neutral public reproductions; private source, identifiers and graphs remain local. Ordinary analysis stays offline, bounded and independent of a Qt SDK or runtime execution. Optional source-relationship storage preserves legacy falsy graph-metadata absence when no source contract is promised, while typed promises and invalid nonempty carriers retain strict rejection. The precise C++ free-call owner takes over only callers with accepted source ownership; existing generic partial-input calls and transport remain intact outside that boundary without acquiring new native or namespace proof. A native enrichment run shares one accepted-source corpus index across parsed units; per-unit resolution state and later runs remain independent, with unchanged source facts and authority. Platform/optional-profile skips and unverified mechanisms remain explicit. (`REQ-QML-022-AC06`)
+
+Status: **Implemented through INC-QML-101; bounded source, corrected native full-suite and fresh isolated installed-profile evidence is recorded in traceability with explicit skips/expected failure. Complete reference-corpus and new-head hosted proof remain pending. No whole-SDK support claim.**
+The existing source and diagnostic contracts remain authoritative while the pinned
+inventory and failing neutral reproductions establish the new implementation scope.
+Per-mechanism acceptance and remaining gaps belong in traceability and the support
+matrix; neither a downloaded API catalog nor generic C++ admission proves native
+Qt behavior.
+
 ## Shared compatibility requirements
 
 ### REQ-CORE-001 — Installed assistant contracts
@@ -858,7 +886,7 @@ adjacent compatibility cases and the fresh isolated artifact/install profile pas
 within their declared local profiles. The broad Qt source selection retains 35
 explicit platform skips. Complete all-language and hosted evidence, and the separately owned
 application-corpus refresh remain pending. No new requirement or acceptance identifier is
-allocated; REQ-QML-022 remains unallocated.
+allocated at that checkpoint; REQ-QML-022 is allocated by INC-QML-61.
 
 ### RC compilation-prerequisite refinement
 

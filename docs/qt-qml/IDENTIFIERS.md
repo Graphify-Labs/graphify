@@ -21,8 +21,9 @@ Current internal links use current headings; existing heading links retain their
 legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
-Future requirements continue with `REQ-QML-022`; future top-level increments
-continue with `INC-QML-54`. INC-QML-49 owns current-upstream integration;
+Future requirements continue with `REQ-QML-023`; future top-level increments
+continue with `INC-QML-102`. INC-QML-61 owns the versioned Qt 6.12 audit;
+INC-QML-62–101 own its scoped correction and delivery sequence. INC-QML-49 owns current-upstream integration;
 INC-QML-50 owns followed Qt metadata source provenance; INC-QML-51/52 own runner
 and metadata-growth fixture corrections; INC-QML-53 owns the bounded C++/CMake
 parser repair under existing acceptance criteria. These counters describe different concerns and need
@@ -35,7 +36,7 @@ Shared assistant/filesystem/Terraform compatibility uses the independent
 [compatibility plan](../COMPATIBILITY.md). The Qt/QML counters and aliases above
 remain unchanged; shared contribution-gate follow-up is not another Qt feature.
 
-The twenty-one requirements comprise eighty-five criteria. The initial seventeen
+The twenty-two requirements comprise ninety-one criteria. The initial seventeen
 requirements/sixty-eight criteria and seven `REQ-QML-018` adoption criteria retain
 separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.
 REQ-QML-020 adds three explicit-membership criteria locally Verified for the bounded

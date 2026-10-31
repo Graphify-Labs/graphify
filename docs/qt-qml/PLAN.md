@@ -3632,3 +3632,438 @@ REQ-QML-014-AC03 require a controlled declined-source fixture plus retained
 missing-parser rejection coverage. Reproduce that profile locally, retain all
 four hosted failures, correct the test boundary without production/dependency/
 platform changes, and let the new source synchronization own fresh validation.
+
+## INC-QML-61 — Pinned Qt 6.12 inventory and reference-corpus audit
+
+Status: **In progress; findings are not implemented support**. Owner: integration
+maintainer. Baseline is `a0926ef84a26e9f3cb46f0b982ac495c21fc2255` (Graphify
+0.9.99, AST32/Qt26). Qt's released 6.12.0 documentation is the initial API
+snapshot; moving documentation and separate module versions require their own
+provenance. The completed upstream-sync PR remains unchanged while this work uses
+a separate feature branch in the same canonical workspace.
+
+REQ-QML-022-AC01/AC06 govern an exhaustive inventory-accounting ledger, not a
+claim of semantic completeness. Preserve class/type owners, overload/member
+anchors, qualified conversion names, source hashes and missing/external pages.
+Use official tagged generator source where generated tooling contracts are not
+fully described by prose. Keep explicit semantic support, generic source support,
+conservative exclusions and unverified forms distinct.
+
+A private reference application's committed main is audited through exact Git
+blobs and a frozen installed baseline. No dirty application files, branches,
+watchers, global tools or existing graphs change. Detached temporary input data
+is not another working checkout; actual detector paths define the code-only
+audit, and private evidence never enters this repository. Corpus/source/tool
+identities and exclusions are retained privately. Neutral fixtures reproduce
+each finding before a public correction is implemented.
+
+| Increment / criteria | Preimplementation acceptance, rejection and persistence matrix |
+| --- | --- |
+| INC-QML-62; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Retain scoped C++ reference/pointer/callback member declarations and destructor prototypes through direct/facade/export/reload. Preserve constructor/method distinction, overloads, access, original-byte spans and callable rejection for data fields. Characterize all nested declarator shapes before changing shared traversal. |
+| INC-QML-63; REQ-QML-008/014/016; REQ-QML-022-AC03/AC06 | Preserve ordinary identifiers sharing annotation names; apply actual Q_OBJECT/Q_GADGET access resets and later explicit labels. Admit supported export/namespace/new compiler annotations without inventing QObject/registration authority; comments/strings, malformed forms, BOM/CRLF and false-positive controls remain required. |
+| INC-QML-64; REQ-QML-003/005/006/010; REQ-QML-022-AC02/AC06 | Emit QML enum member/value facts and resolve legal type-qualified enum reads using accepted lexical/component identity. Preserve implicit/explicit values, ambiguity, same-named owners, source ranges, repeated relations and static-type rejection for ordinary instance properties/methods. |
+| INC-QML-65; REQ-QML-009/012/014; REQ-QML-022-AC04/AC06 | Admit every verified Qt6.12 qmltyperegistrar field with typed bounded validation. Opaque/type-only and file/line hints remain tooling facts, never creation/native ownership/cross-root read authority. Unknown, duplicate, malformed and contradictory descriptions still reject with prior-output retention/recovery. |
+| INC-QML-66; REQ-QML-006/008; REQ-QML-022-AC04/AC06 | Preserve Qt6.12 C++ VIRTUAL/OVERRIDE and QML virtual/override/final modifiers without swallowing accessor/member names or simulating engine/moc runtime enforcement. Validate combinations and false-positive identifier contexts; retain read/write/notify links and rejection evidence. |
+| INC-QML-67; REQ-QML-004/009/020; REQ-QML-022-AC05/AC06 | Analyze literal QML source type-name/version/internal CMake properties with their actual exported-name semantics, independent from filename/resource aliases. Scope, dynamic/unknown values, cross-root paths, conflicting metadata, metadata-only updates, stale-edge retirement and recovery need production regressions. |
+| INC-QML-68; REQ-QML-008/017/018; REQ-QML-022-AC05/AC06 | Record source-proven engine-specific external-singleton setup. Canonical type/module/instance and actual lexical engine govern joins; another engine, unregistered/unknown type, dynamic text/callback and ambiguous lifetime cannot authorize a guessed provider. |
+| INC-QML-69; REQ-QML-014/015; REQ-QML-022-AC01/AC06 | Recheck the complete inventory ledger and private admitted corpus with the corrected tool. Close each demonstrated gap with a neutral regression or explicit unresolved acceptance; run full compatibility, generation, lint/type, packaging/consumer and normal PR validation. Refresh the repository graph; keep upstream review, application adoption and runtime guarantees separate. |
+
+Diagnostic impact: existing parser/unsupported/ambiguity/cache/publication owners
+remain authoritative. New supported syntax must remove false diagnostics without
+masking real rejection or fabricating certainty. New codes or persisted fact
+contracts need their catalog, version, failure-retention and recovery evidence.
+Root owns shared cache/schema changes and generation; delegated owners have
+disjoint producer/test files. Further findings extend this sequence through new
+stable increments; they are not silently dismissed as covered by the inventory.
+
+
+### Additional declaration gaps found by INC-QML-61
+
+The reference-corpus and neutral AST audit expose adjacent declaration boundaries.
+They extend this authorized development rather than being hidden by aggregate
+name counts. These increments remain separate from mechanical migrations.
+
+| Increment / criteria | Preimplementation acceptance and compatibility matrix |
+| --- | --- |
+| INC-QML-70; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Admit source-proven C++ reference-only headers and free/namespace function prototypes with scoped identities, overloads, source ranges and prototype/definition distinction. Preserve C/Objective-C admission, function-pointer data, template/partial syntax, declaration roles and existing canonical joins. Test direct/facade/export/reload and cold/warm/full/incremental removal; unsupported headers must not be silently relabeled by spelling alone. |
+| INC-QML-71; REQ-QML-014; REQ-QML-022-AC02/AC06 | Investigate omitted C# class fields in the admitted mixed-language corpus and preserve source-owned class/member facts if confirmed at the production boundary. Do not infer function-local variable graph behavior from this class/member requirement. Record neutral failures before a scoped correction, retaining existing properties/methods/interface roles and all unrelated-language evidence. |
+| INC-QML-72; REQ-QML-003/014/018; REQ-QML-022-AC02/AC03/AC06 | Characterize valid C++ pointer-to-member data/function declarators rejected by the pinned parser. Add only source-preserving bounded compatibility where original tokens and declaration identity establish the role; never turn a qualified member-pointer into an invented field/class/method. Malformed/ambiguous syntax, source-byte parity, facade and update/export retention remain fail-closed. A parser rejection alone is an explicit gap until the source correction and regression evidence pass. |
+
+
+INC-QML-70 initially preserves legacy free-definition IDs while adding separately
+identified prototypes (qualified scope plus signature). This does not claim a
+prototype/definition join. Its call lookup must not select another scope or an
+arbitrary overload. The adjacent legacy collapse of same-named free definitions
+is a separate confirmed regression obligation:
+
+| Increment / criteria | Preimplementation acceptance and compatibility matrix |
+| --- | --- |
+| INC-QML-73; REQ-QML-003/014/018; REQ-QML-022-AC02/AC06 | Preserve distinct free-function definitions in namespaces/overloads and source-proven prototype/body identity without rewriting class/member joins. Characterize qualified/unqualified calls, local shadows, ambiguous signatures, static/template functions, header/cross-file pairs and partial input before changing legacy IDs. Actual canonical source scope/signature proof, not label enrichment or basename lookup, governs any join; schema retirement and full/incremental stale-edge removal are mandatory. |
+
+
+### Further admitted-header corrections
+
+The exact admitted-header comparison still finds valid source shapes outside the
+current header hint/parser profile. Preserve their original failures separately
+from successful reference-prototype recovery.
+
+| Increment / criteria | Preimplementation acceptance and compatibility matrix |
+| --- | --- |
+| INC-QML-74; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Recognize C++-only default member initializers in otherwise plain struct `.h` declarations without relabeling C initializers, bitwise expressions, comments/strings, function bodies or Objective-C. Header classification remains a bounded lexical admission hint; actual grammar and source identity govern facts. Test dispatch through direct/facade/cache/full/incremental paths and retain unrelated C behavior. |
+| INC-QML-75; REQ-QML-003/014/018; REQ-QML-022-AC03/AC06 | Characterize QtTest typed-argument/body-macro parser gaps, preserving source-only test declarations without running tests or expanding arbitrary macros. Recover only accepted source/SDK-context forms with original-byte locations and explicit local-override/ordinary-function/unevaluated/malformed rejection. Real calls/fields cannot be invented from macro type text; cache, export and publication retention need ordinary regressions. |
+
+
+### Context and metaobject authority findings
+
+| Increment / criteria | Preimplementation acceptance and architecture decision |
+| --- | --- |
+| INC-QML-76; REQ-QML-011/014; REQ-QML-022-AC02/AC06 | A changed/added/deleted accepted C# source or relevant project/discovery input refreshes the actual detector-admitted C# cohort through caller-owned update orchestration. Warm per-file syntax caches remain usable; extraction does not secretly read/reparse borrowed context. Prove partial-class canonical ownership, changed callers, sorted-earlier half additions/deletions, conditional/delegate field shadows, full/incremental parity, same-package AST-epoch retirement, failed-publication retention/recovery and settled no-change behavior. This conservative correctness boundary has an explicit resolver-cost tradeoff; dependency-directed cohort invalidation is a future characterized optimization. |
+| INC-QML-77; REQ-QML-008/016/017; REQ-QML-022-AC03/AC06 | QObject ancestry alone cannot authorize a class's own metaobject properties, invokable methods or signals. Require accepted source-owned metaobject declaration evidence for the actual declaring class, rejecting conditional/fabricated marker authority and wrong ownership while retaining valid own-Q_OBJECT and existing supported typed-Base providers. Unsupported inheritance profiles remain explicit; no enclosing/global class may lend missing authority. Cover direct/facade/QML reads/calls/handlers, sanitation/export/reload, cold/warm/full/incremental stale cleanup and rejected-update recovery. |
+
+INC-QML-71's conditional/delegate-field corrections additionally retain each
+source alternative and block storage/unknown conditional type as a concrete call
+or receiver. Actual methods and proved local callable shadows remain distinct.
+These are source-identity corrections, not preprocessing evaluation or runtime
+function-pointer dispatch.
+
+
+INC-QML-69 delivery targets a separate stacked review on the existing Qt/QML
+integration source while its default-branch sync PR remains open and unchanged.
+The normal `pull_request` event must run the same full/native/optional-wheel gates
+for that real `codex/qt-*` integration base. Extend only PR base-branch admission;
+retain existing default/release push coverage, matrix/platforms, permissions,
+workflow-specific concurrency and no-duplicate-dispatch sequencing. A source
+workflow-policy regression checks branch admission and unchanged push/gate shape;
+actual hosted acceptance still requires a new reviewed source/base/checkout.
+
+The same installed-wheel Windows/macOS source lanes also collect C++/C# and
+field-call ownership and source-relationship consumer tests for the shared declaration/caller/worker changes in
+this audit. Their grammars are existing core dependencies. Preserve every old
+source family, install/smoke/failure sequence, job and platform; Ubuntu remains
+artifact-only while Linux all-extras owns the complete suite. A launcher-bound
+regression proves the additional selection without weakening the clean optional
+profiles. Hosted results for the new source remain required.
+
+
+### Admitted include-context corrections
+
+| Increment / criteria | Preimplementation acceptance and profile decision |
+| --- | --- |
+| INC-QML-78; REQ-QML-003/011/014/018; REQ-QML-022-AC03/AC06 | Propagate QtTest SDK syntax context only through source-proven literal forward include chains over the caller's already-admitted C++ snapshot. Direct and transitive profiles must share explicit per-run context across generic production and Qt collectors; no ambient root, extra file discovery, system-header read or compiler execution. Preserve include order, unique in-root target identity, guards/shadow/override uncertainty, bounds and original source hashes. Partial APIs cannot read missing context. SDK-context-only edits must invalidate affected cached facts and preserve full/incremental/export/retention parity. |
+| INC-QML-79; REQ-QML-008/011/016/017; REQ-QML-022-AC03/AC06 | Treat a literal conventional whole-file `#ifndef`/matching first `#define` inclusion guard as transparent declaration admission in the static source profile. Reject feature/ifdef/else/elif, mismatched/incomplete/non-file-wide forms as ordinary conditional uncertainty. Apply one source predicate consistently to registration/metaobject, alias/type, engine identity and call context; preserve nested genuine conditions. Prove own-metaobject and guarded SDK alias/load positives, negative controls, byte ranges, stale conditional-state cleanup and accepted-publication recovery. This is source-profile interpretation, not evaluation of arbitrary compiler defines or a compiled/runtime claim. |
+
+### Callback-return callable ownership
+
+| Increment / criteria | Preimplementation acceptance and regression matrix |
+| --- | --- |
+| INC-QML-80; REQ-QML-003/008/014/018; REQ-QML-022-AC02/AC03/AC06 | A C++ method returning a callback retains the actual method's own name/parameters in declarations and out-of-line definitions. The nested returned callback signature cannot become an extra resolved Qt member or lend invokable/provider authority. Preserve nearest-binding role, source/header canonical ownership, original bytes and source-opaque return uncertainty through direct/facade/export/reload and cold/warm/full/incremental stale cleanup. Characterize data-member pointers, constructors and ordinary methods as adjacent controls; rejected or failed updates retain prior products and recover. |
+
+### Source-only test launcher admission
+
+| Increment / criteria | Preimplementation acceptance and uncertainty matrix |
+| --- | --- |
+| INC-QML-81; REQ-QML-003/008/014/018; REQ-QML-022-AC03/AC06 | Characterize documented translation-unit `QTEST_MAIN`, `QTEST_GUILESS_MAIN`, `QTEST_APPLESS_MAIN` and `QUICK_TEST_MAIN_WITH_SETUP` syntax that legitimately lacks a terminating semicolon. Admit only actual literal SDK-context/source-owner forms; retain a source-only launcher fact and original spans without inventing a generated main, runtime test execution, callback target or provider. Ordinary same-spelled identifiers, qualified/member/conditional/local overrides, malformed arguments and unsupported context remain explicit. An unknown quoted include after a source occurrence cannot retroactively remove its earlier context; the same possible interference before use remains unavailable. Prove direct/facade/header/source/worker parity, export/reload, relevant cold/warm/full/incremental cleanup, rejection/failure retention and recovery. No generated moc file is trusted, read outside the admitted set or executed. |
+
+### Quick Test assertion effects
+
+| Increment / criteria | Preimplementation acceptance and regression matrix |
+| --- | --- |
+| INC-QML-82; REQ-QML-017/018; REQ-QML-022-AC03/AC05/AC06 | Retain documented `QTRY_VERIFY_ACTIVE_FOCUS` and `QVERIFY_ACTIVE_FOCUS` source assertions under the exact QtQuickTest header family and supported literal one-argument statement profile. A repeated or unproved assertion argument cannot lend a unique ordered external-singleton setup merely because it contains the SDK setter. Preserve real inner call occurrences and original spans; no QQuickItem focus, engine identity or evaluation count is inferred. Retry repetition follows the documented mechanism; nonretry evaluation remains unverified. Explicit undef/ordinary same-spelled function controls retain ordinary call behavior. Cover direct/facade/export/reload, stale interference cleanup, cold/warm/full/incremental parity and failed/rejected publication recovery. |
+
+### Further declaration and lexical-call corrections
+
+| Increment / criteria | Preimplementation acceptance and regression matrix |
+| --- | --- |
+| INC-QML-83; REQ-QML-003/008/014/018; REQ-QML-022-AC02/AC03/AC06 | Recover a source-proven valid unnamed pointer parameter with a literal default where the pinned C++ grammar rejects the declaration/override body. Preserve actual pointer/reference layers, optional arity, overload identity and original-byte spans; no synthesized public parameter name, data binding or native provider authority may appear. Malformed and unsupported defaults remain explicit. Cover direct/facade/header/body/source facts, ordinary named and unnamed parameters, callback/constructor boundaries, cold/warm/full/incremental/export parity, rejected/failing publication retention and recovery. Compatibility policy is a focused parser boundary, not changed compiler semantics or a dependency upgrade. |
+| INC-QML-84; REQ-QML-014; REQ-QML-022-AC02/AC06 | Emit actual C# local-function declarations with lexical scope/ownership and source identity; valid calls obey block and forward visibility rather than class/global basename maps. Runtime delegate parameters/locals cannot target another class's same-named method, with or without a class field. Preserve valid local-function-over-field and typed receiver controls; reject ambiguous/conditional/out-of-scope claims. Local variables remain rejection-only binding evidence, not a new variable graph feature or runtime delegate/lambda dispatch. Cover source bytes, direct/facade/transport, nested/partial source identity, warm/full/incremental stale cleanup, real persistence failure/retention/recovery and unrelated-language compatibility. |
+| INC-QML-85; REQ-QML-003/014/018; REQ-QML-022-AC02/AC03/AC06 | Independently supported equal-byte C++/QtTest/member-pointer/default adapters must compose in the same file. Each stage proves only its exact source-owned repair; unrelated pending supported syntax cannot cause a valid local repair to disappear. The final Qt overlay whole-file parser/AST gate remains mandatory and rejects remaining malformed/unsupported input; generic C++ retains its existing partial-input result contract. Cover each isolated success, their failing-before combination, malformed neighbors, original-byte/callable/type identity, direct/facade/export and full/incremental/retention/recovery parity. This is coordinated parse-view ownership, not arbitrary macro expansion or relaxed final Qt acceptance. |
+| INC-QML-86; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Preserve source-proven optional argument arity when the existing empty-default adapter omits `={}` from its parse view. A function with a real accepted default cannot become required-arity merely because compatibility syntax was blanked. Original accepted parameter/default ownership governs arity; comments/strings, malformed defaults and unrelated declarations cannot supply one. Preserve ordinary unique IDs, overload uncertainty and separate prototype/body facts through direct/facade/cache/export/full/incremental and retained-write recovery. A signature hash alone does not establish default or type equivalence. |
+| INC-QML-87; REQ-QML-003/008/014/018; REQ-QML-022-AC03/AC06 | Retain selected QtTest macros used as actual standalone callable substatements under if/else/loop/case/label or feature-preprocessor bodies. Require the original statement relationship and actual function/lambda ancestry; preserve nearest lexical scope, opaque test data and unverified conditional/runtime status. For initializers, parameters, nested expressions, global/class declarations and unrelated parser errors, retain explicit rejection. Source macro occurrence never proves execution, count or native provider identity. Cover the seven demonstrated source failures and rejection control, original spans, callback shadowing, direct/facade/export, full/incremental cleanup and failure retention/recovery. |
+| INC-QML-88; REQ-QML-003/008/014/018; REQ-QML-022-AC03/AC06 | Retain a source-only QFETCH column in a real unbraced if/else/loop body when the pinned parser cannot admit its primitive declaration view. Use only an inert equal-byte expression statement with an explicit opaque parsed role and exact body-only scope ending at the original semicolon; invent no braces, declaration name/type or wider binding. Existing braced/preprocessor/case/label data paths retain their real opaque binder. Prove actual typed control-body ownership, outer same-named engine/callback behavior after the branch, no type-argument calls, condition/initializer rejection, original ranges, direct/facade/export and full/incremental/retention/recovery parity. Final Qt admission remains strict and execution/type/column agreement remains unverified. |
+| INC-QML-89; REQ-QML-014/015; REQ-QML-022-AC02/AC06 | A source-local function's containment and call relationships, including opposite logical directions, survive actual graph assembly, persistence/reload, remapping and source consumers. Use D40's typed optional source-relationship storage profile without changing ordinary legacy Graph/DiGraph behavior or replacing facts with fabricated scopes/duplicate owner metadata. Preserve existing same-relation evidence precedence; validate activation and source directions. Cover direct and durable CLI/watch parity/failure recovery, explain/query/wiki/HTML/vault/canvas/Cypher, graph diff, topology metrics and merge/global/keyed stale cleanup. Source-edge consumers enumerate relationships; explicit topology projections remain separate. |
+| INC-QML-90; REQ-QML-014; REQ-QML-022-AC02/AC06 | Emit actual explicit C# indexer declarations as source-owned noncallable members with return/parameter/interface/accessor provenance and distinct role/signature identities. Parameter count/type/mode and explicit-interface source syntax govern identity; return type, parameter names/defaults/body do not create another overload. Preserve repeated/conditional declarations without source loss, malformed/bounded metadata status, direct/facade/warm/full/incremental/export and failed-write recovery. Reuse owning class/type-reference emission; do not synthesize get_Item/set_Item, bind runtime element access, traverse new accessor-call ownership, or invent implicit positional-record properties. |
+| INC-QML-91; REQ-QML-014; REQ-QML-022-AC02/AC06 | A C# property whose declared receiver type is an actual lexical type parameter cannot borrow an unrelated same-spelled source class. Apply the existing field/local type-parameter rejection at the owning property receiver-inference boundary; retain property/source-type facts and concrete/qualified receiver controls. Cover class/method/nested-local scopes as applicable, direct/facade/export, warm/full/incremental stale false-edge retirement and failed/rejected publication recovery. This is lexical type identity, not generic substitution or runtime property evaluation. |
+
+| INC-QML-92; REQ-QML-003/008/014/018; REQ-QML-022-AC02/AC03/AC06 | Characterize the actual grammar failure for a documented Windows calling-convention function declarator. Recover only source-owned documented calling-convention tokens at their declarator role, keeping original byte spans, return/parameter/callable identity and opaque ABI hints. Do not infer runtime Windows availability, load headers, expand arbitrary macros or admit ordinary same-spelled identifiers. Cover direct/facade, malformed/override/conditional controls, cold/warm/full/incremental/export and rejected/failed-write retention/recovery. |
+| INC-QML-93; REQ-QML-005/011/014/018; REQ-QML-022-AC03/AC06 | Allow a literal quoted include to use explicit literal target-owned build include roots from the caller-admitted metadata snapshot. Require an unambiguous admitted target/source membership and literal include-root witness with exact metadata/source hashes and spans. Preserve source-relative precedence, include order, containment, root bounds, missing/duplicate/dynamic/conditional uncertainty and immutable shared worker context. Never guess by basename or discover/read unadmitted headers, execute CMake/qmake or borrow another target's paths. Cover metadata-only updates, stale authority retirement, full/incremental parity, corruption/rejected/failed publication retention and recovery. Initial acceptance is the independently tested literal CMake target profile; unsupported qmake/dynamic forms remain explicit. |
+| INC-QML-94; REQ-QML-014; REQ-QML-022-AC02/AC06 | The existing C# source-type reference collector retains nested generic argument facts under a source-qualified generic type, including a built-in global:: qualifier. Keep one authoritative collector for fields, properties, indexers, parameters and returns; source type references do not imply alias/CLR/generic-substitution or receiver resolution. Characterize qualified/unqualified/nested/alias/partial cases, exact original spans, direct/facade/export, cold/warm/full/incremental stale cleanup and failed-write retention/recovery. |
+
+INC-QML-90 boundary correction before exit: explicit indexers remain rejection-only
+data storage when the public partial C# facade receives accepted node-only context
+without ownership edges. Add a real node-only context regression for invoking an
+indexer-returned delegate and a genuine method positive. Missing ownership cannot
+turn a source indexer declaration into a concrete callee; extend the existing
+field storage policy rather than inventing accessor invocation or receiver facts.
+This remains the allocated indexer noncallability criterion, not a new runtime
+feature or a waiver of complete graph ownership validation.
+
+INC-QML-89 shared-type consumer correction: a real two-repository source-profile
+fixture reproduces a missing `same_type_as` fact when that accepted type pair
+already has a `references` relationship. The source-profile consumer must check
+its own relation and use the shared storage owner; retain the legacy simple-graph
+projection. Verify both independent facts and repeated application with no new
+fact. This is existing shared-type composition under D40, not broader type/CLR
+identity or cross-repository inference.
+
+INC-QML-93 caller-boundary acceptance includes an admitted C-compatible SDK
+forwarding header in the context-only native-header snapshot, with unchanged C
+source production/Qt-member classification and explicit Objective-C/non-native
+override rejection. This corrects a real facade failure hidden by direct snapshot
+fixtures; do not change the fixture into a C++ class or weaken dispatch policy.
+
+### INC-QML-95 — Bounded negative source-effect domains
+
+Scope: REQ-QML-005/011/014/018 and REQ-QML-022-AC03/AC06. Preserve INC-QML-93's
+literal positive root profiles and conservative unknown-effect rejection. Extend
+only rejection analysis with independently rederived finite source-data domains:
+literal `foreach(IN ITEMS)`, literal `set`/`list(APPEND)` values, ASCII TOLOWER,
+finite substitutions and conservative conditional joins. A DIRECTORY
+BUILDSYSTEM_TARGETS foreach iterator may carry a single-target-name role without
+inventing its enumerated values; get_target_property(SOURCES) stays unknown unless
+independently proven, and MATCHES/other conditions need not execute. Unknown
+conditions join possible finite values, never supply a positive configured fact.
+
+Prove both absence of relevant root/identity mutation or duplicate declaration
+of the candidate literal target and absence of competing ownership of its actual translation unit. A
+monotonic source append with a proven single target and complete possible source
+paths disjoint from the unit cannot add that unit to another owner. Unresolved
+payloads, list injection, option/FILE_SET ambiguity, unknown writers, scope/alias
+conflicts and excess bounds retain veto. New executable declarations additionally
+need complete finite owner values excluding the candidate target and source
+values excluding the candidate unit. Root mutation remains under the stricter
+INC-QML-93 owner/root contract; no arbitrary dynamic-root relaxation.
+
+No loop-generated positive profile, source discovery, directory-target snapshot,
+regex/configuration evaluation or project/build execution is introduced. Existing
+literal roots/source declarations remain the sole positive owners. New helpers
+stay at or below 300 lines, one effect-analysis owner per metadata input/run; all
+source/build bytes and semantic negative decisions revalidate at both checkpoints.
+
+Acceptance matrix: positive irrelevant literal/finite loop effects and actual
+facade source context; same-source/target collision, dynamic or tainted values,
+source-list/target-argument injection, unsupported commands/options and scoped
+shadowing rejection; source order and finite branch joins; bound exhaustion;
+worker/direct/facade/export and cold/warm/full/incremental parity; metadata-only
+retarget/stale authority retirement, accepted-product rejection/write-failure
+retention, recovery and no-change settling. The three corpus cases remain
+unaccepted until the exact original inputs pass through production with retained
+proof. If this bounded model cannot prove them, preserve the explicit limitation
+rather than weakening ownership or pretending configured-project uniqueness.
+
+### INC-QML-96 — One accepted C++ index per analysis run
+
+Scope: REQ-QML-014/018 and REQ-QML-022-AC02/AC03/AC06. The complete-corpus
+validation exposed retained per-unit copies of identical whole-corpus path,
+definition, accepted-node and parent indexes. Their creation predates this audit;
+admitting more source units amplifies the storage cost. Extract one run-owned
+accepted-source index and borrow it across mappings without changing declaration,
+ambiguity, parent, definition-path or provenance decisions. Per-unit syntax and
+mutable class/function records remain unit-owned. No ambient cache or mutable
+cross-run owner is introduced, and direct mapper callers retain their interface.
+
+Acceptance matrix before implementation: demonstrate repeated index construction
+on multiple neutral admitted units; assert one corpus index per enrichment run
+independently of unit count, with fresh ownership on a later run. Compare shared
+and standalone mapping outcomes for classes, overloads, out-of-line definitions,
+incomplete/ambiguous ownership and foreign source edges. Borrowed input nodes and
+edges remain unchanged; overlays cannot retroactively modify the accepted snapshot.
+Preserve direct/facade/worker, full/incremental/export and failure-retention cases.
+Use deterministic index/ownership assertions rather than machine-specific timing
+or RSS thresholds. Repeat the exact installed corpus and full acceptance gates
+after the source freezes; interrupted runs establish no acceptance.
+
+### INC-QML-97 — Cohort-wide identity of positive build commands
+
+Scope: REQ-QML-005/011/018 and REQ-QML-022-AC03/AC06. A command shadow declared in
+another caller-admitted CMake file must invalidate positive literal profiles that
+depend on that command's built-in identity. The existing cohort census already
+protects negative effect reasoning; apply the same conservative command-identity
+boundary to positive target/source/include-root profiles. Do not evaluate include,
+subdirectory or configured execution order to invent a safe identity.
+
+Acceptance matrix before implementation: reproduce a parent-file function/macro
+shadow of a positive command with the otherwise valid profile in an admitted
+child; preserve the ordinary unshadowed control and same-file rejection. Cover
+each owning positive command and unrelated-name controls, malformed census input,
+source/facade context checkpoints, metadata-only stale-authority rejection and
+actual failed/rejected publication retention/recovery. No missing command identity
+may be restored by a checksum, finite negative domain or parser success. Keep
+diagnostics bounded and distinct from a malformed transport integrity failure.
+
+
+### INC-QML-98 — Shadowed emission prefixes cannot become bare calls
+
+Scope: REQ-QML-016-AC01/AC04 and REQ-QML-022-AC03/AC06. Broader compatibility
+validation exposed old fixtures expecting a locally redefined emission prefix to
+be erased. Exact installed-baseline reproduction shows that this can fabricate a
+resolved bare signal call. Qt 6.12's documented `Q_EMIT`/`emit` empty macro
+definitions do not supply identity after a source-local define/undef. Preserve
+INC-QML-63's strict Q_EMIT rejection and apply the same source-order guard to the
+legacy native emit prefix recovery. Native keyword matching must use the existing
+equal-byte directive-masked matching view, preserving original preprocessing
+directives and continued bodies; the original source still owns override order.
+Do not preprocess arbitrary macro bodies.
+
+Acceptance matrix before implementation: retain exact old malformed prefix
+fixtures for both spellings as explicit whole-overlay QT_CPP_SYNTAX rejection
+with no fabricated Qt emission/endpoint authority. Demonstrate the plain emit
+false positive before the correction. Preserve unshadowed declared/unknown SDK
+emissions, original bytes/BOM/CRLF/spans, and genuine ordinary functions/calls
+named emit or Q_EMIT. Keep an earlier source observation when later shadowing is
+followed only by valid ordinary call syntax; an unsupported later prefix rejects
+the whole source under the existing final Qt gate rather than publishing partial
+overlays. Exercise direct/facade/export and actual manual/watch rejection retention,
+recovery and settled no-change behavior. No assertion is weakened to admit a
+false event: the old bare-event expectation is replaced by stronger rejection
+after recording the conflicting baseline, requirement and official definition.
+
+Native syntax recovery retains its existing persistence owner and generic partial
+input contract. Ordinary complete identifiers cannot acquire SDK roles, and a
+clean compatibility parse cannot authorize an erased unknown prefix.
+
+
+INC-QML-98 first-directive boundary refinement: independent review reproduced a
+valid ordinary function rejected when a UTF8 BOM immediately precedes the first
+define/undef. Recognize only that leading BOM in same-length directive matching
+and source-order override lookup; do not strip arbitrary UTF8 bytes or treat a
+midstream BOM as directive whitespace. Both emission spellings and other Qt
+annotation override ownership must use the same first-directive boundary. Capture
+first-line BOM positive and shadow-prefix negatives before correction; preserve
+original buffers/spans and continued-definition nonauthority. This is the same
+source/directive ownership contract, not preprocessing or a relaxed final gate.
+
+
+### INC-QML-99 — Free-call takeover requires caller ownership
+
+Scope: REQ-QML-003/014/018 and REQ-QML-022-AC02/AC06. The full unrelated-language
+compatibility gate reproduced an actual CUDA regression: a valid ordinary host
+call in a partially parsed kernel-launch body was removed by the new free-call
+owner, which then lacked caller proof to resolve it. Installed-baseline comparison
+retains that edge. Preserve D39's existing generic partial-input result contract
+by transferring call ownership only for a recorded C++ free caller or a validated
+native member/constructor caller. Unknown partial callers keep existing generic
+edges and raw-call transport; they receive no fabricated free-function, namespace
+or native authority. Retire free-label guesses only for callers actually owned.
+
+Acceptance matrix before implementation: retain the exact existing CUDA fixture
+and a neutral ordinary host-call reproduction through direct/facade cold/warm
+paths. Demonstrate the missing edge before correction. Preserve raw transport and
+existing partial status without manufacturing source proof. Recorded normal and
+scoped free callers keep precise resolution; recorded anonymous, conditional,
+ambiguous or unavailable scopes keep conservative deferral/retirement. Determine
+owned callers before namespace early rejection, and avoid newly eager native
+metadata decoding for recorded free callers. Include genuine native member and
+constructor controls, malformed borrowed proof rejection, full/incremental stale
+cleanup, actual publication failure retention and recovery. No CUDA build, SDK,
+kernel execution or broad parser-error relaxation is introduced.
+
+The same full gate exposed a dropped historical `#4854` issue reference in the
+AST-cache version comment. Restore that required upstream explanation alongside
+the unpublished audit schema33 rationale; retain the original assertion. The
+cache version and dependency contract do not change merely to clear the test.
+Final source, wheel, corpus and hosted evidence must be rebound after correction;
+interrupted c3dc corpus proof is incomplete and cannot establish final acceptance.
+
+
+Read-only follow-up of INC-QML-95's three remaining native contexts confirms that
+Qt 6.12 resource generation appends to preexisting output-variable contents. With
+no admitted prior initializer, inherited/cache contents remain unknown; generated
+basenames alone cannot prove source disjointness. Keep the veto rather than
+assuming an empty configured variable. This is an explicit unsupported source
+profile, not a new increment that can be completed by relaxing evidence. Later
+property/filter leaves retain separate dispositions even when compile-only.
+
+
+INC-QML-77 compatibility expectation conformance: the full suite's old ancestry
+fixture mutates definition/status/class identity while retaining a newer resolved
+source-metaobject promise. Exact original-format baseline replay returns an
+unavailable target because that format has no promise; current transport correctly
+raises bounded QT_METADATA before lookup. Preserve all seven corrupted inputs.
+The three contradictory promised-carrier cases must assert controlled rejection
+and unchanged input, while the other four retain their unavailable lookup checks.
+This follows the already implemented strict promise contract and ordinary marker
+regressions; it introduces no INC-QML-100 runtime change and weakens no assertion.
+
+
+### INC-QML-100 — Preserve unpromised legacy metadata absence
+
+Scope: D40, REQ-QML-014/015/018 and REQ-QML-022-AC02/AC06. The full compatibility
+gate found 12 regressions in existing direct/combined/reload legacy cases: False,
+zero, empty-list and empty-string graph metadata had historically represented
+absence without reserved context. The source-profile selector rejected their
+carrier type before determining whether source storage was promised. Exact
+installed-baseline replay accepts all 15 absence cases, including None.
+
+Acceptance matrix before implementation: preserve those original legacy cases and
+normal Graph/DiGraph types with actual nodes/edges, no fabricated marker or input
+mutation. Validate every local-function promise first; valid typed facts with the
+four nonmapping falsy carriers still reject, malformed promises cannot hide behind
+legacy absence, and truthy invalid carriers/invalid dictionary markers retain
+strict rejection. None/missing metadata retains current raw typed autodetection.
+Exercise direct assembly, combined build, JSON load, public rejection retention/
+recovery where affected, and ordinary positive typed serialization/reload. Do not
+coerce promised source metadata before validation or weaken any existing test.
+
+The existing SOURCE_RELATIONSHIPS_INVALID owner and publication boundary remain;
+only validation selection/order is corrected. No storage schema/cache epoch,
+dependency, platform or direction contract changes. Source, installed, complete-
+corpus and hosted gates must be rerun/rebound after the implementation.
+
+
+INC-QML-73 source-owner eligibility conformance: an older ambiguity fixture copies
+a now-typed free-function proof but changes its node ID to an invalid suffix.
+Current exact source-ID validation correctly excludes that peer; independently
+valid prefixed IDs still compete and withhold source ownership. Preserve the old
+suffix as an invalid-peer/no-extra-authority control, use two eligible peers for
+the original ambiguity assertion, and retain legacy no-proof ambiguity coverage.
+All borrowed inputs remain unchanged; no native class/provider authority follows
+from literal source containment. This is fixture eligibility correction under the
+existing precise-source contract, not an ambiguity relaxation or new runtime
+increment. Full-run evidence retains the original failing case before correction.
+
+
+INC-QML-67 projection expectation conformance: an older membership fixture now
+contains source-export ownership promises introduced by this increment. Moving
+only the parent module's source file contradicts the module/source/export same-
+file chain and must raise bounded QML_METADATA before projection. Retain the
+exact corruption with unchanged-input/no-published-membership assertions; the
+other ten membership parameters keep unavailable/no-edge checks. Existing export
+integrity tests already require this rejection. This is test-only contract
+conformance, not a new runtime increment or a weaker membership requirement.
+
+
+### INC-QML-101 — Member provenance uses allocated declaration identity
+
+Scope: REQ-QML-003/008/014/017/018 and REQ-QML-022-AC02/AC03/AC06. Exact LF/CRLF
+full-suite failures expose a preexisting producer gap: a class name colliding with
+its header-file ID receives a salted canonical identity, but the member augmenter
+reconstructs an unsalted identity and fails to stamp the actual method. INC-QML-77
+correctly withholds the resulting unproved native binding. Original-format
+baseline resolved it without member proof; do not relax the stricter guard.
+
+Acceptance matrix before implementation: Engine passes its already allocated
+per-unit CppIdentity to the member augmenter, matching the constructor boundary.
+Retain optional standalone construction for existing callers. Preserve the exact
+existing forward/body, file/class-collision and BOM/LF/CRLF fixtures; assert actual
+cpp_member source proof on the allocated node and one valid native QML endpoint.
+Cover ordinary noncolliding, namespace/overload/constructor controls, callback
+data noncallability, source/header provenance, direct/facade/cold/warm/export/load,
+full/incremental retarget/stale cleanup, rejected/failed publication retention,
+recovery and no-change settling. Do not guess an unsalted node, duplicate mutable
+identity owners, invent a member proof or grant authority from a label alone.
+
+No cache/storage schema, dependency, platform or analyzed-runtime execution
+changes are introduced. Existing unavailable diagnostics remain correct when
+proof is absent; this correction supplies the genuine producer proof. Measure
+source/test sizes and retain the engine's documented ceiling before the narrow
+hook, then rebind the final package, full source, corpus and hosted evidence.
+
+
+INC-QML-99 caller/target uncertainty distinction: characterization confirms that
+a recorded conditional or duplicate caller can still provide its actual lexical
+namespace for an observed source call. Its uncertainty flags do not imply that
+every unconditional unique target is unavailable. Keep such callers owned and
+resolved edges in precise source-owner context, without a legacy/global guess;
+conditional/ambiguous target definitions remain rejected. Anonymous or unavailable
+caller namespaces still cannot authorize a guessed edge. Tests must preserve this
+existing distinction rather than add a new blanket conditional-caller rejection.

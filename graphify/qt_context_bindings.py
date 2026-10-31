@@ -28,8 +28,8 @@ def _binding(site, item, component, provider, evidence):
                 "status": "resolved", "bridge_direction": "cpp_to_qml"})}}
 
 
-def resolve_context_bindings(results, index, all_nodes, all_edges):
-    native, loads = QtEventIndex(all_nodes), {}
+def resolve_context_bindings(results, index, all_nodes, all_edges, *, unknown_metaobject_ownership=()):
+    native, loads = QtEventIndex(all_nodes, all_edges, unknown_metaobject_ownership=unknown_metaobject_ownership), {}
     declared_types = DeclaredProviderIndex(all_nodes)
     for result in results:
         for site in result.get("nodes", []) if result else []:

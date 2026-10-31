@@ -27,7 +27,8 @@ def _failure(result, path, root, error):
     code = error.code if isinstance(error, QtCppError) else "QT_CPP_LIMIT"
     result.setdefault("qt_failures", []).append({"code": code, "source_file": name})
     result.setdefault("diagnostics", []).append({"code": code, "source_file": name, "severity": "error",
-        "owner": "qt_cpp", "message": "Qt source analysis could not complete", "recovery": "Correct source and retry; prior graph is preserved."})
+        "owner": "cpp_test_context" if code == "QT_CPP_CONTEXT" else "qt_cpp", "message": "Qt source analysis could not complete", "recovery": "Correct source and retry; prior graph is preserved.",
+        **({"span": error.span} if isinstance(error, QtCppError) and error.span else {})})
 
 
 def _qt_owner(mapping, owner):
@@ -124,7 +125,7 @@ def _emission(facts, unit, mapping, call, types, identity):
               conditional=conditional_at(unit, call["start_byte"]), status="pending", reason="")
 
 
-def collect_qt_cpp_events(paths, per_file, *, root: Path, accepted_nodes=None, accepted_edges=None):
+def collect_qt_cpp_events(paths, per_file, *, root: Path, accepted_nodes=None, accepted_edges=None, qt_test_contexts=None):
     """Enrich admitted results after canonicalization; never regenerate C++ definitions."""
     nodes = accepted_nodes if accepted_nodes is not None else [n for r in per_file if r for n in r.get("nodes", [])]
     edges = accepted_edges if accepted_edges is not None else [e for r in per_file if r for e in r.get("edges", [])]
@@ -135,7 +136,7 @@ def collect_qt_cpp_events(paths, per_file, *, root: Path, accepted_nodes=None, a
         try:
             if not is_qt_cpp_source(path):
                 continue
-            unit = read_cpp(Path(path), Path(root))
+            unit = read_cpp(Path(path), Path(root), qt_test_context=qt_test_contexts.for_path(path) if qt_test_contexts else None)
             mapping, facts = map_cpp(unit, nodes, edges, root=Path(root)), QtFacts(unit)
             mapping.bind_classes([{"node_id": md.get("class_id", ""), "qualified_name": md.get("class_name", "")}
                                   for node in nodes if (md := qt_metadata(node)).get("kind") == "class"])

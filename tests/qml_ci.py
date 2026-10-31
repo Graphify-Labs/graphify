@@ -40,11 +40,14 @@ def main():
     if "--artifact-only" not in sys.argv:
         run("uv", "pip", "install", "--python", interpreter(extra), str(wheel) + "[terraform]")
     environment = dict(os.environ, GRAPHIFY_QML_TEST_WHEEL=str(wheel), PYTHONUTF8="1")
-    # Joint upstream/Qt boundaries belong to the same native source profile;
-    # Linux's all-extras job owns them while this lane keeps isolated smokes.
+    # Native source lanes exercise the shared C++/C# declaration and caller
+    # boundaries as well as Qt. Their grammars are already core dependencies;
+    # Linux still owns the full suite and artifact-only keeps isolated smokes.
     tests = (["tests/test_qml_wheel_artifact.py"] if "--artifact-only" in sys.argv
              else sorted(str(path.relative_to(root)) for path in (root / "tests").glob("test_*.py")
-                         if path.name.startswith(("test_qml_", "test_qt_", "test_upstream_qt_"))))
+                         if path.name.startswith(("test_qml_", "test_qt_", "test_upstream_qt_",
+                                                  "test_cpp_", "test_csharp_", "test_field_call_",
+                                                  "test_source_relationship_"))))
     run(interpreter(extra), "-X", "utf8", "-m", "pytest", *tests, "-q", "-ra", "--tb=short",
         cwd=root, env=environment)
 

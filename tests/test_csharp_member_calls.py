@@ -725,15 +725,21 @@ def test_static_local_function_param_survives_out_var_reuse(tmp_path):
         )
     })
     outer = _find(r, ".Outer()", "_r_outer")
+    # Source-local callables now own their physical body calls. Preserve the
+    # original receiver/confidence regression while rejecting outer attribution.
+    inner = next(node["id"] for node in r["nodes"]
+                 if node["label"] == "Inner()" and node.get("metadata", {}).get("csharp_local_function"))
     alpha = _find(r, ".Alpha()", "target2")
     beta = _find(r, ".Beta()", "target2")
     gamma = _find(r, ".Gamma()", "target2")
-    assert (outer, alpha) in calls, \
+    assert (inner, alpha) in calls, \
         "typed local-function param must survive a same-named out-var elsewhere"
-    assert (outer, beta) in calls
+    assert (inner, beta) in calls
+    assert (outer, inner) in calls
     for tgt in (alpha, beta):
+        assert (outer, tgt) not in calls
         edge = next(e for e in r["edges"] if e["relation"] == "calls"
-                    and e["source"] == outer and e["target"] == tgt)
+                    and e["source"] == inner and e["target"] == tgt)
         assert edge["confidence"] == "INFERRED"
     assert (outer, gamma) not in calls, \
         "the out-var receiver itself stays untypable — no guessed edge, and no " \

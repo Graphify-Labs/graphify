@@ -296,6 +296,14 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # or persistence can obscure it. Ordinary graphs avoid the extra node view.
     retained_imports = (read_import_retention(node_link_view(G), is_placeholder=_is_external_stub)
                         if FIELD in G.graph else frozenset())
+    from graphify.source_relationships import is_source_graph, source_profile, storage_key
+    try:
+        source_mode = source_profile(G.nodes(data=True), G.graph)
+        if source_mode and not is_source_graph(G):
+            raise ValueError("SOURCE_RELATIONSHIPS_INVALID: source profile requires multigraph storage")
+    except ValueError as exc:
+        print(f"[graphify] error: {exc}; JSON was not written.", file=sys.stderr)
+        return False
     take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
@@ -448,6 +456,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         link.pop("_src", None)
         link.pop("_tgt", None)
         link["source"], link["target"] = source, target
+        if source_mode:
+            link["key"] = storage_key(source, target, link.get("relation"))
     # Canonicalize the key order WITHIN each node/link dict. node_link_data always
     # appends the node key (`id`) at the end, so a node whose `id` was an inline
     # attribute on a cold build (position varies) lands last after a read-rebuild
@@ -1307,21 +1317,26 @@ def to_canvas(
                 "height": 60,
             })
 
-    # Generate edges - only between nodes both in canvas, cap at 200 highest-weight
-    all_edges_weighted: list[tuple[float, str, str, str]] = []
+    # Source relationships need direction/relation IDs; a pair-only canvas ID
+    # would overwrite containment with calls. Legacy IDs stay unchanged.
+    from graphify.source_relationships import logical_endpoints as source_endpoints, source_profile, storage_key
+    source_edges = source_profile(G.nodes(data=True), G.graph)
+    all_edges_weighted: list[tuple[float, str, str, str, str]] = []
     for u, v, edata in G.edges(data=True):
-        u, v = edata.get("_src", u), edata.get("_tgt", v)
+        u, v = (source_endpoints(G, u, v, edata) if source_edges
+                else (edata.get("_src", u), edata.get("_tgt", v)))
         if u in all_canvas_nodes and v in all_canvas_nodes:
             weight = edata.get("weight", 1.0)
             relation = edata.get("relation", "")
             conf = edata.get("confidence", "EXTRACTED")
             label = f"{relation} [{conf}]" if relation else f"[{conf}]"
-            all_edges_weighted.append((weight, u, v, label))
+            identity = f"e_{storage_key(u, v, relation)}" if source_edges else f"e_{u}_{v}"
+            all_edges_weighted.append((weight, u, v, label, identity))
 
     all_edges_weighted.sort(key=lambda x: -x[0])
-    for weight, u, v, label in all_edges_weighted[:200]:
+    for weight, u, v, label, identity in all_edges_weighted[:200]:
         canvas_edges.append({
-            "id": f"e_{u}_{v}",
+            "id": identity,
             "fromNode": f"n_{u}",
             "toNode": f"n_{v}",
             "label": label,

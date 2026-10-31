@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from graphify.extractors.qml_source_identity import relative_qml_source
+from graphify.extractors.qml_source_modifiers import recover_property_modifiers, valid_property_modifiers
 
 
 class QmlInputError(Exception):
@@ -22,6 +23,18 @@ def load_parser():
         raise QmlInputError("QML_PARSER_LOAD", "QML parser failed to load; reinstall the pinned qml extra") from exc
 
 
+def _validate_tree_bounds(root):
+    """The existing AST budget precedes every compatibility/semantic traversal."""
+    pending = [(root, 0)]
+    count = 0
+    while pending:
+        node, depth = pending.pop()
+        count += 1
+        if count > 100_000 or depth > 256:
+            raise QmlInputError("QML_LIMIT", "QML AST exceeds the supported size/depth bound")
+        pending.extend((child, depth + 1) for child in node.named_children)
+
+
 def parse_source(path: Path):
     try:
         if path.stat().st_size > 5_000_000:
@@ -34,7 +47,10 @@ def parse_source(path: Path):
     if len(source) > 5_000_000:
         raise QmlInputError("QML_LIMIT", "QML input exceeds 5 MB")
     try:
-        tree = load_parser().parse(source)
+        parser = load_parser()
+        tree = parser.parse(source)
+        _validate_tree_bounds(tree.root_node)
+        tree = recover_property_modifiers(source, parser, tree, validate=_validate_tree_bounds)
     except QmlInputError:
         raise
     except Exception as exc:
@@ -44,17 +60,11 @@ def parse_source(path: Path):
         return source, tree.root_node, True
     if tree.root_node.has_error:
         raise QmlInputError("QML_SYNTAX", "QML syntax is incomplete or invalid; fix source before publication")
+    if not valid_property_modifiers(tree.root_node, source):
+        raise QmlInputError("QML_SYNTAX", "QML property modifier combination is invalid; correct modifiers before publication")
     if any(child.type not in {"comment", "ui_pragma", "ui_import", "ui_object_definition"}
            for child in tree.root_node.named_children):
         raise QmlInputError("QML_UNSUPPORTED", "Unsupported top-level QML syntax in this profile")
-    pending = [(tree.root_node, 0)]
-    count = 0
-    while pending:
-        node, depth = pending.pop()
-        count += 1
-        if count > 100_000 or depth > 256:
-            raise QmlInputError("QML_LIMIT", "QML AST exceeds the supported size/depth bound")
-        pending.extend((child, depth + 1) for child in node.named_children)
     return source, tree.root_node, False
 
 

@@ -5,6 +5,7 @@ import re
 
 from graphify.extractors.qt_cpp_syntax import walk
 from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
+from graphify.extractors.qt_cpp_test_macros import opaque_test_declaration
 
 
 def simple_reference(value):
@@ -64,6 +65,11 @@ def variables_at(unit, mapping, position, *, type_scope=None):
         if syntax.type == "declaration":
             name, value = _name(unit, syntax.child_by_field_name("declarator")), unit.field(syntax, "type")
             if not name:
+                continue
+            # A source-only QtTest column binder has an opaque parse-view type;
+            # its original macro prefix cannot alias a provider/SDK class.
+            if opaque_test_declaration(unit, syntax):
+                variables[name] = ""
                 continue
             declared = type_name(value)
             if declared == "auto":

@@ -11,6 +11,9 @@ from graphify.extractors.base import (
     _read_source_bytes,
     _read_text,
 )
+from graphify.extractors.csharp_fields import FieldOccurrences, field_declarations as _csharp_field_declarations
+from graphify.extractors.csharp_indexers import IndexerOccurrences, describe_indexer
+from graphify.extractors.field_call_policy import FieldCallPolicy
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
@@ -270,7 +273,7 @@ def _csharp_pick_overload(overloads: list[dict], argc: int | None) -> dict | Non
 
 
 def _csharp_pre_scan_name_collisions(
-    root_node, source: bytes, stem: str
+    root_node, source: bytes, stem: str, *, member_reservations=None,
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Pre-scan a C# file for declared names that collapse to one node id.
 
@@ -336,6 +339,11 @@ def _csharp_pre_scan_name_collisions(
                 name = _read_text(name_node, source) if name_node is not None else ""
                 if name:
                     member_names.setdefault(_make_id(type_nid, name), set()).add(name)
+                    if member_reservations is not None:
+                        member_reservations.setdefault(type_nid, set()).add(name)
+            elif c.type == "field_declaration":
+                for name, _, _ in _csharp_field_declarations(c, source):
+                    member_names.setdefault(_make_id(type_nid, name), set()).add(name)
             elif c.type in ("declaration_list", "enum_member_declaration_list") or (
                 c.type.startswith("preproc_")
             ):
@@ -362,6 +370,7 @@ _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
     "record_declaration",
     "struct_declaration",
     "method_declaration",
+    "local_function_statement",
 })
 
 def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
@@ -410,11 +419,23 @@ def _csharp_collect_type_refs(
         if name and name not in skip:
             out.append((name, "generic_arg" if generic else "type", False, ""))
         return
-    if t == "qualified_name":
-        prefix, _, text = _read_text(node, source).rpartition(".")
-        text = text.split("<", 1)[0]
-        if text and text not in skip:
-            out.append((text, "generic_arg" if generic else "type", True, prefix))
+    if t in {"qualified_name", "alias_qualified_name"}:
+        # AST names own qualified leaves; dots inside type arguments cannot
+        # replace the container. Ordinary namespace identifiers are not types.
+        alias = node.child_by_field_name("alias") if t == "alias_qualified_name" else None
+        if alias is not None and _read_text(alias, source) != "global":
+            return  # Extern/using-alias `::` identity is a separate profile.
+        info = _read_csharp_type_name(node, source)
+        if info and info[0]:
+            out.append((info[0], "generic_arg" if generic else "type", info[1], info[2]))
+        pending = list(reversed(node.named_children))
+        while pending:
+            child = pending.pop()
+            if child.type == "type_argument_list":
+                for arg in child.named_children:
+                    _csharp_collect_type_refs(arg, source, True, out, skip)
+            else:
+                pending.extend(reversed(child.named_children))
         return
     if t == "generic_name":
         name_child = node.child_by_field_name("name")
@@ -3394,11 +3415,19 @@ def _csharp_method_receiver_types(
         # `name[]` carries the element type for `name[i].M()` (#4246); every
         # binding shadows it too, so an untyped local still hides a field's.
         for key, value in ((name, type_name), (name + "[]", elem_type)):
-            if field_types.get(key) not in (None, value):
+            if field_types.get(key) not in (None, "", value):
                 field_poisoned.add(key)
             bindings.setdefault(key, []).append(
                 (scope_node.start_byte, scope_node.end_byte, value)
             )
+
+    # A lexical type parameter names no concrete class, even when an unrelated
+    # source declaration shares its spelling. Preserve qualified concrete types.
+    def receiver_type(type_node, source):
+        info = _read_csharp_type_name(type_node, source)
+        if info and not info[1] and info[0] in _csharp_type_parameters_in_scope(type_node, source):
+            return None
+        return _csharp_receiver_type_name(type_node, source)
 
     def bind_parameter(param, scope_node) -> None:
         name_node = param.child_by_field_name("name")
@@ -3406,7 +3435,7 @@ def _csharp_method_receiver_types(
             ptype = param.child_by_field_name("type")
             bind(
                 _read_text(name_node, source),
-                _csharp_receiver_type_name(ptype, source),
+                receiver_type(ptype, source),
                 scope_node,
                 _csharp_element_type_name(ptype, source),
             )
@@ -3463,7 +3492,7 @@ def _csharp_method_receiver_types(
                 (c for c in node.children if c.type == "variable_declaration"), None
             )
             if vd is not None:
-                declared = _csharp_receiver_type_name(
+                declared = receiver_type(
                     vd.child_by_field_name("type"), source
                 )
                 declared_elem = _csharp_element_type_name(
@@ -3483,7 +3512,7 @@ def _csharp_method_receiver_types(
                         # `var v = new T()` — recover T from the object-creation.
                         for g in declarator.children:
                             if g.type == "object_creation_expression":
-                                type_name = _csharp_receiver_type_name(
+                                type_name = receiver_type(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
@@ -3499,7 +3528,7 @@ def _csharp_method_receiver_types(
             # property it iterates (resolved after the walk, below).
             left = node.child_by_field_name("left")
             if left is not None and left.type == "identifier":
-                loop_type = _csharp_receiver_type_name(
+                loop_type = receiver_type(
                     node.child_by_field_name("type"), source
                 )
                 loop_source = (
@@ -3523,7 +3552,7 @@ def _csharp_method_receiver_types(
             if name_node is not None and name_node.type == "identifier":
                 bind(
                     _read_text(name_node, source),
-                    _csharp_receiver_type_name(
+                    receiver_type(
                         node.child_by_field_name("type"), source
                     ),
                     scope,
@@ -5349,12 +5378,18 @@ def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
     """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
     if node is None:
         return None
+    alias = node.child_by_field_name("alias") if node.type == "alias_qualified_name" else None
+    if alias is not None and _read_text(alias, source) == "global":
+        # Only the language's built-in root qualifier lends this identity;
+        # arbitrary aliases retain their existing separate resolution profile.
+        actual = _read_csharp_type_name(node.child_by_field_name("name"), source)
+        return (actual[0], True, "global::" + actual[2]) if actual else None
     if node.type in ("identifier", "predefined_type"):
         return (_read_text(node, source), False, "")
     if node.type == "qualified_name":
-        prefix, _, tail = _read_text(node, source).rpartition(".")
-        tail = tail.split("<", 1)[0]
-        return (tail, True, prefix)
+        actual = _read_csharp_type_name(node.child_by_field_name("name"), source)
+        qualifier = node.child_by_field_name("qualifier")
+        return (actual[0], True, _read_text(qualifier, source)) if actual and qualifier is not None else None
     if node.type == "generic_name":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
@@ -6122,13 +6157,15 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
 
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
-    scan_root: Path | None = None,
+    scan_root: Path | None = None, cpp_original_source: bytes | None = None,
 ) -> dict:
     """Generic AST extractor driven by LanguageConfig.
 
     ``source_override`` parses the given bytes instead of reading ``path``, while
     still keying nodes/edges off ``path``. Lets container formats (e.g. Vue SFCs)
     mask the wrapper and parse just the embedded ``<script>``.
+    ``cpp_original_source`` supplies aligned declaration/signature bytes only;
+    local/type inference continues to consume the normalized parse view.
     """
     try:
         mod = importlib.import_module(config.ts_module)
@@ -6157,6 +6194,9 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = _read_source_bytes(path) if source_override is None else source_override
+        if config.ts_module == "tree_sitter_cpp":
+            from graphify.extractors.cpp_source_views import declaration_source
+            cpp_source = declaration_source(source, cpp_original_source)
         # In C and C++, if the .h file does not end with a newline '\n' an error
         # is throwed even if the file is valid. In order to avoid this, a new line
         # char is added only if the original file does not end with it.
@@ -6172,9 +6212,17 @@ def _extract_generic(
     # Exact Qt/C++ identities coexist with upstream GPU qualifier filtering;
     # dialect hints never replace source-backed declaration ownership.
     cpp_identity = None
+    cpp_functions = None
     if config.ts_module == "tree_sitter_cpp":
+        from graphify.extractors.cpp_declarators import (
+            declarator_metadata, is_destructor_prototype, member_declarator,
+        )
         from graphify.extractors.cpp_identity import CppIdentity
+        from graphify.extractors.cpp_functions import CppFunctions
+        from graphify.extractors.cpp_call_sites import call_target as cpp_call_target
         cpp_identity = CppIdentity(root, source, stem)
+        cpp_functions = CppFunctions(root, cpp_source, stem, alias_names=_cpp_alias_names,
+                                     reserved_ids=(_make_id(str(path)), *(record["id"] for record in cpp_identity.records.values())))
     # GPU C++ dialects (Metal .metal, CUDA .cu/.cuh) route through the C++
     # extractor, but their address-space/execution-space/function qualifiers are
     # not C++ keywords, so tree-sitter-cpp misparses a leading `kernel` /
@@ -6293,11 +6341,17 @@ def _extract_generic(
     csharp_interface_names: set[str] = set()
     csharp_type_groups: dict[str, set[str]] = {}
     csharp_member_groups: dict[str, set[str]] = {}
+    csharp_member_reservations = {}
+    csharp_lexical = None
     if config.ts_module == "tree_sitter_c_sharp":
+        from graphify.extractors.csharp_lexical_calls import CSharpLexicalCalls
+        csharp_lexical = CSharpLexicalCalls(root, source, stem, signature=_csharp_method_signature)
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
         csharp_type_groups, csharp_member_groups = _csharp_pre_scan_name_collisions(
-            root, source, stem
+            root, source, stem, member_reservations=csharp_member_reservations,
         )
+    csharp_field_occurrences = FieldOccurrences(reserved_names=csharp_member_reservations)
+    csharp_indexer_occurrences = IndexerOccurrences()
 
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
@@ -7443,6 +7497,7 @@ def _extract_generic(
             # A C# constructor has no node of its own, so its body was never
             # walked for calls. Attribute them to the declaring type (#4246).
             ctor_body = node.child_by_field_name("body")
+            csharp_lexical.bind(node, parent_class_nid, parent_class_nid)
             if ctor_body is not None:
                 csharp_method_scopes[id(ctor_body)] = (node, parent_class_nid)
                 function_bodies.append((parent_class_nid, ctor_body))
@@ -7450,6 +7505,17 @@ def _extract_generic(
         if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "field_declaration"
                 and parent_class_nid):
+            # Declaration ownership is independent of optional receiver-type
+            # inference: primitive and generic-parameter fields still exist.
+            for name, syntax, metadata in _csharp_field_declarations(node, source):
+                field_nid = _underscore_salted_nid(
+                    _make_id(parent_class_nid, name), name, csharp_member_groups,
+                )
+                field_nid, occurrence = csharp_field_occurrences.identify(field_nid, parent_class_nid, name, syntax)
+                line = syntax.start_point.row + 1
+                metadata["duplicate_declaration"] = occurrence > 0
+                add_node(field_nid, name, line, metadata={"csharp_member": metadata})
+                add_edge(parent_class_nid, field_nid, "defines", line, context="field")
             type_node = node.child_by_field_name("type")
             if type_node is None:
                 for child in node.children:
@@ -7517,6 +7583,32 @@ def _extract_generic(
                                  line, context=ctx, metadata=metadata)
             return
 
+        if config.ts_module == "tree_sitter_c_sharp" and t == "indexer_declaration" and parent_class_nid:
+            # Explicit indexers are data declarations. Keep their actual source
+            # roles/types without creating receiver bindings or runtime accessors.
+            descriptor = describe_indexer(node, source)
+            if descriptor is not None:
+                member, occurrence = csharp_indexer_occurrences.identify(parent_class_nid, descriptor, node)
+                line = node.start_point.row + 1
+                metadata = {**descriptor.metadata, "duplicate_declaration": occurrence > 0}
+                add_node(member, descriptor.label, line, metadata={"csharp_member": metadata})
+                add_edge(parent_class_nid, member, "defines", line, context="field")
+                for type_node, context in descriptor.type_nodes:
+                    refs = []
+                    _csharp_collect_type_refs(type_node, source, False, refs)
+                    for name, role, qualified, qualifier in refs:
+                        target = ensure_named_node(name, line)
+                        if target == parent_class_nid:
+                            continue
+                        fields = {"ref_token": name}
+                        if qualified:
+                            fields["qualified"] = True
+                        if qualifier:
+                            fields["ref_qualifier"] = qualifier
+                        add_edge(parent_class_nid, target, "references", line,
+                                 context="generic_arg" if role == "generic_arg" else context, metadata=fields)
+            return
+
         if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "property_declaration"
                 and parent_class_nid):
@@ -7528,12 +7620,8 @@ def _extract_generic(
             # field. Use _csharp_collect_type_refs (like the Java/PHP/Kotlin
             # siblings) so `List<Widget>` yields both the List field ref and the
             # Widget generic_arg ref.
-            # A property becomes a node, the way a C++ data member does. Fields
-            # stay out: the id recipe casefolds and strips leading underscores, so
-            # `_count` and `Count` normalize to the same id, and emitting both
-            # would hand the node to whichever the parser reached first — in
-            # practice the private backing field, hiding the public member behind
-            # it. See #3006 for the follow-up.
+            # Properties and fields use the same pre-scanned collision groups;
+            # backing-field spelling cannot take a property's source identity.
             prop_node_name = node.child_by_field_name("name")
             if prop_node_name is not None:
                 property_name = _read_text(prop_node_name, source)
@@ -7554,6 +7642,13 @@ def _extract_generic(
                 # `public Widget Main { get; set; }` types Main as Widget.
                 prop_name_node = node.child_by_field_name("name")
                 prop_type = _csharp_receiver_type_name(type_node, source)
+                prop_info = _read_csharp_type_name(type_node, source)
+                if prop_info and not prop_info[1] and prop_info[0] in _csharp_type_parameters_in_scope(type_node, source):
+                    # A declared generic property still shadows inherited data;
+                    # absence must not let a base field lend its concrete type.
+                    prop_type = None
+                    if prop_name_node is not None:
+                        csharp_field_types.setdefault(parent_class_nid, {})[_read_text(prop_name_node, source)] = ""
                 if prop_name_node is not None and prop_type:
                     csharp_field_types.setdefault(parent_class_nid, {})[
                         _read_text(prop_name_node, source)
@@ -7830,18 +7925,13 @@ def _extract_generic(
                         add_edge(parent_class_nid, target_nid, "requires", line)
             return
 
-        if (config.ts_module == "tree_sitter_cpp"
-                and t == "field_declaration"
-                and parent_class_nid):
-            # Skip method prototypes (field_declaration with a function_declarator
-            # is a member-function declaration, not a data member).
+        if (config.ts_module == "tree_sitter_cpp" and parent_class_nid
+                and (t == "field_declaration" or is_destructor_prototype(node, source))):
+            # Classify each name's nearest binding. An outer function wrapper
+            # can declare a callback field rather than a member function.
             decls = list(node.children_by_field_name("declarator"))
-            is_method = any(
-                d.type == "function_declarator"
-                or (d.type in ("pointer_declarator", "reference_declarator")
-                    and any(c.type == "function_declarator" for c in d.children))
-                for d in decls
-            )
+            members = [(decl, None if node.has_error else member_declarator(decl, source)) for decl in decls]
+            has_field = any(shape is not None and not shape[1] for _, shape in members)
             type_node = node.child_by_field_name("type")
             # A nested type (`class Inner { … };` inside a class body) is a
             # field_declaration whose `type` field IS the class_specifier, so
@@ -7863,7 +7953,7 @@ def _extract_generic(
             )
             if is_nested_type:
                 walk(type_node, parent_class_nid)
-            if not is_method and not is_nested_type:
+            if has_field and not is_nested_type:
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
@@ -7875,38 +7965,22 @@ def _extract_generic(
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references",
                                      line, context=ctx)
-            # Emit a node for each declarator. Use children_by_field_name so we
-            # only visit declarator children, not the type node (which would give
-            # us the type name, not the field name). Handles int x, y; via
-            # multiple declarator fields and static const int MAX = 100; via the
-            # init_declarator → field_identifier recursion in _get_cpp_func_name.
-            #
-            # A declarator that is a function_declarator is a member-FUNCTION
-            # declaration — a prototype, a `virtual f();`, or a pure virtual
-            # `virtual f() = 0;` — not a data member. It was being emitted as a
-            # `defines` field (bare label, no `()`), so a pure-virtual interface
-            # class had no method nodes and an override/call had nothing to bind
-            # to. Emit it with the same shape the function_definition branch uses
-            # (a `.name()` label, a `method` edge, callable) so the declaration
-            # and its out-of-line/overriding definition share one node — parity
-            # with the Java/TS/Scala abstract-method contract.
-            for decl in decls:
-                name = _get_cpp_func_name(decl, source)
-                if not name:
+            # Literal declaration spans survive cache/export as source facts;
+            # they do not authorize a QObject member or dynamic callback target.
+            for decl, shape in members:
+                if shape is None:
                     continue
+                name, decl_is_method = shape
                 line = decl.start_point[0] + 1
                 member_nid = _make_id(parent_class_nid, name)
-                decl_is_method = (
-                    decl.type == "function_declarator"
-                    or (decl.type in ("pointer_declarator", "reference_declarator")
-                        and any(c.type == "function_declarator" for c in decl.children))
-                )
+                kind = "destructor" if name.startswith("~") else "method" if decl_is_method else "field"
+                metadata = declarator_metadata(decl, kind)
                 if decl_is_method:
-                    add_node(member_nid, f".{name}()", line)
+                    add_node(member_nid, f".{name}()", line, metadata=metadata)
                     add_edge(parent_class_nid, member_nid, "method", line)
                     callable_def_nids.add(member_nid)
                 else:
-                    add_node(member_nid, name, line)
+                    add_node(member_nid, name, line, metadata=metadata)
                     add_edge(parent_class_nid, member_nid, "defines", line, context="field")
             return
 
@@ -7974,10 +8048,11 @@ def _extract_generic(
                 if config.sanitize_symbol_name_fn is not None
                 else func_name
             )
+            local_record = csharp_lexical.records.get(node.id) if csharp_lexical is not None else None
             # A name that normalizes to nothing collapses `_make_id(prefix, name)`
             # onto the (absolute-path-derived) prefix, leaking the scan path and
             # colliding with the file/class node (#1899). No graph signal; skip.
-            if not normalize_id(sanitized_name):
+            if not normalize_id(sanitized_name) and local_record is None:
                 return
 
             line = node.start_point[0] + 1
@@ -7999,12 +8074,17 @@ def _extract_generic(
                     ruby_method_kind = "instance"
                 else:
                     ruby_method_kind = "ambiguous"
-            if parent_class_nid:
+            if local_record is not None:
+                parent_class_nid = parent_class_nid or csharp_lexical.parent_class(node)
+                preferred, enclosing, metadata = csharp_lexical.describe(node, file_nid)
+                func_nid = decl_node(preferred, func_name, "localfn", f"{func_name}()", line, metadata=metadata)
+                add_edge(enclosing, func_nid, "contains", line, context="csharp_local_function")
+            elif parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
                 # C++ overload identity belongs to the original constructor
                 # signature before generic deduplication loses occurrence spans.
                 if cpp_identity is not None:
-                    func_nid = cpp_identity.constructor(node, sanitized_name, parent_class_nid)
+                    func_nid = cpp_identity.constructor(node, sanitized_name, parent_class_nid, signature_source=cpp_source)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -8071,7 +8151,8 @@ def _extract_generic(
                 func_nid = _make_id(stem, sanitized_name)
                 if cpp_identity is not None:
                     from graphify.extractors.cpp_identity import qualified_function_id
-                    func_nid = qualified_function_id(stem, node, sanitized_name, source)
+                    free_id = cpp_functions.identity(node) if cpp_functions is not None else None
+                    func_nid = free_id or qualified_function_id(stem, node, sanitized_name, cpp_source)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -8079,6 +8160,10 @@ def _extract_generic(
                 func_nid = decl_node(func_nid, sanitized_name, "fn",
                                      f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
+            if cpp_functions is not None:
+                cpp_functions.bind(node, func_nid)
+            if csharp_lexical is not None:
+                csharp_lexical.bind(node, func_nid, parent_class_nid)
             callable_def_nids.add(func_nid)  # function / method def is callable
             if config.ts_module == "tree_sitter_python":
                 local_bound_names[func_nid] = _python_local_bound_names(node, source)
@@ -8129,7 +8214,7 @@ def _extract_generic(
                                     metadata["ref_qualifier"] = qualifier
                                 add_edge(func_nid, target_nid, "references", line,
                                          context=ctx, metadata=metadata)
-                return_node = node.child_by_field_name("returns")
+                return_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
                 if return_node is not None:
                     refs: list[tuple[str, str, bool, str]] = []
                     _csharp_collect_type_refs(
@@ -8629,6 +8714,9 @@ def _extract_generic(
                         if anon_body is not None:
                             for child in anon_body.children:
                                 walk(child, parent_class_nid=obj_nid)
+            if csharp_lexical is not None:
+                for local in csharp_lexical.children(node):
+                    walk(local, parent_class_nid=parent_class_nid)
             return
 
         # JS/TS arrow functions and C# namespaces — language-specific extra handling
@@ -8870,11 +8958,16 @@ def _extract_generic(
     _case_of_targets = {
         e.get("target") for e in edges if e.get("relation") == "case_of"
     }
+    if config.ts_module == "tree_sitter_c_sharp":
+        from graphify.extractors.csharp_field_uncertainty import invalidate_field_receiver_types
+        invalidate_field_receiver_types(nodes, edges, csharp_field_types)
+    field_calls = FieldCallPolicy(nodes, edges, class_ids=callable_class_nids)
+    local_csharp_ids = csharp_lexical.local_ids() if csharp_lexical is not None else ()
     for n in nodes:
         nid_to_sf[n["id"]] = str(n.get("source_file") or "")
         if n.get("type") == "namespace":
             continue
-        if n["id"] in _case_of_targets:
+        if n["id"] in _case_of_targets or n["id"] in field_calls.storage or n["id"] in local_csharp_ids:
             continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
@@ -8965,6 +9058,8 @@ def _extract_generic(
                 # two nested classes of one name are one node: which class lies around it is unknown
                 if class_parent.setdefault(e["target"], e["source"]) != e["source"]:
                     class_parent[e["target"]] = ""
+        if csharp_lexical is not None:
+            method_owner.update(csharp_lexical.class_owners())
         if lexical_calls:
             lexical_bases = _lexical_class_bases(
                 edges, _LEXICAL_CALL_LANGUAGES[config.ts_module], label_by_nid, nid_to_sf,
@@ -8983,6 +9078,8 @@ def _extract_generic(
                 continue
             seen.add(cls)
             for _name, _tname in tables.get(cls, {}).items():
+                if tables is csharp_field_types and merged.get(_name.split("[", 1)[0].split("{", 1)[0]) == "":
+                    continue
                 merged.setdefault(_name, _tname)
             queue.extend(_local_bases.get(cls, []))
         return merged
@@ -9713,12 +9810,9 @@ def _extract_generic(
                         # `Foo::bar()`: the scope (`Foo`) is the receiver type named
                         # explicitly in source (EXTRACTED), the name is the callee.
                         is_member_call = True
-                        name = func_node.child_by_field_name("name")
-                        if name:
-                            callee_name = _read_text(name, source)
-                        scope = func_node.child_by_field_name("scope")
-                        if scope is not None:
-                            member_receiver = _read_text(scope, source)
+                        target = cpp_call_target(node, source)
+                        if target is not None:
+                            callee_name, member_receiver = target[:2]
             elif config.ts_module == "tree_sitter_java":
                 if node.type == "object_creation_expression":
                     # `new Foo(...)` — the constructed type is in the `type` field,
@@ -9970,7 +10064,12 @@ def _extract_generic(
                     and not self_receiver
                     and not _js_factory_sibling_call
                 )
-                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                local_decision = csharp_lexical.lookup(node, callee_name) if csharp_lexical is not None and not is_member_call else None
+                cpp_qualified = (config.ts_module == "tree_sitter_cpp" and func_node is not None
+                                 and func_node.type == "qualified_identifier")
+                if local_decision is not None:
+                    tgt_nid = local_decision[0]
+                elif cpp_qualified or _python_defer or _java_defer or _csharp_defer or _js_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -10059,6 +10158,11 @@ def _extract_generic(
                     peers = csharp_overload_peers[tgt_nid]
                     picked = _csharp_pick_overload(peers, _csharp_argc(node))
                     tgt_nid = (picked or peers[0])["id"]
+                field_shadow = (tgt_nid in field_calls.storage or local_decision is not None and tgt_nid is None
+                    or local_decision is None and field_calls.shadows(caller_nid, callee_name,
+                    is_member=is_member_call, receiver=self_receiver or member_receiver))
+                if field_shadow:
+                    tgt_nid = None
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
@@ -10083,7 +10187,7 @@ def _extract_generic(
                         and not is_member_call
                         and callee_name in (local_bound_names.get(caller_nid, frozenset()) | extra_locals)
                     )
-                    if not is_py_local_data:
+                    if not is_py_local_data and not field_shadow:
                         # Callee not in this file — save for cross-file resolution in extract()
                         rc_entry = {
                             "caller_nid": caller_nid,
@@ -10152,6 +10256,7 @@ def _extract_generic(
                         # suffix sets, so a source_file suffix alone can't separate them.
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
+                            rc_entry["cpp_qualified"] = cpp_qualified
                         # PHP: separate a scoped class call (`Helper::m()`, source-
                         # qualified) from an instance member call (`$g->m()`), whose
                         # receiver is a variable the resolver must type through the
@@ -10781,10 +10886,18 @@ def _extract_generic(
     # Retain their exact source proof before corpus canonicalization owns the join.
     if config.ts_module == "tree_sitter_cpp":
         from graphify.extractors.cpp_constructors import augment_cpp_constructors
-        augment_cpp_constructors(root, source, nodes, clean_edges, path,
+        augment_cpp_constructors(root, cpp_source, nodes, clean_edges, path,
                                  identities=cpp_identity)
         from graphify.extractors.cpp_member_identity import augment_cpp_members
-        augment_cpp_members(root, source, nodes, path)
+        augment_cpp_members(root, cpp_source, nodes, path, identities=cpp_identity)
+        assert cpp_functions is not None
+        cpp_functions.annotate(nodes)
+        # Source-only prototypes join neither the already resolved body map nor
+        # existing implementation IDs; corpus call guessing excludes them too.
+        from graphify.extractors.cpp_prototypes import augment_cpp_prototypes
+        augment_cpp_prototypes(root, cpp_source, nodes, clean_edges, path)
+        from graphify.extractors.cpp_call_sites import reconcile_free_call_sites
+        reconcile_free_call_sites(cpp_functions, nodes, clean_edges, raw_calls, path)
     return result
 
 def _ts_mark_public_twins(root, source: bytes, result: dict) -> None:

@@ -4,6 +4,9 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from graphify.extractors.qml_project_read import literal_path
+from graphify.extractors.qml_cmake_type_exports import (
+    QML_TYPE_PROPERTIES, literal_version_token, valid_type_properties,
+)
 
 
 _NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
@@ -50,18 +53,30 @@ def source_properties(facts, command, properties, consumed):
     # opaque: no expansion, dependency read, or provider fact is authorized.
     if native_resource(paths) and set(names) <= _RC_COMPILE_PROPERTIES:
         return
-    allowed = {"QT_RESOURCE_ALIAS", "QT_QML_SINGLETON_TYPE", "HEADER_FILE_ONLY"}
-    if (command.scoped or len(set(names)) != len(names) or set(names) - allowed
-            or any(token.dynamic for token in pairs)):
+    allowed = {"QT_RESOURCE_ALIAS", "QT_QML_SINGLETON_TYPE", "HEADER_FILE_ONLY"} | QML_TYPE_PROPERTIES
+    # Semicolons normally mark unestablished CMake list expansion. Only this
+    # value position admits a quoted/bracket numeric version list; source paths,
+    # names, variable expressions and unquoted lists keep their existing gate.
+    dynamic = any(token.dynamic for token in pairs[::2]) or any(
+        token.dynamic and not (name == "QT_QML_SOURCE_VERSIONS" and literal_version_token(token, facts.text))
+        for name, token in zip(names, pairs[1::2]))
+    if command.scoped or len(set(names)) != len(names) or set(names) - allowed or dynamic:
         reject(facts, command)
         return
     updates = dict(zip(names, (token.value for token in pairs[1::2])))
     if any(updates.get(name, "TRUE") not in {"TRUE", "FALSE", "ON", "OFF", "1", "0"}
-           for name in {"QT_QML_SINGLETON_TYPE", "HEADER_FILE_ONLY"}):
+           for name in {"QT_QML_SINGLETON_TYPE", "QT_QML_INTERNAL_TYPE", "HEADER_FILE_ONLY"}):
         reject(facts, command, "unsupported_source_property_value")
+        return
+    if not valid_type_properties(updates):
+        reject(facts, command, "unsupported_qml_type_property_value")
         return
     for token in paths:
         path = literal_path(facts.file, token.value)
+        if names and QML_TYPE_PROPERTIES.intersection(names) and (
+                path is None or PurePosixPath(path).suffix != ".qml"):
+            reject(facts, command, "qml_type_property_source_outside_subset")
+            continue
         key = path if path is not None else token.value
         if key in consumed:
             reject(facts, command, "source_property_after_metadata_use")

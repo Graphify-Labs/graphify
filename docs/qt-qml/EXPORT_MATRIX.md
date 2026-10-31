@@ -147,10 +147,28 @@ production reload/query/update/writer tests and final artifact evidence belong i
 
 ## Final adoption evidence boundary
 
-The current bounded Windows source and reviewed installed profile includes
-INC-QML-11/15/08 and INC-QML-28–38. Mechanism proof and per-occurrence transport
+This historical bounded Windows source and reviewed installed checkpoint covers
+INC-QML-11/15/08 and INC-QML-28–38; it does not verify INC-QML-61–95. Mechanism proof and per-occurrence transport
 survive assembly/serialization/reload; typed uses/read/call/connect/disconnect
 facts retain their original endpoint roles and direction. Local installed
 acceptance, actual CMake/qmake CLI profiles and retained full-gate/platform limits
 are recorded in [final validation](VALIDATION.md#final-adoption-delivery).
 Earlier revision records do not establish whole-SDK or runtime compatibility.
+
+
+## Qt 6.12 corrective source facts
+
+REQ-QML-022 adds source-owned generic C++/C# declaration metadata, QML enum
+members/values, source-only property/annotation flags, typed qmltypes fields,
+individual literal build-export revisions and engine-specific singleton setup
+relationships. Actual owner/endpoint roles, original spans, lossless literals and
+uncertainty must survive graph assembly, sanitation, JSON export/reload and relevant
+update consumers. Tooling/source-only facts never become runtime/provider proof
+merely by being serialized. New transport rejects inconsistent ownership/types,
+counts and spans before lookup. Final whole-consumer and installed-artifact proof
+is recorded separately in traceability; historical export evidence is not reused
+for these changed contracts. D40 introduces an optional typed source-relationship
+multigraph/profile/key extension while retaining ordinary legacy simple graphs.
+Source arcs remain distinct through supported consumers and explicit topology
+projections do not replace source storage. No database privilege or runtime schema
+migration is introduced; AST33/Qt27 invalidate derived analysis facts only.

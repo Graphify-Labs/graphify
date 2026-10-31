@@ -2405,6 +2405,8 @@ def _rebuild_code(
             if qt_full_refresh or qml_refresh_required(code_files, changed_paths):
                 wanted = [p for p in code_files if p not in semantic_doc_files]
                 print("[graphify watch] Qt/QML inputs changed; refreshing the live code corpus.")
+            from graphify.csharp_incremental import refresh_csharp_paths
+            wanted = refresh_csharp_paths(wanted, code_files, removed=deleted_paths, profile_changed=qt_state.changed)
             if not wanted and not deleted_paths and not qt_full_refresh:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -2521,7 +2523,9 @@ def _rebuild_code(
                     if edge.get("relation") not in (
                         "contains", "method", "inherits", "imports", "imports_from"
                     ):
-                        if not (edge.get("relation") == "references" and edge.get("context") == "return_type"):
+                        if not ((edge.get("relation") == "references" and edge.get("context") == "return_type")
+                                or (edge.get("relation") == "defines" and edge.get("context") == "field"
+                                    and edge.get("confidence") == "EXTRACTED")):
                             continue
                     if not _is_ast_tier(edge):
                         continue
@@ -2536,6 +2540,11 @@ def _rebuild_code(
                     }
                     if edge.get("context") == "return_type":
                         context_edge["context"] = "return_type"
+                    if edge.get("relation") == "defines":
+                        # Same source-owned field contract as manual updates;
+                        # storage is an exclusion, never callback target proof.
+                        context_edge.update(context="field", confidence="EXTRACTED",
+                                            source_location=edge.get("source_location"), metadata=edge.get("metadata", {}))
                     edge_metadata = edge.get("metadata")
                     if (
                         isinstance(edge_metadata, dict)
@@ -2774,6 +2783,10 @@ def _rebuild_code(
             # the shared finalizer preserves authored roles outside its exact
             # legacy-shape convention and retires only unreferenced placeholders.
             _finalize_raw_graph_endpoints(candidate_graph_data)
+            # Raw publication declares the typed profile before persistence,
+            # using the same validation/key owner as clustered JSON storage.
+            from graphify.source_relationships import adopt_transport
+            candidate_graph_data = adopt_transport(candidate_graph_data)
             if not _valid_publication_direction(
                     ((edge["source"], edge["target"], edge) for edge in candidate_graph_data["links"]),
                     directed=candidate_graph_data["directed"]):

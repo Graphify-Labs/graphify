@@ -82,4 +82,8 @@ def is_cpp_header(path: Path) -> bool:
             source = stream.read(256 * 1024)
     except OSError:
         return False
-    return _DECLARATION.search(_code(source)) is not None
+    code = _code(source)
+    if _DECLARATION.search(code) is not None:
+        return True
+    from graphify.cpp_header_declarations import has_cpp_declaration_hint
+    return has_cpp_declaration_hint(code)

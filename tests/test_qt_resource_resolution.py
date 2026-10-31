@@ -119,7 +119,11 @@ def test_literal_build_context_and_module_resource_component_mapping(tmp_path):
     cmake = parse_cmake("qt_add_qml_module(app URI Public.Tools VERSION 1.2 "
                         "RESOURCE_PREFIX /ui QML_FILES Main.qml SOURCES service.h)")
     nodes = qml["nodes"] + cmake["nodes"] + [cpp]
-    index = QtProjectIndex(nodes, [], root=tmp_path)
+    # Source-export promises retain their actual module/source/export chain;
+    # throwing away producer edges is now corrupt transport, not a positive fixture.
+    edges = qml["edges"] + cmake["edges"]
+    before = copy.deepcopy((nodes, edges))
+    index = QtProjectIndex(nodes, edges, root=tmp_path)
     context = index.module_context("service.h")
     assert context.status == "resolved"
     assert context.target_id is not None
@@ -137,12 +141,13 @@ def test_literal_build_context_and_module_resource_component_mapping(tmp_path):
     assert index.module_context("other/service.h").target_id is None
     other = parse_cmake("qt_add_qml_module(other URI Other.Tools VERSION 1.0 SOURCES service.h)",
                         relative_file="other.cmake")
-    conflict = QtProjectIndex(nodes + other["nodes"], [], root=tmp_path).module_context("service.h")
+    conflict = QtProjectIndex(nodes + other["nodes"], edges + other["edges"], root=tmp_path).module_context("service.h")
     assert conflict.status == "ambiguous"
     assert conflict.evidence
     duplicate = parse_cmake("qt_add_qml_module(other URI Public.Tools VERSION 1.2 QML_FILES Main.qml)",
                             relative_file="other.cmake")
-    assert QtProjectIndex(nodes + duplicate["nodes"], [], root=tmp_path).module_import("Public.Tools").status == "ambiguous"
+    assert QtProjectIndex(nodes + duplicate["nodes"], edges + duplicate["edges"], root=tmp_path).module_import("Public.Tools").status == "ambiguous"
+    assert (nodes, edges) == before
 
 
 def test_qmake_qrc_membership_resolves_the_same_component(tmp_path):
@@ -163,7 +168,10 @@ def test_public_qt6_cmake_and_qmake_fixtures_describe_identical_membership():
     for metadata in (extract_cmake(root / "CMakeLists.txt", root=root),
                      extract_qmake(root / "tools.pro", root=root)):
         assert not metadata.get("error")
-        index = QtProjectIndex(qml["nodes"] + qrc["nodes"] + metadata["nodes"] + [cpp], [], root=root)
+        # Both build-system fixtures supply the exact relationships their real
+        # producers emitted; CMake's export ownership is not reconstructed by name.
+        edges = qml["edges"] + qrc["edges"] + metadata["edges"]
+        index = QtProjectIndex(qml["nodes"] + qrc["nodes"] + metadata["nodes"] + [cpp], edges, root=root)
         context = index.module_context("backend.h")
         assert context.target_id is not None
         md = index.module_metadata(context.target_id)
@@ -179,6 +187,33 @@ def test_public_qt6_cmake_and_qmake_fixtures_describe_identical_membership():
             assert resource.candidates == (component.target_id,)
         else:
             assert resource.target_id == component.target_id
+
+
+def test_literal_node_only_export_context_is_rejected_without_mutating_input(tmp_path):
+    """Retain the exact old positive input as a rejected missing-ownership regression."""
+    qml, _ = corpus(tmp_path)
+    cpp = fact_node("service.h", "file", "cpp", "service.h", 1)
+    cmake = parse_cmake("qt_add_qml_module(app URI Public.Tools VERSION 1.2 "
+                        "RESOURCE_PREFIX /ui QML_FILES Main.qml SOURCES service.h)")
+    nodes = qml["nodes"] + cmake["nodes"] + [cpp]
+    before = copy.deepcopy(nodes)
+    with pytest.raises(ValueError, match="QML_METADATA: incomplete build export ownership"):
+        QtProjectIndex(nodes, [], root=tmp_path)
+    assert nodes == before
+
+
+def test_public_cmake_node_only_export_context_is_rejected_without_mutating_input():
+    """The old public fixture cannot claim complete ownership after discarding actual edges."""
+    root = Path(__file__).parent / "fixtures/qml/project_metadata"
+    qml = extract_qml(root / "Main.qml", root=root)
+    cpp = fact_node("backend.h", "file", "cpp", "backend.h", 1)
+    qrc = extract_qrc(root / "resources.qrc", root=root)
+    cmake = extract_cmake(root / "CMakeLists.txt", root=root)
+    nodes = qml["nodes"] + qrc["nodes"] + cmake["nodes"] + [cpp]
+    before = copy.deepcopy(nodes)
+    with pytest.raises(ValueError, match="QML_METADATA: incomplete build export ownership"):
+        QtProjectIndex(nodes, [], root=root)
+    assert nodes == before
 
 
 @pytest.mark.parametrize("same_file", [False, True])

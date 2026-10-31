@@ -49,7 +49,7 @@ def test_req_qml016_ac04_ancestor_edges_reach_reload_query_and_affected(tmp_path
     """Exact source bytes and typed mechanisms survive actual durable consumers."""
     source = ("\ufeff// café 雪\n" + SOURCE).replace("\n", "\r\n")
     result = analysis(tmp_path, {"events.cpp": source})
-    index = QtEventIndex(result["nodes"])
+    index = QtEventIndex(result["nodes"], result["edges"])
     resolved = index.member({"form": "member_pointer", "class_name": "Child", "member_name": "changed"},
                             "Child", role="signal")
     assert resolved.status == "resolved"
@@ -63,7 +63,9 @@ def test_req_qml016_ac04_ancestor_edges_reach_reload_query_and_affected(tmp_path
     reloaded = load_node_link_graph(json.loads(path.read_text(encoding="utf-8")))
     for node in sites(result, "class"):
         assert qt_metadata(reloaded.nodes[node["id"]]) == qt_metadata(node)
-    accepted = QtEventIndex([{"id": identity, **data} for identity, data in reloaded.nodes(data=True)])
+    owned = [{**data, "source": data.get("_src", source), "target": data.get("_tgt", target)}
+             for source, target, data in reloaded.edges(data=True)]
+    accepted = QtEventIndex([{"id": identity, **data} for identity, data in reloaded.nodes(data=True)], owned)
     assert accepted.member({"form": "member_pointer", "class_name": "Child", "member_name": "changed"},
                            "Child", role="signal").target_id == resolved.target_id
     native_sites = sites(result, "emission") + sites(result, "connect") + sites(result, "disconnect")
@@ -206,7 +208,14 @@ def test_req_qml016_ac01_reloaded_incomplete_proof_is_rejected_without_mutation(
                           "base_shape": {"bases": None},
                           "class_status": {"status": "ambiguous"}}[control])
     before = copy.deepcopy(nodes)
-    answer = QtEventIndex(nodes).member({"form": "member_pointer", "class_name": "Child", "member_name": "changed"},
+    if control == "class_status":
+        # A resolved new marker promise contradicts an altered class status;
+        # reject corrupted transport instead of treating it as missing source.
+        with pytest.raises(ValueError, match="QT_METADATA"):
+            QtEventIndex(nodes, result["edges"])
+        assert nodes == before
+        return
+    answer = QtEventIndex(nodes, result["edges"]).member({"form": "member_pointer", "class_name": "Child", "member_name": "changed"},
                                       "Child", role="signal")
     assert answer.status == "unavailable" and nodes == before
 
@@ -214,7 +223,7 @@ def test_req_qml016_ac01_reloaded_incomplete_proof_is_rejected_without_mutation(
 def test_req_qml016_ac01_explicit_ancestor_qualification_requires_receiver_compatibility(tmp_path):
     """Grandparent qualification accepts Child identity and rejects an unrelated object."""
     result = analysis(tmp_path, {"events.cpp": SOURCE + "class Other : public QObject { Q_OBJECT };"})
-    index = QtEventIndex(result["nodes"])
+    index = QtEventIndex(result["nodes"], result["edges"])
     endpoint = {"form": "member_pointer", "class_name": "Grand", "member_name": "changed"}
     assert index.member(endpoint, "Child", role="signal").status == "resolved"
     answer = index.member(endpoint, "Other", role="signal")

@@ -164,7 +164,9 @@ def test_req_qml008_ac02_source_fallback_rejects_unproved_or_noncallable_context
     elif corruption == "wrong_line":
         chosen["source_location"] = "L100"
     elif corruption == "ambiguous":
-        nodes.append({**copy.deepcopy(chosen), "id": target + "_different"})
+        # Both peers must satisfy the producer's role-specific source ID. The
+        # original invalid suffix is retained separately as an ineligible peer.
+        nodes.append({**copy.deepcopy(chosen), "id": "other_" + target})
     elif corruption == "not_callable":
         chosen["_callable"] = False
     elif corruption == "class_like":

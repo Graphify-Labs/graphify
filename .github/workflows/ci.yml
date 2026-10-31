@@ -4,7 +4,9 @@ on:
   push:
     branches: ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "main"]
   pull_request:
-    branches: ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "main", "codex/qml-*"]
+    # Stacked audit reviews target Qt integration branches; the PR event owns
+    # their validation without adding a duplicate feature-branch push run.
+    branches: ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "main", "codex/qml-*", "codex/qt-*"]
   workflow_dispatch:
 
 # Checkout/tests/security scanning need no repository mutation permissions.

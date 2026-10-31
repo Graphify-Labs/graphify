@@ -436,9 +436,18 @@ facts belong to their owning file/declaration, indexes to one analysis run, and
 cache/persistence to explicit owners. Preserve extractor facade/import direction;
 extractor children must not import `graphify.extract`.
 
+When introducing or refactoring multi-unit indexing, retain one accepted-corpus
+index at the owning invocation boundary rather than one identical corpus index
+per unit. Keep unit-specific resolution state independent and rebuild snapshots
+between phases that append facts. Characterize snapshot timing, input aliasing,
+ordering and standalone entry points; a storage optimization cannot silently
+change source authority. Existing phases with observable alias-input timing need
+separate characterization; record deferred ownership work explicitly.
+
 Preserve stable IDs, nested resolver references, relative provenance, locations,
 and distinct relationship mechanisms through remapping, cache, incremental
-reconstruction, and export. Do not solve graph edge collapse by silently replacing
+reconstruction, and export. When advancing cache or policy epochs, preserve
+upstream incompatibility rationales and issue references alongside the new reason. Do not solve graph edge collapse by silently replacing
 one relationship with another. Follow the documented graph compatibility decision.
 
 Verify new fact contracts through direct extractor, facade, graph assembly,
@@ -446,6 +455,14 @@ sanitation, export and reload. Producer provenance must survive every entry poin
 a facade-only marker is insufficient. Keep literal lookup values distinct from
 escaped display values, test metadata length/list bounds, and reject corrupted
 transport explicitly. Scope keys must have bounded size as nesting grows.
+
+Typed graph transport must validate explicit mode types, collection/element shapes,
+exact node/endpoint identities, duplicate or conflicting aliases and logical
+orientation before compatibility adapters or graph libraries can coerce them.
+Storage keys are not source evidence. Source-owned declaration identities must
+survive direct producers without a facade-only tier stamp, including distinct
+same-named scopes on one source line. Preserve established legacy projections
+outside an explicitly documented optional storage profile.
 
 ## Incremental refactoring discipline
 
@@ -517,6 +534,13 @@ lookup/depth, distinct same-named engine declarations and lexical type aliases.
 Textual spelling and QML lexical visibility alone do not establish QObject member,
 engine/provider or native endpoint identity. Reject unsupported identity rather
 than binding a convenient global or enclosing declaration.
+
+Parser compatibility regressions must cover error-free role misclassification as
+well as parse errors, and compose with independently accepted local adapters.
+Mask only source-owned syntax spans; an annotation payload cannot become an
+ordinary identifier or lend another adapter authority. Preserve the final owning
+parser gate, original-byte proof and uncertainty instead of treating a clean
+compatibility parse as semantic acceptance.
 
 Audit Qt API families by semantic mechanism and exceptional production paths.
 Use official versioned API inventories as completeness checklists; name counts,

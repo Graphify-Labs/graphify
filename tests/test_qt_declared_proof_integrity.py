@@ -19,7 +19,7 @@ def serialized_subscription(result, *, notify=False):
                 and bool(qt_metadata(item)["endpoint_proof"].get("notify_property_id")) is notify)
     source, target = by_id[edge["source"]], by_id[edge["target"]]
     def accepted():
-        return allows_qt_qml_edge(source, target, edge, source_id=source["id"], target_id=target["id"], nodes=by_id)
+        return allows_qt_qml_edge(source, target, edge, source_id=source["id"], target_id=target["id"], nodes=by_id, edges=edges)
     assert accepted()
     return nodes, by_id, edge, accepted
 
@@ -93,8 +93,10 @@ def test_req_qml018_ac04_ac06_reloaded_notify_proof_retains_mapping_identity(tmp
     path = tmp_path / "graph.json"
     assert to_json(graph, {}, str(path), force=True)
     restored = load_node_link_graph(json.loads(path.read_text(encoding="utf-8")))
+    owned = [{**value, "source": value.get("_src", left), "target": value.get("_tgt", right)}
+             for left, right, value in restored.edges(data=True)]
     for edge in result["edges"]:
         if edge.get("context") == "qt_context_subscription" and qt_metadata(edge)["endpoint_proof"].get("notify_property_id"):
             source, target = edge["source"], edge["target"]
             assert allows_qt_qml_edge(restored.nodes[source], restored.nodes[target], restored.edges[source, target],
-                                      source_id=source, target_id=target, nodes=restored.nodes)
+                                      source_id=source, target_id=target, nodes=restored.nodes, edges=owned)

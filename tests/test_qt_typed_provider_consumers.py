@@ -70,4 +70,4 @@ def test_req_qml018_ac06_corrupted_endpoint_or_chain_is_rejected_at_consumer(tmp
             fields[{"accessor": "api_type_target_id", "provider": "provider_type_evidence",
                     "handler": "handler_target_id", "role": "roles"}[corruption]] = [] if corruption in {"provider", "role"} else "missing"
             chosen["metadata"]["qt"] = encode_qt(fields)
-    assert not allows_qt_qml_edge(source, target, edge, source_id=source["id"], target_id=target["id"], nodes=by_id)
+    assert not allows_qt_qml_edge(source, target, edge, source_id=source["id"], target_id=target["id"], nodes=by_id, edges=edges)

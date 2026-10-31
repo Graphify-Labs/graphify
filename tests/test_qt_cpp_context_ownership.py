@@ -113,17 +113,20 @@ def test_req_qml008_ac02_borrowed_distinct_complete_bodies_remain_ambiguous(tmp_
 
 @pytest.mark.parametrize("body", [False, None])
 def test_req_qml008_ac02_borrowed_missing_body_authority_stays_unavailable(tmp_path, body):
-    """A forward/legacy metadata record cannot substitute for accepted complete-body authority."""
+    """A resolved marker promise cannot survive corrupted borrowed definition authority."""
     _, nodes, edges = accepted_context(tmp_path, qualified=False)
     for node in nodes:
         if qt_metadata(node).get("kind") == "class":
             update_qt(node, is_definition=body)
     before = copy.deepcopy((nodes, edges))
-    fresh, _ = refresh(tmp_path, nodes, edges)
+    fresh = {"nodes": [], "edges": []}
+    additions, projected = [], []
+    failures = resolve_qt_qml([tmp_path / "backend.cpp"], [fresh], additions, projected,
+        root=tmp_path, context_nodes=nodes, context_edges=edges)
+    assert failures and {item["code"] for item in fresh["qml_failures"]} == {"QML_RESOLUTION_FAILED"}
     assert qt_metadata(sites(fresh, "member")[0])["class_id"] == ""
-    emission = qt_metadata(sites(fresh, "emission")[0])
-    assert emission["status"] == "unavailable" and emission["target_id"] == ""
     assert not any(edge.get("context") == "qt_signal_emit" for edge in fresh["edges"])
+    assert additions == [] and projected == []
     assert (nodes, edges) == before
 
 

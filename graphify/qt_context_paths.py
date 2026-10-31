@@ -4,6 +4,7 @@ from __future__ import annotations
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.qml_resolution_types import Resolution
 from graphify.qt_declared_provider import DeclaredProviderIndex
+from graphify.qt_metaobject import valid_metaobject_proof
 
 
 def context_path(bridge, binding, parts):
@@ -65,7 +66,7 @@ def valid_context_chain(binding, proof, nodes):
     return proof.get("class_id") == current
 
 
-def valid_context_endpoint(proof, nodes):
+def valid_context_endpoint(proof, nodes, edges=None, metaobject_index=None):
     """A serialized role label cannot turn a private/ordinary method into a signal."""
     member = nodes.get(proof.get("member_fact_id"))
     target = nodes.get(proof.get("canonical_target_id"))
@@ -73,7 +74,7 @@ def valid_context_endpoint(proof, nodes):
         return False
     md = qt_metadata(member)
     types = DeclaredProviderIndex(nodes)
-    if not types.source_owned(member):
+    if not types.source_owned(member) or not valid_metaobject_proof(proof, nodes, edges, metaobject_index):
         return False
     if md.get("kind") == "property":
         return proof.get("kind") == "property" and proof.get("member_fact_id") == proof.get("canonical_target_id")

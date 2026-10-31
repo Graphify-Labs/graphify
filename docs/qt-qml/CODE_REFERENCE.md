@@ -1101,3 +1101,202 @@ owners measure 162/259 lines; the existing cache integration/predecessor modules
 measure 195/136. All remain below 300. Their small size does not replace the
 source identity, failure/recovery, platform or accepted-criterion evidence in
 traceability. No unrelated mechanical extraction is part of this integration.
+
+
+## Qt 6.12 corrective ownership (INC-QML-61 onward)
+
+The integration maintainer owns D38, shared schema/policy changes and final
+cross-boundary evidence. Delegated producer owners have disjoint source/test files;
+only the integration owner stages, commits and publishes. New handwritten helpers
+and tests retain the 300-line limit.
+
+At the audit baseline, `qt_cpp_syntax.py` measures 234 lines, `qt_cpp_mapping.py`
+261, `qml_types.py` 179, `qt_cpp_properties.py` 71 and `qml_declarations.py` 157.
+Retain the 300-line limit or extract a cohesive new responsibility. Generic
+`extractors/engine.py` measures 11,007 lines (existing integration ceiling 11,050).
+INC-QML-62 may add narrow C++ declaration hooks within the existing 11,050-line ceiling; owner: generic
+extractor maintainer. Nested declarator policy belongs in a focused helper, not
+new branches spread through the walker. Exit: a separately characterized upstream
+C++ extractor migration under its migration playbook; no mechanical port is mixed
+with these semantic corrections. Measured final sizes and any other touched legacy
+exceptions must be recorded before completion.
+
+
+INC-QML-71 additionally touches the established unchanged-context filters:
+`cli.py` measures 5,534 lines before this change (permitted ceiling5,550), and
+`watch.py` measures3,385 (ceiling3,400). Owners: CLI/update and watcher maintainers.
+Only actual source-backed `defines` edges with `context=field` join the existing
+accepted context-edge filter, preserving source/confidence/metadata. A read-only
+field-call policy derives lexical storage ownership from these edges; it does
+not duplicate mutable owner IDs. Extraction exit: characterize and extract the
+shared unchanged-context selection policy in a separate increment when another
+consumer needs that boundary. No unrelated CLI/watcher restructuring is included.
+
+INC-QML-77 touches `build.py` at its existing graph-assembly boundary: baseline
+3,244 physical lines, permitted ceiling 3,265, current 3,263. Owner: graph
+assembly maintainer. The narrow addition remaps a complete, read-only ownership
+snapshot after accepted node normalization and supplies one analysis-owned
+metaobject validation index to existing projection gates. Class/marker policy
+remains in `qt_metaobject.py`; it is not duplicated in graph assembly. The index
+is bound to the exact node container and immutable edge tuple, with bounded
+per-class source-freshness checks rather than whole-graph reconstruction for each
+edge. Exit: characterize and extract the existing Qt/QML projection assembly
+boundary in a separate increment if another consumer needs this orchestration.
+No unrelated build restructuring is mixed into this correction.
+
+INC-QML-78 extends `extract.py` only at the existing native extraction/Qt
+pipeline seams. The pre-change measured size is 11,689 lines (prior recorded
+ceiling 11,700); permitted scoped ceiling is 11,735. Owner: extractor facade
+maintainer. The addition constructs one caller-admitted immutable QtTest
+snapshot, forwards per-file payloads through sequential/safe/worker and
+individual-worker retry paths, bypasses native syntax reuse when that source
+context requires it, and supplies the same snapshot to final collection. Existing
+three/four/five-element worker arguments remain compatible. Context policy and
+source-witness validation belong in focused helpers; no ambient root or hidden
+header discovery enters the facade. Exit: a separately characterized extraction
+orchestration responsibility under the existing migration constraints, without
+mixing an unrelated mechanical move into this semantic correction.
+
+INC-QML-84 extends the established C# producer hooks in `extractors/engine.py`:
+pre-change size 11,033, prior ceiling 11,050, permitted scoped ceiling 11,110.
+Owner: generic C# extractor maintainer. Approximately 60 lines admit actual local
+function statements, bind producer-allocated IDs and invoke one focused lexical
+call policy. Scope/binder indexes, visibility and proof validation belong in the
+new helper (at most 300 lines); the engine remains the declaration/edge allocator.
+No second mutable root, class-owned local function or global basename authority
+is introduced. Exit: a separately characterized C# extraction migration under
+the upstream playbook; no mechanical port or unrelated restructuring is mixed
+into this semantic correction. Final measured sizes remain a handoff gate.
+
+INC-QML-89 permits only the following narrow legacy consumer growth for the
+optional typed source-relationship profile. The integration maintainer owns
+graph construction, direction restoration, analysis/topology and keyed cleanup;
+delegated consumer ownership covers explain/wiki/export/merge with coordinated
+Git integration. Source storage/validation/key policy belongs in a focused new
+helper (at most 300 lines), not repeated domain logic in every consumer.
+
+| File | Pre-change physical lines / scoped ceiling |
+| --- | --- |
+| `graphify/build.py` | 3,263 / 3,295 |
+| `graphify/cli.py` | 5,545 / 5,580 |
+| `graphify/export.py` | 1,494 / 1,525 |
+| `graphify/wiki.py` | 481 / 500 |
+| `graphify/analyze.py` | 843 / 865 |
+| `graphify/paths.py` | 702 / 725 |
+| `graphify/cross_repo_calls.py` | 325 / 345 |
+| `graphify/cluster.py` | 507 / 525 |
+
+Keep legacy simple-graph behavior and evidence precedence intact. Explicit
+topology projections stay derived; source renderers enumerate real relationships.
+Exit: independently characterize and extract the existing graph-consumer/storage
+boundaries if further profiles need them; no unrelated broad migration is mixed
+into this correction. Final measured growth and each consumer's evidence are
+required at handoff.
+
+INC-QML-94 retains the existing C# type-reference collector as the sole owner of
+qualified and nested generic syntax. Engine was 11,107 physical lines before the
+correction; its focused ceiling becomes 11,145 for the extractor maintainer.
+This is a narrow correction of child traversal and builtin global qualification,
+not a duplicate indexer collector. A separately characterized language migration
+remains the extraction exit; unrelated mechanical moves are excluded here.
+
+INC-QML-94 permits `graphify/extractors/csharp.py` 658 / 662 physical lines, owned by the
+C# resolver maintainer, solely for builtin `global::` exact-root lookup.
+The existing `CsharpNameResolver` remains canonical; no parallel alias parser or
+index is introduced. Extract a characterized resolver responsibility separately
+when broader language migration is authorized.
+
+INC-QML-84's preexisting `tests/test_csharp_member_calls.py` was 899 lines and
+is 905 after the six-line actual source-body ownership fixture correction;
+its scoped ceiling is 910, owned by the C# extractor maintainer. No assertion or
+case was dropped: the nested callable now owns its physical calls. A future
+cohesive receiver-typing test split is the extraction exit. The measured ceiling
+was documented after growth, an explicit process timing gap in this audit;
+this record does not retroactively claim preimplementation compliance.
+
+INC-QML-89's raw publication seam adds four lines to `watch.py`, measured
+3,394 before / 3,398 after, within the existing 3,400 ceiling. Owner: watcher
+publication maintainer. The shared source-transport owner stamps/validates mode,
+marker and keys before the existing accepted-product replacement boundary;
+legacy raw output remains on its original path. No persistence owner is moved.
+
+### INC-QML-93/95 build context and effect owners
+
+| Owner/interface | Responsibility |
+| --- | --- |
+| `qt_cpp_build_types.py`, `qt_cpp_build_profiles.py` | Bounded immutable build/source witnesses and positive literal target-root profiles; source-relative lookup precedence and strict unknown-root/property mutation veto. |
+| `qt_cpp_include_resolution.py`, `qt_cpp_build_integrity.py` | Target-domain header resolution, rejection-only absence/shadow evidence, source/build hash checks and fresh semantic replay at both publication checkpoints. |
+| `qt_cpp_build_domains.py` | Complete finite source-list domains/Unknown and separate single-target-name role; no configured/generated target authority. |
+| `qt_cpp_build_data.py` | Per-input bounded lexical environment, branch joins, loop-entry/post-loop widening and cohort command-shadow rejection. |
+| `qt_cpp_build_effects.py` | Immutable negative source effects and target/source-key irrelevance checks, never positive source discovery or configuration execution. |
+| `qt_cpp_test_context.py`, `qt_cpp_test_context_integrity.py` | Existing immutable SDK include/effect snapshot and consistency checks, with explicit project paths supplied by the facade. |
+| `extract.py` | Keep caller admission/dispatch ownership; C-compatible native headers can forward context while their source/Qt-overlay classification stays unchanged. |
+
+All new source files remain at or below 300 lines. Existing context293 remains
+within its recorded330 ceiling; facade11720/11735 and engine11120/11145 include
+explicit typing/invariant corrections. Source-cache schema33 and Qt policy27 are
+unpublished corrective namespaces; final consumers use fresh caches. Generated
+resource/property/filter output does not become a guessed admitted source.
+
+The INC-QML-93/95 checkpoint measurements for these focused owners: build types129,
+profiles226, include resolution182, build integrity87, value domains122,
+source data157, effects88, test context293 and context integrity74 physical lines.
+These are implementation sizes, not test/SDK coverage counts. The context293
+retains its justified330 ceiling; all new files remain within300.
+
+
+### INC-QML-96/97 invocation and command-identity owners
+
+`qt_cpp_accepted_index.py` (60 physical lines) owns one lazy accepted-corpus
+snapshot for native exposure. `qt_cpp_mapping.py` (260) retains standalone
+`CppMapping`/`map_cpp` and independent unit records; `qt_cpp_exposure.py` (205)
+uses the private bound factory in both native admission loops. Events/access
+construction and pipeline append timing are unchanged. See D42 and the design
+for snapshot membership, borrowed dictionaries and mutable-record boundaries.
+
+`qt_cpp_build_profiles.py` grows from the INC-QML-95 checkpoint's 226 to 247
+lines for the cohort-wide positive command-definition census. It remains the
+sole positive target-root profile owner; the negative effect/domain owners do
+not acquire positive authority. All these files remain below 300 lines.
+
+Neutral regressions are `test_qt_cpp_shared_index.py` (109),
+`test_qt_cpp_index_lifetime.py` (121) and
+`test_qt_build_positive_shadow.py` (172). Measurements describe this development
+snapshot; final execution and revision identity belong in traceability.
+
+
+### INC-QML-98 native emission recovery
+
+`qt_cpp_syntax.py` grows from 296 to exactly 300 physical lines. It retains the
+existing normalization owner and directive-masked matching view; a source-order
+plain-emission override check mirrors the existing Q_EMIT rejection. No new
+parser/cache/persistence owner is introduced. `test_qt_explicit_emissions.py`
+(186) retains the exact unsupported prefix fixtures with stronger source rejection
+assertions; `test_qt_emission_override_updates.py` (145) supplies valid ordinary
+identifiers, original-byte spans, supported order controls and public failure
+retention/recovery. All remain within the 300-line ceiling.
+
+The final INC-QML-98 boundary uses `qt_cpp_annotations.py` (198 lines) as the
+shared first-line BOM/directive and override matching owner. Its equal-length
+view recognizes only an initial UTF8 BOM; native emit recovery reuses the shared
+override lookup rather than a separate directive regex. Original parse/source
+buffers and spans remain unchanged.
+
+
+### INC-QML-99/100/101 corrected boundaries
+
+`cpp_call_sites.py` is 189 lines: only source-owned callers enter precise handoff
+and retirement. `source_relationships.py` is 220: all local-function promises are
+validated before unpromised legacy falsy carrier repair.
+`cpp_member_identity.py` is 194: `augment_cpp_members(..., identities=None)`
+reuses the supplied per-unit `CppIdentity` and its allocated `declaration_id`.
+Engine passes that owner explicitly, remaining 11,120 within its existing 11,145
+ceiling. Constructor/member/source ownership stays in the existing extractor
+direction; no second mutable identity owner is added to Engine's path.
+
+The new partial-caller/member-proof/member-update tests measure 133/78/129 lines;
+legacy metadata tests 144 and source-proof eligibility controls 64. Touched
+construction/source-link/membership/resource tests measure 149/185/290/234, all
+within 300. Earlier syntax300/annotation198 limits remain unchanged. Cache schema33
+retains the historical #4854 ID-domain rationale. These are source measurements
+and focused evidence, not whole-SDK or unexecuted platform coverage.

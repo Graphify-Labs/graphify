@@ -116,6 +116,20 @@ def test_req_core004_ac02_artifact_profile_preserves_clean_optional_boundaries(p
     assert profile.calls[-1].wheel_environment == str(profile.wheel)
 
 
+def test_req_qml022_ac06_native_profile_collects_shared_cpp_csharp_ownership(profile):
+    """Core parser regressions join native source lanes after unchanged isolated-wheel smokes."""
+    names = ("test_cpp_members.py", "test_csharp_fields.py", "test_field_call_ownership.py",
+             "test_source_relationship_consumers.py")
+    for name in names:
+        (profile.root / "tests" / name).write_text("def test_boundary(): pass\n", encoding="utf-8")
+    qml_ci.main()
+    selected = profile.calls[-1].arguments
+    assert all(str(Path("tests") / name) in selected for name in names)
+    assert str(Path("tests") / "test_unrelated.py") not in selected
+    assert [call.arguments for call in profile.calls[:-1]] == [*clean_prefix(profile), addon(profile)]
+    assert_neutral_smokes(profile)
+
+
 def test_req_core004_ac03_failed_addon_stops_before_native_pytest(profile):
     """A failed declared-extra install remains a failed lane without retrying a reduced test set."""
     profile.failure = "addon"

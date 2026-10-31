@@ -18,6 +18,7 @@ from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp, source_span
 from graphify.extractors.qt_cpp_variables import simple_reference, type_name, variables_at
 from graphify.extractors.qt_cpp_provider_expression import provider_expression
+from graphify.extractors.qt_cpp_external_singletons import collect_external_singletons
 
 _METHODS = {"load", "loadFromModule", "loadUrl", "setSource", "create", "createWithInitialProperties", "rootObjects", "rootObject",
             "findChild", "property", "setProperty", "setParent", "invokeMethod", "read", "write", "setContextProperty", "setContextObject", "setInitialProperties"}
@@ -167,7 +168,7 @@ def _component_constructors(unit, mapping, facts, identities, types):
                   conditional=conditional_at(unit, match.start()), status="pending", reason="", bridge_direction="cpp_to_qml")
 
 
-def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, accepted_edges=None):
+def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, accepted_edges=None, qt_test_contexts=None):
     nodes = accepted_nodes if accepted_nodes is not None else [node for result in per_file if result for node in result.get("nodes", [])]
     edges = accepted_edges if accepted_edges is not None else [edge for result in per_file if result for edge in result.get("edges", [])]
     for path, result in zip(paths, per_file):
@@ -176,7 +177,7 @@ def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, a
         try:
             if not is_qt_cpp_source(path):
                 continue
-            unit = read_cpp(Path(path), Path(root))
+            unit = read_cpp(Path(path), Path(root), qt_test_context=qt_test_contexts.for_path(path) if qt_test_contexts else None)
             mapping, facts = map_cpp(unit, nodes, edges, root=Path(root)), QtFacts(unit)
             mapping.bind_classes([{"node_id": md.get("class_id", ""), "qualified_name": md.get("class_name", "")}
                                   for node in nodes if (md := qt_metadata(node)).get("kind") == "class"])
@@ -186,6 +187,7 @@ def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, a
             _component_constructors(unit, mapping, facts, identities, types)
             for call in calls(unit, mapping, _METHODS):
                 _site(facts, unit, mapping, call, identities, types, component_engines)
+            collect_external_singletons(unit, mapping, facts, identities, types)
             result.setdefault("nodes", []).extend(facts.nodes)
             result.setdefault("edges", []).extend(facts.edges)
         except (QtCppError, ValueError) as error:

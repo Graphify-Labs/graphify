@@ -49,11 +49,13 @@ def _visible_usings(root, source, scope, position):
     return unique if len(unique) <= 50 else None
 
 
-def augment_cpp_members(root, source, nodes, path):
+def augment_cpp_members(root, source, nodes, path, *, identities=None):
     """Stamp bounded original AST facts before corpus canonicalization."""
     if root.has_error:
         return
-    identities = CppIdentity(root, source, _file_stem(path))
+    # Generic allocation can salt a class away from its colliding file ID.
+    # Reuse that run-owned mapping; standalone callers retain the original path.
+    identities = identities or CppIdentity(root, source, _file_stem(path))
     by_id = {node["id"]: node for node in nodes}
     for item in _walk(root):
         if item.type != "function_declarator":
@@ -74,7 +76,7 @@ def augment_cpp_members(root, source, nodes, path):
         record = identities.record(parent) if parent else None
         if record:
             owner, member, role = record["qualified"], name, "declaration"
-            nid = _make_id(record["id"], name)
+            nid = _make_id(identities.declaration_id(record), name)
         elif syntax.type == "function_definition" and "::" in name:
             raw_owner, member = name.rsplit("::", 1)
             owner = "::".join(filter(None, (scope, raw_owner)))

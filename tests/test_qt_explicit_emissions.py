@@ -10,7 +10,7 @@ from graphify.extract import extract
 from graphify.extractors.qt_cpp_calls import calls
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.qt_cpp_mapping import map_cpp
-from graphify.extractors.qt_cpp_syntax import read_cpp
+from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp
 from graphify.paths import load_node_link_graph
 from tests.qt_analysis_helpers import analysis, sites
 
@@ -76,25 +76,33 @@ def test_req_qml016_ac01_unsupported_macro_member_normalization_reports_rejectio
 
 @pytest.mark.parametrize("marker", ["emit", "Q_EMIT"])
 def test_req_qml016_ac01_local_macro_override_cannot_inherit_qt_annotation_role(tmp_path, marker):
-    """A preceding define/undef blocks SDK annotation proof without preprocessing."""
+    """A source-redefined prefix cannot be erased into an invented executable call."""
     source = f"#define {marker} ordinary\nclass Backend : public QObject {{ Q_OBJECT public: void run() {{ {marker} missing(1); }} }};"
-    result = analysis(tmp_path, {"events.cpp": source})
-    assert not sites(result, "emission")
+    assert_rejected_override(tmp_path, source)
+
+
+def assert_rejected_override(root, source):
+    """The exact unsupported input rejects all fresh Qt overlays, with original-byte diagnostics."""
+    path = root / "events.cpp"
+    path.write_bytes(source.encode())
+    result = extract([path], root=root, cache_root=root, parallel=False)
+    assert any(row["code"] == "QT_CPP_SYNTAX" for row in result["qml_failures"])
+    assert not any(qt_metadata(node) for node in result["nodes"])
+    with pytest.raises(QtCppError) as rejected:
+        read_cpp(path, root)
+    assert rejected.value.code == "QT_CPP_SYNTAX"
+    span = rejected.value.span
+    assert span and path.read_bytes()[span["start_byte"]:span["end_byte"]] in {b"emit", b"Q_EMIT"}
 
 
 def test_req_qml016_ac01_macro_override_order_preserves_prior_explicit_observation(tmp_path):
-    """Later source shadowing cannot revoke an earlier lexical annotation occurrence."""
+    """An unsupported later prefix rejects the whole overlay, including an earlier valid occurrence."""
     source = '''class Backend : public QObject { Q_OBJECT public: void run() {
  emit missing(1);
 #undef emit
  emit missing(2);
 } };'''
-    result = analysis(tmp_path, {"events.cpp": source})
-    emitted = sites(result, "emission")
-    assert len(emitted) == 1
-    metadata = qt_metadata(emitted[0])
-    span = metadata["span"]
-    assert (tmp_path / "events.cpp").read_bytes()[span["start_byte"]:span["end_byte"]] == b"missing(1)"
+    assert_rejected_override(tmp_path, source)
 
 
 def test_req_qml016_ac01_conditional_occurrence_keeps_uncertainty_without_delivery(tmp_path):
@@ -160,12 +168,9 @@ def test_req_qml016_ac01_explicit_annotation_owns_emission_mechanism(tmp_path, n
 
 @pytest.mark.parametrize("marker", ["emit", "Q_EMIT"])
 def test_req_qml016_ac01_override_cannot_recover_annotation_by_prefix(tmp_path, marker):
-    """Known bare signal admission cannot reauthorize a rejected annotation token."""
+    """A known signal cannot turn a rejected source prefix into a bare emission."""
     source = f"#define {marker} ordinary\nclass Backend : public QObject {{ Q_OBJECT signals: void ready(); public: void run() {{ {marker} ready(); }} }};"
-    result = analysis(tmp_path, {"events.cpp": source})
-    selected = sites(result, "emission")
-    assert len(selected) == 1
-    assert qt_metadata(selected[0])["explicit_emit"] is False
+    assert_rejected_override(tmp_path, source)
 
 
 @pytest.mark.parametrize("marker", ["emit", "Q_EMIT"])

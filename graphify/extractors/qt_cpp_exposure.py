@@ -5,13 +5,17 @@ from pathlib import Path
 import re
 
 from graphify.extractors.qt_cpp_facts import QtFacts, qt_metadata
-from graphify.extractors.qt_cpp_mapping import map_cpp
+from graphify.extractors.qt_cpp_accepted_index import _accepted_cpp_mapper
 from graphify.extractors.qt_cpp_properties import add_properties
 from graphify.extractors.qt_cpp_registration import add_literal_registrations, add_macro_registration, conditional_offset
 from graphify.extractors.qt_cpp_syntax import MAX_CPP_BYTES, QtCppError, lexical_code, read_cpp
 from graphify.extractors.qt_cpp_type_aliases import add_type_dependency_facts, type_dependency_source
 from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 from graphify.extractors.qt_cpp_api_types import add_api_fields, return_fields
+from graphify.extractors.qt_cpp_metaobject import add_metaobject_declarations
+from graphify.extractors.qt_cpp_test_macros import add_qt_test_facts, is_qt_test_source
+from graphify.extractors.qt_cpp_annotations import add_namespace_annotations
+from graphify.extractors.qt_cpp_syntax import walk
 
 _CPP = {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"}
 _QT = re.compile(rb"\b(?:QML_[A-Z_]+|Q_[A-Z_]+|QObject|QQml\w*|QQuickView|qmlRegister\w*|signals|slots)\b")
@@ -26,6 +30,8 @@ def is_qt_cpp_source(path, *, class_names=()):
     except OSError as exc:
         raise QtCppError("QT_CPP_READ", "Cannot read admitted C++ source") from exc
     code = lexical_code(source)
+    if is_qt_test_source(source, code):
+        return True
     if _QT.search(code) or re.search(rb"\bemit\s+[A-Za-z_]", code):
         return True
     # Admission hints never bind an endpoint: parsed qualification and accepted
@@ -40,8 +46,10 @@ def _failure(result, path, root, error):
     except ValueError:
         source = ""
     result.setdefault("qml_failures", []).append({"code": error.code, "source_file": source})
-    result.setdefault("diagnostics", []).append({"code": error.code, "severity": "error", "owner": "qt",
-                                                "source_file": source, "message": str(error)})
+    result.setdefault("diagnostics", []).append({"code": error.code, "severity": "error",
+                                                "owner": "cpp_test_context" if error.code == "QT_CPP_CONTEXT" else "qt",
+                                                "source_file": source, "message": str(error),
+                                                **({"span": error.span} if error.span else {})})
 
 
 def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
@@ -51,6 +59,8 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
     callables = {node["id"] for node in mapping.nodes if node.get("_callable") is True
                  and not node.get("_callable_class")}
     types = NativeTypeScope(mapping.unit, mapping, classes=classes, alias_nodes=alias_nodes)
+    add_namespace_annotations(mapping, facts, walk=walk)
+    add_qt_test_facts(mapping, facts)
 
     def source_owner(record):
         return record.get("node_id", "") if (record and record.get("status") == "resolved"
@@ -78,6 +88,9 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
         # marker or a guessed basename. Unknown header aliases remain opaque.
         canonical_bases = [types.resolve(name, record["span"]["start_byte"]) for name in bases]
         enclosing = mapping.owner_at(record["span"]["start_byte"])
+        # Actual own moc declarations have separate source/edge proof. QObject
+        # ancestry remains object-type evidence, never own-member authority.
+        metaobject = add_metaobject_declarations(mapping, facts, record, owned)
         facts.add("class", record["name"], record["span"],
                   owner=record["node_id"] or source_owner(enclosing) or None,
                   generic_target_id=record["node_id"], class_id=record["node_id"],
@@ -85,12 +98,13 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
                   is_definition=record["is_definition"],
                   api_declaration_conditional=conditional_offset(mapping.unit, record["span"]["start_byte"]),
                   is_qobject="Q_OBJECT" in macros or "QObject" in bases,
-                  source_q_object="Q_OBJECT" in macros, is_gadget="Q_GADGET" in macros, bases=bases,
+                  source_q_object="Q_OBJECT" in macros, is_gadget=bool(macros & {"Q_GADGET", "Q_GADGET_EXPORT"}), bases=bases,
                   canonical_base_names=canonical_bases,
                   canonical_base_status="resolved" if all(canonical_bases) else "unavailable",
                   canonical_base_access=base_access,
                   canonical_base_access_status="resolved" if len(base_access) == len(bases)
-                  and all(value in {"public", "protected", "private"} for value in base_access) else "unavailable")
+                  and all(value in {"public", "protected", "private"} for value in base_access) else "unavailable",
+                  **metaobject)
         add_macro_registration(mapping, facts, record)
         add_properties(mapping.unit, mapping, facts, record, types=types)
         add_api_fields(mapping, facts, record, types)
@@ -112,7 +126,7 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
                   **return_fields(mapping.unit, record, types))
 
 
-def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=None):
+def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=None, qt_test_contexts=None):
     """Use final canonical aggregate IDs; mutate fresh result slices only.
 
     Failure facts share the QML safety channel so update can reject incomplete Qt
@@ -121,6 +135,9 @@ def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=
     paths, per_file = list(paths), list(per_file)
     nodes = list(accepted_nodes) if accepted_nodes is not None else [node for result in per_file for node in result.get("nodes", [])]
     edges = list(accepted_edges) if accepted_edges is not None else [edge for result in per_file for edge in result.get("edges", [])]
+    # Each unit owns its syntax/records while one entry-cohort lookup snapshot
+    # survives this phase. Later dependency/Qt facts cannot enter that snapshot.
+    map_unit = _accepted_cpp_mapper(nodes, edges, root=Path(root))
     units, pending = [], []
     for path, result in zip(paths, per_file):
         try:
@@ -133,8 +150,8 @@ def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=
             if not is_qt_cpp_source(path):
                 pending.append((path, result))
                 continue
-            unit = read_cpp(Path(path), Path(root))
-            units.append((map_cpp(unit, nodes, edges, root=Path(root)), result))
+            unit = read_cpp(Path(path), Path(root), qt_test_context=qt_test_contexts.for_path(path) if qt_test_contexts else None)
+            units.append((map_unit(unit), result))
         except QtCppError as error:
             _failure(result, path, root, error)
     classes = [record for mapping, _ in units for record in mapping.classes]
@@ -149,8 +166,8 @@ def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=
         try:
             if (is_qt_cpp_source(path, class_names=[item["qualified_name"] for item in classes])
                     or ((units or classes) and type_dependency_source(path))):
-                unit = read_cpp(Path(path), Path(root))
-                units.append((map_cpp(unit, nodes, edges, root=Path(root)), result))
+                unit = read_cpp(Path(path), Path(root), qt_test_context=qt_test_contexts.for_path(path) if qt_test_contexts else None)
+                units.append((map_unit(unit), result))
         except QtCppError as error:
             _failure(result, path, root, error)
     # All accepted header shadows must exist before any source registration is

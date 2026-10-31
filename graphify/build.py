@@ -34,6 +34,8 @@ from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
 from .validate import VALID_CONFIDENCES, validate_extraction
+from .source_relationships import (FIELD as SOURCE_RELATIONSHIPS, canonicalize_keys,
+    is_source_graph, logical_endpoints, make_source_graph, merge_evidence, source_identity_ids, source_profile, storage_key)
 
 
 # Deterministic (AST) extractors emit source_location "L<line>"; the semantic
@@ -1079,6 +1081,24 @@ def edge_datas(G: nx.Graph, u: str, v: str) -> list[dict]:
     return [raw]
 
 
+def add_source_relationship(G: nx.Graph, src, tgt, attrs: dict) -> None:
+    """Compose accepted graph facts without re-running source normalization."""
+    attributes = {key: value for key, value in attrs.items() if key != "key"}
+    if not is_source_graph(G):
+        G.add_edge(src, tgt, **attributes)
+        return
+    src, tgt = logical_endpoints(G, src, tgt, attributes)
+    attributes["_src"], attributes["_tgt"] = src, tgt
+    key = storage_key(src, tgt, attributes.get("relation"))
+    if G.has_edge(src, tgt, key):
+        old = G.edges[src, tgt, key]
+        _execution_wins(old, attributes)
+        if not merge_evidence(old, attributes, rank=_CONFIDENCE_RANK,
+                              fold=_fold_also_seen, evidence_keys=_EVIDENCE_KEYS):
+            return
+    G.add_edge(src, tgt, key=key, **attributes)
+
+
 def has_parallel_links(links: "list[dict]", directed: bool = True) -> bool:
     """True when any two link dicts share the same endpoints.
 
@@ -1456,7 +1476,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # corrupt transport. Applying after accepted transformations clears only
     # actual node removal/role changes; the marker never supplies endpoint proof.
     from graphify.qt_import_retention import apply_import_retention, node_link_view, read_import_retention
+    if (isinstance(extraction.get("graph"), dict) and SOURCE_RELATIONSHIPS in extraction["graph"]
+            and ("links" in extraction or "multigraph" in extraction)):
+        from graphify.source_relationships import adopt_transport
+        extraction = adopt_transport(extraction)
     retained_import_ids = read_import_retention(extraction, is_placeholder=_is_external_stub)
+    _source_profile = source_profile(extraction.get("nodes", ()), extraction.get("graph"))
     _root = str(Path(root).resolve()) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
@@ -1611,7 +1636,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _doc_remap.get(n, n) if _hashable(n) else n for n in he["nodes"]
                 ]
 
-    G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
+    G = make_source_graph(extraction.get("nodes", ()), directed=directed, graph_metadata=({SOURCE_RELATIONSHIPS: {"contract_version": 1}} if _source_profile else None))
     for node in extraction.get("nodes", []):
         # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
         # by a buggy LLM extraction) so NetworkX add_node never raises
@@ -1666,7 +1691,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # canonical winner and the ambiguity decisions below don't flip run-to-run
     # with CPython's per-process string-hash seed (#1753) — the same reason the
     # edge-iteration loop further down sorts on purpose.
+    source_identities = source_identity_ids(G.nodes(data=True))
     for nid in sorted(node_set):
+        if nid in source_identities:
+            continue  # A typed source declaration is neither a semantic twin nor a ghost.
         attrs = G.nodes[nid]
         label = str(attrs.get("label", "")).strip()
         sf = str(attrs.get("source_file", ""))
@@ -1729,6 +1757,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
     _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for nid in sorted(node_set):
+        if nid in source_identities:
+            continue  # A typed source declaration is neither a semantic twin nor a ghost.
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
             continue  # AST nodes are never ghosts (strict check — see Pass 1)
@@ -1773,6 +1803,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # canonical winner" rule Pass 2's _loc_collisions already applies).
     if _ast_file_nodes:
         for nid in sorted(node_set):
+            if nid in source_identities:
+                continue
             if nid in _ghost_remap:
                 continue  # already resolved by the exact (sf, label) key
             attrs = G.nodes[nid]
@@ -1842,6 +1874,23 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
     dropped_schema_edges = 0
+    # Own-metaobject proof needs the complete ownership cohort, independently
+    # of sorted insertion order. Borrow copies with the same endpoint aliases
+    # already accepted above; domain validation remains in qt_metaobject.
+    qt_ownership_edges = []
+    for owned in extraction.get("edges", []):
+        if owned.get("context") != "qt_source_site":
+            continue
+        left, right = owned.get("source", owned.get("from")), owned.get("target", owned.get("to"))
+        if not isinstance(left, str) or not isinstance(right, str):
+            continue
+        left = left if left in node_set else norm_to_id.get(_normalize_id(left), left)
+        right = right if right in node_set else norm_to_id.get(_normalize_id(right), right)
+        qt_ownership_edges.append({**owned, "source": left, "target": right,
+                                   "source_file": _norm_source_file(owned.get("source_file", ""), _root)})
+    qt_ownership_edges = tuple(qt_ownership_edges)
+    from graphify.qt_metaobject import QtMetaobjectIndex
+    qt_metaobject_index = QtMetaobjectIndex(G.nodes, qt_ownership_edges)
     for edge in sorted(
         extraction.get("edges", []),
         key=lambda e: (
@@ -1957,14 +2006,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # gate so changing a relation cannot bypass endpoint/source authority.
         from graphify.qt_qml_projection import allows_qt_qml_edge, is_typed_qt_qml_edge
         if is_typed_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs) and not allows_qt_qml_edge(
-                G.nodes[src], G.nodes[tgt], attrs, source_id=src, target_id=tgt, nodes=G.nodes):
+                G.nodes[src], G.nodes[tgt], attrs, source_id=src, target_id=tgt, nodes=G.nodes,
+                edges=qt_ownership_edges, metaobject_index=qt_metaobject_index):
             continue
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
             from graphify.qml_projection import allows_qml_script_edge
             qml_script_edge = allows_qml_script_edge(G.nodes[src], G.nodes[tgt], attrs, target_id=tgt)
             qt_qml_edge = allows_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs,
-                                            source_id=src, target_id=tgt, nodes=G.nodes)
+                                            source_id=src, target_id=tgt, nodes=G.nodes,
+                                            edges=qt_ownership_edges, metaobject_index=qt_metaobject_index)
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
@@ -1998,6 +2049,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # causing display functions to show edges backwards.
         attrs["_src"] = src
         attrs["_tgt"] = tgt
+        if is_source_graph(G):
+            add_source_relationship(G, src, tgt, attrs)
+            continue
         # Before the drops below, so a runtime import that folds into a
         # type-only edge still clears its marker (#3159). The reverse-direction
         # duplicate that the undirected graph drops (#1061) is another file's
@@ -2069,32 +2123,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             ):
                 continue
             if existing_rel == attrs.get("relation"):
-                existing_conf = existing_attrs.get("confidence")
-                incoming_conf = attrs.get("confidence")
-                existing_rank = _CONFIDENCE_RANK.get(existing_conf, 0)
-                incoming_rank = _CONFIDENCE_RANK.get(incoming_conf, 0)
-                if existing_rank > incoming_rank:
-                    _fold_also_seen(existing_attrs, attrs)
+                if not merge_evidence(existing_attrs, attrs, rank=_CONFIDENCE_RANK,
+                                      fold=_fold_also_seen, evidence_keys=_EVIDENCE_KEYS):
                     continue
-                if existing_rank == incoming_rank:
-                    if existing_attrs.get("source_location") and not attrs.get("source_location"):
-                        _fold_also_seen(existing_attrs, attrs)
-                        continue
-                    existing_score = existing_attrs.get("confidence_score")
-                    incoming_score = attrs.get("confidence_score")
-                    if (
-                        existing_score is not None
-                        and incoming_score is not None
-                        and existing_score > incoming_score
-                    ):
-                        _fold_also_seen(existing_attrs, attrs)
-                        continue
-                _fold_also_seen(attrs, existing_attrs)
-                # add_edge merges into the stored dict: a field only the loser
-                # carried (its score, its line) would otherwise stay on the winner.
-                for _key in (*_EVIDENCE_KEYS, "also_seen"):
-                    if _key not in attrs:
-                        existing_attrs.pop(_key, None)
         G.add_edge(src, tgt, **attrs)
     if dropped_schema_edges:
         print(
@@ -2205,6 +2236,8 @@ def build(
                                               for ext in extractions))
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
     for ext in extractions:
+        if source_profile(ext.get("nodes", ()), ext.get("graph")):
+            combined["graph"] = {SOURCE_RELATIONSHIPS: {"contract_version": 1}}
         combined["nodes"].extend(ext.get("nodes", []))
         combined["edges"].extend(ext.get("edges", []))
         combined["hyperedges"].extend(ext.get("hyperedges", []))
@@ -2351,7 +2384,8 @@ def _read_existing_graph_data(graph_path: Path) -> dict | None:
         ) from exc
     from graphify.qt_import_retention import read_import_retention
     read_import_retention(data, is_placeholder=_is_external_stub)
-    return data
+    from graphify.source_relationships import adopt_transport
+    return adopt_transport(data)
 
 
 def _load_existing_graph(graph_path: Path, *, retention_policy: dict | None = None) -> "tuple[list, list, list, bool] | None":
@@ -3184,6 +3218,7 @@ def prefix_graph_for_global(
             data["_src"] = relabel[data["_src"]]
         if "_tgt" in data and data["_tgt"] in relabel:
             data["_tgt"] = relabel[data["_tgt"]]
+    canonicalize_keys(H)
     # Out-of-band hyperedges must be relabeled with the nodes (#2484, after
     # @oleksii-tumanov's diagnosis in PR #1691): relabel_nodes copies graph
     # attrs by reference, so member ids kept their pre-prefix form and dangled

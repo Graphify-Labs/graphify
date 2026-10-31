@@ -113,10 +113,16 @@ def test_req_qml017_ac02_native_ancestry_reads_only_accepted_complete_source_fac
                       "canonical_missing": ("canonical_base_names", None)}[corruption]
         declaration["metadata"]["qt"] = encode_qt({**md, key: value})
     before = copy.deepcopy((nodes, edges))
-    index = QtQmlAccessIndex(nodes, edges, root=tmp_path)
-    root = next(node for node in nodes if qml_metadata(node).get("kind") == "object"
-                and not qml_metadata(node).get("parent_scope_key"))
-    assert index.find_child(root["id"], "child").target_id is None
+    if corruption in {"definition", "status", "identity"}:
+        # INC77's resolved marker promises a complete canonical class. Keep
+        # these exact corruptions: contradictory transport rejects before lookup.
+        with pytest.raises(ValueError, match="^QT_METADATA: malformed source-owned metaobject evidence$"):
+            QtQmlAccessIndex(nodes, edges, root=tmp_path)
+    else:
+        index = QtQmlAccessIndex(nodes, edges, root=tmp_path)
+        root = next(node for node in nodes if qml_metadata(node).get("kind") == "object"
+                    and not qml_metadata(node).get("parent_scope_key"))
+        assert index.find_child(root["id"], "child").target_id is None
     assert (nodes, edges) == before
 
 

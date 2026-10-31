@@ -80,7 +80,7 @@ def test_req_qml012_ac02_rc_rejection_preserves_products_and_recovers(tmp_path, 
     compare_clean(tmp_path)
 
 
-@pytest.mark.parametrize("prior_policy", [23, 24, 25])
+@pytest.mark.parametrize("prior_policy", [23, 24, 25, 26])
 def test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits26(tmp_path, monkeypatch, prior_policy):
     """A pending policy upgrade cannot advance state before accepted publication.
 
@@ -108,7 +108,7 @@ def test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_co
     assert inspect_qt_analysis(tmp_path, out, collect_files(tmp_path, root=tmp_path)).changed
     build.write_bytes(RC_PREFIX.encode() + original)
     assert _rebuild_code(tmp_path, changed_paths=[build], no_cluster=True, acquire_lock=False)
-    assert policy.QT_POLICY_VERSION == 26
+    assert policy.QT_POLICY_VERSION == 27
     current = inspect_qt_analysis(tmp_path, out, collect_files(tmp_path, root=tmp_path))
     assert not current.changed and read_qt_fingerprint(out) == current.fingerprint
     assert (out / QT_STATE_FILE).read_bytes() != prior[QT_STATE_FILE]

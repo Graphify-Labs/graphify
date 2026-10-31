@@ -2,7 +2,8 @@ name: QML optional wheel
 
 on:
   pull_request:
-    branches: [v8, main, 'codex/qml-*']
+    # The same optional-wheel matrix covers stacked Qt integration reviews.
+    branches: [v8, main, 'codex/qml-*', 'codex/qt-*']
   push:
     branches: [v8, main]
 

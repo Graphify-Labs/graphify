@@ -53,7 +53,7 @@ class QmlProjectIndex(QmlModuleIndex):
             if self.native_index:
                 results.append(self.native_index.module_type(uri, major, minor, name, importer=importer))
             if self.project_index:
-                results.append(self.project_index.resolve_component(uri, name, major, minor))
+                results.append(self.project_index.resolve_component(uri, name, major, minor, importer=importer))
         return combine(results)
 
     def resolve_type(self, file: str, component_key: str, name: str) -> Resolution:

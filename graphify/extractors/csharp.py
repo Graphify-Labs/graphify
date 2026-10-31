@@ -506,6 +506,10 @@ class CsharpNameResolver:
         # exact known namespace. Dangle on ambiguity / no hit / unknown qualifier.
         if not isinstance(qualifier, str) or not qualifier:
             return None
+        # `global::` is a source-language root, never an alias or an enclosing
+        # namespace search. Unknown rooted scopes remain unresolved.
+        if qualifier.startswith("global::"):
+            return self.type_def_index.get((qualifier.removeprefix("global::"), label))
         in_scope = [
             entry for entry in self.aliases_by_file.get(source_file, {}).get(qualifier, [])
             if self._using_in_scope(entry[1], entry[2], source_node)

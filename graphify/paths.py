@@ -670,6 +670,10 @@ def load_node_link_graph(path_or_data):
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     if isinstance(data, dict):
+        # Validate typed storage before any compatibility adapter can repair a
+        # malformed collection or mode into an apparently accepted source graph.
+        from graphify.source_relationships import adopt_transport
+        data = adopt_transport(data)
         # Semantic loading is the scoped dependency boundary: paths' low-level
         # atomic writers must not acquire a top-level cycle through build.
         # Validate transport before NetworkX adoption and detach mutable policy.

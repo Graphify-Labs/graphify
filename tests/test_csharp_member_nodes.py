@@ -6,11 +6,9 @@ state was absent from the graph. C++ emits a node per data member with `defines`
 #2971 is adding the same for C structs, and #2220 gave Swift computed properties
 nodes. This brings C# to that line.
 
-Properties only, not fields. `ids.normalize_id` casefolds and strips leading
-underscores, so `_count` and `Count` are the same id: emitting both would hand
-the node to whichever the parser reached first, which is the private backing
-field, hiding the public member behind it. In C# the property is the state's
-public identity, so it is the half worth having first.
+INC-QML-71 extends the original property-only contract to fields using the same
+collision-aware allocator. `_count` and `Count` remain separate source members;
+the backing field cannot take the public property's node or callable identity.
 """
 from __future__ import annotations
 
@@ -88,8 +86,7 @@ def test_a_generic_parameter_typed_property_still_gets_a_node(tmp_path):
 
 
 def test_a_backing_field_does_not_take_the_property_node(tmp_path):
-    # `_count` and `Count` normalize to one id. The public member is the one to
-    # keep, and there is exactly one edge rather than two onto a shared node.
+    # Both source declarations survive, with separate IDs and owner edges.
     defines, r = _extract(tmp_path, {"S.cs": (
         "public class Counter {\n"
         "    private int _count;\n"
@@ -97,19 +94,20 @@ def test_a_backing_field_does_not_take_the_property_node(tmp_path):
         "}\n"
     )})
     assert (_find(r, "Counter"), _find(r, "Count")) in defines
-    assert len(defines) == 1
-    assert "_count" not in _labels(r)
+    assert (_find(r, "Counter"), _find(r, "_count")) in defines
+    assert len(defines) == 2
+    assert _find(r, "_count") != _find(r, "Count")
 
 
-def test_a_field_alone_makes_no_member_node_but_keeps_its_type_reference(tmp_path):
-    # Fields are out for now, and the reference to a field's type is untouched.
+def test_a_field_alone_keeps_its_member_node_and_type_reference(tmp_path):
+    # The new source member is additive; existing type references are untouched.
     defines, r = _extract(tmp_path, {"S.cs": (
         "public class Runner {\n"
         "    private readonly Worker _worker;\n"
         "}\n"
         "public class Worker { }\n"
     )})
-    assert defines == set()
+    assert defines == {(_find(r, "Runner"), _find(r, "_worker"))}
     references = {(e["source"], e["target"], e.get("context")) for e in r["edges"]
                   if e["relation"] == "references"}
     assert (_find(r, "Runner"), _find(r, "Worker"), "field") in references

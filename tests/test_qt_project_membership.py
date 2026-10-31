@@ -127,6 +127,13 @@ def test_req_qml020_ac02_source_projection_rejects_unproved_membership(tmp_path,
         declaration["metadata"]["qml"] = encode_metadata({key: value for key, value in md.items() if key != "raw_values"})
     borrowed = list(nodes)
     before = copy.deepcopy((nodes, edges, declaration))
+    if corruption == "foreign_module":
+        # INC67 exports promise a same-file module→source ownership chain.
+        # Moving only the module contradicts that transport before projection.
+        with pytest.raises(ValueError, match="^QML_METADATA: invalid build export ownership$"):
+            apply(tmp_path, nodes, edges, [declaration])
+        assert (nodes, edges, declaration) == before and borrowed == before[0]
+        return
     sites = apply(tmp_path, nodes, edges, [declaration])
     assert len(sites) == 1 and qml_metadata(sites[0])["status"] != "resolved"
     assert not qml_metadata(sites[0])["target_id"]

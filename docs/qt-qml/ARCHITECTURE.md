@@ -1339,3 +1339,100 @@ its unrelated SQL input at the existing dispatcher seam, preserving real Qt
 parsing, manifest persistence, retention and recovery. Keep missing-parser
 acceptance rejection separately protected; do not loosen the production guard,
 add an unrelated parser dependency or skip macOS to satisfy this test.
+
+
+## D38 — Versioned Qt 6.12 source coverage and finite evidence
+
+The extension remains a bounded static analyzer. A pinned official API inventory
+accounts for documented owners, overloads, properties, variables, macros and QML
+members; it does not confer native identity or prove every runtime mechanism.
+External independently versioned modules and missing documentation retain explicit
+provenance gaps. No SDK loading, build hook, constructor or corpus code executes.
+
+Use a frozen installed baseline against exact committed private input blobs,
+then publish neutral reproductions only. The application checkout, existing graph,
+watcher and installed tool are separate adoption boundaries and remain untouched.
+Member declarations, enum values, annotations, generated tooling fields and literal
+project/export metadata retain their respective source owners. Source annotations
+and tooling descriptions cannot replace canonical C++/engine/provider evidence.
+
+Correct confirmed gaps in separate increments under REQ-QML-022. Generic source
+facts, Qt semantic facts and tooling-only hints have different authority. Preserve
+source bytes, uncertainty, unsupported diagnostics, cache invalidation and accepted
+product retention. New producers require direct/facade/export/reload and relevant
+cold/warm/full/incremental evidence before their criteria become verified.
+
+## D39 — Original-source semantics across compatibility parse views
+
+One file read owns immutable original bytes and any aligned compatibility view.
+The tree proves syntactic ownership; original tokens govern parameter operators,
+signature identity, optional defaults and exported source ranges. A parse-view
+pointer-to-reference substitution cannot become semantic reference authority.
+Alignment is necessary, not sufficient: each local adapter still needs its exact
+source/span/role proof, with final clean Qt-overlay admission. Generic C++ keeps
+its established marked partial-input contract. Reject unaligned internal buffers
+through the source-integrity retention channel rather than a normalized fallback.
+
+Reject blanket macro expansion, invented names/braces and ambient mutable source
+state. When an unbraced source test-data declaration needs an inert statement
+view, retain a distinct opaque parsed role and the real implicit body-only
+source scope; do not publish a synthesized declaration or wider binding. Reuse
+the existing typed source/containment and persistence owners. SDK runtime,
+preprocessor outcomes and generated executable behavior remain unverified.
+
+The same separation applies to incomplete borrowed resolver contexts: unknown
+ownership is an invocation-local availability state, never a metadata flag that
+can repair canonical source or corrupt complete graph transport. Complete graph
+assembly/export still requires all promised ownership evidence. These decisions
+extend D38's finite static profile without adding another runtime or executing
+analyzed code.
+
+## D40 — Typed source relationships retain parallel facts
+
+The new C# local-function profile has real declaration containment and a direct
+call between the same endpoints. A simple Graph projection cannot own both.
+Inputs carrying the validated typed source-role contract therefore use an
+optional MultiGraph/MultiDiGraph storage profile with logical source/target and
+relation identity. Ordinary legacy inputs retain their Graph/DiGraph behavior;
+this is not a mandatory repository-wide migration. Persist the standard graph
+mode and bounded deterministic storage keys after endpoint remapping. Storage
+selection confers no callable, Qt or runtime authority.
+
+Reject overwriting a relationship, duplicating mutable owner IDs, fabricated
+scope nodes, and persistence-only sidecars that still lose in-memory facts.
+Different relationships and opposite logical directions remain independent;
+duplicate evidence for one relationship retains the existing confidence/source
+precedence. All existing schema, source and Qt projection gates precede storage.
+Malformed typed activation/direction transport rejects boundedly.
+
+Source-edge consumers enumerate all relations, including query/explain, wiki,
+HTML, notes/canvas, database export, diff and merged/global graphs. Keyed cleanup
+removes only its owned relation. Clustering and topology-ratio/centrality work may
+use an explicit derived simple projection without replacing the accepted source
+graph. Test existing consumers before broadening this optional profile to other
+producer families. Complete source/durable/failure/platform evidence is required
+before this compatibility increment is verified.
+
+## D41 — Source-key proof may eliminate irrelevant unknown build effects
+
+A global veto is safe but can reject a literal source/root profile because of
+independent source appends in foreach loops. Analyze a bounded source-data domain
+only to prove irrelevance; never execute configuration or turn generated targets
+into positive owners. Known single-target roles and complete finite source values
+must exclude both candidate-target root/identity mutation or collision and competing ownership of
+its translation unit. Unknown values/effects retain the existing veto. Guards may
+join finite possibilities without evaluating runtime MATCHES. Original metadata
+bytes and a fresh semantic replay own this negative proof; a flag/checksum cannot
+replace missing evidence. Positive build roots stay literal and caller-admitted.
+This avoids a general CMake interpreter and preserves source/runtime separation.
+
+## D42 — Run-owned accepted-source index, unit-owned mapping records
+
+Native enrichment uses one immutable-in-practice accepted-source snapshot per
+analysis run for path/definition identity, node lookup and parent relationships.
+Individual parsed units borrow that index; their syntax and mutable resolution
+records remain independent. Avoid retaining identical whole-corpus indexes for
+every source unit, and avoid a process-global cache with stale roots or facts.
+Standalone mapper calls keep their own fresh snapshot. This changes storage
+ownership only; source authority, iteration order, ambiguity and publication
+ordering must remain equivalent under deterministic characterization.

@@ -1,6 +1,7 @@
 """Bounded literal/call syntax over comment/string-masked accepted C++ bytes."""
 from __future__ import annotations
 
+from bisect import bisect_right
 import json
 import re
 
@@ -76,7 +77,15 @@ def calls(unit, mapping, names, *, include_explicit=False):
     """Only executable function-body occurrences, never declaration signatures."""
     explicit = _explicit_calls(unit) if include_explicit else set()
     explicit_ends = {end: start for start, end in explicit}
+    # QtTest column type/name payloads are source-only, not evaluated calls.
+    # Index exact producer ranges once; real assertion arguments remain visible.
+    data = sorted((record["start"], record["end"]) for record in unit.qt_test_macros
+                  if record["kind"] == "test_data")
+    data_starts = [start for start, _ in data]
     for match in _CALLEE.finditer(unit.code):
+        position = bisect_right(data_starts, match.start()) - 1
+        if position >= 0 and match.start() < data[position][1]:
+            continue
         left = match.group().rfind(b"(") + match.start()
         callee = unit.code[match.start():left].decode().strip()
         plain = re.sub(r"<.*>", "", callee).strip()
@@ -134,6 +143,6 @@ def conditional_at(unit, position):
     from graphify.extractors.qt_cpp_syntax import walk
     for syntax in walk(unit.root):
         if syntax.type in {"if_statement", "switch_statement", "conditional_expression", "preproc_if", "preproc_ifdef"}:
-            if syntax.start_byte <= position < syntax.end_byte:
+            if not unit.include_guards.accepts(syntax) and syntax.start_byte <= position < syntax.end_byte:
                 return True
     return False

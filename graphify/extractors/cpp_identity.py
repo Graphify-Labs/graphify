@@ -109,7 +109,7 @@ class CppIdentity:
         """A basename collision is not an alternative to lexical alias proof."""
         return identity in self.alias_ids
 
-    def constructor(self, node, name, parent_id):
+    def constructor(self, node, name, parent_id, *, signature_source=None):
         """Inline constructors use the same exact owner/signature as prototypes."""
         parent = node.parent
         while parent and parent.type not in {"class_specifier", "struct_specifier", "translation_unit"}:
@@ -122,7 +122,7 @@ class CppIdentity:
         # Keep the established lexical owner/signature suffix. Its authorization
         # is independent of generic file/declaration collision salting; the real
         # parent edge still uses the allocated declaration ID.
-        return constructor_id(record["id"], name, node, self.source, record["qualified"])
+        return constructor_id(record["id"], name, node, self.source if signature_source is None else signature_source, record["qualified"])
 
     def preferred(self, record):
         group = self.groups[record["qualified"]]

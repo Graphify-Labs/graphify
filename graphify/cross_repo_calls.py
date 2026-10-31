@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
-from typing import TYPE_CHECKING
+from graphify.build import add_source_relationship, edge_datas
+from graphify.source_relationships import is_source_graph, logical_endpoints
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import networkx as nx
@@ -101,8 +103,11 @@ def _drop_previous_output(merged: "nx.Graph") -> None:
     a single ``merge-graphs`` of the same inputs, and it is also how a repo whose
     types moved stops answering for calls it no longer owns.
     """
-    stale = [(u, v) for u, v, data in merged.edges(data=True)
-             if data.get(CROSS_REPO_CALL_MARKER)]
+    # Only this resolver's keyed fact is stale; a parallel contains/source call
+    # must survive cleanup even when it shares both endpoints.
+    stale = ([(u, v, key) for u, v, key, data in cast("nx.MultiGraph", merged).edges(keys=True, data=True)
+              if data.get(CROSS_REPO_CALL_MARKER)] if merged.is_multigraph() else
+             [(u, v) for u, v, data in merged.edges(data=True) if data.get(CROSS_REPO_CALL_MARKER)])
     merged.remove_edges_from(stale)
 
 
@@ -300,11 +305,12 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 if len(targets) != 1:
                     continue
                 target = targets[0]
-            if target == caller or merged.has_edge(caller, target):
+            existing = edge_datas(merged, caller, target) if merged.has_edge(caller, target) else ()
+            if target == caller or (any(data.get("relation") == "calls" and
+                    logical_endpoints(merged, caller, target, data) == (caller, target) for data in existing)
+                    if is_source_graph(merged) else bool(existing)):
                 continue
-            merged.add_edge(
-                caller,
-                target,
+            add_source_relationship(merged, caller, target, dict(
                 relation="calls",
                 context="cross_repo",
                 confidence="INFERRED",
@@ -320,6 +326,6 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 _src=caller,
                 _tgt=target,
                 **{CROSS_REPO_CALL_MARKER: True},
-            )
+            ))
             added += 1
     return added

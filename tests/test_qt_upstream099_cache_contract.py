@@ -32,7 +32,7 @@ def current_cache(monkeypatch):
     cache._flush_stat_index()
 
 
-@pytest.mark.parametrize("old_schema", [23, 31])
+@pytest.mark.parametrize("old_schema", [23, 31, 32])
 def test_req_qml011_ac01_ac03_ac04_upstream099_retires_both_predecessors(
         tmp_path, monkeypatch, current_cache, old_schema):
     """Actual predecessor writes miss; a fresh/warm producer keeps semantic bytes."""
@@ -44,7 +44,7 @@ def test_req_qml011_ac01_ac03_ac04_upstream099_retires_both_predecessors(
                                    "edges": []}, root=tmp_path)
         old_directory = cache.cache_dir(tmp_path)
         assert list(old_directory.glob("*.json"))
-    assert cache._AST_CACHE_SCHEMA == 32
+    assert cache._AST_CACHE_SCHEMA == 33
     assert cache.load_cached(source, root=tmp_path) is None
     assert not old_directory.exists()
     cold = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)

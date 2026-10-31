@@ -12,10 +12,11 @@ from graphify.qt_qml_bridge import build_qt_qml_bridge
 
 
 class QtQmlAccessIndex:
-    def __init__(self, nodes, edges, *, root, project_index=None):
+    def __init__(self, nodes, edges, *, root, project_index=None, unknown_metaobject_ownership=()):
         self.nodes = {node["id"]: node for node in nodes}
         self.project = project_index or QtProjectIndex(nodes, edges, root=root)
-        self.native = build_qt_qml_bridge(nodes, edges, root=root, project_index=self.project)
+        self.native = build_qt_qml_bridge(nodes, edges, root=root, project_index=self.project,
+                                        unknown_metaobject_ownership=unknown_metaobject_ownership)
         self.qml = build_qml_index(nodes, edges, root=root, native_index=self.native, project_index=self.project)
         self.loads, self.handles, self.names = {}, {}, {}
         self.declarations, self.unsafe_parent_components, self.qobject_types = {}, set(), {}

@@ -181,3 +181,22 @@ per-case wheel-byte attestation. Exact counts, source/native artifact evidence,
 failed advisory scans, baseline typing and physical interaction/runtime limits
 belong to the canonical checkpoint. Documentation follow-up revisions retain
 their own normal PR validation through the [PR checks](https://github.com/SlinkyRamey/graphify/pull/7/checks).
+
+
+## Qt 6.12 corrective branch evidence
+
+The source corrections in INC-QML-61 onward are being verified locally on Windows
+x64/Python3.12 with the existing frozen all-extras profile and pinned grammars.
+The optional-wheel native Windows/macOS selection includes `test_qt_`,
+`test_qml_`, `test_upstream_qt_`, `test_cpp_`, `test_csharp_`, `test_field_call_`
+and `test_source_relationship_` modules. Existing-core grammar dependencies and
+clean QML/core smoke boundaries remain; Linux retains the full suite. New hosted runs and final isolated QML/core consumers are still
+pending. Historical successful lanes above do not verify this new working source.
+No Qt SDK/runtime execution or cross-platform application build is inferred.
+
+The final local corrective profile uses the previously qualified native Bash/sh
+and interpreter wrappers in process-local PATH, never the Windows WSL launcher.
+An initial misconfigured full run was cancelled before completion and its two
+faithful shell failures retained separately; it does not count as a passed full
+run. The corrected full gate, source-matched isolated wheel consumers and hosted
+matrix retain their own source/revision identities and exclusions.

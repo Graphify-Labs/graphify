@@ -195,7 +195,7 @@ def test_req_qml008_ac02_multiple_real_class_bodies_are_not_forward_declarations
 
 @pytest.mark.parametrize("body", [False, None])
 def test_req_qml008_ac02_missing_body_proof_cannot_become_a_native_provider(tmp_path, body):
-    """Literal registration tolerates a forward declaration, but not absent definition proof."""
+    """A resolved own-metaobject promise cannot survive removal of its accepted definition proof."""
     from graphify.extractors.qt_cpp_facts import update_qt
     from graphify.qt_event_index import QtEventIndex
     from graphify.qt_qml_bridge import build_qt_qml_bridge
@@ -211,10 +211,14 @@ def test_req_qml008_ac02_missing_body_proof_cannot_become_a_native_provider(tmp_
     for node in nodes:
         if qt_metadata(node).get("kind") == "class" and node["source_file"] == "backend.hpp":
             update_qt(node, is_definition=body)
-    assert QtEventIndex(nodes).class_name("Shared::Backend") == ""
-    unsupported = build_qt_qml_bridge(nodes, result["edges"], root=tmp_path)
-    assert unsupported.module_type("Demo", 1, 0, "Backend").status == "unavailable"
-    assert unsupported.unresolved[providers[0]["id"]]["reason"] == "native_class_definition_unavailable"
+    before = copy.deepcopy(nodes)
+    # INC77 distinguishes this corrupted positive promise from a fresh legal
+    # forward declaration, which still remains ordinary unavailable source.
+    with pytest.raises(ValueError, match="QT_METADATA"):
+        QtEventIndex(nodes, result["edges"])
+    with pytest.raises(ValueError, match="QT_METADATA"):
+        build_qt_qml_bridge(nodes, result["edges"], root=tmp_path)
+    assert nodes == before
 
 
 def test_req_qml008_ac02_external_and_function_local_classes_keep_unknown_ownership(tmp_path):

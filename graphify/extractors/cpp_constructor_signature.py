@@ -61,7 +61,13 @@ def _parameter(parameter, source, owner):
         cv = sorted(_read_text(child, source) for child in declarator.children if child.type == "type_qualifier")
         if any(value not in {"const", "volatile"} for value in cv):
             return ""
-        symbol = "*" if "pointer" in declarator.type else "&&" if any(child.type == "&&" for child in declarator.children) else "&"
+        # Compatibility ASTs may admit a rejected unnamed pointer through an
+        # abstract-reference parse view. Exact original operator bytes retain
+        # pointer/reference overload identity without creating a named binder.
+        operators = [child for child in declarator.children if child.type in {"*", "&", "&&"}]
+        symbol = _read_text(operators[0], source) if len(operators) == 1 else ""
+        if symbol not in {"*", "&", "&&"}:
+            return ""
         layers.append([symbol, cv])
         declarator = declarator.child_by_field_name("declarator") or next(
             (child for child in declarator.named_children if child.type != "type_qualifier"), None)

@@ -57,7 +57,7 @@ def test_req_qml016_ac01_missing_or_corrupt_base_access_rejects_pointer_only(tmp
                          "shape": {"canonical_base_access": [{}]},
                          "status": {"canonical_base_access_status": "unavailable"}}[invalid])
     before = copy.deepcopy(nodes)
-    index = QtEventIndex(nodes)
+    index = QtEventIndex(nodes, result["edges"])
     endpoint = {"form": "member_pointer", "class_name": "Child", "member_name": "changed"}
     result = index.member(endpoint, "Child", role="signal")
     assert result.status == "unavailable" and result.reason == "inheritance_access_unavailable"
