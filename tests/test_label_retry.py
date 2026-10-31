@@ -11,6 +11,31 @@ import pytest
 from graphify import llm as llm_mod
 
 
+def _labels_for(
+    prompt: str, unparseable: set[int] | frozenset[int] = frozenset()
+) -> str:
+    """Label every community in ``prompt``; garbage if any id is unparseable."""
+    cids_in_prompt = [int(m) for m in re.findall(r"Community (\d+):", prompt)]
+    if unparseable & set(cids_in_prompt):
+        return "{this is not valid json, missing quotes"
+    return json.dumps({str(cid): f"Label {cid}" for cid in cids_in_prompt})
+
+
+def _make_sequenced_llm_stub(
+    first_reply: str,
+    prompts: list[list[int]],
+    unparseable: set[int] | frozenset[int] = frozenset(),
+):
+    """Emit ``first_reply`` on the initial LLM call, then delegate to ``_labels_for``."""
+    def fake_call_llm(prompt: str, **_kwargs) -> str:
+        prompts.append([int(m) for m in re.findall(r"Community (\d+):", prompt)])
+        if len(prompts) == 1:
+            return first_reply
+        return _labels_for(prompt, unparseable=unparseable)
+
+    return fake_call_llm
+
+
 def test_label_batch_recovers_via_split_on_invalid_json(monkeypatch):
     """Demonstrates the bug fix.
 
@@ -25,60 +50,40 @@ def test_label_batch_recovers_via_split_on_invalid_json(monkeypatch):
         "Community 137: build_graph, cluster_nodes",
         "Community 201: render_route, handle_request",
     ]
-    call_count = {"n": 0}
-
-    def fake_call_llm(prompt: str, **_kwargs) -> str:
-        """First call (4 communities): returns broken JSON to trigger retry.
-        Subsequent calls (<=2 communities): return a clean JSON object
-        labeling whatever community IDs appear in the prompt.
-        """
-        call_count["n"] += 1
-        cids_in_prompt = [int(m) for m in re.findall(r"Community (\d+):", prompt)]
-        if call_count["n"] == 1:
-            return "{this is not valid json, missing quotes"
-        return json.dumps({str(cid): f"Label {cid}" for cid in cids_in_prompt})
-
-    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+    prompts: list[list[int]] = []
+    monkeypatch.setattr(
+        llm_mod,
+        "_call_llm",
+        _make_sequenced_llm_stub("{this is not valid json, missing quotes", prompts),
+    )
 
     result = llm_mod._label_batch_with_retry(
         batch_cids, batch_lines, backend="gemini", model=None,
     )
 
     assert result == {42: "Label 42", 99: "Label 99", 137: "Label 137", 201: "Label 201"}
-    assert call_count["n"] >= 2
+    assert len(prompts) >= 2
 
 
 def test_label_batch_recovers_when_json_is_valid_but_incomplete(monkeypatch):
     """A truncated object can salvage valid pairs without covering the batch."""
     batch_cids = [42, 99, 137, 201]
     batch_lines = [f"Community {cid}: node_{cid}" for cid in batch_cids]
-    call_count = {"n": 0}
-
-    def fake_call_llm(prompt: str, **_kwargs) -> str:
-        call_count["n"] += 1
-        cids_in_prompt = [int(m) for m in re.findall(r"Community (\d+):", prompt)]
-        if call_count["n"] == 1:
-            # The salvage parser can recover these pairs, but the response is
-            # incomplete and must still enter the existing split-retry path.
-            return '{"42":"Label 42","99":"Label 99","137":"Label 137"'
-        return json.dumps({str(cid): f"Label {cid}" for cid in cids_in_prompt})
-
-    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+    prompts: list[list[int]] = []
+    monkeypatch.setattr(
+        llm_mod,
+        "_call_llm",
+        _make_sequenced_llm_stub(
+            '{"42":"Label 42","99":"Label 99","137":"Label 137"', prompts
+        ),
+    )
 
     result = llm_mod._label_batch_with_retry(
         batch_cids, batch_lines, backend="gemini", model=None,
     )
 
     assert result == {cid: f"Label {cid}" for cid in batch_cids}
-    assert call_count["n"] == 2
-
-
-def _labels_for(prompt: str, unparseable: set[int]) -> str:
-    """Label every community in ``prompt``; garbage if any id is unparseable."""
-    cids_in_prompt = [int(m) for m in re.findall(r"Community (\d+):", prompt)]
-    if unparseable & set(cids_in_prompt):
-        return "{this is not valid json, missing quotes"
-    return json.dumps({str(cid): f"Label {cid}" for cid in cids_in_prompt})
+    assert len(prompts) == 2
 
 
 def test_a_missing_id_that_never_parses_keeps_the_labels_already_had(monkeypatch):
@@ -92,14 +97,13 @@ def test_a_missing_id_that_never_parses_keeps_the_labels_already_had(monkeypatch
     batch_cids = [42, 99, 137, 201]
     batch_lines = [f"Community {cid}: node_{cid}" for cid in batch_cids]
     prompts: list[list[int]] = []
-
-    def fake_call_llm(prompt: str, **_kwargs) -> str:
-        prompts.append([int(m) for m in re.findall(r"Community (\d+):", prompt)])
-        if len(prompts) == 1:
-            return '{"42":"Label 42","99":"Label 99"'
-        return _labels_for(prompt, unparseable={137})
-
-    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        llm_mod,
+        "_call_llm",
+        _make_sequenced_llm_stub(
+            '{"42":"Label 42","99":"Label 99"', prompts, unparseable={137}
+        ),
+    )
 
     result = llm_mod._label_batch_with_retry(
         batch_cids, batch_lines, backend="gemini", model=None,
@@ -115,14 +119,13 @@ def test_a_half_that_never_parses_does_not_discard_the_other_half(monkeypatch):
     batch_cids = [42, 99, 137, 201]
     batch_lines = [f"Community {cid}: node_{cid}" for cid in batch_cids]
     prompts: list[list[int]] = []
-
-    def fake_call_llm(prompt: str, **_kwargs) -> str:
-        prompts.append([int(m) for m in re.findall(r"Community (\d+):", prompt)])
-        if len(prompts) == 1:
-            return "{this is not valid json, missing quotes"
-        return _labels_for(prompt, unparseable={137})
-
-    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        llm_mod,
+        "_call_llm",
+        _make_sequenced_llm_stub(
+            "{this is not valid json, missing quotes", prompts, unparseable={137}
+        ),
+    )
 
     result = llm_mod._label_batch_with_retry(
         batch_cids, batch_lines, backend="gemini", model=None,
@@ -139,8 +142,9 @@ def test_a_batch_that_never_parses_still_raises(monkeypatch):
         llm_mod, "_call_llm", lambda prompt, **_kwargs: "{not json at all",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         llm_mod._label_batch_with_retry(
             [1, 2, 3], ["Community 1: a", "Community 2: b", "Community 3: c"],
             backend="gemini", model=None,
         )
+    assert "not parseable JSON" in str(exc_info.value)

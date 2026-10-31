@@ -335,30 +335,36 @@ def test_adaptive_retry_re_raises_unrelated_errors(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_looks_like_timeout_matches_concrete_classes():
+def test_looks_like_timeout_matches_subprocess():
     import subprocess
+
+    assert llm._looks_like_timeout(
+        subprocess.TimeoutExpired(["cmd"], 30)
+    )
+
+
+@pytest.mark.parametrize(
+    "module_name, exception_name, kwargs",
+    [
+        ("openai", "APITimeoutError", "request"),
+        ("anthropic", "APITimeoutError", "request"),
+        ("botocore.exceptions", "ReadTimeoutError", "endpoint_url"),
+        ("botocore.exceptions", "ConnectTimeoutError", "endpoint_url"),
+    ],
+)
+def test_looks_like_timeout_matches_concrete_classes(
+    module_name, exception_name, kwargs
+):
     from unittest.mock import MagicMock
 
-    assert llm._looks_like_timeout(subprocess.TimeoutExpired(["cmd"], 30))
+    module = pytest.importorskip(module_name)
+    exception_class = getattr(module, exception_name)
 
-    try:
-        import openai
-        assert llm._looks_like_timeout(openai.APITimeoutError(request=MagicMock()))
-    except ImportError:
-        pass
+    arguments = {
+        kwargs: MagicMock() if kwargs == "request" else "http://test"
+    }
 
-    try:
-        import anthropic
-        assert llm._looks_like_timeout(anthropic.APITimeoutError(request=MagicMock()))
-    except ImportError:
-        pass
-
-    try:
-        import botocore.exceptions
-        assert llm._looks_like_timeout(botocore.exceptions.ReadTimeoutError(endpoint_url="http://test"))
-        assert llm._looks_like_timeout(botocore.exceptions.ConnectTimeoutError(endpoint_url="http://test"))
-    except ImportError:
-        pass
+    assert llm._looks_like_timeout(exception_class(**arguments))
 
 
 def test_looks_like_timeout_ignores_unrelated_errors():

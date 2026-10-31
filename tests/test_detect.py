@@ -120,17 +120,26 @@ def test_detect_warns_small_corpus():
     assert result["needs_graph"] is False
     assert result["warning"] is not None
 
-def test_detect_skips_noise_dot_dirs():
-    """Noise dot dirs (.next, .nuxt, .graphify cache, …) are skipped (#873).
-    Non-noise dot dirs (.github, .claude, …) are now allowed through."""
+@pytest.fixture
+def detected_fixture_paths():
     result = detect(FIXTURES)
-    for files in result["files"].values():
-        for f in files:
-            # graphify's own cache is always skipped
-            assert "/.graphify/" not in f
-            # well-known framework caches are always skipped
-            for noise in ("/.next/", "/.nuxt/", "/.turbo/", "/.angular/"):
-                assert noise not in f
+    return [
+        file_path
+        for files in result["files"].values()
+        for file_path in files
+    ]
+
+
+@pytest.mark.parametrize(
+    "noise_dir",
+    [".graphify", ".next", ".nuxt", ".turbo", ".angular"],
+)
+def test_detect_skips_noise_dot_dirs(noise_dir, detected_fixture_paths):
+    """Noise directories must not appear in detected source files (#873)."""
+    assert not any(
+        f"/{noise_dir}/" in file_path
+        for file_path in detected_fixture_paths
+    ), f"Directory {noise_dir} should be ignored"
 
 
 def test_detect_skips_obsidian_vault_metadata_dirs(tmp_path):
@@ -1816,20 +1825,26 @@ def test_is_ignored_cache_matches_uncached_results(tmp_path):
     assert not _is_ignored(tmp_path / "logs" / "keep.log", tmp_path, patterns)
     assert _is_ignored(tmp_path / "logs" / "drop.log", tmp_path, patterns)
 
+@pytest.fixture
+def counting_ignore_cache():
+    """Create a cache that records how often each path is evaluated."""
+    eval_counts = {}
 
-def test_is_ignored_cache_evaluates_each_dir_once():
-    """Siblings under the same subtree must share the cached parent result (#1235).
+    class CountingCache(dict):
+        def __setitem__(self, key, value):
+            eval_counts[key] = eval_counts.get(key, 0) + 1
+            super().__setitem__(key, value)
 
-    Counts how many times each unique target path is evaluated through the
-    cache: every directory (ancestor) should be evaluated exactly once across
-    a multi-file subtree rather than once per descendant file.
-    """
+    return CountingCache(), eval_counts
+
+
+def test_is_ignored_cache_evaluates_each_dir_once(counting_ignore_cache):
+    """Siblings under the same subtree must share cached parent results (#1235)."""
     from graphify.detect import _is_ignored
 
     root = Path("/repo")
-    patterns = [(root, "*.tmp")]  # non-empty so _eval runs
+    patterns = [(root, "*.tmp")]
 
-    # A subtree where many files share the same ancestor directories.
     files = [
         root / "a" / "b" / "f1.py",
         root / "a" / "b" / "f2.py",
@@ -1838,29 +1853,20 @@ def test_is_ignored_cache_evaluates_each_dir_once():
         root / "a" / "c" / "f5.py",
     ]
 
-    eval_counts: dict[Path, int] = {}
+    cache, eval_counts = counting_ignore_cache
 
-    # A dict subclass records every cache write. Since _eval writes to the
-    # cache exactly once per computed target (and reads short-circuit before
-    # any write), one write == one evaluation of that path.
-    class CountingCache(dict):
-        def __setitem__(self, key, value):
-            eval_counts[key] = eval_counts.get(key, 0) + 1
-            super().__setitem__(key, value)
-
-    cache = CountingCache()
     for f in files:
         _is_ignored(f, root, patterns, _cache=cache)
 
-    # Each unique path (files + ancestor dirs) must be computed exactly once.
     for target, count in eval_counts.items():
-        assert count == 1, f"{target} evaluated {count} times, expected 1 (cache miss)"
+        assert count == 1, (
+            f"{target} evaluated {count} times, expected 1 (cache miss)"
+        )
 
-    # Shared ancestors must be present and counted only once each.
     assert eval_counts[root / "a"] == 1
     assert eval_counts[root / "a" / "b"] == 1
     assert eval_counts[root / "a" / "c"] == 1
-    # All five distinct files are computed once each.
+
     for f in files:
         assert eval_counts[f] == 1
 
@@ -1912,42 +1918,57 @@ def test_ignored_dir_pruned_walk_never_lists_contents(tmp_path, monkeypatch):
     ignored = as_posix_list(result["ignored"])
     assert sum("graphify-notes" in p for p in ignored) == 1
 
+@pytest.fixture
+def scan_ignore_tree(tmp_path):
+    """Prepare ignored and retained files for the scan-cost test."""
+    n_ignored_dirs = 100
+    n_ignored_files_per_dir = 20
 
-def test_scan_ignore_cost_is_per_directory_not_per_file(tmp_path, monkeypatch):
-    """On a 2,000-file tree under an ignored dir, ignore evaluation is O(dirs).
+    (tmp_path / ".graphifyignore").write_text(
+        "graphify-notes/\n", encoding="utf-8"
+    )
 
-    Counts _is_scan_ignored and _is_ignored invocations during detect(): the
-    ignored subtree must cost exactly one directory-level check — never one
-    per contained file (the 29k-file defect shape).
-    """
-    import graphify.detect as det
-
-    n_ignored_dirs, n_ignored_files_per_dir = 100, 20  # 2,000 ignored files
-    (tmp_path / ".graphifyignore").write_text("graphify-notes/\n")
     for d in range(n_ignored_dirs):
         sub = tmp_path / "graphify-notes" / f"note-dir-{d:03d}"
         sub.mkdir(parents=True)
+
         for f in range(n_ignored_files_per_dir):
-            (sub / f"note-{f:02d}.md").write_text("# note")
+            (sub / f"note-{f:02d}.md").write_text(
+                "# note", encoding="utf-8"
+            )
+
     kept = 0
+
     for d in range(5):
         sub = tmp_path / "src" / f"pkg{d}"
         sub.mkdir(parents=True)
+
         for f in range(10):
-            (sub / f"mod{f}.py").write_text("x = 1")
+            (sub / f"mod{f}.py").write_text(
+                "x = 1", encoding="utf-8"
+            )
             kept += 1
 
+    return kept, n_ignored_dirs
+
+@pytest.fixture
+def scan_ignore_call_counts(monkeypatch):
+    """Monitor calls to the scan and ignore functions."""
+    import graphify.detect as det
+
     scan_calls = {"total": 0, "under_ignored": 0}
+    ignored_calls = {"total": 0}
+
     real_scan = det._is_scan_ignored
+    real_is_ignored = det._is_ignored
 
     def counting_scan(path, *args, **kwargs):
         scan_calls["total"] += 1
+
         if "graphify-notes" in path.parts:
             scan_calls["under_ignored"] += 1
-        return real_scan(path, *args, **kwargs)
 
-    ignored_calls = {"total": 0}
-    real_is_ignored = det._is_ignored
+        return real_scan(path, *args, **kwargs)
 
     def counting_is_ignored(*args, **kwargs):
         ignored_calls["total"] += 1
@@ -1955,23 +1976,38 @@ def test_scan_ignore_cost_is_per_directory_not_per_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(det, "_is_scan_ignored", counting_scan)
     monkeypatch.setattr(det, "_is_ignored", counting_is_ignored)
+
+    return scan_calls, ignored_calls
+
+
+def test_scan_ignore_cost_is_per_directory_not_per_file(
+    tmp_path, scan_ignore_tree, scan_ignore_call_counts
+):
+    """Ignore evaluation must scale with directories, not ignored files."""
+    import graphify.detect as det
+
+    kept, n_ignored_dirs = scan_ignore_tree
+    scan_calls, ignored_calls = scan_ignore_call_counts
+
     result = det.detect(tmp_path)
 
     assert result["total_files"] == kept
-    # Exactly ONE ignore evaluation for the whole ignored subtree.
+
     assert scan_calls["under_ignored"] == 1, (
         f"{scan_calls['under_ignored']} evaluations under the ignored dir — "
         "expected 1 (the directory itself); per-file evaluation regressed"
     )
-    # Overall evaluation count scales with kept entries + dirs, not with the
-    # 2,000 files inside the ignored dir.
+
     budget = 4 * (kept + n_ignored_dirs)
+
     assert scan_calls["total"] < budget, (
         f"{scan_calls['total']} _is_scan_ignored calls, expected < {budget}"
     )
+
     assert ignored_calls["total"] < 2 * budget, (
         f"{ignored_calls['total']} _is_ignored calls, expected < {2 * budget}"
     )
+
 
 
 def test_is_ignored_no_per_pattern_path_construction(monkeypatch):
@@ -4262,7 +4298,8 @@ def test_save_manifest_unchanged_file_preserves_seen(tmp_path):
 def test_save_manifest_changed_file_updates_seen(tmp_path):
     """#2838: save_manifest assigns a new seen timestamp when file content changes."""
     import json
-    import time
+    import os
+
     a = tmp_path / "a.py"
     a.write_text("x = 1\n", encoding="utf-8")
     manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
@@ -4271,9 +4308,13 @@ def test_save_manifest_changed_file_updates_seen(tmp_path):
     raw1 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     seen_1 = raw1["a.py"]["seen"]
 
-    # Modify file content (new hash)
-    time.sleep(0.01)
+    # Modify file content and advance its modification timestamp
+    previous_mtime_ns = a.stat().st_mtime_ns
     a.write_text("x = 2\n", encoding="utf-8")
+
+    new_mtime_ns = previous_mtime_ns + 2_000_000_000
+    os.utime(a, ns=(new_mtime_ns, new_mtime_ns))
+
     save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
     raw2 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 
@@ -4450,28 +4491,38 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
 
 
-def test_lexical_relative_matches_pathlib_relative_to():
-    """The string-space `_lexical_relative` must return exactly what
-    `_nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))` would — including
-    None where relative_to raises (target not under anchor). Guards the
-    reimplemented relative_to against silent drift (#2226)."""
+@pytest.mark.parametrize(
+    "anchor_path",
+    ["/a/b", "/a", "/a/b/c", "/x", "/"],
+)
+@pytest.mark.parametrize(
+    "target_path",
+    [
+        "/a/b/c/d.py",
+        "/a/b",
+        "/a/b/c",
+        "/a/x.py",
+        "/a/b/c/d/e.py",
+        "/x/y.py",
+        "/other/z.py",
+        "/a/bb/c.py",
+        "/a/b/c",
+    ],
+)
+def test_lexical_relative_matches_pathlib_relative_to(anchor_path, target_path):
+    """Compare lexical relative paths with pathlib for all path combinations."""
     from pathlib import Path
     from graphify.detect import _lexical_relative, _nfc
 
-    anchors = ["/a/b", "/a", "/a/b/c", "/x", "/"]
-    targets = [
-        "/a/b/c/d.py", "/a/b", "/a/b/c", "/a/x.py", "/a/b/c/d/e.py",
-        "/x/y.py", "/other/z.py", "/a/bb/c.py", "/a/b/c",
-    ]
-    for r in anchors:
-        anchor = Path(r)
-        for t in targets:
-            target = Path(t)
-            try:
-                expected = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
-                expected = None
-            assert _lexical_relative(target, target.parts, anchor) == expected, (t, r)
+    anchor = Path(anchor_path)
+    target = Path(target_path)
+
+    try:
+        expected = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
+    except ValueError:
+        expected = None
+
+    assert _lexical_relative(target, target.parts, anchor) == expected
 
 
 def test_globstar_matcher_leaves_no_reference_cycle():

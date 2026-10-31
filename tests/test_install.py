@@ -723,7 +723,10 @@ def test_codebuddy_uninstall_removes_hook(tmp_path):
 
 def test_codebuddy_uninstall_noop_if_not_installed(tmp_path):
     from graphify.__main__ import codebuddy_uninstall
-    codebuddy_uninstall(tmp_path)  # should not raise
+
+    codebuddy_uninstall(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
@@ -1465,7 +1468,9 @@ def test_cursor_uninstall_noop_if_not_installed(tmp_path):
     """cursor uninstall does nothing if rule was never written."""
     from graphify.__main__ import _cursor_uninstall
 
-    _cursor_uninstall(tmp_path)  # should not raise
+    _cursor_uninstall(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 # ── Gemini CLI ────────────────────────────────────────────────────────────────
@@ -1564,7 +1569,9 @@ def test_gemini_uninstall_removes_hook(tmp_path):
 def test_gemini_uninstall_noop_if_not_installed(tmp_path):
     from graphify.__main__ import gemini_uninstall
 
-    gemini_uninstall(tmp_path)  # should not raise
+    gemini_uninstall(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_amp_user_install_lands_in_config_agents(tmp_path, monkeypatch):

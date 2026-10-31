@@ -95,9 +95,16 @@ def test_code_files_are_still_not_sliced(tmp_path):
     assert expand_oversized_files([f], _FILE_CHAR_CAP) == [f]
 
 
+def _oversized_slice_spans(
+    boundaries: list[tuple[int, int]], cap: int
+) -> list[tuple[int, int]]:
+    return [(start, end) for start, end in boundaries if end - start > cap]
+
+
 def test_slices_stay_within_the_cap(tmp_path):
-    for start, end in slice_boundaries(BIG, _FILE_CHAR_CAP):
-        assert end - start <= _FILE_CHAR_CAP
+    boundaries = slice_boundaries(BIG, _FILE_CHAR_CAP)
+    assert boundaries
+    assert _oversized_slice_spans(boundaries, _FILE_CHAR_CAP) == []
 
 
 # ---------------------------------------------------------------------------

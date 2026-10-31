@@ -694,8 +694,7 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
 
     # Verify direction is correct in the freshly written JSON.
     saved = json.loads(graph_path.read_text())
-    saved_calls = [e for e in saved.get("links", saved.get("edges", []))
-                   if e.get("relation") == "calls"]
+    saved_calls = get_call_edges(saved)
     assert len(saved_calls) == 1
     assert saved_calls[0]["source"] == truth_src
     assert saved_calls[0]["target"] == truth_tgt
@@ -706,8 +705,7 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
 
     # The calls edge must still go a -> b, not b -> a.
     reloaded = json.loads(graph_path.read_text())
-    reloaded_calls = [e for e in reloaded.get("links", reloaded.get("edges", []))
-                      if e.get("relation") == "calls"]
+    reloaded_calls = get_call_edges(reloaded)
     assert len(reloaded_calls) == 1
     assert reloaded_calls[0]["source"] == truth_src, (
         f"calls edge source flipped after build_merge round-trip: "
@@ -717,6 +715,10 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
         f"calls edge target flipped after build_merge round-trip: "
         f"expected {truth_tgt} (b), got {reloaded_calls[0]['target']}"
     )
+
+def get_call_edges(graph_data):
+    edges = graph_data.get("links", graph_data.get("edges", []))
+    return [edge for edge in edges if edge.get("relation") == "calls"]
 
 
 def test_build_merge_directed_edge_direction_survives_round_trip(tmp_path):
@@ -856,8 +858,7 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
     graph_path = tmp_path / "graph.json"
     assert to_json(G, {}, str(graph_path), force=True)
     saved = json.loads(graph_path.read_text())
-    saved_calls = [e for e in saved.get("links", saved.get("edges", []))
-                   if e.get("relation") == "calls"]
+    saved_calls = get_call_edges(saved)
     assert len(saved_calls) == 1
     assert saved_calls[0]["source"] == "a_handler", (
         f"calls edge source flipped on bidirectional collision: "
@@ -1148,54 +1149,83 @@ def test_build_merge_prune_windows_backslash_paths(tmp_path):
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
 
 
-def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
-    """Re-extracting a CHANGED file must REPLACE its prior nodes/edges, not
-    accumulate them. build_merge previously only grew the graph, so an edge that
-    disappeared from a file's new version survived forever (only exact-duplicate
-    edges collapsed). The new-chunk source_file may be an absolute win32 path
-    while the stored graph keeps relative posix — both forms must match."""
+@pytest.fixture
+def stale_edges_graph(tmp_path):
+    """Create an initial graph with stale and unchanged file contributions."""
     import networkx as nx
 
     root = tmp_path / "corpus"
     root.mkdir()
     graph_path = tmp_path / "graph.json"
 
-    # First build: changed.md contributed A, B and edge A->B; keep.md is unrelated.
-    chunk0 = {"nodes": [
-        {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
-        {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
-        {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
-    ], "edges": [
-        {"source": "A", "target": "B", "relation": "references", "confidence": "EXTRACTED",
-         "source_file": "changed.md", "weight": 1.0},
-        {"source": "K", "target": "A", "relation": "references", "confidence": "EXTRACTED",
-         "source_file": "keep.md", "weight": 1.0},
-    ]}
-    G0 = build([chunk0], dedup=False)
-    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+    chunk = {
+        "nodes": [
+            {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
+            {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
+            {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
+        ],
+        "edges": [
+            {
+                "source": "A", "target": "B", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": "changed.md",
+                "weight": 1.0,
+            },
+            {
+                "source": "K", "target": "A", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": "keep.md",
+                "weight": 1.0,
+            },
+        ],
+    }
 
-    # changed.md edited: re-extraction now yields A, C and edge A->C (B dropped).
-    # source_file arrives as an absolute win32-style path (as detect emits on Windows).
+    initial_graph = build([chunk], dedup=False)
+    graph_path.write_text(
+        json.dumps(nx.node_link_data(initial_graph, edges="edges")),
+        encoding="utf-8",
+    )
+
+    return root, graph_path
+
+
+def test_build_merge_replaces_changed_file_stale_edges(stale_edges_graph):
+    """Re-extracting a changed file replaces stale nodes and edges."""
+    root, graph_path = stale_edges_graph
+
+    # The changed file now contributes A and C instead of A and B.
     abs_changed = str(root / "changed.md").replace("/", "\\")
-    new_chunk = {"nodes": [
-        {"id": "A", "label": "A", "file_type": "document", "source_file": abs_changed},
-        {"id": "C", "label": "C", "file_type": "document", "source_file": abs_changed},
-    ], "edges": [
-        {"source": "A", "target": "C", "relation": "references", "confidence": "EXTRACTED",
-         "source_file": abs_changed, "weight": 1.0},
-    ]}
-    G1 = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    new_chunk = {
+        "nodes": [
+            {
+                "id": "A", "label": "A", "file_type": "document",
+                "source_file": abs_changed,
+            },
+            {
+                "id": "C", "label": "C", "file_type": "document",
+                "source_file": abs_changed,
+            },
+        ],
+        "edges": [
+            {
+                "source": "A", "target": "C", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": abs_changed,
+                "weight": 1.0,
+            },
+        ],
+    }
 
-    labels = {d["label"] for _, d in G1.nodes(data=True)}
-    edges = {(u, v) for u, v in G1.edges()}
+    merged_graph = build_merge(
+        [new_chunk], graph_path, dedup=False, root=root
+    )
 
-    # Stale contribution from the old version of changed.md is gone.
+    labels = {data["label"] for _, data in merged_graph.nodes(data=True)}
+    edges = {(source, target) for source, target in merged_graph.edges()}
+
     assert "B" not in labels, "stale node from changed file's old version must be dropped"
     assert ("A", "B") not in edges and ("B", "A") not in edges, "stale edge must be dropped"
-    # Fresh contribution is present.
+
     assert "C" in labels, "re-extracted node must be present"
     assert ("A", "C") in edges, "re-extracted edge must be present"
-    # An unchanged file is untouched.
+
     assert "K" in labels, "unchanged file's node must survive"
     assert ("K", "A") in edges, "unchanged file's edge must survive"
 
@@ -1476,19 +1506,36 @@ def test_graph_has_legacy_ids_ignores_global_mcp_ids(mcp_kind, nid):
     assert graph_has_legacy_ids([node], root=".") is False
 
 
-def test_graph_has_legacy_ids_still_checks_file_scoped_mcp_nodes():
-    """The exemption is narrow: file-derived MCP kinds stay under detection, and a
-    missing/malformed metadata blob doesn't exempt anything (or crash)."""
+@pytest.mark.parametrize("kind", ["mcp_config_file", "mcp_server"])
+def test_graph_has_legacy_ids_checks_file_scoped_mcp_kinds(kind):
     from graphify.build import graph_has_legacy_ids
-    for kind in ("mcp_config_file", "mcp_server"):
-        stale = {"id": "mcp_mcp_server_x", "source_file": "sub/.mcp.json",
-                 "source_location": "L1", "metadata": {"mcp_kind": kind}}
-        assert graph_has_legacy_ids([stale], root=".") is True
-    for meta in (None, "not-a-dict", {}, {"mcp_kind": None}):
-        stale = {"id": "mcp_mcp_server_x", "source_file": "sub/.mcp.json",
-                 "source_location": "L1", "metadata": meta}
-        assert graph_has_legacy_ids([stale], root=".") is True
 
+    stale = {
+        "id": "mcp_mcp_server_x",
+        "source_file": "sub/.mcp.json",
+        "source_location": "L1",
+        "metadata": {"mcp_kind": kind},
+    }
+
+    assert graph_has_legacy_ids([stale], root=".") is True
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [None, "not-a-dict", {}, {"mcp_kind": None}],
+    ids=["none", "invalid-string", "empty-dict", "missing-kind"],
+)
+def test_graph_has_legacy_ids_checks_invalid_mcp_metadata(meta):
+    from graphify.build import graph_has_legacy_ids
+
+    stale = {
+        "id": "mcp_mcp_server_x",
+        "source_file": "sub/.mcp.json",
+        "source_location": "L1",
+        "metadata": meta,
+    }
+
+    assert graph_has_legacy_ids([stale], root=".") is True
 
 @pytest.mark.parametrize("mcp_dir", ["", "sub"])
 def test_fresh_mcp_graph_is_not_flagged_legacy(tmp_path, monkeypatch, mcp_dir):
@@ -2044,22 +2091,24 @@ def test_build_merge_explicit_ast_sources_argument(tmp_path):
     assert "nuget_pkg" in G1, "ast_sources explicit arg must protect undispatched A.csproj"
 
 
-def test_build_annotations_all_resolve():
-    # build.py imports every annotated name at module scope -- no TYPE_CHECKING-only
-    # names -- so an unresolvable hint here means a missing import, not a lazy one.
+def _build_module_functions():
     import inspect
-    import typing
-
     from graphify import build as build_module
 
-    unresolvable = []
-    for name, obj in vars(build_module).items():
-        if inspect.isfunction(obj) and obj.__module__ == build_module.__name__:
-            try:
-                typing.get_type_hints(obj)
-            except NameError as exc:
-                unresolvable.append(f"{name}: {exc}")
-    assert not unresolvable, "\n".join(unresolvable)
+    return [
+        (name, obj)
+        for name, obj in vars(build_module).items()
+        if inspect.isfunction(obj)
+        and obj.__module__ == build_module.__name__
+    ]
+
+
+@pytest.mark.parametrize("name,obj", _build_module_functions())
+def test_build_annotations_all_resolve(name, obj):
+    import typing
+
+    hints = typing.get_type_hints(obj)
+    assert isinstance(hints, dict)
 
 
 def test_method_ghost_dedupe_and_alias_resolution_3705():
