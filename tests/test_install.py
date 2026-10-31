@@ -877,6 +877,24 @@ def test_agents_install_idempotent(tmp_path):
     assert content.count("## graphify") == 1
 
 
+def test_agents_install_fresh_file_is_byte_identical_on_second_install(tmp_path):
+    """A fresh AGENTS.md must go through the same section writer a merge
+    into an existing one does, so the second install finds the end marker
+    the first one left behind instead of mis scanning the boundary and
+    growing the file. Checking only the heading count (as the idempotent
+    test above does) does not catch this: a duplicated end marker leaves
+    the heading count at 1 while the file still grows on every install."""
+    from graphify.install import _SECTION_END_MARKER
+
+    _agents_install(tmp_path, "codex")
+    first = (tmp_path / "AGENTS.md").read_text()
+    assert first.count(_SECTION_END_MARKER) == 1
+
+    _agents_install(tmp_path, "codex")
+    second = (tmp_path / "AGENTS.md").read_text()
+    assert second == first
+
+
 def test_agents_install_appends_to_existing(tmp_path):
     """Installs into an existing AGENTS.md without overwriting other content."""
     agents_md = tmp_path / "AGENTS.md"
@@ -1497,6 +1515,24 @@ def test_gemini_install_idempotent(tmp_path):
     gemini_install(tmp_path)
     md = tmp_path / "GEMINI.md"
     assert md.read_text().count("## graphify") == 1
+
+
+def test_gemini_install_fresh_file_is_byte_identical_on_second_install(tmp_path):
+    """Same regression as test_agents_install_fresh_file_is_byte_identical_on_second_install,
+    for the fresh GEMINI.md path: a fresh file must still pick up the end
+    marker so the second install recognizes the section instead of
+    re appending a duplicate copy on top of it."""
+    from graphify.__main__ import gemini_install
+    from graphify.install import _SECTION_END_MARKER
+
+    gemini_install(tmp_path)
+    md = tmp_path / "GEMINI.md"
+    first = md.read_text()
+    assert first.count(_SECTION_END_MARKER) == 1
+
+    gemini_install(tmp_path)
+    second = md.read_text()
+    assert second == first
 
 
 def test_gemini_install_merges_existing_gemini_md(tmp_path):
