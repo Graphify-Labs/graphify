@@ -150,6 +150,7 @@ Then act on it:
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
   - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
   - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
+  - If one of the large subfolders is not project content (agent session logs, scratch or decision-journal folders, build output), also offer to exclude it instead of narrowing the run: add its path, gitignore-style, to a `.graphifyignore` at the scan root, then rerun Step 2 (#2842).
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
 
 ### Step 2.5 - Video and audio (only if video files detected)
@@ -552,6 +553,8 @@ Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNI
 ### Step 5 - Label communities
 
 Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
+
+The report only gives a section to communities with at least 3 real nodes (`min_community_size=3` in `graphify.report.generate`; file, concept, and rationale nodes do not count). Smaller communities are left out of the report's community sections and counted as "thin omitted"; they remain in `graph.json` and the visualizer (#2842).
 
 Then regenerate the report and save the labels for the visualizer:
 
