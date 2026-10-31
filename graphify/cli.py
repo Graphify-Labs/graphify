@@ -2379,6 +2379,57 @@ def dispatch_command(cmd: str) -> None:
         else:
             print(format_diagnostic_report(summary))
 
+    elif cmd == "verify":
+        graph_path = Path(_default_graph_path())
+        rules_path: Path | None = None
+        json_output = False
+
+        i = 2
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg == "--rules":
+                i += 1
+                if i >= len(sys.argv):
+                    print("error: --rules requires a path", file=sys.stderr)
+                    sys.exit(1)
+                rules_path = Path(sys.argv[i])
+            elif arg == "--graph":
+                i += 1
+                if i >= len(sys.argv):
+                    print("error: --graph requires a path", file=sys.stderr)
+                    sys.exit(1)
+                graph_path = Path(sys.argv[i])
+            elif arg == "--json":
+                json_output = True
+            else:
+                print(f"error: unknown verify option {arg}", file=sys.stderr)
+                sys.exit(1)
+            i += 1
+
+        if rules_path is None:
+            print(
+                "Usage: graphify verify --rules path/to/rules.json [--graph path] [--json]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from graphify.verify import format_json, format_report, load_rules, verify_graph
+
+        try:
+            rules = load_rules(rules_path)
+            violations = verify_graph(graph_path, rules)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        if json_output:
+            print(json.dumps(format_json(violations), indent=2))
+        else:
+            print(format_report(violations))
+
+        if violations:
+            sys.exit(1)
+
     elif cmd == "add":
         if len(sys.argv) < 3:
             print(

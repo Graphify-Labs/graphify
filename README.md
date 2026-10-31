@@ -106,6 +106,14 @@ Shortest path (3 hops):
 
 Every edge carries a **confidence tag** (`EXTRACTED` = explicit in the source, `INFERRED` = derived by resolution), so you can tell what was read directly from what was inferred. `graphify query "<question>"` returns a scoped subgraph for a plain-language question, and `graphify path A B` traces how any two things connect, ending with the path's overall confidence: that of its weakest hop.
 
+You can also check architectural/dependency invariants against the live graph with `graphify verify --rules rules.json` (basic, local version of [Graphify Cloud](https://app.graphify.com/login)'s formal verification). A rules file lists forbidden dependencies as glob patterns over `source_file`:
+
+```json
+{ "rules": [ { "name": "extractors must not depend on cli", "from": "graphify/extractors/*", "to": "graphify/cli.py" } ] }
+```
+
+`graphify verify` fails (exit code 1) if any edge in the graph actually crosses a forbidden boundary, so it doubles as a CI gate.
+
 ---
 
 ## What it does
