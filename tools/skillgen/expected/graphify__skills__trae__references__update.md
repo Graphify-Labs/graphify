@@ -14,6 +14,10 @@ from pathlib import Path
 
 from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
+# Step B3.5 lists the files this run reads only partway, and the manifest write (and Step 9,
+# if it runs) keeps them unstamped. Only B3.5 rewrites the list, so drop one an earlier run
+# left: it would keep a file this run serves from the cache unstamped on every run (#4807).
+Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
 result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 nf = result.get('new_files', {})
@@ -161,7 +165,13 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # is lost forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
-_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'))
+# A file a subagent only partly read (Step B3.5 lists it) DID produce output, so the
+# filter alone would stamp it and the next --update would never re-queue it. Pass the
+# list as Step 9 does after a full build, so it stays unstamped and is retried (#2225, #4807).
+# Leave the list on disk: Step 9 reads it too if it runs after the update.
+_pf = Path('graphify-out/.graphify_partial.txt')
+_partial = {l.strip() for l in _pf.read_text(encoding=\"utf-8\").splitlines() if l.strip()} if _pf.exists() else set()
+_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'), partial_source_files=_partial)
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
 _sem_types = ('document', 'paper', 'image')
