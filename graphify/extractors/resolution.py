@@ -1388,6 +1388,12 @@ def _apply_symbol_resolution_facts(
                 continue
             declared.setdefault((node_path, normalize_id(bare)), node["id"])
         node_by_id = {node.get("id"): node for node in nodes}
+        references_by_file: dict[Path | None, list[dict]] = {}
+        for edge in edges:
+            if edge.get("relation") == "references":
+                references_by_file.setdefault(
+                    _js_source_path(str(edge.get("source_file") or ""), root), []
+                ).append(edge)
         for fact in facts.imports:
             if effective_suffix(fact.file_path).lower() not in (
                 ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"
@@ -1403,11 +1409,7 @@ def _apply_symbol_resolution_facts(
             )
             if not target_nid:
                 continue
-            for edge in edges:
-                if _js_source_path(str(edge.get("source_file") or ""), root) != source_path:
-                    continue
-                if edge.get("relation") != "references":
-                    continue
+            for edge in references_by_file.get(source_path, ()):
                 if edge.get("target") == target_nid:
                     continue
                 node = node_by_id.get(edge.get("target"))
