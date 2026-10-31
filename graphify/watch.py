@@ -1246,21 +1246,52 @@ def _reconcile_existing_graph(
         # until a semantic re-extraction supersedes them. Same provenance rule
         # the node reconciliation above applies via _origin (#1865). Deletion
         # eviction stays provenance-blind.
+        def _edge_evicted(edge: dict) -> bool:
+            return not source_paths.is_evicted(edge, excluded_alive_files) and (
+                source_paths.is_evicted(edge, edge_evicted_source_identities)
+                or (
+                    _is_ast_tier(edge)
+                    and source_paths.is_evicted(edge, rebuilt_source_identities)
+                )
+            )
+
+        existing_edges = existing.get("links", existing.get("edges", []))
         preserved_edges = [
             edge
-            for edge in existing.get("links", existing.get("edges", []))
+            for edge in existing_edges
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
-            and not (
-                source_paths.is_evicted(edge, edge_evicted_source_identities)
-                and not source_paths.is_evicted(edge, excluded_alive_files)
-            )
-            and not (
-                _is_ast_tier(edge)
-                and source_paths.is_evicted(edge, rebuilt_source_identities)
-                and not source_paths.is_evicted(edge, excluded_alive_files)
-            )
+            and not _edge_evicted(edge)
         ]
+        # `reverse_import` stands for the target file's import back, which the
+        # undirected build dropped in favour of this edge (#4839). That import
+        # is the target file's, so it goes when an edge from that file would:
+        # clear the stamp then (re-extracting the file stamps it again), and
+        # move it onto the fresh edge when only this edge's own file was
+        # re-extracted.
+        node_files = {
+            n.get("id"): n.get("source_file")
+            for n in existing.get("nodes", []) if isinstance(n, dict)
+        }
+
+        def _reverse_leg_evicted(edge: dict) -> bool:
+            return _edge_evicted({**edge, "source_file": node_files.get(edge.get("target"))})
+
+        preserved_edges = [
+            {k: v for k, v in edge.items() if k != "reverse_import"}
+            if edge.get("reverse_import") and _reverse_leg_evicted(edge) else edge
+            for edge in preserved_edges
+        ]
+        carried_reverse = {
+            (edge.get("source"), edge.get("target"), edge.get("relation"))
+            for edge in existing_edges
+            if edge.get("reverse_import")
+            and _edge_evicted(edge)
+            and not _reverse_leg_evicted(edge)
+        }
+        for edge in result["edges"]:
+            if (edge.get("source"), edge.get("target"), edge.get("relation")) in carried_reverse:
+                edge["reverse_import"] = True
 
         preserved_edges = _reconcile_markdown_links(
             result,
@@ -2324,7 +2355,7 @@ def _rebuild_code(
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",
-                        "_py_fixture", "_py_return_type",
+                        "_py_fixture", "_py_return_type", "_go_fields",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
@@ -2547,9 +2578,11 @@ def _rebuild_code(
                 dedupe_nodes as _dedupe_nodes,
                 disambiguate_file_labels_in_nodes as _disamb_labels,
                 finalize_raw_graph_endpoints as _finalize_raw_graph_endpoints,
+                qualify_csharp_method_labels_in_nodes as _qualify_cs_methods,
             )
             raw_nodes = _dedupe_nodes(result.get("nodes", []))
             _disamb_labels(raw_nodes)
+            _qualify_cs_methods(raw_nodes, result.get("edges", []))
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
             candidate_graph_data = {
                 **{

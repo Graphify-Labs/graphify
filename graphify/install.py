@@ -208,8 +208,9 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
     if platform_name == "gemini":
         if project:
             return (project_dir or Path(".")) / ".gemini" / "skills" / "graphify" / "SKILL.md"
-        if platform.system() == "Windows":
-            return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+        # Gemini CLI reads ~/.gemini/skills on every OS. ~/.agents/skills is the
+        # `agents` platform's destination, and sharing it let each platform
+        # overwrite and uninstall the other's skill (#2800).
         return Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
 
     if platform_name == "opencode":
@@ -1010,7 +1011,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         )
 
     if platform == "opencode":
-        _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_plugin(_opencode_dir(project=project, project_dir=project_dir))
 
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
@@ -1054,10 +1055,22 @@ def _gemini_hook(project: bool = False) -> dict:
         "matcher": "read_file|list_directory",
         "hooks": [{"type": "command", "command": f"{exe} hook-guard gemini"}],
     }
+def _warn_shadowing_agents_skill() -> None:
+    """Gemini CLI prefers ~/.agents/skills over ~/.gemini/skills for a skill of
+    the same name. Before #2800 a Windows gemini install wrote there, so an old
+    copy can hide the one just installed. It may belong to the `agents`
+    platform, so point at it rather than delete it."""
+    shadow = _platform_skill_destination("agents")
+    if shadow.exists():
+        print(f"  note: Gemini CLI loads {shadow} ahead of this install. If an older")
+        print("        `graphify install --platform gemini` wrote it, delete that folder;")
+        print("        if you use the `agents` platform, keep it.")
 def gemini_install(project_dir: Path | None = None, *, project: bool = False) -> None:
     """Copy skill file, write GEMINI.md section, and install BeforeTool hook."""
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file("gemini", project=project, project_dir=project_dir)
+    if not project:
+        _warn_shadowing_agents_skill()
 
     target = project_dir / "GEMINI.md"
 
@@ -1765,6 +1778,18 @@ export default {
 """
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
+
+
+def _opencode_dir(*, project: bool, project_dir: Path | None = None) -> Path:
+    """OpenCode's config dir: <project>/.opencode, or ~/.config/opencode globally.
+
+    OpenCode loads plugins from <dir>/plugins/ in both. The global dir has no
+    .opencode/ segment, so it cannot be built by joining _OPENCODE_PLUGIN_PATH
+    onto a base the way the project one is (#3398).
+    """
+    if project:
+        return (project_dir or Path(".")) / ".opencode"
+    return Path.home() / ".config" / "opencode"
 # First line of every plugin graphify has written, back to the first one (#71).
 _OPENCODE_PLUGIN_HEADER = "// graphify OpenCode plugin"
 def _opencode_plugin_is_v1_only(body: str) -> bool:
@@ -1775,14 +1800,14 @@ def _opencode_plugin_is_v1_only(body: str) -> bool:
     with "Plugin must export a default definition" (#3554, #3732).
     """
     return body.startswith(_OPENCODE_PLUGIN_HEADER) and "export default" not in body
-def _opencode_config_names_plugin(project_dir: Path) -> bool:
+def _opencode_config_names_plugin(opencode_dir: Path) -> bool:
     """True when opencode.json still mentions the bare plugin path."""
     try:
-        raw = (project_dir / _OPENCODE_CONFIG_PATH).read_text(encoding="utf-8")
+        raw = (opencode_dir / _OPENCODE_CONFIG_PATH.name).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
     return f'"{_OPENCODE_PLUGIN_PATH.as_posix()}"' in raw
-def _drop_opencode_config_entry(project_dir: Path) -> bool:
+def _drop_opencode_config_entry(opencode_dir: Path) -> bool:
     """Remove the plugin entry older releases wrote into opencode.json.
 
     The entry was the bare path ``.opencode/plugins/graphify.js``. OpenCode
@@ -1790,7 +1815,7 @@ def _drop_opencode_config_entry(project_dir: Path) -> bool:
     never needed, and OpenCode 2 reads a bare path as an npm package name and
     fails to install it (#3732). Returns True when the config changed.
     """
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
+    config_file = opencode_dir / _OPENCODE_CONFIG_PATH.name
     entry = _OPENCODE_PLUGIN_PATH.as_posix()
     try:
         raw = config_file.read_text(encoding="utf-8")
@@ -1803,7 +1828,7 @@ def _drop_opencode_config_entry(project_dir: Path) -> bool:
         # would drop them, so say what to remove instead.
         if f'"{entry}"' in raw:
             print(
-                f"  {_OPENCODE_CONFIG_PATH}  ->  not plain JSON, left as is; "
+                f"  {config_file}  ->  not plain JSON, left as is; "
                 f'remove "{entry}" from its plugin list by hand'
             )
         return False
@@ -1821,27 +1846,28 @@ def _drop_opencode_config_entry(project_dir: Path) -> bool:
         # ensure_ascii=False: keep the user's non-ASCII values readable.
         _write_text_atomic(config_file, json.dumps(config, indent=2, ensure_ascii=False))
     return changed
-def _install_opencode_plugin(project_dir: Path) -> None:
-    """Write graphify.js into .opencode/plugins/, where OpenCode discovers it.
+def _install_opencode_plugin(opencode_dir: Path) -> None:
+    """Write graphify.js into <opencode_dir>/plugins/, where OpenCode discovers it.
 
-    Both files are replaced atomically. The CLI refresh can run this while
-    OpenCode is watching them, and it must never see half a plugin.
+    ``opencode_dir`` comes from _opencode_dir. Both files are replaced
+    atomically. The CLI refresh can run this while OpenCode is watching them,
+    and it must never see half a plugin.
     """
-    plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
+    plugin_file = opencode_dir / _OPENCODE_PLUGIN_PATH.relative_to(".opencode")
     _write_text_atomic(plugin_file, _OPENCODE_PLUGIN_JS)
-    print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
+    print(f"  {plugin_file}  ->  tool.execute.before hook written")
 
-    if _drop_opencode_config_entry(project_dir):
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  stale plugin entry removed")
-def _uninstall_opencode_plugin(project_dir: Path) -> None:
+    if _drop_opencode_config_entry(opencode_dir):
+        print(f"  {opencode_dir / _OPENCODE_CONFIG_PATH.name}  ->  stale plugin entry removed")
+def _uninstall_opencode_plugin(opencode_dir: Path) -> None:
     """Remove graphify.js plugin and deregister from opencode.json."""
-    plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
+    plugin_file = opencode_dir / _OPENCODE_PLUGIN_PATH.relative_to(".opencode")
     if plugin_file.exists():
         plugin_file.unlink()
-        print(f"  {_OPENCODE_PLUGIN_PATH}  ->  removed")
+        print(f"  {plugin_file}  ->  removed")
 
-    if _drop_opencode_config_entry(project_dir):
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
+    if _drop_opencode_config_entry(opencode_dir):
+        print(f"  {opencode_dir / _OPENCODE_CONFIG_PATH.name}  ->  plugin deregistered")
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
@@ -1963,7 +1989,7 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
     if platform == "codex":
         _install_codex_hook(project_dir or Path("."), project=project)
     elif platform == "opencode":
-        _install_opencode_plugin(project_dir or Path("."))
+        _install_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
     elif platform == "kilo":
         _install_kilo_plugin(project_dir or Path("."))
 
@@ -2114,7 +2140,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
     if not target.exists():
         print("No AGENTS.md found in current directory - nothing to do")
         if platform == "opencode":
-            _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -2124,7 +2150,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
     if cleaned is None:
         print("graphify section not found in AGENTS.md - nothing to do")
         if platform == "opencode":
-            _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -2138,7 +2164,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
     if platform == "opencode":
-        _uninstall_opencode_plugin(project_dir or Path("."))
+        _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
 def _kilo_uninstall_global() -> list[str]:
@@ -2314,7 +2340,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
-    _uninstall_opencode_plugin(pd)
+    _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=pd))
+    # `graphify install --platform opencode` writes the plugin here (#3398).
+    _uninstall_opencode_plugin(_opencode_dir(project=False))
     _uninstall_codex_hook(pd)
 
     # Git hook

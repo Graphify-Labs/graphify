@@ -59,6 +59,7 @@ from graphify.extractors.csharp import (
     _is_dotnet_source_file,
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
+    bare_csharp_method_labels_in_nodes,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
@@ -5020,6 +5021,13 @@ def _resolve_python_member_calls(
         return _key(stem or n.get("label", ""))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # A dispatch-table value is only pre-empted by an edge that already says the
+    # caller reaches the target. An `imports` edge from the file to the same symbol
+    # is expected and must not hide it (the generic resolver's call_like_pairs).
+    call_like_pairs = {
+        (e.get("source"), e.get("target")) for e in all_edges
+        if e.get("relation") in ("calls", "indirect_call")
+    }
     # A method hangs off its class (`method` edge), not its file (`contains`), so
     # the typed-receiver arm finds a method caller's file through its class.
     method_class: dict[str, str] = {}
@@ -5090,6 +5098,28 @@ def _resolve_python_member_calls(
             # Swift node labelled `Swift.Array`. Stubs and external modules
             # carry no file.
             return
+        if rc.get("indirect"):
+            # `module.func` listed in a dispatch table: referenced as a value, not
+            # invoked, so the same INFERRED `indirect_call` the bare-name path emits,
+            # and only to a real callable, never a class used as a value (#2137).
+            if (caller, target_nid) in call_like_pairs:
+                return
+            if not node_by_id.get(target_nid, {}).get("_callable") or node_by_id.get(target_nid, {}).get("_callable_class"):
+                return
+            call_like_pairs.add((caller, target_nid))
+            existing_pairs.add((caller, target_nid))
+            all_edges.append({
+                "source": caller,
+                "target": target_nid,
+                "relation": "indirect_call",
+                "context": rc.get("context", "collection"),
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": rc.get("source_file", ""),
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+            })
+            return
         if rc.get("_python_attr_read"):
             # An attribute read only runs a property getter, and only the one it
             # spells: _key() folds `_items` into `items`, so compare the name.
@@ -5105,6 +5135,8 @@ def _resolve_python_member_calls(
         if (caller, target_nid) in existing_pairs:
             return
         existing_pairs.add((caller, target_nid))
+        if not rc.get("_python_attr_read"):
+            call_like_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
         # definition (each arm applies a single-definition god-node guard).
@@ -5178,7 +5210,10 @@ def _resolve_python_member_calls(
         return None
 
     factory_receivers: list[dict] = []
-    for rc in all_raw_calls:
+    # Dispatch-table values (`indirect`) go last, so a direct call to the same target
+    # claims the pair as `calls` whichever comes first in the body. Both halves keep
+    # their source order.
+    for rc in [r for r in all_raw_calls if not r.get("indirect")] + [r for r in all_raw_calls if r.get("indirect")]:
         if rc.get("_ambiguous_python_import"):
             continue
         if not rc.get("is_member_call"):
@@ -5191,14 +5226,18 @@ def _resolve_python_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
-        if receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
+        # A dispatch-table `module.func` value takes the module arm only: its
+        # receiver is a bare name the extractor already checked is not a local.
+        if rc.get("indirect") and not (receiver and callee and caller and not receiver[:1].isupper()):
+            continue
+        if not rc.get("indirect") and receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
             target = _inherited_method(caller, callee, skip_own=receiver == "super")
             if target:
                 # Same rule as the in-file base walk (_self_call_target), across files.
                 _emit_call(caller, target, rc)
                 continue
         attr_type = rc.get("_python_self_attr_type")
-        if attr_type and callee and caller:
+        if attr_type and callee and caller and not rc.get("indirect"):
             # `self.X.m()` with X bound to one class (#2860): only a unique class
             # the caller's own file defines or imports, and only if it owns `m`.
             class_nids = class_def_nids.get(_key(attr_type), [])
@@ -5280,6 +5319,8 @@ def _resolve_python_member_calls(
             # (#2082), so an aliased import resolves the same as the bare name.
             rkey = _key(receiver)
             caller_file = _file_node(caller)
+            if caller_file is None and rc.get("indirect") and caller in imported_by_filenode and caller not in file_of_node:
+                caller_file = str(caller)  # a module-level dispatch table: the caller IS the file
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
@@ -7407,10 +7448,17 @@ def _resolve_go_member_calls(
     # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
+    # A struct's fields, by struct id, from the file node that declares it: a method in
+    # one file of the package and the struct in another is the common Go layout, and the
+    # caller's flat table holds only what its own file declares. An id two files declare
+    # has no single answer.
+    fields_by_type: dict[str, list[dict[str, str]]] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
         if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+        for struct_nid, fields in (n.get("_go_fields") or {}).items():
+            fields_by_type.setdefault(struct_nid, []).append(fields)
 
     method_index: dict[tuple[str, str], list[str]] = {}
     for e in all_edges:
@@ -7428,14 +7476,21 @@ def _resolve_go_member_calls(
         # flat table: two types in one file may both name their receiver `s`.
         type_name = rc.get("receiver_type") or type_table_by_file.get(
             rc.get("source_file", ""), {}).get(receiver)
+        if not type_name and rc.get("field_owner"):
+            owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
+            declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
+            if len(declared) == 1:
+                type_name = declared[0].get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
-            # says who is asking, so no suffix sniff is needed.
-            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
+            # says who is asking, so no suffix sniff is needed. A method value is not
+            # parked: `f(x.y)` may just as well pass a field, which is no call at all.
+            if not rc.get("indirect"):
+                _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
             continue
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
@@ -7446,11 +7501,14 @@ def _resolve_go_member_calls(
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
+        indirect = bool(rc.get("indirect"))
         all_edges.append({
             "source": caller,
             "target": target,
-            "relation": "calls",
-            "context": "call",
+            # A method value (`routing.Wrap(s.Handle)`) hands the method over to be
+            # called later, as an `indirect_call` does in the other languages (#1566).
+            "relation": "indirect_call" if indirect else "calls",
+            "context": rc.get("context", "argument") if indirect else "call",
             "confidence": "INFERRED",
             # The rubric's discrete INFERRED scale (references/extraction-spec.md):
             # a single-definition type-table hit is the high-confidence rung.
@@ -9536,6 +9594,10 @@ def extract(
             fresh results are appended to the returned nodes/edges.
     """
     paths = [Path(p) for p in paths]
+    if resolution_context_nodes:
+        # Persisted C# method labels carry their owner (#4883); the resolvers
+        # match the bare `.Name()` form a fresh extraction produces.
+        resolution_context_nodes = bare_csharp_method_labels_in_nodes(resolution_context_nodes)
     anchor_root = Path(root) if root is not None else None
     _check_tree_sitter_version()
     _raise_recursion_limit()

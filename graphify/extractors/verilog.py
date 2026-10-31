@@ -47,8 +47,12 @@ _SV_PARENS_INNER = r"(?:[^()]|\([^()]*\))*"
 
 _SV_PARENS = r"\(" + _SV_PARENS_INNER + r"\)"
 
+# The return type is optional: a `new` constructor never has one, and a plain
+# `function foo(...);` implicitly returns a 1-bit value. Without the `?` here,
+# every constructor method - the single most common one in a SystemVerilog
+# class - matched nothing at all: no node, no parameter-type references.
 _SV_FUNC_RE = re.compile(
-    r"\bfunction\s+([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+(\w+)\s*"
+    r"\bfunction\s+(?:([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+)?(\w+)\s*"
     r"\((" + _SV_PARENS_INNER + r")\)\s*;",
     re.MULTILINE,
 )
@@ -210,8 +214,9 @@ def _augment_systemverilog_semantics(
             edges.append({"source": class_nid, "target": func_nid, "relation": "method",
                           "confidence": "EXTRACTED", "confidence_score": 1.0,
                           "source_file": str_path, "source_location": f"L{func_line}", "weight": 1.0})
-            for ref_name, role in _sv_collect_type_refs(return_type, skip=type_params):
-                add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "return_type")
+            if return_type:
+                for ref_name, role in _sv_collect_type_refs(return_type, skip=type_params):
+                    add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "return_type")
             for param in _sv_split_type_list(params):
                 pm = _SV_PARAM_RE.match(param)
                 if not pm:
