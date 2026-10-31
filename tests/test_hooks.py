@@ -785,6 +785,33 @@ def _is_within_repo_git(hooks: Path, main: Path) -> bool:
     return True
 
 
+def test_linked_worktree_hooks_dir_under_non_ascii_path(tmp_path, monkeypatch):
+    """git prints paths as UTF-8. Decoding them with the Windows locale codec
+    pointed hook install at a mangled copy of the path."""
+    main = tmp_path / "café" / "main"
+    main.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(main)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(main), "-c", "user.email=t@example.com", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "x"],
+        check=True, capture_output=True,
+    )
+    wt = tmp_path / "café" / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+                   check=True, capture_output=True)
+
+    real_run = subprocess.run
+
+    def cp1252_locale_run(*args, **kwargs):
+        if kwargs.get("text") and kwargs.get("encoding") is None:
+            kwargs["encoding"] = "cp1252"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", cp1252_locale_run)
+    assert _hooks_dir(wt) == (main / ".git" / "hooks").resolve()
+    assert not (tmp_path / "café".encode("utf-8").decode("cp1252")).exists()
+
+
 def test_default_hooks_dir_unaffected(tmp_path):
     """No core.hooksPath -> normal .git/hooks install, no rejection."""
     repo = _make_git_repo(tmp_path)
