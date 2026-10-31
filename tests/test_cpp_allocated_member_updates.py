@@ -6,11 +6,15 @@ import errno
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 
 import pytest
 
+import graphify
 from graphify.extract import extract
+from graphify.paths import load_node_link_graph
 from graphify.watch import _rebuild_code
 from tests.test_qt_final_incremental_parity import endpoints, manual_update, normalized, run, unrelated
 from tests.test_qt_semantic_correction_updates import products
@@ -44,28 +48,71 @@ def full_fields(graph):
                     for source, target, data in graph.edges(data=True)))
 
 
-def cold_reference(root, monkeypatch, operation):
-    """Rebuild through the same raw publication owner, retaining both evidence representations.
+# The output setting is read before imports. A new process retains the actual
+# same-root raw CLI/watch owner without moving a potentially open accepted tree.
+# Static code plus literal argv keeps analyzed source/CWD outside the harness.
+_COLD_PROGRAM = """
+import json
+from pathlib import Path
+import sys
+package_parent, root_text, operation, identity_text = sys.argv[1:]
+sys.path.insert(0, package_parent)
+import graphify
+assert Path(graphify.__file__).resolve() == Path(package_parent, "graphify", "__init__.py").resolve()
+from graphify.paths import GRAPHIFY_OUT
+root = Path(root_text).resolve()
+output = Path(GRAPHIFY_OUT).resolve()
+Path(identity_text).write_text(json.dumps({
+    "package_file": str(Path(graphify.__file__).resolve()),
+    "analysis_root": str(root), "output": str(output),
+    "output_existed": output.exists(), "isolated": bool(sys.flags.isolated),
+    "operation": operation,
+}), encoding="utf-8")
+if operation == "manual":
+    import graphify.__main__ as entrypoint
+    entrypoint._check_skill_version = lambda *_: None
+    entrypoint._refresh_stale_skills = lambda: None
+    sys.argv = ["graphify", "update", str(root), "--no-cluster"]
+    entrypoint.main()
+elif operation == "watch":
+    from graphify.watch import _rebuild_code
+    sys.exit(0 if _rebuild_code(root, no_cluster=True) else 1)
+else:
+    raise ValueError("unsupported cold-reference operation")
+"""
 
-    Assembled Graph output folds repeated forward/body evidence into also_seen;
-    raw no-cluster output preserves both observations. A cold raw reference must
-    therefore use the actual same-root public owner. Retain test-owned products
-    outside the admitted corpus, and restore the accepted cohort even on failure.
+
+def cold_reference(root, monkeypatch, operation):
+    """Publish cold raw evidence beside the corpus; accepted output is never moved.
+
+    The same analysis root preserves IDs and source provenance. An isolated child
+    selects the parent's admitted package explicitly and honors GRAPHIFY_OUT
+    before imports. Logs and outputs remain inspectable on both success/failure.
     """
+    assert operation in {"manual", "watch"}
+    root = root.resolve()
     output = root / "graphify-out"
     retained = Path(tempfile.mkdtemp(prefix="allocated-member-products-", dir=root.parent)).resolve()
-    assert output.resolve().parent == root.resolve() and retained.parent == root.resolve().parent
-    saved, reference = retained / "accepted", retained / "cold-reference"
-    assert output.is_dir() and not saved.exists() and not reference.exists()
-    before = products(root)
-    output.rename(saved)
+    reference, identity_path = retained / "cold-reference", retained / "identity.json"
+    assert output.is_dir() and not reference.exists() and retained.parent == root.parent
+    before = {str(path.relative_to(output)): path.read_bytes()
+              for path in output.rglob("*") if path.is_file()}
+    package_file = Path(graphify.__file__).resolve()
+    command = [sys.executable, "-I", "-X", "utf8", "-c", _COLD_PROGRAM,
+               str(package_file.parent.parent), str(root), operation, str(identity_path)]
+    env = dict(os.environ, GRAPHIFY_OUT=str(reference), GRAPHIFY_NO_AUTO_REFRESH="1", GRAPHIFY_NO_TIPS="1")
     try:
-        return run(root, monkeypatch, operation)
+        with (retained / "child.log").open("wb") as log:
+            child = subprocess.run(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+        child.check_returncode()
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        assert identity == {"package_file": str(package_file), "analysis_root": str(root),
+                            "output": str(reference), "output_existed": False,
+                            "isolated": True, "operation": operation}
+        return load_node_link_graph(reference / "graph.json")
     finally:
-        if output.exists():
-            output.rename(reference)
-        saved.rename(output)
-        assert products(root) == before
+        assert {str(path.relative_to(output)): path.read_bytes()
+                for path in output.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize("operation", ["manual", "watch"])

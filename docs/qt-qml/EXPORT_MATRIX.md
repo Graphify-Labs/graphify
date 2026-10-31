@@ -172,3 +172,47 @@ multigraph/profile/key extension while retaining ordinary legacy simple graphs.
 Source arcs remain distinct through supported consumers and explicit topology
 projections do not replace source storage. No database privilege or runtime schema
 migration is introduced; AST33/Qt27 invalidate derived analysis facts only.
+
+That AST33/Qt27 statement describes the earlier checkpoint. INC-QML-104–109
+subsequently retire incomplete derived facts through AST35/Qt29; the recorded
+literal class/member/alias correction uses36/30. This does not change storage
+selection, ABI or database privileges. The class `lexical_scope_proof` retains
+its bounded ordered roles, literal names, original spans and actual parent
+identity through sanitation/raw JSON export/reload. Missing entire parents and
+corrupt fields cannot acquire lookup authority. Direct body caller IDs and facade
+canonical callers stay distinct; only the established canonicalizer folds pairs.
+Legacy undirected Graph iteration is not a promised reconstruction format for
+source direction. Exact tests and final source/artifact binding are separate
+from this transport design.
+
+INC-QML-114 advances the current derived-fact profile to AST37/Qt31. Its optional
+dual type-reference promise preserves a source-local unavailable lookup through
+direct extraction, facade rewiring, assembly, metadata sanitation, JSON export
+and reload. The logical target remains an actual same-literal sourceless stub;
+the family never supplies positive or native authority. Independent valid uses of
+the same spelling retain their existing resolution. Partial/corrupt promises,
+foreign source or contradictory direction reject before consumer mutation;
+export reports failure before accounting/write even under force. Accepted typed
+raw edge paths follow the builder's existing normalized owner frame, preserving
+same-payload rebuild and `original_links` use. No new storage mode or database
+privilege is introduced. Source tests and final artifact/hosted evidence must be
+bound separately; earlier35/29 and36/30 receipts remain historical.
+
+INC118 subsequently advances derived facts/products to AST38/Qt32. Its optional
+original anonymous-namespace witness preserves admitted same-unit helper calls
+after member ownership repair, with stable source IDs and complete original
+spans through serialization/reload. Absent/incomplete/corrupt proof supplies no
+lookup authority. Existing graph storage, runtime dependencies and semantic
+cache are unchanged. INC117's source-only complete observation composition
+retains version1 relation/direction keys and strict duplicate-key reload
+rejection; repeated distinct source evidence uses `also_seen`, not another
+storage mode or per-occurrence identity contract. Final artifact/hosted proof
+must bind to these later source contracts;37/31 evidence stays historical.
+
+INC119 makes AST39/Qt33 current. Actual C++ definition/prototype producers carry
+the existing AST provenance into direct as well as facade assembly, preserving
+separate source roles/IDs and actual call targets through both graph directions,
+export and strict public path reload. It adds no authority or export mode.
+Successful legacy38 cache reads with missing provenance become real misses and
+retirements under39; semantic cache stays unchanged. The preceding38/32 proofs
+remain checkpoint evidence, not acceptance of these later source bytes.

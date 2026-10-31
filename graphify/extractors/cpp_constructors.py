@@ -144,10 +144,59 @@ def _store(node, key, fact):
     node["metadata"] = metadata
 
 
+def _constructor_declarations(syntax, source, identities, classes, stem):
+    """Share source classification; callers retain allocation and graph authority."""
+    for item in syntax:
+        if item.type not in {"declaration", "function_definition"} or item.child_by_field_name("type") is not None:
+            continue
+        declarator = item.child_by_field_name("declarator")
+        if declarator is None or declarator.type != "function_declarator":
+            continue
+        name_node = declarator.child_by_field_name("declarator")
+        name = _read_text(name_node, source) if name_node else ""
+        if not _identifier(name):
+            continue
+        scope = _scope(item, source)
+        if scope is None:
+            continue
+        parent = item.parent
+        while parent and parent.type not in {"class_specifier", "struct_specifier", "translation_unit", "namespace_definition"}:
+            parent = parent.parent
+        owner_info = classes.get(parent.id) if parent else None
+        if owner_info and name == owner_info[1].split("::")[-1]:
+            _, qualified, lexical_id = owner_info
+            nid = constructor_id(lexical_id, name, item, source, qualified)
+            role = "definition" if item.type == "function_definition" else "declaration"
+        elif not owner_info and item.type == "function_definition" and "::" in name:
+            qualified, short = name.rsplit("::", 1)
+            if qualified.split("::")[-1] != short or item.child_by_field_name("body") is None:
+                continue
+            qualified = f"{scope}::{qualified}" if scope else qualified
+            if not _identifier(qualified):
+                continue
+            nid = qualified_function_id(stem, item, name, source, identities=identities)
+            role = "definition"
+        else:
+            continue
+        yield item, nid, name, qualified, scope, role, owner_info
+
+
+def constructor_candidate_ids(root, original_source, identities):
+    """Read-only allocator exclusions, never class, signature or native authority."""
+    if root.has_error:
+        return frozenset()
+    classes = {record["syntax"].id: (None, record["qualified"], identities.constructor_owner_id(record))
+               for record in identities.records.values() if _identifier(record["qualified"])}
+    return frozenset(item[1] for item in _constructor_declarations(_walk(root), original_source, identities, classes, identities.stem))
+
+
 def augment_cpp_constructors(root, source, nodes, edges, path, *, identities=None):
     """Produce bounded exact source facts; never execute or reparse the corpus."""
     if root.has_error:
         return
+    from graphify.extractors.cpp_class_scopes import class_scope_proof
+    from graphify.extractors.cpp_include_guards import IncludeGuardIndex
+    guards = IncludeGuardIndex(root)
     source_facts(root, source, nodes, path)
     by_id = {node["id"]: node for node in nodes}
     # The generic engine may have salted a declaration away from its file ID.
@@ -175,30 +224,14 @@ def augment_cpp_constructors(root, source, nodes, edges, path, *, identities=Non
         if identities.preferred(record) is record:
             fact = {"contract_version": 1, "qualified_name_b64": _encoded(qualified),
                     "scope_b64": _encoded(scope),
+                    "lexical_scope_proof": class_scope_proof(item, source, guards),
                     "is_definition": item.child_by_field_name("body") is not None,
                     "span": _span(item), "ambiguous": identities.ambiguous(record)}
             _store(owner, "cpp_class", fact)
-        classes[item.id] = (owner, qualified, record["id"])
-    for item in syntax:
-        if item.type not in {"declaration", "function_definition"} or item.child_by_field_name("type") is not None:
-            continue
-        declarator = item.child_by_field_name("declarator")
-        if declarator is None or declarator.type != "function_declarator":
-            continue
-        name_node = declarator.child_by_field_name("declarator")
-        name = _read_text(name_node, source) if name_node else ""
-        if not _identifier(name):
-            continue
-        scope = _scope(item, source)
-        if scope is None:
-            continue
-        parent = item.parent
-        while parent and parent.type not in {"class_specifier", "struct_specifier", "translation_unit", "namespace_definition"}:
-            parent = parent.parent
-        owner_info = classes.get(parent.id) if parent else None
-        if owner_info and name == owner_info[1].split("::")[-1]:
-            owner, qualified, lexical_id = owner_info
-            nid = constructor_id(lexical_id, name, item, source, qualified)
+        classes[item.id] = (owner, qualified, identities.constructor_owner_id(record))
+    for item, nid, name, qualified, scope, role, owner_info in _constructor_declarations(syntax, source, identities, classes, _file_stem(path)):
+        if owner_info:
+            owner = owner_info[0]
             if nid not in by_id:
                 node = {"id": nid, "label": f".{name}()", "file_type": "code",
                         "source_file": str(path), "source_location": f"L{item.start_point.row + 1}", "_callable": True}
@@ -207,17 +240,7 @@ def augment_cpp_constructors(root, source, nodes, edges, path, *, identities=Non
                 edges.append({"source": owner["id"], "target": nid, "relation": "method",
                               "confidence": "EXTRACTED", "source_file": str(path),
                               "source_location": node["source_location"], "weight": 1.0})
-            role = "definition" if item.type == "function_definition" else "declaration"
-        elif not owner_info and item.type == "function_definition" and "::" in name:
-            qualified, short = name.rsplit("::", 1)
-            if qualified.split("::")[-1] != short or item.child_by_field_name("body") is None:
-                continue
-            qualified = f"{scope}::{qualified}" if scope else qualified
-            nid = qualified_function_id(_file_stem(path), item, name, source)
-            if nid not in by_id or not _identifier(qualified):
-                continue
-            role = "definition"
-        else:
+        elif nid not in by_id:
             continue
         _store(by_id[nid], "cpp_constructor", {"contract_version": 1, "owner_b64": _encoded(qualified),
                "scope_b64": _encoded(scope),

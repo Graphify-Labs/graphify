@@ -288,7 +288,7 @@ def existing_graph_node_count(path: "str | Path"):
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
-    from graphify.build import _is_external_stub, take_shrink_accounting
+    from graphify.build import _is_external_stub, add_source_relationship, take_shrink_accounting
     from graphify.qt_import_retention import (
         FIELD, apply_import_retention, node_link_view, read_import_retention,
     )
@@ -296,15 +296,29 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # or persistence can obscure it. Ordinary graphs avoid the extra node view.
     retained_imports = (read_import_retention(node_link_view(G), is_placeholder=_is_external_stub)
                         if FIELD in G.graph else frozenset())
-    from graphify.source_relationships import is_source_graph, source_profile, storage_key
+    from graphify.source_relationships import is_source_graph, prepare_source_links, source_profile, storage_key
+    from graphify.extractors.cpp_type_references import validate_type_reference_export
+    source_accounting = {}
     try:
+        # Preserve known source restrictions before accounting or output handling.
+        validate_type_reference_export(G, original_links)
         source_mode = source_profile(G.nodes(data=True), G.graph)
         if source_mode and not is_source_graph(G):
             raise ValueError("SOURCE_RELATIONSHIPS_INVALID: source profile requires multigraph storage")
+        if source_mode:
+            original_links = prepare_source_links(G, original_links, add=add_source_relationship)
+            # Validate once before publication; no counter conversion may fail
+            # after the atomic write has already accepted the output.
+            try:
+                source_accounting = {key: int(G.graph.get(key, 0) or 0)
+                                     for key in ("_dedup_collapsed", "_pruned_node_count")}
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid source accounting") from None
     except ValueError as exc:
         print(f"[graphify] error: {exc}; JSON was not written.", file=sys.stderr)
         return False
-    take_shrink_accounting(G)
+    if not source_mode:
+        take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -399,6 +413,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # node_link_data shares G.graph. Version stamps and sorted hyperedges are
     # output metadata; exporting must not mutate the accepted caller graph.
     data["graph"] = dict(data.get("graph", {}))
+    for key in source_accounting:
+        data["graph"].pop(key, None)
 
     def _json_sort_key(item: dict) -> str:
         return json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -522,6 +538,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     from graphify.paths import write_json_atomic
     # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, compact=True)
+    for key in source_accounting:
+        G.graph.pop(key, None)
     return True
 
 

@@ -833,6 +833,23 @@ recovery failure retains its existing owner and cannot become source-view succes
   invalid nonempty carrier or a malformed reserved marker still rejects. Every
   promised source fact is validated before this compatibility decision.
 
+INC117 extends the same owner to source-only complete observation evidence.
+Malformed/nested evidence carriers or competing nested identity fields must
+reject before adoption, accounting and publication; the implementation and
+exact local/hosted evidence remain in the owning increment. Valid repeated
+observations compose without a warning and retain their distinct source
+context/provenance. This does not relax duplicate persisted storage-key
+rejection. Actual atomic I/O failure retains its existing persistence exception
+and accepted disk state; source-profile pending accounting is consumed only on
+successful publication. The independent `CPP_REFERENCE_CONTEXT_INVALID` owner
+continues validating its own promises in every source observation.
+
+INC118 introduces no new diagnostic: absent, incomplete, corrupt or unsupported
+anonymous-namespace lookup proof remains unavailable and cannot authorize a
+call. Successful bounded static lookup adds no warning. Actual cache/write and
+recovery failures retain their existing owning diagnostics and retention rules;
+an unresolved source call is not an executed Qt/C++ failure.
+
 
 INC-QML-98 uses existing `QT_CPP_SYNTAX` (error; native Qt syntax owner) when a
 source-local define/undef precedes a recovered emission prefix. The bounded
@@ -843,3 +860,74 @@ and preprocessing directives are preserved. Successful admission adds no warning
 Correct the unsupported source and retry; normal CLI/watch rejection retains
 accepted products, corrected recovery and repeated application use the existing
 writer. A write/rollback failure retains its separate persistence diagnostic.
+
+
+INC-QML-104/105/106 reuse the existing diagnostic owners. Accepted legacy tooling
+booleans, proven C# captures and unique member pairs add no success warning.
+Wrong tooling owners/types/duplicates remain `QML_TYPES_UNSUPPORTED`; correct the
+description and retry. Missing, static, conditional or ambiguous source identity
+remains unresolved rather than a guessed relationship; no execution failure is
+inferred. A rejected source update retains accepted products through the existing
+Qt/source guard. A real replacement failure reports `GRAPH_PUBLICATION_FAILED`
+and must retain prior graph/manifest/report/state products; recovery and repeated
+application use the ordinary writer. Cache epochs retire successful old facts,
+not durable accepted output. These corrections introduce no new error code,
+logger, dependency fallback or partial-publication mode.
+
+INC-QML-107–113 retain those boundaries. Accepted read-only member context,
+negative callback bindings, validated class roles and literal declaration identity
+add no success warning. Missing/conditional/ambiguous or corrupt borrowed scope
+cannot supply a namespace/native target; it remains unavailable under the existing
+source-resolution owner. A resolver availability result is not permission to
+publish otherwise corrupt promised transport. Original parser/source/native
+integrity gates remain in force. Actual serialization/replacement failure remains
+distinct from source uncertainty and retains the writer's failure, prior-product
+retention, recovery and settled-repeat contract. The syntax/Qt epoch migration
+reparses incomplete derived facts; it does not discard accepted durable output.
+
+The struct-callable header hint chooses a grammar and emits no new diagnostic.
+Missing optional parser, malformed/partial source and unavailable source/native
+proof retain their separate owners; a C++ hint alone never establishes successful
+semantic analysis. The bounded read/masking/declaration-context owner performs no
+SDK discovery or source execution. Actual rejected writes and replacement EIO
+retain the existing public failure and recovery contract on both manual/watch
+paths; a platform fixture skip is not successful rejection evidence.
+
+### CPP_REFERENCE_CONTEXT_INVALID
+
+- Severity: error. Owner: `cpp_type_references`, introduced by INC-QML-114.
+  Implemented at producer, raw rewire, build, reload and JSON export boundaries;
+  final source/artifact/hosted verification remains separately recorded.
+- Trigger: an invalid/partial typed promise, corrupt literal/scope/span fields,
+  contradictory target/direction or a missing promised counterpart. Both the
+  version marker and metadata are required when either is present. Fully absent
+  legacy data retains its existing compatibility behavior.
+  A promised raw payload also rejects conflicting `edges`/`links` aliases or
+  explicitly nonboolean graph-mode flags before a compatibility adapter can
+  select/coerce them. Missing flags retain their existing defaults.
+  An export override cannot erase a promise already known by the Graph: its
+  retained logical arc, source context and exact fact must remain represented
+  in supplied `original_links`. Extra original parallel evidence stays allowed.
+- Outcome: controlled `ValueError` before rewiring/adoption/load/export mutation;
+  JSON export reports failure before writing. It is source-context integrity
+  failure, distinct from missing parser or ordinary unavailable type lookup.
+  A valid unavailable profile adds no warning and grants no native authority.
+- Recovery: repair or re-extract the admitted source/cache transport, then retry
+  through the normal writer. Force cannot authorize corrupt context. Existing
+  failed-publication retention and recovery own graph/manifest/report/state;
+  persistence/rollback failure remains separate and is never context success.
+- Evidence/logging: retain bounded stage/code and safe relative source context
+  where available; do not print source text, literal private names or raw input.
+  Actual producer/facade/build/reload/export and public failure paths must be
+  executed before implementation/verification status advances.
+
+INC119 diagnostic impact: valid actual definition/prototype provenance adds no
+warning or new diagnostic code. Existing parser/partial-source and unavailable
+lookup outcomes retain their owners and do not invent a missing body. Existing
+cache misses retire old38 fragments under39, preserving semantic data; ordinary
+successful regeneration is not an integrity error. Actual failed publication
+uses the existing writer diagnostic, retains accepted products and permits
+repaired retry/repeat. An older graph that lost a source body requires source
+re-extraction with the reviewed writer; declaration text or facade provenance
+cannot reconstruct unobserved source evidence. No new persistence boundary,
+logging framework or externally visible failure taxonomy is introduced.

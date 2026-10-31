@@ -16,15 +16,21 @@ from graphify.extractors.cpp_member_identity import member_fact
 from graphify.extractors.cpp_constructors import _fact
 
 
-_SCOPES = {"compound_statement", "for_statement", "for_range_loop", "if_statement", "switch_statement", "catch_clause", "lambda_expression"}
+_SCOPES = {"compound_statement", "for_statement", "for_range_loop", "if_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "lambda_expression"}
 
 
 def _scope(node, function):
-    parent = node.parent
+    # A range variable does not own its range initializer or later statements.
+    if node.type == "for_range_loop":
+        return node.child_by_field_name("body") or node
+    child, parent = node, node.parent
     while parent is not None and parent != function:
+        if (parent.type in {"if_statement", "for_statement", "for_range_loop", "while_statement", "do_statement"}
+                and any(parent.child_by_field_name(field) == child for field in ("consequence", "alternative", "body"))):
+            return child  # Unbraced controlled declarations have an implicit scope.
         if parent.type in _SCOPES:
             return parent
-        parent = parent.parent
+        child, parent = parent, parent.parent
     return function.child_by_field_name("body") or function
 
 
@@ -39,14 +45,89 @@ def _binding_names(declarator, source):
     return []
 
 
+def _binding_nodes(function):
+    """Nested classes/functions own their binders; lambdas keep local windows."""
+    pending = [function]
+    while pending:
+        node = pending.pop()
+        if node != function and node.type in {"function_definition", "class_specifier", "struct_specifier", "union_specifier"}:
+            continue
+        yield node
+        pending.extend(reversed(node.named_children))
+
+
+def _owned_parameter(node, function, source):
+    """Callback/prototype parameter names never bind the surrounding function."""
+    parameters = node.parent
+    if (parameters is not None and parameters.parent is not None and parameters.parent.type == "catch_clause"
+            and parameters.parent.child_by_field_name("parameters") == parameters):
+        return True
+    owner = node.parent
+    while owner is not None and owner != function and owner.type != "lambda_expression":
+        owner = owner.parent
+    if owner is None:
+        return False
+    declarator = owner.child_by_field_name("declarator")
+    actual = callable_declarator(declarator, source) if declarator is not None else None
+    if actual is None and owner.type == "lambda_expression" and declarator is not None:
+        actual = declarator if declarator.type == "abstract_function_declarator" else None
+    return actual is not None and actual.child_by_field_name("parameters") == node.parent
+
+
+def _callback_binding(node, source):
+    """Recognize only the pinned grammar's primitive zero-argument data shape.
+
+    A complete primitive ``T (*name)()`` statement is unambiguous declaration
+    syntax even when parsed as nested calls. Named expressions/types cannot
+    borrow that proof. The result owns negative shadowing only, at the end of
+    the original declarator and before any initializer, without a parser view.
+    """
+    if node.type != "call_expression" or node.has_error:
+        return None
+    outer, inner = node.child_by_field_name("arguments"), node.child_by_field_name("function")
+    if outer is None or any(child.type != "comment" for child in outer.named_children) or inner is None or inner.type != "call_expression":
+        return None
+    primitive, arguments = inner.child_by_field_name("function"), inner.child_by_field_name("arguments")
+    if primitive is None or primitive.type != "primitive_type" or arguments is None:
+        return None
+    values = [child for child in arguments.named_children if child.type != "comment"]
+    if len(values) != 1:
+        return None
+    pointer = values[0]
+    while pointer.type == "parenthesized_expression" and len(pointer.named_children) == 1:
+        pointer = pointer.named_children[0]
+    name, operator = pointer.child_by_field_name("argument"), pointer.child_by_field_name("operator")
+    if (pointer.type != "pointer_expression" or operator is None or operator.type != "*"
+            or name is None or name.type != "identifier"):
+        return None
+    expression, parent = node, node.parent
+    if parent is not None and parent.type == "assignment_expression" and parent.child_by_field_name("left") == node:
+        assignment = parent.child_by_field_name("operator")
+        if assignment is None or assignment.type != "=":
+            return None
+        expression, parent = parent, parent.parent
+    if parent is None or not (parent.type == "expression_statement" or
+            parent.type == "for_statement" and parent.child_by_field_name("initializer") == expression):
+        return None
+    return _read_text(name, source), node.end_byte
+
+
 def _bindings(function, source):
     values = []
-    for node in _walk(function):
+    for node in _binding_nodes(function):
+        if not function.has_error and (binding := _callback_binding(node, source)) is not None:
+            scope = _scope(node, function)
+            values.append((*binding, scope.start_byte, scope.end_byte))
         if node.type in {"declaration", "type_definition", "parameter_declaration", "optional_parameter_declaration", "for_range_loop"}:
+            if node.type in {"parameter_declaration", "optional_parameter_declaration"} and not _owned_parameter(node, function, source):
+                continue
             for declarator in node.children_by_field_name("declarator"):
                 scope = _scope(node, function)
+                # The local name is in scope before its own initializer; the
+                # initializer's expression end is not a declaration boundary.
+                actual = declarator.child_by_field_name("declarator") if declarator.type == "init_declarator" else declarator
                 for name in _binding_names(declarator, source):
-                    values.append((name, declarator.end_byte, scope.start_byte, scope.end_byte))
+                    values.append((name, actual.end_byte if actual is not None else declarator.end_byte, scope.start_byte, scope.end_byte))
         elif node.type == "lambda_capture_specifier":
             scope = next((parent for parent in [node.parent] if parent is not None and parent.type == "lambda_expression"), None)
             if scope is not None:

@@ -42,7 +42,7 @@ except Exception:
 # declaration/enum/member and Qt6.12 annotation contracts. Unchanged source bytes
 # cannot accept earlier omitted or differently classified facts. Independent
 # semantic entries retain their existing lifetime and are not recomputed here.
-_AST_CACHE_SCHEMA = 33  # Retire pre-audit syntax facts; preserve the #4854 ID-domain repair.
+_AST_CACHE_SCHEMA = 39  # Retire missing direct AST provenance; preserve the #4854 ID-domain repair.
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is

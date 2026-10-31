@@ -15,6 +15,7 @@ from graphify.extractors.cpp_declarators import callable_declarator, member_decl
 from graphify.extractors.cpp_function_signature import parameter_facts
 from graphify.extractors.cpp_functions import bounded_scope, namespace_scope, occurrence_suffix
 from graphify.extractors.cpp_include_guards import IncludeGuardIndex
+from graphify.extractors.cpp_anonymous_namespaces import namespace_witness
 
 
 def _scope(node, source):
@@ -92,10 +93,14 @@ def augment_cpp_prototypes(root, source, nodes, edges, path):
                 "span": _span(declaration),
                 **parameter_facts(current, source),
             }}
+            if not named:
+                metadata["cpp_prototype"]["anonymous_scope_proof"] = namespace_witness(declaration, source)
             line = declaration.start_point.row + 1
+            # Mark only this actual declaration; a prototype stays independent
+            # of definitions and gains no body/native resolution authority.
             nodes.append({"id": identity, "label": f"{name}()", "file_type": "code",
                           "source_file": str(path), "source_location": f"L{line}",
-                          "_callable": True, "metadata": metadata})
+                          "_callable": True, "_origin": "ast", "metadata": metadata})
             edges.append({"source": file_id, "target": identity, "relation": "contains",
                           "confidence": "EXTRACTED", "source_file": str(path),
                           "source_location": f"L{line}", "weight": 1.0})

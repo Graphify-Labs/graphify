@@ -22,10 +22,25 @@ legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
 Future requirements continue with `REQ-QML-023`; future top-level increments
-continue with `INC-QML-104`. INC-QML-61 owns the versioned Qt 6.12 audit;
+continue with `INC-QML-120`. INC-QML-61 owns the versioned Qt 6.12 audit;
 INC-QML-62–101 own its scoped correction and delivery sequence; INC-QML-102
 owns platform-faithful persistence fault fixtures without runtime changes. INC-QML-103
-owns the original-byte-aware aggregate newline oracle and explicit CLI pairs. INC-QML-49 owns current-upstream integration;
+owns the original-byte-aware aggregate newline oracle and explicit CLI pairs. INC-QML-104
+owns legacy tooling type-const field compatibility under the Qt6.12 profile. INC-QML-105
+owns captured C# receiver-call compatibility; INC-QML-106 owns canonical same-unit
+member declaration/body provenance; INC-QML-107 owns preserved direct C++ calls
+through uniquely source-proven member scope. INC-QML-108 owns local C++ callback
+binding rejection and source-role compatibility; INC-QML-109 owns enclosing-class
+shadow and namespace separation. INC-QML-110 owns collision-safe literal class
+identities; INC-QML-111 owns literal member-name collisions; INC-QML-112 owns
+literal alias-name collisions; INC-QML-113 owns C++ struct callable header
+admission; INC-QML-114 owns source lexical rejection through later type rewiring.
+INC-QML-115 owns retained per-case optional-wheel hosted test evidence.
+INC-QML-116 owns same-root cold-reference output isolation in parity tests.
+INC-QML-117 owns source-profile export/reload composition of repeated reference
+evidence; INC-QML-118 owns same-unit anonymous helper calls after member takeover.
+INC-QML-119 owns direct C++ definition/prototype source provenance in assembly.
+INC-QML-49 owns current-upstream integration;
 INC-QML-50 owns followed Qt metadata source provenance; INC-QML-51/52 own runner
 and metadata-growth fixture corrections; INC-QML-53 owns the bounded C++/CMake
 parser repair under existing acceptance criteria. These counters describe different concerns and need

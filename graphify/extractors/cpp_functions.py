@@ -17,6 +17,7 @@ from graphify.extractors.cpp_constructors import _signature, _span, _walk
 from graphify.extractors.cpp_declarators import callable_declarator, member_declarator
 from graphify.extractors.cpp_function_signature import parameter_facts, valid_parameter_facts
 from graphify.extractors.cpp_include_guards import IncludeGuardIndex
+from graphify.extractors.cpp_anonymous_namespaces import namespace_witness
 from graphify.extractors.cpp_source_views import span_contains, valid_span
 
 
@@ -213,6 +214,10 @@ class CppFunctions:
                       "template": template, "conditional": conditional,
                       "static": any(child.type == "storage_class_specifier" and _read_text(child, source) == "static" for child in node.children)}
             record.update(parameter_facts(function, source))
+            # Anonymous lookup needs original role/range evidence, not a digest
+            # or a later source reread after the producer has released its AST.
+            if not named:
+                record["anonymous_scope_proof"] = namespace_witness(node, source)
             self.records[node.id] = record
         plain = defaultdict(list)
         exact = defaultdict(list)
@@ -266,4 +271,9 @@ class CppFunctions:
                         scope_fingerprint=record["scope_fingerprint"],
                         namespace_proof=record["scope_proof"], scope_complete=record["scope_proof_complete"] and not record["scope_oversize"],
                         span=_span(record["syntax"]))
+            # Direct graph assembly must retain this actual AST declaration,
+            # independently of the facade's later extraction-tier stamp.
+            node["_origin"] = "ast"
             node.setdefault("metadata", {})["cpp_function"] = fact
+            if "anonymous_scope_proof" in record:
+                fact["anonymous_scope_proof"] = record["anonymous_scope_proof"]

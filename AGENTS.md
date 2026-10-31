@@ -349,6 +349,12 @@ uncovered changed branches; overall coverage or successful parsing alone does no
 prove resolution correctness. Change CI when new evidence needs dependencies,
 platform jobs, services, artifacts, or reports; discovered-but-skipped tests do not pass.
 
+Before coverage or reporting commands, explicitly select an owned ignored output
+destination and retain a restorable copy plus hash of existing unrelated data.
+Do not allow omitted options to fall back to shared root artifacts. Verify exact
+bytes after completion before claiming preservation; rerunning tests or matching
+counts cannot reconstruct prior user-owned data.
+
 Before completion, confirm every changed behavior and applicable criterion has
 executable coverage or an explicit gap, tests exercise production and failure paths,
 and regression assertions exclude the original failure. Requirements, design,
@@ -455,6 +461,25 @@ sanitation, export and reload. Producer provenance must survive every entry poin
 a facade-only marker is insufficient. Keep literal lookup values distinct from
 escaped display values, test metadata length/list bounds, and reject corrupted
 transport explicitly. Scope keys must have bounded size as nesting grows.
+
+For new or changed typed transport, validate explicit mode scalars and every raw
+collection alias before a compatibility adapter can coerce or select them.
+Individually valid aliases can still conflict; define their agreement policy and
+test evidence loss when an unused alias or export override erases both promise
+fields. A supplied alternate view must retain restrictions already known by the
+accepted graph while preserving permitted extra parallel evidence. Keep ordinary
+unpromised legacy behavior explicit. Accepted path/ID normalization must leave one
+coherent caller frame across copied adapters and replaced link lists; carry only
+already-validated logical direction through identity conversion. Test repeated
+build/export/reload and rejected-input/accounting/disk retention at those actual
+boundaries. These are extension standards, not claims that all legacy formats
+already implement typed validation or atomic in-memory input mutation.
+
+When changing a cache epoch or versioned namespace, inspect all current-epoch
+assertions and persistence-fault selectors across retained package profiles.
+Keep predecessor constants unchanged. Update paired current-schema/directory
+expectations together, and prove that a targeted persistence fault actually
+reaches the new owned destination before claiming failure retention or recovery.
 
 Typed graph transport must validate explicit mode types, collection/element shapes,
 exact node/endpoint identities, duplicate or conflicting aliases and logical

@@ -2758,13 +2758,16 @@ def _rebuild_code(
             _disamb_labels(raw_nodes)
             _qualify_cs_methods(raw_nodes, result.get("edges", []))
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
+            from graphify.source_relationships import inherit_source_snapshot
+            inherit_source_snapshot(result, existing_graph_data)
             candidate_graph_data = {
                 **{
                     k: v for k, v in result.items()
                     if k not in ("edges", "nodes") and k not in _RUN_ONLY_KEYS
                 },
                 "nodes": raw_nodes,
-                "links": _dedupe_edges(result.get("edges", [])),
+                "links": _dedupe_edges(result.get("edges", []), source_nodes=raw_nodes,
+                                        graph_metadata=result.get("graph"), directed=bool((existing_graph_data or {}).get("directed", False))),
                 # A first build's fresh extraction may carry no hyperedges key,
                 # while a reconciled rebuild always does; write it either way so
                 # the two builds of one tree give the same file.

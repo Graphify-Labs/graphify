@@ -18,10 +18,13 @@ COMPONENT_FIELDS = {"name", "prototype", "file", "exports", "exportMetaObjectRev
                     "hasCustomParser", "enforcesScopedEnums", "valueType", "aliases",
                     "extensionIsNamespace", "isJavaScriptBuiltin", "isSelfExtension", "isTypeOpaque",
                     "lineNumber", "resolvedFile", "lineNumberInResolvedFile", "parentProperty"}
-_TYPE_FIELDS = {"type", "isList", "isPointer", "isTypeConstant", "isConst"}
+# Qt6.8 writeType emits isConstant for every type-bearing member. Its Property
+# spelling also covered property constness, so retain it as raw tooling evidence
+# without aliasing modern isTypeConstant/isMethodConstant/isPropertyConstant.
+_TYPE_FIELDS = {"type", "isList", "isPointer", "isTypeConstant", "isConst", "isConstant"}
 _PROPERTY_FIELDS = {"isReadonly", "isRequired", "isFinal", "index", "read", "write", "notify",
                     "bindable", "isVirtual", "isOverride", "isPropertyConstant", "privateClass",
-                    "isConstant", "reset", "isEnum", "isUnderlyingType", "underlyingType"}
+                    "reset", "isEnum", "isUnderlyingType", "underlyingType"}
 _METHOD_FIELDS = {"isConstructor", "isJavaScriptFunction", "isCloned", "isMethodConstant"}
 _ENUM_FIELDS = {"values", "alias", "isFlag", "isScoped", "isEnum", "isUnderlyingType", "underlyingType"}
 _COMMON_MEMBER = _TYPE_FIELDS | {"name", "revision", "lineNumber"}

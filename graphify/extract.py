@@ -3970,6 +3970,9 @@ def _rewire_unique_stub_nodes(
     nodes: list[dict], edges: list[dict], root: Path | None = None,
 ) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
+    # A source-local rejection belongs to one edge, not the shared bare stub.
+    from graphify.extractors.cpp_type_references import is_type_reference_unavailable, validate_type_references
+    validate_type_references(nodes, edges)
     scan_root = Path(root).resolve() if root is not None else None
     crate_by_dir: dict[Path, str | None] = {}
 
@@ -4239,8 +4242,11 @@ def _rewire_unique_stub_nodes(
             _is_dotnet_source_file(str(edge.get("source_file", "")))
             and edge.get("relation") in csharp_scoped_relations
         )
+        # The preflight proved any explicit pair; veto its logical target only.
+        unavailable_target = (edge.get("_tgt", edge.get("target"))
+                              if is_type_reference_unavailable(edge) else None)
         source = edge.get("source")
-        if source in remap:
+        if source in remap and source != unavailable_target:
             remapped_source = remap[str(source)]
             if not (
                 is_csharp_scoped_edge
@@ -4253,7 +4259,7 @@ def _rewire_unique_stub_nodes(
             if not (
                 is_csharp_scoped_edge
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
-            ) and not _names_own_builtin_base(
+            ) and target != unavailable_target and not _names_own_builtin_base(
                 edge, str(target), remapped_target
             ) and not _cross_language_candidate(edge, remapped_target):
                 edge["target"] = remapped_target

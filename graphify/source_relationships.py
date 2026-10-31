@@ -16,6 +16,7 @@ from typing import TypeGuard
 
 import networkx as nx
 from graphify.graph_direction import logical_endpoints as accepted_endpoints
+from graphify.source_relationship_evidence import validate_observations, validate_parent_cohort, validate_transport_cohort
 
 FIELD = "graphify_source_relationships"
 _CONTRACT = {"contract_version": 1}
@@ -155,30 +156,15 @@ def adopt_transport(data: dict) -> dict:
         raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid node collection")
     if not source_profile(data.get("nodes", ()), metadata):
         return data
-    if "links" in data and "edges" in data and data["links"] != data["edges"]:
-        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: conflicting link collection aliases")
-    for flag in ("directed", "multigraph"):
-        if flag in data and type(data[flag]) is not bool:
-            raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid graph mode flag")
-    nodes, edges = data.get("nodes", []), data.get("links", data.get("edges", []))
-    if not isinstance(nodes, list) or not isinstance(edges, list):
-        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid node/link collection")
-    ids = {}
-    for node in nodes:
-        identity = node.get("id") if isinstance(node, dict) else None
-        if not _identity(identity) or identity in ids:
-            raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid or duplicate node identity")
-        ids[identity] = type(identity)
+    edges = validate_transport_cohort(data, identity=_identity)
+    from graphify.extractors.cpp_type_references import validate_type_reference_transport
+    validate_type_reference_transport(data, directed=data.get("directed", False))
     metadata = dict(data.get("graph") or {})
     if FIELD in metadata and data.get("multigraph") is not True:
         raise ValueError("SOURCE_RELATIONSHIPS_INVALID: source relationship profile requires multigraph storage")
     metadata[FIELD] = dict(_CONTRACT)
     links, seen, pairs = [], set(), set()
     for edge in edges:
-        if (not isinstance(edge, dict) or not _identity(edge.get("source")) or not _identity(edge.get("target"))
-                or not isinstance(edge.get("relation"), str) or not edge["relation"].strip()
-                or any(ids.get(edge[key]) is not type(edge[key]) for key in ("source", "target"))):
-            raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid source relationship link")
         endpoints = (edge["source"], edge["target"])
         pair_key = endpoints if data.get("directed") else frozenset(endpoints)
         if data.get("multigraph") is False and pair_key in pairs:
@@ -196,6 +182,61 @@ def adopt_transport(data: dict) -> dict:
     if "edges" in data:
         result["edges"] = links
     return result
+
+
+def prepare_source_links(graph, original_links, *, add):
+    """Compose one accepted logical arc per key before accounting or publication."""
+    nodes = [{**data, "id": key} for key, data in graph.nodes(data=True)]
+    current = [{**data, "source": source, "target": target} for source, target, data in graph.edges(data=True)]
+    validate_parent_cohort(nodes, current, directed=graph.is_directed(), identity=_identity)
+    identities = [storage_key(*logical_endpoints(graph, edge["source"], edge["target"], edge), edge["relation"]) for edge in current]
+    if len(identities) != len(set(identities)):
+        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: duplicate source relationship storage identity")
+    if original_links is None:
+        return None
+    if not isinstance(original_links, (list, tuple)):
+        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid original source links")
+    selected = list(original_links)
+    validate_parent_cohort(nodes, selected, directed=graph.is_directed(), identity=_identity, allow_missing=True)
+    return prepare_source_edges([edge for edge in selected if edge["source"] in graph and edge["target"] in graph],
+                                directed=graph.is_directed(), add=add)
+
+
+def validate_source_transport(data):
+    """Autoactivation cannot hide malformed unused aliases or coerce mode flags."""
+    if source_profile(data.get("nodes", ()), data.get("graph")):
+        validate_transport_cohort(data, identity=_identity, raw=True)
+
+
+def prepare_source_edges(edges, *, directed, add):
+    """An explicit raw publisher composes observations before strict adoption."""
+    if type(directed) is not bool:
+        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid graph mode flag")
+    graph = make_source_graph(directed=directed, graph_metadata={FIELD: dict(_CONTRACT)})
+    for edge in edges:
+        if (not isinstance(edge, dict) or not all(_identity(edge.get(key)) for key in ("source", "target"))
+                or not isinstance(edge.get("relation"), str) or not edge["relation"].strip()):
+            raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid source relationship link")
+        validate_observations([edge])
+        add(graph, edge["source"], edge["target"], edge)
+    return [{**data, "source": source, "target": target} for source, target, data in graph.edges(data=True)]
+
+
+def inherit_source_profile(data, policy):
+    """Retain accepted storage after its last activating declaration is removed."""
+    if policy.get("source_profile"):
+        source_profile(data.get("nodes", ()), data.get("graph"))
+        data["graph"] = {**(data.get("graph") or {}), FIELD: dict(_CONTRACT)}
+        data.setdefault("directed", policy["source_directed"])
+        data.setdefault("multigraph", True)
+
+
+def inherit_source_snapshot(data, previous):
+    """Borrow only validated persisted storage intent from the caller's snapshot."""
+    if previous is not None:
+        accepted = adopt_transport(previous)
+        inherit_source_profile(data, {"source_profile": source_profile(accepted.get("nodes", ()), accepted.get("graph")),
+                                      "source_directed": accepted.get("directed", False)})
 
 
 def _identity(value):

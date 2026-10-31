@@ -13,7 +13,7 @@ import hashlib
 from types import MappingProxyType
 
 from graphify.extractors.base import _make_id, _read_text
-from graphify.extractors.csharp_lexical_binders import binding_names
+from graphify.extractors.csharp_lexical_binders import binding_names, receiver_bindings
 
 _FUNCTIONS = {"method_declaration", "constructor_declaration", "local_function_statement", "accessor_declaration"}
 _SCOPES = _FUNCTIONS | {"compilation_unit", "namespace_declaration", "file_scoped_namespace_declaration",
@@ -68,7 +68,7 @@ class CSharpLexicalCalls:
         self.source, self.stem = source, stem
         scopes, parents, fingerprints, scope_nodes = {}, {}, {}, {}
         functions, records, children, data = {}, {}, defaultdict(list), defaultdict(set)
-        groups, ordinals, nodes = defaultdict(list), defaultdict(int), []
+        groups, ordinals, nodes, conditions = defaultdict(list), defaultdict(int), [], {}
         file_namespaces = [child.child_by_field_name("name") for child in root.named_children
                            if child.type == "file_scoped_namespace_declaration"]
         file_scope = hashlib.sha256("\0".join(_read_text(node, source) for node in file_namespaces if node is not None).encode()).hexdigest()
@@ -77,6 +77,7 @@ class CSharpLexicalCalls:
             node, outer_scope, owner, conditional = pending.pop()
             nodes.append(node)
             conditional |= node.type.startswith("preproc_")
+            conditions[node.id] = conditional
             scope = outer_scope
             if node.type in _SCOPES:
                 name_node = node.child_by_field_name("name")
@@ -115,12 +116,14 @@ class CSharpLexicalCalls:
         for group in groups.values():
             for record in group:
                 records[record.syntax.id] = replace(record, duplicate=len(group) > 1)
+        receiver_data = defaultdict(list)
         for node in nodes:
             parent = node
             while parent is not None and parent.type not in _FUNCTIONS:
                 parent = parent.parent
             if parent is None:
                 continue  # Class fields are owned by their actual source edges.
+            function = parent
             scope = scopes[node.id]
             if node.type in {"declaration_pattern", "declaration_expression"}:
                 parent = node.parent
@@ -129,6 +132,8 @@ class CSharpLexicalCalls:
                 scope = scopes[parent.id] if parent is not None else scope
             for name in binding_names(node, source):
                 data[scope].add(_key(name))
+            receiver_data[function.id].extend(receiver_bindings(
+                node, source, function, scope_nodes.get(scope), conditional=conditions[node.id]))
         scoped = defaultdict(list)
         for record in records.values():
             scoped[(record.scope, record.name_key)].append(record)
@@ -137,6 +142,7 @@ class CSharpLexicalCalls:
         self.children_by_owner = MappingProxyType({key: tuple(value) for key, value in children.items()})
         self.scoped = MappingProxyType({key: tuple(value) for key, value in scoped.items()})
         self.data = MappingProxyType({key: frozenset(value) for key, value in data.items()})
+        self.receiver_data = MappingProxyType({key: tuple(value) for key, value in receiver_data.items()})
         # This is the sole mutable ID table. The generic declaration allocator,
         # never the immutable AST index, supplies every accepted callable ID.
         self.allocated = {}
@@ -173,6 +179,76 @@ class CSharpLexicalCalls:
 
     def class_owners(self):
         return {value[0]: value[1] for key, value in self.allocated.items() if key in self.records and value[1]}
+
+    def capture_receiver_tables(self, method_scopes, tables):
+        """Reuse one collector's proven types inside supported lexical captures.
+
+        Own-body bindings remain narrower than the added local-function window.
+        Missing/conditional/late/duplicate declarations and static barriers add
+        None shadows, so a field or unrelated method cannot lend authority.
+        Source tuples and per-file indexes are never mutated or shared globally.
+        """
+        typed = {}
+        for key, (node, _) in method_scopes.items():
+            names = defaultdict(list)
+            for name, values in tables[key][0].items():
+                names[name.removeprefix("@")].extend(values)
+            typed[node.id] = names
+        result = dict(tables)
+
+        def is_static(node):
+            return any(child.type == "modifier" and _read_text(child, self.source) == "static"
+                       for child in node.children)
+
+        for key, (node, _) in method_scopes.items():
+            record = self.records.get(node.id)
+            if record is None:
+                continue
+            ancestors, parent = [], record.parent
+            while parent is not None:
+                ancestors.append(parent)
+                parent = self.records[parent].parent if parent in self.records else None
+            allowed = []
+            if not is_static(node):
+                for parent in ancestors:
+                    allowed.append(parent)
+                    if is_static(self.scope_nodes[parent]):
+                        break
+            inherited = typed.get(allowed[-1], {}) if allowed else {}
+            barrier, scope = None, self.scopes[node.id]
+            while scope is not None:
+                frame = self.scope_nodes[scope]
+                if frame.type in {"local_function_statement", "lambda_expression"} and is_static(frame):
+                    barrier = frame.start_byte, frame.end_byte
+                    break
+                scope = self.parents[scope]
+            own, base = tables[key]
+            bindings = defaultdict(list)
+            for name, values in own.items():
+                bindings[name.removeprefix("@")].extend(values)
+            claims = defaultdict(list)
+            for parent in ancestors:
+                for binding in self.receiver_data.get(parent, ()):
+                    if binding.scope[0] <= node.start_byte and node.end_byte <= binding.scope[1]:
+                        claims[binding.name].append(binding)
+            for name, candidates in claims.items():
+                width = min(binding.scope[1] - binding.scope[0] for binding in candidates)
+                nearest = [binding for binding in candidates if binding.scope[1] - binding.scope[0] == width]
+                binding = nearest[0]
+                accepted = (len(nearest) == 1 and binding.supported and not binding.conditional
+                            and binding.declared <= node.start_byte and binding.owner in allowed
+                            and (barrier is None or barrier[0] <= binding.scope[0] and binding.scope[1] <= barrier[1])
+                            and not record.conditional and not record.partial)
+                for suffix in ("", "[]"):
+                    matches = [value for start, end, value in inherited.get(name + suffix, ())
+                               if (start, end) in binding.type_windows]
+                    value = matches[0] if accepted and len(matches) == 1 and isinstance(matches[0], str) else None
+                    bindings[name + suffix].append((node.start_byte, node.end_byte, value))
+            # Escaped/unescaped C# spellings denote the same source binder;
+            # combining their rows preserves actual duplicate-declaration ties.
+            aliases = {alias: list(values) for name, values in bindings.items() for alias in (name, "@" + name)}
+            result[key] = aliases, dict(base)
+        return result
 
     def lookup(self, call, name):
         """None means no lexical binding; `(None,)` forbids every global fallback."""

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from graphify.extractors.cpp_functions import decoded, free_definition_fact, occurrence_suffix, scope_proof_parts, valid_span
 from graphify.extractors.cpp_class_proof import class_fact
+from graphify.extractors.cpp_class_scopes import CppClassScopes
 from graphify.extractors.cpp_constructors import _fact
-from graphify.extractors.cpp_member_identity import member_fact
+from graphify.extractors.cpp_member_identity import member_fact, proven_member_pairs
 from graphify.extractors.field_call_policy import FieldCallPolicy
 from graphify.extractors.cpp_function_signature import valid_parameter_facts
+from graphify.extractors.cpp_anonymous_namespaces import AnonymousFunctions
 import re
 import hashlib
 import json
@@ -83,12 +85,13 @@ def _call(call):
     return fact
 
 
-def _caller_namespace(caller, call, fact, owners, definitions):
+def _caller_scope(caller, call, fact, owners, definitions, class_scopes):
     if caller is None:
         return None
     free = free_definition_fact(caller)
     if free and free["span"] == fact["caller_span"] and caller.get("source_file") == call.get("source_file"):
-        return decoded(free.get("namespace_b64")) if free.get("namespace_status") == "available" else None
+        namespace = decoded(free.get("namespace_b64")) if free.get("namespace_status") == "available" else None
+        return (namespace, ()) if namespace is not None else None
     # Existing class/member proof owns qualified implementations. A namespace
     # string in call transport alone cannot relabel an unknown owner as a class.
     member = _native_member(caller)
@@ -125,19 +128,43 @@ def _caller_namespace(caller, call, fact, owners, definitions):
     accepted_owners = owners.get(caller["id"], {})
     if len(accepted_owners) != 1:
         return None
-    scopes = {decoded(value.get("scope_b64")) for value in accepted_owners.values()}
-    return next(iter(scopes)) if len(scopes) == 1 and None not in scopes else None
+    owner = decoded(native.get("owner_b64"))
+    possible = {owner} | {scope + "::" + owner for value in (member.get("using_b64", ()) if member else ())
+                          if (scope := decoded(value))} if owner else set()
+    if decoded(next(iter(accepted_owners.values())).get("qualified_name_b64")) not in possible:
+        return None  # A damaged method edge cannot relabel the original source owner.
+    # Qualified class identity includes lexical parent classes. Only the
+    # source-role witness plus actual containment can separate namespace lookup
+    # from enclosing-class hiding; a missing parent supplies neither authority.
+    return class_scopes.scope(next(iter(accepted_owners)))
+
+
+def _direct_member_scopes(nodes, edges):
+    """Borrow same-file pair ownership for scope, retaining actual body IDs.
+
+    The declaration proxy also owns field/method hiding. This creates no source
+    edge, native endpoint, canonical ID, or authority for a foreign-file body.
+    """
+    choices = {}
+    for body, declaration, owner in proven_member_pairs(nodes, edges):
+        if body.get("source_file") == declaration.get("source_file"):
+            key = (declaration["id"], owner["id"])
+            choices.setdefault(body["id"], {})[key] = class_fact(owner)
+    return {caller: (*next(iter(values)), next(iter(values.values())))
+            for caller, values in choices.items() if len(values) == 1}
 
 
 def resolve_free_function_calls(nodes, edges, raw_calls):
     """Consume source sites using the complete accepted view, without mutating context."""
     by_id = {node["id"]: node for node in nodes}
     bodies, prototypes, all_names = {}, {}, set()
+    anonymous = AnonymousFunctions()
     for node in nodes:
         fact = free_definition_fact(node)
         if fact:
             name = decoded(fact.get("name_b64"))
             all_names.add(name)
+            anonymous.add(node, fact, name)
             qualified = decoded(fact.get("qualified_name_b64"))
             if fact.get("namespace_status") == "available" and qualified:
                 bodies.setdefault(qualified, []).append((node, fact))
@@ -148,7 +175,9 @@ def resolve_free_function_calls(nodes, edges, raw_calls):
                 all_names.add(qualified.rsplit("::", 1)[-1])
                 prototypes.setdefault(qualified, []).append({**prototype, "source_file": node["source_file"]})
     known = set(bodies) | set(prototypes)
+    direct_scopes = _direct_member_scopes(nodes, edges)
     fields = FieldCallPolicy(nodes, edges)
+    class_scopes = CppClassScopes(nodes, edges)
     owners, definitions = {}, {}
     for edge in edges:
         if edge.get("relation") == "contains" and edge.get("confidence") == "EXTRACTED":
@@ -161,6 +190,11 @@ def resolve_free_function_calls(nodes, edges, raw_calls):
             proof = class_fact(owner)
             if proof and proof["is_definition"] and not proof["ambiguous"]:
                 owners.setdefault(edge.get("target"), {})[owner["id"]] = proof
+    for caller, (_, owner_id, proof) in direct_scopes.items():
+        owners.setdefault(caller, {})[owner_id] = proof
+    for node in nodes:
+        if name := anonymous.add_declaration(node, definitions):
+            all_names.add(name)
     existing = {(edge.get("source"), edge.get("target")) for edge in edges if edge.get("relation") == "calls"}
     for call in raw_calls:
         fact = _call(call)
@@ -169,24 +203,34 @@ def resolve_free_function_calls(nodes, edges, raw_calls):
         if not fact["qualified"]:
             call["_cpp_free_handled"] = True
         caller = by_id.get(call.get("caller_nid"))
-        namespace = _caller_namespace(caller, call, fact, owners, definitions)
-        if namespace is None:
+        scope = _caller_scope(caller, call, fact, owners, definitions, class_scopes)
+        if scope is None:
             continue
+        namespace, lexical_classes = scope
         name = decoded(fact["name_b64"])
         qualifier = decoded(fact["qualifier_b64"])
         prefixes = [""] if fact["absolute"] else ["::".join(namespace.split("::")[:end]) for end in range(len(namespace.split("::")), -1, -1)]
         choices = ["::".join(filter(None, (prefix, qualifier, name))) if fact["qualified"] else
                    "::".join(filter(None, (prefix, name))) for prefix in prefixes]
-        selected = next((qualified for qualified in choices if qualified in known), None)
+        anonymous_choices = {choice: anonymous.at(call.get("source_file"), choice.rsplit("::", 1)[0] if "::" in choice else "",
+                                                  name, fact["span"]["start_byte"]) for choice in choices} if not fact["qualified"] else {}
+        selected = next((choice for choice in choices if choice in known or any(anonymous_choices.get(choice, ([], False)))), None)
         if selected is None:
             continue
         call["_cpp_free_handled"] = True
+        shadow_owner = direct_scopes[call["caller_nid"]][0] if call.get("caller_nid") in direct_scopes else call.get("caller_nid")
         if (fact["shadowed"] or fact["template"] or fact["unevaluated"] or fact["using_namespace_unavailable"]
-                or not fact["qualified"] and fields.has_member(call.get("caller_nid"), call.get("callee"))):
+                or not fact["qualified"] and (fields.has_member(shadow_owner, call.get("callee"))
+                    or any(fields.has_member(owner, call.get("callee")) for owner in lexical_classes))):
             continue
+        anonymous_bodies, unknown_anonymous = anonymous_choices.get(selected, ([], False))
+        if unknown_anonymous or anonymous_bodies and (selected in known or len(anonymous_bodies) != 1):
+            continue  # Anonymous and named declarations can make the same lookup ambiguous.
         declarations = prototypes.get(selected, [])
         viable = []
-        for node, definition in bodies.get(selected, []):
+        for node, definition in (anonymous_bodies or bodies.get(selected, [])):
+            if anonymous_bodies and (node["source_file"], node["source_location"]) not in definitions.get(node["id"], ()):
+                continue  # The target's actual file edge independently owns its same-TU source frame.
             if (definition["ambiguous"] or definition["template"] or definition["conditional"] or definition.get("scope_complete") is not True
                     or definition.get("arity_status") != "available"
                     or definition["signature_status"] != "normalized" or definition["max_args"] is None

@@ -1857,7 +1857,7 @@ def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
 
 def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
                            skip: frozenset[str] | None = None,
-                           dialect_quals: frozenset[str] = frozenset()) -> None:
+                           dialect_quals: frozenset[str] = frozenset(), contexts: list | None = None) -> None:
     """Walk a C++ type expression; append (name, role) tuples.
     Resolves qualified_identifier tails (std::string → string) and template_type
     base + arguments (std::vector<HttpClient> → vector + HttpClient as generic_arg).
@@ -1878,11 +1878,13 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
         text = _read_text(node, source)
         if text and text not in skip and text not in dialect_quals:
             out.append((text, "generic_arg" if generic else "type"))
+            if contexts is not None:
+                contexts.append(node)
         return
     if t == "qualified_identifier":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            _cpp_collect_type_refs(name_node, source, generic, out, skip, dialect_quals)
+            _cpp_collect_type_refs(name_node, source, generic, out, skip, dialect_quals, contexts)
         return
     if t == "template_type":
         name_node = node.child_by_field_name("name")
@@ -1890,18 +1892,20 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
             text = _read_text(name_node, source)
             if text and text not in skip and text not in dialect_quals:
                 out.append((text, "generic_arg" if generic else "type"))
+                if contexts is not None:
+                    contexts.append(name_node)
         args_node = node.child_by_field_name("arguments")
         if args_node is not None:
             for c in args_node.children:
                 if c.is_named:
-                    _cpp_collect_type_refs(c, source, True, out, skip, dialect_quals)
+                    _cpp_collect_type_refs(c, source, True, out, skip, dialect_quals, contexts)
         return
     if t in ("type_descriptor", "pointer_declarator", "reference_declarator",
              "array_declarator", "type_qualifier", "abstract_pointer_declarator",
              "abstract_reference_declarator", "abstract_array_declarator"):
         for c in node.children:
             if c.is_named:
-                _cpp_collect_type_refs(c, source, generic, out, skip, dialect_quals)
+                _cpp_collect_type_refs(c, source, generic, out, skip, dialect_quals, contexts)
 
 def _scala_given_synthetic_name(node, source: bytes) -> str | None:
     """A stable label for an anonymous Scala 3 given (`given Show[Int] with`).
@@ -3076,8 +3080,15 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
         if len(functions) == 1:
             return _get_cpp_func_name(functions[0], source)
         return None
+    if node.type == "parenthesized_declarator":
+        # A returned callback wraps the actual method. Its nearest binding,
+        # not the callback's parameter list, supplies the callable name.
+        from graphify.extractors.cpp_declarators import member_declarator
+        shape = member_declarator(node, source)
+        if shape and shape[1]:
+            return shape[0]
     for child in node.children:
-        if child.type == "identifier":
+        if child.type in ("identifier", "field_identifier"):
             return _read_text(child, source)
     return None
 
@@ -5122,8 +5133,8 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
     gets a type node contained by the file, so a type reference to it lands on
     a sourced declaration instead of a sourceless stub. Returns False for it:
     the walk goes on, so a typedef'd struct body still gets its own node.
-    C++ never populates namespace_stack, so the id is the one
-    ensure_named_node looks up for a name declared in this file.
+    Source collision candidates pass through generic allocation before actual
+    aliases bind their exact lexical name for later type lookup.
     """
     if node.type in ("alias_declaration", "type_definition"):
         line = node.start_point[0] + 1
@@ -6212,17 +6223,24 @@ def _extract_generic(
     # Exact Qt/C++ identities coexist with upstream GPU qualifier filtering;
     # dialect hints never replace source-backed declaration ownership.
     cpp_identity = None
+    cpp_member_names = None
     cpp_functions = None
     if config.ts_module == "tree_sitter_cpp":
         from graphify.extractors.cpp_declarators import (
             declarator_metadata, is_destructor_prototype, member_declarator,
         )
         from graphify.extractors.cpp_identity import CppIdentity
+        from graphify.extractors.cpp_member_names import CppMemberNames
+        from graphify.extractors.cpp_alias_ids import CppAliasIds
+        from graphify.extractors.cpp_type_references import make_type_reference, invalid_type_reference_context
         from graphify.extractors.cpp_functions import CppFunctions
         from graphify.extractors.cpp_call_sites import call_target as cpp_call_target
         cpp_identity = CppIdentity(root, source, stem)
+        cpp_alias_ids = CppAliasIds(root, source, stem, alias_names=_cpp_alias_names)
         cpp_functions = CppFunctions(root, cpp_source, stem, alias_names=_cpp_alias_names,
                                      reserved_ids=(_make_id(str(path)), *(record["id"] for record in cpp_identity.records.values())))
+        # One source census separates literal member names before allocation.
+        cpp_member_names = CppMemberNames(cpp_identity, cpp_functions, reserved_ids=cpp_alias_ids.reserved_ids)
     # GPU C++ dialects (Metal .metal, CUDA .cu/.cuh) route through the C++
     # extractor, but their address-space/execution-space/function qualifiers are
     # not C++ keywords, so tree-sitter-cpp misparses a leading `kernel` /
@@ -6407,9 +6425,12 @@ def _extract_generic(
             edge["metadata"] = sanitize_metadata(metadata)
         edges.append(edge)
 
-    def ensure_named_node(name: str, line: int, syntax=None) -> str:
+    reference_stubs: set[str] = set()  # Owned only by this helper's actual sourceless appends.
+
+    def ensure_named_node(name: str, line: int, syntax=None, *, cpp_lookup=None) -> str:
         if cpp_identity is not None and syntax is not None:
-            accepted_class = cpp_identity.reference(name, syntax)
+            cpp_lookup = cpp_lookup or cpp_identity.reference_result(name, syntax, known_aliases=cpp_alias_ids.literal_names)
+            accepted_class = cpp_lookup[0]
             if accepted_class:
                 # A known later body will materialize during the AST walk;
                 # adding a stub now would hide it through seen_ids.
@@ -6426,10 +6447,12 @@ def _extract_generic(
             nid = _underscore_salted_nid(nid, name, python_underscore_groups)
         rejected_alias = (cpp_identity is not None and syntax is not None
                           and cpp_identity.owns_alias_id(nid))
-        if nid in seen_ids and nid != file_nid and not rejected_alias:
+        if nid in seen_ids and nid != file_nid and not rejected_alias and not (cpp_lookup and cpp_lookup[1]):
             return nid
         nid = _make_id(name)
-        if nid == _make_id(path.stem):
+        if cpp_lookup and cpp_lookup[1] and nid in seen_ids and nid not in reference_stubs:
+            invalid_type_reference_context()
+        if nid == _make_id(path.stem) and not (cpp_lookup and cpp_lookup[1]):
             # #4334: `Widget` in widget.py slugs to the file-stem id, so the stub
             # can swallow the file node. Decide after the walk (see below).
             stem_forward_refs[nid] = _make_id(stem, name)
@@ -6442,6 +6465,7 @@ def _extract_generic(
             # file's path (with extension) into the id and blocks the rewire, which is
             # the phantom-duplicate-node bug (#1402).
             seen_ids.add(nid)
+            reference_stubs.add(nid)
             nodes.append({
                 "id": nid,
                 "label": name,
@@ -6452,6 +6476,17 @@ def _extract_generic(
             })
         return nid
 
+    def add_type_reference(owner, name, line, syntax, *, relation="references", context=None):
+        # One source query travels with its edge; shared stubs carry no global veto.
+        lookup = cpp_identity.reference_result(name, syntax, known_aliases=cpp_alias_ids.literal_names) if cpp_identity is not None else None
+        raw_name = lookup[2] if lookup and lookup[1] else name
+        target = ensure_named_node(raw_name, line, syntax, cpp_lookup=lookup)
+        if target != owner or relation == "inherits":
+            fact = make_type_reference(raw_name, lookup[3], lookup[4], cpp_source, lookup=lookup[5]) if lookup and lookup[1] else None
+            add_edge(owner, target, relation, line, context=context, metadata={"cpp_type_reference": fact} if fact else None)
+            if fact:
+                edges[-1]["cpp_type_reference_version"] = 1
+
     stem_forward_refs: dict[str, str] = {}
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
@@ -6460,13 +6495,18 @@ def _extract_generic(
 
     def decl_node(nid: str, name: str, kind: str, label: str, line: int,
                   *, syntax=None, **kwargs) -> str:
+        original_nid = nid
+        if cpp_identity is not None and kind == "alias" and syntax is not None:
+            nid = cpp_alias_ids.candidate(syntax, name, nid)
         resolved = decl_registry.resolve(nid, name, kind, seen_ids)
         created = resolved not in seen_ids
         add_node(resolved, label, line, **kwargs)
         # Reusing a generic ID from another alias spelling/scope does not
         # materialize this declaration and cannot authorize a native lookup.
         if cpp_identity is not None and kind == "alias" and syntax is not None and created:
-            cpp_identity.bind_alias(syntax, name, resolved, original_id=nid)
+            if nodes[-1]["id"] == resolved:
+                nodes[-1]["_origin"] = "ast"
+            cpp_identity.bind_alias(syntax, name, resolved, original_id=original_nid)
         return resolved
     if not source:
         # #4041: a zero-byte file has no line 1. Keep the node (an empty
@@ -7398,22 +7438,19 @@ def _extract_generic(
                             continue
                         if not base:
                             continue
-                        base_nid = ensure_named_node(base, line, sub)
-                        add_edge(class_nid, base_nid, "inherits", line)
+                        add_type_reference(class_nid, base, line, sub, relation="inherits")
                         # Emit a generic_arg reference for each type argument on the
                         # base (Base<Dep> -> Car references Dep). _cpp_collect_type_refs
                         # handles nested/qualified args (Base<std::vector<Dep>>) too.
                         if template_args_node is not None:
                             arg_refs: list[tuple[str, str]] = []
+                            arg_contexts = []
                             for arg in template_args_node.children:
                                 if arg.is_named:
                                     _cpp_collect_type_refs(arg, source, True, arg_refs,
-                                                           dialect_quals=dialect_type_quals)
-                            for ref_name, _role in arg_refs:
-                                target_nid = ensure_named_node(ref_name, line, arg)
-                                if target_nid != class_nid:
-                                    add_edge(class_nid, target_nid, "references",
-                                             line, context="generic_arg")
+                                                           dialect_quals=dialect_type_quals, contexts=arg_contexts)
+                            for (ref_name, _role), type_context in zip(arg_refs, arg_contexts):
+                                add_type_reference(class_nid, ref_name, line, type_context, context="generic_arg")
 
             # Find body and recurse. Ruby pushes its scope segments so nested
             # declarations qualify against the enclosing module/class (#2302);
@@ -7957,14 +7994,12 @@ def _extract_generic(
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
+                    type_contexts = []
                     _cpp_collect_type_refs(type_node, source, False, refs,
-                                           dialect_quals=dialect_type_quals)
-                    for ref_name, role in refs:
+                                           dialect_quals=dialect_type_quals, contexts=type_contexts)
+                    for (ref_name, role), type_context in zip(refs, type_contexts):
                         ctx = "generic_arg" if role == "generic_arg" else "field"
-                        target_nid = ensure_named_node(ref_name, line, type_node)
-                        if target_nid != parent_class_nid:
-                            add_edge(parent_class_nid, target_nid, "references",
-                                     line, context=ctx)
+                        add_type_reference(parent_class_nid, ref_name, line, type_context, context=ctx)
             # Literal declaration spans survive cache/export as source facts;
             # they do not authorize a QObject member or dynamic callback target.
             for decl, shape in members:
@@ -7973,10 +8008,15 @@ def _extract_generic(
                 name, decl_is_method = shape
                 line = decl.start_point[0] + 1
                 member_nid = _make_id(parent_class_nid, name)
+                # Repair real name collisions without changing data/method roles.
+                if cpp_member_names is not None:
+                    member_nid = cpp_member_names.candidate(decl, member_nid, owner_id=parent_class_nid)
                 kind = "destructor" if name.startswith("~") else "method" if decl_is_method else "field"
                 metadata = declarator_metadata(decl, kind)
                 if decl_is_method:
                     add_node(member_nid, f".{name}()", line, metadata=metadata)
+                    if cpp_identity is not None:
+                        cpp_identity.bind_member(decl, member_nid)
                     add_edge(parent_class_nid, member_nid, "method", line)
                     callable_def_nids.add(member_nid)
                 else:
@@ -8085,6 +8125,9 @@ def _extract_generic(
                 # signature before generic deduplication loses occurrence spans.
                 if cpp_identity is not None:
                     func_nid = cpp_identity.constructor(node, sanitized_name, parent_class_nid, signature_source=cpp_source)
+                # Existing constructor identity remains independently authoritative.
+                if cpp_member_names is not None:
+                    func_nid = cpp_member_names.candidate(node, func_nid, owner_id=parent_class_nid)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -8152,7 +8195,10 @@ def _extract_generic(
                 if cpp_identity is not None:
                     from graphify.extractors.cpp_identity import qualified_function_id
                     free_id = cpp_functions.identity(node) if cpp_functions is not None else None
-                    func_nid = free_id or qualified_function_id(stem, node, sanitized_name, cpp_source)
+                    func_nid = free_id or qualified_function_id(stem, node, sanitized_name, cpp_source, identities=cpp_identity)
+                    # Namespace/free source identities never become member names.
+                    if cpp_member_names is not None and not free_id:
+                        func_nid = cpp_member_names.candidate(node, func_nid)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -8162,6 +8208,10 @@ def _extract_generic(
                 add_edge(file_nid, func_nid, "contains", line)
             if cpp_functions is not None:
                 cpp_functions.bind(node, func_nid)
+            # Member proof follows this allocated occurrence; proven namespace
+            # free functions retain their separate source-identity owner.
+            if cpp_identity is not None and (cpp_functions is None or cpp_functions.identity(node) is None):
+                cpp_identity.bind_member(node, func_nid)
             if csharp_lexical is not None:
                 csharp_lexical.bind(node, func_nid, parent_class_nid)
             callable_def_nids.add(func_nid)  # function / method def is callable
@@ -8436,20 +8486,20 @@ def _extract_generic(
             if config.ts_module in ("tree_sitter_c", "tree_sitter_cpp"):
                 if config.ts_module == "tree_sitter_cpp":
                     def collect(node, source: bytes, generic: bool,
-                                out: list[tuple[str, str]]) -> None:
+                                out: list[tuple[str, str]], contexts=None) -> None:
                         _cpp_collect_type_refs(node, source, generic, out, None,
-                                               dialect_type_quals)
+                                               dialect_type_quals, contexts)
                 else:
-                    collect = _c_collect_type_refs
+                    def collect(node, source: bytes, generic: bool, out: list[tuple[str, str]], contexts=None) -> None:
+                        _c_collect_type_refs(node, source, generic, out)
                 return_node = node.child_by_field_name("type")
                 if return_node is not None:
                     refs: list[tuple[str, str]] = []
-                    collect(return_node, source, False, refs)
-                    for ref_name, role in refs:
+                    type_contexts = []
+                    collect(return_node, source, False, refs, type_contexts)
+                    for index, (ref_name, role) in enumerate(refs):
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
-                        target_nid = ensure_named_node(ref_name, line, return_node)
-                        if target_nid != func_nid:
-                            add_edge(func_nid, target_nid, "references", line, context=ctx)
+                        add_type_reference(func_nid, ref_name, line, type_contexts[index] if type_contexts else return_node, context=ctx)
                 # function_declarator may be wrapped in pointer/reference declarators
                 decl = node.child_by_field_name("declarator")
                 while decl is not None and decl.type in (
@@ -8465,13 +8515,11 @@ def _extract_generic(
                             if ptype is None:
                                 continue
                             refs = []
-                            collect(ptype, source, False, refs)
-                            for ref_name, role in refs:
+                            type_contexts = []
+                            collect(ptype, source, False, refs, type_contexts)
+                            for index, (ref_name, role) in enumerate(refs):
                                 ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
-                                target_nid = ensure_named_node(ref_name, line)
-                                if target_nid != func_nid:
-                                    add_edge(func_nid, target_nid, "references",
-                                             line, context=ctx)
+                                add_type_reference(func_nid, ref_name, line, type_contexts[index] if type_contexts else ptype, context=ctx)
 
             if config.ts_module == "tree_sitter_scala":
                 params_node = None
@@ -9112,6 +9160,11 @@ def _extract_generic(
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
+    # Reuse the existing receiver collector for proven lexical captures; each
+    # local function keeps its own shadow, source-order and static barriers.
+    if csharp_lexical is not None:
+        csharp_receiver_types = csharp_lexical.capture_receiver_tables(
+            csharp_method_scopes, csharp_receiver_types)
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:

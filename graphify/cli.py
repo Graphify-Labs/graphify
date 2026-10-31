@@ -4991,7 +4991,8 @@ def dispatch_command(cmd: str) -> None:
                     }
                     _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
+            merged["edges"] = _dedupe_edges(merged["edges"], source_nodes=merged["nodes"],
+                                             graph_metadata=merged.get("graph"), directed=merged.get("directed", False))
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
@@ -5012,6 +5013,8 @@ def dispatch_command(cmd: str) -> None:
                     _e["source_file"] = (
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
+            from graphify.source_relationships import adopt_transport as _source_transport
+            merged = _source_transport(merged)
             # RT-parity for the raw path: an incomplete build must not force a
             # partial graph over a larger complete one here either. The clustered
             # path gets this from to_json's #479 guard; this path never calls

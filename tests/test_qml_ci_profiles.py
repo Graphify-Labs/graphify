@@ -7,6 +7,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from tests import qml_ci
 
@@ -36,6 +37,8 @@ def profile(tmp_path, monkeypatch):
                             extra=workspace / "extra", core=workspace / "core", calls=[], failure=None)
     monkeypatch.setattr(qml_ci, "__file__", str(tests / "qml_ci.py"))
     monkeypatch.setattr(qml_ci.sys, "argv", ["qml_ci.py"])
+    # Existing local command contracts are independent of an outer CI report.
+    monkeypatch.delenv("GRAPHIFY_QML_JUNIT_PATH", raising=False)
 
     def external_process(arguments, *, check, **kwargs):
         """A successful uv build creates its sole artifact; failures preserve real check semantics."""
@@ -147,3 +150,25 @@ def test_req_core004_ac03_failed_clean_smoke_cannot_admit_native_addon(profile, 
         qml_ci.main()
     expected = clean_prefix(profile)[:6 if mode == "qml" else 7]
     assert [call.arguments for call in profile.calls] == expected
+
+
+def test_req_core004_ac03_workflow_retains_matrix_bound_xml_on_all_outcomes():
+    """The actual existing matrix retains each job's report even on a failed pytest exit."""
+    path = Path(__file__).resolve().parents[1] / ".github/workflows/qml-wheel.yml"
+    workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["qml-wheel"]
+    assert job["strategy"]["matrix"] == {
+        "os": ["ubuntu-latest", "windows-latest", "macos-latest"],
+        "python": ["3.10", "3.12", "3.13", "3.14"]}
+    steps = job["steps"]
+    verify = next(step for step in steps if step.get("name") == "Verify installed wheels and platform contracts")
+    report = next(step for step in steps if step.get("name") == "Retain per-case QML test evidence")
+    expected = "${{ runner.temp }}/graphify-qml-results/tests.xml"
+    assert verify["env"] == {"GRAPHIFY_QML_JUNIT_PATH": expected}
+    assert verify["run"] == ("uv run --no-project --python ${{ matrix.python }} python tests/qml_ci.py "
+                             "${{ runner.os == 'Linux' && '--artifact-only' || '' }}")
+    assert report["if"] == "always()"
+    assert report["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert report["with"] == {
+        "name": "qml-wheel-tests-${{ matrix.os }}-python-${{ matrix.python }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        "path": expected, "retention-days": "14", "if-no-files-found": "error"}

@@ -213,3 +213,72 @@ There are 117 outside-profile index-row occurrences; this is not the distinct
 partitions for the captured inputs, not individual SDK-symbol verification.
 The final classifier/source/matrix binding is regenerated after source freeze;
 intermediate runtime digests do not establish final delivered behavior.
+
+
+Corpus-led compatibility corrections INC-QML-104/105/106 extend the existing
+source profiles under REQ-QML-022-AC02/AC04/AC06. Legacy tooling `isConstant`
+remains raw type-bearing member evidence, distinct from Qt6.12's modern
+type/property/method flags. A uniquely proven same-unit C++ member prototype/body
+pair keeps actual declaration identity and original body navigation; ordinary
+methods remain unexposed, while invokable/slot endpoints still require all
+existing class/metaobject/provider proof. Duplicate or conditional bodies, mismatched
+signatures and callback data remain unavailable. C# local-function receiver
+captures borrow source-proven type windows with static/shadow/order guards; no
+function-local variable graph is added. Their exact tests, native outcomes and
+remaining package/corpus/hosted gates belong in [traceability](../../tests/TRACEABILITY.md).
+These corrections do not change inventory totals or verify additional SDK APIs
+merely by matching their spelling.
+
+INC-QML-107–109 correct direct ordinary-call retention, source-owned local callback
+shadows and enclosing-class versus namespace lookup. Shared read-only member-pair
+proof preserves actual direct/facade callers. A bounded original-AST class-role
+witness prevents omitted ancestors from becoming namespace authority; uncertain,
+conditional, anonymous, template/union and unsupported qualified out-of-line class
+profiles remain unavailable. INC-QML-110–112 address confirmed literal class,
+member and alias identity collisions. These are existing source mechanism
+corrections, not additions to SDK inventory counts or a claim that every documented
+class/member/API executes correctly. Fresh final-source package, corpus and
+committed-head hosted gates remain required before delivery acceptance.
+
+INC-QML-113 corrects the bounded lexical admission of plain struct callable `.h`
+inputs while retaining C callback/data/attribute and inert/executable exclusions.
+Selecting the C++ producer is independent of Qt annotation/native proof and adds
+no individually verified SDK symbols to the inventory.
+
+INC-QML-114 preserves a source-local unavailable C++ type lookup through later
+unique-label reconciliation and persisted consumers. The rejection belongs to
+one reference, so separate valid uses keep their existing targets. Bounded source
+context and independent typed promises reject damaged transport rather than
+inventing a declaration or native authority. This is a source-mechanism correction
+under the existing criteria, with AST37/Qt31 migration, not an increase in the
+documented API inventory or individually verified SDK totals.
+
+The INC104–114 local source checkpoint has 2,048 combined compatibility passes and four
+explicit unavailable-preprocessor skips. Fresh isolated core/QML-watch consumers
+verify the same 383 raw Git/package/installed payload files, including 246 Python
+modules, with 31/35 frozen dependency profiles. Those are source/artifact mechanism
+checks, not 81,472 SDK semantic tests. Complete source/corpus and reviewed-head
+hosted evidence remain separately recorded in traceability. A fresh official
+release check on 31 October 2026 at 19:42 UTC confirms
+[Qt 6.12.0](https://download.qt.io/official_releases/qt/6.12/) remains the latest
+6.12 patch; the pinned inventory/release inputs are unchanged. Missing owners,
+anchors, separately versioned modules and unverified macros above remain explicit.
+
+That383-file artifact predates INC117/118 and does not verify their later source
+contracts. Source-only complete observation composition and original anonymous
+namespace witnesses add no individually verified Qt SDK symbols or inventory
+rows. Their AST38/Qt32 source, package, complete corpus and reviewed-head hosted
+evidence must be rebound separately. Optional-wheel per-case XML and test-only
+cold-reference output isolation likewise change evidence ownership, not SDK
+semantic coverage. The same documented static-profile and unverified inventory
+limits continue to apply.
+
+The subsequent INC119 checkpoint makes AST39/Qt33 current. Actual direct C++
+definition/prototype producers retain source provenance before assembly, without
+granting additional SDK/native authority. The new raw-Git wheel has385 payloads,
+including248 Python files; fresh offline core/QML-watch profiles independently
+match all of them before and after FAST8 plus the complete existing CLI,
+failure-retention/recovery and source-observation probes. This is installed
+mechanism evidence, not additional individually verified SDK symbols. Full-source,
+reference-corpus and reviewed-head hosted evidence have their own identities and
+acceptance in traceability; none is inferred from the inventory counts.

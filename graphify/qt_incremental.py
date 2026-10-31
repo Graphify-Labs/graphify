@@ -14,7 +14,10 @@ QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
 # Qt6.12 source/tooling/export and engine-specific setup contracts extend the
 # accepted facts at unchanged package/source identity. Prior context must refresh
 # through the existing accepted-product owner; syntax has its separate epoch.
-QT_POLICY_VERSION = 27
+# Scoped lookup and literal/class/binding proof retire prior accepted joins.
+# Same-unit anonymous helpers need their original namespace witness as well.
+# Direct source declarations must retain their AST tier before graph composition.
+QT_POLICY_VERSION = 33
 
 
 def is_qt_metadata(path: str | Path) -> bool:
