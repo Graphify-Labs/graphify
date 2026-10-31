@@ -255,6 +255,11 @@ Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), enco
 # interrupted run, and Step B3 merges every .graphify_chunk_*.json it finds.
 for stale in Path('graphify-out').glob('.graphify_chunk_*.json'):
     stale.unlink()
+# Same rule for the partial list: only this run's B3.5 may write it. A list left by
+# an earlier run (an --update stops before Step 9's cleanup) must never reach Step 9,
+# or a doc this build served in full from the cache stays unstamped and is re-queued
+# (#4814). Delete it here, before B3.5 can rewrite it.
+Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
 ```
