@@ -2689,6 +2689,67 @@ def test_fortran_capital_F_parses_preprocessed():
     assert any("compute_volume" in l for l in labels)
 
 
+def test_fortran_derived_type_extends_emits_inherits_edge(tmp_path):
+    """`type, extends(base) :: derived` is Fortran's derived-type inheritance
+    syntax. It was never handled — only the bare `type :: name` form was read —
+    so every extends() clause was silently dropped and no inherits edge was
+    ever emitted, unlike every other OOP language extractor in this codebase.
+    """
+    src = tmp_path / "geom.f90"
+    src.write_text(
+        "module geom\n"
+        "  type :: shape\n"
+        "    real :: area\n"
+        "  end type shape\n"
+        "  type, extends(shape) :: circle\n"
+        "    real :: radius\n"
+        "  end type circle\n"
+        "end module geom\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert ("circle", "shape") in _edge_labels(r, "inherits")
+
+
+def test_fortran_abstract_extends_also_emits_inherits_edge(tmp_path):
+    """`type, abstract, extends(base) :: derived` combines the abstract and
+    extends specifiers; the inherits edge must still be emitted alongside the
+    plain extends() case."""
+    src = tmp_path / "shapes.f90"
+    src.write_text(
+        "module shapes\n"
+        "  type, abstract :: shape\n"
+        "    real :: area\n"
+        "  end type shape\n"
+        "  type, abstract, extends(shape) :: polygon\n"
+        "    integer :: sides\n"
+        "  end type polygon\n"
+        "end module shapes\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert ("polygon", "shape") in _edge_labels(r, "inherits")
+
+
+def test_fortran_plain_derived_type_has_no_inherits_edge(tmp_path):
+    """Control: a derived type with no extends() clause must not gain a
+    spurious inherits edge from this fix."""
+    src = tmp_path / "plain.f90"
+    src.write_text(
+        "module plain\n"
+        "  type :: point\n"
+        "    real :: x, y\n"
+        "  end type point\n"
+        "end module plain\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert _edge_labels(r, "inherits") == set()
+
+
 def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
     """A derived type's `contains` section binds procedures as its methods.
 
