@@ -946,8 +946,41 @@ def _print_banner() -> None:
         print("\n" + "\n".join(lines) + "\n")
     except Exception:
         pass
-def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
-    _print_banner()
+def _copy_kilo_command_file() -> None:
+    """Install the native /graphify command file for Kilo Code."""
+    command_src = Path(__file__).parent / "command-kilo.md"
+    if not command_src.exists():
+        print(
+            f"error: command-kilo.md not found in package - reinstall graphify",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
+    command_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(command_src, command_dst)
+    print(f"  command installed ->  {command_dst}")
+
+
+def _register_claude_skill_registration(*, project: bool = False, project_dir: Path | None = None) -> None:
+    """Register the graphify skill block in the matching Claude Code scope."""
+    project_dir = project_dir or Path(".")
+    if project:
+        claude_md = project_dir / ".claude" / "CLAUDE.md"
+        skill_ref = ".claude/skills/graphify/SKILL.md"
+    elif os.environ.get("CLAUDE_CONFIG_DIR"):
+        config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
+        claude_md = config_dir / "CLAUDE.md"
+        skill_ref = str(config_dir / "skills" / "graphify" / "SKILL.md")
+    else:
+        claude_md = Path.home() / ".claude" / "CLAUDE.md"
+        skill_ref = "~/.claude/skills/graphify/SKILL.md"
+    _register_always_on_block(
+        claude_md, "  CLAUDE.md        ->  ", _skill_registration(skill_ref)
+    )
+
+
+def _install_platform_skill(platform: str, *, project: bool = False, project_dir: Path | None = None) -> None:
+    """Install a single platform's skill + registration."""
     platform = _canonical_platform(platform)
     if platform == "gemini":
         gemini_install(project_dir=project_dir, project=project)
@@ -955,7 +988,6 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "cursor":
         _cursor_install(Path("."))
         return
-    # On Windows, antigravity needs the PowerShell skill, not the bash one
     if platform == "antigravity" and sys.platform == "win32":
         platform = "antigravity-windows"
     if platform not in _PLATFORM_CONFIG:
@@ -969,38 +1001,14 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file(platform, project=project, project_dir=project_dir)
 
+    if platform in ("antigravity", "antigravity-windows"):
+        _antigravity_finalize(skill_dst, project_dir)
+
     if platform == "kilo":
-        # Kilo Code also supports a native /graphify command file.
-        command_src = Path(__file__).parent / "command-kilo.md"
-        if not command_src.exists():
-            print(
-                f"error: command-kilo.md not found in package - reinstall graphify",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
-        command_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(command_src, command_dst)
-        print(f"  command installed ->  {command_dst}")
+        _copy_kilo_command_file()
 
     if cfg["claude_md"]:
-        # Register in the matching Claude Code scope. Honor CLAUDE_CONFIG_DIR
-        # for the global (non-project) case, same as _platform_skill_destination
-        # does for the skill copy path (#527) -- this always-on registration
-        # path was missed by that fix (#2694).
-        if project:
-            claude_md = project_dir / ".claude" / "CLAUDE.md"
-            skill_ref = ".claude/skills/graphify/SKILL.md"
-        elif os.environ.get("CLAUDE_CONFIG_DIR"):
-            config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
-            claude_md = config_dir / "CLAUDE.md"
-            skill_ref = str(config_dir / "skills" / "graphify" / "SKILL.md")
-        else:
-            claude_md = Path.home() / ".claude" / "CLAUDE.md"
-            skill_ref = "~/.claude/skills/graphify/SKILL.md"
-        _register_always_on_block(
-            claude_md, "  CLAUDE.md        ->  ", _skill_registration(skill_ref)
-        )
+        _register_claude_skill_registration(project=project, project_dir=project_dir)
 
     if platform == "codebuddy":
         # Register in ~/.codebuddy/CODEBUDDY.md (CodeBuddy only)
@@ -1016,6 +1024,10 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
 
+
+def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
+    _print_banner()
+    _install_platform_skill(platform, project=project, project_dir=project_dir)
     print()
     print("Done. Open your AI coding assistant and type:")
     print()
@@ -1026,9 +1038,10 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     print()
 def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
-    print("Usage: graphify install [--project] [--strict] [--platform P|P]")
+    print("Usage: graphify install [--project] [--strict] [--platform P|P] [--detect]")
     print(f"Platforms: {platforms}")
-    print("  --strict  block the first raw file read per session until one "
+    print("  --detect   detect installed assistants and install graphify for each (interactive)")
+    print("  --strict   block the first raw file read per session until one "
           "`graphify query` runs (Claude Code project hook only; needs --project)")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
@@ -1419,10 +1432,10 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
         print(f"graphify workflow written to {wf_path.resolve()}")
 def _antigravity_install(project_dir: Path) -> None:
     """Install graphify for Google Antigravity (global skill + .agents/rules + .agents/workflows)."""
-    # Copy the skill to ~/.gemini/config/skills/graphify/SKILL.md (global), then
-    # lay down the always-on rules/workflows under the project dir.
-    install(platform="antigravity")
-    _antigravity_finalize(_platform_skill_destination("antigravity"), project_dir)
+    # install() copies the global skill and lays down the always-on
+    # rules/workflows under the project dir (via _install_platform_skill's
+    # Antigravity finalize step).
+    install(platform="antigravity", project_dir=project_dir)
 
     print()
     print("Antigravity will now check the knowledge graph before answering")
@@ -2074,11 +2087,11 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("devin", project=True, project_dir=project_dir)
         _devin_rules_install(project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".windsurf"])
-    elif platform_name == "antigravity":
+    elif platform_name in ("antigravity", "antigravity-windows"):
         # Project-scoped: skill in .agents/skills/ PLUS the .agents/rules +
         # .agents/workflows always-on layer (previously this path wrote only the
         # skill, leaving the rules/workflows the uninstall path removes unset).
-        skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
+        skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
     elif platform_name in ("copilot", "pi", "kimi", "agents"):
@@ -2107,7 +2120,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
             _uninstall_codex_hook(project_dir)
-    elif platform_name == "antigravity":
+    elif platform_name in ("antigravity", "antigravity-windows"):
         _antigravity_uninstall(project_dir, project=True)
     elif platform_name == "devin":
         removed = _remove_skill_file("devin", project=True, project_dir=project_dir)
@@ -2533,6 +2546,106 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
     _uninstall_codebuddy_hook(project_dir or Path("."))
 
 
+def _detectable_platforms() -> list[str]:
+    """Platforms whose presence --detect probes, filtered to this OS."""
+    if platform.system() == "Windows":
+        drop = {"claude", "antigravity"}
+    else:
+        drop = {"windows", "antigravity-windows"}
+    return [name for name in [*_PLATFORM_CONFIG, "gemini", "cursor"] if name not in drop]
+
+
+def _platform_marker_dir(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
+    """The config directory whose existence signals that an assistant is installed."""
+    base = (project_dir or Path(".")) if project else Path.home()
+
+    if platform_name == "cursor":
+        # Cursor is rules-only and has no _platform_skill_destination.
+        return base / ".cursor"
+
+    if platform_name == "gemini":
+        # Gemini CLI keeps its config in ~/.gemini on every OS; only the skill
+        # install destination differs on Windows (~/.agents), not the agent's dir.
+        return base / ".gemini"
+
+    if platform_name in ("claude", "windows") and not project and os.environ.get("CLAUDE_CONFIG_DIR"):
+        return Path(os.environ["CLAUDE_CONFIG_DIR"])
+
+    if platform_name == "hermes" and not project and platform.system() == "Windows":
+        local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return local / "hermes"
+
+    if platform_name in ("antigravity", "antigravity-windows") and not project:
+        # Antigravity config lives under ~/.gemini/antigravity; using ~/.gemini
+        # would collide with the gemini platform's marker.
+        return Path.home() / ".gemini" / "antigravity"
+
+    skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
+    try:
+        rel = skill_dst.relative_to(base)
+    except ValueError:
+        # Out-of-base destinations (e.g. a relocated LOCALAPPDATA) are not
+        # detectable by a home-relative directory; return a path that never exists.
+        return base / "__graphify_unresolved__"
+    parts = rel.parts
+    # The first component is the assistant's config dir, except for platforms
+    # that live under a shared ~/.config container (opencode/kilo/devin/amp),
+    # where the second component is the platform-specific dir.
+    n = 2 if parts and parts[0] == ".config" else 1
+    return base.joinpath(*parts[:n])
+
+
+def _detect_install(*, project: bool = False, project_dir: Path | None = None, strict: bool = False) -> None:
+    """Interactively detect installed assistants and install graphify for each."""
+    _print_banner()
+    project_dir = project_dir or Path(".")
+
+    detected: list[str] = []
+    seen: set[Path] = set()
+    for name in _detectable_platforms():
+        marker = _platform_marker_dir(name, project=project, project_dir=project_dir)
+        if marker.is_dir() and marker not in seen:
+            detected.append(name)
+            seen.add(marker)
+
+    if not detected:
+        print("No supported AI coding assistants detected. Nothing to install.")
+        print()
+        print("Install one manually with:")
+        print("  graphify install --platform <name>")
+        print("  graphify <platform> install")
+        return
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("Detected AI coding assistants (interactive install requires a terminal):")
+        for name in detected:
+            print(f"  - {name}")
+        print()
+        print("No installs performed. Re-run interactively with `graphify install --detect`,")
+        print("or install individually with `graphify <platform> install`.")
+        return
+
+    installed: list[str] = []
+    skipped: list[str] = []
+    for name in detected:
+        answer = input(f"Install graphify for {name}? [Y/n] ").strip().lower()
+        if answer in ("", "y", "yes"):
+            installed.append(name)
+            if project:
+                _project_install(name, project_dir, strict=strict)
+            else:
+                _install_platform_skill(name, project=False, project_dir=project_dir)
+        else:
+            skipped.append(name)
+
+    print()
+    print("graphify install --detect summary:")
+    for name in installed:
+        print(f"  installed: {name}")
+    for name in skipped:
+        print(f"  skipped:   {name}")
+
+
 _CLI_INSTALL_COMMANDS = frozenset({
     "agents",
     "aider",
@@ -2575,6 +2688,7 @@ def dispatch_install_cli(cmd: str) -> bool:
         selected_platform: str | None = None
         project_scope = False
         strict = False
+        detect = False
         args = sys.argv[2:]
         i = 0
         while i < len(args):
@@ -2587,6 +2701,9 @@ def dispatch_install_cli(cmd: str) -> bool:
                 i += 1
             elif arg == "--strict":
                 strict = True
+                i += 1
+            elif arg == "--detect":
+                detect = True
                 i += 1
             elif arg.startswith("--platform="):
                 candidate = arg.split("=", 1)[1]
@@ -2614,6 +2731,12 @@ def dispatch_install_cli(cmd: str) -> bool:
                     sys.exit(1)
                 selected_platform = arg
                 i += 1
+        if detect:
+            if selected_platform:
+                print("error: --detect cannot be combined with --platform or a positional platform", file=sys.stderr)
+                sys.exit(1)
+            _detect_install(project=project_scope, project_dir=Path("."), strict=strict)
+            return True
         chosen_platform = selected_platform or default_platform
         if project_scope:
             _project_install(chosen_platform, Path("."), strict=strict)
