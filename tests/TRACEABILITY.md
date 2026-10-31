@@ -4087,3 +4087,59 @@ original 16 failures passing its replay. Advisory scanner clearance remains a
 separate unestablished claim. Documentation-only delivery commits must retain
 raw package identity; the final head and each PR's distinct source/base/checkout
 are recorded in their live descriptions and ignored revision-bound receipts.
+
+### Hosted minimal-profile fixture follow-up — INC-QML-60
+
+The first new QML optional-wheel run `41154844442` tests source
+`760fdaff63f360956bf0b5ada149d594d3ab0e04` on the fork's synthetic checkout.
+All four actual macOS lanes reach the same failure in
+`test_qt_upstream094_cli.py::test_req_qml012_ac02_manifest_failure_does_not_advance_accepted_qt_context`:
+3,042 passed/69 skipped/one failed per lane. The Windows 3.12 lane also reports
+that exact failure (3,092 passed/19 skipped). These are executed test failures,
+not runner-acquisition failures; the capacity notice is advisory. Other active
+jobs are not inferred to have passed.
+
+The failure occurs reading initial `.qt_analysis.json`, before the manifest
+OSError injector is installed. Captured output confirms raw graph publication
+and the real missing `tree_sitter_sql` diagnostic. The unrelated SQL fixture is
+not intentionally declined in this case, so the unchanged production source-
+completeness guard correctly withholds initial Qt acceptance. A fresh local
+process masking only that optional import reproduces the exact pre-injection
+failure. The output path itself is correct; no path-alias fix is indicated.
+
+A shared fixture helper now explicitly declines only SQL through the existing
+dispatcher seam for the intentional-empty/manifest-persistence scenarios. Actual
+Qt parsing, manifest writes, the OSError fault, retained accepted Qt bytes,
+configuration-change recovery and repeated accepted-product bytes remain real.
+The manifest must independently show the declined SQL ast_empty/hash evidence.
+Neither parser dependencies, production acceptance checks nor platform selection
+change, and no fixture is skipped.
+
+`test_qt_upstream094_cli.py::test_req_qml012_ac02_missing_unrelated_parser_preserves_accepted_qt_context[False]`
+and `[True]` cover raw and clustered paths under REQ-QML-012-AC02,
+REQ-QML-011-AC04 and REQ-QML-014-AC03. They seed accepted Qt state with deliberate
+SQL decline, invalidate SQL bytes and a harmless ignore-pattern fingerprint,
+assert the candidate context differs, restore the actual SQL extractor and deny
+its optional import. The real diagnostic and cleared SQL manifest hash must
+appear while prior accepted Qt bytes remain. A successful deliberate-decline
+retry reaches the exact new candidate fingerprint, and repeat retains acceptance.
+This does not establish extract-wide cohort rollback or a failing CLI exit after
+a tolerated partial-source result.
+
+Both ordinary and import-absent fresh-process profiles pass all five module
+identities with zero skips; the latter masks the import without removing the
+installed SQL wheel or changing dependencies; profile runs are separate evidence, not ten unique
+cases. Watched production/dependency and unrelated coverage/results bytes remain
+unchanged. The two additional ordinary guard cases extend the exact-case union
+to 12,946 identities: 12,764 passed/181 skipped/one inherited expected failure,
+with no unresolved local executed failure. New hosted validation must run on the
+new reviewed head through ordinary PR synchronization. Previous source `760fdaff` jobs,
+the initial wheel/code commit and each platform's outcomes retain their own
+revision boundaries. Package contents are unchanged by this test/documentation
+correction and must pass the independent final-head raw/installed-byte audit.
+Required AST graph refresh after the test-code change and actual new CI results
+remain separately recorded in delivery receipts and the live PR descriptions.
+
+Whole-repository Ruff passes after this fixture correction. Pyright 1.1.414
+again reports 689 errors/899 files, zero warnings and zero new merge-owned
+occurrences against the same independently executed parent baselines.

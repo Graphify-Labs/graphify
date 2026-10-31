@@ -1329,3 +1329,13 @@ provider authority. The older blanket no-`Hidden` assertion predates that
 accepted generic support and must not suppress valid upstream facts. The public
 file-ID recipe itself is unchanged; this integration corrects declaration/file
 role separation and allocated declaration ownership.
+
+Hosted minimal-QML execution exposes a fixture boundary missed by the all-extras
+local profile: the manifest-failure test seeds a mixed corpus containing SQL but
+does not control that optional extractor, unlike its adjacent intentional-empty
+tests. When the SQL parser is absent, the CLI correctly withholds Qt acceptance
+before the manifest rejection is even armed. The fixture must explicitly decline
+its unrelated SQL input at the existing dispatcher seam, preserving real Qt
+parsing, manifest persistence, retention and recovery. Keep missing-parser
+acceptance rejection separately protected; do not loosen the production guard,
+add an unrelated parser dependency or skip macOS to satisfy this test.

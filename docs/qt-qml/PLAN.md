@@ -3623,3 +3623,12 @@ nodes/67,041 edges/1,298 communities and retained backup; labeling/API work is
 not invoked. Exact source `147eee15758ac2b49c661be56ecc21cc6710b1c1` and unchanged
 final package identity belong to the local proof; new PR source/base/checkouts
 and hosted conclusions remain separate review evidence.
+
+The first new macOS QML run executes on all four assigned Python versions and
+finds one fixture setup failure per lane (3,042 passes/69 skips). The unrelated
+optional SQL parser is absent, correctly preventing initial Qt acceptance before
+the manifest-write fault is armed. REQ-QML-012-AC02/REQ-QML-011-AC04 and
+REQ-QML-014-AC03 require a controlled declined-source fixture plus retained
+missing-parser rejection coverage. Reproduce that profile locally, retain all
+four hosted failures, correct the test boundary without production/dependency/
+platform changes, and let the new source synchronization own fresh validation.
