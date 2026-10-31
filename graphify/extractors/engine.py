@@ -6376,6 +6376,21 @@ def _extract_generic(
 
     decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
+    def _php_const_ref_target(cca) -> "str | None":
+        # #4648: resolve a Scope::MEMBER class scope to a real local node; skip
+        # self::/static::/parent:: and never mint a stub for an unknown scope.
+        first = next((c for c in cca.children if c.is_named), None)
+        if first is None or first.type not in ("name", "qualified_name"):
+            return None
+        name = _read_text(first, source)
+        if first.type == "qualified_name":
+            name = name.rsplit("\\", 1)[-1]
+        declared = decl_registry.lookup(name)
+        if declared is not None:
+            return declared
+        nid = _make_id(stem, ".".join(namespace_stack), name)
+        return nid if (nid in seen_ids and nid != file_nid) else None
+
     def decl_node(nid: str, name: str, kind: str, label: str, line: int,
                   **kwargs) -> str:
         resolved = decl_registry.resolve(nid, name, kind, seen_ids)
@@ -7588,14 +7603,11 @@ def _extract_generic(
             while stack:
                 sub = stack.pop()
                 if sub.type == "class_constant_access_expression":
-                    scope = next((c for c in sub.children if c.is_named
-                                  and c.type in ("name", "qualified_name", "identifier")), None)
-                    if scope is not None:
-                        line = sub.start_point[0] + 1
-                        tgt = ensure_named_node(_read_text(scope, source), line)
-                        if tgt != parent_class_nid and tgt not in seen_here:
-                            seen_here.add(tgt)
-                            add_edge(parent_class_nid, tgt, "references_constant", line)
+                    tgt = _php_const_ref_target(sub)
+                    if tgt is not None and tgt != parent_class_nid and tgt not in seen_here:
+                        seen_here.add(tgt)
+                        add_edge(parent_class_nid, tgt, "references_constant",
+                                 sub.start_point[0] + 1)
                 stack.extend(sub.children)
 
         if (config.ts_module == "tree_sitter_php"
@@ -8207,14 +8219,11 @@ def _extract_generic(
                         while pstack:
                             psub = pstack.pop()
                             if psub.type == "class_constant_access_expression":
-                                pscope = next((c for c in psub.children if c.is_named
-                                               and c.type in ("name", "qualified_name", "identifier")), None)
-                                if pscope is not None:
-                                    pline = psub.start_point[0] + 1
-                                    ptgt = ensure_named_node(_read_text(pscope, source), pline)
-                                    if ptgt != const_src and ptgt not in seen_param:
-                                        seen_param.add(ptgt)
-                                        add_edge(const_src, ptgt, "references_constant", pline)
+                                ptgt = _php_const_ref_target(psub)
+                                if ptgt is not None and ptgt != const_src and ptgt not in seen_param:
+                                    seen_param.add(ptgt)
+                                    add_edge(const_src, ptgt, "references_constant",
+                                             psub.start_point[0] + 1)
                             pstack.extend(psub.children)
                 return_node = _php_method_return_type_node(node)
                 if return_node is not None:

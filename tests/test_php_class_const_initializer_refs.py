@@ -73,3 +73,29 @@ def test_method_body_reference_still_works(tmp_path):
         "class Check {\n    public function pick(): Role { return Role::Viewer; }\n}\n",
     )
     assert any(src == ".pick()" and tgt == "Role" for src, tgt in refs), refs
+
+
+def test_self_static_parent_scope_emits_no_spurious_edge(tmp_path):
+    """`self::`/`static::`/`parent::` must not emit an edge to the member name."""
+    refs = _const_refs(
+        tmp_path,
+        "<?php\nnamespace App;\nclass Base { const SEED = 1; }\n"
+        "class C extends Base {\n"
+        "    const A = 1;\n"
+        "    const B = self::A;\n"
+        "    private int $x = static::A;\n"
+        "    public function __construct(int $n = parent::SEED) {}\n"
+        "}\n",
+    )
+    assert refs == set(), refs
+
+
+def test_qualified_scope_resolves_to_local_class(tmp_path):
+    """A fully-qualified scope resolves to the real class, not a synthetic name."""
+    refs = _const_refs(
+        tmp_path,
+        "<?php\nnamespace App;\n" + _ENUM +
+        "class S {\n    private Role $f = \\App\\Role::Viewer;\n}\n",
+    )
+    assert ("S", "Role") in refs, refs
+    assert not any("App" in tgt or "\\" in tgt for _, tgt in refs), refs
