@@ -130,7 +130,37 @@ def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     assert labels.count("record()") == 2
     assert ("Counter", "Base") in _edge_labels(result, "inherits")
     assert ("run()", "guarded()") in _edge_labels(result, "uses")
+    # Control: the single-library `using Lib for uint;` form must keep working
+    # exactly as before while the using_alias form below is fixed.
+    assert ("Counter", "Lib") in _edge_labels(result, "uses")
     assert len([edge for edge in result["edges"] if edge["relation"] == "imports_from"]) == 2
+
+
+@_needs_solidity
+def test_solidity_using_free_function_set_emits_uses_edges(tmp_path):
+    """`using {f1, f2} for T;` (free functions bound as members, legal since
+    0.8.13) wraps each name in its own `using_alias` child instead of putting
+    it directly under the using_directive the way `using Lib for T;` does.
+    The extractor only looked at direct children, so it saw nothing to read
+    and silently dropped the whole directive -- no edge at all, for either
+    function."""
+    source = tmp_path / "Counter.sol"
+    source.write_text(
+        "pragma solidity ^0.8.13;\n"
+        "function freeAdd(uint a, uint b) pure returns (uint) { return a + b; }\n"
+        "function freeSub(uint a, uint b) pure returns (uint) { return a - b; }\n"
+        "contract Counter {\n"
+        "  using {freeAdd, freeSub} for uint;\n"
+        "  uint public count;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    uses = _edge_labels(result, "uses")
+    assert ("Counter", "freeAdd()") in uses
+    assert ("Counter", "freeSub()") in uses
 
 
 @_needs_solidity

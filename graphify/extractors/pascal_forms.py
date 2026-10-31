@@ -70,7 +70,7 @@ def extract_lazarus_form(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    obj_re = re.compile(r"^\s*object\s+\w+\s*:\s*(\w+)", re.IGNORECASE)
+    obj_re = re.compile(r"^\s*(?:object|inherited|inline)\s+\w+\s*:\s*(\w+)", re.IGNORECASE)
     event_re = re.compile(r"^\s*On\w+\s*=\s*(\w+)", re.IGNORECASE)
     end_re = re.compile(r"^\s*end\s*$", re.IGNORECASE)
 
@@ -169,7 +169,7 @@ def extract_delphi_form(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    obj_re   = re.compile(r"^\s*object\s+\w+\s*:\s*(\w+)", re.IGNORECASE)
+    obj_re   = re.compile(r"^\s*(?:object|inherited|inline)\s+\w+\s*:\s*(\w+)", re.IGNORECASE)
     event_re = re.compile(r"^\s*On\w+\s*=\s*(\w+)", re.IGNORECASE)
     end_re   = re.compile(r"^\s*end\s*$", re.IGNORECASE)
     stack: list[str] = [file_nid]

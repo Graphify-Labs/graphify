@@ -6,11 +6,11 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java, C++, C# and Swift resolvers now park those calls on the caller node and
-this pass finishes them after the merge. The cases below pin what it must NOT do
-as much as what it must: the single-definition guard, the cross-repo-only scope,
-and the language guard are what keep it from fabricating an edge from a name
-collision.
+The Java, C++, C#, Swift, Go, Kotlin, Objective-C, PHP and TS/JS resolvers now park
+those calls on the caller node and this pass finishes them after the merge. The cases
+below pin what it must NOT do as much as what it must: the single-definition guard, the
+cross-repo-only scope, and the language guard are what keep it from fabricating an edge
+from a name collision.
 """
 from __future__ import annotations
 
@@ -44,7 +44,11 @@ def _needs(module: str):
 needs_java = _needs("tree_sitter_java")
 needs_cpp = _needs("tree_sitter_cpp")
 needs_csharp = _needs("tree_sitter_c_sharp")
+needs_objc = _needs("tree_sitter_objc")
 needs_swift = _needs("tree_sitter_swift")
+needs_go = _needs("tree_sitter_go")
+needs_typescript = _needs("tree_sitter_typescript")
+needs_kotlin = _needs("tree_sitter_kotlin")
 
 
 def _caller(repo: str, parked: list[dict], node_id: str = "app_run",
@@ -103,6 +107,35 @@ def test_a_parked_call_binds_to_the_one_declaration_in_another_repo():
     assert data["source_location"] == "L10"
 
 
+def test_edge_source_file_is_the_parked_call_site_not_the_caller_node_file():
+    # The caller node's source_file is the declaration file (an ObjC caller lives
+    # in its `.h`); the call happens in the `.m`. Pairing the call-site line with
+    # the `.h` points past the end of an unrelated file (#3152 issue 3). The parked
+    # `file` carries the call-site, relativized at extract time.
+    parked = [{"callee": "greet", "receiver_type": "Greeter", "lang": "java",
+               "line": "L10", "file": "src/App.m"}]
+    G = _graph(
+        caller=_caller("a", parked, source_file="src/App.h"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    data = G.edges["a::app_run", "b::greeter_greet"]
+    assert data["source_file"] == "src/App.m"
+    assert data["source_location"] == "L10"
+
+
+def test_a_pre_3152_parked_entry_without_file_falls_back_to_the_caller_file():
+    # Graphs built before the call-site `file` was parked still merge: the edge
+    # falls back to the caller node's own source_file, the pre-fix behavior.
+    G = _graph(
+        caller=_caller("a", PARKED_GREET, source_file="src/App.h"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    data = G.edges["a::app_run", "b::greeter_greet"]
+    assert data["source_file"] == "src/App.h"
+
+
 def test_two_repos_declaring_the_same_name_bind_nothing():
     # The single-definition guard the single-repo resolvers apply. Two `Greeter`
     # declarations mean the call is ambiguous, and guessing one is worse than
@@ -154,6 +187,28 @@ def test_a_cpp_call_does_not_bind_to_a_csharp_declaration():
     assert link_cross_repo_member_calls(G) == 0
 
 
+PARKED_PHP = [{"callee": "greet", "receiver_type": "Greeter", "lang": "php", "line": "L4"}]
+
+
+def test_a_php_call_binds_to_a_php_declaration_in_another_repo():
+    G = _graph(
+        caller=_caller("a", PARKED_PHP, source_file="src/App.php"),
+        declarations=[(_declaration("b", "Greeter", "src/Greeter.php"),
+                       _method("b", ".greet()", source_file="src/Greeter.php"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_php_call_does_not_bind_to_a_java_declaration():
+    G = _graph(
+        caller=_caller("a", PARKED_PHP, source_file="src/App.php"),
+        declarations=[(_declaration("b", "Greeter", "src/Greeter.java"),
+                       _method("b", ".greet()", source_file="src/Greeter.java"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
 def test_a_cpp_header_declaration_answers_through_defines():
     # A C++ class that only declares `void greet();` owns it through `defines`,
     # the relation the extractor also uses for fields, so a header-only library
@@ -176,6 +231,140 @@ def test_a_defines_member_does_not_answer_a_java_call():
         relation="defines",
     )
     assert link_cross_repo_member_calls(G) == 0
+
+
+PARKED_TS = [{"callee": "greet", "receiver_type": "Greeter", "lang": "typescript",
+              "line": "L4"}]
+
+
+@pytest.mark.parametrize("declaring_file", ["src/greeter.ts", "src/greeter.js",
+                                            "src/greeter.mjs", "src/greeter.tsx"])
+def test_a_typescript_call_binds_across_the_whole_js_family(declaring_file: str):
+    # One key for TS and JS: a TS class legitimately answers a JS call site, so
+    # splitting the two would drop every TS<->JS cross-repo call.
+    G = _graph(
+        caller=_caller("a", PARKED_TS, source_file="src/app.ts"),
+        declarations=[(_declaration("b", "Greeter", declaring_file),
+                       _method("b", ".greet()", source_file=declaring_file))],
+    )
+    assert link_cross_repo_member_calls(G) == 1, declaring_file
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_typescript_call_does_not_bind_to_a_python_declaration():
+    G = _graph(
+        caller=_caller("a", PARKED_TS, source_file="src/app.ts"),
+        declarations=[(_declaration("b", "Greeter", "greeter.py"),
+                       _method("b", ".greet()", source_file="greeter.py"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+PARKED_OBJC = [{"callee": "greet", "receiver_type": "Greeter", "lang": "objc", "line": "L5"}]
+
+
+def test_an_objc_selector_answers_through_either_sigil():
+    # An ObjC method label keeps its +/- sigil while a parked selector carries no
+    # class/instance distinction, so both spellings have to be tried.
+    for label in ("-greet", "+greet"):
+        G = _graph(
+            caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+            declarations=[(_declaration("b", "Greeter", "Greeter.m"),
+                           _method("b", label, source_file="Greeter.m"))],
+        )
+        assert link_cross_repo_member_calls(G) == 1, label
+        assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_an_objc_callee_that_already_carries_a_sigil_still_binds():
+    # A parked selector is written bare, but the payload comes from `graph.json`
+    # and a sigiled one must not ask the index for `--greet`.
+    G = _graph(
+        caller=_caller("a", [dict(PARKED_OBJC[0], callee="-greet")],
+                       source_file="src/App.m"),
+        declarations=[(_declaration("b", "Greeter", "Greeter.m"),
+                       _method("b", "-greet", source_file="Greeter.m"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_type_declaring_both_objc_sigils_binds_nothing():
+    # `+greet` and `-greet` on one class are two different methods and the parked
+    # selector cannot say which was meant.
+    decl = _declaration("b", "Greeter", "Greeter.m")
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[(decl, _method("b", "-greet", "greeter_inst", "Greeter.m"))],
+    )
+    class_method = _method("b", "+greet", "greeter_cls", "Greeter.m")
+    G.add_node(class_method[0], **class_method[1])
+    G.add_edge(decl[0], class_method[0], relation="method")
+
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_an_objc_call_does_not_bind_to_a_cpp_member_of_a_shared_header():
+    # `.h` belongs to both languages, so the sigil is what keeps an ObjC `-greet`
+    # and a C++ `.greet()` from answering for each other inside one header.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[(_declaration("b", "Greeter", "greeter.h"),
+                       _method("b", ".greet()", source_file="greeter.h"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+    G = _graph(
+        caller=_caller("a", PARKED_CPP, source_file="src/app.cpp"),
+        declarations=[(_declaration("b", "Greeter", "greeter.h"),
+                       _method("b", "-greet", source_file="greeter.h"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_an_objc_protocol_does_not_answer_a_parked_call():
+    # A protocol carries the same markers as a class but is labelled `<Greeter>`,
+    # which no parked receiver type ever spells.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[(_declaration("b", "<Greeter>", "Greeter.h"),
+                       _method("b", "-greet", source_file="Greeter.h"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_an_objc_class_split_decl_impl_across_repos_binds_to_the_definition():
+    # `@interface` in one repo's header, `@implementation` in another repo's `.m`:
+    # `_merge_decl_def_classes` folds this within a repo but not across the boundary,
+    # so both surface as `Greeter` and the collision guard would drop the call. The
+    # `.m` definition is the target; the header declaration is not.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[
+            (_declaration("b", "Greeter", "include/Greeter.h"),
+             _method("b", "-greet", source_file="include/Greeter.h")),
+            (_declaration("c", "Greeter", "src/Greeter.m"),
+             _method("c", "-greet", source_file="src/Greeter.m")),
+        ],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "c::greeter_greet")}
+
+
+def test_two_objc_definitions_of_the_same_class_still_bind_nothing():
+    # Two unrelated `Greeter` classes, each with its own `.m` definition, are a real
+    # collision: the split-class union must not paper over the guard it loosened.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[
+            (_declaration("b", "Greeter", "b/Greeter.m"),
+             _method("b", "-greet", source_file="b/Greeter.m")),
+            (_declaration("c", "Greeter", "c/Greeter.m"),
+             _method("c", "-greet", source_file="c/Greeter.m")),
+        ],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+    assert _added_calls(G) == set()
 
 
 def test_the_definition_answers_before_a_same_named_declaration():
@@ -248,6 +437,30 @@ def test_a_repo_that_stops_declaring_the_type_loses_the_edge():
     G.remove_node("b::greeter_greet")
     assert link_cross_repo_member_calls(G) == 0
     assert _added_calls(G) == set()
+
+
+PARKED_GO = [{"callee": "Greet", "receiver_type": "Greeter", "lang": "go", "line": "L7"}]
+
+
+def test_a_go_call_does_not_bind_to_a_java_declaration():
+    # Go's suffix set is `.go` alone. Two backend services in one merge often hold one
+    # of each, and a shared type name there is a coincidence, not a namespace.
+    G = _graph(
+        caller=_caller("a", PARKED_GO, source_file="src/app.go"),
+        declarations=[(_declaration("b", "Greeter"), _method("b", ".Greet()"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_a_go_call_does_not_bind_to_a_differently_cased_method():
+    # Go exports by capitalisation, so `greet` is a different method from `Greet` and
+    # is unreachable from another package at all.
+    G = _graph(
+        caller=_caller("a", PARKED_GO, source_file="src/app.go"),
+        declarations=[(_declaration("b", "Greeter", "greeter.go"),
+                       _method("b", ".greet()", source_file="greeter.go"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
 
 
 def _write_graph(path: Path, nodes: list[dict], links: list[dict]) -> None:
@@ -366,6 +579,32 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
         marks=needs_csharp, id="csharp-field-receiver",
     ),
     pytest.param(
+        "typescript", "greet",
+        ("src/app.ts", 'import { Greeter } from "greeter-pkg";\n'
+                       "export class App {\n"
+                       "    constructor(private greeter: Greeter) {}\n"
+                       "    run(): void { this.greeter.greet(); }\n"
+                       "}\n"),
+        ("src/greeter.ts", "export class Greeter {\n    greet(): void {}\n}\n"),
+        marks=needs_typescript, id="typescript-parameter-property",
+    ),
+    pytest.param(
+        "objc", "greet",
+        ("src/App.m", "@interface App : NSObject\n"
+                      "@property (nonatomic, strong) Greeter *greeter;\n"
+                      "@end\n"
+                      "@implementation App\n"
+                      "- (void)run { [self.greeter greet]; }\n"
+                      "@end\n"),
+        ("src/Greeter.m", "@interface Greeter : NSObject\n"
+                          "- (void)greet;\n"
+                          "@end\n"
+                          "@implementation Greeter\n"
+                          "- (void)greet {}\n"
+                          "@end\n"),
+        marks=needs_objc, id="objc-property-receiver",
+    ),
+    pytest.param(
         "swift", "greet",
         ("src/App.swift", "class App {\n"
                           "    var greeter: Greeter\n"
@@ -373,6 +612,24 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
                           "}\n"),
         ("src/Greeter.swift", "class Greeter { func greet() {} }\n"),
         marks=needs_swift, id="swift-property-receiver",
+    ),
+    pytest.param(
+        # A struct field used from a method is the shape Go dependency injection takes,
+        # and the field's declared type is the only place the receiver is named.
+        "go", "Greet",
+        ("src/app.go", "package svc\n\ntype App struct {\n\tgreeter *Greeter\n}\n\n"
+                       "func (a *App) Run() { a.greeter.Greet() }\n"),
+        ("src/greeter.go", "package svc\n\ntype Greeter struct{}\n\n"
+                           "func (g *Greeter) Greet() {}\n"),
+        marks=needs_go, id="go-struct-field",
+    ),
+    pytest.param(
+        # The object-qualified shape the Kotlin resolver answers: `Greeter.greet()`
+        # names the object singleton explicitly, and only the other repo declares it.
+        "kotlin", "greet",
+        ("src/App.kt", "fun run() { Greeter.greet() }\n"),
+        ("src/Greeter.kt", "object Greeter { fun greet() {} }\n"),
+        marks=needs_kotlin, id="kotlin-object-receiver",
     ),
 ])
 def test_each_language_parks_the_call_and_the_merge_finishes_it(

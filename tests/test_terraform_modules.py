@@ -75,7 +75,7 @@ def test_same_named_directories_and_cross_file_references_stay_separate(tmp_path
     variables = [n for n in result["nodes"] if n["label"] == "var.name"]
     assert len({n["id"] for n in variables}) == 4
     for variable in variables:
-        source = str(Path(variable["source_file"]).parent / "use.tf")
+        source = (Path(variable["source_file"]).parent / "use.tf").as_posix()
         output = _node(result, "output.name", source)
         assert any(e["source"] == output["id"] and e["target"] == variable["id"]
                    for e in result["edges"])

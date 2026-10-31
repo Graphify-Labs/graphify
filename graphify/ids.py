@@ -41,10 +41,11 @@ how many times the caller has already casefolded.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 
-__all__ = ["normalize_id", "make_id"]
+__all__ = ["normalize_id", "make_id", "decl_salt", "DeclIdRegistry"]
 
 
 def normalize_id(s: str) -> str:
@@ -81,6 +82,72 @@ def normalize_id(s: str) -> str:
     cur = re.sub(r"[^\w]+", "_", cur, flags=re.UNICODE)
     cur = re.sub(r"_+", "_", cur)
     return cur.strip("_")
+
+
+def decl_salt(name: str) -> str:
+    """Stable 12-hex digest appended when a declaration id collides (#4854)."""
+    return hashlib.sha1(
+        name.encode("utf-8", "replace"), usedforsecurity=False
+    ).hexdigest()[:12]
+
+
+class DeclIdRegistry:
+    """Assign unique ids to declarations in one file.
+
+    Ownership is keyed by the id the declaration would have used, so two
+    declarations whose names normalize alike (``Foo`` / ``_Foo``, or ``Base`` in
+    two namespaces) stay distinct. A reference lookup by name only answers when
+    exactly one declaration in the file spells that name; an ambiguous name
+    keeps the caller's existing fallback.
+    """
+
+    def __init__(self, reserved_ids=()):
+        self._assigned: dict[tuple[str, str], str] = {}
+        self._owners: dict[str, tuple[str, str]] = {
+            rid: ("file", rid) for rid in reserved_ids
+        }
+        self._by_name: dict[tuple[str, str], set[str]] = {}
+        self._salted: set[str] = set()
+
+    def resolve(self, nid: str, name: str, kind: str, taken) -> str:
+        key = (kind, nid)
+        owner = self._owners.get(nid)
+        if owner == key:
+            return self._assigned[key]
+        if nid not in taken and owner is None:
+            self._owners[nid] = key
+            self._assigned[key] = nid
+            self._by_name.setdefault((kind, normalize_id(name)), set()).add(nid)
+            return nid
+        assigned = self._assigned.get(key)
+        if assigned is not None:
+            return assigned
+        # An id already used by a real declaration is a duplicate reference to
+        # that declaration (prototype owner, same name re-declared); reuse it
+        # instead of minting a second node. Only a salted id, whose owner stole
+        # the spelling from this declaration, forces a counter-salt (#4854).
+        if (nid in taken and owner is not None and owner[0] != "file"
+                and nid not in self._salted):
+            return nid
+        base = make_id(nid, decl_salt(name))
+        candidate = base
+        counter = 2
+        while candidate in taken or candidate in self._owners:
+            candidate = make_id(base, str(counter))
+            counter += 1
+        self._owners[candidate] = key
+        self._assigned[key] = candidate
+        self._salted.add(candidate)
+        self._by_name.setdefault((kind, normalize_id(name)), set()).add(candidate)
+        return candidate
+
+    def lookup(self, name: str, kinds=("type", "fn", "var", "ns", "alias")) -> str | None:
+        norm = normalize_id(name)
+        for kind in kinds:
+            ids = self._by_name.get((kind, norm))
+            if ids:
+                return next(iter(ids)) if len(ids) == 1 else None
+        return None
 
 
 def make_id(*parts: str) -> str:

@@ -426,6 +426,51 @@ def test_omitted_documents_are_reconciled_and_warned(tmp_path, capsys):
     assert "produced no nodes" in err and "doc1.md" in err
 
 
+@pytest.mark.parametrize("max_concurrency", [1, 2])
+def test_files_of_a_failed_chunk_are_not_reported_as_model_omissions(
+    tmp_path, capsys, max_concurrency,
+):
+    """#3616: a chunk that raises never got a model response, so its files must
+    not be described as "the model returned a response but omitted them". Only
+    files absent from a successful chunk keep that wording; both still land in
+    `uncovered_files` so a re-run retries them. Serial and pooled paths alike."""
+    from graphify.llm import extract_corpus_parallel
+
+    failed = tmp_path / "failed.md"
+    failed.write_text("# Failed\n", encoding="utf-8")
+    omitted = tmp_path / "omitted.md"
+    omitted.write_text("# Omitted\n", encoding="utf-8")
+    kept = tmp_path / "kept.md"
+    kept.write_text("# Kept\n", encoding="utf-8")
+
+    def fake(chunk, **kwargs):
+        name = getattr(chunk[0], "path", chunk[0]).name
+        if name == "failed.md":
+            raise ImportError("OpenAI package not installed.")
+        nodes = [] if name == "omitted.md" else [
+            {"id": "k", "source_file": name, "file_type": "document"}
+        ]
+        return {"nodes": nodes, "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake):
+        result = extract_corpus_parallel(
+            [failed, omitted, kept], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=max_concurrency,
+        )
+
+    assert result["failed_chunks"] == 1
+    assert {Path(p).name for p in result["uncovered_files"]} == {"failed.md", "omitted.md"}
+    lines = [line for line in capsys.readouterr().err.splitlines() if "produced no nodes" in line]
+    failed_lines = [line for line in lines if "failed.md" in line]
+    omitted_lines = [line for line in lines if "omitted.md" in line]
+    assert failed_lines and omitted_lines
+    assert all("failed before returning a response" in line for line in failed_lines)
+    assert not any("returned a response but omitted" in line for line in failed_lines), (
+        "a failed chunk's file was described as a model omission (#3616)"
+    )
+    assert all("returned a response but omitted" in line for line in omitted_lines)
+
+
 def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
     """#1895: the #1757 cache guard skips the CACHE write for a node attributed
     to a real corpus file that was not dispatched, but the node itself still
@@ -487,6 +532,103 @@ def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
     assert "out-of-scope" in err and "B.py" in err
     # The dispatched files all produced nodes — reconciliation sees no gaps.
     assert result["uncovered_files"] == []
+
+
+def test_edge_between_kept_nodes_survives_when_source_file_was_not_dispatched(tmp_path):
+    """#2276: a references edge between two re-extracted pages is kept when the
+    model stamps it with a real file this run did not dispatch, and a node
+    attributed to another undispatched file is still dropped."""
+    from graphify.build import build, build_merge
+    from graphify.cache import scope_semantic_result
+    from graphify.export import to_json
+    from graphify.llm import extract_corpus_parallel
+
+    page_a = tmp_path / "page_a.md"
+    page_b = tmp_path / "page_b.md"
+    log = tmp_path / "log.md"
+    other = tmp_path / "other.md"
+    for path in (page_a, page_b, log, other):
+        path.write_text("# page\n", encoding="utf-8")
+
+    def _node(nid: str, source_file: str) -> dict:
+        return {
+            "id": nid,
+            "label": nid,
+            "file_type": "document",
+            "source_file": source_file,
+            "source_location": None,
+            "_origin": "semantic",
+        }
+
+    def _edge(source: str, target: str, source_file: str) -> dict:
+        return {
+            "source": source,
+            "target": target,
+            "relation": "references",
+            "source_location": None,
+            "_origin": "semantic",
+            "confidence": "INFERRED",
+            "weight": 1.0,
+            "source_file": source_file,
+            "file_type": "document",
+        }
+
+    prior = {
+        "nodes": [
+            _node("page_a", "page_a.md"),
+            _node("page_b", "page_b.md"),
+            _node("log", "log.md"),
+            _node("leaf", "log.md"),
+        ],
+        "edges": [
+            _edge("log", "leaf", "log.md"),
+            _edge("page_a", "page_b", "page_a.md"),
+        ],
+        "hyperedges": [],
+    }
+    graph_path = tmp_path / "graph.json"
+    to_json(build([prior], root=tmp_path), {}, str(graph_path))
+
+    def fresh(chunk, **kwargs):
+        return {
+            "nodes": [
+                _node("page_a", "page_a.md"),
+                _node("page_b", "page_b.md"),
+                _node("stray", "other.md"),
+            ],
+            "edges": [
+                _edge("page_a", "page_b", "log.md"),
+                _edge("page_a", "stray", "page_a.md"),
+            ],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fresh):
+        result = extract_corpus_parallel(
+            [page_a, page_b], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=2, max_concurrency=1,
+        )
+
+    assert any(
+        e.get("source") == "page_a" and e.get("target") == "page_b"
+        for e in result["edges"]
+    ), f"page_a→page_b missing after extract: {result['edges']}"
+    assert all(n.get("id") != "stray" for n in result["nodes"])
+
+    scope_semantic_result(result, tmp_path, [page_a, page_b])
+    assert any(
+        e.get("source") == "page_a" and e.get("target") == "page_b"
+        for e in result["edges"]
+    ), f"page_a→page_b missing after scope: {result['edges']}"
+
+    G = build_merge([result], graph_path, root=tmp_path)
+    assert G.has_edge("page_a", "page_b")
+    assert G.has_edge("log", "leaf")
+    assert "stray" not in G
+    assert not G.has_edge("page_a", "stray")
+    assert "page_a" in G and "page_b" in G
 
 
 def test_out_of_scope_drop_count_is_zero_when_all_in_scope(tmp_path, capsys):

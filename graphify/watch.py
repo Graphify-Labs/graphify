@@ -5,8 +5,11 @@ import json
 import logging
 import os
 import posixpath
+import multiprocessing
 import re
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -21,6 +24,7 @@ from graphify.paths import (
 
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
+_PENDING_FULL_FILENAME = ".pending_full"
 _PENDING_DRAIN_MAX_PASSES = 20
 
 
@@ -76,6 +80,26 @@ def _drain_pending(out_dir: Path) -> list[Path]:
         seen.add(s)
         out.append(Path(s))
     return out
+
+
+def _queue_pending_full(out_dir: Path) -> None:
+    """Record that a full-corpus rebuild was requested but could not run.
+
+    Full requests (watcher, post-checkout hook) have no path list to append to
+    ``.pending_changes``, so they leave a marker file instead. The lock-holder
+    consumes it and runs one more full pass before releasing (#4274).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / _PENDING_FULL_FILENAME).touch()
+
+
+def _drain_pending_full(out_dir: Path) -> bool:
+    """Consume the full-rebuild marker. Returns True if one was queued."""
+    try:
+        (out_dir / _PENDING_FULL_FILENAME).unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 # Build options that must survive into later rebuilds. The initial `extract`
@@ -210,6 +234,50 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
             except BlockingIOError:
                 yield False
                 return
+            # flock locks the open file's INODE, not the path (#4273). The
+            # release below unlinks the path (so a poller watching for the
+            # file's absence unblocks promptly), but a blocking waiter that
+            # was already parked in flock() when that unlink happened ends up
+            # holding the lock on an orphaned inode with no path at all — a
+            # LATER caller then opens the path fresh, gets a brand-new inode
+            # that was never locked, and flock succeeds on it immediately.
+            # Two holders are then inside the rebuild at once. Guard against
+            # this directly: after flock succeeds, confirm the fd we locked
+            # is still the file CURRENTLY at lock_path. If not — we won a
+            # race for an inode the path has already moved on from — drop
+            # this lock and retry against whatever is at the path now.
+            for _ in range(100):
+                try:
+                    fh_stat = os.fstat(fh.fileno())
+                    path_stat = os.stat(lock_path)
+                except OSError:
+                    same_file = False
+                else:
+                    same_file = (
+                        fh_stat.st_dev == path_stat.st_dev
+                        and fh_stat.st_ino == path_stat.st_ino
+                    )
+                if same_file:
+                    break
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+                fh = open(lock_path, "a+", encoding="utf-8")
+                try:
+                    fcntl.flock(fh.fileno(), flags)
+                except BlockingIOError:
+                    fh.close()
+                    yield False
+                    return
+            else:
+                # Pathological unlink/recreate storm — give up rather than
+                # spin forever; the caller gets the same outcome as losing
+                # the non-blocking race.
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+                yield False
+                return
         else:
             if blocking:
                 while True:
@@ -240,6 +308,17 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     finally:
         if acquired:
             if fcntl is not None:
+                # Unlink BEFORE unlocking (#4273): flock() only ever wakes a
+                # blocked waiter at the LOCK_UN call below, so doing the
+                # unlink first guarantees it has already happened by the
+                # time any waiter's flock() can return — closing the window
+                # the retry check above relies on. The other order (unlock
+                # then unlink) lets a waiter's flock() return, and its
+                # stat-based check run, in the gap before the unlink syscall
+                # actually lands — a false "still valid" read moments before
+                # the path disappears under it.
+                with contextlib.suppress(OSError):
+                    lock_path.unlink()
                 try:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
                 except OSError:
@@ -253,7 +332,9 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
         fh.close()
         # Signal "rebuild done" by removing the lock file. Only the holder
         # unlinks; a non-acquiring caller leaves the existing lock in place.
-        if acquired:
+        # The fcntl branch above already did this (order matters there,
+        # #4273); this covers msvcrt and the no-fcntl-no-match fallback.
+        if acquired and fcntl is None:
             with contextlib.suppress(OSError):
                 lock_path.unlink()
 
@@ -298,7 +379,8 @@ def _git_head(cwd: Path | str | None = None) -> str | None:
     import subprocess as _sp
     try:
         r = _sp.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            ["git", "rev-parse", "HEAD"], stdin=_sp.DEVNULL,
+            capture_output=True, text=True, timeout=3,
             cwd=str(cwd) if cwd is not None else None,
         )
         return r.stdout.strip() if r.returncode == 0 else None
@@ -313,6 +395,12 @@ from graphify.detect import (
     IMAGE_EXTENSIONS,
     _load_graphifyignore,
     _is_ignored,
+)
+from graphify.rcfile import (
+    RC_FILENAME,
+    activate_language_overrides,
+    effective_suffix,
+    set_language_overrides,
 )
 
 _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAGE_EXTENSIONS
@@ -1158,21 +1246,52 @@ def _reconcile_existing_graph(
         # until a semantic re-extraction supersedes them. Same provenance rule
         # the node reconciliation above applies via _origin (#1865). Deletion
         # eviction stays provenance-blind.
+        def _edge_evicted(edge: dict) -> bool:
+            return not source_paths.is_evicted(edge, excluded_alive_files) and (
+                source_paths.is_evicted(edge, edge_evicted_source_identities)
+                or (
+                    _is_ast_tier(edge)
+                    and source_paths.is_evicted(edge, rebuilt_source_identities)
+                )
+            )
+
+        existing_edges = existing.get("links", existing.get("edges", []))
         preserved_edges = [
             edge
-            for edge in existing.get("links", existing.get("edges", []))
+            for edge in existing_edges
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
-            and not (
-                source_paths.is_evicted(edge, edge_evicted_source_identities)
-                and not source_paths.is_evicted(edge, excluded_alive_files)
-            )
-            and not (
-                _is_ast_tier(edge)
-                and source_paths.is_evicted(edge, rebuilt_source_identities)
-                and not source_paths.is_evicted(edge, excluded_alive_files)
-            )
+            and not _edge_evicted(edge)
         ]
+        # `reverse_import` stands for the target file's import back, which the
+        # undirected build dropped in favour of this edge (#4839). That import
+        # is the target file's, so it goes when an edge from that file would:
+        # clear the stamp then (re-extracting the file stamps it again), and
+        # move it onto the fresh edge when only this edge's own file was
+        # re-extracted.
+        node_files = {
+            n.get("id"): n.get("source_file")
+            for n in existing.get("nodes", []) if isinstance(n, dict)
+        }
+
+        def _reverse_leg_evicted(edge: dict) -> bool:
+            return _edge_evicted({**edge, "source_file": node_files.get(edge.get("target"))})
+
+        preserved_edges = [
+            {k: v for k, v in edge.items() if k != "reverse_import"}
+            if edge.get("reverse_import") and _reverse_leg_evicted(edge) else edge
+            for edge in preserved_edges
+        ]
+        carried_reverse = {
+            (edge.get("source"), edge.get("target"), edge.get("relation"))
+            for edge in existing_edges
+            if edge.get("reverse_import")
+            and _edge_evicted(edge)
+            and not _reverse_leg_evicted(edge)
+        }
+        for edge in result["edges"]:
+            if (edge.get("source"), edge.get("target"), edge.get("relation")) in carried_reverse:
+                edge["reverse_import"] = True
 
         preserved_edges = _reconcile_markdown_links(
             result,
@@ -1370,6 +1489,7 @@ def _check_shrink(
     had_explicit_deletions: bool = False,
     rebuilt_sources: "set[str] | None" = None,
     failed_sources: "set[str] | None" = None,
+    deleted_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -1391,6 +1511,12 @@ def _check_shrink(
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     Files in ``failed_sources`` never account for lost nodes: extraction did not
     complete, so their disappearance is the silent shrink this guard protects.
+
+    A larger total is not enough when a saved semantic id is gone (#2229).
+    ``deleted_sources`` is the files the user removed. A semantic node on one of
+    those files may go. A semantic node on a file that is still present may not.
+    The rebuilt set is not that list: an update re-extracts code and must not
+    treat a rationale node on that file as a deleted symbol.
     """
     if force or not existing_data:
         return True
@@ -1406,6 +1532,26 @@ def _check_shrink(
         return True
     existing_nodes = existing_data.get("nodes", [])
     new_nodes = new_data.get("nodes", [])
+    from graphify.build import _lost_saved_semantic_nodes
+    missing = _lost_saved_semantic_nodes(existing_nodes, new_nodes, deleted_sources)
+    if missing:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        ids = ", ".join(str(node.get("id")) for node in missing)
+        print(
+            "[graphify] WARNING: Refusing to overwrite — saved semantic "
+            f"node(s) are missing from the new graph: {ids}.",
+            file=sys.stderr,
+        )
+        if len(new_nodes) < len(existing_nodes):
+            print(
+                f"[graphify] WARNING: new graph has {len(new_nodes)} nodes but existing "
+                f"graph.json has {len(existing_nodes)}. Refusing to overwrite — you may be "
+                f"missing chunk files from a previous session. "
+                f"Pass --force to override.",
+                file=sys.stderr,
+            )
+        return False
     if len(new_nodes) >= len(existing_nodes):
         return True
     if rebuilt_sources is not None:
@@ -1438,8 +1584,15 @@ def _report_for_compare(report_text: str) -> str:
     return re.sub(r"^- Built from commit: `[^`]+`\n?", "", report_text, flags=re.MULTILINE)
 
 
+def _is_single_line(path: Path) -> bool:
+    """True when ``path`` holds one line (the compact graph.json layout, #3413)."""
+    with path.open("rb") as f:
+        f.readline()
+        return not f.readline()
+
+
 def _json_text(data: dict) -> str:
-    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
 def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
@@ -1471,6 +1624,252 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
             "no longer exists and GRAPHIFY_REPO_ROOT is not set."
         )
         return False
+
+
+def _inputs_unchanged(detected: dict, manifest_path: Path, root: Path) -> bool:
+    """True when nothing that can change the code graph changed since the last run.
+
+    Compares the fresh scan against the previous run's manifest by CONTENT
+    (``ast_hash``), never by mtime alone, over three input sets: every detected
+    bucket, the manifest rows the scan no longer covers, and the JS/TS resolution
+    inputs. A tsconfig/jsconfig/package.json edit can move a .ts result without
+    touching a source file, and the lock files are resolution inputs the scan
+    skips by name, so detect() reports them separately (#4740).
+
+    Fails closed. A missing or unreadable manifest, a row that cannot be verified,
+    or anything this cannot prove unchanged returns False so the caller takes the
+    full path: a false "changed" only costs time, a false "unchanged" ships a
+    stale graph.
+    """
+    from graphify.detect import classify_manifest_files, load_manifest
+    from graphify.paths import nfc
+
+    try:
+        manifest = load_manifest(str(manifest_path), root=root)
+    except Exception:
+        return False
+    if not manifest:
+        return False
+
+    def _abs(p: object) -> str:
+        # The scan may report CWD-relative paths while load_manifest re-anchors
+        # its keys at `root`; compare both sides in one absolute, NFC form.
+        try:
+            return nfc(str(Path(os.path.abspath(str(p)))))
+        except (OSError, ValueError, TypeError):
+            return nfc(str(p))
+
+    buckets = {
+        ftype: [_abs(f) for f in flist]
+        for ftype, flist in (detected.get("files") or {}).items()
+    }
+    buckets["resolution_inputs"] = [
+        _abs(f) for f in (detected.get("resolution_inputs") or [])
+    ]
+    keyed = {_abs(k): v for k, v in manifest.items()}
+
+    # unstamped_is_changed=True: a scanned file with no manifest row or a blanked
+    # ast_hash (e.g. one that previously FAILED extraction, #2543) counts as
+    # changed, so fixing it later takes the full rebuild instead of being skipped
+    # forever. The only cost is that a corpus with a permanently-failing file never
+    # fast-paths — the safe direction (a false "changed" only costs time).
+    changed, _unchanged = classify_manifest_files(
+        buckets, keyed, kind="ast", unstamped_is_changed=True
+    )
+    if any(changed.values()):
+        return False
+
+    # A row with no matching scan entry is a deletion, or a file a changed ignore
+    # rule just excluded. Both can move the graph, and neither is provable here.
+    current = {f for flist in buckets.values() for f in flist}
+    return all(f in current for f in keyed)
+
+
+_BUILD_STATE_NAME = ".graphify_build_state.json"
+
+
+def _extractor_epoch() -> str:
+    """Identity of the extraction pipeline behind the current AST output.
+
+    The same triple the AST cache is namespaced by, so anything that invalidates
+    cached fragments also invalidates a graph built from the old ones. Without it
+    the gate would skip a graph the current extractor would not reproduce, which
+    is how the legacy-stub and legacy-marker heals work (#4740).
+    """
+    from graphify.cache import (
+        _AST_CACHE_SCHEMA,
+        _EXTRACTOR_VERSION,
+        _grammar_fingerprint,
+    )
+
+    return f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}-g{_grammar_fingerprint()}"
+
+
+def _scan_digest(detected: dict) -> str:
+    """Fingerprint of WHICH files the scan covers, not what they contain (#4740).
+
+    The manifest cannot answer this on its own: a source whose extraction fails
+    is deliberately left unstamped (#2543), so it has no row and a row-based
+    comparison cannot tell "same file, still failing" from "file is new". Only
+    the in-scope path set separates those, and it is also what catches an edit to
+    an ignore rule, a rename and an outright deletion.
+    """
+    import hashlib
+
+    paths = [
+        os.path.abspath(str(f))
+        for flist in (detected.get("files") or {}).values()
+        for f in flist
+    ]
+    paths += [
+        os.path.abspath(str(f)) for f in (detected.get("resolution_inputs") or [])
+    ]
+    return hashlib.md5(
+        "\n".join(sorted(paths)).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
+
+
+def _current_build_state(
+    *,
+    watch_root: Path,
+    follow_symlinks: bool,
+    no_cluster: bool,
+    gitignore: bool,
+    excludes: list[str] | None,
+    scan_digest: str,
+) -> dict:
+    """Everything besides file content that a rebuild's output depends on (#4740).
+
+    A different scan root, file set, ignore set, output shape or extractor
+    necessarily writes a different graph, so the previous run's stamp cannot
+    vouch for it.
+    """
+    import hashlib
+
+    rc = watch_root / RC_FILENAME
+    try:
+        rc_digest = (
+            hashlib.md5(rc.read_bytes(), usedforsecurity=False).hexdigest()
+            if rc.is_file()
+            else ""
+        )
+    except OSError:
+        rc_digest = ""
+    return {
+        "epoch": _extractor_epoch(),
+        "scan_root": str(watch_root),
+        "scan_digest": scan_digest,
+        "follow_symlinks": bool(follow_symlinks),
+        "no_cluster": bool(no_cluster),
+        "gitignore": bool(gitignore),
+        "excludes": sorted(excludes or []),
+        "rcfile": rc_digest,
+        # Env knobs that change the written output rather than just the timing:
+        # the viz cap removes graph.html outright, and the ambiguous-edge scale
+        # moves community assignment. Read raw so this cannot drift from how
+        # each consumer parses them.
+        "viz_node_limit": os.environ.get("GRAPHIFY_VIZ_NODE_LIMIT", ""),
+        "ambiguous_scale": os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE", ""),
+    }
+
+
+def _graph_json_is_complete(path: Path) -> bool:
+    """Cheap structural check that ``path`` holds a whole JSON object (#4748).
+
+    Deliberately not a full ``json.load``. graph.json is capped at 512 MiB by
+    default (``GRAPHIFY_MAX_GRAPH_BYTES``), and the rebuild that just wrote it is
+    still holding its own copy of the graph, so parsing it again can add a
+    gigabyte of peak RSS to answer one question: did the bytes land whole.
+    Reading the first and last non-whitespace byte answers that for the failure
+    this guards, a partial or truncated publish, which the atomic replace can
+    still produce through its non-atomic fallback.
+
+    Says nothing about corruption in the middle of the file. That would change
+    mtime, which the caller's own stat comparison catches.
+    """
+    try:
+        size = path.stat().st_size
+        if size < 2:
+            return False
+        from graphify.paths import os_long_path
+        with open(os_long_path(path), "rb") as f:
+            head = f.read(64)
+            f.seek(max(0, size - 64))
+            tail = f.read(64)
+    except OSError:
+        return False
+    head = head.lstrip()
+    tail = tail.rstrip()
+    return bool(head) and bool(tail) and head[:1] == b"{" and tail[-1:] == b"}"
+
+
+def _write_build_state(out: Path, state: dict, *, full_clean: bool) -> None:
+    """Stamp what the next run has to match to skip (#4740).
+
+    Refuses to stamp unless the outputs it is about to describe are on disk and
+    whole. A stamp is a promise that the next run may skip, so writing one over a
+    graph.json that a failed or partial publish left behind turns that promise
+    into a stale graph nothing ever repairs (#4748). Any doubt means no stamp,
+    which costs the next run a full rebuild and nothing else.
+    """
+    graph = out / "graph.json"
+    try:
+        st = graph.stat()
+    except OSError:
+        return
+    if not _graph_json_is_complete(graph):
+        return
+    from graphify.exporters.html import _HTML_STALE_MARKER
+    if (out / _HTML_STALE_MARKER).exists():
+        # A pending re-render means graph.html does not describe this graph yet.
+        # _build_state_matches() rejects such a stamp anyway, so writing one that
+        # could never match would only make "a stamp exists" meaningless.
+        return
+    payload = {
+        **state,
+        "full_clean": bool(full_clean),
+        "graph_size": st.st_size,
+        "graph_mtime_ns": st.st_mtime_ns,
+        "html_present": (out / "graph.html").exists(),
+    }
+    try:
+        (out / _BUILD_STATE_NAME).write_text(
+            json.dumps(payload, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _build_state_matches(out: Path, state: dict) -> bool:
+    """True when ``out`` still holds exactly what the last stamped rebuild wrote.
+
+    Fails closed on anything it cannot prove: a missing or unreadable stamp, a
+    graph.json another writer replaced or partly wrote, a pending HTML re-render,
+    or a last rebuild that was itself incremental (which is never a sound base
+    for skipping a full one).
+    """
+    try:
+        prev = json.loads((out / _BUILD_STATE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(prev, dict):
+        return False
+    for key, value in state.items():
+        if prev.get(key) != value:
+            return False
+    # Only a full rebuild leaves a graph a full rebuild could have produced.
+    if prev.get("full_clean") is not True:
+        return False
+    try:
+        st = (out / "graph.json").stat()
+    except OSError:
+        return False
+    if prev.get("graph_size") != st.st_size or prev.get("graph_mtime_ns") != st.st_mtime_ns:
+        return False
+    from graphify.exporters.html import _HTML_STALE_MARKER
+    if (out / _HTML_STALE_MARKER).exists():
+        return False
+    return prev.get("html_present") is (out / "graph.html").exists()
 
 
 def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
@@ -1593,29 +1992,32 @@ def _rebuild_code(
 
     out = watch_path / _GRAPHIFY_OUT
     if acquire_lock:
-        # #1059: incremental (changed_paths is not None) hooks must not drop
-        # their change set when another rebuild is already running. Queue
-        # before attempting the lock so a non-blocking failure still records
-        # the work; the lock-holder drains the queue and merges it in. Full-
-        # corpus rebuilds skip the queue entirely — they already cover every
-        # file, so there is nothing to merge.
-        if changed_paths is not None and not block_on_lock:
-            _queue_pending(out, list(changed_paths))
+        # #1059: a hook must not drop its request when another rebuild is
+        # already running. Queue before attempting the lock so a non-blocking
+        # failure still records the work; the lock-holder drains the queue.
+        # Incremental requests append their paths to .pending_changes; full-
+        # corpus requests leave a .pending_full marker (#4274).
+        queued = False
+        if not block_on_lock:
+            if changed_paths is None:
+                _queue_pending_full(out)
+                queued = True
+            elif changed_paths:
+                _queue_pending(out, list(changed_paths))
+                queued = True
         with _rebuild_lock(out, blocking=block_on_lock) as got:
             if not got:
                 print("[graphify watch] Rebuild already in progress for "
-                      f"{watch_path.resolve()} - changes queued.")
+                      f"{watch_path.resolve()} - "
+                      f"{'changes queued' if queued else 'nothing to queue'}.")
                 return False
             # Lock acquired. Drain anything queued by earlier contenders
-            # (including, importantly, the paths we just queued ourselves)
-            # and merge with our own change set so a single rebuild covers
-            # everything outstanding.
-            if changed_paths is not None:
-                merged = _merge_changed_paths(changed_paths, _drain_pending(out))
-            else:
-                # Full-corpus rebuild supersedes any queued incremental work.
-                _drain_pending(out)
-                merged = None
+            # (including, importantly, what we just queued ourselves). A
+            # queued full request upgrades this run to a full rebuild, which
+            # supersedes any incremental work queued before it starts.
+            full = _drain_pending_full(out) or changed_paths is None
+            pending = _drain_pending(out)
+            merged = None if full else _merge_changed_paths(changed_paths, pending)
             ok = _rebuild_code(
                 watch_path,
                 changed_paths=merged,
@@ -1625,22 +2027,23 @@ def _rebuild_code(
                 acquire_lock=False,
             )
             # Late-arrival drain: another hook may have queued work while we
-            # were rebuilding. Loop up to _PENDING_DRAIN_MAX_PASSES times so a
-            # storm of commits eventually quiesces without livelocking. A full
-            # rebuild already saw everything, so skip this for changed_paths is None.
-            if merged is not None:
-                for _ in range(_PENDING_DRAIN_MAX_PASSES):
-                    late = _drain_pending(out)
-                    if not late:
-                        break
-                    ok = _rebuild_code(
-                        watch_path,
-                        changed_paths=late,
-                        follow_symlinks=follow_symlinks,
-                        force=force,
-                        no_cluster=no_cluster,
-                        acquire_lock=False,
-                    ) and ok
+            # were rebuilding — even a full rebuild only saw files as they were
+            # when it walked the corpus (#4274). Loop up to
+            # _PENDING_DRAIN_MAX_PASSES times so a storm of commits eventually
+            # quiesces without livelocking.
+            for _ in range(_PENDING_DRAIN_MAX_PASSES):
+                late_full = _drain_pending_full(out)
+                late = _drain_pending(out)
+                if not late_full and not late:
+                    break
+                ok = _rebuild_code(
+                    watch_path,
+                    changed_paths=None if late_full else late,
+                    follow_symlinks=follow_symlinks,
+                    force=force,
+                    no_cluster=no_cluster,
+                    acquire_lock=False,
+                ) and ok
             return ok
 
     watch_root = watch_path.resolve()
@@ -1686,6 +2089,37 @@ def _rebuild_code(
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
 
+        # #4740: stop before extraction when nothing that reaches the code graph
+        # has changed. The only no-change exit today sits at the very end of the
+        # pipeline (the topology compare), so a zero-change run still pays for
+        # detect -> extract -> build -> cluster and its gigabytes.
+        #
+        # `changed_paths` already names the change set, so that path is left
+        # alone, and --force means "accept a shrink", not "prove nothing changed".
+        #
+        # Below, this state is both what the gate compares and what every
+        # successful rebuild stamps: the skip key has to cover everything a
+        # rebuild's output depends on besides file content.
+        _build_state_now = _current_build_state(
+            watch_root=watch_root,
+            follow_symlinks=follow_symlinks,
+            no_cluster=no_cluster,
+            gitignore=_gitignore_enabled,
+            excludes=_persisted_excludes,
+            scan_digest=_scan_digest(detected),
+        )
+
+        if changed_paths is None and not force:
+            if (
+                _inputs_unchanged(detected, out / "manifest.json", watch_root)
+                and _build_state_matches(out, _build_state_now)
+            ):
+                print(
+                    "[graphify watch] No relevant changes; "
+                    "graphify-out left untouched."
+                )
+                return True
+
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
         # purged from the graph instead of preserved forever by the fail-closed
@@ -1702,9 +2136,16 @@ def _rebuild_code(
             watch_root, extra_excludes=_persisted_excludes or None, gitignore=True,
         ) if _gitignore_enabled else _ignored_always
 
-        # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
+        # Include document files that have AST extractors (e.g. .md, .mdx, .qmd).
+        # A document that detect() reclassified as a paper (_looks_like_paper,
+        # e.g. Markdown notes quoting an arXiv abstract) gets the same quick-scan
+        # when it has an AST extractor; otherwise an AST-only rebuild gives it
+        # zero nodes with no warning (#4750). Only formats with an extractor
+        # qualify (.md/.mdx/.qmd today): PDFs and plain .txt still have none, so
+        # the _get_extractor filter keeps them out exactly as before.
         ast_doc_files: list[Path] = []
-        for doc_file in detected['files'].get('document', []):
+        for doc_file in [*detected['files'].get('document', []),
+                         *detected['files'].get('paper', [])]:
             p = Path(doc_file)
             if _get_extractor(p) is not None:
                 code_files.append(p)
@@ -1912,6 +2353,9 @@ def _rebuild_code(
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module",
                         "_rust_impl_key", "_rust_declaration_count",
+                        "_ts_public_twin", "_py_property", "_java_ret",
+                        "_ts_fields", "_ts_static_fields",
+                        "_py_fixture", "_py_return_type", "_go_fields",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
@@ -1923,6 +2367,7 @@ def _rebuild_code(
                                 "ruby_resolution_schema",
                                 "ruby_method_kind",
                                 "ruby_lookup_unsafe",
+                                "python_opaque_bases",
                                 "ruby_reopened",
                                 "ruby_external_method_owners",
                                 # Erlang remote-call resolution keys (#3714): an
@@ -1934,6 +2379,11 @@ def _rebuild_code(
                                 "module",
                                 "name",
                                 "arity",
+                                # C# overloads (#4584): which one a call's
+                                # argument count fits.
+                                "min_arity",
+                                "variadic",
+                                "signature",
                             )
                             if key in metadata
                         }
@@ -1943,12 +2393,15 @@ def _rebuild_code(
                 # #2437: the member-call resolvers map receiver type -> owning
                 # class -> method through contains/method edges; hand over the
                 # unchanged corpus's, scoped exactly like the nodes above so a
-                # deleted/re-extracted file's edges can never resurrect.
+                # deleted/re-extracted file's edges can never resurrect. Import
+                # edges come too: a TS field inherited from an unchanged file is
+                # typed by that file's imports, as in a full build.
                 for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
                     if edge.get("relation") not in (
-                        "contains", "method", "inherits"
+                        "contains", "method", "inherits", "imports", "imports_from"
                     ):
-                        continue
+                        if not (edge.get("relation") == "references" and edge.get("context") == "return_type"):
+                            continue
                     if not _is_ast_tier(edge):
                         continue
                     source_file = edge.get("source_file")
@@ -1960,6 +2413,8 @@ def _rebuild_code(
                         "relation": edge.get("relation"),
                         "source_file": source_file,
                     }
+                    if edge.get("context") == "return_type":
+                        context_edge["context"] = "return_type"
                     edge_metadata = edge.get("metadata")
                     if (
                         isinstance(edge_metadata, dict)
@@ -2012,28 +2467,49 @@ def _rebuild_code(
 
             Only the STAMPED set shrinks; scan_corpus at the save sites stays
             the raw detect output so #1908 pruning is unaffected.
+
+            The JS/TS resolution inputs detect() skips by name are stamped under
+            their own bucket so the no-change gate can compare their content on
+            the next run (#4740). They are not extract targets and stay out of
+            scan_corpus, so nothing else sees them.
             """
             if not _failed_ast_sources:
-                return detected["files"]
-            failed_res = set(_failed_ast_sources)
-            for p in _failed_ast_sources:
-                try:
-                    failed_res.add(str(Path(p).resolve()))
-                except (OSError, RuntimeError):
-                    pass
+                stamped = detected["files"]
+            else:
+                failed_res = set(_failed_ast_sources)
+                for p in _failed_ast_sources:
+                    try:
+                        failed_res.add(str(Path(p).resolve()))
+                    except (OSError, RuntimeError):
+                        pass
 
-            def _failed(f: str) -> bool:
-                if f in failed_res:
-                    return True
-                try:
-                    return str(Path(f).resolve()) in failed_res
-                except (OSError, RuntimeError):
-                    return False
+                def _failed(f: str) -> bool:
+                    if f in failed_res:
+                        return True
+                    try:
+                        return str(Path(f).resolve()) in failed_res
+                    except (OSError, RuntimeError):
+                        return False
 
-            return {
-                ftype: [f for f in flist if not _failed(f)]
-                for ftype, flist in detected["files"].items()
-            }
+                stamped = {
+                    ftype: [f for f in flist if not _failed(f)]
+                    for ftype, flist in detected["files"].items()
+                }
+            resolution = detected.get("resolution_inputs") or []
+            if resolution:
+                stamped = {**stamped, "resolution_inputs": list(resolution)}
+            return stamped
+
+        def _stamp_build_state() -> None:
+            """Record what the NEXT run has to match to skip (#4740).
+
+            Only ever called once a rebuild has finished writing its outputs, so
+            the stamp describes a graph that is on disk and current. A rebuild
+            that fails before this point leaves the previous stamp in place, and
+            the gate compares against the outputs too, so it cannot vouch for a
+            graph that was half written.
+            """
+            _write_build_state(out, _build_state_now, full_clean=changed_paths is None)
 
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
@@ -2069,6 +2545,10 @@ def _rebuild_code(
             print(f"error: {exc}", file=sys.stderr)
             return False
 
+        # The equality skips below compare parsed data, not layout; an existing
+        # multi-line graph.json must still be rewritten compact (#3413).
+        legacy_layout = existing_graph.exists() and not _is_single_line(existing_graph)
+
         _relativize_source_files(result, project_root, scope=watch_root)
         # Source files re-extracted this run — their symbol sets may legitimately
         # shrink (a removed function), so the shrink-guard should not block the
@@ -2098,9 +2578,11 @@ def _rebuild_code(
                 dedupe_nodes as _dedupe_nodes,
                 disambiguate_file_labels_in_nodes as _disamb_labels,
                 finalize_raw_graph_endpoints as _finalize_raw_graph_endpoints,
+                qualify_csharp_method_labels_in_nodes as _qualify_cs_methods,
             )
             raw_nodes = _dedupe_nodes(result.get("nodes", []))
             _disamb_labels(raw_nodes)
+            _qualify_cs_methods(raw_nodes, result.get("edges", []))
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
             candidate_graph_data = {
                 **{
@@ -2150,12 +2632,14 @@ def _rebuild_code(
                     )
                 except Exception:
                     same_graph = False
+            same_graph = same_graph and not legacy_layout
             if not same_graph:
                 if not _check_shrink(
                     force, existing_graph_data, candidate_graph_data,
                     had_explicit_deletions=bool(deleted_paths),
                     rebuilt_sources=rebuilt_sources,
                     failed_sources=failed_sources,
+                    deleted_sources=deleted_paths,
                 ):
                     return False
                 from graphify.export import backup_if_protected as _backup
@@ -2193,6 +2677,7 @@ def _rebuild_code(
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     clear_ast=_failed_ast_sources or None,
                 )
+                _stamp_build_state()
             except Exception:
                 pass
 
@@ -2219,7 +2704,7 @@ def _rebuild_code(
         # build_from_json defaults to directed=False otherwise.
         G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
         candidate_topology = _topology_from_graph(G)
-        if existing_graph_data:
+        if existing_graph_data and not legacy_layout:
             try:
                 same_topology = (
                     json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False)
@@ -2253,6 +2738,9 @@ def _rebuild_code(
                     )
                 else:
                     print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
+                # Stamped last: it records the outputs as they now are, and this
+                # path may have just re-rendered or removed graph.html.
+                _stamp_build_state()
                 return True
 
         communities = cluster(G)
@@ -2264,6 +2752,19 @@ def _rebuild_code(
         surprises = surprising_connections(G, communities)
         labels_file = out / ".graphify_labels.json"
         sig_file = out / (".graphify_labels.json" + ".sig")
+        # #3334: a community without a curated name gets a deterministic hub
+        # fallback below so reports and graph.json always show something
+        # readable -- but that fallback used to be written straight into the
+        # same tracked file as genuinely-curated (manual or LLM) names, so a
+        # from-empty rebuild (a fresh clone, a new worktree, any CI run) kept
+        # appending fallback entries to a file users are told is the reviewed,
+        # committable semantic layer. Fallback names now live in a SEPARATE
+        # sidecar (`pending_labels_file`) that never needs reviewing, so the
+        # tracked file only ever contains names someone actually set.
+        # `pending_cids` tracks which entries in `labels` came from there (or
+        # from this run's hub-fill) rather than the tracked file, so the write
+        # step below can route each cid back to the file it belongs in.
+        pending_labels_file = out / ".graphify_labels.pending.json"
         try:
             raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
             # Skip persisted "Community N" placeholders so the hub-fill below
@@ -2275,15 +2776,29 @@ def _rebuild_code(
         except Exception:
             raw = {}
             labels = {}
+        pending_cids: set[int] = set()
+        try:
+            pending_raw = (
+                json.loads(pending_labels_file.read_text(encoding="utf-8"))
+                if pending_labels_file.exists() else {}
+            )
+            for k, v in pending_raw.items():
+                cid = int(k)
+                if cid in communities and cid not in labels and v != f"Community {cid}":
+                    labels[cid] = v
+                    pending_cids.add(cid)
+        except Exception:
+            pass
         # A saved label belongs to a cid, but re-clustering reassigns cids: after a
         # rebuild that adds nodes, cid 30 can cover a completely different community
         # and its old name is then simply wrong. Validate every reused label against
         # the membership signature saved beside the labels — the same guard the
-        # cluster-only path applies — and drop any whose community changed so the
+        # cluster-only path applies — and drop any whose overlap is not a strict
+        # majority of both the saved members and the current members so the
         # hub-fill below renames it, deterministically and correct-by-construction.
         # Without this, an incremental `graphify update` launders stale names into
         # labels.json as though they were current (#label-stale).
-        from graphify.cluster import community_member_sigs
+        from graphify.cluster import community_member_sigs, label_still_applies
         cur_sigs = community_member_sigs(communities)
         saved_sigs: dict[int, str] = {}
         if sig_file.exists():
@@ -2296,21 +2811,46 @@ def _rebuild_code(
             except Exception:
                 saved_sigs = {}
         if saved_sigs:
-            # Precise: the signature tells us exactly which communities changed.
-            stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
+            # Equal signature, or a strict majority of both the saved members
+            # and the current members (#2298).
+            stale = {
+                cid for cid in labels
+                if not label_still_applies(
+                    cid,
+                    communities.get(cid, []),
+                    previous_node_community,
+                    saved_sigs.get(cid),
+                    cur_sigs.get(cid),
+                )
+            }
+        elif len(raw) != len(communities):
+            # No sidecar (labels predate it). A differing community count used
+            # to drop every label; keep one only on that same majority overlap.
+            # Compare against the tracked file alone (`raw`), not the
+            # pending-merged `labels` -- a from-empty rebuild's fresh pending
+            # entries must not count toward "how many labels were saved".
+            stale = {
+                cid for cid in labels
+                if not label_still_applies(
+                    cid,
+                    communities.get(cid, []),
+                    previous_node_community,
+                    None,
+                    None,
+                )
+            }
         else:
-            # No sidecar (labels predate it). A differing community COUNT means the
-            # labels describe a different clustering, so no cid's label is trustworthy;
-            # an equal count is the best available "unchanged" signal.
-            stale = set(labels) if len(raw) != len(communities) else set()
+            stale = set()
         for cid in stale:
             del labels[cid]
+            pending_cids.discard(cid)
         missing = {cid: members for cid, members in communities.items() if cid not in labels}
         if missing:
             # Deterministic hub name (highest-degree member) beats a bare "Community N"
             # placeholder for any community without a saved label.
             from graphify.cluster import label_communities_by_hub
             labels.update(label_communities_by_hub(G, missing))
+            pending_cids.update(missing)
         if stale:
             print(
                 f"[graphify watch] community set changed since labeling "
@@ -2325,7 +2865,14 @@ def _rebuild_code(
                           {"input": 0, "output": 0}, report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
-        labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
+        # Split back into the tracked (curated) file and the pending
+        # (hub-fallback) sidecar (#3334) -- report/graph.json generation above
+        # already used the full, merged `labels` so a fallback-named community
+        # still reads correctly there; only the on-disk split changes.
+        curated_labels = {cid: v for cid, v in labels.items() if cid not in pending_cids}
+        pending_labels = {cid: v for cid, v in labels.items() if cid in pending_cids}
+        labels_json = json.dumps({str(k): v for k, v in sorted(curated_labels.items())}, ensure_ascii=False, indent=2) + "\n"
+        pending_labels_json = json.dumps({str(k): v for k, v in sorted(pending_labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
         json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
@@ -2357,6 +2904,7 @@ def _rebuild_code(
                 )
             except Exception:
                 same_graph = False
+        same_graph = same_graph and not legacy_layout
         if report_path.exists():
             old_report = report_path.read_text(encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)
@@ -2371,6 +2919,7 @@ def _rebuild_code(
                 had_explicit_deletions=bool(deleted_paths),
                 rebuilt_sources=rebuilt_sources,
                 failed_sources=failed_sources,
+                deleted_sources=deleted_paths,
             ):
                 return False
             from graphify.exporters.html import _HTML_STALE_MARKER
@@ -2406,6 +2955,14 @@ def _rebuild_code(
             # that no longer exists. Writing labels first keeps the sidecar
             # trailing, which the guard sees as a mismatch and re-labels.
             write_text_atomic(labels_file, labels_json)
+            if pending_labels:
+                write_text_atomic(pending_labels_file, pending_labels_json)
+            else:
+                # Every community now has a curated name (or there simply are
+                # none pending this run) -- a leftover empty/stale sidecar would
+                # otherwise sit there forever once its last entry is promoted to
+                # a real label.
+                pending_labels_file.unlink(missing_ok=True)
             write_text_atomic(
                 sig_file, json.dumps({str(k): v for k, v in cur_sigs.items()}))
 
@@ -2460,6 +3017,9 @@ def _rebuild_code(
             if callflow_files:
                 products += f", {len(callflow_files)} callflow HTML"
             print(f"[graphify watch] {products} updated in {out}")
+        # Stamped last: every output this rebuild writes is on disk by now, and
+        # the gate compares against those outputs as well as the input manifest.
+        _stamp_build_state()
         return True
 
     except Exception as exc:
@@ -2494,7 +3054,7 @@ def _notify_only(watch_path: Path) -> None:
 
 
 def _has_non_code(changed_paths: list[Path]) -> bool:
-    return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
+    return any(effective_suffix(p).lower() not in _CODE_EXTENSIONS for p in changed_paths)
 
 
 def _batch_triggers_rebuild(batch: list[Path]) -> bool:
@@ -2506,7 +3066,7 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     this, a doc-only deletion batch would sit behind the needs_update flag
     until the next code event or a manual `graphify update` (#2580).
     """
-    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
+    has_code = any(effective_suffix(p).lower() in _CODE_EXTENSIONS for p in batch)
     has_deletion = any(not p.exists() for p in batch)
     return has_code or has_deletion
 
@@ -2537,6 +3097,54 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     reconcile sweep, so a pure-deletion batch must not leave a stale flag.
     """
     return _has_non_code([p for p in batch if p.exists()])
+
+
+@contextlib.contextmanager
+def _rebuild_timeout():
+    """Bound one watch-loop rebuild by GRAPHIFY_REBUILD_TIMEOUT seconds (0 disables).
+
+    Mirrors the hook rebuild (#791, #2148): SIGALRM raises TimeoutError where it
+    exists; elsewhere (Windows) a timer thread kills the pool workers and exits
+    the process, since nothing can interrupt the main thread (#2173).
+    """
+    timeout = int(os.environ.get("GRAPHIFY_REBUILD_TIMEOUT", "600"))
+    if timeout <= 0:
+        yield
+        return
+    # SIGALRM can only be armed from the main thread: signal.signal() raises
+    # ValueError ("signal only works in main thread") anywhere else. watch()'s
+    # dispatch loop is not always the main thread (it is run in a worker thread
+    # both under test and when embedded), and that ValueError would escape the
+    # `except TimeoutError` guard and tear the watch loop down before the
+    # rebuild runs (#4724 regressed gh-928). Off the main thread, fall back to
+    # the signal-free Timer path, which bounds the rebuild just the same.
+    if hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread():
+        def _sigalrm_bail(*_a):
+            # Kill workers before raising: TimeoutError would otherwise block in
+            # the pool's shutdown(wait=True) on a worker the alarm cannot stop.
+            for child in multiprocessing.active_children():
+                child.kill()
+            raise TimeoutError(f"graphify rebuild exceeded {timeout}s")
+        previous = signal.signal(signal.SIGALRM, _sigalrm_bail)
+        signal.alarm(timeout)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+    else:
+        def _bail():
+            print(f"[graphify watch] graphify rebuild exceeded {timeout}s", flush=True)
+            for child in multiprocessing.active_children():
+                child.kill()
+            os._exit(1)
+        watchdog = threading.Timer(timeout, _bail)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            yield
+        finally:
+            watchdog.cancel()
 
 
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
@@ -2573,12 +3181,26 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
         gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
     )
 
+    # Observer and dispatch threads need the same root-specific snapshot.
+    root_config_path = watch_root_for_ignore / RC_FILENAME
+    override_snapshot: dict[str, str] = activate_language_overrides(watch_root_for_ignore)
+    config_changed = False
+
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
-            nonlocal last_trigger, pending
+            nonlocal last_trigger, pending, override_snapshot, config_changed
             if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
+            # Atomic replacement reports the new root config in dest_path.
+            dest_raw = getattr(event, "dest_path", None)
+            dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
+            if path == root_config_path or dest_path == root_config_path:
+                override_snapshot = activate_language_overrides(watch_root_for_ignore)
+                config_changed = True
+                last_trigger = time.monotonic()
+                pending = True
+                return
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
             # the cheapest short-circuit for users with broad ignore patterns
             # (node_modules/, .venv/, build/, …) fires first. _is_ignored
@@ -2586,7 +3208,8 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             # relative_to guard, so a stray symlinked event won't raise.
             if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return
-            if path.suffix.lower() not in _WATCHED_EXTENSIONS:
+            set_language_overrides(override_snapshot)
+            if effective_suffix(path).lower() not in _WATCHED_EXTENSIONS:
                 return
             try:
                 filter_parts = path.relative_to(watch_root_for_ignore).parts
@@ -2603,7 +3226,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     handler = Handler()
     # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
     observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    observer.schedule(handler, str(watch_path), recursive=True)
+    observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
@@ -2618,10 +3241,17 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 pending = False
                 batch = list(changed)
                 changed.clear()
+                config_event, config_changed = config_changed, False
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                if _batch_triggers_rebuild(batch):
-                    _rebuild_code(watch_path)
-                if _batch_needs_llm_flag(batch):
+                # Reapply the observer's snapshot on the dispatch thread.
+                set_language_overrides(override_snapshot)
+                if config_event or _batch_triggers_rebuild(batch):
+                    try:
+                        with _rebuild_timeout():
+                            _rebuild_code(watch_path)
+                    except TimeoutError as exc:
+                        print(f"[graphify watch] {exc}")
+                if config_event or _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")

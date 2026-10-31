@@ -184,9 +184,15 @@ def extract_r(path: Path) -> dict:
 
     def binding_id(owner: str, name: str) -> str:
         suffix = _make_id(name)
-        if not suffix:
-            # Symbol-only R operators are real bindings. Repeated underscores
-            # cannot be produced by _make_id for ordinary names.
+        # Symbol-bearing R names are distinct bindings, but _make_id drops their
+        # punctuation: a fully-symbolic operator (`%||%`) collapses to "", and a
+        # partially-symbolic backtick name (`%foo%`, S3 `[.cls`, dotted `my.op`)
+        # normalizes to the same suffix as an ordinary identifier (`%foo%` and foo
+        # would both be `{owner}_foo`, silently dropping the second). Route every
+        # backtick-quoted name through a reserved namespace keyed on its exact
+        # bytes (#4253). Repeated underscores can't be produced by _make_id for
+        # ordinary names, so the two namespaces never collide.
+        if not suffix or name.startswith("`"):
             return f"{owner}__operator__{name.encode('utf-8').hex()}"
         # Preserve the owner verbatim so nested bindings in an operator's scope
         # keep its reserved namespace instead of normalizing it away.

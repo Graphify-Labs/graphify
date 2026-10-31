@@ -1,0 +1,10 @@
+{
+  "name": "graphify-pi",
+  "private": true,
+  "description": "Native Pi (and Oh My Pi) bridge to Graphify's installed hook-guard CLI",
+  "license": "Apache-2.0",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
