@@ -6,9 +6,9 @@ requirement (#3673), because that is what the call site names. The conforming
 directed walk stops at the protocol and every chain through an injected
 dependency is cut at that point — the Swift twin of the C# gap #3003 closed.
 
-The mechanism — single-conformer, single-owner, per-method `dispatches_to`
-edges at INFERRED — lives in `graphify.interface_dispatch` and is shared with
-the C# pass; this module fixes the Swift gate. Both ends of a pair must be
+The mechanism — single-owner, per-method `dispatches_to` edges at INFERRED,
+fanning out to every conformer — lives in `graphify.interface_dispatch` and
+is shared with the C# pass; this module fixes the Swift gate. Both ends of a pair must be
 declared in a `.swift` file: `implements` is resolved by name, so a Kotlin or
 Java class declaring the same supertype name binds to the Swift protocol when
 that is the only node with the name, and linking a requirement to its method
@@ -42,5 +42,5 @@ def resolve_swift_protocol_dispatch(
     all_nodes: list[dict],
     all_edges: list[dict],
 ) -> None:
-    """Link each single-conformer Swift protocol requirement to its implementation."""
+    """Link each Swift protocol requirement to every conformer that owns it unambiguously."""
     resolve_interface_dispatch(per_file, all_nodes, all_edges, suffixes=_SWIFT_SUFFIXES)

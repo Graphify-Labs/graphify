@@ -8,8 +8,9 @@ node precedes its source node comes back reversed.
 
 query/path/explain (#2309, #2487), affected (#1174), merge-graphs (#2261) and
 the MCP server already restore direction. These tests cover the remaining
-reloaders: the export subcommands, the watch/update HTML re-render, and the git
-merge driver, which writes the committed graph.json.
+reloaders: the export subcommands, the watch/update HTML re-render, the git
+merge driver, which writes the committed graph.json, and `global add`, which
+writes ~/.graphify/global-graph.json.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 PYTHON = sys.executable
 # A fixed positive limit, so HTML rendering never depends on the caller's
@@ -189,3 +191,47 @@ def test_merge_driver_keeps_stored_direction_in_arc_order(tmp_path):
     # Arc order is the direction (what to_json writes); no markers left behind.
     assert {(l["source"], l["target"]) for l in merged["links"]} == TRUE_ARCS
     assert not any("_src" in l or "_tgt" in l for l in merged["links"])
+
+
+def _global_add(tmp_path: Path, *repos: tuple[Path, str]) -> dict:
+    """Run `global add` for each (graph.json, tag) and return the saved global graph."""
+    from graphify.global_graph import global_add
+
+    gdir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", gdir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", gdir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", gdir / "global-manifest.json"):
+        for graph_path, tag in repos:
+            global_add(graph_path, tag)
+    return json.loads((gdir / "global-graph.json").read_text())
+
+
+def _marker_arcs(data: dict) -> set[tuple[str, str]]:
+    return {(l.get("_src", l["source"]), l.get("_tgt", l["target"])) for l in data["links"]}
+
+
+def test_global_add_persists_stored_direction(tmp_path):
+    saved = _global_add(tmp_path, (_graph_json(tmp_path), "proj"))
+    assert _marker_arcs(saved) == {(f"proj::{s}", f"proj::{t}") for s, t in TRUE_ARCS}
+
+
+def test_global_add_dedup_remaps_direction_markers(tmp_path):
+    """Two repos share an external `requests` node. B's copy is deduplicated
+    onto A::requests, so the markers on B's edge must follow it there."""
+
+    def repo(name: str, fn: str) -> Path:
+        # The external node is listed first, the order an undirected load flips.
+        data = {"directed": False, "multigraph": False, "graph": {},
+                "nodes": [{"id": "requests", "label": "requests"},
+                          {"id": fn, "label": f"{fn}()", "source_file": f"{name}/x.py"}],
+                "links": [{"source": fn, "target": "requests", "relation": "calls"}]}
+        p = tmp_path / name / "graph.json"
+        p.parent.mkdir()
+        p.write_text(json.dumps(data))
+        return p
+
+    saved = _global_add(tmp_path, (repo("A", "fa"), "A"), (repo("B", "fb"), "B"))
+    arcs = _marker_arcs(saved)
+    assert arcs == {("A::fa", "A::requests"), ("B::fb", "A::requests")}
+    ids = {n["id"] for n in saved["nodes"]}
+    assert all(end in ids for arc in arcs for end in arc)

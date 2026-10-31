@@ -778,5 +778,44 @@ class TestDart(unittest.TestCase):
         self.assertEqual(loc[_make_id("conn_web.dart")], "L3")
         self.assertEqual(loc[_make_id("service_io.dart")], "L5")
 
+    def test_anonymous_extension_is_detected(self):
+        """An unnamed `extension on Type { ... }` must mint a node and an
+        `extends` edge, exactly like a named extension does; the fallback
+        label it already carried for this case never actually matched."""
+        code = textwrap.dedent("""
+        extension on String {
+          String shout() => toUpperCase();
+        }
+        """)
+        path = self.temp_path / "shout.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        ext_node = next((n for n in result["nodes"] if n["label"] == "Extension on String"), None)
+        self.assertIsNotNone(ext_node)
+
+        extends_string = next(
+            (e for e in result["edges"] if e["source"] == ext_node["id"] and e["relation"] == "extends"),
+            None,
+        )
+        self.assertIsNotNone(extends_string)
+        self.assertEqual(extends_string["target"], "string")
+
+    def test_named_extension_is_unaffected(self):
+        """A control for the fix above: a named extension must still resolve
+        exactly as before, not fall into the anonymous-fallback label."""
+        code = textwrap.dedent("""
+        extension StringExtensions on String {
+          String whisper() => toLowerCase();
+        }
+        """)
+        path = self.temp_path / "whisper.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        ext_node = next((n for n in result["nodes"] if n["label"] == "StringExtensions"), None)
+        self.assertIsNotNone(ext_node)
+        self.assertIsNone(next((n for n in result["nodes"] if "anonymous_extension" in n["id"]), None))
+
 if __name__ == "__main__":
     unittest.main()

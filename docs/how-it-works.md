@@ -97,5 +97,6 @@ Each edge has:
 - `confidence` — `EXTRACTED`, `INFERRED`, or `AMBIGUOUS`
 - `confidence_score` — float (INFERRED only)
 - `source_file` — where the relationship was found
+- `also_seen` — optional; when the same relation between the same two nodes was found more than once, the edge keeps the highest-confidence copy and lists each other copy's `confidence`, `confidence_score`, `source_file` and `source_location` here, weakest first. `graphify path` shows their tags next to the edge's own (`[AMBIGUOUS/INFERRED]`)
 
 Hyperedges (group relationships connecting 3+ nodes) live in `G.graph["hyperedges"]`.
