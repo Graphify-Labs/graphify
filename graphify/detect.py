@@ -3125,6 +3125,60 @@ def classify_manifest_files(
     return new_files, unchanged_files
 
 
+def classify_manifest_deletions(
+    manifest: dict,
+    scanned: Iterable[str],
+    *,
+    root: Path | None = None,
+) -> tuple[list[str], list[str]]:
+    """Split manifest rows that left the scan into (deleted, excluded).
+
+    A row whose file is gone from DISK is a genuine deletion (its cached nodes
+    are ghosts); a row whose file still exists but is out of the current scan was
+    EXCLUDED by a changed ignore rule and must not be reported as deleted
+    (#1908). Mirrors the watch-side excluded-vs-deleted distinction (#1795).
+
+    ``scanned`` must name every row the caller expects to see, including sources
+    that carry manifest rows without being part of the scan corpus
+    (``detect()["resolution_inputs"]``, #4740), or those rows read as excluded on
+    every run.
+    """
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_root(path_str: str) -> bool:
+        if root_res is None:
+            return True
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
+
+    current_files = {_nfc(f) for f in scanned}
+    deleted_files: list[str] = []
+    excluded_files: list[str] = []
+    for f in manifest:
+        if not _in_root(f):
+            continue
+        if _nfc(f) in current_files:
+            continue
+        try:
+            alive = Path(f).exists()
+        except OSError:
+            alive = False
+        (excluded_files if alive else deleted_files).append(f)
+
+    return deleted_files, excluded_files
+
 def detect_incremental(
     root: Path,
     manifest_path: str = _MANIFEST_PATH,
@@ -3195,44 +3249,20 @@ def detect_incremental(
     # nodes are ghosts); a row whose file still exists but is out of the
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
-    # distinction (#1795).
-    try:
-        root_res: Path | None = Path(root).resolve() if root is not None else None
-    except (OSError, RuntimeError):
-        root_res = Path(root) if root is not None else None
-
-    def _in_root(path_str: str) -> bool:
-        if root_res is None:
-            return True
-        p = Path(path_str)
-        try:
-            p.relative_to(root_res)
-            return True
-        except ValueError:
-            pass
-        try:
-            p.resolve().relative_to(root_res)
-            return True
-        except (ValueError, OSError, RuntimeError):
-            return False
-
-    current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
-    # Resolution inputs carry manifest rows but are deliberately kept out of
-    # detect()'s corpus. Without this they read as rows that "left the scan" and
-    # would be reported as excluded on every run (#4740).
-    current_files |= {_nfc(f) for f in full.get("resolution_inputs", [])}
-    deleted_files: list[str] = []
-    excluded_files: list[str] = []
-    for f in manifest:
-        if not _in_root(f):
-            continue
-        if _nfc(f) in current_files:
-            continue
-        try:
-            alive = Path(f).exists()
-        except OSError:
-            alive = False
-        (excluded_files if alive else deleted_files).append(f)
+    # distinction (#1795). Resolution inputs carry manifest rows while being
+    # deliberately kept out of detect()'s corpus, so they are named here too;
+    # without that they would read as rows that left the scan on every run
+    # (#4740).
+    deleted_files, excluded_files = classify_manifest_deletions(
+        manifest,
+        [
+            f
+            for flist in full["files"].values()
+            for f in flist
+        ]
+        + list(full.get("resolution_inputs", [])),
+        root=root,
+    )
 
     new_total = sum(len(v) for v in new_files.values())
     full["incremental"] = True

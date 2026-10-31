@@ -2900,11 +2900,21 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         from graphify.watch import _rebuild_code
 
-        print(f"Re-extracting code files in {watch_path} (no LLM needed)...")
+        print(f"Updating code graph in {watch_path} (no LLM needed)...")
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        # #4740: re-extract only the files whose content differs from the
+        # manifest, so a warm tree costs what changed rather than the whole
+        # corpus. `--force` and a missing/unreadable manifest both keep the
+        # full path (see _rebuild_code).
+        ok = _rebuild_code(
+            watch_path,
+            incremental=True,
+            force=force,
+            no_cluster=no_cluster,
+            block_on_lock=True,
+        )
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
