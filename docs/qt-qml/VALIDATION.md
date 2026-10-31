@@ -2365,3 +2365,48 @@ The [traceability checkpoint](../../tests/TRACEABILITY.md#corrected-full-source-
 records the passing full outcome, all skip/expected-failure boundaries and the
 separate failing predecessor. The new-head hosted and complete installed
 reference-corpus gates remain independent and pending at this checkpoint.
+
+
+### INC-QML-102 permission-failure qualification
+
+A read-only destination is an actual replacement rejection on Windows under the
+existing writer policy. POSIX rename/replace instead requires write permission
+on the parent directory; destination-file write bits do not establish denial.
+The [Apple rename contract](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/rename.2.html)
+and [Python os.replace contract](https://docs.python.org/3.14/library/os.html#os.replace)
+corroborate the exact hosted counterexample. The original four failure cases
+executed on all four macOS Python lanes, with 5,047 passes and 81 skips per lane;
+they are real fixture failures, despite an additional generic runner-capacity
+annotation. They must not be infrastructure-retried or counted as successful.
+
+The corrected physical readonly setup uses the actual platform boundary and
+qualifies denial. Privileged POSIX bypass is an explicit unexecuted capability
+limit; it cannot establish a rejection pass. Graph-target-specific EIO cases run
+on every platform and retain actual production writer dispatch. Permission and
+injected-fault restoration precede recovery and repeat. Current Windows evidence
+cannot establish the new POSIX fixture; the ordinary new-head hosted source lanes
+own that result. The unsuccessful local WSL probe has no installed distribution
+and supplies no POSIX execution evidence. Runtime/package bytes remain unchanged.
+
+
+INC-QML-103's explicit byte-pair CLI and direct-producer procedure extends the
+existing native newline oracle to C#/CUDA/Metal. Test inputs are written as
+literal LF and CRLF, with each original offset/row/byte column checked before
+semantic comparison. The new production-CLI profiles and corruption controls
+pass locally in both clustering modes; the existing aggregate/admission/newline
+selection also passes. Exact case mappings/counts and the predecessor's two
+Linux failures are in [traceability](../../tests/TRACEABILITY.md#inc-qml-103--newline-oracle-validates-source-proof-before-comparison).
+Changing input bytes is not expected to preserve physical offsets. Every other
+field, source identity, edge multiplicity and uncertainty remains constrained;
+all fixtures and assigned platforms remain present. New-head hosted acceptance
+remains a separate pending boundary.
+
+
+After the INC-QML-102/103 test-only corrections, whole-repository Ruff and all
+134 generated-artifact checks pass. Explicit-interpreter Pyright inspects 1,064
+files and retains the same 684 inherited diagnostics with no additions or
+retirements relative to the final source checkpoint (five retired against the
+689 upstream baseline). The production package remains byte-identical.
+The required repository-only AST refresh also succeeds and public reload accepts
+31,400 nodes and 74,323 edges. This updates test-code navigation without an API
+call or application refresh. New-head hosted results remain separately pending.

@@ -1300,3 +1300,30 @@ construction/source-link/membership/resource tests measure 149/185/290/234, all
 within 300. Earlier syntax300/annotation198 limits remain unchanged. Cache schema33
 retains the historical #4854 ID-domain rationale. These are source measurements
 and focused evidence, not whole-SDK or unexecuted platform coverage.
+
+
+### INC-QML-102 test fault ownership
+
+`tests/qt_publication_faults.py` (99 lines; owner INC-QML-102; ceiling300) owns
+qualified Windows destination attributes, POSIX parent write denial and scoped
+replacement faults, together with exact restoration. It never supplies a
+publication result. `tests/test_qt_publication_fault_contracts.py` (114 lines;
+same owner/ceiling) exercises real writer denial/recovery, unrelated syscall
+delegation, exception restoration and POSIX file-only overwrite controls.
+The two existing source-update cohorts retain their assertions and own their
+product snapshots/repair/repeat checks. Production persistence ownership, source
+proof, cache epochs and public interfaces are unchanged.
+
+
+### INC-QML-103 original-byte oracle ownership
+
+`tests/qt_source_newline_oracle.py` (145 lines; owner INC-QML-103; ceiling300)
+validates raw six-coordinate witnesses and required source fragments before
+comparing all semantic attributes, IDs and counted edges. It transforms only
+validated test-oracle coordinates; no production fact changes.
+`tests/test_qt_source_newline_cli.py` (123 lines; same owner/ceiling) owns explicit
+actual CLI byte pairs, direct producer checks and corruption controls.
+`tests/test_qt_source_byte_admission.py` (20 lines) guards actual admitted byte
+owners independently of checkout conversion. Existing aggregate/admission modules
+are 176/169 lines; all fixtures, twelve aggregate tests and assertions remain.
+The byte-owner extensions do not widen the production Qt source-discovery profile.

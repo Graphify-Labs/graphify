@@ -4067,3 +4067,74 @@ resolved edges in precise source-owner context, without a legacy/global guess;
 conditional/ambiguous target definitions remain rejected. Anonymous or unavailable
 caller namespaces still cannot authorize a guessed edge. Tests must preserve this
 existing distinction rather than add a new blanket conditional-caller rejection.
+
+
+### INC-QML-102 — Platform-faithful persistence failure fixtures
+
+Scope decision: REQ-QML-012-AC02 and REQ-QML-022-AC06, test infrastructure only.
+The first reviewed hosted source exposes four macOS failures in the external
+singleton and QtTest update cohorts: clearing graph-file write bits does not deny
+POSIX atomic replacement. The existing writer correctly applies its destination
+read-only attribute guard on Windows; POSIX rename permission belongs to the
+parent directory. Preserve that runtime contract and diagnose the actual failure
+state before changing a rejection expectation.
+
+Acceptance matrix before implementation: retain both existing readonly parameters
+and force=False/True assertions. Windows uses a real read-only destination; POSIX
+uses a genuinely nonwritable output directory, with explicit privileged/capability
+limits rather than a passing skipped assertion. Add target-specific os.replace
+EIO failure cases on every platform through the production writer, while unrelated
+replacement calls retain the actual implementation. Repeated rejection must
+preserve graph, manifest, report and Qt state; restore permissions and fault hooks
+in finally/context boundaries, then prove recovery, clean rebuild parity and
+settled repeat. A POSIX destination-file-only read-only control must preserve the
+valid replacement outcome observed by the failed hosted tests. No runtime,
+assertion, dependency, assigned platform, cache epoch or graph-storage contract is
+weakened. Audit adjacent new readonly fixtures for the same setup error.
+
+Owner: test fault setup/helper and the two affected update cohorts. Native Windows
+can verify file-attribute and injected writer failures locally; real POSIX
+permission and replacement cases require the already assigned hosted source lanes.
+The old exact source/failure logs remain evidence; new head validation belongs to
+the ordinary PR synchronization event, without dispatching duplicate workflows.
+Private corpus analysis continues on identical runtime package bytes and remains
+independently bound. Exit requires actual assigned POSIX and Windows cases to
+execute successfully, plus reviewed fault restoration and retained-data assertions.
+
+
+### INC-QML-103 — Original-byte-aware aggregate newline oracle
+
+Scope decision before implementation: test conformance under
+REQ-QML-022-AC02/AC03/AC06, preserving production facts and all fixture admission.
+The first reviewed Linux full run reproduces two aggregate LF/CRLF equality
+failures. Four existing C#/CUDA/Metal fixtures now carry 14 original-byte source
+spans from the admitted shared producer profiles; changing their line endings
+must change physical offsets. Exact current direct-extractor LF/CRLF pairs prove
+each offset, raw row and byte column against its own input, with every other
+field, ID, edge and existing partial-parser diagnostic equal. Original installed
+A092 emitted no such spans. Windows fixture bytes were already CRLF, so its full
+run did not exercise a differing physical pair. This is a stale oracle against
+the intentional source-byte contract, not evidence for normalizing production
+coordinates or removing metadata.
+
+Acceptance matrix: retain every fixture, both aggregate cluster modes, all twelve
+aggregate tests and exact all-attribute equality for identical byte-owned inputs.
+Extend the byte-owning cohort to the admitted C# and C++-dispatched GPU variants;
+ordinary-language text still converts. An independent actual CLI oracle must
+construct literal LF/CRLF buffers with write_bytes in both modes, irrespective
+of checkout conversion, and validate each exact six-coordinate span against both
+raw buffers before semantic comparison. Compare all remaining fields, stable IDs,
+Counter topology/duplicates and uncertainty. Require the actual field/function/
+host-call facts to exclude symmetric omission. Reject corrupted offsets alone,
+consistent-but-wrong offset/column, semantic roles, stable-ID permutations,
+relationships/endpoints and missing facts in both outputs. Do not strip arbitrary
+metadata, drop inputs, skip platforms, alter source or weaken equality assertions.
+Physical source proof is a separate validated dimension, not incidental noise.
+
+Owner: aggregate test byte classification/admission controls and focused new
+original-byte CLI tests/helpers within300lines. Runtime/cache/schema/dependency
+contracts and all named prior acceptance identities remain unchanged. Exit needs
+the exact prior Linux failure to be excluded by stronger applicable coverage,
+both actual CLI modes and corruption controls locally, and complete assigned
+new-head hosted validation. Private analysis continues on unchanged package bytes;
+its receipt must be bound to the eventual delivery commit independently.

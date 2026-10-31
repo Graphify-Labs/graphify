@@ -2941,3 +2941,24 @@ original installed-baseline source graphs exhibit that same distinction. Matchin
 cold/incremental raw output retains all node and edge fields; typed Qt/QML proof
 metadata is independently checked exactly across profiles. Source-profile storage
 validation continues to reject duplicate serialized logical identities.
+
+
+INC-QML-102 changes test fault ownership only. The existing atomic writer remains
+the sole persistence owner; Windows destination attributes and POSIX parent
+permissions retain their native meanings. Test fixtures establish a real denial
+at that boundary and restore their own state before recovery. A target-specific
+system-call failure may isolate that expensive filesystem boundary, while other
+replacement operations use the real implementation. No graph/cache schema,
+runtime diagnostic, dependency direction or compatibility policy changes, so no
+new architecture decision or error code is allocated. Source-package equality
+must be reattested when the test/documentation-only delivery commit advances.
+
+
+INC-QML-103 extends D39's existing oracle split to C# and C++-dispatched GPU
+source facts. Aggregate all-attribute equality retains the original byte owners;
+a separate actual CLI pair changes their bytes and independently validates
+physical coordinates before exact semantic/topology comparison. Mandatory source
+facts and corruption controls protect the oracle itself. Twelve exported spans
+and fourteen direct-producer spans remain distinct evidence. This changes no
+runtime owner, public graph format, cache epoch, dependency, diagnostic or
+architecture decision; the earlier source-byte preservation contract governs.

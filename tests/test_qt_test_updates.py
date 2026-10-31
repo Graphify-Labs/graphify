@@ -1,9 +1,6 @@
 """INC-QML-75: source-only QtTest records obey cache/publication transactions."""
 from __future__ import annotations
 
-import os
-import stat
-
 import pytest
 
 from graphify.extractors.qt_cpp_facts import qt_metadata
@@ -11,6 +8,7 @@ from graphify.qt_analysis_state import QT_STATE_FILE
 from graphify.watch import _rebuild_code
 from tests.qt_cpp_test_helpers import collect, facts
 from tests.qt_external_singleton_helpers import LOAD, SETUP, sources
+from tests.qt_publication_faults import publication_fault
 from tests.test_qt_cmake_mutation_updates import compare_clean, normalized, published
 
 SOURCE = '''#include <QTest>
@@ -52,9 +50,9 @@ def test_req_qml022_ac06_qt_test_cold_warm_incremental_cleanup_matches_full(tmp_
     compare_clean(tmp_path)
 
 
-@pytest.mark.parametrize("failure", ["syntax", "readonly"])
+@pytest.mark.parametrize("failure", ["syntax", "readonly", "replace"])
 @pytest.mark.parametrize("force", [False, True])
-def test_req_qml022_ac06_qt_test_failure_retains_graph_and_recovers(tmp_path, failure, force):
+def test_req_qml022_ac06_qt_test_failure_retains_graph_and_recovers(tmp_path, monkeypatch, capsys, failure, force):
     """Actual replacement/parse rejection retains every product, then repair/repeat succeeds."""
     path = tmp_path / "checks.hpp"
     path.write_bytes(SOURCE.encode())
@@ -64,17 +62,24 @@ def test_req_qml022_ac06_qt_test_failure_retains_graph_and_recovers(tmp_path, fa
     names = ("graph.json", "manifest.json", "report.md", QT_STATE_FILE)
     prior = {name: (out / name).read_bytes() for name in names}
     destination = out / "graph.json"
-    mode = destination.stat().st_mode
     path.write_bytes(SOURCE.replace("QFETCH(int, state);", "QFETCH(int);").encode() if failure == "syntax"
                      else SOURCE.replace("state", "value").encode())
-    if failure == "readonly":
-        os.chmod(destination, stat.S_IREAD)
-    try:
+
+    def rejected_attempts():
         for _ in range(2):
             assert not _rebuild_code(tmp_path, changed_paths=[path], no_cluster=True, acquire_lock=False, force=force)
             assert {name: (out / name).read_bytes() for name in names} == prior
-    finally:
-        os.chmod(destination, mode)
+            expected = "QML_GRAPH_PRESERVED" if failure == "syntax" else "GRAPH_PUBLICATION_FAILED"
+            assert expected in capsys.readouterr().out
+
+    if failure == "syntax":
+        rejected_attempts()
+    else:
+        with publication_fault(destination, failure, monkeypatch) as fault:
+            assert fault.qualified
+            rejected_attempts()
+            if failure == "replace":
+                assert fault.hits >= 2
     path.write_bytes(SOURCE.encode())
     assert _rebuild_code(tmp_path, changed_paths=[path], no_cluster=True, acquire_lock=False)
     assert len(_test_facts(tmp_path)) == 2

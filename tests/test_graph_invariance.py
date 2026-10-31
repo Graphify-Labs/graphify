@@ -43,10 +43,11 @@ def _native_byte_input(relative: Path) -> bool:
     """Byte ownership follows the accepted native profile, not a directory name.
 
     Keep the existing QML project cohort exact, including its owned scripts.
-    Native C++ and Qt source/metadata inputs retain bytes wherever they occur.
-    Ordinary language fixtures still exercise exact LF-to-CRLF conversion.
+    Native C++ (including CUDA/Metal), C# member and Qt source/metadata inputs
+    retain bytes wherever they occur. Ordinary language fixtures still exercise
+    exact LF-to-CRLF conversion; paired CLI oracles check native newline changes.
     """
-    return (relative.parts[0] == "qml" or relative.suffix.lower() in QT_CPP_SUFFIXES
+    return (relative.parts[0] == "qml" or relative.suffix.lower() in QT_CPP_SUFFIXES | {".cs", ".cu", ".cuh", ".metal"}
             or is_qt_source(relative) or is_qt_metadata(relative))
 
 
@@ -61,9 +62,9 @@ def _copy(src: Path, dst: Path, *, crlf: bool = False) -> Path:
         for path in dst.rglob("*"):
             if not path.is_file():
                 continue
-            # Native facts retain original-byte spans even for non-QObject C++
-            # outside qml/. Dedicated Qt and generic-C++ CLI cases change those
-            # bytes and independently check coordinates plus semantic topology.
+            # Source facts retain original-byte spans for C# and non-QObject
+            # C++/CUDA/Metal outside qml/. Dedicated CLI cases change those bytes
+            # and independently check coordinates plus all semantic attributes.
             if _native_byte_input(path.relative_to(dst)):
                 continue
             data = path.read_bytes()

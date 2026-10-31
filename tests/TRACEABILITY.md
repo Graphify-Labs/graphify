@@ -4609,3 +4609,77 @@ weakened. The earlier 23-failure run remains a distinct failing checkpoint;
 INC-QML-99/100/101 and stronger source-promise fixture conformance own the repairs.
 
 Complete installed reference-corpus and new-head hosted results remain pending.
+
+
+### INC-QML-102 — Physical permission and target-write fault evidence
+
+REQ-QML-012-AC02 and REQ-QML-022-AC06 retain the exact failure/force parameters in
+`test_qt_external_singleton_updates.py::test_req_qml022_ac06_external_setup_failure_retains_products_and_recovers`
+and `test_qt_test_updates.py::test_req_qml022_ac06_qt_test_failure_retains_graph_and_recovers`.
+Both keep two rejected attempts, byte-for-byte graph/manifest/report/Qt-state
+retention, correction, clean rebuild parity and settled repeat. Physical readonly
+setup now owns the actual host boundary; a new `replace` parameter reaches the
+real graph-target replacement at least twice with EIO. Bounded rejection
+messages are asserted, and fault hooks/modes restore before recovery.
+
+`test_qt_publication_fault_contracts.py::test_req_qml022_ac06_graph_replace_eio_delegates_and_restores_after_exception`
+proves unrelated replacements remain real and the original callable is restored
+after an exception. `test_qt_publication_fault_contracts.py::test_req_qml022_ac06_readonly_fault_qualifies_actual_denial_and_restores_modes`
+exercises the atomic writer under qualified physical denial, verifies retained
+bytes/no probe or staging leftovers, and retries after exact mode restoration.
+The POSIX-only positive controls are
+`test_qt_publication_fault_contracts.py::test_req_qml022_ac06_posix_readonly_file_alone_allows_real_atomic_replace`
+and `test_qt_publication_fault_contracts.py::test_req_qml022_ac06_posix_readonly_file_pipeline_accepts_valid_update`;
+the latter covers both mechanisms and force values, accepted graph changes,
+expected source facts and restored-source repeat.
+
+Current local Windows evidence: the owned three-module selection has 21 passes
+and five explicitly POSIX-only positive-control skips. The broader adjacent
+selection has 85 passes and the same five skips; Ruff and explicit-interpreter
+Pyright report zero findings on the four owned files. All four original Windows
+readonly cases execute, as do all four new EIO/force cases. Seven other changed
+readonly fixtures and the wider Qt readonly census have explicit native guards;
+no further unguarded instance was found. Runtime/package, assertions, dependencies
+and platform assignments are unchanged. Actual POSIX parent-denial and all five
+positive controls remain unverified until the assigned new-head hosted lanes
+execute them. The predecessor's four actual macOS failures per lane remain
+failed evidence; generic capacity annotations cannot change that outcome.
+
+
+### INC-QML-103 — Newline oracle validates source proof before comparison
+
+REQ-QML-022-AC02/AC03/AC06 map to
+`test_qt_source_byte_admission.py::test_req_qml022_ac02_source_byte_admission_is_independent_of_checkout`,
+`test_qt_source_newline_cli.py::test_req_qml022_ac02_source_byte_profiles_keep_cli_semantics`,
+`test_qt_source_newline_cli.py::test_req_qml022_ac02_all_direct_source_witnesses_keep_original_bytes`
+and
+`test_qt_source_newline_cli.py::test_req_qml022_ac06_source_newline_oracle_rejects_corruption`.
+The four suffix admission cases construct literal LF bytes, exercise the actual
+selected extractor and retain every copied fixture while ordinary Python text
+converts. The independent actual CLI pairs construct LF/CRLF bytes explicitly in
+both clustering modes; every ID, semantic field, uncertainty value and counted
+edge remains compared after each physical witness is independently validated.
+
+The four real existing fixtures expose 12 six-coordinate witnesses in exported
+graphs and 14 through direct producers. The two additional CUDA raw-call/caller
+spans are intermediate transport and are not claimed exported. All raw offsets,
+rows, byte columns and required source fragments match their own original buffer.
+Ten required fields, two function definitions, source ownership and both observed
+CUDA host calls prevent symmetric omission. Eight corruption controls per mode
+reject wrong offset, consistently shifted offset/column, semantic role, ID
+permutation, relation, endpoint, duplicate edge and missing required fact in both
+outputs. Arbitrary metadata is never stripped; production coordinates/schema are
+unchanged.
+
+Before correction, the four explicit byte-admission tests fail with 22 passing
+controls. After correction, the focused 26 cases pass without skips. The adjacent
+60 cases also pass without skips, including all twelve aggregate invariance tests,
+existing exact admission/copy assertions and both prior native newline CLI
+modules. Ruff and explicit-interpreter Pyright are clean for all five owned
+files. Literal byte construction exercises a real differing pair on Windows,
+where repository CRLF conversion concealed the older aggregate mismatch.
+The first hosted Linux predecessor has six failures: these two aggregate cases
+and the four INC-QML-102 permission fixtures; 14,232 passes, 145 skips and one
+inherited expected failure remain separate. Three other Linux matrix lanes were
+cancelled by fail-fast and cannot establish passing acceptance. New-head complete
+hosted execution remains required.
