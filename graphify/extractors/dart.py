@@ -203,35 +203,45 @@ def extract_dart(path: Path) -> dict:
             header_end = len(rest)
         header = rest[:header_end]
 
-        base_class = None
-        generics = None
         mixins_list = []
         interfaces_list = []
 
-        # Parse extends or on
-        extends_m = re.search(r"^\s*(?:extends|on)\s+([a-zA-Z0-9_.]+)", header)
+        def _consume_generic_args(text: str) -> tuple[str | None, str]:
+            if not text.strip().startswith("<"):
+                return None, text
+            start_idx = text.find("<")
+            depth = 1
+            i = start_idx + 1
+            while i < len(text) and depth > 0:
+                if text[i] == "<":
+                    depth += 1
+                elif text[i] == ">":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start_idx + 1 : i], text[i + 1:]
+                i += 1
+            return None, text
+
+        # Parse extends or on. A mixin's `on` clause may list several
+        # superclass constraints, comma-separated (`mixin Foo on A, B {}`);
+        # `extends` never does, since Dart classes have single inheritance.
+        base_entries: list[tuple[str, str | None]] = []
+        extends_m = re.search(r"^\s*(extends|on)\s+([a-zA-Z0-9_.]+)", header)
         if extends_m:
-            base_class = extends_m.group(1)
-            rest_header = header[extends_m.end():]
-            if rest_header.strip().startswith("<"):
-                start_idx = rest_header.find("<")
-                depth = 1
-                i = start_idx + 1
-                while i < len(rest_header) and depth > 0:
-                    if rest_header[i] == "<":
-                        depth += 1
-                    elif rest_header[i] == ">":
-                        depth -= 1
-                        if depth == 0:
-                            generics = rest_header[start_idx + 1 : i]
-                            break
-                    i += 1
-                if generics is not None:
-                    header = rest_header[i + 1:]
-                else:
-                    header = rest_header
-            else:
-                header = rest_header
+            is_on = extends_m.group(1) == "on"
+            base_class = extends_m.group(2)
+            header = header[extends_m.end():]
+            generics, header = _consume_generic_args(header)
+            base_entries.append((base_class, generics))
+
+            if is_on:
+                while True:
+                    comma_m = re.match(r"\s*,\s*([a-zA-Z0-9_.]+)", header)
+                    if not comma_m:
+                        break
+                    header = header[comma_m.end():]
+                    extra_generics, header = _consume_generic_args(header)
+                    base_entries.append((comma_m.group(1), extra_generics))
 
         # Parse with
         with_m = re.search(r"^\s*with\s+", header)
@@ -251,8 +261,8 @@ def extract_dart(path: Path) -> dict:
         if impl_m:
             interfaces_list = _split_types(header[impl_m.end():])
 
-        # Map extends inheritance relation
-        if base_class:
+        # Map extends/on inheritance relation(s)
+        for base_class, generics in base_entries:
             base_nid = _make_id(base_class)
             add_node(base_nid, base_class, source_file=None)
             add_edge(class_nid, base_nid, "inherits", line=class_line)
