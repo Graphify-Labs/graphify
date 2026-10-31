@@ -327,9 +327,13 @@ def extract_elixir(path: Path) -> dict:
             enclosing[func_nid] = parent_module_nid
             if parent_module_nid:
                 add_edge(parent_module_nid, func_nid, "method", line)
-                module_defs.setdefault((parent_module_nid, func_name), func_nid)
             else:
                 add_edge(file_nid, func_nid, "contains", line)
+            # Keyed by the def's own container (module, or the file for a
+            # top-level def) so a bare call can be resolved to the def that is
+            # actually in scope for its caller, never to an unrelated
+            # same-named def elsewhere in the file (see walk_calls below).
+            module_defs.setdefault((container, func_name), func_nid)
             if do_block_node:
                 function_bodies.append((func_nid, do_block_node))
             else:
@@ -358,11 +362,6 @@ def extract_elixir(path: Path) -> dict:
             walk(child, parent_module_nid)
 
     walk(root)
-
-    label_to_nid: dict[str, str] = {}
-    for n in nodes:
-        normalised = n["label"].strip("()").lstrip(".")
-        label_to_nid[normalised] = n["id"]
 
     module_nid_by_name = {name: nid for nid, name in module_names.items()}
     _MODULE_REF = re.compile(r"(__MODULE__|[A-Z]\w*)(\.[A-Z]\w*)*")
@@ -434,8 +433,26 @@ def extract_elixir(path: Path) -> dict:
             if receiver_module is not None:
                 mod_nid = module_nid_by_name.get(receiver_module)
                 tgt_nid = module_defs.get((mod_nid, callee_name)) if mod_nid else None
+            elif is_member_call:
+                tgt_nid = None
             else:
-                tgt_nid = None if is_member_call else label_to_nid.get(callee_name)
+                # A bare call only ever reaches a def that is actually in
+                # scope for this caller: its own module (or the file, for a
+                # top-level caller) first, then each module brought into
+                # scope by `import`/`use`. Without this a same-named def in
+                # an unrelated sibling module in the same file silently won
+                # over the caller's own def, since both shared one flat
+                # name -> id table.
+                own_container = enclosing.get(caller_nid) or file_nid
+                tgt_nid = module_defs.get((own_container, callee_name))
+                if tgt_nid is None:
+                    for scope_name in _call_scope_for(caller_nid):
+                        scope_nid = module_nid_by_name.get(scope_name)
+                        if scope_nid is None:
+                            continue
+                        tgt_nid = module_defs.get((scope_nid, callee_name))
+                        if tgt_nid is not None:
+                            break
             if tgt_nid and tgt_nid != caller_nid:
                 pair = (caller_nid, tgt_nid)
                 if pair not in seen_call_pairs:
