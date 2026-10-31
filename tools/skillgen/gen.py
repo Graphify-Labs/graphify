@@ -121,6 +121,57 @@ _GRAPH_DIFF_EDIT = (
     " to it in a pull request is expected. Do not flag it as churn or suggest skipping the"
     " graph rebuild or its hooks.",
 )
+# #3768: a natural-language question goes through the vocabulary/lessons workflow
+# in references/query.md; only an exact node name or ID is queried directly. The
+# match description is the tiers-plus-weights wording of references/query.md, not a
+# strict global order. Applied after _QUERY_FIRST_EDIT, to the claude/agents/gemini blocks.
+_QUERY_WORKFLOW_EDIT = (
+    'run `graphify query "<question>"` before your first grep, search or source-file '
+    "read for a codebase question, and put this rule in every subagent prompt that "
+    "explores code. Read raw files",
+    "use the graph before your first grep, search or source-file read for a codebase "
+    "question, and put this rule in every subagent prompt that explores code. An exact "
+    'node name or ID can be passed straight to `graphify query "<name>"`; any '
+    "natural-language question goes through the ordered workflow in the next rule. "
+    "Read raw files",
+)
+_QUERY_WORKFLOW_RULE_EDIT = (
+    "usually much smaller than GRAPH_REPORT.md or raw grep output.\n",
+    "usually much smaller than GRAPH_REPORT.md or raw grep output.\n"
+    "- For a natural-language question, load the graphify skill's `references/query.md` "
+    "first and follow it in order: vocabulary, lessons, query, source check, feedback. "
+    "`graphify query` matches case-insensitively (lowercase) against node labels and "
+    "some other node fields, using exact, prefix and substring tiers combined with "
+    "field weights and term coverage/IDF (so not a strict global order), with no "
+    "stemming or synonyms, so wording that differs from the graph's labels can miss "
+    "the right nodes. The vocabulary, `reflect` and `save-result` steps are CLI-only; "
+    "the MCP tools (`query_graph` etc.) do not cover them.\n",
+)
+_VSCODE_QUERY_EDIT = (
+    'code, your first action should be `graphify query "<question>"` when '
+    "`graphify-out/graph.json`\nexists. Use",
+    "code, when `graphify-out/graph.json` exists, an exact node name or ID can be passed "
+    'straight to\n`graphify query "<name>"`; for a natural-language question, load the '
+    "graphify skill's\n`references/query.md` first and follow it in order (vocabulary, "
+    "lessons, query, source check,\nfeedback). Use",
+)
+_ANTIGRAVITY_QUERY_EDIT = (
+    'exists, first run `graphify query "<question>"` (CLI) or `query_graph` (MCP). Use',
+    'exists: for an exact node name or ID, run `graphify query "<name>"` (CLI) or '
+    "`query_graph` (MCP) directly; for a natural-language question, load the graphify "
+    "skill's `references/query.md` first and follow it in order (vocabulary, lessons, "
+    "query, source check, feedback). The vocabulary, `reflect` and `save-result` steps "
+    "are CLI-only; the MCP tools do not cover them. Use",
+)
+_KIRO_QUERY_EDIT = (
+    'exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / '
+    '`graphify explain "<concept>"`).',
+    'exists: for an exact node name or ID, run `graphify query "<name>"` directly; for a '
+    "natural-language question, load the graphify skill's `references/query.md` first "
+    "and follow it in order (vocabulary, lessons, query, source check, feedback). Use "
+    '`graphify path "<A>" "<B>"` / `graphify explain "<concept>"` for relationships and '
+    "focused concepts.",
+)
 ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
     # #1530: install guidance must stay host-generic — do not tell agents to
     # invoke a literal `skill` tool with `skill: "graphify"`, which is
@@ -134,9 +185,24 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
         ),
         _QUERY_FIRST_EDIT,
         _GRAPH_DIFF_EDIT,
+        _QUERY_WORKFLOW_EDIT,
+        _QUERY_WORKFLOW_RULE_EDIT,
     ),
-    "_CLAUDE_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
-    "_GEMINI_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
+    "_CLAUDE_MD_SECTION": (
+        _QUERY_FIRST_EDIT,
+        _GRAPH_DIFF_EDIT,
+        _QUERY_WORKFLOW_EDIT,
+        _QUERY_WORKFLOW_RULE_EDIT,
+    ),
+    "_GEMINI_MD_SECTION": (
+        _QUERY_FIRST_EDIT,
+        _GRAPH_DIFF_EDIT,
+        _QUERY_WORKFLOW_EDIT,
+        _QUERY_WORKFLOW_RULE_EDIT,
+    ),
+    "_VSCODE_INSTRUCTIONS_SECTION": (_VSCODE_QUERY_EDIT,),
+    "_ANTIGRAVITY_RULES": (_ANTIGRAVITY_QUERY_EDIT,),
+    "_KIRO_STEERING": (_KIRO_QUERY_EDIT,),
 }
 
 # The full six-value file_type enum (Decision A). Every rendered platform — split
@@ -252,6 +318,9 @@ _HOOKS_TARGET = {
 # heading was consolidated on purpose and its content is covered elsewhere."
 SHARED_INTRO_ALLOWLIST: frozenset[str] = frozenset({
     "## What graphify is for",  # lean intro; v8 hosts had verbose intro prose, no heading.
+    # #3768: only a natural-language question needs the expansion step, so the
+    # query reference now heads it "(before traversal)" instead of "(REQUIRED ...)".
+    "### Step 0 — Constrained query expansion (REQUIRED before traversal)",
 })
 
 _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
@@ -1319,6 +1388,41 @@ def _is_code_only_fast_path_fix_line(line: str) -> bool:
     )
 
 
+def _is_query_workflow_note_line(line: str) -> bool:
+    """Whether a line is the aider/devin query-section change made for #3768.
+
+    The monoliths ship no ``references/`` and so no vocabulary/lessons steps. The
+    note tells the agent to run ``graphify reflect --if-stale``, read LESSONS.md
+    and use the graph's vocabulary before a natural-language traversal, and says
+    an exact node name or ID may be queried directly. The sample flow therefore
+    checks node IDs and labels for an exact match before scoring labels.
+    """
+    s = line.strip()
+    return s in {
+        "# Exact node ID or label match first (no length filter)",
+        "q = question.strip().lower()",
+        "exact = [nid for nid, ndata in G.nodes(data=True)",
+        "if q == str(nid).lower() or q == ndata.get('label', '').lower()]",
+        "start_nodes = exact[:3] or [nid for _, nid in scored[:3]]",
+        "start_nodes = [nid for _, nid in scored[:3]]",
+        # Tiered selection: exact ID, then exact labels, then scored matches.
+        "exact_id = [nid for nid in G.nodes() if q == str(nid).lower()]",
+        "exact_label = [nid for nid, ndata in G.nodes(data=True)",
+        "if nid not in exact_id and q == ndata.get('label', '').lower()]",
+        "# An exact ID always wins (alone); then exact labels; then scored matches. Cap last.",
+        "if exact_id:",
+        "start_nodes = exact_id[:3]",
+        "rest = [nid for _, nid in scored if nid not in exact_label]",
+        "start_nodes = (exact_label + rest)[:3]",
+    } or s.startswith(
+        (
+            "Before a natural-language traversal, run `graphify reflect --if-stale`",
+            "An exact node name or ID can be matched directly with the flow below. "
+            "This single-file skill does not include the vocabulary and lessons steps",
+        )
+    )
+
+
 def _is_update_detect_populate_fix_line(line: str) -> bool:
     """Whether a line is part of the aider/devin ``--update`` detect block (found while fixing #4447).
 
@@ -1373,6 +1477,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_query_workflow_note_line,
 )
 
 

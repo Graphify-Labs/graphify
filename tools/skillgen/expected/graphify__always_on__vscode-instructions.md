@@ -1,8 +1,10 @@
 ## graphify
 
 For any question about this repo's architecture, structure, components, or how to add/modify/find
-code, your first action should be `graphify query "<question>"` when `graphify-out/graph.json`
-exists. Use `graphify path "<A>" "<B>"` for relationship questions and `graphify explain "<concept>"`
+code, when `graphify-out/graph.json` exists, an exact node name or ID can be passed straight to
+`graphify query "<name>"`; for a natural-language question, load the graphify skill's
+`references/query.md` first and follow it in order (vocabulary, lessons, query, source check,
+feedback). Use `graphify path "<A>" "<B>"` for relationship questions and `graphify explain "<concept>"`
 for focused-concept questions. These return a scoped subgraph, usually much smaller than the full
 report or raw grep output.
 

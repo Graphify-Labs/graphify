@@ -2,6 +2,19 @@
 
 Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. These flows use the `graphify query` CLI when it is available and fall back to an inline NetworkX traversal otherwise.
 
+## Order of steps
+
+Follow this order for a natural-language question:
+
+1. Load this reference (you are here).
+2. Vocabulary: expand the question against the graph's labels (Step 0).
+3. Lessons: refresh and read `graphify-out/reflections/LESSONS.md` (Step 0b).
+4. Query: run the traversal with the expanded terms (Step 1).
+5. Source check: confirm cited facts against `source_location` in the real files before relying on them.
+6. Feedback: record the result with `save-result` (end of Step 1).
+
+**Interfaces.** The vocabulary, `reflect` and `save-result` steps are CLI-only. The MCP server exposes `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats` and `shortest_path` (plus PR tools), but no vocabulary, `reflect` or `save-result` tools. An MCP-only agent can query with `query_graph`, but it skips vocabulary expansion, lessons and feedback unless it can also run the CLI.
+
 Two traversal modes - choose based on the question:
 
 | Mode | Flag | Best for |
@@ -20,17 +33,20 @@ if not Path('graphify-out/graph.json').exists():
 ```
 If it fails, stop and tell the user to run `/graphify <path>` first.
 
-### Step 0 — Constrained query expansion (REQUIRED before traversal)
+### Step 0 — Constrained query expansion (before traversal)
 
-graphify's `query` CLI matches nodes via case-folded substring + IDF — there is **no stemming, no synonyms, no cross-language match** inside the binary, and the inline fallback below matches the same way. If the user's question uses different language or different domain vocabulary than the graph's labels (user says "обработчик" / graph says "handler"; user says "authentication" / graph says "Guardian"), the literal matcher returns 0 hits and the answer collapses to noise.
+graphify's `query` CLI matches case-insensitively (lowercase) against node labels and some other node fields (source path, rationale text, attributes); scoring combines the field matched, the match tier (exact, prefix, substring) and coverage/IDF effects, so do not read it as a strict global ordering of multi-term results. There is **no stemming, no synonyms, no cross-language match** inside the binary. The inline fallback below is simpler than the CLI: it takes an exact node ID match first, then exact label matches, then falls back to counting lowercase substring matches of the question terms in node labels, and it does not look at source paths, rationale or attributes, nor use prefix tiers or IDF weighting. If the user's question uses different language or different domain vocabulary than the graph's labels (user says "обработчик" / graph says "handler"; user says "authentication" / graph says "Guardian"), the literal matcher returns 0 hits and the answer collapses to noise.
 
 Fix this **without inventing tokens** by expanding the query against the actual graph vocabulary first:
 
-1. Extract the token vocabulary from node labels:
+1. Make sure `graphify-out/.vocab.txt` is current. The vocabulary is derived only from node labels in `graph.json`, so it is rebuilt only when `graph.json` is newer than `.vocab.txt` (an mtime check) or `.vocab.txt` is missing; otherwise reuse the existing file. Nothing in the graphify package generates or reads this file; it is a cache this procedure maintains.
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json, re
 from pathlib import Path
+g = Path('graphify-out/graph.json'); v = Path('graphify-out/.vocab.txt')
+if v.exists() and v.stat().st_mtime >= g.stat().st_mtime:
+    print('vocab: up to date, reusing', v); raise SystemExit(0)
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 vocab = set()
 for n in data['nodes']:
@@ -57,6 +73,10 @@ print(f'vocab: {len(vocab)} tokens')
 Query expanded to (from graph vocab, N tokens): [token1, token2, ...]
 ```
 If the list is empty, say so plainly and stop — do not proceed to traversal.
+
+### Step 0b — Lessons
+
+At the start of graph work, run `graphify reflect --if-stale`, then read `graphify-out/reflections/LESSONS.md` (see "Work memory" below for what it holds). Lessons are applied manually: `graphify query` does not use them to choose or rank start nodes. Where a node has an entry in the lessons sidecar, `graphify query`, the MCP `query_graph` tool (both print a subgraph, where the node line gets a `learning=<status>` suffix) and `graphify explain` (which adds a separate learning line) show a display-only hint. Other MCP tools, including `get_node`, do not show it. Use the preferred sources as places to check first and skip known dead ends yourself.
 
 ### Step 1 — Traversal
 
@@ -89,6 +109,12 @@ question = 'QUESTION'
 mode = 'MODE'  # 'bfs' or 'dfs'
 terms = [t.lower() for t in question.split() if len(t) >= 3]  # match the vocab threshold; keeps api/jwt/ios (#1392)
 
+# Exact node ID or label match first (no length filter)
+q = question.strip().lower()
+exact_id = [nid for nid in G.nodes() if q == str(nid).lower()]
+exact_label = [nid for nid, ndata in G.nodes(data=True)
+               if nid not in exact_id and q == ndata.get('label', '').lower()]
+
 # Find best-matching start nodes
 scored = []
 for nid, ndata in G.nodes(data=True):
@@ -97,7 +123,12 @@ for nid, ndata in G.nodes(data=True):
     if score > 0:
         scored.append((score, nid))
 scored.sort(reverse=True)
-start_nodes = [nid for _, nid in scored[:3]]
+# An exact ID always wins (alone); then exact labels; then scored matches. Cap last.
+if exact_id:
+    start_nodes = exact_id[:3]
+else:
+    rest = [nid for _, nid in scored if nid not in exact_label]
+    start_nodes = (exact_label + rest)[:3]
 
 if not start_nodes:
     print('No matching nodes found for query terms:', terms)
@@ -185,7 +216,7 @@ Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with you
 - `dead_end` — the question/path led nowhere; don't re-derive it next time.
 - `corrected` — the saved answer was wrong; `--correction` records what was right.
 
-At the **start** of graph work, refresh and read the lessons: run `graphify reflect --if-stale` (cheap, deterministic, no LLM; `--if-stale` makes it a no-op when `LESSONS.md` is already newer than every input, e.g. when the git hook just refreshed it), then read `graphify-out/reflections/LESSONS.md`. It lists **preferred sources** (start there), **known dead ends** (skip them), and prior **corrections**. Running `reflect` yourself keeps the lessons current even without the git hook installed; if the post-commit hook *is* installed, `--if-stale` means your session-start run costs almost nothing.
+Lessons (see Step 0b): run `graphify reflect --if-stale` (cheap, deterministic, no LLM; `--if-stale` makes it a no-op when `LESSONS.md` is already newer than every input, e.g. when the git hook just refreshed it), then read `graphify-out/reflections/LESSONS.md`. It lists **preferred sources** (candidates to check first), **known dead ends** (skip them), and prior **corrections**. Running `reflect` yourself keeps the lessons current even without the git hook installed; if the post-commit hook *is* installed, `--if-stale` means your session-start run costs almost nothing.
 
 ---
 

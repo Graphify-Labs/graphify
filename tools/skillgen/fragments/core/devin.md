@@ -1130,6 +1130,8 @@ if not Path('graphify-out/graph.json').exists():
 ```
 If it fails, stop and tell the user to run `/graphify <path>` first.
 
+Before a natural-language traversal, run `graphify reflect --if-stale` and read `graphify-out/reflections/LESSONS.md`, then use the graph's vocabulary (its own node labels, not the question's wording) as the match terms; the split skills describe these steps in `references/query.md`. An exact node name or ID may be queried directly: the flow below checks node IDs and labels for an exact match first, before scoring labels.
+
 Load `graphify-out/graph.json`, then:
 
 1. Find the 1-3 nodes whose label best matches key terms in the question.
@@ -1152,6 +1154,12 @@ question = 'QUESTION'
 mode = 'MODE'  # 'bfs' or 'dfs'
 terms = [t.lower() for t in question.split() if len(t) > 3]
 
+# Exact node ID or label match first (no length filter)
+q = question.strip().lower()
+exact_id = [nid for nid in G.nodes() if q == str(nid).lower()]
+exact_label = [nid for nid, ndata in G.nodes(data=True)
+               if nid not in exact_id and q == ndata.get('label', '').lower()]
+
 # Find best-matching start nodes
 scored = []
 for nid, ndata in G.nodes(data=True):
@@ -1160,7 +1168,12 @@ for nid, ndata in G.nodes(data=True):
     if score > 0:
         scored.append((score, nid))
 scored.sort(reverse=True)
-start_nodes = [nid for _, nid in scored[:3]]
+# An exact ID always wins (alone); then exact labels; then scored matches. Cap last.
+if exact_id:
+    start_nodes = exact_id[:3]
+else:
+    rest = [nid for _, nid in scored if nid not in exact_label]
+    start_nodes = (exact_label + rest)[:3]
 
 if not start_nodes:
     print('No matching nodes found for query terms:', terms)

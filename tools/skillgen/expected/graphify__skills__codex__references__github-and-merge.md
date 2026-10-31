@@ -43,4 +43,4 @@ graphify merge-graphs \
   --out graphify-out/graph.json
 ```
 
-Once `graphify-out/graph.json` exists, the fast path above takes over: any codebase question runs `graphify query` directly on the merged graph — no re-extraction, no size gate.
+Once `graphify-out/graph.json` exists, the fast path above takes over on the merged graph — no re-extraction, no size gate. An exact node name or ID can be passed straight to `graphify query`; a natural-language question goes through the vocabulary, lessons, query, source check, feedback workflow in `references/query.md`.
