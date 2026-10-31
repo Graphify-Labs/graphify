@@ -56,7 +56,7 @@ If no path was given, use `.` (current directory). Do not ask the user for a pat
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
-Follow these steps in order. Do not skip steps.
+Follow these steps in order unless the fast path above applies.
 
 ### Step 0 - GitHub repos and multi-path merge (only if a URL or several paths)
 

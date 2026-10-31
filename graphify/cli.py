@@ -1965,7 +1965,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _is_ambiguity_refusal, _resolve_path_endpoint
+        from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -2054,12 +2054,14 @@ def dispatch_command(cmd: str) -> None:
         # returned an arbitrary route among equal-length paths that varied per
         # process. Build a sorted, materialized graph so neighbor order — and
         # thus the chosen path — is canonical for a given graph.json.
+        from graphify.serve import _weakest_shortest_path
         try:
             if undirected:
                 _und = _nx.Graph()
                 _und.add_nodes_from(sorted(G.nodes))
                 _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-                path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
+                path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
+                    _und, G, src_nid, tgt_nid)
             else:
                 # Directed by default (#2487). True direction is NOT raw arc
                 # order: legacy canonicalized files persist a flipped arc with
@@ -2084,7 +2086,8 @@ def dispatch_command(cmd: str) -> None:
                     for u, v, d in G.edges(data=True)
                     if d.get("relation") == "contains"
                 ))
-                path_nodes = _nx.shortest_path(_dg, src_nid, tgt_nid)
+                path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
+                    _dg, G, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
             if undirected:
                 print(f"No path found between '{source_label}' and '{target_label}'.")
@@ -2097,7 +2100,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
-        from graphify.build import edge_datas
+        hop_datas: list[list[dict]] = []
+        from graphify.build import edge_datas, edge_evidence
+        from graphify.serve import _path_confidence_line
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
             # Report the ACTUAL stored relation(s) of the traversed pair and
@@ -2116,10 +2121,11 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            hop_datas.append(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
-            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+            confs = sorted({_confidence_tag(e) for d in datas for e in edge_evidence(d) if e.get("confidence")})
             conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
@@ -2128,6 +2134,13 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        _summary = _path_confidence_line(hop_datas)
+        if _summary and _n_routes > 1:
+            # Several routes tie on length; report the weakest's confidence so it
+            # never overstates how sure the connection is (#4881).
+            _summary += f" (weakest of {'256+' if _routes_capped else _n_routes} equal-length routes)"
+        if _summary:
+            print(_summary)
         from graphify import querylog
         querylog.log_query(
             kind="path",
@@ -2149,7 +2162,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
             print(_explain_usage)
             return
-        from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
+        from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_single_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -2232,7 +2245,7 @@ def dispatch_command(cmd: str) -> None:
             shown = connections if show_all else connections[:20]
             for direction, nb, edata in shown:
                 rel = edata.get("relation", "")
-                conf = edata.get("confidence", "")
+                conf = _confidence_tag(edata)
                 arrow = "-->" if direction == "out" else "<--"
                 # Append the edge's location — the actual call/import/reference
                 # SITE (in the caller's file for an incoming call), not a def
@@ -4399,7 +4412,7 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
-                            "_py_fixture", "_py_return_type",
+                            "_py_fixture", "_py_return_type", "_go_fields",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4947,6 +4960,8 @@ def dispatch_command(cmd: str) -> None:
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            from graphify.build import qualify_csharp_method_labels_in_nodes as _qualify_cs_methods
+            _qualify_cs_methods(merged["nodes"], merged["edges"])
             # Same endpoint rules as build_from_json (#2873): an import of an
             # external module gets a typed stub node, and any other edge without
             # two declared endpoints is dropped instead of shipping a phantom.

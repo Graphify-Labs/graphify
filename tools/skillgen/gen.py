@@ -1344,6 +1344,20 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+def _is_skip_steps_clarification_line(line: str) -> bool:
+    """Whether a line is part of the #4061 fast-path clarification.
+
+    The fast path skips Steps 1-5 for an existing graph, but the following
+    paragraph said "Follow these steps in order. Do not skip steps." Both the
+    removed old sentence and the added reword are sanctioned here.
+    """
+    stripped = line.strip()
+    return stripped in {
+        "Follow these steps in order. Do not skip steps.",
+        "Follow these steps in order unless the fast path above applies.",
+    }
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1373,6 +1387,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_skip_steps_clarification_line,
 )
 
 
