@@ -21,6 +21,7 @@ def __getattr__(name):
         "to_wiki": ("graphify.wiki", "to_wiki"),
         "reflect": ("graphify.reflect", "reflect"),
         "save_query_result": ("graphify.ingest", "save_query_result"),
+        "reconcile_semantic_similarity": ("graphify.semantic_similarity", "reconcile_semantic_similarity"),
     }
     if name in _map:
         import importlib
