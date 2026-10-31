@@ -287,6 +287,25 @@ def set_json_include(patterns: list[str] | tuple[str, ...] | None) -> None:
     )
 
 
+def set_json_include_override(patterns: list[str] | tuple[str, ...] | None) -> None:
+    """Pin the JSON policy for this thread, ignoring ``.graphifyrc``.
+
+    The CLI flag is a per-run override, not another rc layer. Keeping it
+    separate from the active tuple means every later
+    ``activate_language_overrides(root)`` (detect, extract, watch) re-reads the
+    rc without clobbering the flag.
+    """
+    _local.json_include_override = tuple(
+        _normalise_json_include(p) for p in (patterns or ())
+    )
+
+
+def clear_json_include_override() -> None:
+    """Drop a CLI override so the next activation reads ``.graphifyrc`` again."""
+    if hasattr(_local, "json_include_override"):
+        del _local.json_include_override
+
+
 def get_json_include() -> tuple[str, ...]:
     return tuple(getattr(_local, "json_include", ()))
 
@@ -363,7 +382,8 @@ def activate_language_overrides(root: Path) -> dict[str, str]:
             print(f"[graphify] warning: ignoring {RC_FILENAME}: {exc}", file=sys.stderr)
         cfg = {}
     set_language_overrides(cfg.get("languages"))
-    set_json_include(cfg.get("json_include"))
+    override = getattr(_local, "json_include_override", None)
+    set_json_include(override if override is not None else cfg.get("json_include"))
     return get_language_overrides()
 
 
