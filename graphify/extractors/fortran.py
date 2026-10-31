@@ -314,6 +314,19 @@ def extract_fortran(path: Path) -> dict:
                     line = node.start_point[0] + 1
                     add_node(type_nid, type_name, line)
                     add_edge(scope_nid, type_nid, "defines", line)
+                    # `type, extends(base) :: derived` is Fortran's derived-type
+                    # inheritance syntax (the `type :: name` bare form has no base).
+                    # Without this, every extends() clause was silently dropped and
+                    # Fortran OOP hierarchies never got an inherits edge, unlike every
+                    # other OOP language extractor.
+                    base_spec = next((c for c in stmt.children if c.type == "base_type_specifier"), None)
+                    if base_spec is not None:
+                        base_name_node = next((c for c in base_spec.children if c.type == "identifier"), None)
+                        if base_name_node is not None:
+                            base_name = _read_text(base_name_node, source).lower()
+                            base_nid = ensure_named_node(base_name, line)
+                            if base_nid != type_nid:
+                                add_edge(type_nid, base_nid, "inherits", line)
                     # Type-bound procedures in the `contains` section bind the
                     # derived type to the module procedures that implement its
                     # methods. Without this the binding was dropped and the type
