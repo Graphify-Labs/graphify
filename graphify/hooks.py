@@ -776,7 +776,7 @@ def _rev_parse_path(root: Path, flag: str) -> Path | None:
     try:
         res = _sp.run(
             ["git", "-C", str(root), "rev-parse", flag],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
     except (OSError, FileNotFoundError):
         return None
@@ -838,7 +838,7 @@ def _hooks_dir(root: Path) -> Path:
     try:
         res = _sp.run(
             ["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
         if res.returncode != 0:
             # git failing here is a real signal (corrupt .git/config, tampering,
