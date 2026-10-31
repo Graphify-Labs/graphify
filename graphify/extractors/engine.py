@@ -4990,14 +4990,17 @@ def _swift_file_scope_aliases(root, source: bytes) -> dict[int, str]:
 def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                       nodes: list, edges: list, seen_ids: set, function_bodies: list,
                       parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                      ensure_named_node_fn, file_aliases: dict[int, str]) -> bool:
+                      ensure_named_node_fn, file_aliases: dict[int, str],
+                      decl_node_fn=None) -> bool:
     """Handle enum_entry for Swift. Returns True if handled.
 
     A file-scope `typealias` also gets a type node contained by the file, so a
     type reference to it lands on a sourced declaration instead of a sourceless
     stub. Returns False for it: the walk goes on as before. Swift never
     populates namespace_stack, so the id is the one ensure_named_node looks up
-    for a name declared in this file.
+    for a name declared in this file. It is minted through decl_node_fn like
+    every file-stem declaration, so an alias whose id spells the file's own id
+    (`typealias Swift` in `Box.swift`) still gets a node of its own (#4854).
     """
     node_type = node.type
     if node_type == "typealias_declaration":
@@ -5005,8 +5008,16 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
         if alias_name:
             line = node.start_point[0] + 1
             alias_nid = _make_id(stem, alias_name)
-            if alias_nid not in seen_ids:
+            # decl_node_fn may salt the id, so whether a node was minted is
+            # read off seen_ids after the call, not tested on the unsalted id.
+            # Registered as an "alias", as the C++ alias site is: as a "type" it
+            # would merge with a same-kind case twin (`struct String`).
+            known = len(seen_ids)
+            if decl_node_fn is not None:
+                alias_nid = decl_node_fn(alias_nid, alias_name, "alias", alias_name, line)
+            else:
                 add_node_fn(alias_nid, alias_name, line)
+            if len(seen_ids) > known:
                 add_edge_fn(file_nid, alias_nid, "contains", line)
         return False
     if node_type == "enum_entry" and parent_class_nid:
@@ -8794,7 +8805,8 @@ def _extract_generic(
             if _swift_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge,
-                                  ensure_named_node, swift_file_aliases):
+                                  ensure_named_node, swift_file_aliases,
+                                  decl_node_fn=decl_node):
                 return
 
         # Groovy shares Java's `enum_constant` node shape (name field + optional

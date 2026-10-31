@@ -143,3 +143,24 @@ def test_a_file_scope_alias_after_a_misparsed_type_is_still_a_node(tmp_path: Pat
     result = _extract(tmp_path, {"a.swift": src})
     nodes = _sourced(result, "Top")
     assert len(nodes) == 1 and nodes[0]["source_location"] == "L7"
+
+
+def test_an_alias_named_after_the_file_extension_keeps_its_own_node(tmp_path: Path):
+    """`typealias Swift` in `Box.swift` spells the file's own id (`box_swift`).
+    It must still be its own node, contained by the file, and a reference to it
+    must land on it, not on the file node or a stub (#4854)."""
+    result = _extract(tmp_path, {"Box.swift": "typealias Swift = Int\n\nstruct Holder {\n    var v: Swift\n}\n"})
+    file_ids = {n["id"] for n in result["nodes"] if n["label"] == "Box.swift"}
+    alias = [n for n in _sourced(result, "Swift") if n["id"] not in file_ids]
+    assert len(alias) == 1, result["nodes"]
+    assert any(e["relation"] == "contains" and e["target"] == alias[0]["id"]
+               and e["source"] in file_ids for e in result["edges"])
+    assert _ref_targets(result, "Holder") == {"Swift": "Box.swift"}
+
+
+def test_an_alias_and_a_type_differing_only_in_case_stay_two_nodes(tmp_path: Path):
+    """`typealias string` and `struct String` are two declarations, so the alias
+    must not merge into the struct (it would if it registered as a "type")."""
+    result = _extract(tmp_path, {"Box.swift": "typealias string = [Character]\nstruct String {}\n"})
+    assert len(_sourced(result, "string")) == 1
+    assert len(_sourced(result, "String")) == 1
