@@ -255,6 +255,12 @@ Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), enco
 # interrupted run, and Step B3 merges every .graphify_chunk_*.json it finds.
 for stale in Path('graphify-out').glob('.graphify_chunk_*.json'):
     stale.unlink()
+# Same rule for the partial list and for a previous --update's extraction snapshot
+# (#4811): both outlive that run, and a later full build must not read either as its
+# own. Delete them here, before the stages that write them (#4814). Step 9 falls back
+# to .graphify_extract.json, which IS this run's output on a full build.
+Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
+Path('graphify-out/.graphify_extract_run.json').unlink(missing_ok=True)
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
 ```
@@ -647,13 +653,13 @@ extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encod
 # types are gated on output.
 from graphify.cli import _stamped_manifest_files
 _corpus = detect.get('all_files') or detect['files']
-# A file a subagent only partly read DID produce output, so the stamp filter alone would
-# keep it - but its node set covers just the head of the file, and stamping it means
-# detect_incremental reads it as done and never re-queues it, leaving the truncated graph
-# live forever. Name those files so they stay unstamped and are retried next run (#2225).
+# A partly read file did produce output, but only its head; keep it unstamped (#2225).
+# After an --update, stamp from this run's pre-merge snapshot: the working file holds
+# the merged graph, where a failed doc's OLD nodes look like fresh output (#4811).
+_snap = json.loads(Path('graphify-out/.graphify_extract_run.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_extract_run.json').exists() else None
 _pf = Path('graphify-out/.graphify_partial.txt')
 _partial = {l.strip() for l in _pf.read_text(encoding=\"utf-8\").splitlines() if l.strip()} if _pf.exists() else set()
-_manifest_files = _stamped_manifest_files(_corpus, extract, Path('INPUT_PATH'), partial_source_files=_partial)
+_manifest_files = _stamped_manifest_files(_corpus, _snap['extraction'] if _snap else extract, Path('INPUT_PATH'), partial_source_files=set(_snap['partial']) if _snap else _partial)
 # Files dispatched this run (the changed subset) but NOT stamped above still carry
 # a stale semantic_hash from a prior run; clear it so detect_incremental re-queues
 # them instead of reading them as unchanged (#1948).
@@ -690,7 +696,7 @@ cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
-rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_partial.txt
+rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_extract_run.json graphify-out/.graphify_partial.txt
 find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
