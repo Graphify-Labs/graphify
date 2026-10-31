@@ -3566,7 +3566,7 @@ automatic upstream merge is authorized by this increment.
 
 ## INC-QML-60 — Current upstream integration and fork-default delivery
 
-Status: **Implemented; local source checks complete, packaging and review delivery pending**. Owner: integration
+Status: **Locally complete; fork-default and upstream review acceptance pending**. Owner: integration
 maintainer. Accepted source is `9ccfb44c25d52e743cf7fb03fdd098a8e649e0ed`;
 incoming upstream 0.9.99 is `a0946f962af31b19bff941b453f6dae9a7077c7a`.
 The fork-default target currently remains
@@ -3612,7 +3612,14 @@ with one unsupported fixture skip, 119 consumers, 56 exact source/gate cases and
 97 installer/refresh/scope with four skips. All 16 initial full-run failures pass
 corrections. The exact-case union is 12,759 passed, 184 skipped and one inherited
 expected failure over 12,944 identities; this is not one green full invocation.
-Ruff and every individual generated-resource validator pass. Pyright1.1.414
-reports689 inherited errors and no new merge-owned diagnostic relative to both
-independently executed parent baselines. Packaging, graph and distinct hosted
-review evidence remain separate pending delivery steps.
+Ruff and every individual generated-resource validator pass. Pyright 1.1.414
+reports 689 inherited errors and no new merge-owned diagnostic relative to both
+independently executed parent baselines. All three built-wheel cases and the
+source-built wheel (329 package files, including 192 Python files) and isolated
+consumer pass. The final union becomes
+12,762 passed/181 skipped/one expected failure over the same 12,944 identities.
+The AST-only repository graph refresh exits 0 at integration `147eee15` with 29,177
+nodes/67,041 edges/1,298 communities and retained backup; labeling/API work is
+not invoked. Exact source `147eee15758ac2b49c661be56ecc21cc6710b1c1` and unchanged
+final package identity belong to the local proof; new PR source/base/checkouts
+and hosted conclusions remain separate review evidence.

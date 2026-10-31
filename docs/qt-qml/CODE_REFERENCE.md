@@ -985,8 +985,9 @@ The remaining changed oversized owners are inventoried exhaustively below.
 `Incoming` means the Git-normalized working contents match the selected upstream
 0.9.99 blob; `Combined` means the integration also retains fork content. This
 classification is an ownership inventory, not a raw-byte package/source audit.
-For each row the current line count is also its permitted ceiling: no additional
-growth is granted. Compact owner codes carry the following explicit reasons and
+Each row records the measured count and its permitted ceiling; a correction may
+reduce the count without increasing that ceiling. Compact owner codes give the
+following explicit reasons and
 extraction exits:
 
 - **C — CLI dispatch maintainer:** preserve current command/argument dispatch;

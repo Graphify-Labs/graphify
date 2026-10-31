@@ -3850,8 +3850,8 @@ platform execution and upstream maintainer approval remain unverified.
 
 ## Upstream 099 integration — INC-QML-60
 
-Status: **Local source corrections and static checks complete; packaging,
-graph and hosted acceptance pending**. This
+Status: **Local source, static, wheel/consumer and AST graph checks complete;
+new hosted review acceptance pending**. This
 integration joins contribution source `9ccfb44c25d52e743cf7fb03fdd098a8e649e0ed`
 with upstream 0.9.99 `a0946f962af31b19bff941b453f6dae9a7077c7a`. The
 fork-default target is separately bound to `v8`; neither parent nor the earlier
@@ -3925,7 +3925,7 @@ loss of supported references. These are ordinary collected regressions, not
 excluded audit probes or expected failures.
 
 The later `consumers-final` invocation remains **failed: 113 passed and four
-failed across 117 unique identities**. Its unresolved identities are
+failed across 117 unique identities**. Its original failed identities are
 `test_upstream_qt_path_integration.py::test_req_qml_010_ac03_qualified_native_path_preserves_direction[False]`
 and `[True]`,
 `test_upstream_qt_path_integration.py::test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess`,
@@ -3936,12 +3936,14 @@ The original evidence is retained; passing neighboring cases do not clear them.
 The applied expectation correction aligns those older consumers with upstream's
 intended numeric-confidence display. Raw native source facts own `INFERRED`;
 `export.to_json` supplies the existing missing-score default `0.55` to saved
-links, and path renderers display that stored score as `[INFERRED 0.55]`. It retains the raw confidence assertion alongside exact rendered score and
+links, and path renderers display that stored score as `[INFERRED 0.55]`. The
+correction retains raw confidence alongside exact rendered score and
 endpoint, source-location, relation-kind, forward/reverse and explicit-undirected
 assertions. The rejection fixture must drain extraction/cache progress before
 capturing the actual CLI action; its ambiguity exit remains 3 and no guessed
 route is accepted. This is a fixture capture boundary, not suppression of
-production diagnostics. The exact failures pass the corrected real CLI/HTTP replay; the stdio session
+production diagnostics. The exact failures pass the corrected real CLI/HTTP
+replay; the stdio session
 also passes with an alias-serialized `isError` check across the admitted SDK
 object APIs. A real SDK error result is separately rejected. A first prepared
 assertion incorrectly required a raw producer score (three failures); that probe
@@ -4063,9 +4065,25 @@ export/reload. These overlapping receipts are not summed as new unique cases.
 
 | Evidence boundary | Required final record |
 | --- | --- |
-| Full source and corrections | Full invocation 12,738 passed/16 failed/184 skipped/one expected failure; every original failed identity passes its corrected replay. Exact-case union: 12,944 identities, 12,759 passed/184 skipped/one inherited expected failure, no unresolved executed failure. This is combined evidence, not a green full invocation. |
-| Final static and generated resources | Ruff passes. Pyright1.1.414 reports689 inherited errors/899 files; same-tool parent multiset comparison finds no new merge-owned occurrence. Authoritative generation and all five individual validators pass; 799-line core bound retained. Advisory scanner acceptance is not newly established. |
-| Packaging/consumer | Bind source-built wheel hash, package-file/raw-Git match counts, isolated installed parser/CLI evidence, rejection retention, recovery, no-change behavior, dependency identity and cleanup to the final source. |
-| Repository graph | Record the required AST-only update command, terminal result, backup and output counts. Navigation freshness is distinct from correctness and application adoption. |
+| Full source and corrections | Full invocation 12,738 passed/16 failed/184 skipped/one expected failure; every original failed identity passes its corrected replay. Exact-case union: 12,944 identities, 12,762 passed/181 skipped/one inherited expected failure, no unresolved executed failure. This is combined evidence, not a green full invocation. |
+| Final static and generated resources | Ruff passes. Pyright 1.1.414 reports 689 inherited errors/899 files; same-tool parent multiset comparison finds no new merge-owned occurrence. Authoritative generation and all five individual validators pass; 799-line core bound retained. Advisory scanner acceptance is not newly established. |
+| Packaging/consumer | Integration `147eee15` wheel SHA256 `6676694011ceac2c67988a76a9da8b1524bbd7efb01330c36d019d5642716b09` matches all 329 raw Git/installed package files (192 Python). Fresh offline QML-only consumer passes smoke/public QRC/rejected-write retention/recovery/no-change bytes+mtime/dependency+installed-byte retention/cleanup. Three wheel cases pass. Final documentation-only head is independently re-audited against this unchanged package. |
+| Repository graph | `python -X utf8 -m graphify update .` exits 0 at integration `147eee15`: 29,177 nodes/67,041 edges/1,298 communities. Previous graph retained; no LLM labeling invoked. Luau fixture partial-syntax and 26 symbol-empty source warnings remain explicit. Repository navigation freshness is separate from correctness and application adoption. |
 | Review/delivery | Reread source/default/upstream target identities; record PR URLs, head/base/tested checkout, workflow/event/run and actual conclusions. Fork-default and upstream review are separate. No merge is authorized by this evidence record. |
-| Maintenance schedule | Record the recurring check's actual saved configuration and readback. Preserve existing application installations and unrelated saved state; prepare reviewed updates without silent merge or protection changes. |
+| Maintenance schedule | Daily owner-task maintenance prepares/reuses the fork-default PR when upstream advances, preserves busy/unrelated work and active validation, and never silently merges or changes protections. Actual local schedule settings/readback remain in the owner's task configuration; activation follows PR creation. |
+
+The accepted source-built wheel is bound to integration commit
+`147eee15758ac2b49c661be56ecc21cc6710b1c1`. Its 329 package-file matches include
+192 Python files; metadata, entry point, AST schema 32/Qt policy 26 and QML grammar 0.11.0 also
+match. QML-only installation is offline and lacks pytest/watchdog/packaging/pip.
+Its actual public CLI guard blocks network access, isolates assistant paths,
+retains four accepted products on rejected writes, recovers after correction,
+and preserves repeated graph bytes/mtime, dependencies and installed bytes;
+the temporary public corpus is removed. This is local built/installed proof,
+not hosted artifact origin or application adoption. The three wheel acceptances
+convert three prior optional skips to passes: final exact-case union **12,944
+identities: 12,762 passed/181 skipped/one inherited expected failure**, with every
+original 16 failures passing its replay. Advisory scanner clearance remains a
+separate unestablished claim. Documentation-only delivery commits must retain
+raw package identity; the final head and each PR's distinct source/base/checkout
+are recorded in their live descriptions and ignored revision-bound receipts.

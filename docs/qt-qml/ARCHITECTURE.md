@@ -1256,7 +1256,7 @@ process-wide clock replacement is introduced; existing event assertions remain.
 
 ## D37 — Current upstream compatibility and fork-default handoff
 
-Status: **Implemented; local source checks complete, packaging/hosted acceptance pending**.
+Status: **Locally implemented/checked; new hosted review acceptance pending**.
 Owners: existing extractor/cache, discovery/publication and consumer maintainers.
 INC-QML-60 joins Qt/QML source `9ccfb44c` with upstream 0.9.99 `a0946f96`.
 The fork-default PR targets the existing `v8`; preparing it does not merge a

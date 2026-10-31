@@ -457,9 +457,9 @@ Delivery status: the 0.9.92 fork source `f7430ac9` has revision-bound hosted and
 isolated-consumer evidence. INC-QML-59 integrates upstream 0.9.94 at `c588b72d`
 for the preceding contribution. INC-QML-60 now integrates upstream 0.9.99 at
 `a0946f96` for fork-default delivery and the existing upstream review. Focused
-source checks pass as recorded in traceability; final full/static/packaging and
-new-source hosted/platform acceptance remain **unverified** until their actual
-receipts complete.
+source, corrected full-case union, static, built/installed packaging and AST
+graph checks are recorded in traceability. New-source hosted/platform acceptance
+remains **unverified** until its distinct revision-bound receipts complete.
 Repository renaming changes its discovery URL, not extraction behavior or the
 meaning of prior evidence. Earlier PR #4111 remains a separate review record.
 
@@ -701,6 +701,10 @@ and content contract of the selected operating-system profile.
 4 - Uninstall observes the established global/project scope and explicit user-skill opt-in. Protected shared-agent content is retained according to the current platform contract; missing installations remain a safe no-op. (`REQ-CORE-001-AC04`)
 
 5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. For the generated encoded Windows form, ownership additionally requires exact outer PowerShell options, bounded valid base64/UTF-16 and the exact static hook-check wrapper, permitting only trailing ASCII spaces/tabs after the encoded token. Status alone or general shell/whitespace normalization cannot authorize removal. Leading whitespace, changed options/payload/script/marker, ordinary, foreign and malformed entries remain authored. Recognition executes no script, performs no filesystem lookup and changes no configuration. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
+
+INC-QML-60 retains incoming separate Gemini/agents ownership on every OS.
+Its current installer/refresh/scope replay passes 97 with four profile skips;
+changed destination criteria have current local evidence, not new hosted proof.
 
 Status: **Locally Verified for the recorded native Windows and destination profiles; INC-QML-54 corrected source67 full-suite and isolated installed cases pass, with new hosted proof pending**.
 The post-905 caller-owned read-only correction is **Implemented locally** with

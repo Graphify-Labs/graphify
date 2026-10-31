@@ -2264,8 +2264,8 @@ their own revisions.
 
 ## Upstream 0.9.99 identity and update contracts — INC-QML-60
 
-Status: **Implemented owner contracts with focused local evidence; global source,
-packaging and hosted acceptance remain pending**.
+Status: **Implemented with local source and packaging evidence; inherited
+typing/profile gaps remain explicit and new hosted acceptance is pending**.
 [D37](ARCHITECTURE.md#d37--current-upstream-compatibility-and-fork-default-handoff)
 owns the compatibility decision. This integration joins contribution source
 `9ccfb44c25d52e743cf7fb03fdd098a8e649e0ed` with upstream 0.9.99
@@ -2310,8 +2310,12 @@ is introduced.
 
 `bind_class(record, identity)` records the allocated class ID and
 `declaration_id(record)` reads it. References and real parent edges use that ID.
-Forward/complete-body preference may update only an actual callable class node;
-a colliding file node must retain its own location. This distinction preserves
+Forward/complete-body preference uses the engine's during-walk
+`callable_class_nids` allocation-role set, because `_callable_class` is stamped
+only after traversal. Only that actual class node may receive the complete body's
+location; a colliding file node retains its own location. Exact original-byte
+span validation remains authoritative and is not relaxed after a forward.
+This distinction preserves
 the upstream file/declaration separation without converting the file into a
 native class or losing its source provenance.
 
