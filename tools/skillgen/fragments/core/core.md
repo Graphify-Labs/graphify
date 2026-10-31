@@ -122,6 +122,12 @@ This step has two parts: **structural extraction** (deterministic, free) and **s
 
 Print it once, then continue — do not wait for the user to supply a key. If `GEMINI_API_KEY` or `GOOGLE_API_KEY` IS set, use `graphify.llm.extract_corpus_parallel(files, backend="gemini")` for semantic extraction instead of dispatching subagents. The default Gemini model is `gemini-3-flash-preview`; set `GRAPHIFY_GEMINI_MODEL` or pass `--model` in headless CLI flows to override it.
 
+> **Gemini free-tier quota errors (#2840).** A free-tier key can hit two different quota errors, and only one clears on retry:
+> - `generate_content_free_tier_input_token_count` is the **per-minute** input-token cap. Wait about 60s, then rerun with a lower `max_concurrency`.
+> - `generate_content_free_tier_requests` is the **per-day** request cap. Retrying, backing off, or lowering `max_concurrency` does not clear it, and each attempt spends another of the day's requests. Stop calling `extract_corpus_parallel` at once and extract the remaining uncached files with subagents (Part B) instead.
+>
+> Semantic cache entries are keyed by the extraction prompt's fingerprint, and the Gemini backend's prompt differs from the subagent prompt in `references/extraction-spec.md`. Switching from Gemini to subagents partway through a run therefore finds no cached results for the files Gemini already finished; those files are extracted again.
+
 > **No other API keys are read.** When `GEMINI_API_KEY`/`GOOGLE_API_KEY` are unset, semantic extraction falls to the host agent itself — the running session is the LLM. On a host that dispatches subagents (e.g. Claude Code), dispatch them as written in Part B. On a host that runs the CLI directly in a terminal and cannot dispatch subagents, do not stall: a code-only corpus has no semantic work, so write the empty semantic file (Part B "Fast path") and continue to Part C; for a corpus with docs/papers/images, either set a Gemini key or extract those inline yourself, but in no case prompt for `ANTHROPIC_API_KEY` — that prompt is a misread of this skill.
 
 **Run Part A (AST) and Part B (semantic) in parallel. Dispatch all semantic subagents AND start AST extraction in the same message. Both can run simultaneously since they operate on different file types. Merge results in Part C as before.**
