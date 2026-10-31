@@ -25,6 +25,7 @@ from graphify.paths import (
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_FULL_FILENAME = ".pending_full"
+_PENDING_INCREMENTAL_FILENAME = ".pending_incremental"
 _PENDING_DRAIN_MAX_PASSES = 20
 
 
@@ -88,6 +89,10 @@ def _queue_pending_full(out_dir: Path) -> None:
     Full requests (watcher, post-checkout hook) have no path list to append to
     ``.pending_changes``, so they leave a marker file instead. The lock-holder
     consumes it and runs one more full pass before releasing (#4274).
+
+    A derived incremental request has no path list either, but it needs a pass of
+    its own kind rather than a full one; that is
+    :func:`_queue_pending_incremental`.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / _PENDING_FULL_FILENAME).touch()
@@ -97,6 +102,29 @@ def _drain_pending_full(out_dir: Path) -> bool:
     """Consume the full-rebuild marker. Returns True if one was queued."""
     try:
         (out_dir / _PENDING_FULL_FILENAME).unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _queue_pending_incremental(out_dir: Path) -> None:
+    """Record that an incremental rebuild was requested but could not run.
+
+    An incremental request names no paths: it derives its change set from the
+    manifest *inside* the lock (#4740). So it cannot append to
+    ``.pending_changes``, and ``.pending_full`` would be a lie — the drain runs
+    after the lock the caller then wins, so a full marker would upgrade that
+    caller's own pass to a full rebuild. This third marker says the one thing the
+    other two cannot: run an incremental pass.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / _PENDING_INCREMENTAL_FILENAME).touch()
+
+
+def _drain_pending_incremental(out_dir: Path) -> bool:
+    """Consume the incremental-rebuild marker. Returns True if one was queued."""
+    try:
+        (out_dir / _PENDING_INCREMENTAL_FILENAME).unlink()
     except FileNotFoundError:
         return False
     return True
@@ -1958,6 +1986,7 @@ def _rebuild_code(
     watch_path: Path,
     *,
     changed_paths: list[Path] | None = None,
+    incremental: bool = False,
     follow_symlinks: bool = False,
     force: bool = False,
     no_cluster: bool = False,
@@ -1975,6 +2004,13 @@ def _rebuild_code(
     in ``changed_paths`` (paths that no longer exist on disk) are dropped from
     the preserved set. When ``changed_paths`` is None the full code corpus is
     re-extracted (used by the watcher and post-checkout hook).
+
+    ``incremental`` asks for the change set to be derived from the manifest
+    instead of from ``changed_paths`` (#4740). It applies only when
+    ``changed_paths`` is None and ``force`` is False, so an explicit list always
+    wins and ``--force`` always means a full rebuild. A manifest that is
+    missing, unreadable or empty leaves the full path in place: "no rows" means
+    "unknown", never "nothing changed".
 
     ``acquire_lock`` (default True) takes a non-blocking per-repo flock around
     the rebuild so concurrent post-commit hooks across multiple repos do not
@@ -1995,11 +2031,24 @@ def _rebuild_code(
         # #1059: a hook must not drop its request when another rebuild is
         # already running. Queue before attempting the lock so a non-blocking
         # failure still records the work; the lock-holder drains the queue.
-        # Incremental requests append their paths to .pending_changes; full-
-        # corpus requests leave a .pending_full marker (#4274).
+        #
+        # Three request kinds, three records:
+        #   explicit paths -> .pending_changes, one path per line
+        #   full corpus    -> .pending_full, a marker meaning "re-extract all"
+        #   derived        -> .pending_incremental, a marker meaning "run an
+        #                     incremental pass"; it has no paths of its own, and
+        #                     a full marker would upgrade the holder that then
+        #                     drains it (#4274, #4769)
         queued = False
         if not block_on_lock:
-            if changed_paths is None:
+            if incremental and changed_paths is None:
+                # #4740: this request derives its change set from the manifest
+                # inside the lock, so it names no paths. Without a record of its
+                # own, losing the lock below drops it. The marker says "run an
+                # incremental pass", which a later full pass also satisfies.
+                _queue_pending_incremental(out)
+                queued = True
+            elif changed_paths is None:
                 _queue_pending_full(out)
                 queued = True
             elif changed_paths:
@@ -2015,12 +2064,39 @@ def _rebuild_code(
             # (including, importantly, what we just queued ourselves). A
             # queued full request upgrades this run to a full rebuild, which
             # supersedes any incremental work queued before it starts.
-            full = _drain_pending_full(out) or changed_paths is None
+            #
+            # #4740: an incremental request is NOT a full one even though it
+            # also arrives with changed_paths unset. It derives its own change
+            # set in the call below, and a drained path hint adds nothing to
+            # that: the derivation compares the whole scan against the manifest,
+            # so every add, edit and on-disk deletion a hint could name is
+            # already in it. That is why merged stays None here — passing the
+            # hints would suppress the derivation and re-extract only them.
+            queued_full = _drain_pending_full(out)
+            queued_incremental = _drain_pending_incremental(out)
             pending = _drain_pending(out)
-            merged = None if full else _merge_changed_paths(changed_paths, pending)
+            # A queued incremental request has to be honoured even when this
+            # caller's own flag is off. The marker exists because that request
+            # lost the lock; its change set is the manifest diff, which this
+            # holder can compute just as well.
+            incremental_effective = incremental or queued_incremental
+            if queued_full:
+                full = True
+            elif changed_paths is None:
+                full = not incremental_effective
+            else:
+                full = False
+            merged = (
+                _merge_changed_paths(changed_paths, pending)
+                if changed_paths is not None and not full
+                else None
+            )
             ok = _rebuild_code(
                 watch_path,
                 changed_paths=merged,
+                # A queued full request overrides the hint: a hook saw a tree
+                # change it could not describe, so re-extract everything.
+                incremental=incremental_effective and not queued_full,
                 follow_symlinks=follow_symlinks,
                 force=force,
                 no_cluster=no_cluster,
@@ -2033,12 +2109,14 @@ def _rebuild_code(
             # quiesces without livelocking.
             for _ in range(_PENDING_DRAIN_MAX_PASSES):
                 late_full = _drain_pending_full(out)
+                late_incremental = _drain_pending_incremental(out)
                 late = _drain_pending(out)
-                if not late_full and not late:
+                if not late_full and not late and not late_incremental:
                     break
                 ok = _rebuild_code(
                     watch_path,
-                    changed_paths=None if late_full else late,
+                    changed_paths=None if (late_full or late_incremental) else late,
+                    incremental=(incremental or late_incremental) and not late_full,
                     follow_symlinks=follow_symlinks,
                     force=force,
                     no_cluster=no_cluster,
@@ -2055,7 +2133,12 @@ def _rebuild_code(
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
-        from graphify.detect import detect
+        from graphify.detect import (
+            classify_manifest_deletions,
+            classify_manifest_files,
+            detect,
+            load_manifest,
+        )
         from graphify.build import build_from_json, _is_ast_tier, _norm_source_file as _nsf
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
@@ -2119,6 +2202,51 @@ def _rebuild_code(
                     "graphify-out left untouched."
                 )
                 return True
+
+        # #4740: the caller asked for an incremental update. The manifest already
+        # records the ast_hash of every file the last build extracted, so the
+        # change set can be read off it instead of re-extracting the whole
+        # corpus. `detected` was computed above for the full path anyway, so this
+        # costs one manifest read, not a second scan.
+        #
+        # A manifest that is missing, unreadable or empty leaves changed_paths
+        # None — the full path. "No rows" means the baseline is unknown, and the
+        # only safe reading of unknown is "do the work"; `detect_incremental`
+        # makes the same call for `graphify extract` (#1925).
+        if incremental and changed_paths is None and not force:
+            manifest = load_manifest(str(out / "manifest.json"), root=watch_root)
+            if manifest:
+                _changed_buckets, _unchanged_buckets = classify_manifest_files(
+                    detected["files"], manifest, kind="ast"
+                )
+                derived = [
+                    Path(f) for bucket in _changed_buckets.values() for f in bucket
+                ]
+                # Rows that left the corpus belong in the change set too. A row
+                # whose file is gone from disk must reach the deleted branch
+                # below, or its nodes survive and the shrink guard refuses the
+                # write (_accounted only excuses a source in rebuilt_sources).
+                # A row that is still alive but out of scan is an ignore-rule
+                # change, which the corpus sweep handles on positive evidence
+                # alone (#2495), so it stays out of the change set.
+                _deleted_rows, _excluded_rows = classify_manifest_deletions(
+                    manifest,
+                    (f for bucket in detected["files"].values() for f in bucket),
+                    root=watch_root,
+                )
+                derived.extend(Path(f) for f in _deleted_rows)
+                changed_paths = derived
+                _scanned = sum(len(v) for v in detected["files"].values())
+                if derived:
+                    print(
+                        f"[graphify watch] Incremental: re-extracting {len(derived)} "
+                        f"of {_scanned} scanned files that changed since the last build."
+                    )
+                else:
+                    print(
+                        f"[graphify watch] Incremental: none of the {_scanned} scanned "
+                        "files differ from the last build."
+                    )
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -2338,7 +2466,15 @@ def _rebuild_code(
                     if not node.get("id") or not _is_ast_tier(node):
                         continue
                     source_file = node.get("source_file")
-                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                    # ctx_live is built from project_root-anchored paths, so the
+                    # membership test has to use the same anchoring. identity()
+                    # resolves a stored relative path against the root recorded
+                    # in graphify-out/.graphify_root, and a copied checkout left
+                    # that pointing at its original location — every stored node
+                    # then read as corpus-absent, the context came back empty,
+                    # and the changed batch lost its cross-file edges (#2406).
+                    ctx_identity = ctx_paths.absolute_identity(source_file, project_root)
+                    if not source_file or ctx_identity not in ctx_live:
                         continue
                     ctx_node = {
                         "id": node["id"],
@@ -2405,7 +2541,11 @@ def _rebuild_code(
                     if not _is_ast_tier(edge):
                         continue
                     source_file = edge.get("source_file")
-                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                    # Same anchoring as the nodes above, or an unchanged file's
+                    # import edge drops out of the resolve context and a changed
+                    # file's call into it cannot be resolved (#2437).
+                    ctx_identity = ctx_paths.absolute_identity(source_file, project_root)
+                    if not source_file or ctx_identity not in ctx_live:
                         continue
                     context_edge = {
                         "source": edge.get("source"),
