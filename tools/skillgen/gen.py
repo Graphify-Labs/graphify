@@ -1077,6 +1077,17 @@ def _is_manifest_stamp_fix_line(line: str) -> bool:
     )
 
 
+def _is_update_manifest_save_fix_line(line: str) -> bool:
+    """Whether a line is part of the monolith --update manifest fix (#4812).
+
+    Aider and Devin run each fenced Python block in a fresh interpreter, so the
+    ``save_manifest`` import in the earlier detect block is not available in the
+    merge block where the baseline must be advanced. The rest of the added
+    manifest code is already covered by the #2015/rooted-manifest predicates.
+    """
+    return line.strip() == "from graphify.detect import save_manifest"
+
+
 def _is_sensitive_reporting_fix_line(line: str) -> bool:
     """The #2106 change to how a non-empty ``skipped_sensitive`` is reported: the
     skill now lists the skipped file names instead of only a count, so a
@@ -1372,6 +1383,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
     _is_manifest_stamp_fix_line,
+    _is_update_manifest_save_fix_line,
     _is_sensitive_reporting_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,

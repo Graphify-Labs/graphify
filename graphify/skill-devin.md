@@ -1009,6 +1009,7 @@ Then:
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from graphify.build import build_from_json
+from graphify.detect import save_manifest
 from graphify.export import to_json
 from networkx.readwrite import json_graph
 import networkx as nx
@@ -1025,6 +1026,16 @@ G_new = build_from_json(new_extraction, directed=IS_DIRECTED)
 # Merge: new nodes/edges into existing graph
 G_existing.update(G_new)
 print(f'Merged: {G_existing.number_of_nodes()} nodes, {G_existing.number_of_edges()} edges')
+
+from graphify.cli import _stamped_manifest_files
+_corpus = json.loads(Path('graphify-out/.graphify_incremental.json').read_text())
+_manifest_files = _stamped_manifest_files(_corpus['files'], new_extraction, Path('INPUT_PATH'))
+_sem_types = ('document', 'paper', 'image')
+_dispatched = {f for t, fl in _corpus.get('new_files', {}).items() if t in _sem_types for f in fl}
+_stamped = {f for fl in _manifest_files.values() for f in fl}
+_cleared = _dispatched - _stamped
+_scan = {f for fl in _corpus['files'].values() for f in fl}
+save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 "
 ```
 
