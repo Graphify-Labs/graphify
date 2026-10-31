@@ -5346,7 +5346,7 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
         files = [f for f in files_from.read_text(encoding="utf-8").splitlines() if f.strip()]
         cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(
-            files, root, mode=cache_mode, prompt_file=prompt_file
+            files, root=root, cache_root=root, mode=cache_mode, prompt_file=prompt_file
         )
         out = root / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
