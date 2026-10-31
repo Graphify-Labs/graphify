@@ -1427,7 +1427,9 @@ const vis = {{
 }};
 
 const document = doc;
-const window = {{}};
+// Inspector scenarios register browser listeners without dispatching gestures.
+// Navigation tests exercise the same emitted callbacks through their event boundary.
+const window = {{ listeners: [], addEventListener(...args) {{ this.listeners.push(args); }} }};
 
 {script}
 
@@ -1493,7 +1495,7 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
     assert '<div class="field"><b>Core Systems</b></div>' in info_html
     assert '<div class="field">Community: Core Systems</div>' in info_html
     assert '<div class="field">Members: 25</div>' in info_html
-    assert '<div class="field">Degree: 1</div>' in info_html
+    assert '<div class="field">Connected communities: 1</div>' in info_html
     assert "Type: unknown" not in info_html
     assert "Source: -" not in info_html
 
@@ -1516,7 +1518,10 @@ const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remov
 const els = {};
 const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
   createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
-const window = { innerWidth: 1280, innerHeight: 800 };
+// Middle-button panning registers window handlers before sidebar interaction.
+// Retain those handlers so the harness supplies the browser event boundary.
+const window = { innerWidth: 1280, innerHeight: 800, listeners: {},
+  addEventListener(t, f) { this.listeners[t] = f; } };
 class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
   get(id) { return this.map.get(id); } update() {} }
 const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}

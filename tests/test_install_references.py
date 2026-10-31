@@ -295,7 +295,8 @@ def test_claude_install_ships_lean_core_and_references(tmp_path):
     ]
 
 
-def test_gemini_install_references_all_resolve(tmp_path):
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_gemini_install_references_all_resolve(tmp_path, monkeypatch, system):
     """End-to-end: every references/ pointer in gemini's installed SKILL.md resolves.
 
     gemini ships claude's lean skill.md body but resolves its references through a
@@ -303,9 +304,13 @@ def test_gemini_install_references_all_resolve(tmp_path):
     real claude bundle must leave no dead pointer on disk.
     """
     import re
+    # Upstream #2800 gives Gemini its own destination on every OS; references
+    # must resolve there without installing an unrelated agents skill.
+    monkeypatch.setattr(mainmod.platform, "system", lambda: system)
     _install(tmp_path, "gemini")
     skill = tmp_path / ".gemini" / "skills" / "graphify" / "SKILL.md"
     assert skill.exists()
+    assert not (tmp_path / ".agents" / "skills" / "graphify").exists()
     refdir = skill.parent / "references"
     assert refdir.is_dir()
     pointers = set(re.findall(r"references/([a-z-]+\.md)", skill.read_text(encoding="utf-8")))

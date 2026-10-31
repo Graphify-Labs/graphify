@@ -54,7 +54,10 @@ def _stamp(dst: Path) -> str:
 # What gets refreshed
 # ---------------------------------------------------------------------------
 
-def test_every_stale_platform_is_refreshed_not_only_the_detected_one(capsys):
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_every_stale_platform_is_refreshed_not_only_the_detected_one(capsys, monkeypatch, system):
+    """Refresh each owned destination, including Gemini's separate Windows copy."""
+    monkeypatch.setattr(mainmod.platform, "system", lambda: system)
     dsts = {name: _stale(name) for name in ("claude", "codex", "opencode", "gemini")}
 
     mainmod._refresh_stale_skills()
@@ -62,7 +65,8 @@ def test_every_stale_platform_is_refreshed_not_only_the_detected_one(capsys):
     out, err = capsys.readouterr()
     for name, dst in dsts.items():
         assert _stamp(dst) == __version__, name
-        assert dst.read_bytes() == _packaged(name), name
+        variant = "windows" if name == "claude" and system == "Windows" else name
+        assert dst.read_bytes() == _packaged(variant), name
         assert str(dst.parent) in err
     assert OLD in err and "GRAPHIFY_NO_AUTO_REFRESH" in err
     assert out == "", "stdout must stay clean for --json and the MCP stdio server"
@@ -450,9 +454,11 @@ def test_uninstall_after_a_refresh_leaves_no_directory_behind():
     assert not dst.parent.exists()
 
 
-def test_a_stale_gemini_skill_gets_the_warning_too(monkeypatch, capsys):
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_a_stale_gemini_skill_gets_the_warning_too(monkeypatch, capsys, system):
     """gemini is not in _PLATFORM_CONFIG, so the version check never saw its
-    ~/.gemini copy; with the refresh off it must still warn."""
+    user copy; with the refresh off it must still warn at its host destination."""
+    monkeypatch.setattr(mainmod.platform, "system", lambda: system)
     monkeypatch.setenv("GRAPHIFY_NO_AUTO_REFRESH", "1")
     dst = _stale("gemini")
     monkeypatch.setattr(sys, "argv", ["graphify", "--version"])
@@ -461,6 +467,7 @@ def test_a_stale_gemini_skill_gets_the_warning_too(monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert f"warning: skill at {dst.parent} is from graphify {OLD}" in err
+    # Gemini owns .gemini on every OS; the diagnostic must name its installer.
     assert "graphify install --platform gemini" in err
 
 

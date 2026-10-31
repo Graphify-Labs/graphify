@@ -365,7 +365,8 @@ def _flatten_attr_text(val, parts: list[str]) -> None:
 
 def _node_attributes_text(data: dict) -> tuple[str, str]:
     """The node's `attributes` key-value pairs normalized and tokenized for search."""
-    attrs = data.get("attributes")
+    from graphify.qt_qml_search import search_attributes
+    attrs = search_attributes(data)
     if not isinstance(attrs, dict) or not attrs:
         return "", ""
     parts: list[str] = []
@@ -780,6 +781,9 @@ def _pick_scored_endpoint(G: nx.Graph, scored: list[tuple[float, str]], query: s
 
     `scored` must be non-empty (both callers return early on no match).
     """
+    # A public node ID is an explicit identity request, not a fuzzy label query.
+    if query in G:
+        return query
     qtokens = set(_search_tokens(query))
     if not qtokens:
         return scored[0][1]
@@ -1211,12 +1215,11 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"{attrs_suffix}]"
         )
         lines.append(line)
+    render_edges = []
     for u, v in edges:
         if u in nodes and v in nodes:
-            # One EDGE line per relationship: on a multigraph a pair can
-            # carry several edges (e.g. contains + calls), each with its
-            # own metadata (#4500). The traversal records one entry per
-            # pair; expanding here keeps every relationship visible.
+            # Expand every parallel relationship before applying the
+            # established deterministic source-fact rendering order.
             for d in edge_datas(G, u, v):
                 # (u, v) is BFS/DFS visit order, not necessarily the true edge
                 # direction: on an undirected graph G.neighbors() walks callers
@@ -1232,23 +1235,30 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 # would KeyError on an unknown id (#2080 review).
                 if {src, tgt} != {u, v}:
                     src, tgt = u, v
-                context = d.get("context")
-                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
-                # The relation SITE (call/import/reference line in the source's
-                # file), not a def line — so "who calls X" cites a clickable call
-                # location, not the caller's def (#BUG1).
-                _loc = str(d.get("source_location") or "")
-                at_suffix = (
-                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                    if _loc else ""
-                )
-                line = (
-                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                    f"--{sanitize_label(str(d.get('relation', '')))} "
-                    f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-                )
-                lines.append(line)
+                render_edges.append((src, tgt, d))
+    # Traversal completion walks a set of visited nodes. Render source facts in
+    # stable semantic order so CLI and an independent MCP process agree.
+    render_edges.sort(key=lambda item: tuple(str(value or "") for value in (
+        item[0], item[1], *(item[2].get(key) for key in (
+            "relation", "context", "confidence", "source_file", "source_location")))))
+    for src, tgt, d in render_edges:
+        context = d.get("context")
+        context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+        # The relation SITE (call/import/reference line in the source's
+        # file), not a def line — so "who calls X" cites a clickable call
+        # location, not the caller's def (#BUG1).
+        _loc = str(d.get("source_location") or "")
+        at_suffix = (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+            if _loc else ""
+        )
+        line = (
+            f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+            f"--{sanitize_label(str(d.get('relation', '')))} "
+            f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+            f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+        )
+        lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -2210,6 +2220,16 @@ def _resolve_path_endpoint(
     return _pick_scored_endpoint(G, scored, query), scored, None
 
 
+def _typed_membership_direction(data: dict) -> bool:
+    """Source-backed Qt/QML facts retain their explicit membership orientation."""
+    metadata = data.get("metadata")
+    if not isinstance(data.get("source_file"), str) or not data["source_file"] or not isinstance(metadata, dict):
+        return False
+    return any(isinstance(value := metadata.get(name), dict)
+               and type(value.get("contract_version")) is int and value["contract_version"] == 1
+               for name in ("qml", "qt"))
+
+
 def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
     """The sorted, materialized graph `_shortest_path_text` searches.
 
@@ -2248,12 +2268,15 @@ def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
         # continue on to the file that defines it, and a file-to-file
         # dependency routed through a shared symbol finds no path at all
         # even though both halves exist (#3878). Add the implied reverse hop
-        # for traversal only — the printed segment still recovers the real
-        # stored `contains` edge and its true direction from G below.
+        # for generic traversal only — the printed segment still recovers the
+        # stored edge's direction. Qt/QML membership has explicit source-owned
+        # direction, including legacy links whose declaration nodes alone carry
+        # that contract. Only an explicit undirected request can reverse it.
         H.add_edges_from(sorted(
             (d.get("_tgt", v), d.get("_src", u))
             for u, v, d in G.edges(data=True)
             if d.get("relation") == "contains"
+            and not any(_typed_membership_direction(item) for item in (d, G.nodes[u], G.nodes[v]))
         ))
     cache[undirected] = H
     return H
@@ -2457,6 +2480,11 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
         else:
             segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
     prefix = ("\n".join(warnings) + "\n") if warnings else ""
+    # Both views describe the selected route: retain actual source evidence
+    # before the weakest-hop summary, whose final-line contract belongs to MCP.
+    from graphify.path_provenance import path_provenance
+    path_edges = [data for hop in hop_datas for data in hop]
+    sources = path_provenance([G.nodes[node_id] for node_id in path_nodes], path_edges)
     summary = _path_confidence_line(hop_datas)
     if n_routes > 1 and summary:
         # Several routes tie on length; the confidence shown is the weakest of
@@ -2464,7 +2492,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
         summary += f" (weakest of {'256+' if routes_capped else n_routes} equal-length routes)"
     return (
         prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
-        + (f"\n{summary}" if summary else "")
+        + sources + (f"\n{summary}" if summary else "")
     )
 
 

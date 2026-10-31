@@ -1,0 +1,12 @@
+// Synthetic type-description syntax, not metadata produced by a private project.
+import QtQuick.tooling 1.2
+Module {
+    Component {
+        name: "Example::Backend"
+        prototype: "QObject"
+        exports: ["Example/Backend 1.0"]
+        Property { name: "value"; type: "int"; isReadonly: true }
+        Method { name: "reset" }
+        Signal { name: "updated"; Parameter { name: "value"; type: "int" } }
+    }
+}

@@ -392,7 +392,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # would drift), the composed body is translated deterministically:
 #
 #   * ```` ```bash ```` fences become ```` ```powershell ```` fences;
-#   * the inline ``$(cat graphify-out/.graphify_python) -c "..."`` python blocks
+#   * the inline ``"$(cat graphify-out/.graphify_python)" -c "..."`` python blocks
 #     become single-quoted here-strings piped to the interpreter's stdin
 #     (``@'...'@ | & (Get-Content graphify-out\.graphify_python) -``). A
 #     single-quoted here-string is verbatim, so the bash ``\"`` escapes are
@@ -407,7 +407,10 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
+# Keep exactly the historical opener as an input alias for callers composing
+# older fragments. Both forms render the same literal PowerShell Python body.
+_PY_INVOKE_POSIX_LEGACY = '$(cat graphify-out/.graphify_python) -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -465,7 +468,7 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
-        elif line == _PY_INVOKE_POSIX:
+        elif line in (_PY_INVOKE_POSIX, _PY_INVOKE_POSIX_LEGACY):
             out.append(_PY_INVOKE_PS_OPEN)
             in_py = True
         elif line == _MKDIR_POSIX:
@@ -1209,10 +1212,36 @@ def _is_watch_injection_fix_line(line: str) -> bool:
     stripped = line.strip()
     return (
         stripped == "python3 -m graphify.watch INPUT_PATH --debounce 3"
-        or stripped == '$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
+        or stripped == '"$(cat graphify-out/.graphify_python)" -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
         or stripped == "Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:"
         or stripped == "This watches the same folder graphify extracted, read from the trusted `graphify-out/.graphify_root` that Step 1 resolved - there is no path to substitute, so a scan root containing shell metacharacters can never be re-interpreted here. Behavior depends on what changed:"
     )
+
+
+def _is_qt_qml_source_guidance_line(line: str) -> bool:
+    """Allow only the reviewed Qt source runbook additions, never a prefix class.
+
+    Keep the frozen v8 comparison intact. Exact prose and the complete AST root/
+    pre-publication gate footprint are listed here; unrelated Qt-prefixed advice
+    or arbitrary extraction edits must still fail the monolith roundtrip.
+    """
+    return line.strip() in {
+        "[Qt/QML] Install the optional `graphifyy[qml]` extra in the recorded interpreter when the accepted corpus contains QML or `.qmltypes`. Analysis does not require a Qt SDK and never executes project code or build tools.",
+        "[Qt/QML] Preserve scoped source identities, evidence and unresolved statuses. Bindings, signal emissions, declared connections and meta-object accesses have different meanings; an emission does not prove a synchronous slot call. QML `id` does not establish C++ `objectName` lookup.",
+        "[Qt/QML] The literal CMake/qmake/QRC/type-description subset and its limits are documented in `docs/qt-qml/README.md` when available. Conditional builds, dynamic targets and unsupported syntax cannot become guessed providers. A failed integrity gate preserves prior output; do not force past it.",
+        "[Qt/QML] For a Qt/QML corpus, run `graphify update` in the recorded interpreter with the trusted `graphify-out/.graphify_root` scan root, then stop this manual merge procedure. The production updater refreshes unchanged consumers after C++/metadata changes, checks parser/import/ignore configuration and commits its analysis stamp after successful publication. Include `.qml`, `.qmltypes`, `qmldir`, `CMakeLists.txt`, `.cmake`, `.pro`, `.pri`, `.qrc` and Qt C++ sources when identifying this branch.",
+        "[Qt/QML] Preserve unsupported/partial diagnostics and prior graph, manifest and report output. Never use force or an empty extraction to bypass a Qt integrity failure. Configured import roots select accepted providers; they do not authorize additional source discovery.",
+        "from graphify.qml_safety import require_complete_qml",
+        "from graphify.qt_analysis_state import inspect_qt_analysis",
+        "scan_root = Path(Path('graphify-out/.graphify_root').read_text(encoding='utf-8').strip()).resolve()",
+        "scan_root = scan_root.parent if scan_root.is_file() else scan_root",
+        "qt_state = inspect_qt_analysis(scan_root, Path('graphify-out'), code_files)",
+        "result = extract(code_files, root=scan_root, cache_root=scan_root,",
+        "qml_import_roots=qt_state.import_roots, refresh_native=qt_state.has_qt)",
+        "require_complete_qml(result, code_files, operation='skill AST', root=scan_root)",
+        # The replaced v8 AST call. Split-core cache call is not a monolith line.
+        "result = extract(code_files)",
+    }
 
 
 def _is_graph_diff_direction_fix_line(line: str) -> bool:
@@ -1304,7 +1333,7 @@ def _is_code_only_fast_path_fix_line(line: str) -> bool:
             'import json',
             'from pathlib import Path',
             '"',
-            '$(cat graphify-out/.graphify_python) -c "',
+            '"$(cat graphify-out/.graphify_python)" -c "',
             "if [ ! -f .graphify_extract.json ]; then",
             "if [ ! -f graphify-out/.graphify_extract.json ]; then",
         )
@@ -1381,6 +1410,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_community_label_export_fix_line,
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
+    _is_qt_qml_source_guidance_line,
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
     _is_worktree_visibility_note_line,
@@ -1394,6 +1424,27 @@ _SANCTIONED_MONOLITH_DIFFS = (
 def _is_sanctioned_monolith_diff(line: str) -> bool:
     """Whether a single added/removed monolith line is an allowed change."""
     return not line.strip() or any(pred(line) for pred in _SANCTIONED_MONOLITH_DIFFS)
+
+
+def _consume_interpreter_quote_pairs(added: Counter, removed: Counter) -> None:
+    """Cancel only counted, exact executable-quoting pairs against frozen text.
+
+    Arguments, bodies and multiplicity remain subject to the existing drift
+    checks. This is deliberately a paired transformation, not permission for
+    arbitrary edits on lines that happen to contain an interpreter marker.
+    """
+    marker = '$(cat graphify-out/.graphify_python)'
+    instruction = ('**In every subsequent bash block, replace `python3` with `'
+                   + marker + '` to use the correct interpreter.**')
+    for old, count in list(removed.items()):
+        stripped = old.lstrip()
+        if not (stripped.startswith((marker + ' -c "', marker + ' -m '))
+                or old == instruction):
+            continue
+        new = old.replace(marker, '"' + marker + '"', 1)
+        paired = min(count, added[new])
+        removed[old] -= paired
+        added[new] -= paired
 
 
 def monolith_roundtrip(platform: Platform) -> list[str]:
@@ -1428,6 +1479,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
 
     added = Counter(rendered_lines) - Counter(original_lines)
     removed = Counter(original_lines) - Counter(rendered_lines)
+    _consume_interpreter_quote_pairs(added, removed)
 
     problems: list[str] = []
     for line in list(added.elements()) + list(removed.elements()):

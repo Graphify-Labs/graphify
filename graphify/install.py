@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -44,6 +45,7 @@ except Exception:
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
+from graphify.codex_hook_command import HookCommandError, codex_hook_command, is_encoded_codex_hook
 from graphify.paths import write_text_atomic as _write_text_atomic
 
 
@@ -545,7 +547,14 @@ def _is_graphify_hook_entry(entry: object) -> bool:
     if not isinstance(entry, dict) or entry.get("type") != "command":
         return False
     command = entry.get("command")
-    return isinstance(command, str) and _is_graphify_hook_command(command)
+    if not isinstance(command, str):
+        return False
+    # Native Codex transports hide the executable and subcommand in base64.
+    # Require both its owned marker and exact static wrapper; a status label or
+    # altered/copied command alone cannot authorize another hook's removal.
+    if re.search(r"(?<!\S)-encodedcommand(?:\s|$)", command, flags=re.IGNORECASE):
+        return entry.get("statusMessage") == "graphify hook-check" and is_encoded_codex_hook(command)
+    return _is_graphify_hook_command(command)
 
 
 def _strip_graphify_hooks(groups: "list") -> "list":
@@ -1910,24 +1919,26 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     A project-scoped install emits the bare command, since .codex/hooks.json is
     then committed and an installing machine's path is wrong there (#3129).
     """
+    # Validate native transport before touching settings. A missing OS consumer
+    # must retain the prior hook JSON rather than publish an ambiguous fallback.
+    # The transport owner also quotes spaced POSIX launchers; do not add another
+    # shell-quoting layer around the native Windows encoded invocation.
+    try:
+        command = codex_hook_command(_resolve_graphify_exe(project=project), windows=os.name == "nt")
+    except HookCommandError as error:
+        print(f"[graphify] cannot install Codex hook: {error}", file=sys.stderr)
+        sys.exit(1)
     hooks_path = project_dir / ".codex" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
-
     existing = _read_settings_for_merge(hooks_path)
-
-    graphify_exe = _resolve_graphify_exe(project=project)
-    if " " in graphify_exe and not graphify_exe.startswith('"'):
-        # Mirror _claude_pretooluse_hooks/_gemini_hook: a resolved path with
-        # spaces must be quoted, or every shell that runs the hook command
-        # (Git Bash, cmd.exe, sh) word-splits it at the first space and the
-        # hook can never fire.
-        graphify_exe = f'"{graphify_exe}"'
     hook_entry = {
         "hooks": {
             "PreToolUse": [
                 {
                     "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": f"{graphify_exe} hook-check"}],
+                    # Codex's native status field keeps encoded hooks visibly
+                    # owned by graphify for existing reinstall/uninstall rules.
+                    "hooks": [{"type": "command", "command": command, "statusMessage": "graphify hook-check"}],
                 }
             ]
         }
@@ -1943,7 +1954,7 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     hooks["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
     _write_settings_with_backup(hooks_path, existing)
     print(
-        f"  .codex/hooks.json  ->  PreToolUse hook registered ({graphify_exe} hook-check"
+        "  .codex/hooks.json  ->  PreToolUse hook registered (graphify hook-check"
         " - intentional no-op; Codex Desktop rejects additionalContext on PreToolUse,"
         " so graph guidance comes from AGENTS.md)"
     )

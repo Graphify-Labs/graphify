@@ -4,3 +4,5 @@
 worked/**/*.html linguist-vendored=true
 graphify-out/**/*.html linguist-vendored=true
 *.html linguist-detectable=false
+# Preserve the byte-range fixture's intentional CRLF bytes.
+tests/fixtures/qml/parser_probe/UnicodeCRLF.qml -text whitespace=cr-at-eol

@@ -224,4 +224,3 @@ def test_extract_ejs_no_longer_reports_missing_extractor(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "no AST extractor" not in err
     assert any(n.get("label") == "page.ejs" for n in result["nodes"])
-

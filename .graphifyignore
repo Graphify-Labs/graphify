@@ -1,0 +1,4 @@
+# Deliberately invalid parser fixtures are test data, not publishable components.
+# Tests open these files directly; repository graph refresh follows this corpus.
+tests/fixtures/qml/parser_probe/Malformed.qml
+tests/fixtures/qml/parser_probe/Incomplete.qml

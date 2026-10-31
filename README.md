@@ -122,6 +122,18 @@ What you get out of the box:
 | **Beyond code** | Docs, PDFs, images, and video/audio all map into the same graph |
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
 
+### Qt and QML source analysis
+
+This branch includes optional Qt 6/QML static analysis. From this checkout,
+`uv sync --extra qml --extra watch` installs the pinned QML parser and watch support.
+It covers scoped QML/JavaScript dependencies, Qt C++ signals/slots/connections,
+both C++/QML integration directions, and literal CMake/qmake/resource metadata.
+Computed runtime targets remain explicitly unresolved; analysis runs no Qt SDK,
+build tool or application code. See the [support and installation evidence](docs/qt-qml/README.md),
+[export contracts](docs/qt-qml/EXPORT_MATRIX.md) and
+[acceptance criteria](docs/REQUIREMENTS.md) for the verified subset and limits.
+Upstream merging and package publication remain separate delivery steps.
+
 > [!TIP]
 > Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/login) does it continuously and cuts agent token spend by 80%, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start a free 14-day trial &rarr;](https://app.graphify.com/login)
 

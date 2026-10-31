@@ -51,7 +51,12 @@ def test_cli_path_prints_weakest_hop(monkeypatch, tmp_path, capsys):
     mainmod.main()
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == "Shortest path (2 hops):"
-    assert lines[2] == REPORT_SUMMARY
+    # D37 retains the fork's source section and the upstream final-summary
+    # contract in both interfaces; a fixed third line would omit that evidence.
+    assert "Source evidence:" in lines
+    assert any("Report.cs:L7" in line for line in lines)
+    assert any("Report.cs:L2" in line for line in lines)
+    assert lines[-1] == REPORT_SUMMARY
 
 
 def test_mcp_shortest_path_prints_weakest_hop():

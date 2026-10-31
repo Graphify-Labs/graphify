@@ -53,6 +53,31 @@ def _out_from_env() -> str:
 GRAPHIFY_OUT = _out_from_env()
 
 
+def _unlink_replace_file(path: "str | Path") -> None:
+    """Consume an owned replacement file, clearing only its Windows read-only bit."""
+    try:
+        os.unlink(path)
+    except PermissionError:
+        mode = os.stat(path, follow_symlinks=False).st_mode
+        if os.name != "nt" or not stat.S_ISREG(mode) or mode & stat.S_IWRITE:
+            raise
+        # Copies preserve the source mode. Windows cannot unlink that owned
+        # read-only copy/source; never follow a link or alter its target here.
+        os.chmod(path, mode | stat.S_IWRITE)
+        os.unlink(path)
+
+
+def _restore_replace_mode(path: "str | Path", original_mode: int) -> None:
+    """Restore owned regular-file permissions without changing a symlink target."""
+    if not stat.S_ISREG(original_mode):
+        return
+    current = os.stat(path, follow_symlinks=False).st_mode
+    if not stat.S_ISREG(current):
+        raise OSError("Replacement file changed during mode restoration")
+    if stat.S_IMODE(current) != stat.S_IMODE(original_mode):
+        os.chmod(path, stat.S_IMODE(original_mode))
+
+
 def os_long_path(path: "str | Path") -> str:
     r"""Return an OS path string safe for open()/stat() on Windows long paths.
 
@@ -102,8 +127,9 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     or file) aside as a backup rather than deleting it outright, and only
     then renames the temp copy into ``dst``'s place -- matching replace's
     "whatever was there is gone, a plain file replaces it" semantics. If that
-    final rename fails, the backup is renamed straight back so a mid-swap
-    failure leaves the original in place rather than leaving ``dst`` missing.
+    final rename or cleanup fails, restore the source and prior destination.
+    A second OS failure during restoration is an explicit integrity failure;
+    the recovery backup is retained rather than silently discarded.
     """
     try:
         os.replace(src, dst)
@@ -111,6 +137,7 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     except OSError as exc:
         if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
             raise
+        replace_error = exc
     import shutil
     dst = os.fspath(dst)
     if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
@@ -119,38 +146,66 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
         # the "back up dst" step and then crash unlinking a path that no
         # longer exists at the end.
         return
+    try:
+        destination_mode = os.stat(dst, follow_symlinks=False).st_mode
+    except FileNotFoundError:
+        destination_mode = None
+    # Install/cache owners may replace their own read-only copies. Graph writers
+    # enforce their stricter rejection before calling this shared move helper.
+    # Directories remain invalid; lstat keeps link entries distinct from targets.
+    if destination_mode is not None and stat.S_ISDIR(destination_mode):
+        raise replace_error
+    source_mode = os.stat(src, follow_symlinks=False).st_mode
     dst_dir = os.path.dirname(dst) or "."
     fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
     os.close(fd)
+    backup = None
+    backup_moved = landed = source_removed = False
     try:
         shutil.copy2(src, tmp_copy)
-        backup = None
         if os.path.lexists(dst):
             bfd, backup = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-bak-", suffix=".tmp")
             os.close(bfd)
             os.unlink(backup)  # reserve the name only; rename needs it free on Windows
             os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
-        try:
-            os.rename(tmp_copy, dst)
-        except BaseException:
-            if backup is not None:
-                try:
-                    os.rename(backup, dst)
-                except OSError:
-                    pass  # best-effort restore; the swap failure below still propagates
-            raise
+            backup_moved = True
+        os.rename(tmp_copy, dst)
+        landed = True
+        # Keep the prior destination until both move cleanup operations have
+        # completed. A cleanup exception must not mean newly published data.
+        _unlink_replace_file(src)
+        source_removed = True
         if backup is not None:
-            try:
-                os.unlink(backup)
-            except OSError:
-                pass
+            _unlink_replace_file(backup)
     except BaseException:
+        restore_error = None
         try:
-            os.unlink(tmp_copy)
-        except OSError:
-            pass
+            if landed:
+                if source_removed:
+                    if os.path.lexists(src):
+                        raise OSError("Replacement source changed during rollback")
+                    shutil.copy2(dst, src)
+                os.rename(dst, tmp_copy)
+                # Cleanup may have cleared a read-only bit before failing.
+                # Restore both original modes before consuming the backup;
+                # restoration failure must leave those original bytes available.
+                _restore_replace_mode(src, source_mode)
+            if backup_moved and backup is not None:
+                if destination_mode is not None:
+                    _restore_replace_mode(backup, destination_mode)
+                os.rename(backup, dst)
+        except OSError as error:
+            restore_error = error
+        try:
+            if os.path.lexists(tmp_copy):
+                _unlink_replace_file(tmp_copy)
+        except OSError as error:
+            if restore_error is None:
+                raise OSError("Atomic replacement cleanup failed; destination restored") from error
+        if restore_error is not None:
+            recovery = "recovery backup retained" if backup and os.path.lexists(backup) else "manual recovery required"
+            raise OSError("Atomic replacement rollback failed; " + recovery) from restore_error
         raise
-    os.unlink(src)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
@@ -577,15 +632,16 @@ def restore_arc_direction(data: dict) -> dict:
     graph.json is written ``directed: false`` but carries true direction in arc
     order (#563), or in ``_src``/``_tgt`` markers on legacy canonicalized files.
     An undirected ``node_link_graph`` load re-orders endpoints by node-list
-    position, so readers recover direction from these markers. Existing markers
-    win (#2309). Same idiom as the query and merge-graphs loaders (#2261).
+    position, so readers recover direction from these markers. An existing pair
+    wins (#2309); partial or corrupt explicit markers remain intact for consumer
+    rejection instead of acquiring inferred authority from the other endpoint.
     """
     links = data.get("links")
     if not isinstance(links, list):
         return data
     return dict(data, links=[
-        {**link, "_src": link.get("_src", link.get("source")), "_tgt": link.get("_tgt", link.get("target"))}
-        if isinstance(link, dict) else link
+        {**link, "_src": link.get("source"), "_tgt": link.get("target")}
+        if isinstance(link, dict) and "_src" not in link and "_tgt" not in link else link
         for link in links
     ])
 
@@ -614,8 +670,33 @@ def load_node_link_graph(path_or_data):
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     if isinstance(data, dict):
+        # Semantic loading is the scoped dependency boundary: paths' low-level
+        # atomic writers must not acquire a top-level cycle through build.
+        # Validate transport before NetworkX adoption and detach mutable policy.
+        from graphify.build import _is_external_stub
+        from graphify.qt_import_retention import apply_import_retention, read_import_retention
+        retained = read_import_retention(data, is_placeholder=_is_external_stub)
+        data = apply_import_retention(data, retained, is_placeholder=_is_external_stub)
         data = restore_arc_direction(data)
     try:
-        return json_graph.node_link_graph(data, edges="links")
+        graph = json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"
-        return json_graph.node_link_graph(data)
+        graph = json_graph.node_link_graph(data)
+    if not graph.is_directed():
+        # Export stores the producer's orientation in serialized endpoints.
+        # NetworkX's undirected iteration order cannot recover that contract.
+        for link in data.get("links", []):
+            metadata = link.get("metadata", {})
+            qml = metadata.get("qml", {}) if isinstance(metadata, dict) else {}
+            qt = metadata.get("qt", {}) if isinstance(metadata, dict) else {}
+            if not any(isinstance(value, dict) and value.get("contract_version") == 1 for value in (qml, qt)):
+                continue
+            source, target = link["source"], link["target"]
+            attributes = (graph.edges[source, target, link.get("key", 0)]
+                          if graph.is_multigraph() else graph.edges[source, target])
+            # Only an absent pair may be restored from serialized endpoints.
+            # Explicit partial/foreign markers remain visible for consumer
+            # rejection; reload must not turn corrupt transport into proof.
+            if "_src" not in attributes and "_tgt" not in attributes:
+                attributes["_src"], attributes["_tgt"] = source, target
+    return graph
