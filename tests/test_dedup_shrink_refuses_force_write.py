@@ -23,6 +23,7 @@ def _notes(corpus):
             "file_type": "document",
             "source_file": readme,
             "source_location": "L1",
+            "_origin": "semantic",
         },
         {
             "id": "readme_decisions_b",
@@ -30,6 +31,7 @@ def _notes(corpus):
             "file_type": "document",
             "source_file": readme,
             "source_location": "L2",
+            "_origin": "semantic",
         },
         {
             "id": "readme_overview",
@@ -37,6 +39,7 @@ def _notes(corpus):
             "file_type": "document",
             "source_file": readme,
             "source_location": "L3",
+            "_origin": "semantic",
         },
     ]
 
@@ -144,6 +147,7 @@ def test_a_deleted_file_still_writes(monkeypatch, tmp_path):
             "file_type": "document",
             "source_file": readme,
             "source_location": "L1",
+            "_origin": "semantic",
         },
         {
             "id": "gone_notes",
@@ -151,6 +155,7 @@ def test_a_deleted_file_still_writes(monkeypatch, tmp_path):
             "file_type": "document",
             "source_file": gone,
             "source_location": "L1",
+            "_origin": "semantic",
         },
     ]
     fresh = [nodes[0]]

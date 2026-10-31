@@ -84,6 +84,23 @@ def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.Comp
     )
 
 
+def _skip_unless_bash_python_has_graphify() -> None:
+    """On Windows, Step 1 only works when `bash` has a POSIX `python3` that can import
+    graphify (e.g. WSL). Git Bash + a Windows Python gets the Store `python3` stub
+    and `/mnt/c/...` paths it cannot open, so there is nothing meaningful to assert."""
+    if sys.platform != "win32":
+        return
+    try:
+        probe = subprocess.run(
+            ["bash", "-c", "python3 -c 'import graphify'"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip("bash is not available")
+    if probe.returncode != 0:
+        pytest.skip("bash has no python3 that can import graphify (WSL needed on Windows)")
+
+
 # --- #3844: Monolith --watch contract tests ----------------------------------
 
 
@@ -180,6 +197,7 @@ def test_step1_does_not_execute_a_semicolon_separated_command_in_input_path(tmp_
 @pytest.mark.parametrize("skill_file", ALL_TESTED_SKILL_FILES)
 def test_step1_still_resolves_a_legitimate_path(tmp_path: Path, skill_file: str):
     """The fix must not break ordinary paths, including paths with spaces."""
+    _skip_unless_bash_python_has_graphify()
     script = _extract_step1_bash_block(skill_file)
     project = tmp_path / "my project with spaces"
     project.mkdir()

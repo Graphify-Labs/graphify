@@ -28,7 +28,7 @@ _PAS_USES_RE = re.compile(
 
 _PAS_TYPE_HEADER_RE = re.compile(
     r"\b(?P<name>[A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*=\s*(?:packed\s+)?"
-    r"(?P<kind>class|interface)\b"
+    r"(?P<kind>class|interface|record)\b"
     r"(?:\s*\(\s*(?P<bases>[^)]*)\s*\))?",
     re.IGNORECASE,
 )
@@ -36,7 +36,7 @@ _PAS_TYPE_HEADER_RE = re.compile(
 _PAS_END_SEMI_RE = re.compile(r"\bend\s*;", re.IGNORECASE)
 
 _PAS_METHOD_DECL_RE = re.compile(
-    r"\b(?:procedure|function|constructor|destructor)\s+"
+    r"\b(?:procedure|function|constructor|destructor|operator)\s+"
     r"(?P<name>[A-Za-z_]\w*)"
     r"(?:\s*\([^)]*\))?"
     r"(?:\s*:\s*[\w<>,\s.]+)?"
@@ -45,7 +45,7 @@ _PAS_METHOD_DECL_RE = re.compile(
 )
 
 _PAS_IMPL_HEADER_RE = re.compile(
-    r"\b(?:procedure|function|constructor|destructor)\s+"
+    r"\b(?:procedure|function|constructor|destructor|operator)\s+"
     r"(?P<qual>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)"
     r"(?:\s*<[^>]+>)?"
     r"(?:\s*\([^)]*\))?"
@@ -66,8 +66,8 @@ _PAS_KEYWORDS = frozenset({
     "with", "inherited", "result", "var", "const", "type", "nil", "true",
     "false", "exit", "break", "continue", "uses", "unit", "program",
     "library", "interface", "implementation", "initialization", "finalization",
-    "procedure", "function", "constructor", "destructor", "class", "record",
-    "object", "array", "string", "integer", "boolean", "real", "char",
+    "procedure", "function", "constructor", "destructor", "operator", "class",
+    "record", "object", "array", "string", "integer", "boolean", "real", "char",
     "writeln", "write", "readln", "read", "assigned", "length", "high",
     "low", "inc", "dec", "new", "dispose", "setlength", "copy", "pos",
     "trim", "format", "inttostr", "strtoint", "ord", "chr", "sizeof",

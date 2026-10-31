@@ -14,7 +14,10 @@ The resolvers now park those calls on the caller node as
 ``_park_unresolved_member_call``). This pass reads them back after the graphs are
 composed and emits the ``calls`` edge when the receiver's type resolves to
 exactly one declaration in another repo, keeping the single-definition guard the
-single-repo resolvers use: an ambiguous name still fabricates nothing.
+single-repo resolvers use: an ambiguous name still fabricates nothing. An ObjC
+class split ``@interface``(.h)/``@implementation``(.m) across repos is the one
+exception — several same-named candidates bind to the sole one that DEFINES the
+selector (#1556), two definitions still being an ambiguity.
 
 Edges only, no node merging or renaming, so the pass composes with the prefixing
 and pruning already in place. Every edge it adds is tagged, and it clears its own
@@ -41,14 +44,28 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
+    "go": frozenset({".go"}),
     "java": frozenset({".java"}),
+    "kotlin": frozenset({".kt", ".kts"}),
+    "objc": frozenset({".h", ".m", ".mm"}),
     "swift": frozenset({".swift"}),
+    "php": frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
+    # TS and JS share one key: a TS class legitimately answers a JS call site, so
+    # splitting them would drop every TS<->JS cross-repo call. An SFC script block is
+    # TS/JS too, so a class exported from `.vue` answers as well.
+    "typescript": frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+                             ".vue", ".svelte", ".astro"}),
 }
 
 # A declaration owns its members through a `method` edge, except in C++, where an
 # in-class declaration (`void bar();` in a header) is modelled as a field and
 # carries `defines` instead. `method` wins when both name the same member.
 _MEMBER_RELATIONS = ("defines", "method")
+
+# An ObjC @implementation lives in a `.m`/`.mm`; a `.h` carries only the @interface
+# declaration. This is what tells the one DEFINITION apart from the declarations when
+# a class is split across repositories.
+_OBJC_IMPL_SUFFIXES = frozenset({".m", ".mm"})
 
 
 def _key(label: object) -> str:
@@ -57,7 +74,8 @@ def _key(label: object) -> str:
     Type labels are plain (``Greeter``) while method labels carry the extractor's
     decoration (``.greet()``). Case is preserved: every language that parks calls
     here is case-sensitive, and folding case would let `greeter` answer for
-    `Greeter`.
+    `Greeter`. Objective-C's ``+``/``-`` sigil is deliberately kept, so an ObjC
+    ``-greet`` and a C++ ``.greet()`` stay distinct members of a shared header.
     """
     return str(label or "").strip().removeprefix(".").removesuffix("()")
 
@@ -148,6 +166,48 @@ def _member_relations(lang: str) -> tuple[str, ...]:
     return ("method", "defines") if lang == "cpp" else ("method",)
 
 
+def _member_keys(lang: str, callee: str) -> tuple[str, ...]:
+    """Which member-index keys a parked callee may answer to.
+
+    An ObjC selector carries no class/instance distinction, so both sigils are
+    tried; a type declaring `+greet` and `-greet` both is an ambiguity, not a hit.
+    A selector cannot itself begin with a sigil, so stripping one first keeps an
+    entry that already carries it from asking for `--greet`.
+    """
+    if lang == "objc":
+        selector = callee.lstrip("+-")
+        return (f"-{selector}", f"+{selector}")
+    return (callee,)
+
+
+def _objc_union_definition(
+    merged: "nx.Graph",
+    members: dict[tuple[str, str], list[str]],
+    candidates: list[str],
+    callee: str,
+) -> str | None:
+    """The sole DEFINITION of an ObjC selector across same-named candidates.
+
+    An ObjC class whose `@interface` (`.h`) and `@implementation` (`.m`) live in
+    different repositories surfaces as several same-named candidates that
+    ``_merge_decl_def_classes`` folds within a repo but cannot across the boundary
+    (its id embeds the directory, #1556). The candidate that DEFINES the selector —
+    an impl in `.m`/`.mm`, or a folded node naming its impl in ``definition_file`` —
+    is the target; a bare header declaration is not. Two candidates that both define
+    it are two unrelated classes and stay ambiguous, so the single-definition guard
+    still holds for the collision it was meant to catch.
+    """
+    defs: list[str] = []
+    for cand in candidates:
+        for member_key in _member_keys("objc", callee):
+            for member in members.get((cand, member_key), []):
+                data = merged.nodes[member]
+                if data.get("definition_file") or _suffix(data.get("source_file")) in _OBJC_IMPL_SUFFIXES:
+                    defs.append(member)
+    defs = list(dict.fromkeys(defs))
+    return defs[0] if len(defs) == 1 else None
+
+
 def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     """Emit `calls` edges for parked member calls another repo answers.
 
@@ -204,29 +264,42 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 if merged.nodes[node].get("repo") != caller_repo
                 and _suffix(merged.nodes[node].get("source_file")) in suffixes
             ]
-            if len(candidates) != 1:
-                # The same guard the single-repo resolvers apply: two repos
-                # declaring the same name is an ambiguity, not a hit.
+            if not candidates:
                 continue
-            if lang == "csharp":
-                # Reuse the extractor's authoritative C# visibility rules. A
-                # candidate is valid only when the caller's namespace, using,
-                # or alias resolves this exact receiver name to that node.
-                resolved, _decisive = csharp_resolver.resolve_type_name(
-                    receiver_type,
-                    dict(caller_data, id=caller),
-                    str(caller_data.get("source_file") or ""),
-                )
-                if resolved != candidates[0]:
+            if lang == "objc" and len(candidates) > 1:
+                # A class split @interface(.h)/@implementation(.m) across repos
+                # leaves several same-named candidates; bind the selector to its
+                # sole definition rather than bailing on the collision guard.
+                target = _objc_union_definition(
+                    merged, members_by_relation["method"], candidates, callee)
+                if target is None:
                     continue
-            targets: list[str] = []
-            for relation in _member_relations(lang):
-                targets = members_by_relation[relation].get((candidates[0], callee), [])
-                if targets:
-                    break
-            if len(targets) != 1:
-                continue
-            target = targets[0]
+            else:
+                if len(candidates) != 1:
+                    # The same guard the single-repo resolvers apply: two repos
+                    # declaring the same name is an ambiguity, not a hit.
+                    continue
+                if lang == "csharp":
+                    # Reuse the extractor's authoritative C# visibility rules. A
+                    # candidate is valid only when the caller's namespace, using,
+                    # or alias resolves this exact receiver name to that node.
+                    resolved, _decisive = csharp_resolver.resolve_type_name(
+                        receiver_type,
+                        dict(caller_data, id=caller),
+                        str(caller_data.get("source_file") or ""),
+                    )
+                    if resolved != candidates[0]:
+                        continue
+                targets: list[str] = []
+                for relation in _member_relations(lang):
+                    members = members_by_relation[relation]
+                    for member_key in _member_keys(lang, callee):
+                        targets.extend(members.get((candidates[0], member_key), []))
+                    if targets:
+                        break
+                if len(targets) != 1:
+                    continue
+                target = targets[0]
             if target == caller or merged.has_edge(caller, target):
                 continue
             merged.add_edge(
@@ -236,7 +309,12 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 context="cross_repo",
                 confidence="INFERRED",
                 confidence_score=0.85,
-                source_file=str(caller_data.get("source_file") or ""),
+                # The parked call-site file (the .m), not the caller node's own
+                # source_file (often the .h where the method is declared): the
+                # location below is the call-site line, so pairing it with the
+                # .h would point past the end of an unrelated file. Pre-#3152
+                # graphs have no `file`, so fall back to the caller's file.
+                source_file=str(entry.get("file") or caller_data.get("source_file") or ""),
                 source_location=entry.get("line"),
                 weight=1.0,
                 _src=caller,

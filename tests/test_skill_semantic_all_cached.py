@@ -59,7 +59,9 @@ def test_all_cached_run_reaches_part_c_with_cached_nodes_and_no_stale_chunks(tmp
     b0 = _python_blocks(body, "**Step B0", "**Step B1")
     b3 = _python_blocks(body, "**Step B3", "#### Part C")
     part_c = _python_blocks(body, "#### Part C", "\n### ")[:1]
-    assert len(b0) == 1 and len(b3) == 3 and len(part_c) == 1
+    # b3 spans Step B3 (merge) through Step B3.5 (the partial-read coverage
+    # check added in #3987), so the range carries four blocks, not three.
+    assert len(b0) == 1 and len(b3) == 4 and len(part_c) == 1
 
     corpus = tmp_path / "corpus"
     corpus.mkdir()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import graphify.__main__ as mainmod
+from graphify.cli import EXIT_AMBIGUOUS
 
 
 def _write_graph(tmp_path):
@@ -282,7 +283,7 @@ def test_explain_ambiguous_label_lists_every_candidate(monkeypatch, tmp_path, ca
     assert "Ambiguous" in out
     assert "services/chat/src/application/ports/metrics.port.ts" in out
     assert "services/scraping/src/application/ports/metrics.port.ts" in out
-    assert code == 1
+    assert code == EXIT_AMBIGUOUS
     # It must not present one file as the answer.
     assert "Node: MetricsPort\n  ID:" not in out
 

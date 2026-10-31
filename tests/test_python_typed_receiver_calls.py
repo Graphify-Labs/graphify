@@ -144,6 +144,27 @@ def test_class_not_visible_from_caller_emits_no_edge(tmp_path):
     assert not _has(calls, "run")
 
 
+def test_nested_functions_and_nested_class_methods_reach_the_file(tmp_path):
+    # A nested def's `contains` parent is its enclosing function, and a nested
+    # class's is its outer class: the visibility check must climb to the file.
+    calls, _, _ = _calls(tmp_path, {
+        "client.py": _CLIENT,
+        "use.py": (
+            "from .client import Client\n\n"
+            "def outer():\n    def inner(c: Client):\n        return c.send()\n    return inner\n\n"
+            "class K:\n    def run(self):\n        def callback(c: Client):\n            return c.send()\n"
+            "        return callback\n\n"
+            "def a():\n    def b():\n        def deep():\n            c = Client()\n            return c.send()\n"
+            "        return deep\n    return b\n\n"
+            "class Outer:\n    class Inner:\n        def go(self, c: Client):\n            return c.send()\n\n"
+            "def hidden():\n    def nope(c: 'Unknown'):\n        return c.send()\n    return nope\n"
+        ),
+    })
+    for caller in ("inner", "callback", "deep", ".go"):  # methods are labeled .name()
+        assert _has(calls, caller), caller
+    assert not _has(calls, "nope")
+
+
 def test_duplicate_class_name_emits_no_edge(tmp_path):
     calls, _, _ = _calls(tmp_path, {
         "a/__init__.py": "",

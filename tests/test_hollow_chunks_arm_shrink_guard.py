@@ -79,6 +79,41 @@ def test_a_chunk_that_omitted_files_arms_the_shrink_guard(monkeypatch, tmp_path,
     assert "semantic extraction is incomplete" in capsys.readouterr().err
 
 
+def test_an_omission_with_no_truncation_gets_the_coverage_note(monkeypatch, tmp_path, capsys):
+    """#4101: when every omitted file came back from a chunk that was NOT
+    truncated or hollow, the message must say so explicitly and point at
+    --token-budget, rather than the bare "a re-run will retry them" framing
+    that reads as transient when retrying the same chunk size reproduces the
+    exact same omission every time."""
+    _record_force(monkeypatch)
+    _arm(monkeypatch, tmp_path, uncovered=("GUIDE.md",))
+    _run()
+    err = capsys.readouterr().err
+    assert "0 came back truncated or hollow" in err
+    assert "None of this run's chunks came back truncated" in err
+    assert "--token-budget" in err
+
+
+def test_a_truncated_run_does_not_get_the_coverage_note(monkeypatch, tmp_path, capsys):
+    """Control: when a chunk DID come back truncated/hollow, the #4101 note
+    must stay silent — that case already has a correct, different cause."""
+    _record_force(monkeypatch)
+    _arm(monkeypatch, tmp_path, partial=("GUIDE.md",))
+    _run()
+    err = capsys.readouterr().err
+    assert "None of this run's chunks came back truncated" not in err
+
+
+def test_omission_and_truncation_together_does_not_get_the_coverage_note(monkeypatch, tmp_path, capsys):
+    """When SOME chunks truncated, the omission is no longer provably a pure
+    coverage-at-this-chunk-size gap, so the note must not fire."""
+    _record_force(monkeypatch)
+    _arm(monkeypatch, tmp_path, uncovered=("GUIDE.md",), partial=("GUIDE.md",))
+    _run()
+    err = capsys.readouterr().err
+    assert "None of this run's chunks came back truncated" not in err
+
+
 def test_a_hollow_chunk_arms_the_shrink_guard(monkeypatch, tmp_path, capsys):
     """After every retry a hollow chunk is returned (not raised) with its
     files marked partial; that is the reporter's run 2."""

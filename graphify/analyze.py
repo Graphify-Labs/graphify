@@ -82,8 +82,12 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
         from graphify.build import _is_file_node_label
         if _is_file_node_label(label, source_file):
             return True
-    # Method stub: AST extractor labels methods as '.method_name()'
+    # Method stub: AST extractor labels methods as '.method_name()'; C# methods
+    # carry their owner for display ('Owner.method_name()', #4883).
     if label.startswith(".") and label.endswith("()"):
+        return True
+    from graphify.extractors.csharp import bare_csharp_method_label
+    if bare_csharp_method_label(label, source_file) is not None:
         return True
     # Module-level function stub: labeled 'function_name()' - only has a contains edge
     # These are real functions but structurally isolated by definition; not a gap worth flagging
@@ -197,6 +201,20 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     if "." not in source.split("/")[-1]:
         return True
     return False
+
+
+def _is_contains_only_ast_node(G: nx.Graph, node_id: str) -> bool:
+    """AST declarations (type aliases, enum members, local consts, JSON keys)
+    whose only edge is the structural `contains` from their declaring file are
+    working as designed, not documentation gaps (#4205)."""
+    from graphify.build import _is_ast_tier
+    attrs = G.nodes[node_id]
+    if not _is_ast_tier(attrs):
+        return False
+    if G.degree(node_id) != 1:
+        return False
+    edges = list(G.edges(node_id, data=True))
+    return len(edges) == 1 and edges[0][2].get("relation") == "contains"
 
 
 from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS
@@ -478,7 +496,11 @@ def suggest_questions(
     questions = []
     node_community = _node_community_map(communities)
 
-    # 1. AMBIGUOUS edges → unresolved relationship questions
+    # 1. AMBIGUOUS edges → unresolved relationship questions.
+    # Tagged ``low_confidence=True`` (#4199): the audit trail stays
+    # intact but downstream renderers (report.py) move these into a
+    # separate "Low-confidence Hints" section so they do not compete
+    # with EXTRACTED/INFERRED bridges in the main list.
     for u, v, data in G.edges(data=True):
         if data.get("confidence") == "AMBIGUOUS":
             ul = G.nodes[u].get("label", u)
@@ -488,6 +510,7 @@ def suggest_questions(
                 "type": "ambiguous_edge",
                 "question": f"What is the exact relationship between `{ul}` and `{vl}`?",
                 "why": f"Edge tagged AMBIGUOUS (relation: {relation}) - confidence is low.",
+                "low_confidence": True,
             })
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
@@ -552,6 +575,7 @@ def suggest_questions(
         if G.degree(n) <= 1
         and not _is_file_node(G, n)
         and not _is_concept_node(G, n)
+        and not _is_contains_only_ast_node(G, n)
         and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
@@ -737,12 +761,14 @@ def find_import_cycles(
 
         # Deferred `import(...)` edges are real dependencies but do not form a
         # hard file-level cycle, so they are excluded from cycle detection (#1241).
-        if data.get("deferred"):
-            continue
         # Type-only imports/re-exports (`import type` / `export type ... from`)
         # are erased at compile time - a cycle that closes through one cannot
         # exist at runtime (#3123). The edge itself stays in the graph.
-        if data.get("type_only"):
+        forward = not data.get("deferred") and not data.get("type_only")
+        # An undirected build keeps one edge per file pair, so the other file's
+        # runtime import back is only a stamp on this edge (#4839).
+        reverse = bool(data.get("reverse_import"))
+        if not forward and not reverse:
             continue
 
         src_file_attr = data.get("source_file", "")
@@ -767,7 +793,10 @@ def find_import_cycles(
         if not tgt_file:
             continue
 
-        file_graph.add_edge(src_file_attr, tgt_file)
+        if forward:
+            file_graph.add_edge(src_file_attr, tgt_file)
+        if reverse:
+            file_graph.add_edge(tgt_file, src_file_attr)
 
     if not file_graph.edges():
         return []

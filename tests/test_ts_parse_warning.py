@@ -95,7 +95,7 @@ def test_ts_genuinely_broken_file_still_warns(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "syntax errors" in err
     assert "broken.ts" in err
-    assert re.search(r"first error at line 1", err)
+    assert re.search(r"error region at line 1", err)
 
 
 def test_ts_midfile_breakage_warns_and_keeps_intact_functions(tmp_path, capsys):
