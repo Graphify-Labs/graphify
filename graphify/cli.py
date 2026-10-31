@@ -2867,12 +2867,25 @@ def dispatch_command(cmd: str) -> None:
         no_cluster = False
         args = sys.argv[2:]
         watch_arg: str | None = None
-        for a in args:
+        cli_json_include: list[str] = []
+        i = 0
+        while i < len(args):
+            a = args[i]
             if a == "--force":
                 force = True
+                i += 1
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                i += 1
+                continue
+            if a == "--include-json" and i + 1 < len(args):
+                cli_json_include.append(args[i + 1])
+                i += 2
+                continue
+            if a.startswith("--include-json="):
+                cli_json_include.append(a.split("=", 1)[1])
+                i += 1
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2881,6 +2894,7 @@ def dispatch_command(cmd: str) -> None:
                 print("error: update accepts at most one path argument", file=sys.stderr)
                 sys.exit(2)
             watch_arg = a
+            i += 1
 
         if watch_arg is not None:
             watch_path = Path(watch_arg)
@@ -2898,6 +2912,9 @@ def dispatch_command(cmd: str) -> None:
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
+        if cli_json_include:
+            from graphify.rcfile import set_json_include_override
+            set_json_include_override(cli_json_include)
         from graphify.watch import _rebuild_code
 
         print(f"Re-extracting code files in {watch_path} (no LLM needed)...")
@@ -3787,6 +3804,7 @@ def dispatch_command(cmd: str) -> None:
         cli_resolution: float = 1.0
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
+        cli_json_include: list[str] = []
         cli_timing: bool = False
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
         # disables the incremental gate and skips semantic-cache reads (#1894).
@@ -3881,6 +3899,10 @@ def dispatch_command(cmd: str) -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a == "--include-json" and i + 1 < len(args):
+                cli_json_include.append(args[i + 1]); i += 2
+            elif a.startswith("--include-json="):
+                cli_json_include.append(a.split("=", 1)[1]); i += 1
             elif a == "--postgres" and i + 1 < len(args):
                 cli_postgres_dsn = args[i + 1]; i += 2
             elif a.startswith("--postgres="):
@@ -3912,6 +3934,10 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
+
+        if cli_json_include:
+            from graphify.rcfile import set_json_include_override
+            set_json_include_override(cli_json_include)
 
         _VALID_MODES = {"deep"}
         if extract_mode is not None and extract_mode not in _VALID_MODES:

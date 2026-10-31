@@ -23,6 +23,9 @@ graph serialization rather than a mock classifier.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,10 +36,12 @@ from graphify.extractors.json_config import extract_json
 from graphify.rcfile import (
     activate_language_overrides,
     cache_salt,
+    clear_json_include_override,
     get_json_include,
     json_include_matches,
     load_graphifyrc,
     set_json_include,
+    set_json_include_override,
     set_language_overrides,
 )
 from graphify.watch import _rebuild_code
@@ -152,10 +157,13 @@ def _manifest(root: Path) -> dict:
 def _reset_policy():
     set_language_overrides({})
     set_json_include(())
+    set_json_include_override(None)
+    clear_json_include_override()
     set_active_scan_root(None)
     yield
     set_language_overrides({})
     set_json_include(())
+    clear_json_include_override()
     set_active_scan_root(None)
 
 
@@ -238,6 +246,15 @@ def test_worker_init_forwards_the_policy():
     set_json_include(())
     _worker_init({}, ("config/**/*.json",))
     assert get_json_include() == ("config/**/*.json",)
+
+
+def test_cli_override_survives_rc_activation(tmp_path):
+    (tmp_path / ".graphifyrc").write_text(
+        "json.include=config/**/*.json\n", encoding="utf-8"
+    )
+    set_json_include_override(("hooks/**/*.json",))
+    activate_language_overrides(tmp_path)
+    assert get_json_include() == ("hooks/**/*.json",)
 
 
 def test_extract_json_uses_the_active_policy(tmp_path, monkeypatch):
@@ -342,6 +359,72 @@ def test_enabling_glob_reindexes_unchanged_files_without_force(tmp_path):
     after = _manifest(root)["config/allowlist.json"]
     assert after["language"].startswith("json_include=")
     assert after["ast_hash"] == before["ast_hash"]
+
+
+def test_include_override_beats_the_rc_policy(tmp_path):
+    root = _corpus(tmp_path)
+    (root / ".graphifyrc").write_text(
+        "json.include=config/**/*.json\n", encoding="utf-8"
+    )
+    set_json_include_override(("hooks/**/*.json",))
+    _rebuild(root, force=True)
+    sources = _sources(_graph(root))
+
+    assert "hooks/settings.template.json" in sources
+    assert "config/allowlist.json" not in sources
+    assert "config/registry.json" not in sources
+
+
+def _cli_env() -> dict[str, str]:
+    repo = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo)
+    env["GRAPHIFY_MAX_WORKERS"] = "1"
+    env["GRAPHIFY_NO_TIPS"] = "1"
+    env.pop("GRAPHIFY_OUT", None)
+    env.pop("GRAPHIFY_FORCE", None)
+    return env
+
+
+def test_update_cli_accepts_include_json(tmp_path):
+    root = _corpus(tmp_path)
+    run = subprocess.run(
+        [
+            sys.executable, "-m", "graphify", "update", ".",
+            "--force", "--no-cluster",
+            "--include-json", "config/**/*.json",
+        ],
+        cwd=root,
+        env=_cli_env(),
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stderr
+    sources = _sources(_graph(root))
+    assert "config/allowlist.json" in sources
+    assert "config/registry.json" in sources
+    assert "hooks/settings.template.json" not in sources
+
+
+def test_extract_cli_accepts_include_json(tmp_path):
+    root = _corpus(tmp_path)
+    run = subprocess.run(
+        [
+            sys.executable, "-m", "graphify", "extract", ".",
+            "--code-only", "--no-cluster", "--force",
+            "--include-json", "hooks/**/*.json",
+        ],
+        cwd=root,
+        env=_cli_env(),
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stderr
+    sources = _sources(_graph(root))
+    assert "hooks/settings.template.json" in sources
+    assert "config/allowlist.json" not in sources
 
 
 def test_removing_glob_evicts_the_nodes_without_force(tmp_path):
