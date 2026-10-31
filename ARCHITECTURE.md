@@ -111,6 +111,11 @@ from hiding bridge, inferred-relationship, isolation, and low-cohesion signals.
 The existing candidate order within each type is preserved; if the limit is smaller
 than the number of available types, their generation order determines priority.
 
+`graphify explain` ranks a node's neighbours by edge confidence (`EXTRACTED`,
+then `INFERRED`, then `AMBIGUOUS`) and then by increasing degree, so a
+high-degree hub does not fill the default top-20 cap as the graph grows.
+Equal keys keep collection order.
+
 One test file per module under `tests/`. Run with:
 
 ```bash
