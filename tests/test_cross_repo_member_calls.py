@@ -333,6 +333,40 @@ def test_an_objc_protocol_does_not_answer_a_parked_call():
     assert link_cross_repo_member_calls(G) == 0
 
 
+def test_an_objc_class_split_decl_impl_across_repos_binds_to_the_definition():
+    # `@interface` in one repo's header, `@implementation` in another repo's `.m`:
+    # `_merge_decl_def_classes` folds this within a repo but not across the boundary,
+    # so both surface as `Greeter` and the collision guard would drop the call. The
+    # `.m` definition is the target; the header declaration is not.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[
+            (_declaration("b", "Greeter", "include/Greeter.h"),
+             _method("b", "-greet", source_file="include/Greeter.h")),
+            (_declaration("c", "Greeter", "src/Greeter.m"),
+             _method("c", "-greet", source_file="src/Greeter.m")),
+        ],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "c::greeter_greet")}
+
+
+def test_two_objc_definitions_of_the_same_class_still_bind_nothing():
+    # Two unrelated `Greeter` classes, each with its own `.m` definition, are a real
+    # collision: the split-class union must not paper over the guard it loosened.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[
+            (_declaration("b", "Greeter", "b/Greeter.m"),
+             _method("b", "-greet", source_file="b/Greeter.m")),
+            (_declaration("c", "Greeter", "c/Greeter.m"),
+             _method("c", "-greet", source_file="c/Greeter.m")),
+        ],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+    assert _added_calls(G) == set()
+
+
 def test_the_definition_answers_before_a_same_named_declaration():
     # A C++ class declares `void greet();` in its header (`defines`) and defines
     # it out of line in the `.cpp` (`method`). Both hang off the one folded class

@@ -503,11 +503,12 @@ def test_rust_forward_type_reference_resolves_to_local_declaration(tmp_path):
 
 
 def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path):
-    """#3782: only struct/enum/trait declarations become nodes, so only they may
-    resolve a forward reference. A `type` alias, a `union`, a struct declared in a
-    function body, a name declared nowhere in the file and a generic type that only
-    an `impl` names produce no node of that name here; references to them must keep
-    their sourceless stub instead of being dropped."""
+    """#3782: only file-level type declarations (struct/enum/trait, and since
+    #4285 `type` aliases and unions) become nodes, so only they may resolve a
+    forward reference. A struct declared in a function body, a name declared
+    nowhere in the file and a generic type that only an `impl` names produce no
+    node of that name here; references to them must keep their sourceless stub
+    instead of being dropped."""
     p = tmp_path / "shapes.rs"
     p.write_text(
         "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere, w: &Wrapper<u8>) {}\n"
@@ -534,6 +535,9 @@ def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path)
     }
     for name in ("Alias", "Bits", "Local", "Elsewhere", "Wrapper"):
         assert name in targets, f"reference to {name} was dropped"
+    for name in ("Alias", "Bits"):
+        assert targets[name]["source_file"] == str(p), name
+    for name in ("Local", "Elsewhere", "Wrapper"):
         assert targets[name]["source_file"] == "", name
 
 
@@ -620,13 +624,14 @@ def test_rust_forward_reference_to_a_casefold_colliding_type_resolves_to_it(tmp_
 
 
 def test_rust_forward_reference_keeps_its_stub_when_a_non_type_shares_the_name(tmp_path):
-    """#3782: a `type HANDLE` alias is not a node, and `fn Handle()` beside
-    `struct Handle {}` has the type's exact name, so the two still share one node
-    that walk() gives to whichever comes first. A reference above the
-    declarations keeps the sourceless stub v8's extractor gives it."""
-    for name, user, other, label in (
-        ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE"),
-        ("same_name_fn.rs", "fn user(h: &Handle) {}", "fn Handle() {}", "Handle"),
+    """#3782: `fn Handle()` beside `struct Handle {}` has the type's exact name,
+    so the two still share one node that walk() gives to whichever comes first.
+    A reference above the declarations keeps the sourceless stub v8's extractor
+    gives it. A `type HANDLE` alias is a type node of its own since #4285 (the
+    two types are salted apart), so a reference to it lands on it."""
+    for name, user, other, label, sourced in (
+        ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE", True),
+        ("same_name_fn.rs", "fn user(h: &Handle) {}", "fn Handle() {}", "Handle", False),
     ):
         p = tmp_path / name
         p.write_text(
@@ -639,7 +644,7 @@ def test_rust_forward_reference_keeps_its_stub_when_a_non_type_shares_the_name(t
             for e in r["edges"]
             if e["relation"] == "references" and e["target"] in by_id
         ]
-        assert targets == [(label, "")], name
+        assert targets == [(label, str(p) if sourced else "")], name
 
 
 def test_rust_forward_reference_resolves_when_no_other_item_shares_the_id(tmp_path):
@@ -1044,6 +1049,61 @@ def test_sql_procedural_body_trigger_is_recovered(tmp_path):
     assert sum(1 for e in r["edges"] if e["relation"] == "triggers") == 1
     node_ids = {n["id"] for n in r["nodes"]}
     assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_mysql_current_timestamp_parens_table_is_recovered(tmp_path):
+    """MySQL/MariaDB `DEFAULT current_timestamp()` / `ON UPDATE
+    current_timestamp()`: tree-sitter-sql rejects the parentheses, so the
+    whole CREATE TABLE lands in an ERROR node and the table was dropped —
+    the only trace left was the sourceless stub minted by other tables'
+    REFERENCES to it (#4613).
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "repro.sql"
+    p.write_text(
+        "CREATE TABLE foo (\n"
+        "  created_at datetime NOT NULL DEFAULT current_timestamp(),\n"
+        "  updated_at datetime DEFAULT NULL ON UPDATE current_timestamp(),\n"
+        "  KEY idx_x (created_by)\n"
+        ");\n"
+        "\n"
+        "CREATE TABLE after_table (\n"
+        "  id int NOT NULL,\n"
+        "  foo_id int REFERENCES foo (id)\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert sorted(by_label) == ["after_table", "foo", "repro.sql"], sorted(by_label)
+    # The recovered table is a real sourced node, not the sourceless stub a
+    # REFERENCES would otherwise mint for it.
+    assert by_label["foo"]["source_file"] == str(p)
+    # ... so the FK from after_table resolves onto it.
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    assert (by_label["after_table"]["id"], "references", by_label["foo"]["id"]) in edges
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_commented_out_create_table_is_not_recovered(tmp_path):
+    """The table recovery runs over the comment-masked source: a commented-out
+    CREATE TABLE in an error-bearing file must not fabricate a node.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "-- CREATE TABLE ghost (\n"
+        "--   id int\n"
+        "-- );\n"
+        "CREATE TABLE foo (\n"
+        "  created_at datetime NOT NULL DEFAULT current_timestamp()\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    labels = sorted(n["label"] for n in r["nodes"])
+    assert labels == ["foo", "schema.sql"], labels
 
 
 def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):

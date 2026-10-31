@@ -3846,3 +3846,226 @@ pre-lifecycle run; neither new helper adds a diagnostic. A preliminary repeat
 without selected interpreter discovery hit the Windows Store alias and is
 retained as invalid-profile evidence rather than product type evidence. New-source hosted
 platform execution and upstream maintainer approval remain unverified.
+
+
+## Upstream 099 integration — INC-QML-60
+
+Status: **Local source corrections and static checks complete; packaging,
+graph and hosted acceptance pending**. This
+integration joins contribution source `9ccfb44c25d52e743cf7fb03fdd098a8e649e0ed`
+with upstream 0.9.99 `a0946f962af31b19bff941b453f6dae9a7077c7a`. The
+fork-default target is separately bound to `v8`; neither parent nor the earlier
+INC-QML-59 results prove the new integration. [D37](../docs/qt-qml/ARCHITECTURE.md#d37--current-upstream-compatibility-and-fork-default-handoff),
+[the design](../docs/qt-qml/DESIGN.md#upstream-0999-identity-and-update-contracts--inc-qml-60)
+and [the acceptance matrix](../docs/qt-qml/PLAN.md#inc-qml-60--current-upstream-integration-and-fork-default-delivery)
+own scope, source/cache lifetime and the final delivery boundary. No new
+requirement or acceptance identity is allocated.
+
+### Exact new regression assignments
+
+Each node below is relative to the `tests/` directory. A listed parameter suffix
+is part of the collected identity; each suffix is a separate case. The five
+ordinary modules contribute **36 distinct passing identities** in the recorded
+focused receipts: cache nine, graph five, path direction four, CLI/MCP output two
+and discovery/watch sixteen. These are scoped executions, not one full-suite
+invocation or whole-criterion verification.
+
+| Acceptance criteria | Exact executable identities and observed boundary |
+| --- | --- |
+| REQ-QML-011-AC01/AC03/AC04; REQ-QML-014-AC03 | `test_qt_upstream099_cache_contract.py::test_req_qml011_ac01_ac03_ac04_upstream099_retires_both_predecessors[23]` and `[31]` perform actual predecessor writes, current-schema misses/retirement and fresh/warm reuse while preserving independent semantic-cache bytes. Two passed. |
+| REQ-QML-003-AC04; REQ-QML-014-AC03 | `test_qt_upstream099_cache_contract.py::test_req_qml003_ac04_qml014_ac03_colliding_cpp_file_preserves_native_owners` preserves actual salted class ownership, distinct constructor identities, native Qt emission/access owners, references and cold/warm JSON reload rather than binding to the colliding file. One passed. |
+| REQ-QML-014-AC03 | `test_qt_upstream099_cache_contract.py::test_req_qml014_ac03_cpp_reference_does_not_borrow_an_unrelated_namespace` rejects generic-registry basename fallback without lexical native authority. One passed. |
+| REQ-QML-014-AC03 | `test_qt_upstream099_cache_contract.py::test_req_qml014_ac03_cpp_alias_reference_needs_lexical_authority[False]` and `[True]` retain sibling-namespace rejection and an explicitly written qualified alias. Two passed. |
+| REQ-QML-003-AC04; REQ-QML-014-AC03 | `test_qt_upstream099_cache_contract.py::test_req_qml003_ac04_qml014_ac03_alias_file_collision_keeps_containment` retains actual file containment after alias allocation salts the declaration away from the file ID. One passed. |
+| REQ-QML-014-AC03 | `test_qt_upstream099_cache_contract.py::test_req_qml014_ac03_reused_alias_node_cannot_supply_another_scope[False]` and `[True]` reject borrowed generic alias IDs across namespaces on separate lines and the same physical line. The allocation event, not line equality, supplies authority. Two passed. |
+| REQ-QML-010-AC02; REQ-QML-018-AC04 | `test_qt_upstream099_graph_contract.py::test_req_qml010_ac02_qml018_ac04_alias_and_retained_import_survive_roundtrip[raw]` and `[clustered]` resolve aliases before generic stub minting while retaining the protected import and serialized/reloaded ownership. Two passed. |
+| REQ-QML-018-AC06 | `test_qt_upstream099_graph_contract.py::test_req_qml018_ac06_raw_retention_rejection_precedes_alias_mutation` rejects corrupted reserved ownership before alias/stub mutation. One passed. |
+| REQ-QML-018-AC06 | `test_qt_upstream099_graph_contract.py::test_req_qml018_ac06_semantic_fold_does_not_excuse_authored_external_loss` admits genuine folded AST twins but rejects loss of an authored external-looking record. One passed. |
+| REQ-QML-014-AC03 | `test_qt_upstream099_graph_contract.py::test_req_qml014_ac03_csharp_labels_and_qt_retention_both_finalize` checks incoming C# owner labels together with Qt retention cleanup in the actual graph finalization path. One passed. |
+| REQ-QML-010-AC04 | `test_qt_upstream099_path_direction.py::test_req_qml010_ac04_typed_membership_requires_explicit_undirected_query[False-False]`, `[False-True]`, `[True-False]` and `[True-True]` exercise actual producer/JSON typed membership, both stored graph profiles and legacy links whose endpoint alone carries contract evidence. Default traversal retains logical direction; explicit undirected traversal remains available. Four passed. |
+| REQ-QML-010-AC04 | `test_qt_upstream099_cli_path.py::test_req_qml010_ac04_path_keeps_sources_before_one_final_confidence[generic-scored]` and `[qml-extracted]` exercise the public CLI and shared MCP text owner using persisted generic and real build/QML facts. Route and bounded source evidence precede exactly one final weakest-hop summary. Two passed. |
+| REQ-QML-011-AC04; REQ-QML-012-AC02, accepted-context sub-boundary | `test_qt_upstream099_watch_gate.py::test_req_qml011_ac04_qml012_ac02_fast_gate_requires_current_qt_acceptance[missing-state-False]`, `[missing-state-True]`, `[import-roots-False]` and `[import-roots-True]` show that equal source hashes cannot bypass missing or changed Qt acceptance in raw/clustered profiles. Four passed. |
+| REQ-QML-012-AC02; REQ-QML-011-AC04, required update-cohort sub-boundary | `test_qt_upstream099_watch_gate.py::test_req_qml012_ac02_qml011_ac04_failed_qt_cohort_cannot_advance_skip_stamp[False]` and `[True]` force the real staged Qt-state persistence owner to fail, retain the prior accepted product cohort and skip stamp, then verify repaired retry. Two passed. This does not make the optional stamp writer atomic or establish extract-wide rollback. |
+| REQ-QML-002-AC01; REQ-QML-014-AC03 | `test_qt_upstream099_watch_gate.py::test_req_qml002_ac01_qml014_ac03_yaml_and_qt_metadata_share_source_admission[settings.yaml]`, `[settings.yml]`, `[Main.qml]`, `[Types.qmltypes]`, `[project.cmake]`, `[project.pro]`, `[project.pri]`, `[resources.qrc]`, `[qmldir]` and `[CMakeLists.txt]` retain incoming YAML classification and existing exact Qt input admission. Ten passed. |
+
+### Focused evidence and retained failures
+
+The source profile is the existing selected native Python development environment
+with package 0.9.99 and its resolved optional parser dependencies. Tests use
+`python -X utf8 -m pytest`, explicit module selections, `-q --tb=short -rs -p
+no:cacheprovider` and isolated `--junitxml` destinations. Exact selections,
+source/dependency snapshots, individual identities, outcomes and failure text
+remain in ignored run receipts. No analyzed project is built or executed, no Qt
+SDK is required, and the global/application installations are unchanged.
+
+The cache/extractor `focused-freeze` selection passes 175 identities; its disjoint
+`generic-freeze` selection passes 227 and skips one unsupported upstream C++
+fixture kind. Their deduplicated total is **403 identities: 402 passed, one
+skipped**. Original cache replacement-failure injection and historical 0.9.92/
+0.9.94 simulations remain intact; current assertions use combined AST schema 32
+while Qt policy remains 26. Discovery/watch `green-gate` passes all sixteen new
+cases; `owned-regressions` passes 418 and retains twelve inherited filesystem/
+platform skips across 430 identities. Those two watch selections are not added
+as if disjoint.
+
+Separate graph-owner receipts record `core-graph` 320 passed/one skipped,
+`path-confidence` 96 passed, `qml-mcp` two passed and `typed-direction-green`
+forty passed. The two `cli-path` identities pass independently. These selections
+overlap and have no asserted additive grand total. Their skips are not evidence
+of target-platform execution.
+
+Retained red-before receipts cover **15 distinct identities in the new modules**:
+seven cache/native identity cases, four typed-direction cases and four Qt
+no-change-gate cases. Repeated observations of the colliding class case count
+once. All fifteen pass in their applicable corrected focused runs. The original
+failures include lost constructor ownership, a file's overwritten location,
+wrong-scope class/alias binding, lost alias containment and same-line alias reuse;
+positive qualified-alias coverage also prevents rejection from becoming a blanket
+loss of supported references. These are ordinary collected regressions, not
+excluded audit probes or expected failures.
+
+The later `consumers-final` invocation remains **failed: 113 passed and four
+failed across 117 unique identities**. Its unresolved identities are
+`test_upstream_qt_path_integration.py::test_req_qml_010_ac03_qualified_native_path_preserves_direction[False]`
+and `[True]`,
+`test_upstream_qt_path_integration.py::test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess`,
+and
+`test_qt_mcp_consumers.py::test_qml016_ac04_http_metadata_search_keeps_connection_reference_semantics`.
+The original evidence is retained; passing neighboring cases do not clear them.
+
+The applied expectation correction aligns those older consumers with upstream's
+intended numeric-confidence display. Raw native source facts own `INFERRED`;
+`export.to_json` supplies the existing missing-score default `0.55` to saved
+links, and path renderers display that stored score as `[INFERRED 0.55]`. It retains the raw confidence assertion alongside exact rendered score and
+endpoint, source-location, relation-kind, forward/reverse and explicit-undirected
+assertions. The rejection fixture must drain extraction/cache progress before
+capturing the actual CLI action; its ambiguity exit remains 3 and no guessed
+route is accepted. This is a fixture capture boundary, not suppression of
+production diagnostics. The exact failures pass the corrected real CLI/HTTP replay; the stdio session
+also passes with an alias-serialized `isError` check across the admitted SDK
+object APIs. A real SDK error result is separately rejected. A first prepared
+assertion incorrectly required a raw producer score (three failures); that probe
+is retained and corrected at the export boundary without adding fabricated facts.
+
+### Same-tool typing comparison and correction
+
+Independent pristine archives of upstream `a0946f962` and premerge contribution
+`9ccfb44c` use the **same Pyright 1.1.414 and canonical development dependencies**
+as the working-source run. Archives are produced from Git blobs with
+command-local `core.autocrlf=false` and `core.eol=lf`; they contain the tracked
+source tree, no Git checkout metadata and no locally copied configuration.
+Pyright uses each archive's own `pyproject.toml` and the explicitly selected
+Python interpreter. Neither archive executes analyzed project code.
+
+The initial frozen working source reports **690 errors/898 files**; upstream reports **679/580**;
+the premerge contribution reports **685/856**. Every run has zero warnings.
+Comparison uses a multiset of relative path, rule and exact message rather than
+line shifts or raw added/removed output. Of the thirteen occurrences absent from
+upstream, twelve occur in the independently checked premerge contribution. All
+but **one** working occurrence match at least one parent: the new
+`cpp_constructors.py` optional-record subscript diagnostic. The legacy worker
+tuple diagnostic and eleven existing test/probe diagnostics are not introduced
+by this merge.
+
+The applied minimal narrowing correction places `if not record: continue` before the
+allocated-owner lookup. It exposes the existing None/empty rejection to static
+narrowing without changing successful constructor ownership or mutating AST
+facts. The final whole-repository Pyright run reports **689 errors/899 files**, zero
+warnings. Relative path/rule/message multiset comparison against the maximum
+union of both independently executed parent baselines finds **zero new merge-
+owned occurrences**. Native/cache/provider/shared replay passes 219 cases,
+including all nine original cache cases. The global type gate still exits 1;
+these inherited diagnostics remain unresolved. Historical Pyright 1.1.409 counts remain historical;
+they are not numerically compared as an equivalent tool baseline.
+
+### Full invocation and diagnosed corrections
+
+The retained full invocation (`python -X utf8 -m pytest tests/ -q --tb=short
+-rs -p no:cacheprovider --junitxml=<receipt>`) ends **12,738 passed, 16 failed,
+184 skipped and one expected failure**. Its source, dependency, native-fixture,
+unrelated coverage/results and parent snapshots are unchanged throughout.
+
+Five failures assume the obsolete shared Windows Gemini/agents destination.
+Upstream #2800 now gives Gemini its own `.gemini/skills` tree on every OS.
+`test_install_references.py::test_gemini_install_references_all_resolve[Windows]`,
+`test_skill_auto_refresh.py::test_every_stale_platform_is_refreshed_not_only_the_detected_one[Windows]`,
+`test_skill_auto_refresh.py::test_a_stale_gemini_skill_gets_the_warning_too[Windows]`,
+and `test_uninstall_scope.py`'s `test_bare_call_still_removes_global[Windows-gemini]`
+and `test_remove_user_skill_opt_in_with_project_dir[Windows-gemini]` retain real
+install/reference, refresh/stamp/diagnostic and project/global removal checks at
+the correct independent owner. Incoming agent-content retention regressions stay
+intact. Their whole-module frozen replay passes **97 with four inapplicable or
+Windows symlink skips**; all recorded inputs/dependencies are unchanged. An
+initial concurrent replay also passes 97 but its global diff guard observes an
+independent authorized consumer edit, so it is retained separately and does not
+establish isolated source integrity. Applies to REQ-CORE-001-AC02/AC03/AC04.
+
+The MCP stdio SDK attribute rename accounts for one failure. The real protocol
+alias remains `isError`; `test_qt_mcp_stdio.py::test_qml013_ac04_sdk_tool_error_is_rejected`
+uses an actual SDK error result and must reject it. Together with the four
+confidence/capture corrections above, all three consumer modules pass eight
+cases. MCP 2.3.0 is executed; runtime execution under an older SDK is not claimed.
+Applies to REQ-QML-013-AC04 and REQ-QML-010-AC03/AC04.
+
+Two `test_qt_typed_provider_adoption.py::test_req_qml018_ac04_cyclic_and_oversized_child_paths_stay_unresolved`
+cases expose a real producer defect: checking the final callable marker during
+the AST walk retains a forward-declaration line for a complete class body. The
+engine's existing allocation-role set now authorizes complete-body location
+replacement; exact Qt source-span validation and `QT_CPP_LIMIT` remain intact.
+`test_qt_upstream099_forward_identity.py::test_req_qml003_ac02_ac04_qml018_ac04_forward_role_preserves_complete_body`
+executes `[LF-Backend-native.h]`, `[LF-Hpp-native.hpp]`,
+`[CRLF-Backend-native.h]` and `[CRLF-Hpp-native.hpp]`. All four fail at the
+actual direct-producer proof before correction, then pass direct producer,
+BOM/Unicode byte ranges, distinct file L1/class L4 ownership, cold/warm facade,
+native QML endpoint and serialized/reloaded facts. The new module is 85 lines.
+These four extend the five-module 36-case inventory above to six modules and
+40 identities. Applies to REQ-QML-003-AC02/AC04, REQ-QML-018-AC03/AC04 and
+REQ-QML-014-AC03.
+
+Four `test_upstream_qt_shared_integration.py` cases instead have stale blanket
+no-`Hidden` assertions. Upstream emits a sourced typedef alias at the original
+location; the corrected checks require its file containment while rejecting
+anonymous-member leakage and guessed native class/registration authority. All
+Backend endpoint, union member and manual/watch stale-member checks remain.
+The six original failures reproduce before correction. Final native/cache/
+provider/shared selection passes **219**, and a disjoint generic selection
+passes **227 with one unsupported upstream C++ fixture skip**: 447 unique
+identities, 446 passed and one skipped, with input/dependency/coverage integrity.
+
+Both actual CLI schema23→32 upgrade profiles (`extract` and `update`) rebuild
+unchanged public mixed inputs, match their own same-root cold saved graph
+(**32 nodes/34 edges**, all factual attributes) and repeat without changing the
+accepted cohort bytes or graph mtime. QML component/invokable/property bridges
+retain their exact native targets and direction. Public collision file IDs agree
+across both versions; no changed file-ID recipe is claimed. Initial probe errors
+were fixture selectors/hash-seed re-execution assumptions, not product failures.
+One new old-consumer Python bytecode file is retained; no original consumer file
+changes or disappears, and the corrected baseline stays unchanged. The all-extras
+probe physically blocks the inherited optional tokenizer's first-use network
+lookup and records its caught heuristic fallback. This is not a zero-network-
+attempt claim; the later isolated QML-only wheel profile is a separate boundary.
+
+Whole-repository Ruff passes. All five separately invoked skillgen validators
+pass after authoritative generation and `--bless`; no hand-edited generated
+output or relaxed 800-line core bound is used. The generated core is 799 lines.
+The expected failure is the inherited two-manifest React reference-stub case;
+platform, privilege, service, optional parser/oracle and live-provider exclusions
+remain explicit skips, not passes.
+
+The final exact source-gate selection passes **56**: all **46** workflow-listed
+real integration identities and ten production gate rejection controls. Its
+identity audit agrees with actual collection. The final consumer selection,
+replayed after the producer fix, passes **119**, including the complete corrected
+consumer modules and native/typed direction, confidence, repeated relations and
+export/reload. These overlapping receipts are not summed as new unique cases.
+
+### Integration-owner completion fields
+
+| Evidence boundary | Required final record |
+| --- | --- |
+| Full source and corrections | Full invocation 12,738 passed/16 failed/184 skipped/one expected failure; every original failed identity passes its corrected replay. Exact-case union: 12,944 identities, 12,759 passed/184 skipped/one inherited expected failure, no unresolved executed failure. This is combined evidence, not a green full invocation. |
+| Final static and generated resources | Ruff passes. Pyright1.1.414 reports689 inherited errors/899 files; same-tool parent multiset comparison finds no new merge-owned occurrence. Authoritative generation and all five individual validators pass; 799-line core bound retained. Advisory scanner acceptance is not newly established. |
+| Packaging/consumer | Bind source-built wheel hash, package-file/raw-Git match counts, isolated installed parser/CLI evidence, rejection retention, recovery, no-change behavior, dependency identity and cleanup to the final source. |
+| Repository graph | Record the required AST-only update command, terminal result, backup and output counts. Navigation freshness is distinct from correctness and application adoption. |
+| Review/delivery | Reread source/default/upstream target identities; record PR URLs, head/base/tested checkout, workflow/event/run and actual conclusions. Fork-default and upstream review are separate. No merge is authorized by this evidence record. |
+| Maintenance schedule | Record the recurring check's actual saved configuration and readback. Preserve existing application installations and unrelated saved state; prepare reviewed updates without silent merge or protection changes. |

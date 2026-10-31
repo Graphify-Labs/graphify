@@ -928,3 +928,175 @@ The header helper measures 85 physical lines and its new cache/header regression
 module 136. New handwritten production/test modules retain the ordinary 300-line
 ceiling. Final source measurements and integration-wide verification are checked
 at handoff; the allowances do not turn skipped or unexecuted checks into passes.
+
+
+## Upstream 0.9.99 integration owners — INC-QML-60
+
+[D37](ARCHITECTURE.md#d37--current-upstream-compatibility-and-fork-default-handoff)
+and the [identity/update design](DESIGN.md#upstream-0999-identity-and-update-contracts--inc-qml-60)
+describe the Qt/QML `9ccfb44c` / upstream 0.9.99 `a0946f96` integration.
+These are the reconciled owners; predecessor schema, size and verification
+snapshots above remain historical. Local focused proof is recorded in
+[traceability](../../tests/TRACEABILITY.md); a successful focused batch does not
+establish full-suite, hosted, clean-install, merged-result or application proof.
+
+| Owner and boundary | Combined responsibility and compatibility seam |
+| --- | --- |
+| Cache maintainer: `cache.py` | AST schema 32 retires fork 23 and incoming 31 facts under the existing namespace policy. Semantic-cache lifetime remains independent; Qt analysis policy stays 26. Existing parser/package/override keying and rejected-write retention remain authoritative. |
+| Extractor facade maintainer: `extract.py` | Retain root-aware Qt input/diagnostic and provenance transport together with incoming declarations, file IDs, rationale redaction and deliberate declined-source handling. Internal run controls are not public source facts. |
+| Generic extractor maintainer: `extractors/engine.py`, `cpp_identity.py`, `cpp_constructors.py` | Generic allocation supplies actual class IDs and lexical alias authority to one run-local `CppIdentity` index. Immutable AST records remain unchanged. Constructor IDs keep their lexical owner/signature recipe; parent links and Qt native sites use the actual allocated class ID. A known alias ID alone cannot authorize a different namespace/scope, including same-line declarations. Class-body source updates cannot overwrite a collided file node, and alias containment follows actual allocation. |
+| Constructor augmentation interface | `augment_cpp_constructors(root, source, nodes, edges, path, *, identities=None)` accepts the engine's already-bound index. Standalone callers retain the fresh-index default; no ambient mutable root or second generic-allocation owner is introduced. Unsupported identity retains the conservative unsourced-reference path. |
+| Discovery/watch maintainers: `detect.py`, `watch.py` | Retain incoming YAML/YML admission and existing Qt metadata discovery. The early no-change shortcut additionally requires `not qt_full_refresh`. Required graph/root/manifest/Qt-state cohort publication precedes optional upstream build-state stamping. A missing/mismatching optional stamp costs a rebuild; it cannot accept an unpublished Qt state. |
+| Graph assembly maintainer: `build.py` | Validate Qt retained context before mutation; resolve incoming old-stem/file aliases before one external-stub mint. Preserve strict placeholder identity, incoming folded semantic accounting, distinct relation/evidence transport and Qt orphan retention. Incoming file/C# label finalization and retained context both survive the final graph. |
+| Filesystem maintainer: `paths.py` | Preserve owned read-only replacement/mode restoration and incoming long-path transport under the existing explicit persistence owners. No new write owner or path-key convention is added. |
+| Path/MCP maintainer: `serve.py` | `_path_search_graph(G, undirected)` is the single search-policy owner. Source-backed typed Qt/QML edge or endpoint contracts prevent implied reverse membership; generic reverse `contains` navigation and explicit undirected opt-in remain. Existing multiple relationship/provenance, equal-length weakest-confidence selection and reload semantics remain authoritative. |
+| CLI/publication maintainer: `cli.py` | CLI delegates search policy to the same `_path_search_graph` owner as MCP. Both render route, bounded source evidence, then the final weakest-hop confidence summary. Numeric `INFERRED 0.55` evidence remains visible; neither source locations nor original rejection/empty-action-output assertions are removed to satisfy an old positional/string expectation. |
+
+The new graph-contract, typed-membership and CLI regressions exercise actual
+assembly, public consumers and serialized reload. The membership cases use real
+QML producer facts, both storage modes and legacy edge-metadata omission; edge
+or endpoint contract authority, not filename or label spelling, establishes
+orientation. Existing native-forward/reverse and generic C# reverse-containment
+coverage remains applicable. Expected text/capture alignment belongs to the
+same documented numeric-confidence contract, not a change to source confidence.
+
+### Current integration-only cohesion allowances
+
+This inventory supersedes the earlier increment ceilings for the files listed
+below. It covers changed handwritten Python files against Qt/QML `9ccfb44c`;
+intentional corpus fixtures and generated assistant output are outside the
+source-file limit. The measurement uses physical lines at the frozen integration
+source. A ceiling permits only the stated reconciliation, not unrelated growth.
+The default for new handwritten production/test modules remains 300 lines.
+
+| Owner | File | Measured lines / ceiling | Reason and extraction exit |
+| --- | --- | --- | --- |
+| Graph assembly maintainer | `graphify/build.py` | 3,244 / 3,260 | Alias/stub order, strict saved-data protection and typed retention remain one assembly boundary. Extract one characterized raw-loader/finalization responsibility when its next cohesive change needs growth. |
+| Filesystem maintainer | `graphify/paths.py` | 702 / 720 | Long-path transport coexists with owned replacement and mode restoration. A future split must first characterize path identity and actual replacement failure/recovery. |
+| Path/MCP maintainer | `graphify/serve.py` | 3,480 / 3,500 | Shared direction policy, source evidence and confidence remain with current query consumers. Extract a characterized search/render responsibility without duplicating mutable graph/search ownership. |
+| Cache maintainer | `graphify/cache.py` | 1,947 / 1,950 | Combined schema/keying and retained-state policy remain in the existing cache owner. Separate a characterized cache responsibility only after proving lifetime, rejection and recovery parity. |
+| Extractor facade maintainer | `graphify/extract.py` | 11,663 / 11,700 | Preserve incoming/fork transport and existing facade direction. Follow the migration playbook for one characterized producer/transport responsibility. |
+| Generic extractor maintainer | `graphify/extractors/engine.py` | 11,007 / 11,050 | Actual allocated IDs, lexical authority and constructor/Qt joins share one analysis run. A future characterized extraction must preserve allocation order, immutable records and facade/child dependency direction. |
+| Discovery maintainer | `graphify/detect.py` | 3,248 / 3,260 | Incoming admission and Qt metadata retain one corpus boundary. Extract a characterized admission responsibility without a second ignore/discovery implementation. |
+| Watch/publication maintainer | `graphify/watch.py` | 3,385 / 3,400 | Qt refresh gating and optional-stamp ordering stay with accepted-product lifetime. Characterize event, failure, retry and persistence order before a cohesive lifecycle extraction. |
+| CLI/publication maintainer | `graphify/cli.py` | 5,534 / 5,550 | Shared search delegation and source/confidence rendering coexist with current publication contracts. Extract a characterized command boundary when growth is next required; persistence authority stays explicit. |
+
+The remaining changed oversized owners are inventoried exhaustively below.
+`Incoming` means the Git-normalized working contents match the selected upstream
+0.9.99 blob; `Combined` means the integration also retains fork content. This
+classification is an ownership inventory, not a raw-byte package/source audit.
+For each row the current line count is also its permitted ceiling: no additional
+growth is granted. Compact owner codes carry the following explicit reasons and
+extraction exits:
+
+- **C — CLI dispatch maintainer:** preserve current command/argument dispatch;
+  extract one characterized command family with unchanged public invocation and
+  error behavior before further growth.
+- **G — graph-processing maintainer:** retain the named analysis, join,
+  deduplication or serialization responsibility and its incoming contracts;
+  extract one characterized pass with stable IDs, source evidence, relation
+  multiplicity, rejection and durable-output parity before further growth.
+- **L — language-extractor maintainer:** adopt upstream language/type-resolution
+  behavior with existing facade/child direction; use the exact migration playbook
+  for a separately characterized one-language or resolver responsibility.
+- **P — platform/integration maintainer:** preserve current install, hook,
+  provider, repository-ingest or security boundary; characterize platform,
+  credential/redaction, foreign-entry, failure and cleanup outcomes before
+  extracting one cohesive responsibility.
+- **R — report/document-consumer maintainer:** retain the current report, tree
+  view or wiki ownership; characterize source/display separation, reload and
+  output-preservation behavior before extracting one render/ingest responsibility.
+- **T — component-regression maintainer:** retain the named component's incoming
+  and fork fixture/assertion families; characterize production seams, case
+  identity, collection and rejection coverage before moving one coherent case
+  family. A size-only split or assertion reduction is not an exit.
+- **S — generated-guidance maintainer:** retain generator and authoritative
+  fragment ownership; characterize transport, snapshots, multiset and budget
+  invariants before extracting one generation pass. Generated output must still
+  be regenerated through the upstream tool.
+
+| File | Measured lines / ceiling | Owner | Integration basis |
+| --- | --- | --- | --- |
+| `graphify/__main__.py` | 1,116 / 1,116 | C | Combined |
+| `graphify/affected.py` | 457 / 457 | G | Combined |
+| `graphify/analyze.py` | 843 / 843 | G | Incoming |
+| `graphify/cross_repo_calls.py` | 325 / 325 | G | Incoming |
+| `graphify/dedup.py` | 1,807 / 1,807 | G | Incoming |
+| `graphify/export.py` | 1,494 / 1,494 | G | Combined |
+| `graphify/extractors/cobol.py` | 314 / 314 | L | Incoming |
+| `graphify/extractors/commonlisp.py` | 582 / 582 | L | Incoming |
+| `graphify/extractors/csharp.py` | 654 / 654 | L | Incoming |
+| `graphify/extractors/dart.py` | 618 / 618 | L | Incoming |
+| `graphify/extractors/fortran.py` | 440 / 440 | L | Incoming |
+| `graphify/extractors/go.py` | 925 / 925 | L | Incoming |
+| `graphify/extractors/julia.py` | 503 / 503 | L | Incoming |
+| `graphify/extractors/markdown.py` | 634 / 634 | L | Incoming |
+| `graphify/extractors/objc.py` | 815 / 815 | L | Incoming |
+| `graphify/extractors/ocaml.py` | 372 / 372 | L | Incoming |
+| `graphify/extractors/pascal.py` | 720 / 720 | L | Incoming |
+| `graphify/extractors/powershell.py` | 617 / 617 | L | Incoming |
+| `graphify/extractors/resolution.py` | 4,386 / 4,386 | L | Combined |
+| `graphify/extractors/robot.py` | 315 / 315 | L | Incoming |
+| `graphify/extractors/rust.py` | 989 / 989 | L | Incoming |
+| `graphify/extractors/solidity.py` | 720 / 720 | L | Incoming |
+| `graphify/extractors/sql.py` | 993 / 993 | L | Incoming |
+| `graphify/extractors/terraform.py` | 511 / 511 | L | Incoming |
+| `graphify/extractors/vbnet.py` | 437 / 437 | L | Incoming |
+| `graphify/extractors/verilog.py` | 401 / 401 | L | Incoming |
+| `graphify/hooks.py` | 1,254 / 1,254 | P | Incoming |
+| `graphify/install.py` | 2,865 / 2,865 | P | Combined |
+| `graphify/llm.py` | 3,910 / 3,910 | P | Incoming |
+| `graphify/prs.py` | 822 / 822 | P | Incoming |
+| `graphify/report.py` | 428 / 428 | R | Combined |
+| `graphify/security.py` | 518 / 518 | P | Incoming |
+| `graphify/tree_html.py` | 689 / 689 | R | Incoming |
+| `graphify/wiki.py` | 481 / 481 | R | Incoming |
+| `tests/test_build.py` | 2,173 / 2,173 | T | Incoming |
+| `tests/test_chunking.py` | 1,006 / 1,006 | T | Incoming |
+| `tests/test_cli_export.py` | 1,324 / 1,324 | T | Incoming |
+| `tests/test_cpp_nested_and_cli.py` | 472 / 472 | T | Incoming |
+| `tests/test_cross_repo_member_calls.py` | 659 / 659 | T | Incoming |
+| `tests/test_csharp_interface_dispatch.py` | 316 / 316 | T | Incoming |
+| `tests/test_dart.py` | 821 / 821 | T | Incoming |
+| `tests/test_dedup.py` | 2,396 / 2,396 | T | Incoming |
+| `tests/test_detect.py` | 4,665 / 4,665 | T | Incoming |
+| `tests/test_dotnet.py` | 773 / 773 | T | Incoming |
+| `tests/test_export.py` | 1,710 / 1,710 | T | Combined |
+| `tests/test_extract.py` | 6,631 / 6,631 | T | Combined |
+| `tests/test_file_id_collision_4854.py` | 386 / 386 | T | Incoming |
+| `tests/test_hook_guard.py` | 568 / 568 | T | Incoming |
+| `tests/test_hooks.py` | 2,177 / 2,177 | T | Combined |
+| `tests/test_import_extension_resolution.py` | 608 / 608 | T | Incoming |
+| `tests/test_install.py` | 2,006 / 2,006 | T | Combined |
+| `tests/test_install_references.py` | 616 / 616 | T | Combined |
+| `tests/test_kotlin_grammar.py` | 778 / 778 | T | Incoming |
+| `tests/test_language_override_lifecycle.py` | 307 / 307 | T | Combined |
+| `tests/test_languages.py` | 6,347 / 6,347 | T | Combined |
+| `tests/test_llm_backends.py` | 1,845 / 1,845 | T | Incoming |
+| `tests/test_multilang.py` | 1,933 / 1,933 | T | Incoming |
+| `tests/test_opencode_plugin_refresh.py` | 436 / 436 | T | Incoming |
+| `tests/test_pascal.py` | 497 / 497 | T | Incoming |
+| `tests/test_path_type_member.py` | 317 / 317 | T | Incoming |
+| `tests/test_prs.py` | 817 / 817 | T | Incoming |
+| `tests/test_rationale.py` | 693 / 693 | T | Incoming |
+| `tests/test_security.py` | 598 / 598 | T | Incoming |
+| `tests/test_serve.py` | 2,137 / 2,137 | T | Incoming |
+| `tests/test_serve_http.py` | 584 / 584 | T | Incoming |
+| `tests/test_skill_auto_refresh.py` | 573 / 580 | T | Combined |
+| `tests/test_terraform.py` | 569 / 569 | T | Incoming |
+| `tests/test_update_no_change_gate.py` | 363 / 363 | T | Incoming |
+| `tests/test_vbnet_extractor.py` | 384 / 384 | T | Incoming |
+| `tests/test_watch.py` | 5,661 / 5,661 | T | Combined |
+| `tools/skillgen/gen.py` | 1,660 / 1,660 | S | Combined |
+
+
+The six new handwritten regression modules measure 161 lines
+(`test_qt_upstream099_cache_contract.py`), 46 (`test_qt_upstream099_cli_path.py`),
+107 (`test_qt_upstream099_graph_contract.py`), 47
+(`test_qt_upstream099_path_direction.py`) and 118
+(`test_qt_upstream099_watch_gate.py`), plus 85
+(`test_qt_upstream099_forward_identity.py`). Retained focused C++ identity/constructor
+owners measure 162/259 lines; the existing cache integration/predecessor modules
+measure 195/136. All remain below 300. Their small size does not replace the
+source identity, failure/recovery, platform or accepted-criterion evidence in
+traceability. No unrelated mechanical extraction is part of this integration.

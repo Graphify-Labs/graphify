@@ -11,13 +11,24 @@ pytest.importorskip("mcp", reason="QML-013-AC04 requires the optional MCP SDK")
 
 from mcp import ClientSession, StdioServerParameters  # noqa: E402
 from mcp.client.stdio import stdio_client  # noqa: E402
+from mcp.types import CallToolResult  # noqa: E402
 
 from tests.qt_consumer_helpers import cli, saved_graph  # noqa: E402
 
 
 def text_result(result):
-    assert not result.isError, result
+    # MCP SDK object attributes changed to snake_case; the protocol alias stays
+    # isError. Assert the real result's public wire projection across SDK versions.
+    assert result.model_dump(by_alias=True)["isError"] is False, result
     return "\n".join(item.text for item in result.content if item.type == "text").strip()
+
+
+def test_qml013_ac04_sdk_tool_error_is_rejected():
+    """A real SDK result decoded from an error wire payload cannot pass parity."""
+    result = CallToolResult.model_validate({"content": [{"type": "text", "text": "tool failed"}],
+                                          "isError": True})
+    with pytest.raises(AssertionError):
+        text_result(result)
 
 
 def test_stdio_query_path_and_source_node_agree_with_cli(tmp_path, monkeypatch, capsys):

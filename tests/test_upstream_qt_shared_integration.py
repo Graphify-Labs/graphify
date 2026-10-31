@@ -74,7 +74,18 @@ def assert_joint_facts(graph, member="integer"):
                for _, target, data in graph.edges(union, data=True))
     assert graph.nodes[union_fetch]["source_location"] == "L2"
     assert graph.nodes[backend_fetch]["source_location"] == "L8"
-    assert not any(data.get("label") in {"Hidden", "anonymous"}
+    # The incoming generic typedef producer owns the sourced alias, not the
+    # anonymous union's members or any QObject/QML registration authority.
+    hidden, hidden_data = declaration(graph, "Hidden")
+    assert hidden_data["source_location"] == "L4"
+    assert hidden_data.get("_callable_class") is not True and not qt_metadata(hidden_data)
+    header, _ = declaration(graph, "backend.h")
+    assert any(target == hidden and data.get("relation") == "contains"
+               for _, target, data in graph.edges(header, data=True))
+    assert not any(data.get("label") == "anonymous" for _, data in graph.nodes(data=True))
+    assert not any(data.get("relation") == "defines" for _, _, data in graph.edges(hidden, data=True))
+    assert not any(qt_metadata(data).get("kind") in {"class", "registration"}
+                   and qt_metadata(data).get("class_id") == hidden
                    for _, data in graph.nodes(data=True))
     calls = [(source, target, data) for source, target, data in graph.edges(data=True)
              if data.get("context") == "qml_js_call"]

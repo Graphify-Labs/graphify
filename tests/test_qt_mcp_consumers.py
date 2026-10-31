@@ -73,6 +73,6 @@ def test_qml016_ac04_http_metadata_search_keeps_connection_reference_semantics(t
         mcp_query = tool(client, headers, "query_graph", {"question": "QueuedConnection", "depth": 2}, 2)
         assert mcp_query == query and "Qt connect:" in mcp_query and "events.cpp:L" in mcp_query
         references = tool(client, headers, "get_neighbors", {"node_id": endpoint, "relation_filter": "references"}, 3)
-        assert "[references] [INFERRED]" in references and "events.cpp:L" in references
+        assert "[references] [INFERRED 0.55]" in references and "events.cpp:L" in references
         calls = tool(client, headers, "get_neighbors", {"node_id": endpoint, "relation_filter": "calls"}, 4)
         assert "-->" not in calls and "<--" not in calls

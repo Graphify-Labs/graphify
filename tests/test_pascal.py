@@ -25,6 +25,13 @@ def _edges_with_relation(r, *relations):
     return [e for e in r["edges"] if e["relation"] in relations]
 
 
+def _node_id_by_label(r, label):
+    for n in r["nodes"]:
+        if n["label"] == label:
+            return n["id"]
+    return None
+
+
 def test_pascal_no_error():
     from graphify.extract import extract_pascal
     r = extract_pascal(FIXTURES / "sample.pas")
@@ -276,6 +283,39 @@ def test_lfm_no_dangling_edges():
         assert e["source"] in node_ids, f"Dangling source: {e}"
 
 
+def test_lfm_inherited_and_inline_blocks_nest_like_object():
+    # "inherited" (ancestor-overridden component) and "inline" (embedded
+    # frame) are declared with the same "Name: Class ... end" shape as
+    # "object", but previously only "object" opened a nesting level. That
+    # left the inherited block's own "end" popping a level it never pushed,
+    # so the next sibling attached to the grandparent instead of its real
+    # parent.
+    from graphify.extract import extract_lazarus_form
+    r = extract_lazarus_form(FIXTURES / "sample_inherited.lfm")
+    child_form_nid = _node_id_by_label(r, "TChildForm")
+    panel_nid = _node_id_by_label(r, "TPanel")
+    assert child_form_nid is not None
+    assert panel_nid is not None
+    contains_edges = _edges_with_relation(r, "contains")
+    assert any(
+        e["source"] == child_form_nid and e["target"] == panel_nid
+        for e in contains_edges
+    ), "NativePanel (declared after the inherited/inline blocks) should still nest under TChildForm"
+
+
+def test_lfm_event_inside_inherited_block_scoped_to_it():
+    from graphify.extract import extract_lazarus_form
+    r = extract_lazarus_form(FIXTURES / "sample_inherited.lfm")
+    panel_nid = _node_id_by_label(r, "TPanel")
+    handler_nid = _node_id_by_label(r, "InheritedPanelClick()")
+    assert handler_nid is not None
+    ref_edges = _edges_with_relation(r, "references")
+    assert any(
+        e["source"] == panel_nid and e["target"] == handler_nid
+        for e in ref_edges
+    ), "OnClick inside the inherited block should reference the inherited panel, not an ancestor"
+
+
 # ── Lazarus Package (.lpk) ───────────────────────────────────────────────────
 
 def test_lpk_no_error():
@@ -374,6 +414,38 @@ def test_dfm_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"Dangling source: {e}"
+
+
+def test_dfm_inherited_and_inline_blocks_nest_like_object():
+    # Same gap as the .lfm case: "inherited" (ancestor-overridden component)
+    # and "inline" (embedded frame) open a nesting level just like "object"
+    # does. Previously only "object" was recognized, so the inherited
+    # block's "end" popped a level it never pushed and the next sibling
+    # ended up attached to the grandparent instead of its real parent.
+    from graphify.extract import extract_delphi_form
+    r = extract_delphi_form(FIXTURES / "sample_inherited.dfm")
+    child_form_nid = _node_id_by_label(r, "TChildForm")
+    panel_nid = _node_id_by_label(r, "TPanel")
+    assert child_form_nid is not None
+    assert panel_nid is not None
+    contains_edges = _edges_with_relation(r, "contains")
+    assert any(
+        e["source"] == child_form_nid and e["target"] == panel_nid
+        for e in contains_edges
+    ), "NativePanel (declared after the inherited/inline blocks) should still nest under TChildForm"
+
+
+def test_dfm_event_inside_inherited_block_scoped_to_it():
+    from graphify.extract import extract_delphi_form
+    r = extract_delphi_form(FIXTURES / "sample_inherited.dfm")
+    panel_nid = _node_id_by_label(r, "TPanel")
+    handler_nid = _node_id_by_label(r, "InheritedPanelClick()")
+    assert handler_nid is not None
+    ref_edges = _edges_with_relation(r, "references")
+    assert any(
+        e["source"] == panel_nid and e["target"] == handler_nid
+        for e in ref_edges
+    ), "OnClick inside the inherited block should reference the inherited panel, not an ancestor"
 
 
 def test_dfm_binary_returns_empty_not_crash():

@@ -12,6 +12,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_source_text,
     _read_text,
 )
+from graphify.ids import normalize_id
 from graphify.rcfile import effective_suffix, get_language_overrides
 import functools
 import hashlib
@@ -422,7 +423,16 @@ def _pnpm_workspace_globs(workspace_file: Path) -> list[str]:
             in_packages = True
             continue
         if in_packages and line.startswith("-"):
-            value = line[1:].strip().strip("'\"")
+            value = line[1:].strip()
+            if value[:1] in ("'", '"'):
+                # Quoted: the value ends at the closing quote, so a `# comment` after it is dropped.
+                end = value.find(value[0], 1)
+                if end < 0:
+                    continue
+                value = value[1:end].strip()
+            else:
+                # Unquoted: a `#` only starts a comment after whitespace.
+                value = re.split(r"(?:^|\s)#", value, maxsplit=1)[0].strip()
             if value and not value.startswith("!"):
                 globs.append(value)
             continue
@@ -465,7 +475,11 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
 
     packages: dict[str, Path] = {}
     for pattern in _workspace_globs(root):
-        package_dirs: list[Path] = [root] if pattern in (".", "./") else list(root.glob(pattern))
+        try:
+            package_dirs: list[Path] = [root] if pattern in (".", "./") else list(root.glob(pattern))
+        except (ValueError, NotImplementedError) as e:
+            print(f"  warning: skipped workspace glob {pattern!r} ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
+            continue
         for package_dir in package_dirs:
             manifest = package_dir / "package.json"
             if not manifest.is_file():
@@ -853,7 +867,9 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     if start_dir is None:
         return _resolve_js_import_path(Path(raw))
     if raw.startswith("."):
-        return _resolve_js_import_path(start_dir / raw)
+        # Strip ?query / #fragment before resolving, as bundlers do (#4860).
+        specifier = raw.split("#", 1)[0].split("?", 1)[0]
+        return _resolve_js_import_path(start_dir / specifier)
 
     aliases = _load_tsconfig_aliases(start_dir)
     hit = _resolve_tsconfig_alias(raw, aliases,
@@ -1353,6 +1369,55 @@ def _apply_symbol_resolution_facts(
             "source_location": f"L{line}",
         })
         return node_id
+
+    # #4854: a reference to an imported name can be minted before the imported
+    # declaration is known, as a sourceless stub (or as this file's own id when
+    # the name equals the extension). Bind it to the declaration in the target
+    # file, keyed by (path, name) so two modules may declare the same symbol.
+    if facts.imports:
+        declared: dict[tuple[Path, str], str] = {}
+        for node in nodes:
+            node_path = _js_source_path(str(node.get("source_file") or ""), root)
+            if node_path is None:
+                continue
+            label = str(node.get("label") or "").strip()
+            if not label or label.startswith("."):
+                continue
+            bare = label[:-2] if label.endswith("()") else label
+            if "." in bare:
+                continue
+            declared.setdefault((node_path, normalize_id(bare)), node["id"])
+        node_by_id = {node.get("id"): node for node in nodes}
+        for fact in facts.imports:
+            if effective_suffix(fact.file_path).lower() not in (
+                ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"
+            ):
+                continue
+            source_path = _resolve_cached(fact.file_path)
+            target_path = _resolve_cached(fact.target_path)
+            names = {normalize_id(fact.imported_name), normalize_id(fact.local_name)}
+            target_nid = next(
+                (declared[(target_path, name)] for name in names
+                 if (target_path, name) in declared),
+                None,
+            )
+            if not target_nid:
+                continue
+            for edge in edges:
+                if _js_source_path(str(edge.get("source_file") or ""), root) != source_path:
+                    continue
+                if edge.get("relation") != "references":
+                    continue
+                if edge.get("target") == target_nid:
+                    continue
+                node = node_by_id.get(edge.get("target"))
+                if node is None or node.get("source_file"):
+                    continue
+                stub_label = normalize_id(
+                    str(node.get("label") or "").strip("()").lstrip(".")
+                )
+                if stub_label in names:
+                    edge["target"] = target_nid
 
     # Keyed by the emitting file as well: two files whose ids collide (`a-b/x.ts`
     # and `a/b/x.ts` both make `a_b_x`) share `source` until

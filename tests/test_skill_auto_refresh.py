@@ -56,7 +56,7 @@ def _stamp(dst: Path) -> str:
 
 @pytest.mark.parametrize("system", ["Linux", "Windows"])
 def test_every_stale_platform_is_refreshed_not_only_the_detected_one(capsys, monkeypatch, system):
-    """Refresh independent destinations; retain the ambiguous Windows shared copy."""
+    """Refresh each owned destination, including Gemini's separate Windows copy."""
     monkeypatch.setattr(mainmod.platform, "system", lambda: system)
     dsts = {name: _stale(name) for name in ("claude", "codex", "opencode", "gemini")}
 
@@ -64,11 +64,6 @@ def test_every_stale_platform_is_refreshed_not_only_the_detected_one(capsys, mon
 
     out, err = capsys.readouterr()
     for name, dst in dsts.items():
-        if name == "gemini" and system == "Windows":
-            assert _stamp(dst) == OLD, name
-            assert dst.read_text(encoding="utf-8") == OLD_BODY, name
-            assert str(dst.parent) not in err
-            continue
         assert _stamp(dst) == __version__, name
         variant = "windows" if name == "claude" and system == "Windows" else name
         assert dst.read_bytes() == _packaged(variant), name
@@ -165,15 +160,14 @@ def test_the_copilot_dir_shared_with_vscode_is_not_guessed():
     assert dst.read_text(encoding="utf-8") == OLD_BODY
 
 
-def test_a_directory_shared_by_two_platforms_is_not_guessed(monkeypatch):
-    """On Windows gemini and agents both install into ~/.agents/skills (#2800)."""
-    monkeypatch.setattr(mainmod.platform, "system", lambda: "Windows")
-    assert _platform_skill_destination("gemini") == _platform_skill_destination("agents")
-    dst = _stale("agents")
-
-    mainmod._refresh_stale_skills()
-
-    assert _stamp(dst) == OLD
+@pytest.mark.parametrize("system", ["Linux", "Darwin", "Windows"])
+def test_gemini_and_agents_own_separate_skill_dirs(monkeypatch, system):
+    """gemini and agents ship different SKILL.md files, so one shared dir let
+    each overwrite and uninstall the other's skill on Windows (#2800)."""
+    monkeypatch.setattr(mainmod.platform, "system", lambda: system)
+    gemini = _platform_skill_destination("gemini")
+    assert gemini == Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
+    assert gemini.parent != _platform_skill_destination("agents").parent
 
 
 def test_a_directory_shared_through_a_symlink_is_not_guessed(requires_symlinks):
@@ -473,10 +467,8 @@ def test_a_stale_gemini_skill_gets_the_warning_too(monkeypatch, capsys, system):
 
     err = capsys.readouterr().err
     assert f"warning: skill at {dst.parent} is from graphify {OLD}" in err
-    # On Windows this is also agents' destination. The warning names the first
-    # matching installer; the stamp cannot identify the shared copy's variant.
-    platform_name = "agents" if system == "Windows" else "gemini"
-    assert f"graphify install --platform {platform_name}" in err
+    # Gemini owns .gemini on every OS; the diagnostic must name its installer.
+    assert "graphify install --platform gemini" in err
 
 
 def test_the_first_cli_run_after_an_upgrade_refreshes_and_stays_quiet(monkeypatch, capsys):

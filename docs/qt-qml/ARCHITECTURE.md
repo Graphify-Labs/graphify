@@ -1253,3 +1253,79 @@ defect, not evidence for a parser/cache correction or a backwards system clock.
 The native-test fixture must finish owned watcher/observer cleanup before clock
 patch restoration on both success and failure. No new production stop API or
 process-wide clock replacement is introduced; existing event assertions remain.
+
+## D37 — Current upstream compatibility and fork-default handoff
+
+Status: **Implemented; local source checks complete, packaging/hosted acceptance pending**.
+Owners: existing extractor/cache, discovery/publication and consumer maintainers.
+INC-QML-60 joins Qt/QML source `9ccfb44c` with upstream 0.9.99 `a0946f96`.
+The fork-default PR targets the existing `v8`; preparing it does not merge a
+protected default, retire earlier drafts or authorize a new runtime.
+
+AST schema **32** retires predecessor schemas 23/31. Qt policy retains its
+separate owner and version 26. Incoming declared/file identity and alias changes
+must preserve Qt endpoint authority, multiple relations, source evidence and
+publication protection. No-change watch acceptance additionally requires that
+the already-computed Qt context does not need a full refresh; unchanged source
+bytes alone cannot establish accepted Qt configuration. Optional build-state
+stamping follows successful accepted-product cohort publication.
+
+Both path consumers render route, existing bounded source evidence, then one
+final weakest-hop confidence summary. The incoming confidence-test module already
+specifies a final summary for both interfaces, but its CLI third-line assertion
+assumes no source section. Preserve the fork's source evidence and literal
+CLI/MCP parity; adapt that positional expectation to require the exact final
+summary plus the original source locations. Dropping evidence, repeating the
+summary or language-specific output ordering would conceal this contract clash.
+This is a documented compatibility decision, not a reduced confidence assertion.
+
+The incoming implied reverse `contains` traversal supplies generic structural
+navigation, not evidence of reverse Qt/QML membership. The shared path-search
+graph owner excludes typed Qt/QML membership from that implication; explicit
+undirected mode retains its separate opt-in contract. CLI and MCP use the same
+search policy. Forward facts, saved bytes and generic reverse-navigation behavior
+remain intact. Real saved QML graphs reproduce the spurious reverse route before
+this scoped correction; source role/edge authority, not filename spelling or
+label heuristics, establishes the exclusion.
+
+The existing Python/uv build and optional QML grammar contract remain. Incoming
+dependency/security floors are retained, resolved from the upstream lock and
+verified in the local development environment. Shared source history advances
+without rewriting the published contribution branch; the fork-default and
+upstream PRs retain their distinct bases and validation evidence. The recurring
+maintenance task compares live refs and prepares/reuses reviewed updates; it
+does not silently merge, change protections or treat old CI as new-source proof.
+
+Incoming upstream #2800 separates Gemini's user destination from agents on every
+operating system. Retain that production correction: Gemini owns `.gemini/skills`
+on Windows too, while install/uninstall preserve a potentially shadowing agents
+copy and explain it. Five older fork expectations still assume the former shared
+Windows location. Align those fixtures with the upstream ownership contract;
+retain real installation, reference resolution, refresh/version diagnostics and
+global/project uninstall assertions. No installer behavior is reverted to satisfy
+an obsolete fixture. This updates REQ-CORE-001-AC02/AC03/AC04 within INC-QML-60.
+
+MCP 2 exposes the SDK result flag as `is_error`; the serialized protocol still
+uses `isError`. The stdio test reads the real result's alias-serialized flag and
+rejects an actual error result, retaining compatibility with both admitted SDK
+families. HTTP continues to validate the protocol JSON directly. This is a test
+adapter correction under REQ-QML-013-AC04, not a production wire-format change.
+
+The complete C++ class body must replace a preceding forward declaration's
+location only for a node allocated as a callable declaration, never a file-role
+collision. The engine owns that allocation-role set during the walk; its final
+`_callable_class` marker is not available yet. Checking that later marker too
+early retained a forward span and caused the unchanged exact Qt source-proof
+validator to reject the complete declaration with `QT_CPP_LIMIT`. Use the
+already-owned allocation-role set at location replacement and keep exact span
+validation, limits and file-role rejection intact. Direct producer and actual
+Qt facade regressions cover both forward declarations and file collisions under
+REQ-QML-003-AC02/AC04, REQ-QML-018-AC03/AC04 and REQ-QML-014-AC03.
+
+Upstream's sourced C++ typedef aliases remain generic source facts even when
+their underlying union is anonymous. Preserve the `Hidden` alias's literal
+location/file containment; prohibit anonymous-member leakage or guessed Qt
+provider authority. The older blanket no-`Hidden` assertion predates that
+accepted generic support and must not suppress valid upstream facts. The public
+file-ID recipe itself is unchanged; this integration corrects declaration/file
+role separation and allocated declaration ownership.

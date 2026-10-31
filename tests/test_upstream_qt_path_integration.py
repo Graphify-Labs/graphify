@@ -16,6 +16,8 @@ def native_path(root, directed=False):
     """Actual registered C++ source supplies a native target and typed QML call."""
     result = corpus(root)
     call = next(edge for edge in result["edges"] if edge.get("context") == "qml_js_call")
+    # The producer tags inference; JSON export supplies the path renderer's fallback.
+    assert call.get("confidence") == "INFERRED"
     source, target = call["source"], call["target"]
     assert qt_metadata(call)["native_endpoint"]["canonical_target_id"] == target
     graph = build_from_json(result, root=root, directed=directed)
@@ -33,6 +35,9 @@ def run_path(monkeypatch, path, source, target, capsys, *flags):
     """Exercise the public CLI; only its unrelated version notification is isolated."""
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "path", source, target, "--graph", str(path), *flags])
+    # Fixture extraction can report cache progress; only the actual CLI action
+    # owns the stdout/error contract asserted by each accepted or rejected path.
+    capsys.readouterr()
     try:
         mainmod.main()
     except SystemExit as ended:
@@ -50,12 +55,12 @@ def test_req_qml_010_ac03_qualified_native_path_preserves_direction(tmp_path, mo
     accepted = path.read_bytes()
     code, output, error = run_path(monkeypatch, path, source_query, target_query, capsys)
     assert code == 0 and not error
-    assert "Shortest path (1 hops):" in output and "--calls [INFERRED]-->" in output
+    assert "Shortest path (1 hops):" in output and "--calls [INFERRED 0.55]-->" in output
     assert "qml_js_call" in output and "backend.hpp" in output
     code, output, error = run_path(monkeypatch, path, target_query, source_query, capsys)
     assert code == 0 and not error and "No directed path found" in output
     code, output, error = run_path(monkeypatch, path, target_query, source_query, capsys, "--undirected")
-    assert code == 0 and not error and "<--calls [INFERRED]--" in output
+    assert code == 0 and not error and "<--calls [INFERRED 0.55]--" in output
     code, output, error = run_path(monkeypatch, path, source, target, capsys)
     assert code == 0 and not error and "Shortest path (1 hops):" in output
     assert path.read_bytes() == accepted

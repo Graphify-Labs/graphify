@@ -96,8 +96,8 @@ def test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh(
     fresh = cache.load_cached(source, root=tmp_path)
     assert fresh is not None
     assert {item.get("_python_receiver_shadowed") for item in fresh["raw_calls"]} == {False, True}
-    assert cache._AST_CACHE_SCHEMA == 23
-    assert cache.cache_dir(tmp_path).name == f"v0.9.92-s23-g{cache._grammar_fingerprint()}"
+    assert cache._AST_CACHE_SCHEMA == 32
+    assert cache.cache_dir(tmp_path).name == f"v0.9.92-s32-g{cache._grammar_fingerprint()}"
     warm = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert normalized(build_from_json(cold, directed=True, root=tmp_path)) == normalized(
         build_from_json(warm, directed=True, root=tmp_path))
@@ -165,7 +165,7 @@ def test_req_qml011_ac03_ac04_qml018_ac06_upgrade_failure_retains_repairs_repeat
 
     def fail_current_ast(temporary, target):
         target = Path(target)
-        if target.parent.name == f"v0.9.92-s23-g{cache._grammar_fingerprint()}":
+        if target.parent.name == f"v0.9.92-s32-g{cache._grammar_fingerprint()}":
             # Serialization and staging must really finish before the injected
             # replacement failure reaches the actual cache persistence owner.
             assert Path(temporary).is_file()

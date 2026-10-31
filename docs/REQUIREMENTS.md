@@ -10,8 +10,8 @@ Shared compatibility requirements use `REQ-CORE-NNN` and criteria
 preserve every Qt/QML identity. The [compatibility plan](COMPATIBILITY.md)
 defines their scope and evidence boundaries.
 
-Current integration checkpoint: INC-QML-59 combines upstream 0.9.94 with the
-validated Qt/QML fork. AST schema 23 and Qt policy 26 apply to this source.
+Current integration checkpoint: INC-QML-60 combines upstream 0.9.99 with the
+validated Qt/QML fork. AST schema 32 and Qt policy 26 apply to this source.
 Earlier verified checkpoints below remain revision-bound historical evidence;
 they do not establish full or hosted acceptance of the new integration.
 
@@ -183,7 +183,7 @@ Components, object instances, properties, signals, and functions produce source-
 
 1 - A fixture with nested objects, properties, signals and functions yields exactly the expected declarations, ownership links, original names and source locations. (`REQ-QML-003-AC01`)
 
-2 - Equal `id`/member names in different component scopes, duplicate basenames in different directories, and `Panel.qml` beside `Panel.cpp` produce distinct identities. File records and source declarations remain distinct when an admitted walked directory alias combines a neighboring-file stem collision with a same-named variable; physical-path normalization cannot collapse accepted lexical owners during final ID remapping. (`REQ-QML-003-AC02`)
+2 - Equal `id`/member names in different component scopes, duplicate basenames in different directories, and `Panel.qml` beside `Panel.cpp` produce distinct identities. File records and source declarations remain distinct when an admitted walked directory alias combines a neighboring-file stem collision with a same-named variable; physical-path normalization cannot collapse accepted lexical owners during final ID remapping. A forward declaration and its complete class body retain one declaration identity with the complete body's exact location, without replacing a colliding file record's span. (`REQ-QML-003-AC02`)
 
 3 - Comments, strings containing braces/type names, and grouped property blocks create no false component/object declarations; valid object declarations remain present. (`REQ-QML-003-AC03`)
 
@@ -334,7 +334,7 @@ Repeated analysis of identical input has stable IDs and normalized output. Seria
 
 3 - A fixture with different relations on the same endpoint pair round-trips all promised facts through build/export/reload; no relation disappears through simple-graph overwrite. (`REQ-QML-010-AC03`)
 
-4 - Extracted syntax, inferred resolution and ambiguity retain their accepted confidence/evidence distinction; sourceless stubs cannot overwrite a source-backed definition's provenance. Tierless import-placeholder treatment is confined to the canonical minted shape and D30's explicit legacy-shape compatibility convention. Metadata even when empty, source locations, unknown attributes, other origins and noncanonical values remain protected. An exact-shape authored legacy record is indistinguishable from an automatic one; the convention may treat its historical semantic stamp as automatic without claiming authorship certainty. (`REQ-QML-010-AC04`)
+4 - Extracted syntax, inferred resolution and ambiguity retain their accepted confidence/evidence distinction; sourceless stubs cannot overwrite a source-backed definition's provenance. CLI and MCP path text retain the same route and bounded source evidence, followed by one final weakest-hop confidence summary; source evidence cannot disappear merely to keep the summary on a fixed numbered line. Generic structural navigation may imply reverse containment, but typed Qt/QML membership remains directed unless undirected traversal is explicitly selected; a structural shortcut cannot manufacture a reverse Qt/QML route. Tierless import-placeholder treatment is confined to the canonical minted shape and D30's explicit legacy-shape compatibility convention. Metadata even when empty, source locations, unknown attributes, other origins and noncanonical values remain protected. An exact-shape authored legacy record is indistinguishable from an automatic one; the convention may treat its historical semantic stamp as automatic without claiming authorship certainty. (`REQ-QML-010-AC04`)
 
 <a name="qml-011--incremental-correctness"></a>
 
@@ -455,9 +455,11 @@ Public support documentation accurately lists implemented syntax, resolution lim
 
 Delivery status: the 0.9.92 fork source `f7430ac9` has revision-bound hosted and
 isolated-consumer evidence. INC-QML-59 integrates upstream 0.9.94 at `c588b72d`
-for a fresh contribution. Its scoped local source, generated-guidance and
-isolated QML-only consumer checks pass as recorded in traceability; new-source
-hosted/platform and release acceptance remain **unverified**.
+for the preceding contribution. INC-QML-60 now integrates upstream 0.9.99 at
+`a0946f96` for fork-default delivery and the existing upstream review. Focused
+source checks pass as recorded in traceability; final full/static/packaging and
+new-source hosted/platform acceptance remain **unverified** until their actual
+receipts complete.
 Repository renaming changes its discovery URL, not extraction behavior or the
 meaning of prior evidence. Earlier PR #4111 remains a separate review record.
 
@@ -692,9 +694,9 @@ and content contract of the selected operating-system profile.
 
 1 - A Codex hook installed from an executable path containing spaces reaches that exact executable and passes `hook-check` as the CLI subcommand. Generated POSIX runbooks invoke their recorded Python interpreter as one executable word, preserving literal arguments, working directory and update ordering when the path contains spaces or legal shell-sensitive characters. A split-prefix or PATH decoy cannot substitute another interpreter or Graphify; an empty, missing or failing recorded interpreter fails without an installation or runtime-selection fallback. Literal path transport preserves executable identity and argument boundaries through the supported consumer shells, with a nonmatching executable rejected by the regression. (`REQ-CORE-001-AC01`)
 
-2 - Hermes and Gemini user installations use their platform-owned destinations and include resolvable skill references. POSIX and Windows profiles use their documented home/data and Gemini/shared-agents locations; project installation retains its separate scope. (`REQ-CORE-001-AC02`)
+2 - Hermes and Gemini user installations use their platform-owned destinations and include resolvable skill references. Gemini uses its own `.gemini/skills` destination on POSIX and Windows, separate from `.agents/skills`; Hermes retains its documented home/data locations. Project installation retains its separate scope. (`REQ-CORE-001-AC02`)
 
-3 - Refresh writes the correct platform-adapted skill bytes for each uniquely owned stale installed destination and preserves unrelated content. Authorized replacement of an installer/cache-owned copy may consume a read-only regular source or destination; a directory destination rejects, and failed replacement or cleanup restores prior source/destination bytes and modes without changing a symlink target's permissions. This permission belongs to the owning replacement caller and does not authorize generic atomic writes or accepted graph products to overwrite a read-only destination. Ambiguous shared Gemini/agents copies retain their bytes and stamp; version checking with automatic refresh disabled reports the actual matching destination/installer. An already current installation is unchanged. Shared-directory ownership isolation remains outside the implemented contract. (`REQ-CORE-001-AC03`)
+3 - Refresh writes the correct platform-adapted skill bytes for each uniquely owned stale installed destination and preserves unrelated content. Authorized replacement of an installer/cache-owned copy may consume a read-only regular source or destination; a directory destination rejects, and failed replacement or cleanup restores prior source/destination bytes and modes without changing a symlink target's permissions. This permission belongs to the owning replacement caller and does not authorize generic atomic writes or accepted graph products to overwrite a read-only destination. Gemini and agents refresh independently at their distinct destinations; version checking with automatic refresh disabled reports the actual matching destination/installer. Gemini installation reports a shadowing legacy agents copy without deleting it, and Gemini uninstall retains that copy. An already current installation is unchanged. (`REQ-CORE-001-AC03`)
 
 4 - Uninstall observes the established global/project scope and explicit user-skill opt-in. Protected shared-agent content is retained according to the current platform contract; missing installations remain a safe no-op. (`REQ-CORE-001-AC04`)
 

@@ -2261,3 +2261,164 @@ suite, global installation, application graph refresh, native Qt execution or
 new upstream-event acceptance. New source or base revisions require applicable
 proof; earlier fork/synthetic/exact-merge runs remain historical evidence for
 their own revisions.
+
+## Upstream 0.9.99 identity and update contracts — INC-QML-60
+
+Status: **Implemented owner contracts with focused local evidence; global source,
+packaging and hosted acceptance remain pending**.
+[D37](ARCHITECTURE.md#d37--current-upstream-compatibility-and-fork-default-handoff)
+owns the compatibility decision. This integration joins contribution source
+`9ccfb44c25d52e743cf7fb03fdd098a8e649e0ed` with upstream 0.9.99
+`a0946f962af31b19bff941b453f6dae9a7077c7a`. It preserves existing Python
+owners and public entry points; it is neither an extractor migration nor a
+second Qt runtime. Exact acceptance mappings and changing execution status belong
+in [INC-QML-60 traceability](../../tests/TRACEABILITY.md).
+
+### Producer epochs and cache lifetime
+
+`cache.py` advances the authoritative AST namespace to **schema 32**. Upstream
+schema 31 includes generic declaration/file identity, alias and call-resolution
+changes; the fork's schema 23 includes its source-owned Qt/C++ contracts. Neither
+predecessor can establish this combined producer, even when package versions or
+source bytes match. Their AST entries miss and retire through existing namespace
+cleanup. Current-schema warm reuse still depends on the accepted package,
+grammar fingerprint, input and language-policy key. Semantic cache entries retain
+their independent prompt/content lifetime and byte preservation.
+
+Qt analysis policy remains **26** at its existing owner. The AST epoch does not
+replace Qt configuration acceptance, expand metadata discovery or authorize a
+pending context stamp. Qt metadata/native enrichment retains its separate
+reconstruction path; borrowed native lookup indexes are not serialized as cache
+authority. Existing cache-write failure and accepted-product recovery contracts
+remain in force. There is no general persisted-format migration.
+
+The facade keeps native input normalization and root-aware Qt collectors while
+applying upstream rationale-label redaction before cache publication. Cargo
+package context and the incoming read-only C# resolver-label view remain at their
+existing owners. Deliberately declined sources, failed AST inputs and Qt failure
+collections retain distinct meanings; run-only extraction controls are not
+published as ordinary raw graph fields.
+
+### Allocated native declarations and lexical constructor identity
+
+The generic engine's declaration registry allocates actual node IDs, including
+salting a class or alias away from an existing file ID. `CppIdentity` retains
+immutable AST records with their original lexical names and IDs, plus one
+run-owned borrowed view of those actual allocations. The engine supplies this
+view as it materializes declarations; no process-global project or lookup state
+is introduced.
+
+`bind_class(record, identity)` records the allocated class ID and
+`declaration_id(record)` reads it. References and real parent edges use that ID.
+Forward/complete-body preference may update only an actual callable class node;
+a colliding file node must retain its own location. This distinction preserves
+the upstream file/declaration separation without converting the file into a
+native class or losing its source provenance.
+
+Constructor provenance retains parser byte offsets and row/column coordinates
+against the original source buffer. Allocation binding does not rewrite those
+spans, encoded lexical scopes or signature facts. Existing bounded transport,
+source/type and signature validation continue to reject unsupported or corrupted
+authority; a normalized display label cannot supply missing byte or scope proof.
+
+`CppIdentity.constructor(node, name, parent_id)` compares the actual accepted
+parent, but retains the established lexical owner/signature recipe for the
+constructor ID. Consequently, file/declaration salting cannot collapse overloads
+or bypass the existing constructor-ID authorization suffix. These are separate
+contracts: the node ID preserves its typed lexical signature, while its source
+parent edge proves the allocated owner. No arbitrary global ID rewrite is used.
+
+`augment_cpp_constructors(root, source, nodes, edges, path, *, identities=None)`
+accepts that same borrowed index from the engine. Existing standalone callers
+retain the fresh-index default. Reconstructing an unbound index after generic
+allocation would discard the salted class's identity and omit its constructor
+facts. Augmentation instead locates the actual class, enriches the original
+lexical constructor IDs, and leaves the existing source/signature authority to
+authorize native joins. Qt emission/access sites borrow those proven callable
+IDs rather than a convenient file or class basename.
+
+### Alias allocation, visibility and conservative rejection
+
+`bind_alias(node, name, identity, *, original_id=None)` receives only a
+file/namespace alias admitted by the existing C++ producer. The engine calls it
+only when allocation actually materializes a new declaration. Reusing a generic
+ID from a different namespace or case spelling cannot grant that second source
+scope authority. This rule uses the allocation event, not line equality, so two
+declarations on the same physical line cannot borrow each other's node.
+
+The borrowed alias view retains exact qualified spelling and source order.
+`reference(name, node)` searches the actual lexical scopes and prior visible
+declarations. When the generic collector supplies a direct qualified type's
+leaf, its exact owning `qualified_identifier` can restore the written literal
+qualification. Nested template-argument qualification is not guessed. Existing
+bounded name/scope admission still applies; an alias reference supplies an alias
+declaration, not proof of its runtime target or a new native endpoint.
+
+An accepted lookup returns the actual allocated declaration ID. A rejected
+lookup cannot fall back to an unrelated generic-registry class or reuse a known
+alias ID merely because normalization produced the same basename. It retains
+the existing unsourced-reference path instead of deleting the relationship or
+minting a new global ID scheme. C++ type/scope and constructor authority retain
+their separate checks; this does not promise compiler-complete alias, template,
+preprocessor or dynamic Qt resolution.
+
+Containment also follows actual allocation. An alias salted away from its file
+is newly materialized even though its old ID was already occupied; the file must
+therefore retain a `contains` edge to that alias. Existing duplicate declarations
+do not gain duplicate containment solely from this correction.
+
+### Full-update acceptance and optional no-change evidence
+
+The watcher computes Qt refresh requirements before considering upstream's
+early no-change shortcut. The shortcut requires `not qt_full_refresh` as well as
+unchanged relevant inputs and matching build state. Equal source hashes cannot
+accept changed import roots, profile, parser or durable Qt configuration.
+Discovery retains both incoming YAML/YML AST admission and Qt metadata inputs.
+
+Required accepted products continue through the existing `ProductPublication`
+cohort. The optional upstream build-state stamp follows successful publication;
+it cannot advertise an uncommitted graph or advance after a failed Qt cohort.
+The stamp owner checks complete output and stale-HTML state. A missing, malformed
+or mismatching stamp costs a later rebuild rather than authorizing a skip; its
+optional write is not a replacement for required graph/manifest/Qt-state
+persistence. The extract-path manifest-warning limitation recorded in INC-QML-59
+is not reclassified as whole-cohort atomicity by this integration.
+
+### Shared path search and output order
+
+CLI and MCP use the shared `_path_search_graph` policy. Default directed search
+respects persisted logical orientation. Upstream implied reverse `contains`
+navigation remains available for generic structure, but not for source-backed
+Qt/QML membership identified by edge or endpoint contract evidence. This is not
+a filename/label heuristic. An explicit undirected request retains its separate
+opt-in behavior; the stored graph and printed relationship direction remain
+authoritative.
+
+Search views remain owned by each accepted graph object and direction mode;
+reload supplies a fresh graph. Both consumers render the selected route, the
+existing bounded source evidence, then one final weakest-hop confidence summary.
+Incoming equal-length-route confidence behavior remains intact. Source locations
+are not removed to satisfy a positional assertion, and the summary is neither
+duplicated nor given language-specific ordering. A confidence score describes
+static graph evidence, not runtime execution or thread safety.
+
+### Diagnostics and verification boundary
+
+The semantic union adds no runtime diagnostic code or logger. Unsupported native
+identity remains conservative at its existing source/type authority; parser,
+cache, publication and recovery failures retain their existing owners and
+[diagnostic catalog](ERRORS.md). No successful cache read or in-memory extraction
+establishes durable publication. An optional skip stamp cannot conceal failed
+required products or erase retained recovery evidence.
+
+The owned cache/extractor selections pass **402 cases**, with one upstream
+unsupported C++ fixture skip, across 403 distinct identities. Ordinary regressions
+retain red-before evidence for constructor loss, wrong-scope binding, file
+location overwrite and lost alias containment; multiline and same-line alias
+reuse are separately rejected. Nine current integration cases include real
+native ownership plus cold/warm serialized graph reload. Focused discovery/watch
+receipts separately cover the Qt refresh gate and existing accepted-product
+failure/recovery cases. These results are not one full-source invocation or
+proof of new Linux/macOS, clean-install, hosted, merge-result or application
+acceptance. Global checks, package contents and PR revision evidence remain with
+the integration owner and traceability.

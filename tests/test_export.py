@@ -212,7 +212,15 @@ def test_to_cypher_contains_merge_statements():
         out = Path(tmp) / "cypher.txt"
         to_cypher(G, str(out))
         content = out.read_text()
-        assert "MERGE" in content
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Transformer';" in content
+        assert "{id: 'n_transformer', label:" not in content
+
+        G.nodes["n_transformer"]["label"] = "Renamed Transformer"
+        to_cypher(G, str(out))
+        refreshed = out.read_text()
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Renamed Transformer';" in refreshed
+        assert "{id: 'n_transformer', label:" not in refreshed
+        assert "SET n.label = 'Transformer';" not in refreshed
 
 def test_to_graphml_creates_file():
     G = make_graph()

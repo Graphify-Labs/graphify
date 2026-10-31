@@ -68,6 +68,9 @@ class CppIdentity:
     def __init__(self, root, source, stem):
         self.source, self.stem = source, stem
         self.records, self.groups = {}, {}
+        # Generic declaration allocation owns IDs. Borrow its accepted IDs and
+        # alias scopes for this run without changing the immutable AST records.
+        self.declarations, self.aliases, self.alias_ids = {}, {}, set()
         for node in _walk(root):
             if node.type not in {"class_specifier", "struct_specifier"}:
                 continue
@@ -86,17 +89,40 @@ class CppIdentity:
     def record(self, node):
         return self.records.get(node.id)
 
+    def bind_class(self, record, identity):
+        """Remember the generic producer's allocated ID for this exact class."""
+        self.declarations[record["id"]] = identity
+
+    def declaration_id(self, record):
+        """AST names keep their lexical ID; references use the actual declaration."""
+        return self.declarations.get(record["id"], record["id"])
+
+    def bind_alias(self, node, name, identity, *, original_id=None):
+        """Only a produced file/namespace alias supplies lexical lookup authority."""
+        scope = lexical_scope(node, self.source)
+        qualified = "::".join(filter(None, (scope, name))) if scope is not None else ""
+        if scope is not None and _name(qualified):
+            self.aliases.setdefault(qualified, []).append((node.start_byte, identity))
+            self.alias_ids.update((identity, original_id or identity))
+
+    def owns_alias_id(self, identity):
+        """A basename collision is not an alternative to lexical alias proof."""
+        return identity in self.alias_ids
+
     def constructor(self, node, name, parent_id):
         """Inline constructors use the same exact owner/signature as prototypes."""
         parent = node.parent
         while parent and parent.type not in {"class_specifier", "struct_specifier", "translation_unit"}:
             parent = parent.parent
         record = self.record(parent) if parent else None
-        if (not record or record["id"] != parent_id or name != record["name"]
+        if (not record or self.declaration_id(record) != parent_id or name != record["name"]
                 or node.child_by_field_name("type") is not None):
             return _make_id(parent_id, name)
         from graphify.extractors.cpp_constructor_signature import constructor_id
-        return constructor_id(parent_id, name, node, self.source, record["qualified"])
+        # Keep the established lexical owner/signature suffix. Its authorization
+        # is independent of generic file/declaration collision salting; the real
+        # parent edge still uses the allocated declaration ID.
+        return constructor_id(record["id"], name, node, self.source, record["qualified"])
 
     def preferred(self, record):
         group = self.groups[record["qualified"]]
@@ -108,6 +134,13 @@ class CppIdentity:
 
     def reference(self, name, node):
         """Resolve exact in-file class scopes without borrowing a basename."""
+        # The generic collector intentionally reports a qualified type's leaf.
+        # Recover a direct literal spelling from its owning syntax before the
+        # lexical lookup; do not guess a nested template argument's qualifier.
+        if node.type == "qualified_identifier":
+            written = _read_text(node, self.source)
+            if _name(written.removeprefix("::")) and written.rsplit("::", 1)[-1] == name:
+                name = written
         if not isinstance(name, str) or not _name(name.removeprefix("::")):
             return ""
         scope = lexical_scope(node, self.source)
@@ -120,6 +153,10 @@ class CppIdentity:
             qualified = "::".join(filter(None, (prefix, raw)))
             visible = [record for record in self.groups.get(qualified, ())
                        if record["syntax"].start_byte <= node.start_byte]
+            aliases = {identity for start, identity in self.aliases.get(qualified, ())
+                       if start <= node.start_byte}
+            if aliases:
+                return next(iter(aliases)) if len(aliases) == 1 and not visible else ""
             if visible:
-                return visible[0]["id"]
+                return self.declaration_id(visible[0])
         return ""

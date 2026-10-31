@@ -260,7 +260,7 @@ def test_fresh_query_stamp_silences_nudges_after_the_first(tmp_path, monkeypatch
     _fresh_stamp(tmp_path)
     # The stamp is project-wide and cannot tell which agent queried, so each
     # agent still gets its first nudge; later ones are silenced.
-    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
     assert _invoke("search", _search_payload(), tmp_path, monkeypatch) == ""
 
@@ -275,34 +275,34 @@ def test_subagents_get_their_own_nudge_budget(tmp_path, monkeypatch):
     # Claude Code subagents share the parent's session_id and differ by agent_id.
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
     sid = "s" * 64  # long ids must not truncate distinct agents into one key
-    assert "MANDATORY" in _invoke("read", _read_payload(sid), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(sid), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(sid), tmp_path, monkeypatch) == ""
-    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch) == ""
-    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-b"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(sid, "agent-b"), tmp_path, monkeypatch)
 
 
 def test_subagent_first_nudge_survives_parent_query(tmp_path, monkeypatch):
-    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
     _fresh_stamp(tmp_path)  # parent queried
     assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
-    assert "MANDATORY" in _invoke("read", _read_payload(agent="agent-a"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(agent="agent-a"), tmp_path, monkeypatch)
 
 
 def test_nudges_capped_per_session(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "3")
     outs = [_invoke("read", _read_payload("cap"), tmp_path, monkeypatch) for _ in range(3)]
-    assert all("MANDATORY" in o for o in outs)
+    assert all("knowledge graph at" in o for o in outs)
     assert _invoke("read", _read_payload("cap"), tmp_path, monkeypatch) == ""
     assert _invoke("search", _search_payload("cap"), tmp_path, monkeypatch) == ""
     # Another session has its own budget.
-    assert "MANDATORY" in _invoke("read", _read_payload("other"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload("other"), tmp_path, monkeypatch)
 
 
 def test_read_and_search_nudges_share_the_session_budget(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "2")
-    assert "MANDATORY" in _invoke("search", _search_payload("mix"), tmp_path, monkeypatch)
-    assert "MANDATORY" in _invoke("read", _read_payload("mix"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("search", _search_payload("mix"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload("mix"), tmp_path, monkeypatch)
     assert _invoke("search", _search_payload("mix"), tmp_path, monkeypatch) == ""
 
 
@@ -316,14 +316,14 @@ def test_nudge_cap_default_is_five(tmp_path, monkeypatch):
 def test_nudge_cap_disabled(value, tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", value)
     outs = [_invoke("read", _read_payload("nocap"), tmp_path, monkeypatch) for _ in range(8)]
-    assert all("MANDATORY" in o for o in outs)
+    assert all("knowledge graph at" in o for o in outs)
 
 
 def test_nudges_without_session_id_are_not_counted(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
     payload = {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
     outs = [_invoke("read", payload, tmp_path, monkeypatch) for _ in range(3)]
-    assert all("MANDATORY" in o for o in outs)
+    assert all("knowledge graph at" in o for o in outs)
 
 
 # --------------------------------------------------------------------------- #

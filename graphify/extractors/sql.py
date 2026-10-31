@@ -59,6 +59,22 @@ _TRIGGER_RECOVERY_RX = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# CREATE TABLE recovery, sibling to the routine/trigger patterns above. A
+# column default the grammar cannot model — MySQL/MariaDB
+# `DEFAULT current_timestamp()` / `ON UPDATE current_timestamp()`, whose
+# parentheses tree-sitter-sql rejects (upstream DerekStride/tree-sitter-sql)
+# — puts the whole statement in an ERROR node, so walk() never dispatches on
+# it and the table vanished, leaving only the sourceless stub that other
+# tables' REFERENCES minted for it (#4613). The name atom is _TRIGGER_IDENT
+# (the same delimited-identifier shape); the label is the bare name, with no
+# `()` suffix — a table is not callable either.
+_TABLE_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TABLE\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(" + _TRIGGER_IDENT + r")",
+    re.IGNORECASE,
+)
+
 # _mask_sql_comments is a linear character scanner, not a regex: the four
 # span kinds interact in ways a single pattern cannot express safely —
 # comment-opener parity inside strings, nested block comments, and
@@ -813,6 +829,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             _walk_from_refs(child, caller_nid, line, cte_names)
 
+    src_text = source.decode("utf-8", errors="replace")
+
     # Pre-pass: register every table/view DEFINED in this file before walking,
     # so forward references (a FK to a table created later in the same file)
     # still resolve to the real sourced node instead of falling back to a stub.
@@ -825,6 +843,21 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             _collect_defined_names(child)
 
     _collect_defined_names(root)
+
+    # A CREATE TABLE the grammar failed on (#4613) never reaches the pre-pass
+    # — its statement sits inside an ERROR node — so references to it would
+    # mint sourceless stubs and the REFERENCES fallback below would skip it.
+    # When the parse failed, pre-register the recovered table names from the
+    # masked source so resolution sees the real id; the node itself is
+    # emitted in the has_error fallback, alongside the recovered routines
+    # and triggers.
+    if root.has_error:
+        _masked, _ident_spans = _scan_sql(src_text)
+        for m in _TABLE_RECOVERY_RX.finditer(_masked):
+            if any(s <= m.start() < e for s, e in _ident_spans):
+                continue
+            table_nids.setdefault(
+                _norm_ident(m.group(1)), _make_id(stem, m.group(1)))
 
     # Secondary bare-name aliases: a reference written without a schema
     # (`REFERENCES users`) should resolve to a schema-qualified definition
@@ -861,7 +894,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # (e.g. Firebird COMPUTED BY columns push constraints out of the tree entirely).
     # Snapshot after tree walk so we don't re-emit edges already captured above.
     emitted = {(e["source"], e["target"]) for e in edges if e["relation"] == "references"}
-    src_text = source.decode("utf-8", errors="replace")
     for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
@@ -945,5 +977,17 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             tbl_name = m.group(2)
             tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
             _add_edge(trig_nid, tbl_nid, "triggers", trig_line)
+
+        # Tables the grammar dropped into an ERROR node (#4613), pre-registered
+        # above so references already resolved to this id. _add_node dedupes,
+        # so a table that parsed cleanly keeps its walk-emitted node.
+        for m in _TABLE_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            tbl_name = m.group(1)
+            tbl_line = src_text[: m.start()].count("\n") + 1
+            # Clean the label (brackets/quotes) for display but key the id off the
+            # raw name so it matches the pre-pass registration the FK edges resolved to.
+            _add_node(_make_id(stem, tbl_name), _clean_ident(tbl_name), tbl_line)
 
     return {"nodes": nodes, "edges": edges}

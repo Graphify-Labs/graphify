@@ -48,13 +48,13 @@ def test_req_qml011_ac01_ac03_ac04_predecessor_ast_misses_semantic_survives(
         }, root=tmp_path)
         prior_directory = cache.cache_dir(tmp_path)
         assert list(prior_directory.glob("*.json"))
-    assert cache._AST_CACHE_SCHEMA == 23
+    assert cache._AST_CACHE_SCHEMA == 32
     assert cache.load_cached(source, root=tmp_path) is None
     assert not prior_directory.exists()
     cold = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
     cached = cache.load_cached(source, root=tmp_path)
     assert cached and cached["raw_calls"]
-    assert cache.cache_dir(tmp_path).name == f"v0.9.94-s23-g{cache._grammar_fingerprint()}"
+    assert cache.cache_dir(tmp_path).name == f"v0.9.94-s32-g{cache._grammar_fingerprint()}"
     warm = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert normalized(build_from_json(cold, directed=True, root=tmp_path)) == normalized(
         build_from_json(warm, directed=True, root=tmp_path))

@@ -3563,3 +3563,56 @@ with 27,747 nodes and 63,702 edges; the previous graph is backed up. No applicat
 installation or graph is refreshed. Exit produces a fresh upstream contribution
 from the reviewed 0.9.94 integration; earlier requests remain separate and no
 automatic upstream merge is authorized by this increment.
+
+## INC-QML-60 — Current upstream integration and fork-default delivery
+
+Status: **Implemented; local source checks complete, packaging and review delivery pending**. Owner: integration
+maintainer. Accepted source is `9ccfb44c25d52e743cf7fb03fdd098a8e649e0ed`;
+incoming upstream 0.9.99 is `a0946f962af31b19bff941b453f6dae9a7077c7a`.
+The fork-default target currently remains
+`0b60d47e6cd9338c51143f39f35b6c45c8453385` on `v8`. Continue the owned
+contribution branch, preserving shared history and the existing upstream review;
+deliver a new fork-default PR without merging or changing protection.
+
+| Acceptance IDs | Preimplementation acceptance and boundary matrix |
+| --- | --- |
+| REQ-QML-011-AC01/AC03/AC04; REQ-QML-014-AC03 | Preserve both predecessor producers, source-owned failures and independent semantic lifetime. Review schema 23/31 incompatibility and use a new combined AST schema rather than admitting stale predecessor facts. Characterize mixed cold/warm and upgrade behavior; retain separate Qt policy ownership. |
+| REQ-QML-003-AC04; REQ-QML-010-AC02/AC03/AC04; REQ-QML-018-AC04/AC06 | Combine upstream declaration/file identity collision fixes, endpoint and confidence output with Qt/QML direction, logical endpoints and multiple relationship evidence. Malformed endpoints must reject; intentional generic ID corrections need explicit compatibility evidence through actual serialization/reload. |
+| REQ-QML-011-AC04; REQ-QML-012-AC02; REQ-QML-014-AC03 | Retain discovery/configuration ownership, manual/watch update parity, no-change saved semantic facts and accepted-product failure/rollback boundaries. Do not infer publication success from extraction or replace a guarded Qt product with a partial graph. |
+| REQ-CORE-001-AC01/AC03/AC05; REQ-CORE-004-AC02/AC03/AC04; REQ-QML-015-AC02 | Preserve native interpreter/installer ownership and joined watcher test lifetimes alongside incoming fixes. Regenerate changed assistant resources from fragments and execute each validator separately. Retain required cases, platform/dependency contracts and ordinary PR-owned validation. |
+| REQ-QML-015-AC01/AC03/AC04 | Keep requirements, design, traceability and cohesion allowances aligned with the resolved source. Run proportionate focused/full/static/packaging checks, refresh the repository graph and disclose skips/baseline findings. The fork-default PR and updated upstream review have distinct bases/checkouts; earlier 0.9.94 proof is historical only. |
+
+Diagnostic impact: no new runtime diagnostic is planned for a semantic merge.
+Existing parse/unsupported/ambiguity, cache, publication and recovery owners
+retain their contracts. Newly reproduced defects require faithful regressions
+before correction. Rejected/failed operations must retain prior accepted data;
+unexecuted or skipped infrastructure cannot establish acceptance. A recurring
+maintenance check prepares reviewed PRs and never silently merges a default or
+shared branch. Its local schedule is operational configuration, not a new
+Graphify runtime or publicly shipped scheduler.
+
+The full invocation adds REQ-CORE-001-AC02/AC03/AC04 and REQ-QML-013-AC04 to
+this matrix: incoming Gemini/agents ownership replaces obsolete Windows shared-
+directory fixtures, and MCP's SDK attribute rename must not change its wire
+error/rejection contract. Preserve the original 16 failed identities and replay
+them at their actual interfaces. C++ cyclic-path limits and union visibility need
+separate production diagnosis before changing their expectations.
+
+That diagnosis identifies one producer regression: complete-body span replacement
+consults a marker stamped only after the walk. The engine's existing callable
+allocation-role set must own the decision instead. Add red-before direct producer
+forward/collision coverage and retain exact Qt proof rejection for wrong spans;
+do not loosen `QT_CPP_LIMIT`. Four union cases instead need sourced typedef-alias
+acceptance with explicit no-native-authority checks. These corrections retain
+REQ-QML-003-AC02/AC04, REQ-QML-018-AC03/AC04 and REQ-QML-014-AC03 and stay in this
+integration increment rather than introducing an unrelated refactor.
+
+Final frozen source selections pass 219 native/cache/provider/shared, 227 generic
+with one unsupported fixture skip, 119 consumers, 56 exact source/gate cases and
+97 installer/refresh/scope with four skips. All 16 initial full-run failures pass
+corrections. The exact-case union is 12,759 passed, 184 skipped and one inherited
+expected failure over 12,944 identities; this is not one green full invocation.
+Ruff and every individual generated-resource validator pass. Pyright1.1.414
+reports689 inherited errors and no new merge-owned diagnostic relative to both
+independently executed parent baselines. Packaging, graph and distinct hosted
+review evidence remain separate pending delivery steps.

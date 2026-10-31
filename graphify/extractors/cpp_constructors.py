@@ -144,13 +144,15 @@ def _store(node, key, fact):
     node["metadata"] = metadata
 
 
-def augment_cpp_constructors(root, source, nodes, edges, path):
+def augment_cpp_constructors(root, source, nodes, edges, path, *, identities=None):
     """Produce bounded exact source facts; never execute or reparse the corpus."""
     if root.has_error:
         return
     source_facts(root, source, nodes, path)
     by_id = {node["id"]: node for node in nodes}
-    identities = CppIdentity(root, source, _file_stem(path))
+    # The generic engine may have salted a declaration away from its file ID.
+    # Borrow its indexed mapping; standalone callers retain the original path.
+    identities = identities or CppIdentity(root, source, _file_stem(path))
     classes = {}
     syntax = list(_walk(root))
     for item in syntax:
@@ -162,7 +164,9 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
         if scope is None or not _identifier(name):
             continue
         record = identities.record(item)
-        owner = by_id.get(record["id"]) if record else None
+        if not record:
+            continue
+        owner = by_id.get(identities.declaration_id(record))
         if owner is None or owner.get("_callable_class") is not True:
             continue
         qualified = f"{scope}::{name}" if scope else name
@@ -174,7 +178,7 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
                     "is_definition": item.child_by_field_name("body") is not None,
                     "span": _span(item), "ambiguous": identities.ambiguous(record)}
             _store(owner, "cpp_class", fact)
-        classes[item.id] = (owner, qualified)
+        classes[item.id] = (owner, qualified, record["id"])
     for item in syntax:
         if item.type not in {"declaration", "function_definition"} or item.child_by_field_name("type") is not None:
             continue
@@ -193,8 +197,8 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
             parent = parent.parent
         owner_info = classes.get(parent.id) if parent else None
         if owner_info and name == owner_info[1].split("::")[-1]:
-            owner, qualified = owner_info
-            nid = constructor_id(owner["id"], name, item, source, qualified)
+            owner, qualified, lexical_id = owner_info
+            nid = constructor_id(lexical_id, name, item, source, qualified)
             if nid not in by_id:
                 node = {"id": nid, "label": f".{name}()", "file_type": "code",
                         "source_file": str(path), "source_location": f"L{item.start_point.row + 1}", "_callable": True}
