@@ -7579,6 +7579,25 @@ def _extract_generic(
                              line, context=ctx)
             return
 
+        if (config.ts_module == "tree_sitter_php" and parent_class_nid
+                and t in ("const_declaration", "property_declaration")):
+            # #4648: Scope::MEMBER accesses in class-level initializers sit
+            # outside any function body, so emit their references_constant here.
+            seen_here: set[str] = set()
+            stack = list(node.children)
+            while stack:
+                sub = stack.pop()
+                if sub.type == "class_constant_access_expression":
+                    scope = next((c for c in sub.children if c.is_named
+                                  and c.type in ("name", "qualified_name", "identifier")), None)
+                    if scope is not None:
+                        line = sub.start_point[0] + 1
+                        tgt = ensure_named_node(_read_text(scope, source), line)
+                        if tgt != parent_class_nid and tgt not in seen_here:
+                            seen_here.add(tgt)
+                            add_edge(parent_class_nid, tgt, "references_constant", line)
+                stack.extend(sub.children)
+
         if (config.ts_module == "tree_sitter_php"
                 and t == "property_declaration"
                 and parent_class_nid):
@@ -8180,6 +8199,23 @@ def _extract_generic(
                                 fctx = "generic_arg" if role == "generic_arg" else "field"
                                 add_edge(parent_class_nid, target_nid, "references",
                                          line, context=fctx)
+                        # #4648: a Scope::MEMBER in a parameter default is outside
+                        # the body, so emit its references_constant edge here.
+                        const_src = parent_class_nid or func_nid
+                        seen_param: set[str] = set()
+                        pstack = list(p.children)
+                        while pstack:
+                            psub = pstack.pop()
+                            if psub.type == "class_constant_access_expression":
+                                pscope = next((c for c in psub.children if c.is_named
+                                               and c.type in ("name", "qualified_name", "identifier")), None)
+                                if pscope is not None:
+                                    pline = psub.start_point[0] + 1
+                                    ptgt = ensure_named_node(_read_text(pscope, source), pline)
+                                    if ptgt != const_src and ptgt not in seen_param:
+                                        seen_param.add(ptgt)
+                                        add_edge(const_src, ptgt, "references_constant", pline)
+                            pstack.extend(psub.children)
                 return_node = _php_method_return_type_node(node)
                 if return_node is not None:
                     refs = []
