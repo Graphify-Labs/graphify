@@ -640,13 +640,15 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     correct, just not accelerated.
     """
     global _stat_index_dirty
-    p = _normalize_path(Path(path))
-    root = _normalize_path(Path(root))
-    _ensure_stat_index(root, cache_root=cache_root)
-    abs_key = str(p.resolve())
+    raw_path = Path(path)
+    raw_root = Path(root)
+    src = Path(_os_long_path(raw_path))
+    root_src = Path(_os_long_path(raw_root))
+    _ensure_stat_index(root_src, cache_root=cache_root)
+    abs_key = str(_normalize_path(src.resolve()))
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = src.stat()
         entry = _stat_index.get(abs_key)
         if _stat_sig_fresh(entry, st) and "word_count" in entry:
             return entry["word_count"]
@@ -656,7 +658,7 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     # Captured BEFORE compute() reads the file, for the same reason file_hash
     # stamps before its read (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    wc = compute(Path(path))
+    wc = compute(raw_path)
 
     if st is not None:
         _stat_entry_for(abs_key, st, observed_at_ns)["word_count"] = wc
