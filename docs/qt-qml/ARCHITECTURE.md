@@ -1570,3 +1570,22 @@ runtime ordering or general compiler lookup. Existing IDs, generic partial
 callers, named namespace behavior and native exposure guards remain independent.
 AST38 and Qt32 retire earlier accepted37/31 facts and products that could omit
 the source-owned helper call; semantic cache and dependency policy are unchanged.
+## D48 — Rebuild setup denial stays distinct from contention and publication
+
+Decision recorded before INC123 implementation: queue/lock storage setup
+belongs to the existing rebuild owner. A denied/missing/unavailable setup path
+must not masquerade as another active holder or a failed graph replacement.
+Report `REBUILD_SETUP_FAILED` with `stage=queue` or `stage=lock`, and fail before analysis or mutable
+publication, retaining prior products, pending requests and legitimate holder
+state. A failed queue setup cannot claim a new request was queued. Existing
+append/coalescing and partial-append behavior is unchanged; no transactional
+queue rollback is introduced. Ordinary retry uses the same native mutex.
+
+The readonly writer fixture is a separate boundary and must arm only after
+actual lock acquisition. Its correction cannot erase independent denied-lock
+regression coverage. Keep native flock/msvcrt behavior, contention semantics,
+inode revalidation and ownership-aware cleanup. A new mutex backend, arbitrary
+retry framework or broad watcher refactor would require a separate decision.
+Status: implemented with local focused/broad evidence and independent peer.
+Fresh installed profiles pass; full-corpus and POSIX/reviewed-head hosted gates
+remain separate.

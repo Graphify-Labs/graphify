@@ -3318,3 +3318,30 @@ versions; semantic data remains intact. Source refresh reconstructs missing
 observations/provenance from original input. An old graph that already lost a
 definition cannot be repaired by inventing its body from a declaration. Retain
 accepted products before rollback and re-extract with the reviewed writer.
+
+### Controlled activation and rebuild setup (INC-QML-120/123)
+
+The existing source-profile owner records malformed carrier/record envelopes
+while validating every genuine typed fact. Explicit storage promises reject an
+invalid collection before iteration; automatic typed activation also rejects
+recorded malformed peers. Successful unpromised legacy empties/skipped records
+retain their original normalization. Real node-data views, pairs and generators
+remain supported; malformed tuple attributes cannot hide a typed promise.
+Builder validation precedes normalization, and public load precedes NetworkX
+adoption. The success storage/fact/identity contracts and AST39/Qt33 are unchanged.
+
+The rebuild owner uses one ExitStack for the existing native mutex context.
+Only pending-request setup and context entry sit inside the OSError guard.
+Failure reports REBUILD_SETUP_FAILED with a queue/lock stage and returns false
+before analysis/cache/publication. Recursive analysis, writer failures and
+context release remain outside that classification, with their existing owners.
+Contention, native inode-race checks, queue append/coalescing and release code
+are unchanged. Existing pending requests are not drained by denied lock entry;
+failed queue setup cannot claim new work persisted. Partial append and late
+unlock/cleanup failures retain existing policy; no queue transaction is added.
+
+Readonly publication tests arm the real native fault at the transaction factory
+after real mutex acquisition and request drain. An actual contender confirms
+ownership. The actual publication preparation fails; permissions restore before
+late queue/mutex cleanup. This is separate from native denied-lock setup, with
+no fake mutex, writer result or production persistence-policy change.

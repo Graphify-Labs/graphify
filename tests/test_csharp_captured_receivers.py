@@ -48,6 +48,7 @@ def test_req_qml022_ac02_local_receiver_captures_keep_source_caller_and_class_ta
     assert seen[0] == seen[1]
 
 
+# Name each unavailable binding role independently of pytest's source-value IDs.
 @pytest.mark.parametrize("body", [
     "void Inner(){worker.Run();} Worker worker=new Worker(); Inner();",
     "{Worker worker=new Worker();} void Inner(){worker.Run();} Inner();",
@@ -60,7 +61,9 @@ def test_req_qml022_ac02_local_receiver_captures_keep_source_caller_and_class_ta
     "var worker=Unknown(); void Inner(){worker.Run();} Inner();",
     "Worker worker=new Worker(); Other worker=new Other(); void Inner(){worker.Run();} Inner();",
     "\n#if FEATURE\nWorker worker=new Worker();\n#else\nOther worker=new Other();\n#endif\nvoid Inner(){worker.Run();} Inner();",
-])
+], ids=["declared-after-local", "closed-block", "static-local", "nested-static-local",
+        "static-lambda-capture", "for-initializer-binding", "using-statement-binding",
+        "dynamic-receiver", "unknown-inferred-type", "duplicate-receiver", "conditional-receiver-types"])
 def test_req_qml022_ac06_capture_rejects_out_of_scope_unproved_or_static_bindings(tmp_path, body):
     """Unavailable capture cannot borrow a convenient same-named class method."""
     path = tmp_path / "Capture.cs"
@@ -111,6 +114,7 @@ def test_req_qml022_ac06_capture_modifier_checks_do_not_rescan_callable_bodies(t
     assert not blocks, "Modifier lookup must inspect actual modifier nodes, never complete bodies"
 
 
+# Stable role names keep valid-capture evidence comparable across pytest versions.
 @pytest.mark.parametrize("body", [
     "void Use(Other worker){static void Inner(Worker worker){worker.Run();}Inner(null);}",
     "void Use(Other worker){static void Outer(Worker worker){void Inner(){worker.Run();}Inner();}Outer(null);}",
@@ -119,7 +123,8 @@ def test_req_qml022_ac06_capture_modifier_checks_do_not_rescan_callable_bodies(t
     "void Use(Other worker){System.Action<Worker> action=static(Worker worker)=>{void Inner(){worker.Run();}Inner();};}",
     "void Use(Other worker){System.Action<Worker> action=(Worker worker)=>{void Inner(){worker.Run();}Inner();};}",
     "void Use(){System.Action action=static()=>{Worker worker=new Worker();void Inner(){worker.Run();}Inner();};}",
-])
+], ids=["static-local-parameter", "nested-static-parameter", "escaped-outer-parameter",
+        "escaped-local-reference", "static-lambda-parameter", "lambda-parameter", "static-lambda-owned-local"])
 def test_req_qml022_ac02_capture_static_own_parameters_and_literal_aliases_remain_valid(tmp_path, body):
     """An actual static-frame parameter and escaped spellings retain their proven identity."""
     path = tmp_path / "Capture.cs"

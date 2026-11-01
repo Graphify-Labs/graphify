@@ -2061,14 +2061,24 @@ def _rebuild_code(
         # Incremental requests append their paths to .pending_changes; full-
         # corpus requests leave a .pending_full marker (#4274).
         queued = False
-        if not block_on_lock:
-            if changed_paths is None:
-                _queue_pending_full(out)
-                queued = True
-            elif changed_paths:
-                _queue_pending(out, list(changed_paths))
-                queued = True
-        with _rebuild_lock(out, blocking=block_on_lock) as got:
+        with contextlib.ExitStack() as lock_scope:
+            # Guard only pre-analysis coordination I/O. Writer/body failures and
+            # the native mutex's release remain owned by their existing paths.
+            stage = "queue"
+            try:
+                if not block_on_lock:
+                    if changed_paths is None:
+                        _queue_pending_full(out)
+                        queued = True
+                    elif changed_paths:
+                        _queue_pending(out, list(changed_paths))
+                        queued = True
+                stage = "lock"
+                got = lock_scope.enter_context(_rebuild_lock(out, blocking=block_on_lock))
+            except OSError:
+                print(f"[graphify watch] REBUILD_SETUP_FAILED: stage={stage}; "
+                      "check output permissions/storage availability and retry.")
+                return False
             if not got:
                 print("[graphify watch] Rebuild already in progress for "
                       f"{watch_path.resolve()} - "

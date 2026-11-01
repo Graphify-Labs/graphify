@@ -931,3 +931,23 @@ repaired retry/repeat. An older graph that lost a source body requires source
 re-extraction with the reviewed writer; declaration text or facade provenance
 cannot reconstruct unobserved source evidence. No new persistence boundary,
 logging framework or externally visible failure taxonomy is introduced.
+
+### REBUILD_SETUP_FAILED — INC-QML-123
+
+- Status: implemented; focused native Windows/filesystem and broad local checks
+  pass. POSIX native and final package/reviewed-head hosted evidence are pending.
+- Severity/owner: error at rebuild setup, before analysis/cache or publication,
+  with stable `stage=queue` or `stage=lock`. Native contention retains its result.
+- Context/message: bounded code/stage and actionable output-permission/availability
+  repair guidance. Do not disclose backend exception bodies or private paths.
+- Retention: reject the update without replacing accepted products or changing a
+  legitimate holder's payload/permissions. Already queued requests are not
+  consumed by a failed lock entry; failed queue setup never claims persisted new
+  work. Existing append/coalescing behavior is unchanged, with no new atomic
+  rollback guarantee for partial appends. Setup failure is not contention.
+- Recovery: repair output-lock storage access, then retry the ordinary update;
+  repeat after recovery remains safe. Preserve native mutex release/cleanup and
+  expose unconfirmed cleanup separately. Writer failures retain their own code.
+- Evidence: independently exercise actual denied lock storage and readonly graph
+  publication after real lock acquisition; available native platform and bounded
+  filesystem-seam outcomes stay distinct. No native-platform success is inferred.

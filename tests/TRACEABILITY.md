@@ -5460,3 +5460,133 @@ gates, with finalizers not yet established. These fresh minimal results do not
 claim native Qt execution, clustering determinism or hosted acceptance. Final
 publication must independently compare every package payload with its actual
 source commit; the original build tree identity remains unchanged.
+
+### Failed0a51 complete hosted revision and INC-QML-121 replay
+
+Ordinary PR source `0a51f2bf28189f89da3aadee094d348fdf030510`, base
+`a0926ef84a26e9f3cb46f0b982ac495c21fc2255` and synthetic checkout
+`0ead6423573dacbeee980465a1660f96351e800a` execute Main41254014083 and optional
+QML41254014077, attempt1. All20 jobs are terminal: eight successful, nine failed,
+three Linux lanes automatically cancelled by the existing matrix fail-fast.
+The complete Linux3.14 XML has34 failures,15,309 passes,145 skips and one inherited
+expected failure. Every macOS lane has34 failures/6,122 passes/81 skips; every
+Windows native lane has33 failures/6,180 passes/24 skips; four Ubuntu artifact
+lanes pass their three cases. These are executed failures, not capacity gaps.
+
+The exact failures are one malformed promised-node collection,32 stale raw
+deduper fault-adapter cases and one POSIX readonly-manual lock interception.
+Four source-matched hosted wheels, successful24 clean smokes,12 cleanup markers
+and passing Windows compatibility do not establish those failed test gates.
+Cancelled Linux artifacts have no test XML and receive no execution credit.
+Nine native required-ID mismatches additionally remain unaccepted pending124;
+the corresponding short-label results are not counted as aliases.
+
+INC121's exact original raw case
+`tests/test_qt_update_direction_integrity.py::test_actual_corrupt_candidate_refuses_shortcut_publication_and_repairs[partial_source-False-True-manual]`
+reproduces the KeyError after argument binding prevents the actual corruption
+observer. The corrected callback forwards production context to the real
+deduper, then injects the same damage. The complete module plus
+`tests/test_build.py` and `tests/test_type_only_import_cycles.py` pass190 cases,
+zero skips/failures,45.156 seconds. All existing rejection/no-writer/cohort/cache/
+redaction/repair/repeat assertions remain. Scoped Ruff/Pyright pass; the owned
+adapter/build files and14 protected bytes stay exact during execution. An earlier
+ignored harness placed its fixture beneath `.venv`, causing ordinary discovery
+exclusion before the intended boundary; it remains failed setup evidence. The
+qualified red uses a separately owned neutral temporary root and reaches the
+actual callback failure. Other disjoint source owners are outside this scoped
+guard; this checkpoint does not establish a new complete source freeze.
+
+### INC-QML-120 — Controlled activation checkpoint
+
+| Acceptance | Exact tests | Actual local evidence |
+| --- | --- | --- |
+| REQ-QML-022-AC06; REQ-QML-012-AC01/AC02 | Existing `test_csharp_source_transport.py::test_req_qml022_ac06_corrupt_source_transport_is_controlled_and_retains_publication[nodes_null-build]`; complete `tests/test_source_relationship_activation_contract.py` and `tests/test_source_relationship_activation_consumers.py` | Real producer data through builder and public load, both directions; malformed carriers/records, every promised fact, tuple/view/generator and successful legacy normalization; accepted graph/input/disk retention, actual reached EIO, repair and repeat. |
+
+Ordinary176-case red has59 failures/117 controls; first corrected176 passes.
+The final52-module gate has1,294 passes,17 existing platform-capability skips,
+zero failures/errors,285.812 seconds; all178 owned cases pass. These overlapping
+executions are not summed. The source-profile block has no missing executable
+lines or branch arcs. Overall owner coverage179/187 statements and71/80 branches
+leaves eight/nine unchanged defensive/merge/direction/key gaps explicit.
+Source284/300 and helper/contract/consumer54/134/103 remain exact; all1,141 Python
+files and14 protected files match before/after. Scoped Ruff/Pyright and independent
+read-only peer pass. Current whole-revision package/corpus/hosted acceptance is
+separate;17 skips do not establish POSIX support.
+
+### INC-QML-124 — Test identity compatibility checkpoint
+
+REQ-CORE-004-AC03: five complete parameter axes in
+`tests/test_cpp_type_reference_bounds.py`, `tests/test_csharp_captured_receivers.py`,
+`tests/test_qt_analysis_state.py` and `tests/test_qt_qmltypes_legacy_constant.py`
+now define short unique semantic IDs. All31 parameter expressions/order and
+every function body/assertion/marker/skip remain identical by AST and actual
+logical-value fingerprints. All102 unaffected IDs remain unchanged.
+
+Actual canonical pytest9.1.1 and fresh isolated pytest9.2.0 each collect133
+identical IDs/ordered logical inputs and execute133 passes, zero skips/errors;
+their actual JUnit identities match collection. They are two executions of the
+same cases, not266 unique tests. The old nine literal/fallback discrepancies
+remain retained at0a51 without alias passes. The four owned files and14 protected
+bytes stay exact. Scoped Ruff/Pyright pass. Tooling9.2 is confined to a fresh
+ignored environment; root204 distributions, package metadata and lockfile remain
+unchanged. This source-ID checkpoint needs new reviewed-head runner proof.
+
+### INC-QML-122/123 — Setup and actual publication boundaries
+
+| Acceptance | Exact ordinary tests | Observed boundary |
+| --- | --- | --- |
+| REQ-QML-012-AC01/AC02 | `tests/test_qt_rebuild_setup.py::test_req_qml012_ac01_lock_storage_denial_retains_then_recovers`; `::test_req_qml012_ac02_queue_setup_denial_is_controlled_before_lock` | Real native Windows readonly lock storage plus exact open/mkdir/queue append/full-marker denials fail before analysis. Bounded queue/lock-stage diagnostics, input/product/cache/state/holder retention, prior request preservation, repair and repeat. Existing queued requests may gain the legitimate new watch request; native CRLF append bytes are checked exactly. |
+| REQ-QML-012-AC01/AC02 | `tests/test_qt_rebuild_setup.py::test_req_qml012_ac01_real_contention_keeps_holder_and_pending_requests`; `::test_req_qml012_ac02_body_error_is_not_relabelled_as_lock_storage` | Actual native contention keeps its holder and pending requests; body errors propagate past the setup guard and release the actual mutex. This seam isolates body failure; the separate struct EIO cases reach the real writer. |
+| REQ-QML-022-AC06; REQ-QML-012-AC02; REQ-QML-014-AC03 | `tests/test_cpp_struct_method_updates.py::test_req_qml022_ac06_struct_callable_publication_failure_retains_then_recovers` | Both manual/watch failures use actual acquisition and contender=False. Native readonly/EIO arms at the real transaction factory after coordination, before preparation. Modes restore before late drain/native release. Retention, diagnostics, shrink, input, temporary, repaired cold parity and repeat assertions remain. |
+
+The ordinary lock red has eight faithful failures/three controls, zero skips.
+Corrected focused lock11 passes; combined lock/struct18 passes. The broader
+20-module gate executes487 cases:474 passed,13 existing platform-capability
+skips,zero failures/errors,354.344 seconds. The renamed final-path18-case gate
+passes without skips in21.125 seconds. These overlap and are not summed.
+All1,142 Python source/test files and14 protected files remain exact within
+their respective whole-source gates. Native evidence is Windows locally;
+POSIX permission/native behavior still needs the intended hosted profiles.
+
+The initial new queue oracle expected LF on Windows; corrected qualification
+keeps exact old bytes plus one actual os.linesep request per failed attempt.
+No production normalization or retention assertion is weakened. The probe's
+full-clean/incremental state transition is checked as the existing contract:
+only the exact full_clean True-to-False invocation-mode change is permitted
+after successful recovery; denial preserves every original state byte.
+The first ignored standalone CLI re-exec and overbroad state comparison remain
+failed setup probes, not correction acceptance.
+
+Every new setup statement/branch executes. The fixture has112/113 statements
+and4/4 branches; only its deliberate post-success mode assertion is unreachable
+when faulted preparation fails. Actual finally restoration, repeated denial and
+real recovery supplement that explicit gap. Ruff passes; scoped watch typing
+retains31 exact inherited diagnostics with zero additions/retirements and no
+new test diagnostics. Native advisory algorithms, queue append and shared fault/
+same-unit helpers remain byte-identical. Independent read-only peer is clear.
+No partial-append transaction, native unlock/exit recovery or SDK execution is
+claimed. Final source/package/corpus and new-head hosted proof remain pending.
+
+### Corrected INC120–124 raw package and complete installed checkpoint
+
+Raw tree `bf3238f55810bdea646914a1353848c09b35bf51` is an inert input, not an
+alternate checkout or commit. All385 payloads/248 Python files match raw Git,
+build input and wheel SHA256
+`9f7e229165f42767ab7d5210bf050ec2aada2dc23fb82eaab69d8631f9d947c3`.
+Fresh core/QML-watch31/35-distribution profiles finish all six phases once,
+40.703 seconds. Each passes unchanged FAST8 plus24 actual C# source-profile
+admission cases,6 setup mechanisms and3 real controls. Native Windows denial is
+qualified, body replacement EIO is reached, no early source reads occur on setup
+failure, and actual candidate-cache readback/old AST preservation establishes the
+body-EIO baseline without fabricating analysis or relaxing setup retention.
+All original26 CLI/two direction operations, syntax/EIO retention and recovery,
+repeat, the unchanged281-line extended probe and QML watcher cleanup pass.
+
+All385 installed payloads/248 Python files and dependency inventories remain
+exact before/after. Execution/final readback retains1,142 source/test files,
+14 protected files,28 harness files,17 historical inputs and nine copied
+assertion/configuration files. Actual isolated module origins count198 for
+FAST8 and204 for the new admission/setup probe. These are local Windows installed
+checks; native POSIX/full-source/corpus/new-head hosted gates remain separate.
+The resulting source commit must independently match all385 payloads before
+publication; the original build tree identity remains unchanged.

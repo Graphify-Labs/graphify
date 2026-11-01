@@ -240,3 +240,13 @@ of the later385-payload wheel pass FAST8 and the complete existing CLI, failure
 recovery, source-observation and watcher-cleanup profiles with31/35 unchanged
 distributions. This is local Windows installed evidence. Full-source/corpus and
 actual new Linux/macOS/Windows hosted gates remain pending.
+
+INC120–124 local refinements retain explicit profile boundaries: activation
+1294 passes/17 existing skips; adapter190 passes; setup/publication broad474
+passes/13 existing skips and final renamed-path18 passes; stable IDs133 passes
+under each pytest9.1.1/9.2.0. These selections overlap. Local native permissions
+are Windows evidence, with deterministic I/O seams separately identified.
+The20-job0a51 hosted revision failed (nine failures,three automatic cancellations,
+eight successes); Mac readonly setup, malformed transport and old raw-adapter
+failures are executed results. New corrected package/full/corpus and actual
+POSIX/native hosted acceptance need their own revision-bound evidence.

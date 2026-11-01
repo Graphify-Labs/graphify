@@ -82,12 +82,13 @@ def test_req_qml022_ac04_legacy_constant_rejects_nonboolean_values(owner, value)
     assert result["qml_failures"][0]["code"] == "QML_TYPES_UNSUPPORTED"
 
 
+# Owner/duplicate roles provide durable IDs even when pytest shortens source values.
 @pytest.mark.parametrize("source", [
     'Module { isConstant: true }',
     'Module { Component { name: "Wrong"; isConstant: true } }',
     module(extra="isConstant: false"),
     module("Parameter", extra="isMethodConstant: true"),
-])
+], ids=["module-owner", "component-owner", "duplicate-member-constant", "parameter-method-constant"])
 def test_req_qml022_ac04_legacy_constant_rejects_wrong_owners_and_duplicates(source):
     """Shared type ownership does not admit flags on modules/components or repeated keys."""
     result = parse_qmltypes(source)

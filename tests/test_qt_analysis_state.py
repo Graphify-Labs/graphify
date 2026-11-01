@@ -29,11 +29,13 @@ def test_successful_configuration_checkpoint_and_contract_change_require_refresh
     assert set(payload) == {"schema", "fingerprint", "has_qt"}
 
 
+# State-rejection identities must not depend on pytest's long-bytes display policy.
 @pytest.mark.parametrize("raw", [
     b"invalid", b"\xff", b"[]", b'{"schema":2,"fingerprint":"' + b"a" * 64 + b'"}',
     b'{"schema":true,"fingerprint":"' + b"a" * 64 + b'"}',
     b'{"schema":1,"fingerprint":"bad"}', b"x" * 1025,
-])
+], ids=["malformed-json", "non-utf8", "array-root", "incompatible-schema",
+        "boolean-schema", "malformed-fingerprint", "oversized-state"])
 def test_corrupt_or_incompatible_state_cannot_validate_cached_resolution(tmp_path, raw):
     path = tmp_path / QT_STATE_FILE
     path.write_bytes(raw)

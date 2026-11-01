@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Mapping
 import hashlib
 import json
 import math
@@ -70,13 +71,33 @@ def _local_fact(node):
 
 def source_profile(nodes, graph_metadata=None):
     """Validate typed activation or the persisted storage-only marker."""
+    # Inspect the envelope before iteration only when storage is promised.
+    # Otherwise preserve successful legacy empty carriers and skipped records;
+    # a genuine typed peer makes those recorded shape errors reject below.
+    promised = isinstance(graph_metadata, dict) and FIELD in graph_metadata
+    invalid_collection = isinstance(nodes, (Mapping, str, bytes, bytearray))
+    if promised and invalid_collection:
+        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid node collection")
+    try:
+        records = iter(nodes)
+    except TypeError as error:
+        if promised:
+            raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid node collection") from error
+        raise
     # Visit all promised facts even after activation; a valid peer cannot mask
-    # malformed metadata or hide behind legacy absence. Tuples support node views.
-    typed = False
-    for item in nodes:
-        node = item[1] if isinstance(item, tuple) else item
+    # malformed metadata or records. Invalid tuples still expose their existing
+    # attribute slot, so its typed promise cannot disappear as legacy absence.
+    typed = invalid_records = False
+    for item in records:
+        if isinstance(item, tuple):
+            invalid_records |= len(item) != 2
+            node = item[1] if len(item) > 1 else None
+        else:
+            node = item
         if isinstance(node, dict):
             typed = _local_fact(node) or typed
+        else:
+            invalid_records = True
     # Legacy falsy carriers represented absence before this optional contract.
     # A typed promise still requires a valid carrier before mutable adoption.
     if graph_metadata is not None and not isinstance(graph_metadata, dict):
@@ -88,6 +109,8 @@ def source_profile(nodes, graph_metadata=None):
     if FIELD in metadata and (not isinstance(marker, dict) or marker != _CONTRACT
                               or type(marker.get("contract_version")) is not int):
         raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid source relationship storage profile")
+    if (marker is not None or typed) and (invalid_collection or invalid_records):
+        raise ValueError("SOURCE_RELATIONSHIPS_INVALID: invalid node collection")
     return marker is not None or typed
 
 

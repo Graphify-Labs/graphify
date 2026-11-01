@@ -5344,3 +5344,114 @@ no broken443 local links,929 exact test references, unknown criteria or new
 handwritten files over300 lines. Full-source/corpus runs are active separately,
 not accepted. Draft PR synchronization may own the new hosted matrix in parallel;
 no merge, duplicate dispatch, application adoption or reviewer request follows.
+
+### INC-QML-120 — Controlled malformed source-profile activation
+
+Preimplementation finding: normal PR validation of source `0a51f2bf` exposes an
+existing transport regression: a promised source graph with `nodes:null` reaches
+`source_profile` iteration before controlled structural rejection. The existing
+ordinary C# transport test fails with TypeError on Windows, Linux and macOS.
+This is a product error, not an acquisition failure. Root stops the current
+local full-source and reference-corpus attempts; their bytes/process guards pass
+but interrupted finalizers remain unconfirmed. No incomplete run is acceptance.
+
+The source-profile maintainer owns only its existing261/300-line module and
+focused sub300-line regressions. REQ-QML-022-AC06 and REQ-QML-012-AC01/AC02 apply.
+Before production edits, reproduce the original public builder/load boundary and
+adjacent malformed carriers, explicit/automatic typed activation, complete
+promised-fact validation, valid graph-node views and existing legacy absence.
+Correct admission/validation ordering without converting corrupt promises into
+absence, mutating inputs or granting storage/native authority. Verify accepted
+output and counters remain exact, repair and repeat. Existing source fact schema
+and accepted successful profiles are unchanged; AST39/Qt33 remain current rather
+than advancing epochs solely for rejected-input diagnostics. New package/full/
+corpus/hosted proof must bind the corrected revision.
+
+### INC-QML-121 — Raw direction fault adapter follows the production interface
+
+The same executed Linux/macOS jobs expose32 raw-output regression cases whose
+old test callback rejects the new `source_nodes` keyword before injecting damage
+or setting its observation. Root owns the test adapter in
+`test_qt_update_direction_integrity.py`. Forward the real deduper's keyword
+context through that existing seam, then corrupt only its actual result. Keep
+all32 rejection, no-writer, graph/cache/cohort retention, diagnostic redaction,
+repair/repeat and changed-source assertions. No production behavior, graph
+contract, dependency or native lane changes. Existing REQ-QML-010/012/022 criteria
+remain authoritative; this is restoration of executable regression coverage.
+
+### INC-QML-122 — Readonly publication qualification after actual lock admission
+
+An executed POSIX struct-update fixture makes the output parent nonwritable
+before the manual path can create its rebuild lock. It therefore fails before
+the intended publication boundary. The update/lock maintainer owns the existing
+struct fixture and narrow neutral helpers. Qualify writer denial at actual
+transaction preparation, after the real mutex and pending-request coordination,
+retaining native ownership/release and readonly permissions. A real nonblocking
+contender must confirm ownership; restore permissions before late queue/lock
+cleanup. Do not bypass locking, replace validation, relax output/diagnostic
+assertions or manufacture publication results. Both manual/watch and actual
+replacement-EIO controls must retain all products/permissions, recover and repeat.
+Windows actual readonly-file behavior and POSIX qualification remain separately
+proved. A platform-only skip does not establish the other platform's evidence.
+
+### INC-QML-123 — Unavailable rebuild-lock storage is a distinct controlled error
+
+The fixture also exposes a separate operational gap: actual lock-file/directory
+access denial can escape the update owner as an unhandled OSError. Do not hide
+that outcome by moving the publication fixture. Root records D48 and
+REQ-QML-012-AC01/AC02 before the lock maintainer's implementation. Reproduce denied
+lock storage independently, using actual native denial where available and a
+bounded filesystem seam for deterministic error/control coverage. Define one
+safe actionable `REBUILD_SETUP_FAILED` diagnostic with `stage=queue` or
+`stage=lock`, distinct from contention and writer failure, without disclosing
+backend bodies or private paths. Only queue setup/context entry are guarded;
+analysis, writer and lock-exit failures remain outside this classification.
+Existing append/coalescing and partial-append semantics are unchanged. The command
+must fail before analysis/cache/publication, retain accepted products and
+holder/queued state, and permit repaired retry/repeat. Preserve native advisory
+locking, inode-race retries, holder cleanup and all ordinary lock controls.
+Record any unavailable native platform and remaining failure boundaries exactly.
+No broad mutex refactor, lock bypass or new runtime dependency is authorized.
+
+### INC-QML-124 — Stable source-defined case identities across pytest versions
+
+The failed0a51 native XML also exposes a separate proof gap: nine canonical
+required identities use long auto-generated parameter labels under local
+pytest9.1.1, while hosted9.2.0 uses short fallback labels. Corresponding functions
+execute, but no alias pass is assigned. The test-evidence maintainer owns only
+explicit IDs on five complete axes in four existing modules: C++ type-reference
+bounds, C# captured receivers, Qt analysis state and legacy qmltypes qualifiers.
+All31 parameter values, ordering, test bodies, assertions, markers and skips stay
+exact. Use unique short semantic ASCII labels for complete axes, preserving
+function/criterion/increment identities and old revision-bound evidence.
+
+Before editing, capture actual native mismatches and source AST/value/body
+fingerprints. Afterward compare complete real collections under both available
+pytest versions and execute the exact corrected modules. Duplicate, omitted or
+ambiguous case identities reject the proof; no dependency pin/change, assertion
+relaxation or inferred alias can make the failed revision accepted. The owning
+REQ-CORE-004-AC03 gains this explicit evidence contract. New packaging/source and
+hosted manifests bind the final IDs; old source0a51 receipts remain unchanged.
+
+INC120–124 complete the recorded scoped local correction gates and independent
+read-only reviews. Fresh raw-Git packaging input is tree
+`bf3238f55810bdea646914a1353848c09b35bf51`, explicitly not a commit. Its385 shipped
+payloads/248 Python files match raw objects, inert input and unmodified wheel
+SHA256 `9f7e229165f42767ab7d5210bf050ec2aada2dc23fb82eaab69d8631f9d947c3`.
+Both fresh offline31/35-distribution profiles finish all six phases in40.703
+seconds: unchanged FAST8,24 admission cases,6 setup mechanisms and3 controls per
+profile, then complete original CLI/direction/source probes and watcher cleanup.
+Actual Windows readonly lock qualification and reached writer EIO pass; the
+writer baseline first warms valid candidate caches through actual extraction
+and cache readback while preserving old AST entries and accepted graph bytes.
+Setup rejection still preserves every cache/product/input/holder byte before
+analysis. This distinction does not promise cache rollback after valid analysis.
+
+All1,142 source/test files,14 protected files,28 harness files and historical17
+inputs/nine assertion/configuration copies stay exact. Root Ruff and134 generated
+artifacts pass; full explicit-interpreter typing retains684 inherited diagnostics,
+zero additions/retirements. Static341-file review finds no broken443 local links,
+934 exact test references, unknown criteria or new handwritten file over300.
+The new full-source and reference-corpus gates run separately against this
+artifact. Draft PR synchronization may run in parallel; old failed0a51 jobs,
+interrupted local attempts and earlier raw packages remain separate evidence.

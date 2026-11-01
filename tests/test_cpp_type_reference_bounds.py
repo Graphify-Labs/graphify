@@ -76,7 +76,9 @@ def test_req_qml014_ac03_encoder_does_not_borrow_an_invalid_source_scope(malform
         make_type_reference("Count", malformed, syntax(raw, b"Count"), raw)
 
 
-@pytest.mark.parametrize("lookup", ["Owner<int>::Inner::Count", "N" * 385])
+# Semantic case IDs survive pytest changes to automatic long-value identifiers.
+@pytest.mark.parametrize("lookup", ["Owner<int>::Inner::Count", "N" * 385],
+                         ids=["opaque-template", "oversize-lookup"])
 def test_req_qml014_ac03_opaque_lookup_and_global_scope_never_gain_positive_authority(lookup):
     """Written template qualification is retained opaquely, and over-limit spelling stays unavailable."""
     raw = b"struct Holder{Count value;};"

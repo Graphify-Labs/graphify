@@ -1692,3 +1692,38 @@ roundtrip assertions; the provenance/unit and update modules119/123 cover
 distinct role/scope identities and real failure/removal/recovery. Root's
 cache/state tests own actual38-to39 retirement and paired33-policy refresh.
 These measurements describe ownership, not whole-branch or SDK verification.
+
+Before INC120, source relationships measures261 lines, ceiling300; its existing
+maintainer owns only profile activation/transport validation. Before INC123,
+watch measures3,401 against3,410. Permit a scoped ceiling3,450 for distinct lock
+storage error propagation/handling and comments, owned by the rebuild/lock
+maintainer; native lock/state/queue and publication owners remain unchanged.
+Reason: a real pre-ownership filesystem failure must be controlled without
+misclassifying contention or catching writer errors. Exit: characterize these
+boundaries now, then extract the existing cohesive lock responsibility in a
+separate reviewed increment; no unrelated legacy growth. Root owns integration.
+New regression modules remain below300; actual final measurements and seams
+must replace these preimplementation measurements in the delivery checkpoint.
+
+INC120 final activation owner measures284/300; its focused helper/contract/
+consumer files54/134/103 retain their300-line limits. The existing owner scans
+all typed promises and records envelope damage before optional-profile adoption;
+no resolver, source-fact or persistence owner moves. AST39/Qt33 remain current.
+
+INC123 final watch size is3,411/3,450. `_rebuild_code` owns its narrow ExitStack
+setup/entry guard; native `_rebuild_lock`, queue append/coalescing and writer
+owners remain unchanged. No new exception API or runtime module is introduced.
+`tests/test_qt_rebuild_setup.py`228/300 covers real denied storage and bounded
+queue/open/mkdir seams, contention, body error, retention, repair and repeat.
+The same-body prepublication rename from the temporary test_watch prefix admits
+these cases through the existing native Qt selector without changing selectors.
+The struct-update module143/300 owns its real transaction-preparation fault
+wrapper under an actual mutex/contender; shared fault/same-unit helpers stay exact.
+All changed setup lines/arcs execute; the post-success fixture assertion is an
+explicit gap because the faulted preparation deliberately fails. Scoped watch
+typing retains31 inherited diagnostics with no additions, rather than zero errors.
+
+INC124 only adds explicit IDs/comments to four existing test modules, measuring
+116/181/163/116 lines. Every function body/value/order/marker is unchanged, with
+133 real cases executed under both pytest versions. This is evidence identity
+ownership, not a production extraction or dependency-contract change.
