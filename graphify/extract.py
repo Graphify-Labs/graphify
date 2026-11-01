@@ -27,6 +27,7 @@ from .resolver_registry import (
 )
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
+from .go_dispatch import resolve_go_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
@@ -8282,6 +8283,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "swift_protocol_dispatch", frozenset({".swift"}), resolve_swift_protocol_dispatch
+    )
+)
+# Go member-level interface dispatch: the same edge, but Go types satisfy an
+# interface implicitly, so graphify.go_dispatch infers the implementers from
+# method sets before handing them to graphify.interface_dispatch.
+register_language_resolver(
+    LanguageResolver(
+        "go_interface_dispatch", frozenset({".go"}), resolve_go_interface_dispatch
     )
 )
 # Markdown code-span mentions (`Widget`, `mod.py::Widget::render`) become
