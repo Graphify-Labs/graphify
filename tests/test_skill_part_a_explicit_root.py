@@ -1,78 +1,98 @@
-"""Step 3 Part A passes root= to extract(), so the cache location never anchors ids (#3727).
+"""Part A supplies a trusted explicit root independent of its cache location (#3727).
 
-``extract(paths, cache_root=...)`` uses ``cache_root`` as the fallback anchor for
-``source_file`` and node ids when ``root`` is not given (#1941). Part A called it
-with ``cache_root`` alone. That is harmless while the cache sits in the scan root,
-but the two parameters look alike, and anyone adapting the block to a cache that
-lives elsewhere re-anchored every code node: same node count, every id renamed,
-and every cached edge into code left dangling. A node-count guard cannot see it.
+Inspect the actual emitted multiline call structurally. Execute its complete
+program twice, changing only cache_root, to retain the original identity proof
+without depending on keyword order or a superseded literal INPUT_PATH template.
 """
 from __future__ import annotations
 
-import sys
+import ast
+import copy
+import json
 from pathlib import Path
+import re
+import sys
 
 import pytest
 
-# tests/ -> repo root is one parent up; put it on the path so tools.skillgen
-# imports regardless of pytest's import mode.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from graphify.extract import extract  # noqa: E402
 from tools.skillgen import gen  # noqa: E402
-
-_CALL = "extract(code_files, cache_root="
 
 
 def _split_hosts() -> list[gen.Platform]:
     return [p for p in gen.load_platforms().values() if p.bucket != "monolith"]
 
 
-def _part_a_calls(platform: gen.Platform) -> list[str]:
+def _part_a_program(platform: gen.Platform) -> ast.Module:
+    """Decode only the actual rendered Part A shell program for either shell."""
     body = gen.render(platform)[0].content
-    return [line.strip() for line in body.splitlines() if _CALL in line]
+    section = body.split("#### Part A - Structural extraction for code files", 1)[1].split(
+        "#### Part B - Semantic extraction", 1)[0]
+    if platform.shell == "powershell":
+        programs = re.findall(r"@'\n(.*?)\n'@", section, re.S)
+    else:
+        programs = [source.replace('\\"', '"') for source in re.findall(
+            r' -c "\n(.*?)\n"\s*```', section, re.S)]
+    assert len(programs) == 1, f"[{platform.key}] Part A program not found"
+    return ast.parse(programs[0])
+
+
+def _extract_calls(tree):
+    """Find the real extraction call without assuming a single physical line."""
+    return [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "extract"
+            and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "code_files"]
 
 
 def test_split_hosts_are_discovered():
-    """The parametrized guard below must not pass vacuously on an empty list."""
+    """The parametrized guard must not pass vacuously on an empty list."""
     assert len(_split_hosts()) >= 10, [p.key for p in _split_hosts()]
 
 
 @pytest.mark.parametrize("platform", _split_hosts(), ids=lambda p: p.key)
 def test_part_a_passes_an_explicit_root(platform: gen.Platform):
-    calls = _part_a_calls(platform)
+    """Every host anchors extraction to the recorded scan root, not cache fallback."""
+    tree = _part_a_program(platform)
+    calls = _extract_calls(tree)
     assert calls, f"[{platform.key}] Part A extract() call not found"
+    assert any(isinstance(node, ast.Constant) and node.value == "graphify-out/.graphify_root"
+               for node in ast.walk(tree))
     for call in calls:
-        assert "root=Path('INPUT_PATH')" in call.replace("cache_root=Path('INPUT_PATH')", ""), (
-            f"[{platform.key}] Part A calls extract() with cache_root but no root= (#3727): {call!r}"
-        )
+        roots = [keyword.value for keyword in call.keywords if keyword.arg == "root"]
+        assert len(roots) == 1 and ast.unparse(roots[0]) == "scan_root", platform.key
 
 
-def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
-    """Run the shipped call twice, moving nothing but the cache: ids must not change."""
+def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path, monkeypatch):
+    """Run actual Part A twice; only its cache keyword changes, preserving IDs and provenance."""
     scan_root = tmp_path / "proj"
     (scan_root / "pkg").mkdir(parents=True)
     module = scan_root / "pkg" / "mod.py"
     module.write_text("def hello():\n    return 1\n", encoding="utf-8")
     elsewhere = tmp_path / "cache-elsewhere"
     elsewhere.mkdir()
-
-    (call,) = _part_a_calls(gen.load_platforms()["claude"])
-    expression = call.removeprefix("result = ")
-    in_place = expression.replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
-    relocated = expression.replace(
-        "cache_root=Path('INPUT_PATH')", f"cache_root=Path({str(elsewhere)!r})"
-    ).replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
-    assert in_place != relocated
-
-    scope = {"extract": extract, "Path": Path, "code_files": [module]}
-    ids_in_place = sorted(n["id"] for n in eval(in_place, dict(scope))["nodes"])
-    ids_relocated = sorted(n["id"] for n in eval(relocated, dict(scope))["nodes"])
-
-    assert ids_in_place, "expected AST nodes for the module"
-    assert ids_relocated == ids_in_place, (
-        "moving only the cache renamed the code nodes: "
-        f"{ids_in_place} -> {ids_relocated}"
-    )
+    output = tmp_path / "graphify-out"
+    output.mkdir()
+    (output / ".graphify_root").write_text(str(scan_root), encoding="utf-8")
+    (output / ".graphify_detect.json").write_text(json.dumps({
+        "files": {"code": [str(module)]}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    original = _part_a_program(gen.load_platforms()["claude"])
+    relocated = copy.deepcopy(original)
+    (call,) = _extract_calls(relocated)
+    (cache_keyword,) = [keyword for keyword in call.keywords if keyword.arg == "cache_root"]
+    cache_keyword.value = ast.Call(func=ast.Name(id="Path", ctx=ast.Load()),
+                                   args=[ast.Constant(value=str(elsewhere))], keywords=[])
+    ast.fix_missing_locations(relocated)
+    assert ast.dump(original) != ast.dump(relocated)
+    results = []
+    for program in (original, relocated):
+        scope = {}
+        exec(compile(program, "<actual-shipped-part-a>", "exec"), scope)
+        results.append(scope["result"])
+    ids = [sorted(node["id"] for node in result["nodes"]) for result in results]
+    sources = [{node["source_file"] for node in result["nodes"]} for result in results]
+    assert ids[0] and ids[1] == ids[0], "moving only the cache renamed the code nodes"
+    assert sources == [{"pkg/mod.py"}, {"pkg/mod.py"}]

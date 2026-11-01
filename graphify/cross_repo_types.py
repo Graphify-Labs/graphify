@@ -21,6 +21,8 @@ each side keeps its own members, file and provenance.
 from __future__ import annotations
 
 from collections import defaultdict
+from graphify.build import add_source_relationship, edge_datas
+from graphify.source_relationships import is_source_graph
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -57,11 +59,13 @@ def link_shared_type_declarations(merged: "nx.Graph") -> int:
             for right in nodes[index + 1:]:
                 if merged.nodes[left].get("repo") == merged.nodes[right].get("repo"):
                     continue
-                if merged.has_edge(left, right):
+                existing = edge_datas(merged, left, right) if merged.has_edge(left, right) else ()
+                # A source profile preserves independent mechanisms on one pair;
+                # repeated application only recognizes this consumer's own fact.
+                if (any(data.get("relation") == SHARED_TYPE_RELATION for data in existing)
+                        if is_source_graph(merged) else bool(existing)):
                     continue
-                merged.add_edge(
-                    left,
-                    right,
+                add_source_relationship(merged, left, right, dict(
                     relation=SHARED_TYPE_RELATION,
                     context="cross_repo",
                     confidence="INFERRED",
@@ -70,6 +74,6 @@ def link_shared_type_declarations(merged: "nx.Graph") -> int:
                     weight=1.0,
                     _src=left,
                     _tgt=right,
-                )
+                ))
                 added += 1
     return added

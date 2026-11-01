@@ -1036,7 +1036,9 @@ def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot delete the current working directory")
+# Windows keeps the process CWD open and refuses its removal; the actual deleted
+# directory fixtures belong to POSIX. Portable OS-error seams live separately.
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot remove the active process CWD")
 def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monkeypatch, capsys):
     """Detached hooks can inherit a CWD that no longer exists.
 
@@ -1051,8 +1053,8 @@ def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monk
     monkeypatch.delenv("GRAPHIFY_REPO_ROOT", raising=False)
 
     os.chdir(gone)
-    gone.rmdir()
     try:
+        gone.rmdir()
         assert _rebuild_code(Path("."), changed_paths=[Path("lib.py")]) is False
     finally:
         os.chdir(old_cwd)
@@ -1061,7 +1063,7 @@ def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monk
     assert "current working directory no longer exists" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot delete the current working directory")
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot remove the active process CWD")
 def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch):
     """GRAPHIFY_REPO_ROOT lets detached hook rebuilds recover from a deleted CWD."""
     from graphify.watch import _rebuild_code
@@ -1075,8 +1077,8 @@ def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch)
     monkeypatch.setenv("GRAPHIFY_REPO_ROOT", str(corpus))
 
     os.chdir(gone)
-    gone.rmdir()
     try:
+        gone.rmdir()
         assert _rebuild_code(
             Path("."),
             changed_paths=[Path("lib.py")],
@@ -1677,8 +1679,8 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
     .graphifyignore so busy volumes (node_modules churn, build artefacts,
     Time Machine writes, …) don't wake the rebuild pipeline.
     """
-    import threading
     from graphify import watch as watch_mod
+    from tests.watch_thread_lifecycle import running_watch
 
     watch_root = tmp_path / ".hidden-parent" / "corpus"
     watch_root.mkdir(parents=True)
@@ -1691,30 +1693,22 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
     monkeypatch.setattr(watch_mod, "_rebuild_code", lambda p, **kw: rebuild_calls.append(p) or True)
     monkeypatch.setattr(watch_mod, "_notify_only", lambda p: notify_calls.append(p))
 
-    # Run watch() in a thread with a short debounce so we can verify the
-    # post-debounce dispatch path actually runs on real events.
-    t = threading.Thread(
-        target=watch_mod.watch,
-        args=(watch_root,),
-        kwargs={"debounce": 0.2},
-        daemon=True,
-    )
-    t.start()
-    time.sleep(0.5)  # let observer.start() settle
+    # Real events and debounce remain under test. The scope waits for observer
+    # readiness and joins shutdown before callback/clock patches can be restored.
+    with running_watch(watch_root, monkeypatch, debounce=0.2):
+        # Ignored writes — handler must drop these.
+        (watch_root / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
+        (watch_root / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
+        time.sleep(1.0)
+        assert rebuild_calls == [], "ignored writes triggered a rebuild"
+        assert notify_calls == [], "ignored writes triggered a notify"
 
-    # Ignored writes — handler must drop these.
-    (watch_root / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
-    (watch_root / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
-    time.sleep(1.0)
-    assert rebuild_calls == [], "ignored writes triggered a rebuild"
-    assert notify_calls == [], "ignored writes triggered a notify"
-
-    # Non-ignored write — handler must accept and (after debounce) dispatch.
-    (watch_root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and not rebuild_calls:
-        time.sleep(0.1)
-    assert rebuild_calls, "non-ignored .py write should have triggered _rebuild_code"
+        # Non-ignored write — handler must accept and (after debounce) dispatch.
+        (watch_root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not rebuild_calls:
+            time.sleep(0.1)
+        assert rebuild_calls, "non-ignored .py write should have triggered _rebuild_code"
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
@@ -1723,9 +1717,9 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     not per filesystem event. Otherwise busy volumes re-read the file
     thousands of times per second.
     """
-    import threading
     from graphify import watch as watch_mod
     from graphify import detect as detect_mod
+    from tests.watch_thread_lifecycle import running_watch
 
     (tmp_path / ".graphifyignore").write_text("ignored/\n", encoding="utf-8")
     (tmp_path / "ignored").mkdir()
@@ -1742,15 +1736,14 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     monkeypatch.setattr(watch_mod, "_rebuild_code", lambda p, **kw: True)
     monkeypatch.setattr(watch_mod, "_notify_only", lambda p: None)
 
-    t = threading.Thread(target=watch_mod.watch, args=(tmp_path,), kwargs={"debounce": 0.2}, daemon=True)
-    t.start()
-    time.sleep(0.5)
-
-    # Generate many events; loader must not be called again.
-    for i in range(50):
-        (tmp_path / "ignored" / f"f{i}.py").write_text("x\n", encoding="utf-8")
-    time.sleep(0.7)
-    assert calls["n"] == 1, f"_load_graphifyignore called {calls['n']} times; expected 1"
+    # The same real observer must release its loop before a later test replaces
+    # the watch-module clock; otherwise that loop can steal the later event pump.
+    with running_watch(tmp_path, monkeypatch, debounce=0.2):
+        # Generate many events; loader must not be called again.
+        for i in range(50):
+            (tmp_path / "ignored" / f"f{i}.py").write_text("x\n", encoding="utf-8")
+        time.sleep(0.7)
+        assert calls["n"] == 1, f"_load_graphifyignore called {calls['n']} times; expected 1"
 
 
 # --- _check_shrink: silent-corruption guard with explicit-deletion bypass ---
@@ -1981,12 +1974,15 @@ def test_check_shrink_allows_deleted_code_file_when_semantic_ids_remain(capsys):
 
 
 @pytest.mark.parametrize("stub", [
-    {"id": "json", "external": True, "source_file": "", "file_type": "concept", "_origin": "semantic"},
-    {"id": "json", "type": "external", "source_file": "", "file_type": "concept", "_origin": "semantic"},
+    {"id": "json", "label": "json", "type": "external", "external": True,
+     "source_file": "", "file_type": "concept"},
+    {"id": "json", "label": "json", "type": "external", "external": True,
+     "source_file": "", "file_type": "concept", "_origin": "semantic"},
 ])
 def test_check_shrink_allows_dropped_import_stub_when_total_grows(capsys, stub):
     """Removing an import drops its auto-minted stub. Added code can make the
-    total grow. That write must succeed without --force."""
+    total grow. D30 requires the complete minted shape, with optional old stamp;
+    external/type spelling alone cannot exempt an authored record."""
     def code(node_id):
         return {
             "id": node_id,

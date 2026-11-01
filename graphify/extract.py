@@ -17,7 +17,9 @@ from typing import Any, Callable
 
 from .cache import load_cached, save_cached
 from .cargo_introspect import package_name
+from .source_identity import normalize_input_source, resolved_source_owners, walked_relative_source
 from .security import redact_secrets
+from .ids import decl_salt
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
@@ -75,6 +77,14 @@ from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F401
+from graphify.extractors.qml import extract_qml  # noqa: F401
+from graphify.extractors.qml_metadata import extract_qmldir  # noqa: F401
+from graphify.extractors.qml_cmake import extract_cmake  # noqa: F401
+from graphify.extractors.qml_qmake import extract_qmake  # noqa: F401
+from graphify.extractors.qml_resources import extract_qrc  # noqa: F401
+from graphify.extractors.qml_types import extract_qmltypes  # noqa: F401
+from graphify.qml_safety import is_qml_path
+from graphify.qt_incremental import QT_CPP_SUFFIXES, qt_syntax_cache_bypass, requires_native_refresh
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -93,6 +103,7 @@ from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
 
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.field_call_policy import FieldCallPolicy
 
 from graphify.extractors.resolution import (  # noqa: E402,F401
     _DECLDEF_HEADER_SUFFIXES,
@@ -186,6 +197,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
 
 from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pick_overload, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import _valid_jvm_package_name
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
@@ -222,11 +234,16 @@ def _redact_rationale_labels(result: dict) -> dict:
 
 
 def _safe_extract(
-    extractor: Callable, path: Path, *, scan_root: Path | None = None
+    extractor: Callable, path: Path, *, scan_root: Path | None = None, qt_test_context=None
 ) -> dict:
     try:
-        if extractor is extract_python:
+        # Root-aware Qt collectors share the same post-extraction secret
+        # redaction boundary as generic extractors before cache publication.
+        if extractor in (extract_python, extract_qml, extract_qmldir,
+                         extract_cmake, extract_qmake, extract_qrc, extract_qmltypes):
             return _redact_rationale_labels(extractor(path, root=scan_root))
+        if extractor is extract_cpp and qt_test_context is not None:
+            return _redact_rationale_labels(extractor(path, qt_test_context=qt_test_context))
         return _redact_rationale_labels(extractor(path))
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
@@ -1546,7 +1563,7 @@ _CSHARP_CONFIG = LanguageConfig(
         # type node that those references bind to.
         "delegate_declaration",
     }),
-    function_types=frozenset({"method_declaration"}),
+    function_types=frozenset({"method_declaration", "local_function_statement"}),
     import_types=frozenset({"using_directive"}),
     # `object_creation_expression` joins the invocation node so `new Foo(...)`
     # links the constructing method to Foo, the way Java has since #1373.
@@ -1555,7 +1572,7 @@ _CSHARP_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_access_expression"}),
     call_accessor_field="name",
     body_fallback_child_types=("declaration_list",),
-    function_boundary_types=frozenset({"method_declaration"}),
+    function_boundary_types=frozenset({"method_declaration", "local_function_statement"}),
     import_handler=_import_csharp,
 )
 
@@ -3380,7 +3397,7 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
     return _CPP_EXPORT_MACRO_RE.sub(repl, source)
 
 
-def extract_cpp(path: Path) -> dict:
+def extract_cpp(path: Path, *, qt_test_context=None) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
     C++/CLI sources are normalized to standard C++ first (#2876); see
@@ -3394,11 +3411,18 @@ def extract_cpp(path: Path) -> dict:
     except OSError:
         # Let _extract_generic report the read failure in its usual shape.
         return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
+    from graphify.extractors.qt_cpp_syntax import normalize_qt_cpp
     source_override = _normalize_cpp_cli(source) or source
     source_override = _normalize_cpp_export_macros(source_override)
-    result = _extract_generic(
-        path, _CPP_CONFIG, source_override=source_override
-    )
+    source_override = normalize_qt_cpp(source_override, qt_test_context=qt_test_context, original_source=source) or source_override
+    result = _extract_generic(path, _CPP_CONFIG, source_override=source_override, cpp_original_source=source)
+    if result.get("error") == "CPP_SOURCE_VIEW_MISMATCH":
+        from graphify.extractors.cpp_source_views import source_view_failure
+        return source_view_failure(result, path)
+    # Syntax compatibility retains the original member-pointer qualifier as
+    # source evidence; it never supplies a class target or callable provider.
+    from graphify.extractors.cpp_member_pointers import annotate_member_pointer_fields
+    annotate_member_pointer_fields(result, source, source_override or source)
     return _augment_cpp_string_tests(path, result)
 
 
@@ -3749,6 +3773,10 @@ def _canonicalize_csharp_namespace_nodes(all_nodes: list[dict], all_edges: list[
     for node in all_nodes:
         if node.get("type") != "namespace":
             continue
+        # Qt/QML namespace-shaped facts represent distinct source declarations
+        # and occurrences. Equal labels cannot merge providers or resource aliases.
+        if node.get("metadata", {}).get("qml", {}).get("contract_version") == 1:
+            continue
         label = node.get("label")
         if isinstance(label, str):
             by_label.setdefault(label, []).append(node)
@@ -3815,6 +3843,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
 # Extensions absent from this map (docs, configs, unknown languages) resolve to
 # no family and are never filtered — same permissive default as before.
 _LANG_FAMILY_BY_EXT: dict[str, str] = {
+    ".qml": "qml",
     # JS/TS module graph (SFCs embed JS/TS)
     ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
@@ -3942,6 +3971,9 @@ def _rewire_unique_stub_nodes(
     nodes: list[dict], edges: list[dict], root: Path | None = None,
 ) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
+    # A source-local rejection belongs to one edge, not the shared bare stub.
+    from graphify.extractors.cpp_type_references import is_type_reference_unavailable, validate_type_references
+    validate_type_references(nodes, edges)
     scan_root = Path(root).resolve() if root is not None else None
     crate_by_dir: dict[Path, str | None] = {}
 
@@ -4148,6 +4180,41 @@ def _rewire_unique_stub_nodes(
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
     csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
 
+    # Explicit Kotlin imports constrain each referring edge before the generic
+    # label-only rewire can erase its unresolved stub. The later JVM resolver
+    # must not inherit a convenient wrong-package target or missing authority.
+    jvm_imports: dict[tuple[str, str], set[str]] = {}
+    for edge in edges:
+        source_file = str(edge.get("source_file") or "")
+        metadata = edge.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        fqn = metadata.get("target_fqn")
+        if (edge.get("relation") != "imports" or _lang_family(source_file) != "jvm"
+                or not isinstance(fqn, str) or not fqn):
+            continue
+        alias = metadata.get("alias")
+        name = alias if isinstance(alias, str) and alias else fqn.rsplit(".", 1)[-1]
+        jvm_imports.setdefault((source_file, name), set()).add(fqn)
+
+    def _violates_jvm_import(edge: dict, stub_id: str, candidate_id: str) -> bool:
+        if edge.get("relation") not in csharp_scoped_relations | {"extends"}:
+            return False
+        source_file = str(edge.get("source_file") or "")
+        name = _node_label_key(by_id.get(stub_id, {}))
+        expected = jvm_imports.get((source_file, name))
+        if not expected:
+            return False
+        candidate = by_id.get(candidate_id, {})
+        metadata = candidate.get("metadata")
+        package = metadata.get("jvm_package") if isinstance(metadata, dict) else None
+        if (candidate.get("_callable_class") is not True or not _valid_jvm_package_name(package)
+                or _lang_family(candidate.get("source_file")) != "jvm"):
+            return True
+        label = str(candidate.get("label") or "")
+        actual = f"{package}.{label}" if package else label
+        return expected != {actual}
+
     def _names_own_builtin_base(edge: dict, stub_id: str, remapped_id: str) -> bool:
         r"""#2812: `class FooApiException extends \Exception` names PHP's own global
         built-in, so a same-named class defined in another language cannot be what
@@ -4211,8 +4278,11 @@ def _rewire_unique_stub_nodes(
             _is_dotnet_source_file(str(edge.get("source_file", "")))
             and edge.get("relation") in csharp_scoped_relations
         )
+        # The preflight proved any explicit pair; veto its logical target only.
+        unavailable_target = (edge.get("_tgt", edge.get("target"))
+                              if is_type_reference_unavailable(edge) else None)
         source = edge.get("source")
-        if source in remap:
+        if source in remap and source != unavailable_target:
             remapped_source = remap[str(source)]
             if not (
                 is_csharp_scoped_edge
@@ -4225,9 +4295,11 @@ def _rewire_unique_stub_nodes(
             if not (
                 is_csharp_scoped_edge
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
-            ) and not _names_own_builtin_base(
+            ) and target != unavailable_target and not _names_own_builtin_base(
                 edge, str(target), remapped_target
-            ) and not _cross_language_candidate(edge, remapped_target):
+            ) and not _cross_language_candidate(edge, remapped_target) and not _violates_jvm_import(
+                edge, str(target), remapped_target
+            ):
                 edge["target"] = remapped_target
                 if target in rust_by_name_only:
                     edge["confidence"] = "INFERRED"
@@ -5670,13 +5742,14 @@ def _resolve_cpp_member_calls(
     # declared `void bar();` resolves. `method` wins when a key has both.
     method_index: dict[tuple[str, str], str] = {}
     enclosing_type: dict[str, str] = {}
+    storage_ids = FieldCallPolicy(all_nodes, all_edges).storage
     for rel in ("defines", "method"):
         for e in all_edges:
             if e.get("relation") != rel:
                 continue
             src, tgt = e.get("source"), e.get("target")
             tnode = node_by_id.get(tgt)
-            if tnode is None:
+            if tnode is None or tnode.get("_callable") is not True or tnode.get("_callable_class") or tgt in storage_ids:
                 continue
             enclosing_type.setdefault(tgt, src)
             method_index[(src, _key(tnode.get("label", "")))] = tgt
@@ -5715,7 +5788,7 @@ def _resolve_cpp_member_calls(
         # Only resolve C++ raw_calls (other languages share the raw_calls list;
         # a `.h` may route to either extract_cpp or extract_objc by content, so the
         # extractor-stamped `lang` tag — not the suffix — is the unambiguous gate).
-        if rc.get("lang") != "cpp":
+        if rc.get("lang") != "cpp" or rc.get("_cpp_free_handled"):
             continue
         # Determine the receiver's type and the resulting confidence.
         qualified_fallback_label: str | None = None
@@ -5725,7 +5798,7 @@ def _resolve_cpp_member_calls(
             if not type_nid:
                 continue
             type_qualified = True
-        elif receiver[:1].isupper():
+        elif rc.get("cpp_qualified") or receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
             qualified_fallback_label = f"{receiver}::{callee}()"
             type_defs = type_def_nids.get(_key(receiver), [])
@@ -6014,6 +6087,8 @@ def _resolve_csharp_member_calls(
         if len(hits) != 1:
             return None
         owner_nid, field_type = next(iter(hits))
+        if not field_type:
+            return None
         owner = node_by_id.get(owner_nid)
         return _resolve_type_name_nid(
             field_type, owner, (owner or {}).get("source_file", "")
@@ -6192,7 +6267,10 @@ def _bind_member_field_tables(
             merged = bound.setdefault(candidates[0]["id"], {})
             for fname, tname in fields.items():
                 if merged.get(fname) not in (None, tname):
-                    merged.pop(fname, None)  # cross-shard conflict: no guess
+                    if lang == "csharp":
+                        merged[fname] = ""  # preserve an unavailable binding across further shards
+                    else:
+                        merged.pop(fname, None)  # cross-shard conflict: no guess
                 else:
                     merged[fname] = tname
     return bound
@@ -6931,10 +7009,12 @@ def _jvm_imports_by_file(path: Path, result: dict) -> dict[str, str]:
 
 
 def _resolve_jvm_references(
-    per_file: list[dict],
+    per_file: list[dict | None],
     paths: list[Path],
     all_nodes: list[dict],
     all_edges: list[dict],
+    *,
+    context_nodes: list[dict] | None = None,
 ) -> None:
     """Resolve Java/Kotlin type references through one JVM-wide symbol index.
 
@@ -6953,28 +7033,68 @@ def _resolve_jvm_references(
     imports_by_file: dict[str, dict[str, str]] = {}
 
     for path, result in zip(paths, per_file):
+        if result is None:
+            continue
         package_entry = _jvm_package_name(path, result)
         if package_entry is None:
             continue
         source_file, package = package_entry
         pkg_by_file[source_file] = package
         imports_by_file[source_file] = _jvm_imports_by_file(path, result)
-        for node in result.get("nodes", []):
-            node_source = str(node.get("source_file") or "")
-            if node_source != source_file:
-                continue
-            if not _is_type_like_definition(node):
-                continue
-            label = str(node.get("label", "")).strip()
-            if not label:
-                continue
-            fqn = f"{package}.{label}" if package else label
-            by_fqn.setdefault(fqn, []).append(str(node["id"]))
-
-    if not by_fqn:
+    if not pkg_by_file:
         return
 
+    # One accepted-corpus index serves fresh and unchanged sourced types. Their
+    # producer-owned package marker survives transport; absent legacy or corrupt
+    # evidence cannot be reconstructed from directory names or borrowed source.
+    for node in all_nodes:
+        source_file = str(node.get("source_file") or "")
+        if (effective_suffix(source_file).lower() not in _JVM_NAME_SUFFIXES
+                or node.get("_callable_class") is not True or not _is_type_like_definition(node)):
+            continue
+        metadata = node.get("metadata")
+        package = metadata.get("jvm_package") if isinstance(metadata, dict) else None
+        if not _valid_jvm_package_name(package):
+            continue
+        label = str(node.get("label", "")).strip()
+        if not label:
+            continue
+        fqn = f"{package}.{label}" if package else label
+        by_fqn.setdefault(fqn, []).append(str(node["id"]))
+
     node_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+    # A fresh FQN stub may temporarily occupy an unchanged file's normalized
+    # ID. Keep that accepted file import without admitting its declarations
+    # twice or letting the stub erase genuine file provenance in this decision.
+    def is_file_node(node):
+        source = node.get("source_file")
+        return (isinstance(source, str) and source and node.get("file_type") == "code"
+                and not node.get("_callable") and not node.get("_callable_class")
+                and node.get("label") in {source, Path(source).name})
+
+    context_file_ids = {str(node["id"]) for node in context_nodes or ()
+                        if node.get("id") and is_file_node(node)}
+    occupied = {str(node["id"]) for node in [*all_nodes, *(context_nodes or ())] if node.get("id")}
+    unresolved: dict[str, str] = {}
+
+    def unresolved_file_alias(fqn, target):
+        # Preserve the existing literal FQN stub, salted only when its key
+        # aliases a proven file. Source-owned file IDs never become type proof.
+        if fqn in unresolved:
+            return unresolved[fqn]
+        base = _make_id(target, decl_salt(fqn))
+        candidate, counter = base, 2
+        while candidate in occupied:
+            candidate = _make_id(base, str(counter))
+            counter += 1
+        node = {"id": candidate, "label": fqn, "file_type": "code",
+                "source_file": "", "source_location": ""}
+        all_nodes.append(node)
+        node_by_id[candidate] = node
+        occupied.add(candidate)
+        unresolved[fqn] = candidate
+        return candidate
+
     repoint = {"imports", "inherits", "extends", "implements", "references"}
     for edge in all_edges:
         if edge.get("relation") not in repoint:
@@ -6995,8 +7115,11 @@ def _resolve_jvm_references(
             elif label and not target_node.get("source_file"):
                 simple = label
             else:
-                for name in imports_by_file.get(source_file, {}):
-                    if _make_id(name) == target:
+                # A parked FQN can share its normalized ID with a real file
+                # (b.Logger versus b/Logger.kt). Written import evidence, not
+                # that incidental file-node ownership, chooses the type FQN.
+                for name, written in imports_by_file.get(source_file, {}).items():
+                    if target in {_make_id(name), _make_id(written)}:
                         simple = name
                         break
             if not fqn and simple:
@@ -7007,7 +7130,10 @@ def _resolve_jvm_references(
         if not fqn:
             continue
         candidates = by_fqn.get(fqn, [])
+        file_target = target in context_file_ids or is_file_node(target_node)
         if len(candidates) != 1:
+            if file_target and edge.get("relation") != "imports":
+                edge["target"] = unresolved_file_alias(fqn, target)
             continue
         candidate = candidates[0]
         if candidate == target:
@@ -7015,7 +7141,7 @@ def _resolve_jvm_references(
         # Keep the file-level import edge so `affected <File>` still reaches
         # importers. A bare import target has no node yet; replace a resolved
         # stub, but add the class edge when the target is only a local claim.
-        if edge.get("relation") == "imports" and not target_node:
+        if edge.get("relation") == "imports" and (not target_node or file_target):
             resolved = dict(edge)
             resolved["target"] = candidate
             all_edges.append(resolved)
@@ -7853,9 +7979,9 @@ def _resolve_kotlin_member_calls(
         if e.get("relation") == "method":
             methods_by_type.setdefault(e.get("source"), []).append(e.get("target"))
 
-    # Receiver name -> declaring type node ids, scoped to Kotlin-sourced
-    # definitions only (a same-named type in another language must not
-    # answer a Kotlin call). len != 1 is the god-node guard.
+    # Java and Kotlin share receiver types; another language's same-named
+    # declaration cannot answer a JVM call. Multiple JVM declarations remain
+    # ambiguous under this member pass's existing single-definition guard.
     types_by_name: dict[str, list[str]] = {}
     for n in all_nodes:
         if not n.get("_callable_class"):
@@ -9100,6 +9226,12 @@ def extract_xaml(path: Path) -> dict:
 
 
 _DISPATCH: dict[str, Any] = {
+    ".qml": extract_qml,
+    ".qmltypes": extract_qmltypes,
+    ".cmake": extract_cmake,
+    ".pro": extract_qmake,
+    ".pri": extract_qmake,
+    ".qrc": extract_qrc,
     ".py": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
@@ -9224,6 +9356,7 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
+    ".qml": "qml",
     ".vb": "vbnet",
     ".r": "r",
     ".sol": "solidity",
@@ -9309,22 +9442,6 @@ def _is_objc_header(path: Path) -> bool:
     return any(marker in head for marker in _OBJC_HEADER_MARKERS)
 
 
-# C++-only signals. None of these are valid in a plain C header, so finding one
-# in a `.h` is a high-confidence signal the header is C++ (#1547). The C grammar
-# has no class_specifier, so a `class Foo { ... };` header routed to extract_c
-# loses the class and its method prototypes (a junk `foo_foo` node + a sourceless
-# `class` stub); routing to extract_cpp recovers the real type. Kept CONSERVATIVE:
-# a plain C header with none of these stays on extract_c. ObjC sniffing keeps
-# priority (an ObjC header can legitimately contain `::`/`class` inside an inline
-# C++ block when compiled as Objective-C++). `extern "C"` covers the common
-# C-API header guarded by `#ifdef __cplusplus`: the C grammar rejects the
-# linkage block and the whole header extracts zero symbols.
-_CPP_HEADER_MARKERS = (
-    b"class ", b"namespace ", b"template", b"::",
-    b"public:", b"private:", b"protected:", b'extern "C"',
-)
-
-
 def _is_objc_source(path: Path) -> bool:
     """Whether a `.m` file is Objective-C rather than MATLAB/Octave (#1702).
 
@@ -9342,20 +9459,22 @@ def _is_objc_source(path: Path) -> bool:
 def _is_cpp_header(path: Path) -> bool:
     """Whether a `.h` file is C++ rather than plain C (#1547).
 
-    Mirrors `_is_objc_header`: sniffs for a C++-only token. Used only to reroute
-    a `.h` from extract_c to extract_cpp when no ObjC marker is present (ObjC has
-    priority). Conservative by construction — a plain C header matches nothing
-    here and keeps its existing extract_c routing.
+    Visible declaration tokens in the bounded header prefix select C++, across
+    whitespace and comments between tokens. Inert literals/comments and
+    inconclusive headers retain C. Objective-C selection has priority.
     """
-    try:
-        head = path.read_bytes()[:256 * 1024]
-    except OSError:
-        return False
-    return any(marker in head for marker in _CPP_HEADER_MARKERS)
+    # Admission uses visible tokens across whitespace; strings/comments cannot
+    # select another parser. This standard-library helper needs no Qt parser.
+    from graphify.cpp_header import is_cpp_header
+    return is_cpp_header(path)
 
 
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
+    if path.name == "qmldir":
+        return extract_qmldir
+    if path.name == "CMakeLists.txt":
+        return extract_cmake
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -9406,14 +9525,15 @@ def _get_extractor(path: Path) -> Any | None:
     return _DISPATCH.get(suffix)
 
 
-def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
+def _safe_extract_with_xaml_root(extractor, path: Path, root: Path, *, qt_test_context=None) -> dict:
     # Publish the in-flight scan root on extractors.base (the correct import
     # direction) so root-dependent extractors — Markdown link resolution, the
     # XAML C# project clamp — can read it without reaching back into this module
     # (#3666). Despite the XAML-era name this wraps every extractor.
     previous_root = set_active_scan_root(root.resolve())
     try:
-        return _safe_extract(extractor, path, scan_root=root)
+        options = {"qt_test_context": qt_test_context} if qt_test_context is not None else {}
+        return _safe_extract(extractor, path, scan_root=root, **options)
     finally:
         set_active_scan_root(previous_root)
 
@@ -9440,16 +9560,22 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     Returns:
         (index, result_dict) so results can be placed back in order.
     """
-    if len(args) == 4:
-        idx, path_str, root_str, cache_location_str = args
-    else:  # legacy 3-tuple: location == anchor
+    native_cache_bypass = bool(args[4]) if len(args) >= 5 else False
+    context_options = {"qt_test_context": args[5]} if len(args) >= 6 and args[5] is not None else {}
+    if len(args) >= 4:
+        idx, path_str, root_str, cache_location_str = args[:4]
+    elif len(args) == 3:  # legacy 3-tuple: location == anchor
         idx, path_str, root_str = args
         cache_location_str = root_str
+    else:
+        # Reject incomplete internal work items before touching paths or cache.
+        raise ValueError("worker arguments require at least three items")
     path = Path(path_str)
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+    bypass_cache = (effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+                    or qt_syntax_cache_bypass(path, native=native_cache_bypass))
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
@@ -9461,7 +9587,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     if extractor is None:
         return idx, {"nodes": [], "edges": []}
 
-    result = _safe_extract_with_xaml_root(extractor, path, root)
+    result = _safe_extract_with_xaml_root(extractor, path, root, **context_options)
     # Never cache a zero-node result for an extractable file. Every supported
     # source produces at least a file node, so an empty node list is anomalous
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
@@ -9519,6 +9645,8 @@ def _extract_parallel(
     max_workers: int | None,
     total_files: int,
     cache_location: Path | None = None,
+    native_cache_bypass: bool = False,
+    qt_test_contexts=None,
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -9568,7 +9696,11 @@ def _extract_parallel(
     # the cache dir is written (defaults to root when not decoupled) (#1774).
     root_str = str(root)
     cache_loc_str = str(cache_location if cache_location is not None else root)
-    work_items = [(idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    work_items = [(idx, str(path), root_str, cache_loc_str, True) if native_cache_bypass
+                  else (idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    if qt_test_contexts is not None:
+        work_items = [(idx, str(path), root_str, cache_loc_str, native_cache_bypass, qt_test_contexts.for_path(path))
+                      for idx, path in uncached_work]
 
     done_count = 0
     failed: list[int] = []  # positions into uncached_work whose future failed
@@ -9644,7 +9776,8 @@ def _extract_parallel(
         # a second failure into an error-carrying result.
         _extract_sequential(
             [uncached_work[pos] for pos in failed],
-            per_file, root, total_files, cache_location,
+            per_file, root, total_files, cache_location, native_cache_bypass=native_cache_bypass,
+            **({"qt_test_contexts": qt_test_contexts} if qt_test_contexts is not None else {}),
         )
     if total_files >= _PROGRESS_INTERVAL:
         # Report the same denominator the intermediate lines used (uncached files
@@ -9665,6 +9798,8 @@ def _extract_sequential(
     root: Path,
     total_files: int,
     cache_location: Path | None = None,
+    native_cache_bypass: bool = False,
+    qt_test_contexts=None,
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
@@ -9682,9 +9817,11 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = (effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+                        or qt_syntax_cache_bypass(path, native=native_cache_bypass))
         # XAML boundary anchors on `root` (the corpus), not the cache location.
-        result = _safe_extract_with_xaml_root(extractor, path, root)
+        context_options = {"qt_test_context": qt_test_contexts.for_path(path)} if qt_test_contexts is not None else {}
+        result = _safe_extract_with_xaml_root(extractor, path, root, **context_options)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
         # but cache intentional declines/virtual manifests carrying `skipped` (#3910).
         if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
@@ -9708,6 +9845,8 @@ def extract(
     max_workers: int | None = None,
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
+    qml_import_roots: tuple[str, ...] | None = None,
+    refresh_native: bool = False,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -9748,12 +9887,14 @@ def extract(
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
     """
-    paths = [Path(p) for p in paths]
     if resolution_context_nodes:
         # Persisted C# method labels carry their owner (#4883); the resolvers
         # match the bare `.Name()` form a fresh extraction produces.
         resolution_context_nodes = bare_csharp_method_labels_in_nodes(resolution_context_nodes)
     anchor_root = Path(root) if root is not None else None
+    # Normalize native entry spellings before facts, worker dispatch or cache keys.
+    context_root = anchor_root if anchor_root is not None else cache_root
+    paths = [normalize_input_source(Path(p), context_root) for p in paths]
     _check_tree_sitter_version()
     _raise_recursion_limit()
     # Workspace package manifests/globs can change during watch or repeated extraction.
@@ -9804,6 +9945,12 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    # One source-name decision serves IDs and provenance; realpath state remains
+    # owned by this analysis run, with no second cache or discovery authority.
+    def _walked_rel(path, resolved=None):
+        walked = Path(os.path.abspath(path))
+        physical = resolved if resolved is not None else _cached_realpath(str(walked), os.getcwd())
+        return walked_relative_source(walked, root, physical, realpath=_cached_realpath, cwd=os.getcwd())
     python_scan_paths = list(paths)
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
@@ -9843,6 +9990,18 @@ def extract(
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
 
+    # Context-only C-compatible headers may forward literal includes without
+    # changing their actual producer or admitting Objective-C/non-native data.
+    context_paths = [path for path in paths if _get_extractor(path) is extract_cpp
+                     or path.suffix.lower() in {".h", ".hpp", ".hh", ".hxx"} and _get_extractor(path) is extract_c]
+    # Borrowed graph nodes never authorize opening source or build metadata.
+    from graphify.extractors.qt_cpp_test_context import build_qt_test_contexts
+    qt_test_contexts = build_qt_test_contexts(context_paths, root=root,
+        project_paths=[path for path in paths if _get_extractor(path) is extract_cmake])
+    native_cache_bypass = refresh_native or requires_native_refresh(paths) or qt_test_contexts.requires_native_refresh
+    native_policy_kwargs = {"native_cache_bypass": True} if native_cache_bypass else {}
+    if qt_test_contexts.requires_native_refresh:
+        native_policy_kwargs["qt_test_contexts"] = qt_test_contexts
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
@@ -9854,7 +10013,8 @@ def extract(
             per_file[i] = {"nodes": [], "edges": []}
             no_extractor += 1
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = (effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+                        or qt_syntax_cache_bypass(path, native=native_cache_bypass))
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:
@@ -9899,7 +10059,7 @@ def extract(
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
             ran_parallel = _extract_parallel(
-                uncached_work, per_file, root, max_workers, total, cache_location
+                uncached_work, per_file, root, max_workers, total, cache_location, **native_policy_kwargs
             )
         if not ran_parallel:
             # #2444: only re-extract what the pool didn't finish. A pool that
@@ -9907,7 +10067,7 @@ def extract(
             # the whole batch would throw that work away.
             _extract_sequential(
                 [(i, p) for (i, p) in uncached_work if per_file[i] is None],
-                per_file, root, total, cache_location,
+                per_file, root, total, cache_location, **native_policy_kwargs,
             )
 
     # Fill any remaining None slots. With the #2444/#2445 handling above this
@@ -9920,6 +10080,11 @@ def extract(
                 "nodes": [], "edges": [],
                 "error": "internal: no extraction result produced",
             }
+
+    # Overlay only already-admitted JavaScript resources referenced by QML.
+    # Its facts are separate from the generic JS graph and never execute source.
+    from graphify.extractors.qml_scripts import collect_qml_scripts
+    collect_qml_scripts(paths, per_file, root=root)
 
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
@@ -10183,7 +10348,7 @@ def extract(
     # still carry the raw file-stem prefix; the per-file prefix remap then diverges
     # them (foo_h vs foo_cpp), so the collapse must happen first. Collapsing here
     # also means disambiguation sees one source_file per id and won't split them.
-    _merge_decl_def_classes(all_nodes, all_edges)
+    _merge_decl_def_classes(all_nodes, all_edges, all_raw_calls)
 
     # Same fold for a Go package's type, which every file declaring a method on it mints
     # again under one id; also before disambiguation, which would otherwise split them.
@@ -10229,7 +10394,7 @@ def extract(
     # file node is correctly relativized to main and the skill.md spec wants
     # main_run -- splitting the symbol into AST/semantic ghosts (#1096). Relativize
     # the symbol prefix the same way, gated by source_file so two files sharing a
-    # prefix can't cross-contaminate. Keyed by resolved path -> (old_pref, new_pref).
+    # prefix can't cross-contaminate. Keyed by walked root-relative source identity.
     # Each file maps from up to TWO old prefixes — the input-form prefix
     # _file_node_id(path) and the absolute-resolved-form prefix
     # _file_node_id(path.resolve()). Alias/workspace imports resolve specifiers
@@ -10285,9 +10450,9 @@ def extract(
             # Already covered: either the target is in this batch (its input
             # form is the same form the extractors minted ids from, and the
             # per-path loop registers both that and the resolved form) or an
-            # earlier stamped edge registered it. Re-appending it here would
-            # re-run its per-path iteration AFTER later batch files and could
-            # flip the last-writer of a colliding old-id key.
+            # earlier stamped edge registered it. The ownership pass below
+            # handles shared forms independently; no redundant target entry
+            # should participate in its accepted source claims.
             continue
         _remap_seen.add(_tp)
         try:
@@ -10343,15 +10508,15 @@ def extract(
         if _raw_tp != _tp:
             _remap_seen.add(_raw_tp)
             remap_paths.append(_raw_tp)
+    # Shared physical forms have one explicit owner, independent of batch order.
+    _physical_owners = resolved_source_owners(
+        remap_paths, root, walked_relative=_walked_rel, realpath=_cached_realpath, cwd=os.getcwd())
     for path in remap_paths:
         old_id = _make_id(str(path))
         try:
-            rel = path.relative_to(root)
+            rel = _walked_rel(path)
         except ValueError:
-            try:
-                rel = _resolved(path).relative_to(root)
-            except ValueError:
-                continue
+            continue
         new_id = _file_node_id(rel)
         if old_id != new_id:
             id_remap[old_id] = new_id
@@ -10361,8 +10526,9 @@ def extract(
         # canonical instead of orphaning (#1529).
         path_abs = _resolved(path)
         old_id_abs = _make_id(str(path_abs))
-        if old_id_abs != new_id:
-            id_remap[old_id_abs] = new_id
+        physical_id = _file_node_id(_physical_owners[path_abs])
+        if old_id_abs != physical_id:
+            id_remap[old_id_abs] = physical_id
             id_owner.setdefault(old_id_abs, set()).add(path_abs)
         old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
@@ -10393,18 +10559,19 @@ def extract(
         # (#2243). Register the suffixed forms, preserving the extension tail
         # exactly as the prefix remap yields for in-batch entry nodes
         # (`c.sh` -> `c_sh__entry`): new prefix + the tail of the minted id.
-        for _old, _pref in ((old_id, old_pref), (old_id_abs, old_pref_abs)):
+        for _old, _pref, _owner in ((old_id, old_pref, new_id),
+                                    (old_id_abs, old_pref_abs, physical_id)):
             if not _old.startswith(_pref):
                 continue
-            _entry_new = new_id + _old[len(_pref):] + "__entry"
+            _entry_new = _owner + _old[len(_pref):] + "__entry"
             _entry_old = _old + "__entry"
             if _entry_old != _entry_new:
                 id_remap.setdefault(_entry_old, _entry_new)
         if old_prefs:
-            prefix_remap[path_abs] = old_prefs
+            prefix_remap[root / rel] = old_prefs
         # Absolute form first: it is the longest, so prefix decomposition can
         # try forms in order without a shorter form shadowing it.
-        stem_forms[path_abs] = (
+        stem_forms[root / rel] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
     # A key is contested when a node of a different file carries it as one of that
@@ -10416,7 +10583,12 @@ def extract(
     for _n in all_nodes:
         _k, _sf = _n.get("id"), _n.get("source_file")
         if _k in id_remap and _k in id_owner and _sf and _resolved(_sf) not in id_owner[_k]:
-            _forms = stem_forms.get(_resolved(_sf))
+            # Stem ownership uses the accepted walked name, even when a
+            # discovered junction shares physical bytes with another source.
+            try:
+                _forms = stem_forms.get(root / _walked_rel(Path(_sf)))
+            except (OSError, RuntimeError, ValueError):
+                _forms = None
             if _forms and any(_k.startswith(_f + "_") for _f in _forms[1]):
                 contested.add(_k)
                 held.setdefault(_k, set()).add(_resolved(_sf))
@@ -10497,7 +10669,7 @@ def extract(
             if n.get("type") == "package":
                 continue
             try:
-                entry = prefix_remap.get(_resolved(sf))
+                entry = prefix_remap.get(root / _walked_rel(Path(sf)))
             except Exception:
                 continue
             if entry is None:
@@ -10603,8 +10775,8 @@ def extract(
 
         def _decompose(target: str, tf: str) -> "tuple[str, str] | None":
             try:
-                forms = stem_forms.get(_resolved(tf))
-            except (OSError, RuntimeError):
+                forms = stem_forms.get(root / _walked_rel(Path(tf)))
+            except (OSError, RuntimeError, ValueError):
                 return None
             if not forms:
                 return None
@@ -10873,8 +11045,26 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    field_calls = FieldCallPolicy(resolution_nodes, [*all_edges, *(resolution_context_edges or ())])
+    from graphify.extractors.csharp_lexical_calls import local_function_ids
+    local_csharp_ids = local_function_ids(resolution_nodes, [*all_edges, *(resolution_context_edges or ())])
+    from graphify.extractors.cpp_free_calls import resolve_free_function_calls
+    resolve_free_function_calls(resolution_nodes, all_edges, all_raw_calls)
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
+            continue
+        if n["id"] in field_calls.storage or n["id"] in local_csharp_ids:
+            continue
+        # Dedicated QML scopes resolve these facts; shared label guessing must
+        # not bind generic language calls to QML declarations or source sites.
+        _qml_metadata = n.get("metadata", {}).get("qml", {})
+        if _qml_metadata.get("contract_version") == 1:
+            continue
+        # A free C++ prototype proves a declaration, not a selected body/scope
+        # or overload. Keep it out of shared label-based call guessing.
+        if n.get("metadata", {}).get("cpp_prototype", {}).get("contract_version") == 1:
+            continue
+        if "cpp_function" in n.get("metadata", {}):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
@@ -10901,8 +11091,14 @@ def extract(
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
 
     # JVM name resolution: Java and Kotlin share one package/type namespace.
+    # Accepted context widens the read-only type index. Newly disambiguated
+    # sourceless stubs belong to the fresh result, never the borrowed records.
     # Run before the Kotlin-only resolver and before call evidence is built.
-    _resolve_jvm_references(per_file, paths, all_nodes, all_edges)
+    _jvm_n0 = len(resolution_nodes)
+    _resolve_jvm_references(per_file, paths, resolution_nodes, all_edges,
+                            context_nodes=resolution_context_nodes)
+    if resolution_nodes is not all_nodes:
+        all_nodes.extend(resolution_nodes[_jvm_n0:])
 
     # Kotlin import targets (#2526): rewrite each `imports` edge from the bare
     # last-segment id to the node its written FQN names, via the per-file
@@ -11017,10 +11213,15 @@ def extract(
     _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
     _csharp_overload_cache: dict = {}  # filled on first use (#4584)
     for rc in all_raw_calls:
+        if rc.get("_cpp_free_deferred") or rc.get("_cpp_free_handled"):
+            continue
         if rc.get("_ambiguous_python_import"):
             continue
         callee = rc.get("callee", "")
         if not callee:
+            continue
+        if field_calls.shadows(rc.get("caller_nid"), callee,
+                is_member=rc.get("is_member_call", False), receiver=rc.get("receiver")):
             continue
         if callee in _LANGUAGE_BUILTIN_GLOBALS:
             continue
@@ -11450,24 +11651,25 @@ def extract(
         cached = _sf_forms.get(sf)
         if cached is not None:
             return cached
+        # Accepted aliases identify the same physical source as the canonical
+        # scan root. Decide containment before the external-path fallback so a
+        # nearby short/symlink parent cannot turn native provenance into ../..
+        # transport. Keep written and resolved forms for existing endpoint joins.
         try:
-            rel = sf_path.relative_to(root)
+            sf_resolved = _cached_realpath(str(sf_path), os.getcwd())
+        except (OSError, RuntimeError):
+            sf_resolved = sf_path
+        try:
+            rel = _walked_rel(sf_path, sf_resolved)
         except ValueError:
             portable = _portable_out_of_root_sf(sf_path)
             canonical_id = _make_id("ext", portable)
             new_sf = portable
         else:
-            # In-root: the same canonical repo-relative form the real file
-            # node uses (_file_node_id), so the scan root can never leak into
-            # a persisted id. Real file nodes were already remapped by the
-            # #2169 pass, so only leftover absolute-derived ids match below
-            # (belt-and-braces for #2195 regex-rescue stubs and friends).
+            # IDs and source/definition provenance use the same physically
+            # admitted walked identity, including distinct discovered aliases.
             canonical_id = _file_node_id(rel)
             new_sf = rel.as_posix()
-        try:
-            sf_resolved = sf_path.resolve()
-        except (OSError, RuntimeError):
-            sf_resolved = sf_path
         # Learn the STEM (extension-dropped) forms too: symbol producers mint
         # compound ids as _make_id(_file_stem(path), name), so a node-less
         # absolute-derived endpoint arrives as <stem-key>_<symbol> and only
@@ -11586,6 +11788,27 @@ def extract(
         e.pop("local_alias", None)
         e.pop("_python_plain_import", None)
 
+    # Native overlays must borrow final canonical C++ identities, not the
+    # earlier absolute/stem IDs. Context remains accepted, read-only input.
+    from graphify.qt_qml_pipeline import resolve_qt_qml
+    # An explicit language declaration owns dispatch. All native collectors share
+    # this boundary, so a PHP/Python header cannot be reparsed as Qt C++ merely
+    # because its physical suffix looks native. C++-selected physical headers
+    # retain enrichment; arbitrary extension remaps retain generic extraction.
+    qt_inputs = [(path, result) for path, result in zip(paths, per_file)
+                 if path.suffix.lower() not in QT_CPP_SUFFIXES
+                 or effective_suffix(path) == path.suffix
+                 or _get_extractor(path) is extract_cpp]
+    for failed in resolve_qt_qml([path for path, _ in qt_inputs],
+                                [result for _, result in qt_inputs],
+                                all_nodes, all_edges, root=root,
+                                import_roots=qml_import_roots,
+                                context_nodes=resolution_context_nodes,
+                                context_edges=resolution_context_edges,
+                                **({"qt_test_contexts": qt_test_contexts} if qt_test_contexts.requires_native_refresh else {})):
+        if failed not in _failed_sources:
+            _failed_sources.append(failed)
+
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
     # the watcher drops any AST-marked node missing from the fresh output
@@ -11635,6 +11858,12 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        "qml_failures": [failure for result in per_file if result
+                         for failure in result.get("qml_failures", [])],
+        "qt_failures": [failure for result in per_file if result
+                        for failure in result.get("qt_failures", [])],
+        "diagnostics": [diagnostic for result in per_file if result
+                        for diagnostic in result.get("diagnostics", [])],
         # Surfaces files the extractor declined by design (zero nodes but not a
         # failure) so the manifest can mark the emptiness intentional and the
         # #2543 heal stops re-queuing them every incremental (#2879).
@@ -11658,6 +11887,12 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     containment_root = root if root is not None else target
     from graphify.detect import _resolves_under_root
     if target.is_file():
+        if is_qml_path(target):
+            from graphify.detect import _is_ignored, _load_graphifyignore
+            ignore_root = root if root is not None else target.parent
+            patterns = _load_graphifyignore(ignore_root)
+            if patterns and _is_ignored(target, ignore_root, patterns):
+                return []
         return [target] if _resolves_under_root(target, containment_root) else []
     _EXTENSIONS = set(_DISPATCH.keys())
     from graphify.detect import (
@@ -11695,7 +11930,12 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             for fname in filenames:
                 p = dp / fname
                 suffix = p.suffix
-                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and not _is_installed_graphify_file(p) and _resolves_under_root(p, containment_root):
+                # Exact-name Qt manifests share ordinary sources' corpus gate;
+                # installed Graphify copies never become application facts.
+                if ((suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS
+                     or p.name in {"qmldir", "CMakeLists.txt"})
+                        and not _ignored(p) and not _is_installed_graphify_file(p)
+                        and _resolves_under_root(p, containment_root)):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -11716,7 +11956,11 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         for fname in filenames:
             p = dp / fname
             suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and not _is_installed_graphify_file(p) and _resolves_under_root(p, containment_root):
+            # Following a contained alias preserves the same admission gate.
+            if ((suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS
+                 or p.name in {"qmldir", "CMakeLists.txt"})
+                    and not _ignored(p) and not _is_installed_graphify_file(p)
+                    and _resolves_under_root(p, containment_root)):
                 results.append(p)
     return sorted(results)
 

@@ -1,0 +1,51 @@
+name: QML optional wheel
+
+on:
+  pull_request:
+    # The same optional-wheel matrix covers stacked Qt integration reviews.
+    branches: [v8, main, 'codex/qml-*', 'codex/qt-*']
+  push:
+    branches: [v8, main]
+
+permissions:
+  contents: read
+
+# PR revisions replace obsolete evidence; distinct non-PR groups also prevent
+# GitHub's pending-run replacement from dropping queued default-branch proof.
+concurrency:
+  group: qml-wheel-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  qml-wheel:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Qt assistant guidance checks read the immutable pre-split baseline.
+          # A shallow checkout cannot execute those source-policy regressions.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      # Existing Ubuntu all-extras CI owns source regressions. These lanes prove
+      # isolated optional/core wheel installs; Windows/macOS add QML source tests.
+      - name: Verify installed wheels and platform contracts
+        env:
+          GRAPHIFY_QML_JUNIT_PATH: ${{ runner.temp }}/graphify-qml-results/tests.xml
+        run: uv run --no-project --python ${{ matrix.python }} python tests/qml_ci.py ${{ runner.os == 'Linux' && '--artifact-only' || '' }}
+      # Individual outcomes distinguish native execution from aggregate success;
+      # Ubuntu's three artifact-only cases retain their separate profile.
+      - name: Retain per-case QML test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qml-wheel-tests-${{ matrix.os }}-python-${{ matrix.python }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/graphify-qml-results/tests.xml
+          retention-days: 14
+          if-no-files-found: error

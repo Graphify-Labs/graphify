@@ -70,7 +70,7 @@ def test_directory_named_like_a_source_file_is_rejected(tree):
     assert _is_regular_file(d) is False
 
 
-def test_symlink_to_a_regular_file_is_accepted(tree):
+def test_symlink_to_a_regular_file_is_accepted(tree, requires_symlinks):
     target = tree / "src" / "module.py"
     link = tree / "src" / "alias.py"
     _symlink(link, target)
@@ -78,7 +78,7 @@ def test_symlink_to_a_regular_file_is_accepted(tree):
 
 
 @needs_fifo
-def test_symlink_pointing_at_a_fifo_is_rejected(tree):
+def test_symlink_pointing_at_a_fifo_is_rejected(tree, requires_symlinks):
     """A link to a FIFO blocks exactly like the FIFO, so stat must follow it."""
     fifo = tree / "src" / "real.py"
     os.mkfifo(fifo)
@@ -87,7 +87,7 @@ def test_symlink_pointing_at_a_fifo_is_rejected(tree):
     assert _is_regular_file(link) is False
 
 
-def test_broken_symlink_is_rejected_without_raising(tree):
+def test_broken_symlink_is_rejected_without_raising(tree, requires_symlinks):
     link = tree / "src" / "dangling.py"
     _symlink(link, tree / "src" / "does-not-exist.py")
     assert _is_regular_file(link) is False

@@ -1659,6 +1659,8 @@ def dispatch_command(cmd: str) -> None:
             _raw = _json.loads(gp.read_text(encoding="utf-8"))
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
+            from graphify.source_relationships import adopt_transport
+            _raw = adopt_transport(_raw)
             # `query` deliberately keeps the graph undirected (unlike `path` /
             # `explain`, which force directed=True): BFS/DFS here must explore
             # both callers and callees of the seed node to build useful
@@ -2025,6 +2027,8 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        from graphify.source_relationships import adopt_transport
+        _raw = adopt_transport(_raw)
         # Force directed so the renderer can recover stored caller→callee
         # direction, and multigraph so exact-pair parallel links (e.g. a
         # `references` and a `calls` edge between the same two nodes) survive load
@@ -2036,6 +2040,8 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
+        # Resolve exact IDs and qualified source::symbol names before scoring;
+        # the selected graph still retains Qt logical direction for traversal.
         src_nid, src_scored, src_err = _resolve_path_endpoint(G, source_label)
         tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, target_label)
         for _label, _nid, _err in (
@@ -2074,40 +2080,13 @@ def dispatch_command(cmd: str) -> None:
         # returned an arbitrary route among equal-length paths that varied per
         # process. Build a sorted, materialized graph so neighbor order — and
         # thus the chosen path — is canonical for a given graph.json.
-        from graphify.serve import _weakest_shortest_path
+        from graphify.serve import _path_search_graph, _weakest_shortest_path
         try:
-            if undirected:
-                _und = _nx.Graph()
-                _und.add_nodes_from(sorted(G.nodes))
-                _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-                path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
-                    _und, G, src_nid, tgt_nid)
-            else:
-                # Directed by default (#2487). True direction is NOT raw arc
-                # order: legacy canonicalized files persist a flipped arc with
-                # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
-                # (falling back to the loaded arc) rather than to_directed().
-                _dg = _nx.DiGraph()
-                _dg.add_nodes_from(sorted(G.nodes))
-                _dg.add_edges_from(sorted(
-                    (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
-                ))
-                # A `contains` edge only runs file -> symbol; there is no
-                # stored edge back out to the containing file, so a route that
-                # reaches a symbol (via an `imports`/`calls`/`references` hop)
-                # can never continue on to the file that defines it, and a
-                # file-to-file dependency routed through a shared symbol finds
-                # no path at all even though both halves of the route exist
-                # (#3878). Add the implied reverse hop for traversal only — the
-                # printed segment still recovers the real stored `contains`
-                # edge and its true direction from G, same as any other hop.
-                _dg.add_edges_from(sorted(
-                    (d.get("_tgt", v), d.get("_src", u))
-                    for u, v, d in G.edges(data=True)
-                    if d.get("relation") == "contains"
-                ))
-                path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
-                    _dg, G, src_nid, tgt_nid)
+            # One policy owns stored direction, typed Qt/QML membership and
+            # generic structural reverse navigation for both path consumers.
+            search_graph = _path_search_graph(G, undirected)
+            path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
+                search_graph, G, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
             if undirected:
                 print(f"No path found between '{source_label}' and '{target_label}'.")
@@ -2120,6 +2099,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
+        # Confidence summarizes each hop; Qt provenance retains the same
+        # traversed facts across all hops without replacing either mechanism.
+        path_edges = []
         hop_datas: list[list[dict]] = []
         from graphify.build import edge_datas, edge_evidence
         from graphify.serve import _path_confidence_line
@@ -2141,6 +2123,7 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            path_edges.extend(datas)
             hop_datas.append(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
@@ -2154,6 +2137,11 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        from graphify.path_provenance import path_provenance
+        evidence = path_provenance([G.nodes[nid] for nid in path_nodes], path_edges)
+        if evidence:
+            print(evidence.lstrip("\n"))
+        # Match MCP's final-summary contract after the preserved source section.
         _summary = _path_confidence_line(hop_datas)
         if _summary and _n_routes > 1:
             # Several routes tie on length; report the weakest's confidence so it
@@ -2200,6 +2188,8 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        from graphify.source_relationships import adopt_transport
+        _raw = adopt_transport(_raw)
         # Force directed so the renderer can recover stored caller→callee direction.
         _raw = {**_raw, "directed": True}
         try:
@@ -2249,6 +2239,8 @@ def dispatch_command(cmd: str) -> None:
         # a link persisted in flipped endpoint order carries its truth in the
         # per-edge _src marker (#2309). Markerless edges fall back to the arc
         # tail (today's behavior).
+        # A source-local callable may be both contained and called by one
+        # owner. Render each accepted relation instead of selecting one peer.
         for nb in G.successors(nid):
             for _ed in edge_datas(G, nid, nb):
                 connections.append(
@@ -2885,6 +2877,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        follow_symlinks = False
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -2893,6 +2886,9 @@ def dispatch_command(cmd: str) -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--follow-symlinks":
+                follow_symlinks = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2924,7 +2920,10 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        # Discovery remains opt-in; the existing watch owner checks containment
+        # and publishes the same accepted graph/state cohort for either profile.
+        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster,
+                           follow_symlinks=follow_symlinks, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -3141,6 +3140,8 @@ def dispatch_command(cmd: str) -> None:
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
         from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
+        from graphify.build import add_source_relationship
+        from graphify.source_relationships import is_source_graph, make_source_graph, source_profile
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
@@ -3148,30 +3149,10 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
             _enforce_graph_size_cap_or_exit(gp)
             data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize edges/links key before loading — graphify writes "links"
-            # via node_link_data but older runs may have used "edges" (#738).
-            if "links" not in data and "edges" in data:
-                data = dict(data, links=data["edges"])
-            # Preserve stored edge direction across undirected node_link_graph (#2261).
-            # Mirrors cli.py's query pattern and export.py's _src/_tgt restoration.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            data = dict(
-                data,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in data.get("links", [])
-                ],
-            )
-            try:
-                G = _jg.node_link_graph(data, edges="links")
-            except TypeError:
-                G = _jg.node_link_graph(data)
+            # Validate typed storage before NetworkX can collapse contradictory
+            # flags/parallel links; this loader does not normalize source IDs.
+            from graphify.paths import load_node_link_graph
+            G = load_node_link_graph(data)
             # node_link_graph restores only the nested `graph.hyperedges` slot;
             # a graph.json whose hyperedges live only at the top level (the
             # other half of to_json's dual-slot shape, #2485) would silently
@@ -3179,18 +3160,11 @@ def dispatch_command(cmd: str) -> None:
             if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
                 G.graph["hyperedges"] = data["hyperedges"]
             graphs.append(G)
-        # nx.compose requires all graphs to be the same type.  When input graphs
-        # come from different sources (e.g. an AST-only run vs a full LLM run) one
-        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
-        # (the graphify default) by converting MultiGraphs with nx.Graph().
+        # Validate every source promise before composing. Only the typed
+        # profile opts into relationship-preserving storage; legacy mixed
+        # graph inputs retain their original simple undirected projection.
+        profiles = [source_profile(g.nodes(data=True), g.graph) for g in graphs]
         def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
-            # nx.compose requires every graph to be the same type. Inputs may
-            # disagree on BOTH axes — directed vs undirected, and multi vs simple
-            # — because per-repo graph.json files are written by different extract
-            # paths at different times. Normalise everything to a plain undirected
-            # Graph (the merged cross-repo view is undirected anyway), which covers
-            # DiGraph / MultiGraph / MultiDiGraph. Without this a directed input
-            # crashed compose with "All graphs must be directed or undirected" (#1606).
             if type(g) is not _nx.Graph:
                 return _nx.Graph(g)
             return g
@@ -3202,7 +3176,9 @@ def dispatch_command(cmd: str) -> None:
         naive_tags = [gp.parent.parent.name for gp in graph_paths]
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
-        merged = _nx.Graph()
+        source_metadata = next((g.graph for g, active in zip(graphs, profiles) if active), {})
+        merged = make_source_graph([node for g in graphs for node in g.nodes(data=True)],
+                                   graph_metadata=source_metadata)
         # nx.compose merges graph attrs with dict.update, so each iteration
         # CLOBBERED the previously accumulated hyperedge list — only the last
         # input's hyperedges survived (#2484, after @oleksii-tumanov's
@@ -3217,7 +3193,7 @@ def dispatch_command(cmd: str) -> None:
         # the prefixed nodes preserves each repo's own partition.
         community_offset = 0
         for G, repo_tag in zip(graphs, repo_tags):
-            prefixed = _to_simple(_prefix(G, repo_tag, community_offset=community_offset))
+            prefixed = _prefix(G, repo_tag, community_offset=community_offset)
             hes = prefixed.graph.get("hyperedges")
             if isinstance(hes, list):
                 collected_hyperedges.extend(h for h in hes if isinstance(h, dict))
@@ -3228,7 +3204,13 @@ def dispatch_command(cmd: str) -> None:
             ]
             if cids:
                 community_offset = max(community_offset, max(cids) + 1)
-            merged = _nx.compose(merged, prefixed)
+            if is_source_graph(merged):
+                merged.graph.update(prefixed.graph)
+                merged.add_nodes_from(prefixed.nodes(data=True))
+                for source, target, attrs in prefixed.edges(data=True):
+                    add_source_relationship(merged, source, target, attrs)
+            else:
+                merged = _nx.compose(merged, _to_simple(prefixed))
         # A contract type both repos declare arrives as two unconnected nodes,
         # since every id is repo-prefixed. Link them so a traversal can cross
         # the repo boundary (#3007).
@@ -3426,6 +3408,9 @@ def dispatch_command(cmd: str) -> None:
         graph_path = graph_path.expanduser()
         if graph_path_explicit:
             graph_out_dir = graph_path.parent
+            # A custom graph owns its analysis as well as its labels/report;
+            # unrelated working-directory sidecars cannot select its grouping.
+            analysis_path = graph_out_dir / ".graphify_analysis.json"
             if not labels_path_explicit:
                 labels_path = graph_out_dir / ".graphify_labels.json"
             if not report_path_explicit:
@@ -3484,6 +3469,8 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        from graphify.source_relationships import adopt_transport
+        _raw = adopt_transport(_raw)
         from graphify.paths import restore_arc_direction as _rad
         _raw = _rad(_raw)
         try:
@@ -3588,8 +3575,16 @@ def dispatch_command(cmd: str) -> None:
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so the oversized graph still renders a usable artifact.
                 _effective_node_limit = 5000 if _over_cap else node_limit
-                _to_html(G, communities, str(out_dir / "graph.html"),
-                         community_labels=labels or None, node_limit=_effective_node_limit)
+                try:
+                    written = _to_html(G, communities, str(out_dir / "graph.html"),
+                                       community_labels=labels or None, node_limit=_effective_node_limit)
+                except Exception as exc:
+                    code = "HTML_GROUPING_INVALID" if str(exc).startswith("HTML_GROUPING_INVALID") else "HTML_VIEW_FAILED"
+                    print(f"error: {code}: cannot publish the HTML view. Prior HTML was retained; inspect grouping/output access and retry, or use a focused graph for oversized views.", file=sys.stderr)
+                    sys.exit(1)
+                if not written:
+                    print("error: HTML_VIEW_UNAVAILABLE: grouping cannot produce a useful bounded view. Prior HTML was retained; inspect the partition or choose a focused graph.", file=sys.stderr)
+                    sys.exit(1)
                 if G.number_of_nodes() <= _effective_node_limit:
                     print(f"graph.html written - open in any browser, no server needed")
                 if _over_cap:
@@ -4138,6 +4133,30 @@ def dispatch_command(cmd: str) -> None:
                     existing_graph_path, target, _seen_files, detection=detection
                 )
 
+        # QML scope resolution needs unchanged component/metadata facts too.
+        # Until dependency-directed invalidation is implemented, rebuild the
+        # live code corpus on QML (including deletion) or QML-JS input changes.
+        from graphify.qml_safety import (
+            QmlSafetyError, qml_refresh_required, require_complete_qml,
+        )
+        from graphify.qt_analysis_state import inspect_qt_analysis, commit_qt_analysis
+        try:
+            qt_state = inspect_qt_analysis(target, graphify_out, files_by_type.get("code", []),
+                                          excludes=_effective_excludes or (), gitignore=_effective_gitignore)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        if incremental_mode and ((qt_state.has_qt and qt_state.changed) or qml_refresh_required(
+            files_by_type.get("code", []),
+            [*code_files, *deleted_files, *excluded_files, *graph_stale_sources],
+        )):
+            code_files = [Path(p) for p in files_by_type.get("code", [])]
+            print("[graphify extract] Qt/QML inputs changed; refreshing the live code corpus.")
+        if incremental_mode:
+            from graphify.csharp_incremental import refresh_csharp_paths
+            code_files = refresh_csharp_paths(code_files, files_by_type.get("code", []),
+                removed=[*deleted_files, *excluded_files, *graph_stale_sources], profile_changed=qt_state.changed)
+
         semantic_files = doc_files + paper_files + image_files
         # --code-only: index code (pure local AST, no key) and skip the semantic
         # (doc/paper/image) pass entirely, so a mixed repo doesn't hard-fail when no
@@ -4365,7 +4384,7 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            ast_kwargs: dict = {"cache_root": out_root, "root": target, "qml_import_roots": qt_state.import_roots, "refresh_native": qt_state.has_qt}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -4441,6 +4460,9 @@ def dispatch_command(cmd: str) -> None:
                             _fwd_metadata = {
                                 key: _metadata[key]
                                 for key in (
+                                    # Preserve proven JVM default packages by key presence;
+                                    # empty is evidence, not an absent metadata value.
+                                    "jvm_package",
                                     "ruby_resolution_schema",
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
@@ -4470,7 +4492,9 @@ def dispatch_command(cmd: str) -> None:
                         if _edge.get("relation") not in (
                             "contains", "method", "inherits", "imports", "imports_from"
                         ):
-                            if not (_edge.get("relation") == "references" and _edge.get("context") == "return_type"):
+                            if not ((_edge.get("relation") == "references" and _edge.get("context") == "return_type")
+                                    or (_edge.get("relation") == "defines" and _edge.get("context") == "field"
+                                        and _edge.get("confidence") == "EXTRACTED")):
                                 continue
                         if not _ctx_is_ast_tier(_edge):
                             continue
@@ -4485,6 +4509,11 @@ def dispatch_command(cmd: str) -> None:
                         }
                         if _edge.get("context") == "return_type":
                             _ctx_edge["context"] = "return_type"
+                        if _edge.get("relation") == "defines":
+                            # Source-owned storage retains lexical shadowing;
+                            # an unchanged partial class cannot lend a guessed call.
+                            _ctx_edge.update(context="field", confidence="EXTRACTED",
+                                             source_location=_edge.get("source_location"), metadata=_edge.get("metadata", {}))
                         _edge_metadata = _edge.get("metadata")
                         if (
                             isinstance(_edge_metadata, dict)
@@ -4528,6 +4557,14 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+            # An incomplete QML scope cannot replace a prior contribution even
+            # when total node counts increase or a force/partial flag is used.
+            # Reject before semantic work, graph reconciliation, or publication.
+            try:
+                require_complete_qml(ast_result, code_files, operation="extract", root=target)
+            except QmlSafetyError as exc:
+                print(f"[graphify extract] error: {exc}", file=sys.stderr)
+                sys.exit(1)
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -4927,7 +4964,10 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
+                    # Retain declined-source evidence before committing accepted Qt context.
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
+                    if not _cleared_ast:
+                        commit_qt_analysis(graphify_out, qt_state)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -4978,9 +5018,14 @@ def dispatch_command(cmd: str) -> None:
                     }
                     _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
-            merged["multigraph"] = _has_parallel_links(
-                merged["edges"], directed=bool(merged.get("directed", False))
+            merged["edges"] = _dedupe_edges(merged["edges"], source_nodes=merged["nodes"],
+                                             graph_metadata=merged.get("graph"), directed=merged.get("directed", False))
+            # Source storage remains a multigraph after its last parallel pair
+            # disappears; ordinary raw graphs infer the flag from their links.
+            from graphify.source_relationships import source_profile
+            merged["multigraph"] = (
+                source_profile(merged["nodes"], merged.get("graph"))
+                or _has_parallel_links(merged["edges"], directed=bool(merged.get("directed", False)))
             )
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
@@ -5002,6 +5047,8 @@ def dispatch_command(cmd: str) -> None:
                     _e["source_file"] = (
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
+            from graphify.source_relationships import adopt_transport as _source_transport
+            merged = _source_transport(merged)
             # RT-parity for the raw path: an incomplete build must not force a
             # partial graph over a larger complete one here either. The clustered
             # path gets this from to_json's #479 guard; this path never calls
@@ -5071,7 +5118,10 @@ def dispatch_command(cmd: str) -> None:
                 )
             try:
                 if has_path:
+                    # Retain declined-source evidence before committing accepted Qt context.
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
+                    if not _cleared_ast:
+                        commit_qt_analysis(graphify_out, qt_state)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -5283,7 +5333,10 @@ def dispatch_command(cmd: str) -> None:
         _wja(analysis_path, analysis, indent=2)
         try:
             if has_path:
+                # Retain declined-source evidence before committing accepted Qt context.
                 _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
+                if not _cleared_ast:
+                    commit_qt_analysis(graphify_out, qt_state)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 

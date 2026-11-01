@@ -4,6 +4,7 @@ from pathlib import Path
 import networkx as nx
 
 from graphify.build import edge_datas
+from graphify.source_relationships import is_source_graph, logical_endpoints
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -406,7 +407,10 @@ def _cross_community_surprises(
             return []
         if G.number_of_nodes() > 5000:
             return []
-        betweenness = nx.edge_betweenness_centrality(G)
+        # Centrality measures topology, not the number of source mechanisms on
+        # a pair. Project explicitly; retain the accepted source graph intact.
+        topology = (nx.DiGraph(G) if G.is_directed() else nx.Graph(G)) if G.is_multigraph() else G
+        betweenness = nx.edge_betweenness_centrality(topology)
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
@@ -662,6 +666,8 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     ]
 
     def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
+        if is_source_graph(G):
+            return (*logical_endpoints(G, u, v, data), data.get("relation", ""))
         if G.is_directed():
             return (u, v, data.get("relation", ""))
         return (min(u, v), max(u, v), data.get("relation", ""))

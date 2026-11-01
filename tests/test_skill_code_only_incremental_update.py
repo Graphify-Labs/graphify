@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -102,6 +104,8 @@ def test_codex_code_only_update_materializes_and_merges_fresh_ast(tmp_path: Path
     deleted = root / "deleted.py"
     out = tmp_path / "graphify-out"
     out.mkdir()
+    # Step 1 owns the trusted scan-root marker consumed by the actual Part A.
+    (out / ".graphify_root").write_text(str(root), encoding="utf-8")
 
     # Normal cleanup leaves no final extraction. Seed a stale semantic sidecar
     # to ensure the fast path replaces it rather than carrying it into Part C.
@@ -210,3 +214,33 @@ assert saved == 1
     assert any("added_symbol" in node_id for node_id in merged_nodes)
     assert all(node.get("source_file") != "deleted.py" for node in merged["nodes"])
     assert any(edge["relation"] == "references" for edge in merged["edges"])
+
+
+def test_codex_part_a_missing_trusted_root_rejects_before_ast_then_recovers(tmp_path):
+    """Missing Step 1 authority retains prior products; adding its marker permits retry/repeat."""
+    core = _artifact("graphify/skill-codex.md")
+    (part_a,) = _python_blocks(_section(
+        core, "#### Part A - Structural extraction for code files", "#### Part B - Semantic extraction"))
+    source = tmp_path / "module.py"
+    source.write_text("def current_symbol():\n    return 1\n", encoding="utf-8")
+    output = tmp_path / "graphify-out"
+    output.mkdir()
+    graph = output / "graph.json"
+    graph.write_bytes(b'{"nodes":[{"id":"previous"}],"edges":[]}')
+    (output / ".graphify_detect.json").write_text(json.dumps({
+        "files": {"code": [str(source)]}}), encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in output.iterdir()}
+    with pytest.raises(subprocess.CalledProcessError) as rejected:
+        _run_code(part_a, cwd=tmp_path, root=tmp_path)
+    assert ".graphify_root" in rejected.value.stderr
+    assert {path.name: path.read_bytes() for path in output.iterdir()} == before
+    assert not (output / "cache").exists()
+    assert not (output / ".graphify_ast.json").exists()
+    (output / ".graphify_root").write_text(str(tmp_path), encoding="utf-8")
+    _run_code(part_a, cwd=tmp_path, root=tmp_path)
+    ast_path = output / ".graphify_ast.json"
+    accepted = ast_path.read_bytes()
+    assert any("current_symbol" in node["id"] for node in json.loads(accepted)["nodes"])
+    assert graph.read_bytes() == before["graph.json"]
+    _run_code(part_a, cwd=tmp_path, root=tmp_path)
+    assert ast_path.read_bytes() == accepted and graph.read_bytes() == before["graph.json"]

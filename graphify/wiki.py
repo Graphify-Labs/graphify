@@ -219,6 +219,8 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
         nd = G.nodes[neighbor]
         neighbor_label = nd.get("label", neighbor)
+        # Membership and calls are distinct source relationships even when
+        # they share endpoints; the displayed degree includes both facts.
         for ed in edge_datas(G, nid, neighbor):
             rel = ed.get("relation", "related")
             conf = ed.get("confidence", "")
