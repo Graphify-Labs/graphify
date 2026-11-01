@@ -3979,6 +3979,7 @@ def dispatch_command(cmd: str) -> None:
             graphify_out,
             excludes=cli_excludes or None,
             gitignore=False if no_gitignore else None,
+            code_only=True if code_only else None,
         )
 
         stages = _StageTimer(cli_timing)

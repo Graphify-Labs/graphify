@@ -114,12 +114,15 @@ def _write_build_config(
     *,
     excludes: "list[str] | None",
     gitignore: bool | None = None,
+    code_only: bool | None = None,
 ) -> None:
     """Persist corpus-shaping options under ``out_dir``.
 
     Best effort and non clobbering: omitted options retain their existing values.
+    ``code_only`` records that the graph was built with ``extract --code-only``
+    so a later hook/update/watch rebuild keeps that scope (#4923).
     """
-    if not excludes and gitignore is None:
+    if not excludes and gitignore is None and code_only is None:
         return
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +137,8 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
+        if code_only is not None:
+            config["code_only"] = code_only
         path.write_text(json.dumps(config), encoding="utf-8")
     except OSError:
         pass
@@ -164,6 +169,23 @@ def _read_build_gitignore(out_dir: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         pass
     return True
+
+
+def _read_build_code_only(out_dir: Path) -> bool:
+    """Return whether the graph was built with ``--code-only`` (default False).
+
+    A rebuild has no CLI flag of its own, so this record is the only way it can
+    tell a deliberately code-only graph from a full one (#4923).
+    """
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and cfg.get("code_only") is True:
+                return True
+    except (OSError, json.JSONDecodeError):
+        pass
+    return False
 
 
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
