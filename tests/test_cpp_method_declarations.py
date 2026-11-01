@@ -100,3 +100,36 @@ def test_override_definition_shares_the_declaration_node(tmp_path):
     )})
     assert _rel(r, "method", "Shape", ".area()")
     assert _rel(r, "calls", ".describe()", ".area()")
+
+
+def test_local_lambda_and_std_function_calls_do_not_produce_inferred_edges(tmp_path):
+    """Calls to local lambdas / local std::function variables must not get
+    phantom INFERRED calls edges to same-named symbols in other files (#4917).
+    """
+    r = _extract(tmp_path, {
+        "foo.cpp": (
+            "#include <functional>\n"
+            "\n"
+            "int run()\n"
+            "{\n"
+            "    auto box = [](int x) { return x; };\n"
+            "    std::function<void()> job = [] {};\n"
+            "    job();\n"
+            "    return box(1);\n"
+            "}\n"
+        ),
+        "bar.cpp": (
+            "#include <functional>\n"
+            "\n"
+            "int box(int x) { return x; }\n"
+            "\n"
+            "struct Task { std::function<void()> job; };\n"
+        ),
+    })
+    labels = {n["id"]: str(n.get("label", "")) for n in r["nodes"]}
+    calls = [(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"]
+    # run() must NOT bind to bar.cpp's box() or job via INFERRED edges
+    assert not any(
+        labels.get(s) == "run()" and labels.get(t) in ("box()", "job")
+        for s, t in calls
+    )

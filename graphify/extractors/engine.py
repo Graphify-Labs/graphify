@@ -3111,6 +3111,37 @@ def _cpp_local_var_types(body_node, source: bytes, table: dict[str, str]) -> Non
         for c in n.children:
             stack.append(c)
 
+
+def _cpp_local_bound_names(body_node, source: bytes) -> set[str]:
+    """Collect names of locally declared variables in a C++ function body
+    (``auto box = ...``, ``std::function<void()> job = ...``, ``int x = ...``).
+
+    Used to suppress cross-file raw_calls for calls to local lambdas and
+    std::function variables that would otherwise match same-named symbols
+    in other files (#4917).
+
+    Does not descend into nested function_definition or lambda_expression
+    nodes: their bindings are scoped away.
+    """
+    bound: set[str] = set()
+    stack = [body_node]
+    while stack:
+        n = stack.pop()
+        if n.type in ("function_definition", "lambda_expression"):
+            if n is not body_node:
+                continue
+        if n.type == "declaration":
+            for c in n.children:
+                if c.type in ("identifier", "init_declarator",
+                              "pointer_declarator", "reference_declarator"):
+                    name = _cpp_declarator_name(c, source)
+                    if name:
+                        bound.add(name)
+        for c in n.children:
+            stack.append(c)
+    return bound
+
+
 def _swift_local_var_types(body_node, source: bytes, table: dict[str, str],
                            factory: dict[str, tuple[str, str]] | None = None) -> None:
     """Collect ``var -> Type`` from local ``let``/``var`` bindings in a Swift
@@ -6206,6 +6237,11 @@ def _extract_generic(
     # guard skips any call-argument identifier in the enclosing function's set,
     # so a param/local that shadows a module function name yields no edge.
     local_bound_names: dict[str, set[str]] = {}
+    # C++ only: per-function set of locally-bound variable names (from declarations).
+    # Used to suppress cross-file raw_calls for calls to local lambdas and
+    # std::function variables that would otherwise match same-named symbols
+    # in other files (#4917).
+    cpp_local_bound_names: dict[str, set[str]] = {}
     # Python nested-function lexical scope tracking (#3405): maps child_nid -> parent_scope_nid
     scope_parents: dict[str, str] = {}
     # maps scope_nid -> {bare_func_name -> nested_func_nid}
@@ -10031,7 +10067,16 @@ def _extract_generic(
                         and not is_member_call
                         and callee_name in (local_bound_names.get(caller_nid, frozenset()) | extra_locals)
                     )
-                    if not is_py_local_data:
+                    # C++: if an unqualified call names a local variable binding (lambda,
+                    # std::function, or any local declaration), do NOT append it to
+                    # raw_calls — it would otherwise match a same-named symbol in another
+                    # file and produce a phantom INFERRED calls edge (#4917).
+                    is_cpp_local_data = (
+                        config.ts_module == "tree_sitter_cpp"
+                        and not is_member_call
+                        and callee_name in cpp_local_bound_names.get(caller_nid, frozenset())
+                    )
+                    if not is_py_local_data and not is_cpp_local_data:
                         # Callee not in this file — save for cross-file resolution in extract()
                         rc_entry = {
                             "caller_nid": caller_nid,
@@ -10490,6 +10535,8 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_cpp":
         for _caller_nid, body_node in function_bodies:
             _cpp_local_var_types(body_node, source, type_table)
+        for _caller_nid, body_node in function_bodies:
+            cpp_local_bound_names[_caller_nid] = _cpp_local_bound_names(body_node, source)
 
     # Swift: type local `let x = Type()` / `let x = Type.shared` bindings inside
     # method bodies so `x.method()` on a later line resolves — class-level
