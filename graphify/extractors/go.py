@@ -49,6 +49,13 @@ _GO_PREDECLARED_FUNCS = frozenset({
     "recover",
 })
 
+# The tree-sitter-go nodes a type argument parses as (`new(T)`, `make([]pkg.T, n)`);
+# an ordinary argument is an expression and never one of these.
+_GO_TYPE_NODES = frozenset({
+    "type_identifier", "qualified_type", "pointer_type", "generic_type", "slice_type",
+    "array_type", "map_type", "channel_type", "parenthesized_type",
+})
+
 def _go_alias_re_exports(alias_node, source: bytes) -> bool:
     """Whether `type A = pkg.A` (or `pkg.A[...]`) re-exports another package's type
     under its own name. Such an alias denotes that very type and declares no new
@@ -417,6 +424,33 @@ def extract_go(path: Path) -> dict:
                     if tgt != func_nid:
                         add_edge(func_nid, tgt, "references", line, context=ctx)
 
+    def emit_go_package_var_type_refs(var_decl) -> None:
+        # The types a package-level `var` names, in its declared type (`var x T`), a
+        # composite literal (`pkg.T{}`, `&T{}`) or a type argument (`new(*pkg.T)`,
+        # `make(map[K]V)`), are referenced by the file, which owns the initialiser
+        # (#2360). Without this a file holding only a dependency-injection set
+        # (`wire.Bind(new(Iface), new(*Impl))`) referenced nothing. A closure body is
+        # function code and is left to the call walk.
+        stack = [var_decl]
+        while stack:
+            n = stack.pop()
+            if n.type == "func_literal":
+                continue
+            type_nodes = []
+            if n.type in ("var_spec", "composite_literal"):
+                type_nodes.append(n.child_by_field_name("type"))
+            elif n.type == "argument_list":
+                type_nodes.extend(c for c in n.children if c.type in _GO_TYPE_NODES)
+            for type_node in type_nodes:
+                refs: list[tuple[str, str]] = []
+                _go_collect_type_refs(type_node, source, False, refs)
+                for ref_name, role in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "variable_type"
+                    line = type_node.start_point[0] + 1
+                    add_edge(file_nid, ensure_named_node(ref_name, line), "references",
+                             line, context=ctx)
+            stack.extend(c for c in n.children if c not in type_nodes)
+
     # Node IDs are casefolded (ids.py), so `Run` and `run` declared in one file
     # produce the same id and add_node silently dropped the second — the unexported
     # half vanished from the graph and its call sites bound by bare name to a
@@ -707,6 +741,7 @@ def extract_go(path: Path) -> dict:
             # closure, are credited to the file, the owner a module-level call already
             # gets elsewhere. Without this they were never walked and the callee lost the
             # caller (#2360).
+            emit_go_package_var_type_refs(node)
             function_bodies.append(
                 (file_nid, node, None, None, _go_receiver_type_table(node, source)))
             return
@@ -876,17 +911,33 @@ def extract_go(path: Path) -> dict:
             # `r.Get("/p", s.Handle)`) is how Go registers a handler or callback. It is
             # not a call here, so it never reached the branch above and the method had
             # no caller. Record it for the member-call resolver as an indirect call
-            # through the receiver's declared type (#1566).
+            # through the receiver's declared type (#1566). `s.field.Handle` is typed
+            # through the field, as a direct `s.field.M()` is, only when `s` is this
+            # method's own receiver.
             args = node.child_by_field_name("arguments")
             for arg in args.children if args is not None else ():
                 if arg.type != "selector_expression":
                     continue
                 operand = arg.child_by_field_name("operand")
                 field = arg.child_by_field_name("field")
-                if operand is None or field is None or operand.type != "identifier":
+                if operand is None or field is None:
                     continue
-                name = _read_text(operand, source)
-                if name in go_imported_pkgs:
+                arg_field_owner: str | None = None
+                if operand.type == "identifier":
+                    name = _read_text(operand, source)
+                    if name in go_imported_pkgs:
+                        continue
+                    arg_receiver_type = (self_type if self_name and name == self_name
+                                         else scope_types.get(name))
+                elif operand.type == "selector_expression":
+                    inner = operand.child_by_field_name("operand")
+                    if not (self_name and inner is not None and inner.type == "identifier"
+                            and _read_text(inner, source) == self_name):
+                        continue
+                    name = _read_text(operand.child_by_field_name("field"), source)
+                    arg_receiver_type = None
+                    arg_field_owner = self_type
+                else:
                     continue
                 raw_calls.append({
                     "caller_nid": caller_nid,
@@ -897,8 +948,8 @@ def extract_go(path: Path) -> dict:
                     "language": "go",
                     "receiver": None,
                     "member_receiver": name,
-                    "receiver_type": self_type if self_name and name == self_name
-                    else scope_types.get(name),
+                    "receiver_type": arg_receiver_type,
+                    "field_owner": arg_field_owner,
                     "import_path": None,
                     "source_file": str_path,
                     "source_location": f"L{arg.start_point[0] + 1}",
