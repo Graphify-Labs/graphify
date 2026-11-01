@@ -226,3 +226,8 @@ INC-QML-14 locally completes REQ-QML-020 membership projection as a separate bou
 correction with production and reviewed installed-artifact evidence. D15
 distinguishes source membership from component use and Qt runtime behavior.
 No earlier numeric identity is changed, retired or reused.
+
+INC-QML-132 is the upstream0.9.100 compatibility and fork-merge delivery increment.
+REQ-CORE-005-AC01/AC02/AC03 independently identify accepted JVM package parity,
+conservative rejection, and producer/persistence/context transport. These extend
+the shared CORE namespace without renumbering any Qt/QML identity or alias.

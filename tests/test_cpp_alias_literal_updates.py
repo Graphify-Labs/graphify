@@ -85,7 +85,7 @@ def test_req_qml022_ac06_actual_schema35_incomplete_alias_fragment_cannot_replay
         cache.save_cached(path, old, tmp_path, cache_root=tmp_path)
         directory = cache.cache_dir(tmp_path)
         assert list(directory.glob("*.json"))
-    assert cache._AST_CACHE_SCHEMA == 39 and cache.load_cached(path, tmp_path, cache_root=tmp_path) is None
+    assert cache._AST_CACHE_SCHEMA == 40 and cache.load_cached(path, tmp_path, cache_root=tmp_path) is None
     cold = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     warm = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert cold == warm and len(declarations(cold)) == 2

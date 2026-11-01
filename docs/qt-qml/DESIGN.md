@@ -3499,3 +3499,32 @@ marker normalization alone cannot establish direction correctness if graph
 assembly then overwrites a valid reversed pair with physical ordering. This
 extends the existing explicit basis owner, with no new resolver/native-role
 guess and no change to unpromised ordinary graph direction conventions.
+
+## INC-QML-132 integration ownership and compatibility
+
+The invocation still owns one accepted corpus and its indexes; unit resolvers
+retain their original source/provenance and the existing accepted link frame.
+Incoming generic lookup/index optimizations may not replace Qt/C++/C# accepted
+identity decisions. CLI/watch infer legacy parallel storage only after source
+aware deduplication; accepted source profiles keep their mandatory storage mode
+through removal and repeat publication. Export/serve boundaries retain their
+existing typed rejection and logical endpoint ownership. Diagnostics and final
+atomic publication/recovery owners do not change.
+
+AST40 preserves schema39's direct-source provenance/Qt6.12 contracts and the
+upstream schema33 Scala/Terraform and earlier identity rationales. Qt policy33
+and projection4 do not change. Prompt-owned semantic entries retain their own
+lifetime. Package0.9.100's new PyAV<19 cap is an incoming transcription API
+compatibility contract, not a general dependency refresh.
+
+Touched legacy cohesion exceptions: integration owner; analyze861 lines with
+permitted ceiling900 (sibling analyses); cli5575/ceiling5600 (command-owned
+publication, extraction path raw publication helper); watch3444/ceiling3450
+(single watcher lifetime/publication owner); wiki485/ceiling520 (article render
+owner); cache1949/ceiling1970 (existing namespace/persistence owner);
+extract11978/ceiling12000 and engine11322/ceiling11400 (existing extraction
+facades, follow specialized extractor migration sequencing); resolution4389/
+ceiling4450 (existing cross-file resolver). No mechanical extraction is mixed
+with conflict correction; revisit ceilings before unrelated growth. New focused
+regression files remain below300 physical lines. Existing generated outputs are
+regenerated from authoritative fragments rather than edited directly.

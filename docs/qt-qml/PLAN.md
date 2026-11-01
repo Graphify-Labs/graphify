@@ -5824,3 +5824,52 @@ No production change follows the1,050-case gate. The two overlapping gates
 remain separately bound and are not added into a fictional single invocation.
 Final raw package/installed/full/corpus/hosted and repository refresh now belong
 to the resulting reviewed source; earlier failed packages/environments stay intact.
+
+### INC-QML-132 — Upstream 0.9.100 integration and authorized fork merge
+
+Scope decision and acceptance matrix before manual conflict correction: integrate
+upstream `f5155badddaa3286c78a51653791131e9e2e4d29` into the owned contribution
+branch at `ff68e82d9f95e65504acfb4c0f513eca29786b8a`, preserve both predecessor
+contracts, update the existing fork/upstream reviews, and merge fork PR9 only
+after current gates pass. Upstream merge permission is unavailable to this
+contributor; upstream maintainers own that final merge. No second checkout,
+force-push, protection change, application/global adoption or duplicate PR.
+
+Applicable criteria: REQ-QML-003-AC04, REQ-QML-010-AC01/AC02/AC03,
+REQ-QML-013-AC03, REQ-QML-014-AC01/AC02/AC03/AC04,
+REQ-QML-015-AC01/AC02/AC03, REQ-QML-018-AC05/AC06 and
+REQ-QML-022-AC02/AC06. Existing syntax, ownership, cold/warm and failure contracts
+are preserved; this increment does not claim additional Qt SDK completeness.
+
+| Boundary | Success / boundary | Rejection / failure / recovery |
+| --- | --- | --- |
+| Generic and Qt extraction | Incoming JVM, case-distinct declarations, Scala receiver extension, Terraform relocated cache and other language regressions compose with accepted Qt/C++/C# identity and original provenance. | Existing ambiguous/unsupported identities stay unresolved; real parser/publication faults retain prior accepted products and diagnostics. |
+| Raw graph publication | Legacy parallel relations infer multigraph mode; an accepted source profile retains its required multigraph mode after the final typed/parallel fact is removed. Extract/manual/watch, repeated apply and actual reload agree. | Existing invalid source direction/profile rejection and real write-failure retention/recovery assertions remain unchanged. No new persistence owner or diagnostic code. |
+| Cache migration | AST40 retires both upstream33 and Qt39 entries even with identical package/source bytes, preserving upstream issue rationales, Qt policy33/projection4 and independent semantic entries. | Current namespace assertions and actual fault destinations advance together; predecessor constants remain historical inputs. |
+| Dependencies and resources | Adopt the reviewed upstream PyAV compatibility cap; retain other resolved versions/security floors and authoritative generated resources. | Optional/core profiles, frozen-lock checks, exact wheel bytes and rejected consumer writes remain separate gates; no dependency weakening to hide tests. |
+| Delivery | Source/head, actual PR synthetic/base and eventual fork-v8 resulting SHA have their own checks and receipts. | Active work is left alone; failed source behavior requires scoped correction, infrastructure retries require exact evidence. Upstream approval/permission is not inferred from fork success. |
+
+Ownership: integration owner controls Git, requirements, cache/dependencies and
+publication. Delegated owners have disjoint publication/extraction/export files;
+no concurrent Git mutations or shared root coverage/results writes. All fourteen
+unrelated coverage/result files have independently hashed restorable backups.
+
+Status: **Implementation complete; validation in progress**. Focused, local full, static/generated, packaging/consumer,
+AST-only repository refresh, new PR CI and exact resulting-v8 proof are required.
+Prior source458/M passing counts are not reused as this increment's verdicts.
+
+INC132 scope extension before the bounded JVM correction: the actual incoming
+full-only package index failed a changed-Kotlin-caller probe with two accepted
+same-name Java providers. REQ-CORE-005-AC01/AC02/AC03 records this generic shared
+contract. Further faithful probes exposed wrong-package label rewiring, a
+recovered Java package header incorrectly marked as default, and written-FQN/file
+ID aliasing in Java-to-Kotlin resolution. Each failed assertion and corrected
+producer/resolver/operational proof remains separately retained; test-fixture
+warm-cache expectations that contradicted deliberate Qt refresh are corrected
+as expectations, not reported as product fixes.
+
+Native profile selection initially omitted the new integration modules and five
+incoming core-grammar control modules. Its actual launcher failed that admission
+assertion before correction. The revised pure selection owner is used by the
+real launcher; exact pytest collection checks the final reviewed inventory.
+Clean core/QML wheel smoke and subsequent Terraform extra ordering are retained.

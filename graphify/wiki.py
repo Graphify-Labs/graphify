@@ -225,7 +225,9 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
             rel = ed.get("relation", "related")
             conf = ed.get("confidence", "")
             conf_str = f" `{conf}`" if conf else ""
-            by_relation.setdefault(rel, []).append(f"{_md_link(neighbor_label, resolver)}{conf_str}")
+            by_relation.setdefault(rel, []).append(
+                f"{_md_link(neighbor_label, resolver)}{conf_str}"
+            )
 
     lines += ["## Connections by Relation", ""]
     for rel, targets in sorted(by_relation.items()):

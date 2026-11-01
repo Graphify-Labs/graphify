@@ -10,10 +10,12 @@ Shared compatibility requirements use `REQ-CORE-NNN` and criteria
 preserve every Qt/QML identity. The [compatibility plan](COMPATIBILITY.md)
 defines their scope and evidence boundaries.
 
-Current integration checkpoint: INC-QML-60 combines upstream 0.9.99 with the
-validated Qt/QML fork. AST schema 32 and Qt policy 26 apply to this source.
-Earlier verified checkpoints below remain revision-bound historical evidence;
-they do not establish full or hosted acceptance of the new integration.
+Current integration: INC-QML-132 combines upstream 0.9.100 at `f5155bad` with
+the reviewed Qt/QML audit integrated at `ff68e82d`. AST schema 40 retains both
+upstream schema 33 and Qt/QML schema 39 incompatibility reasons; Qt policy 33
+and source projection 4 remain unchanged. Compatibility and published-result
+acceptance are **in progress**, not established by either parent's passing CI.
+Earlier verified checkpoints remain revision-bound historical evidence.
 
 The Qt/QML catalog contains twenty-two requirements and ninety-one stable acceptance
 criteria. INC-QML-00–07 evidence describes the original bounded Qt 6/QML profile;
@@ -746,7 +748,7 @@ lexical profile. C callbacks, aggregate/bitfield expressions and inert/executabl
 lookalikes do not supply that declaration hint. Grammar selection alone confers
 no source or Qt/native authority.
 
-Status: **Bounded INC104–131 corrections are implemented. INC131's1,050 related passes include88 numeric-direction cases and36 projection4 recovery cases alongside earlier caller-frame regressions. The extended numeric module passes97 cases including default-dedup controls, without another production change. These overlapping runs are not summed. Earlier failures retain their original identities; resulting-source package/full/corpus/native gates remain separately required in traceability and PR #10. AST39/Qt33 remain current. Unsupported SDK forms and unverified bindings are not Verified.**
+Status: **Bounded INC104–131 corrections are implemented. INC131's1,050 related passes include88 numeric-direction cases and36 projection4 recovery cases alongside earlier caller-frame regressions. The extended numeric module passes97 cases including default-dedup controls, without another production change. These overlapping runs are not summed. Earlier failures retain their original identities; resulting-source package/full/corpus/native gates remain separately required in traceability and PR #10. INC104-131 used AST39/Qt33; INC132 advances the shared AST namespace to40. Unsupported SDK forms and unverified bindings are not Verified.**
 The existing source and diagnostic contracts remain authoritative while the pinned
 inventory and failing neutral reproductions establish the new implementation scope.
 Per-mechanism acceptance and remaining gaps belong in traceability and the support
@@ -859,6 +861,37 @@ cases with four platform skips; all 29 critical cases pass** under
 REQ-CORE-004-AC02/AC03. Its local source and installed
 profiles do not extend the earlier hosted checkpoint to the new workflow/head.
 Fresh hosted execution, upload and exact revision evidence remain required.
+
+### REQ-CORE-005 — Accepted JVM package context survives incremental analysis
+
+Source-backed Java/Kotlin type declarations retain their proven literal package
+through extraction, cache, graph export and accepted resolution context. A changed
+caller uses that accepted context without rereading or admitting unchanged source
+files, preserving the same package-qualified import/inheritance targets as a full
+analysis. Package metadata is source evidence, not an inference from a path or ID.
+
+**Acceptance Criteria**
+
+1 - Explicit-package collisions and a proven default package select the same
+source-owned Java/Kotlin type IDs in full and changed-caller extraction, including
+ordinary manual/watch publication. Borrowed accepted nodes/edges remain unchanged;
+unadmitted sources are never opened. (`REQ-CORE-005-AC01`)
+
+2 - Missing, non-string, malformed, unsupported-spelling or over-limit package metadata does not establish
+a package candidate, become a default package, or bind to a wrong same-name type.
+Only exact source-backed JVM type declarations participate; empty string denotes
+a positively proven default package. Existing parser/ambiguity diagnostics and
+unsupported-source policy remain unchanged. (`REQ-CORE-005-AC02`)
+
+3 - Direct producer/facade/cache and actual build/export/reload retain the package
+marker; manual/watch accepted-context forwarding preserves its empty-string value.
+Existing rejected-write and real persistence-failure controls retain prior graph,
+cache/accepted products and permit corrected retry/repeat. This adds no persistence
+owner or separate diagnostic family. (`REQ-CORE-005-AC03`)
+
+Status: **Implemented in INC-QML-132; final full/installed/native qualification pending**. The incoming JVM resolver's full-only index
+failed the changed-caller parity probe; corrected source and installed/native/full
+evidence are required. Earlier compatibility evidence is not acceptance here.
 
 ## Current-upstream integration profile
 

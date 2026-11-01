@@ -75,7 +75,7 @@ def test_req_qml022_ac06_pre_struct_callable_schema_reparses_actual_c_payload(tm
         old.setattr(cache, "_AST_CACHE_SCHEMA", 35)
         cache.save_cached(path, prior, root=tmp_path)
         assert cache.load_cached(path, root=tmp_path) == prior
-    assert cache._AST_CACHE_SCHEMA == 39 and cache.load_cached(path, root=tmp_path) is None
+    assert cache._AST_CACHE_SCHEMA == 40 and cache.load_cached(path, root=tmp_path) is None
     cold = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     warm = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert cold == warm and not cold["failed_sources"]

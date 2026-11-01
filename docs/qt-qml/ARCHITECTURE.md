@@ -1647,3 +1647,30 @@ preflight. All validated source-profile links use the same explicit logical
 basis for assembly and caller-frame projection; this supplies no native member
 or target identity. Projection4 reuses existing publication recovery. Scoped
 numeric regressions pass88; full resulting-source acceptance stays separate.
+
+## D50 — Preserve both source profiles and accepted JVM package authority
+
+Accepted for INC-QML-132. Upstream0.9.100's legacy parallel-link inference
+composes with the existing source-profile storage promise: a retained source
+profile still requires multigraph storage after its final parallel/source fact
+is removed. Ordinary legacy inputs infer storage from actual parallel evidence.
+The source-aware deduper, caller frame, logical endpoints and publication owners
+remain authoritative; inference cannot downgrade their accepted promise.
+
+The incoming JVM resolver previously indexed only fresh providers. Source-backed
+Java/Kotlin type declarations now carry bounded exact metadata.jvm_package from
+the parsed package syntax (empty means proven default; absent/invalid means
+unknown). One invocation indexes accepted types read-only, without reading
+borrowed files or inferring packages from normalized IDs/directories. Explicit
+import evidence constrains the earlier generic rewire as well as JVM resolution.
+File-import and class-import evidence remain distinct when a written FQN aliases
+a file ID; unresolved type evidence cannot borrow that file's sourced authority.
+CLI/watch forward package metadata by key presence. Existing atomic persistence
+owners, failure retention and diagnostic families remain unchanged.
+
+AST40 retires both incompatible parent fact sets (upstream33 and Qt39), preserving
+all original invalidation issues/rationales. Qt policy33, source projection4 and
+independent semantic prompt-cache lifetime remain unchanged. The incoming PyAV
+compatibility cap is adopted through the frozen Python/uv contract; no Qt SDK or
+second application runtime is introduced. Upstream and fork/default reviews and
+resulting-commit evidence remain separate; maintainer permissions are respected.

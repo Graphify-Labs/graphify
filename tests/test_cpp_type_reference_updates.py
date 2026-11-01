@@ -87,7 +87,7 @@ def test_req_qml014_ac03_actual_successful_schema36_cannot_replay_without_reject
         previous.setattr(cache, "_AST_CACHE_SCHEMA", 36)
         cache.save_cached(path, prior, tmp_path, cache_root=tmp_path)
         assert list(cache.cache_dir(tmp_path).glob("*.json"))
-    assert cache._AST_CACHE_SCHEMA == 39 and cache.load_cached(path, tmp_path, cache_root=tmp_path) is None
+    assert cache._AST_CACHE_SCHEMA == 40 and cache.load_cached(path, tmp_path, cache_root=tmp_path) is None
     cold = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     warm = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert cold == warm

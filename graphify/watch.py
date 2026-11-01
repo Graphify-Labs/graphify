@@ -2518,6 +2518,9 @@ def _rebuild_code(
                         fwd_metadata = {
                             key: metadata[key]
                             for key in (
+                                # Preserve proven JVM default packages by key presence;
+                                # empty is evidence, not an absent metadata value.
+                                "jvm_package",
                                 "ruby_resolution_schema",
                                 "ruby_method_kind",
                                 "ruby_lookup_unsafe",
@@ -2784,21 +2787,24 @@ def _rebuild_code(
                 disambiguate_file_labels_in_nodes as _disamb_labels,
                 finalize_raw_graph_endpoints as _finalize_raw_graph_endpoints,
                 qualify_csharp_method_labels_in_nodes as _qualify_cs_methods,
+                has_parallel_links as _has_parallel_links,
             )
             raw_nodes = _dedupe_nodes(result.get("nodes", []))
             _disamb_labels(raw_nodes)
             _qualify_cs_methods(raw_nodes, result.get("edges", []))
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
-            from graphify.source_relationships import inherit_source_snapshot
+            from graphify.source_relationships import inherit_source_snapshot, source_profile
             inherit_source_snapshot(result, existing_graph_data)
+            _directed = bool((existing_graph_data or {}).get("directed", False))
+            raw_links = _dedupe_edges(result.get("edges", []), source_nodes=raw_nodes,
+                                      graph_metadata=result.get("graph"), directed=_directed)
             candidate_graph_data = {
                 **{
                     k: v for k, v in result.items()
                     if k not in ("edges", "nodes") and k not in _RUN_ONLY_KEYS
                 },
                 "nodes": raw_nodes,
-                "links": _dedupe_edges(result.get("edges", []), source_nodes=raw_nodes,
-                                        graph_metadata=result.get("graph"), directed=bool((existing_graph_data or {}).get("directed", False))),
+                "links": raw_links,
                 # A first build's fresh extraction may carry no hyperedges key,
                 # while a reconciled rebuild always does; write it either way so
                 # the two builds of one tree give the same file.
@@ -2806,7 +2812,13 @@ def _rebuild_code(
                 # Inherit the existing graph's directed flag (#2342) so
                 # `graphify update --no-cluster` can't silently drop it -
                 # `result` (the raw merged extraction) never carries one.
-                "directed": bool((existing_graph_data or {}).get("directed", False)),
+                "directed": _directed,
+                # An inherited typed profile promises multigraph storage even
+                # when this revision has no remaining parallel relationships.
+                "multigraph": (
+                    source_profile(raw_nodes, result.get("graph"))
+                    or _has_parallel_links(raw_links, directed=_directed)
+                ),
             }
             # This path writes the raw merged extraction, not a build_from_json
             # graph, so mint the same external stubs the builder does — otherwise

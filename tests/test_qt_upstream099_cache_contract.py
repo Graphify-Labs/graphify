@@ -47,7 +47,7 @@ def test_req_qml011_ac01_ac03_ac04_upstream099_retires_both_predecessors(
                                    "edges": []}, root=tmp_path)
         old_directory = cache.cache_dir(tmp_path)
         assert list(old_directory.glob("*.json"))
-    assert cache._AST_CACHE_SCHEMA == 39
+    assert cache._AST_CACHE_SCHEMA == 40
     assert cache.load_cached(source, root=tmp_path) is None
     assert not old_directory.exists()
     cold = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
@@ -207,7 +207,7 @@ def test_req_qml022_ac06_schema37_missing_anonymous_call_regenerates_without_sou
         assert not any(node.get("metadata", {}).get("cpp_function", {}).get("anonymous_scope_proof")
                        for node in accepted["nodes"])
     assert cache.load_cached(source, root=tmp_path) is None
-    assert cache._AST_CACHE_SCHEMA == 39
+    assert cache._AST_CACHE_SCHEMA == 40
     assert not prior.exists() and source.read_bytes() == raw
     cold = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
     warm = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
@@ -244,7 +244,7 @@ def test_req_qml022_ac06_schema38_missing_direct_origin_reparses_source_roles(
         assert accepted is not None and list(directory.glob("*.json"))
         assert all(node.get("_origin") is None for node in accepted["nodes"]
                    if any(key in node.get("metadata", {}) for key in ("cpp_function", "cpp_prototype")))
-    assert cache.load_cached(source, root=tmp_path) is None and cache._AST_CACHE_SCHEMA == 39
+    assert cache.load_cached(source, root=tmp_path) is None and cache._AST_CACHE_SCHEMA == 40
     assert not directory.exists() and source.read_bytes() == raw
     cold = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
     warm = extraction.extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)

@@ -19,6 +19,7 @@ from .cache import load_cached, save_cached
 from .cargo_introspect import package_name
 from .source_identity import normalize_input_source, resolved_source_owners, walked_relative_source
 from .security import redact_secrets
+from .ids import decl_salt
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
@@ -196,6 +197,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
 
 from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pick_overload, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import _valid_jvm_package_name
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
@@ -2243,9 +2245,8 @@ def extract_js(path: Path) -> dict:
             source = _read_source_bytes(path)
             working = _normalize_ts_export_type_star(source) or source
             normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
-            source_override = normalized if normalized is not None else (
-                working if working is not source else None
-            )
+            working = normalized if normalized is not None else working
+            source_override = working if working is not source else None
         except OSError:
             pass
     result = _extract_generic(path, config, source_override=source_override)
@@ -4179,6 +4180,41 @@ def _rewire_unique_stub_nodes(
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
     csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
 
+    # Explicit Kotlin imports constrain each referring edge before the generic
+    # label-only rewire can erase its unresolved stub. The later JVM resolver
+    # must not inherit a convenient wrong-package target or missing authority.
+    jvm_imports: dict[tuple[str, str], set[str]] = {}
+    for edge in edges:
+        source_file = str(edge.get("source_file") or "")
+        metadata = edge.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        fqn = metadata.get("target_fqn")
+        if (edge.get("relation") != "imports" or _lang_family(source_file) != "jvm"
+                or not isinstance(fqn, str) or not fqn):
+            continue
+        alias = metadata.get("alias")
+        name = alias if isinstance(alias, str) and alias else fqn.rsplit(".", 1)[-1]
+        jvm_imports.setdefault((source_file, name), set()).add(fqn)
+
+    def _violates_jvm_import(edge: dict, stub_id: str, candidate_id: str) -> bool:
+        if edge.get("relation") not in csharp_scoped_relations | {"extends"}:
+            return False
+        source_file = str(edge.get("source_file") or "")
+        name = _node_label_key(by_id.get(stub_id, {}))
+        expected = jvm_imports.get((source_file, name))
+        if not expected:
+            return False
+        candidate = by_id.get(candidate_id, {})
+        metadata = candidate.get("metadata")
+        package = metadata.get("jvm_package") if isinstance(metadata, dict) else None
+        if (candidate.get("_callable_class") is not True or not _valid_jvm_package_name(package)
+                or _lang_family(candidate.get("source_file")) != "jvm"):
+            return True
+        label = str(candidate.get("label") or "")
+        actual = f"{package}.{label}" if package else label
+        return expected != {actual}
+
     def _names_own_builtin_base(edge: dict, stub_id: str, remapped_id: str) -> bool:
         r"""#2812: `class FooApiException extends \Exception` names PHP's own global
         built-in, so a same-named class defined in another language cannot be what
@@ -4261,7 +4297,9 @@ def _rewire_unique_stub_nodes(
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
             ) and target != unavailable_target and not _names_own_builtin_base(
                 edge, str(target), remapped_target
-            ) and not _cross_language_candidate(edge, remapped_target):
+            ) and not _cross_language_candidate(edge, remapped_target) and not _violates_jvm_import(
+                edge, str(target), remapped_target
+            ):
                 edge["target"] = remapped_target
                 if target in rust_by_name_only:
                     edge["confidence"] = "INFERRED"
@@ -6907,6 +6945,210 @@ def _kotlin_package_index(per_file: list[dict]) -> dict[str, list[dict]]:
     return pkg_results
 
 
+_JVM_NAME_SUFFIXES = frozenset({".java", ".kt", ".kts"})
+_JAVA_IMPORT_RE = re.compile(
+    r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)\s*;"
+)
+
+
+def _jvm_package_name(path: Path, result: dict) -> tuple[str, str] | None:
+    """Return ``(source_file, package)`` for a JVM file, or None.
+
+    Kotlin already stamps ``kotlin_package`` on the per-file result. Java has
+    no equivalent field, so read the one package declaration directly. The
+    declaration is a single line and does not need a second tree-sitter parse.
+    """
+    suffix = effective_suffix(path).lower()
+    if suffix in (".kt", ".kts"):
+        source_file = next(
+            (n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")),
+            str(path),
+        )
+        return str(source_file), str(result.get("kotlin_package") or "")
+    if suffix != ".java":
+        return None
+    source_file = next(
+        (n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")),
+        str(path),
+    )
+    try:
+        text = _read_source_text(path, warn=False)
+    except OSError:
+        text = ""
+    match = re.search(r"(?m)^\s*package\s+([\w.]+)\s*;", text)
+    return str(source_file), match.group(1) if match else ""
+
+
+def _jvm_imports_by_file(path: Path, result: dict) -> dict[str, str]:
+    """simple name -> written FQN, for imports in one Java/Kotlin file."""
+    imports: dict[str, str] = {}
+    suffix = effective_suffix(path).lower()
+    if suffix in (".kt", ".kts"):
+        for edge in result.get("edges", []):
+            if edge.get("relation") != "imports":
+                continue
+            md = edge.get("metadata") or {}
+            fqn = md.get("target_fqn")
+            if fqn:
+                imports[str(fqn).split(".")[-1]] = str(fqn)
+        return imports
+    if suffix != ".java":
+        return imports
+    try:
+        text = _read_source_text(path, warn=False)
+    except OSError:
+        return imports
+    for match in _JAVA_IMPORT_RE.finditer(text):
+        body = match.group(1).strip()
+        if body.endswith(".*") or "." not in body:
+            continue
+        simple = body.split(".")[-1]
+        if simple and simple[0].isupper():
+            imports[simple] = body
+    return imports
+
+
+def _resolve_jvm_references(
+    per_file: list[dict | None],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+    *,
+    context_nodes: list[dict] | None = None,
+) -> None:
+    """Resolve Java/Kotlin type references through one JVM-wide symbol index.
+
+    Java and Kotlin share package names and class names. The language-specific
+    resolvers each build an index from one extension, so a Kotlin import of a
+    Java class never sees the Java class, and a Java import of a Kotlin class
+    is parked as external. Build the package/name index once over both
+    languages and repoint only when the written FQN names exactly one sourced
+    type node.
+
+    This runs before the shared call-evidence pass: a Kotlin member call can
+    only bind to a Java method after the import edge reaches the Java class.
+    """
+    by_fqn: dict[str, list[str]] = {}
+    pkg_by_file: dict[str, str] = {}
+    imports_by_file: dict[str, dict[str, str]] = {}
+
+    for path, result in zip(paths, per_file):
+        if result is None:
+            continue
+        package_entry = _jvm_package_name(path, result)
+        if package_entry is None:
+            continue
+        source_file, package = package_entry
+        pkg_by_file[source_file] = package
+        imports_by_file[source_file] = _jvm_imports_by_file(path, result)
+    if not pkg_by_file:
+        return
+
+    # One accepted-corpus index serves fresh and unchanged sourced types. Their
+    # producer-owned package marker survives transport; absent legacy or corrupt
+    # evidence cannot be reconstructed from directory names or borrowed source.
+    for node in all_nodes:
+        source_file = str(node.get("source_file") or "")
+        if (effective_suffix(source_file).lower() not in _JVM_NAME_SUFFIXES
+                or node.get("_callable_class") is not True or not _is_type_like_definition(node)):
+            continue
+        metadata = node.get("metadata")
+        package = metadata.get("jvm_package") if isinstance(metadata, dict) else None
+        if not _valid_jvm_package_name(package):
+            continue
+        label = str(node.get("label", "")).strip()
+        if not label:
+            continue
+        fqn = f"{package}.{label}" if package else label
+        by_fqn.setdefault(fqn, []).append(str(node["id"]))
+
+    node_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+    # A fresh FQN stub may temporarily occupy an unchanged file's normalized
+    # ID. Keep that accepted file import without admitting its declarations
+    # twice or letting the stub erase genuine file provenance in this decision.
+    def is_file_node(node):
+        source = node.get("source_file")
+        return (isinstance(source, str) and source and node.get("file_type") == "code"
+                and not node.get("_callable") and not node.get("_callable_class")
+                and node.get("label") in {source, Path(source).name})
+
+    context_file_ids = {str(node["id"]) for node in context_nodes or ()
+                        if node.get("id") and is_file_node(node)}
+    occupied = {str(node["id"]) for node in [*all_nodes, *(context_nodes or ())] if node.get("id")}
+    unresolved: dict[str, str] = {}
+
+    def unresolved_file_alias(fqn, target):
+        # Preserve the existing literal FQN stub, salted only when its key
+        # aliases a proven file. Source-owned file IDs never become type proof.
+        if fqn in unresolved:
+            return unresolved[fqn]
+        base = _make_id(target, decl_salt(fqn))
+        candidate, counter = base, 2
+        while candidate in occupied:
+            candidate = _make_id(base, str(counter))
+            counter += 1
+        node = {"id": candidate, "label": fqn, "file_type": "code",
+                "source_file": "", "source_location": ""}
+        all_nodes.append(node)
+        node_by_id[candidate] = node
+        occupied.add(candidate)
+        unresolved[fqn] = candidate
+        return candidate
+
+    repoint = {"imports", "inherits", "extends", "implements", "references"}
+    for edge in all_edges:
+        if edge.get("relation") not in repoint:
+            continue
+        source_file = str(edge.get("source_file") or "")
+        if effective_suffix(source_file).lower() not in _JVM_NAME_SUFFIXES:
+            continue
+        target = str(edge.get("target") or "")
+        if not target:
+            continue
+        target_node = node_by_id.get(target) or {}
+        fqn = str((edge.get("metadata") or {}).get("target_fqn") or "")
+        simple = ""
+        if not fqn:
+            label = str(target_node.get("label") or "")
+            if target_node and not target_node.get("source_file") and "." in label:
+                fqn = label
+            elif label and not target_node.get("source_file"):
+                simple = label
+            else:
+                # A parked FQN can share its normalized ID with a real file
+                # (b.Logger versus b/Logger.kt). Written import evidence, not
+                # that incidental file-node ownership, chooses the type FQN.
+                for name, written in imports_by_file.get(source_file, {}).items():
+                    if target in {_make_id(name), _make_id(written)}:
+                        simple = name
+                        break
+            if not fqn and simple:
+                fqn = imports_by_file.get(source_file, {}).get(simple, "")
+                if not fqn:
+                    package = pkg_by_file.get(source_file, "")
+                    fqn = f"{package}.{simple}" if package else simple
+        if not fqn:
+            continue
+        candidates = by_fqn.get(fqn, [])
+        file_target = target in context_file_ids or is_file_node(target_node)
+        if len(candidates) != 1:
+            if file_target and edge.get("relation") != "imports":
+                edge["target"] = unresolved_file_alias(fqn, target)
+            continue
+        candidate = candidates[0]
+        if candidate == target:
+            continue
+        # Keep the file-level import edge so `affected <File>` still reaches
+        # importers. A bare import target has no node yet; replace a resolved
+        # stub, but add the class edge when the target is only a local claim.
+        if edge.get("relation") == "imports" and (not target_node or file_target):
+            resolved = dict(edge)
+            resolved["target"] = candidate
+            all_edges.append(resolved)
+        else:
+            edge["target"] = candidate
+
+
 def _resolve_kotlin_import_targets(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -7737,15 +7979,15 @@ def _resolve_kotlin_member_calls(
         if e.get("relation") == "method":
             methods_by_type.setdefault(e.get("source"), []).append(e.get("target"))
 
-    # Receiver name -> declaring type node ids, scoped to Kotlin-sourced
-    # definitions only (a same-named type in another language must not
-    # answer a Kotlin call). len != 1 is the god-node guard.
+    # Java and Kotlin share receiver types; another language's same-named
+    # declaration cannot answer a JVM call. Multiple JVM declarations remain
+    # ambiguous under this member pass's existing single-definition guard.
     types_by_name: dict[str, list[str]] = {}
     for n in all_nodes:
         if not n.get("_callable_class"):
             continue
         sf = str(n.get("source_file") or "")
-        if not sf.endswith((".kt", ".kts")):
+        if _lang_family(sf) != "jvm":
             continue
         name = str(n.get("label", ""))
         if name:
@@ -10847,6 +11089,16 @@ def extract(
     # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
     # them from the indirect_call guard below to avoid false edges (#2137).
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
+
+    # JVM name resolution: Java and Kotlin share one package/type namespace.
+    # Accepted context widens the read-only type index. Newly disambiguated
+    # sourceless stubs belong to the fresh result, never the borrowed records.
+    # Run before the Kotlin-only resolver and before call evidence is built.
+    _jvm_n0 = len(resolution_nodes)
+    _resolve_jvm_references(per_file, paths, resolution_nodes, all_edges,
+                            context_nodes=resolution_context_nodes)
+    if resolution_nodes is not all_nodes:
+        all_nodes.extend(resolution_nodes[_jvm_n0:])
 
     # Kotlin import targets (#2526): rewrite each `imports` edge from the bare
     # last-segment id to the node its written FQN names, via the per-file

@@ -1842,3 +1842,24 @@ original166-line prefix and all88 earlier bodies remain exact. Existing projecti
 300 after three appended v4 controls, retaining thirteen earlier parameters and
 every earlier test body/assertion. Packaging, installed consumers, full source,
 corpus projection and native hosted checks retain separate revision identities.
+
+## INC-QML-132 / REQ-CORE-005 ownership
+
+- `extractors/engine.py` owns parsed Java/Kotlin package authority and exact
+  package validation, including recovered-header rejection. Direct producers
+  stamp only actual source-backed type declarations; no facade-only provenance.
+- `extract.py` retains the generic rewire veto, current-run JVM lookup and
+  accepted-context composition. Fresh type authority and borrowed file evidence
+  keep their existing lifetimes; no borrowed-source reads or corpus admission.
+- `cli.py` and `watch.py` retain their context allowlists and atomic publication
+  boundaries. JVM default-package metadata is copied by presence; accepted source
+  multigraph mode survives the last parallel arc's deletion.
+- `cache.py` advances AST40 with complete predecessor rationales. Existing
+  current-epoch assertions and real fault destination selectors advance together;
+  historical constants and semantic entries remain unchanged.
+- `tests/qml_ci.py` owns the native selection used by actual launcher execution;
+  `test_qml_ci_upstream_inventory.py` validates real collected case identities.
+  Artifact-only and clean core/QML smoke/add-on ordering are unchanged.
+
+The root upstream architecture remains authoritative. D50 describes this bounded
+composition; no general JVM compiler/runtime or Qt SDK completeness is claimed.

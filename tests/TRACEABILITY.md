@@ -5985,3 +5985,47 @@ successful neutral fixture cleanup is confirmed. Scoped Ruff/typing pass.
 Overlapping1,050/97 runs are reported separately, with final full-source and
 native/package gates still required. Neither an aggregate count nor unchanged
 production bytes alone establishes an unexecuted platform/profile.
+
+## INC-QML-132 — Upstream0.9.100 composition and fork delivery
+
+Implementation/source qualification in progress. Parent sourceM and incoming
+upstream checks are historical inputs, not verdicts for this integration.
+
+| Criteria | Exact executable coverage / evidence owner |
+| --- | --- |
+| REQ-QML-003-AC04, REQ-QML-018-AC05/AC06 | `test_upstream_qt_cache_integration.py` current AST40 namespace/fault selectors and predecessor33/39 migration; `test_qt_upstream094_cache_contract.py`, `test_qt_upstream099_cache_contract.py`, `test_cpp_alias_literal_updates.py`, `test_cpp_struct_method_updates.py`, `test_cpp_type_reference_updates.py`. |
+| REQ-QML-010-AC01/AC02/AC03, REQ-QML-022-AC02/AC06 | `test_upstream_100_extraction.py` real C++ case-distinct class/free-function identity, Qt canonical joins, raw-cache policy and typed consumer preservation. |
+| REQ-QML-013-AC03, REQ-QML-014-AC03, REQ-QML-022-AC06 | `test_upstream_100_publication.py` real extract/manual/watch accepted-source profile deletion/repeat and ordinary legacy parallel flags. Three naive integration-variant failures retained; corrected9 cases pass. Existing source transport/projection/export/failure suites remain unchanged. |
+| REQ-CORE-005-AC01/AC02 | `test_upstream_100_extraction.py` current full/changed-caller package parity; borrowed-state immutability/no-read proof; missing/non-string/malformed/oversize/default package authority; wrong-package and file/type alias rejection; direct producer recovered-header controls. |
+| REQ-CORE-005-AC03, REQ-QML-018-AC06 | `test_upstream_100_jvm_updates.py::test_req_core005_ac01_ac03_jvm_changed_caller_publication_retains_recovers_repeats` manual/watch real late-manifest replacement failure, prior graph/sidecar/cache retention, corrected retry, full-clean parity and no-change repeat. |
+| REQ-QML-014-AC01/AC02/AC04, REQ-CORE-004-AC02/AC03 | `test_qml_ci_profiles.py::test_req_qml018_ac06_native_profile_collects_upstream100_joint_and_generic_cases`, `test_qml_ci_upstream_inventory.py`, existing actual launcher failure/evidence/cleanup and clean-profile tests. New native execution remains unverified until hosted per-case artifacts exist. |
+| REQ-QML-015-AC01/AC02/AC03 | Authoritative skill generator/five validators, current-source static/full suite, raw-only frozen-tree wheel, fresh isolated core/QML consumers, AST-only canonical graph update, source-bound ordinary PR checks and exact resulting-v8 automatic checks. These gates are pending, never inferred from focused counts. |
+
+Focused inherited-parent environment results: publication515passed, export458passed,
+generic/serve222passed. They do not establish synchronized installed0.9.100
+acceptance. The authoritative local sync now uses graphifyy0.9.100/PyAV18.1.0;
+all other resolved package versions remain unchanged. Native install/runtime,
+local full, raw wheel/installed consumer and post-merge gates retain individual
+commands, exact revisions, failed probes and limitations in the delivery PR.
+
+No new diagnostic code or persistence owner is introduced; existing controlled
+rejections and real persistence-failure retention/recovery remain mandatory.
+Fourteen unrelated root coverage/result files have restorable byte-exact guards.
+
+Final focused source qualification uses the synchronized0.9.100/PyAV18.1 profile:
+55 new extraction/operational cases pass; their combined incoming/Qt/C++/JVM/C#
+selection passes265 with3 explicit Windows symlink-capability skips. Paired cache,
+namespace/fault, transcription/dependency and architecture selection passes138
+cases. The real native CI inventory contains99 reviewed cases (52 extraction,
+3 operational,9 publication and35 incoming generic controls); both inventory
+checks and all18 launcher/evidence controls pass. Counts overlap and are not
+summed as a fictional full invocation.
+
+Whole Ruff and all five independent authoritative generated-resource checks pass.
+Qualified same-interpreter raw-Git parent fixtures each report684 inherited type
+diagnostics; the integrated source reports688, including four from byte-matching
+incoming Dart/Claude test changes, with zero additions beyond the parent union.
+The first parent-fixture attempt lacked tools/ and is retained as an input gap;
+qualified fixtures include its real imports. Typing remains a failing baseline,
+not zero-error acceptance. New source full/installed/hosted/resulting-commit
+qualification remains assigned to the delivery PR rather than either parent.

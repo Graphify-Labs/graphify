@@ -133,6 +133,22 @@ def test_req_qml022_ac06_native_profile_collects_shared_cpp_csharp_ownership(pro
     assert_neutral_smokes(profile)
 
 
+def test_req_qml018_ac06_native_profile_collects_upstream100_joint_and_generic_cases(profile):
+    """Native lanes retain merge regressions and their upstream controls after clean smokes."""
+    names = ("test_upstream_100_publication.py", "test_upstream_100_extraction.py",
+             "test_upstream_100_cache.py", "test_4874_jvm_resolution.py",
+             "test_4909_reference_binding_scale.py", "test_case_only_decl_ids_4904.py",
+             "test_scala_extension_methods.py", "test_php_class_const_initializer_refs.py")
+    for name in names:
+        (profile.root / "tests" / name).write_text("def test_boundary(): pass\n", encoding="utf-8")
+    qml_ci.main()
+    selected = profile.calls[-1].arguments
+    assert all(str(Path("tests") / name) in selected for name in names)
+    assert str(Path("tests") / "test_unrelated.py") not in selected
+    assert [call.arguments for call in profile.calls[:-1]] == [*clean_prefix(profile), addon(profile)]
+    assert_neutral_smokes(profile)
+
+
 def test_req_core004_ac03_failed_addon_stops_before_native_pytest(profile):
     """A failed declared-extra install remains a failed lane without retrying a reduced test set."""
     profile.failure = "addon"

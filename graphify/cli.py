@@ -1737,7 +1737,12 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
+        from graphify.affected import (
+            DEFAULT_AFFECTED_RELATIONS,
+            format_affected,
+            load_graph,
+            resolve_seed_outcome,
+        )
         query = sys.argv[2]
         graph_path = _default_graph_path()
         depth = 2
@@ -1792,6 +1797,20 @@ def dispatch_command(cmd: str) -> None:
         # --graph falls back to its own directory.
         from graphify.paths import GRAPHIFY_OUT_NAME
         graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+        # Resolve once so an unresolvable seed can set the documented exit code
+        # (3 = ambiguous name, 4 = no matching node), matching `explain`; a
+        # script could not branch on `affected` while it always exited 0 (#4792).
+        seed, rivals = resolve_seed_outcome(graph, query, graph_root)
+        if seed is None:
+            if rivals:
+                # Share `explain`'s refusal wording so the same ambiguous name
+                # reads identically in both commands.
+                from graphify.serve import _ambiguity_message
+
+                print(_ambiguity_message(graph, query, rivals), file=sys.stderr)
+                sys.exit(EXIT_AMBIGUOUS)
+            print(f"No unique node match for {query}", file=sys.stderr)
+            sys.exit(EXIT_NOT_FOUND)
         print(
             format_affected(
                 graph,
@@ -1799,6 +1818,7 @@ def dispatch_command(cmd: str) -> None:
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
                 root=graph_root,
+                seed=seed,
             )
         )
     elif cmd in ("god-nodes", "god_nodes"):
@@ -4440,6 +4460,9 @@ def dispatch_command(cmd: str) -> None:
                             _fwd_metadata = {
                                 key: _metadata[key]
                                 for key in (
+                                    # Preserve proven JVM default packages by key presence;
+                                    # empty is evidence, not an absent metadata value.
+                                    "jvm_package",
                                     "ruby_resolution_schema",
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
@@ -4903,7 +4926,11 @@ def dispatch_command(cmd: str) -> None:
             # clustered path (whose DiGraph collapses both) and stays deterministic
             # across modes (#1317; node dedup also collapses shared Swift module
             # anchors emitted per importing file, #1327).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            from graphify.build import (
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+                has_parallel_links as _has_parallel_links,
+            )
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
@@ -4993,6 +5020,13 @@ def dispatch_command(cmd: str) -> None:
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"], source_nodes=merged["nodes"],
                                              graph_metadata=merged.get("graph"), directed=merged.get("directed", False))
+            # Source storage remains a multigraph after its last parallel pair
+            # disappears; ordinary raw graphs infer the flag from their links.
+            from graphify.source_relationships import source_profile
+            merged["multigraph"] = (
+                source_profile(merged["nodes"], merged.get("graph"))
+                or _has_parallel_links(merged["edges"], directed=bool(merged.get("directed", False)))
+            )
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
