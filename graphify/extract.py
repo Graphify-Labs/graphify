@@ -453,6 +453,23 @@ def _suppress_ambiguous_python_imports(
             raw_call["_ambiguous_python_import"] = True
 
 
+def _namespace_src_module_parts(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Module path of a file in a PEP 420 namespace package under a `src/` root.
+
+    `parts` is the file's path relative to the scan root. Returns the parts after
+    the nearest `src` directory when the module sits at least one directory below
+    it (`airflow/sql/hooks/sql.py`), else None. A loose `src/helpers.py` is left
+    alone: its bare name is as likely a third-party import. So is a namespace
+    named like a stdlib module, which a bare import means first (#4261)."""
+    dirs = parts[:-1]
+    if "src" not in dirs:
+        return None
+    after = parts[len(dirs) - dirs[::-1].index("src"):]
+    if len(after) < 2 or after[0] in _PYTHON_STDLIB_MODULE_NAMES:
+        return None
+    return after
+
+
 def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     """Repoint Python absolute-import edges to the real file node under a nested
     (e.g. ``src/``) package root (#2072).
@@ -492,8 +509,17 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
             levels += 1
             d = d.parent
         if levels == 0:
-            continue  # not inside a package (namespace pkg / loose module)
-        mod_parts = parts[-(levels + 1):]  # package dirs + the file itself
+            # No initializer above the file: a PEP 420 namespace package, or a
+            # loose module. Under a `src/` layout the import root is that `src/`,
+            # so `pkgsql/src/airflow/sql/hooks/sql.py` is `airflow.sql.hooks.sql`
+            # even though no directory carries an `__init__.py`. Without this a
+            # monorepo of namespace distributions dropped every cross-distribution
+            # import, and with it inherited `self.method()` calls.
+            mod_parts = _namespace_src_module_parts(parts)
+            if mod_parts is None:
+                continue  # loose module, not under a src/ root
+        else:
+            mod_parts = parts[-(levels + 1):]  # package dirs + the file itself
         if len(mod_parts) == len(parts):
             continue  # package root == scan root: file-node id already coincides
         file_node = _file_node_id(rel)

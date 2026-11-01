@@ -2,8 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## Unreleased
+## 0.9.101 (unreleased)
 
+- Fix: **python** a bare call inside a method (`do_thing()`) no longer wrongly self-binds to a same-named method on the class; it resolves to the imported or module-level function it actually names, and a bare call with no such target emits no edge (#4933, thanks @nothariharan).
+- Fix: **python** imports resolve across PEP 420 namespace packages split over multiple `src/` roots (no `__init__.py`), while a module ambiguously provided by two roots stays unresolved and loose/stdlib-named modules are left alone (#4929, thanks @nothariharan).
+- Fix: **go** a method value reached through a receiver field (`m.UseMiddleware(hs.handler.Middleware)`) is linked as an `indirect_call`, extending the method-value-as-argument handling to field chains rooted at the method's own receiver (#1566, #4931, thanks @nothariharan).
+- Fix: **go** a package-level `var` initialiser references the types it names (`var s = wire.NewSet(new(T), ...)`, composite literals, `new(T)`), the type-reference complement to crediting its calls to the file, so a wire-set file no longer extracts as no symbols (#2360, #4932, thanks @nothariharan).
 - Fix: **explain** neighbour ranking prefers EXTRACTED edges and lower-degree nodes, so a growing graph's hubs no longer crowd the default top-20 list (#3143).
 
 ## 0.9.100 (2026-11-01)
