@@ -888,7 +888,7 @@ def test_a_member_call_inside_a_with_block_reaches_the_with_objects_method(tmp_p
 def test_a_call_through_a_csharp_typed_field_is_kept_in_the_built_graph(tmp_path, body):
     members = " Private _rules As New Shop.Rules.PriceRules()\n"
     result = _extract_files(tmp_path, {"PriceRules.cs": _PRICE_RULES, "Caller.vb": _caller(body, members=members)})
-    assert ("Total()", "PriceRules.cs") in _graph_calls(result, "Run()", "Caller.vb")
+    assert ("PriceRules.Total()", "PriceRules.cs") in _graph_calls(result, "Run()", "Caller.vb")
 
 
 # H25 (compiler: x08) -- the caller has its own Save: inside `With _r`, `.Save()` is Repository's, never the caller's
@@ -1096,10 +1096,10 @@ def test_probe_the_issue_repro_with_an_external_form_base_gets_an_edge_per_case(
     result = _extract_files(tmp_path, {**_REPO_FILES, "PriceRules.cs": _PRICE_RULES,
                                        "OrderForm.Designer.vb": designer, "OrderForm.vb": form})
     expected = {"F1_FieldNew()": ("Load()", "Repository.vb"), "F2_FieldAssignedLater()": ("Save()", "Repository.vb"),
-                "F3_MeField()": ("Save()", "Repository.vb"), "F4_FieldCSharp()": ("Total()", "PriceRules.cs"),
+                "F3_MeField()": ("Save()", "Repository.vb"), "F4_FieldCSharp()": ("PriceRules.Total()", "PriceRules.cs"),
                 "F5_FieldInOtherPartialFile()": ("Save()", "Repository.vb"), "W1_WithField()": ("Load()", "Repository.vb"),
                 "W2_WithLocal()": ("Save()", "Repository.vb"), "W3_WithNew()": ("Load()", "Repository.vb"),
-                "W4_WithFieldCSharp()": ("Total()", "PriceRules.cs"), "P1_Parameter()": ("Save()", "Repository.vb")}
+                "W4_WithFieldCSharp()": ("PriceRules.Total()", "PriceRules.cs"), "P1_Parameter()": ("Save()", "Repository.vb")}
     missing = {name for name, target in expected.items() if target not in _graph_calls(result, name, "OrderForm.vb")}
     assert missing == set()
 
