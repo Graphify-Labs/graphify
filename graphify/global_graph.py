@@ -181,21 +181,34 @@ def settled(
     return False
 
 
-def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> dict:
-    """Add or update a project graph in the global graph.
+def _check_manifest_for_add(
+    source_path: Path,
+    repo_tag: str,
+) -> tuple[dict, str, bool]:
+    manifest = _load_manifest()
+    src_hash = _file_hash(source_path)
+    existing = manifest["repos"].get(repo_tag, {})
+    existing_path = existing.get("source_path", "")
+    resolved_str = str(source_path.resolve())
+    if existing_path and existing_path != resolved_str:
+        print(
+            f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
+            f"{existing_path!r}, now updating to {resolved_str!r}. "
+            f"Use --as <tag> to give it a different name.",
+            file=sys.stderr,
+        )
+    return manifest, src_hash, existing.get("source_hash") == src_hash
 
-    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped,
-    unsettled, cross_repo_calls.
-    Skipped=True means the source graph hasn't changed since last add (or was
-    still being written when `unsettled=True`).
-    """
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
 
+def _prepare_add(
+    source_path: Path,
+    repo_tag: str,
+    settle_s: float,
+) -> tuple[dict | None, str, dict | None]:
     if not source_path.exists():
         raise FileNotFoundError(f"graph not found: {source_path}")
-
     if settle_s > 0 and not settled(source_path, settle_s):
-        return {
+        return None, "", {
             "repo_tag": repo_tag,
             "nodes_added": 0,
             "nodes_removed": 0,
@@ -203,21 +216,9 @@ def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> di
             "unsettled": True,
             "cross_repo_calls": 0,
         }
-
-    manifest = _load_manifest()
-    src_hash = _file_hash(source_path)
-
-    existing = manifest["repos"].get(repo_tag, {})
-    existing_path = existing.get("source_path", "")
-    if existing_path and existing_path != str(source_path.resolve()):
-        print(
-            f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
-            f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
-            f"Use --as <tag> to give it a different name.",
-            file=sys.stderr,
-        )
-    if existing.get("source_hash") == src_hash:
-        return {
+    manifest, src_hash, unchanged = _check_manifest_for_add(source_path, repo_tag)
+    if unchanged:
+        return None, "", {
             "repo_tag": repo_tag,
             "nodes_added": 0,
             "nodes_removed": 0,
@@ -225,34 +226,49 @@ def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> di
             "unsettled": False,
             "cross_repo_calls": 0,
         }
+    return manifest, src_hash, None
 
-    # Sample fallback git HEAD before reading/merging the source graph so a
-    # concurrent commit during merge cannot stamp a newer HEAD than the merged bytes.
+
+def _sample_repo_head(source_path: Path) -> str | None:
     from graphify.watch import _git_head
-    repo_root = _resolve_repo_root(source_path)
-    head_at_merge = _git_head(cwd=repo_root)
 
-    # Load source graph
+    repo_root = _resolve_repo_root(source_path)
+    return _git_head(cwd=repo_root)
+
+
+def _read_source_graph_data(source_path) -> tuple[dict, str | None]:
     from graphify.security import check_graph_file_size_cap
+
     check_graph_file_size_cap(source_path)
     data = json.loads(source_path.read_text(encoding="utf-8"))
     built_at_commit = _extract_built_at_commit(data)
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    return data, built_at_commit
+
+
+def _build_prefixed_source_graph(data: dict, repo_tag: str):
+    from graphify.build import prefix_graph_for_global
     from graphify.paths import restore_arc_direction
-    data = restore_arc_direction(data)
+
+    restored = restore_arc_direction(data)
     try:
-        src_G = _jg.node_link_graph(data, edges="links")
+        src_G = _jg.node_link_graph(restored, edges="links")
     except TypeError:
-        src_G = _jg.node_link_graph(data)
+        src_G = _jg.node_link_graph(restored)
+    return prefix_graph_for_global(src_G, repo_tag)
 
-    # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
 
-    # Load global graph and prune stale nodes for this repo
-    G = _load_global_graph()
-    removed = prune_repo_from_graph(G, repo_tag)
+def _load_prefixed_source(source_path, repo_tag: str):
+    # Sample fallback git HEAD before reading/merging the source graph so a
+    # concurrent commit during merge cannot stamp a newer HEAD than the merged bytes.
+    head_at_merge = _sample_repo_head(source_path)
+    data, built_at_commit = _read_source_graph_data(source_path)
+    prefixed = _build_prefixed_source_graph(data, repo_tag)
+    return prefixed, built_at_commit, head_at_merge
 
+
+def _compose_prefixed_graph(G, prefixed) -> int:
     # Merge external-library nodes (no source_file) by label to avoid duplication
     external_labels = {
         d.get("label", ""): n
@@ -280,28 +296,51 @@ def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> di
                 edge_data = {**edge_data, key: remap[edge_data[key]]}
         if u != v:  # don't introduce self-loops via remapping
             G.add_edge(u, v, **edge_data)
+    return prefixed.number_of_nodes() - len(remap)
 
-    added = prefixed.number_of_nodes() - len(remap)
+
+def _replace_repo_in_global_graph(prefixed, repo_tag: str):
+    from graphify.build import prune_repo_from_graph
+
+    G = _load_global_graph()
+    removed = prune_repo_from_graph(G, repo_tag)
+    added = _compose_prefixed_graph(G, prefixed)
+    return G, added, removed
+
+
+def _merge_into_global_graph(prefixed, repo_tag: str) -> tuple[int, int, int]:
+    from graphify.cross_repo_calls import link_cross_repo_member_calls
+
+    G, added, removed = _replace_repo_in_global_graph(prefixed, repo_tag)
     # A member call parked on a caller node (#3152) may be answered by a repo
     # already in the global graph, or by this one for a repo added earlier. The
     # pass recomputes its own output, so adding repos one at a time lands where a
     # single merge-graphs of the same inputs would.
-    from graphify.cross_repo_calls import link_cross_repo_member_calls
-
     cross_repo_calls = link_cross_repo_member_calls(G)
     _save_global_graph(G)
+    return added, removed, cross_repo_calls
 
+
+def _record_manifest_repo(
+    manifest: dict,
+    repo_tag: str,
+    source_path,
+    src_hash: str,
+    added: int,
+    edge_count: int,
+    built_at_commit: str | None,
+    head_at_merge: str | None,
+) -> None:
     commit_basis: str | None = (
         "built_at_commit"
         if built_at_commit
         else ("head_at_merge" if head_at_merge else None)
     )
-
     manifest["repos"][repo_tag] = {
         "added_at": datetime.now(timezone.utc).isoformat(),
         "source_path": str(source_path.resolve()),
         "node_count": added,
-        "edge_count": prefixed.number_of_edges(),
+        "edge_count": edge_count,
         "source_hash": src_hash,
         "built_at_commit": built_at_commit,
         "head_at_merge": head_at_merge,
@@ -309,6 +348,27 @@ def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> di
     }
     _save_manifest(manifest)
 
+
+def _complete_global_add(
+    manifest: dict,
+    repo_tag: str,
+    source_path,
+    src_hash: str,
+    prefixed,
+    built_at_commit: str | None,
+    head_at_merge: str | None,
+) -> dict:
+    added, removed, cross_repo_calls = _merge_into_global_graph(prefixed, repo_tag)
+    _record_manifest_repo(
+        manifest,
+        repo_tag,
+        source_path,
+        src_hash,
+        added,
+        prefixed.number_of_edges(),
+        built_at_commit,
+        head_at_merge,
+    )
     return {
         "repo_tag": repo_tag,
         "nodes_added": added,
@@ -316,6 +376,158 @@ def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> di
         "skipped": False,
         "unsettled": False,
         "cross_repo_calls": cross_repo_calls,
+    }
+
+
+def _run_global_add(source_path, repo_tag: str, settle_s: float) -> dict:
+    manifest, src_hash, early = _prepare_add(source_path, repo_tag, settle_s)
+    if early is not None or manifest is None:
+        return early or {}
+    prefixed, built_at_commit, head_at_merge = _load_prefixed_source(
+        source_path, repo_tag
+    )
+    return _complete_global_add(
+        manifest,
+        repo_tag,
+        source_path,
+        src_hash,
+        prefixed,
+        built_at_commit,
+        head_at_merge,
+    )
+
+
+def global_add(source_path: Path, repo_tag: str, *, settle_s: float = 0.0) -> dict:
+    """Add or update a project graph in the global graph.
+
+    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped,
+    unsettled, cross_repo_calls.
+    Skipped=True means the source graph hasn't changed since last add (or was
+    still being written when `unsettled=True`).
+    """
+    return _run_global_add(source_path, repo_tag, settle_s)
+
+
+def _select_target_repos(only: str | None) -> dict:
+    repos = _load_manifest().get("repos", {})
+    if only:
+        targets = {t: info for t, info in repos.items() if only in t}
+        if repos and not targets:
+            raise ValueError(
+                f"--only {only!r} matched no registered repo of {sorted(repos)}"
+            )
+        return targets
+    return dict(repos)
+
+
+def _read_source_commit(src_path: Path) -> str | None:
+    try:
+        raw_data = json.loads(src_path.read_text(encoding="utf-8"))
+        if isinstance(raw_data, dict):
+            return _extract_built_at_commit(raw_data)
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def _probe_repo_commits(
+    src_path,
+    info: dict,
+    source_built_at_commit: str | None,
+) -> tuple[str | None, int | None]:
+    from graphify.watch import _git_head
+
+    repo_root = _resolve_repo_root(src_path)
+    current_head = _git_head(cwd=repo_root)
+    merged_commit = (
+        info.get("built_at_commit")
+        or info.get("head_at_merge")
+        or source_built_at_commit
+    )
+    commits_behind = _commits_between(repo_root, merged_commit, current_head)
+    return current_head, commits_behind
+
+
+def _probe_existing_source(
+    src_path,
+    info: dict,
+) -> tuple[str | None, bool, str | None, str | None, int | None]:
+    current_hash: str | None = None
+    hash_in_sync = False
+    try:
+        current_hash = _file_hash(src_path)
+        hash_in_sync = current_hash == info.get("source_hash")
+    except OSError:
+        hash_in_sync = False
+    source_built_at_commit = _read_source_commit(src_path)
+    current_head, commits_behind = _probe_repo_commits(
+        src_path, info, source_built_at_commit
+    )
+    return (
+        current_hash,
+        hash_in_sync,
+        source_built_at_commit,
+        current_head,
+        commits_behind,
+    )
+
+
+def _repo_status_entry(info: dict) -> dict:
+    src_str = info.get("source_path", "")
+    src_path = Path(src_str) if src_str else Path()
+    exists = bool(src_str) and src_path.is_file()
+
+    current_hash: str | None = None
+    hash_in_sync = False
+    source_built_at_commit: str | None = None
+    current_head: str | None = None
+    commits_behind: int | None = None
+
+    if exists:
+        (
+            current_hash,
+            hash_in_sync,
+            source_built_at_commit,
+            current_head,
+            commits_behind,
+        ) = _probe_existing_source(src_path, info)
+
+    stale = (
+        (not exists)
+        or (not hash_in_sync)
+        or (commits_behind is not None and commits_behind > 0)
+    )
+    return {
+        "source_path": src_str,
+        "source_exists": exists,
+        "node_count": info.get("node_count", 0),
+        "edge_count": info.get("edge_count", 0),
+        "added_at": info.get("added_at"),
+        "manifest_hash": info.get("source_hash"),
+        "current_hash": current_hash,
+        "hash_in_sync": hash_in_sync,
+        "built_at_commit": info.get("built_at_commit"),
+        "head_at_merge": info.get("head_at_merge"),
+        "commit_basis": info.get("commit_basis"),
+        "source_built_at_commit": source_built_at_commit,
+        "current_head": current_head,
+        "commits_behind": commits_behind,
+        "stale": stale,
+    }
+
+
+def _run_global_status(only: str | None) -> dict:
+    targets = _select_target_repos(only)
+    report_repos = {tag: _repo_status_entry(info) for tag, info in targets.items()}
+    all_in_sync = (
+        not any(r["stale"] for r in report_repos.values())
+        if report_repos
+        else True
+    )
+    return {
+        "global_path": str(_GLOBAL_GRAPH),
+        "repos": report_repos,
+        "all_in_sync": all_in_sync,
     }
 
 
@@ -327,83 +539,46 @@ def global_status(*, only: str | None = None) -> dict:
     provenance (`built_at_commit`) visibly separate from fallback git `HEAD`
     (`head_at_merge`).
     """
-    from graphify.watch import _git_head
+    return _run_global_status(only)
 
-    repos = _load_manifest().get("repos", {})
-    if only:
-        targets = {t: info for t, info in repos.items() if only in t}
-        if repos and not targets:
-            raise ValueError(
-                f"--only {only!r} matched no registered repo of {sorted(repos)}"
-            )
-    else:
-        targets = dict(repos)
 
-    report_repos: dict[str, dict] = {}
+def _sync_one_repo(
+    tag: str,
+    info: dict,
+    settle_s: float,
+) -> tuple[str, dict | None]:
+    src_str = info.get("source_path", "")
+    src_path = Path(src_str) if src_str else Path()
+    if not src_str or not src_path.is_file():
+        return "missing", None
+    res = global_add(src_path, tag, settle_s=settle_s)
+    if res.get("unsettled"):
+        return "unsettled", res
+    if res.get("skipped"):
+        return "skipped", res
+    return "updated", res
+
+
+def _run_global_sync(only: str | None, settle_s: float) -> dict:
+    targets = _select_target_repos(only)
+    buckets: dict[str, list[str]] = {
+        "updated": [],
+        "skipped": [],
+        "unsettled": [],
+        "missing": [],
+    }
+    results: dict[str, dict] = {}
     for tag, info in targets.items():
-        src_str = info.get("source_path", "")
-        src_path = Path(src_str) if src_str else Path()
-        exists = bool(src_str) and src_path.is_file()
-
-        current_hash: str | None = None
-        hash_in_sync = False
-        source_built_at_commit: str | None = None
-        current_head: str | None = None
-        commits_behind: int | None = None
-
-        if exists:
-            try:
-                current_hash = _file_hash(src_path)
-                hash_in_sync = current_hash == info.get("source_hash")
-            except OSError:
-                hash_in_sync = False
-
-            try:
-                raw_data = json.loads(src_path.read_text(encoding="utf-8"))
-                if isinstance(raw_data, dict):
-                    source_built_at_commit = _extract_built_at_commit(raw_data)
-            except (OSError, json.JSONDecodeError, ValueError):
-                source_built_at_commit = None
-
-            repo_root = _resolve_repo_root(src_path)
-            current_head = _git_head(cwd=repo_root)
-            merged_commit = (
-                info.get("built_at_commit")
-                or info.get("head_at_merge")
-                or source_built_at_commit
-            )
-            commits_behind = _commits_between(repo_root, merged_commit, current_head)
-
-        stale = (
-            (not exists)
-            or (not hash_in_sync)
-            or (commits_behind is not None and commits_behind > 0)
-        )
-        report_repos[tag] = {
-            "source_path": src_str,
-            "source_exists": exists,
-            "node_count": info.get("node_count", 0),
-            "edge_count": info.get("edge_count", 0),
-            "added_at": info.get("added_at"),
-            "manifest_hash": info.get("source_hash"),
-            "current_hash": current_hash,
-            "hash_in_sync": hash_in_sync,
-            "built_at_commit": info.get("built_at_commit"),
-            "head_at_merge": info.get("head_at_merge"),
-            "commit_basis": info.get("commit_basis"),
-            "source_built_at_commit": source_built_at_commit,
-            "current_head": current_head,
-            "commits_behind": commits_behind,
-            "stale": stale,
-        }
-
-    all_in_sync = bool(report_repos) and not any(
-        r["stale"] for r in report_repos.values()
-    ) if report_repos else True
+        bucket, res = _sync_one_repo(tag, info, settle_s)
+        buckets[bucket].append(tag)
+        if res is not None:
+            results[tag] = res
     return {
-        "global_path": str(_GLOBAL_GRAPH),
-        "repos": report_repos,
-        "all_in_sync": all_in_sync,
+        "updated": buckets["updated"],
+        "skipped": buckets["skipped"],
+        "unsettled": buckets["unsettled"],
+        "missing": buckets["missing"],
+        "results": results,
     }
 
 
@@ -413,44 +588,7 @@ def global_sync(*, only: str | None = None, settle_s: float = 0.0) -> dict:
     Returns a summary dict with `updated`, `skipped`, `unsettled`, `missing`,
     and per-repo `results`.
     """
-    repos = _load_manifest().get("repos", {})
-    if only:
-        targets = {t: info for t, info in repos.items() if only in t}
-        if repos and not targets:
-            raise ValueError(
-                f"--only {only!r} matched no registered repo of {sorted(repos)}"
-            )
-    else:
-        targets = dict(repos)
-
-    updated: list[str] = []
-    skipped: list[str] = []
-    unsettled: list[str] = []
-    missing: list[str] = []
-    results: dict[str, dict] = {}
-
-    for tag, info in targets.items():
-        src_str = info.get("source_path", "")
-        src_path = Path(src_str) if src_str else Path()
-        if not src_str or not src_path.is_file():
-            missing.append(tag)
-            continue
-        res = global_add(src_path, tag, settle_s=settle_s)
-        results[tag] = res
-        if res.get("unsettled"):
-            unsettled.append(tag)
-        elif res.get("skipped"):
-            skipped.append(tag)
-        else:
-            updated.append(tag)
-
-    return {
-        "updated": updated,
-        "skipped": skipped,
-        "unsettled": unsettled,
-        "missing": missing,
-        "results": results,
-    }
+    return _run_global_sync(only, settle_s)
 
 
 def global_remove(repo_tag: str) -> int:
