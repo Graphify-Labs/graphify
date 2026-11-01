@@ -8924,6 +8924,16 @@ def _extract_generic(
     _case_of_targets = {
         e.get("target") for e in edges if e.get("relation") == "case_of"
     }
+    # Python: a bare `f()` in a method body never names a method (those are only
+    # reachable through self/cls/the class); it reads locals, enclosing
+    # functions, then module globals. The file-wide map lets a method shadow a
+    # same-named module function or import, so the call walk falls back to this
+    # method-free map instead.
+    python_free_label_to_nid: dict[str, str] = {}
+    _python_method_nids = (
+        {e["target"] for e in edges if e.get("relation") == "method"}
+        if config.ts_module == "tree_sitter_python" else set()
+    )
     for n in nodes:
         nid_to_sf[n["id"]] = str(n.get("source_file") or "")
         if n.get("type") == "namespace":
@@ -8941,6 +8951,8 @@ def _extract_generic(
         if n["id"] not in scope_parents:
             label_to_nid[normalised] = n["id"]
             label_to_nid_ci[normalised.lower()] = n["id"]
+            if config.ts_module == "tree_sitter_python" and n["id"] not in _python_method_nids:
+                python_free_label_to_nid[normalised] = n["id"]
         elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
             # A JS/TS nested function is only visible inside its parent, and the
             # scoped lookup already finds it there. Kept out of the file-wide map,
@@ -10046,6 +10058,14 @@ def _extract_generic(
                             curr_scope = scope_parents.get(curr_scope)
                         if not tgt_nid:
                             tgt_nid = label_to_nid.get(callee_name)
+                        # A class-body call (`x = f()` beside `def f`) may still
+                        # name the class's own method; a method body may not.
+                        if (
+                            config.ts_module == "tree_sitter_python"
+                            and tgt_nid in method_owner
+                            and method_owner[tgt_nid] != caller_nid
+                        ):
+                            tgt_nid = python_free_label_to_nid.get(callee_name)
                     elif self_receiver or (
                         config.ts_module == "tree_sitter_python"
                         and is_member_call
