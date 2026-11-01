@@ -29,11 +29,13 @@ def test_successful_configuration_checkpoint_and_contract_change_require_refresh
     assert set(payload) == {"schema", "fingerprint", "has_qt"}
 
 
+# State-rejection identities must not depend on pytest's long-bytes display policy.
 @pytest.mark.parametrize("raw", [
     b"invalid", b"\xff", b"[]", b'{"schema":2,"fingerprint":"' + b"a" * 64 + b'"}',
     b'{"schema":true,"fingerprint":"' + b"a" * 64 + b'"}',
     b'{"schema":1,"fingerprint":"bad"}', b"x" * 1025,
-])
+], ids=["malformed-json", "non-utf8", "array-root", "incompatible-schema",
+        "boolean-schema", "malformed-fingerprint", "oversized-state"])
 def test_corrupt_or_incompatible_state_cannot_validate_cached_resolution(tmp_path, raw):
     path = tmp_path / QT_STATE_FILE
     path.write_bytes(raw)
@@ -107,10 +109,10 @@ def test_package_fact_policy_and_ignore_configuration_invalidate_unchanged_qml(t
     assert inspect_qt_analysis(tmp_path, out, [path], excludes=["generated/"]).changed
 
 
-@pytest.mark.parametrize("prior_policy", [22, 23, 24, 25])
+@pytest.mark.parametrize("prior_policy", [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
 def test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats(tmp_path, monkeypatch, prior_policy):
-    # INC-QML-58 changes metadata facts without changing package versions or source
-    # bytes. Policy 26 must retire earlier accepted checkpoints, then settle.
+    # Changed facts at unchanged source/package bytes must retire each actual
+    # predecessor checkpoint, including31 before anonymous helper proof, then settle.
     import graphify.qt_incremental as policy
 
     path = tmp_path / "CMakeLists.txt"
@@ -124,7 +126,7 @@ def test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats
         commit_qt_analysis(out, old)
         assert not inspect_qt_analysis(tmp_path, out, [path]).changed
     current = inspect_qt_analysis(tmp_path, out, [path])
-    assert policy.QT_POLICY_VERSION == 26
+    assert policy.QT_POLICY_VERSION == 33
     assert current.changed and current.fingerprint != old.fingerprint
     assert path.read_bytes() == raw
     commit_qt_analysis(out, current)

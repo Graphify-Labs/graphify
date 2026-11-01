@@ -105,7 +105,8 @@ def assert_joint_facts(graph, member="integer"):
     return union, field, union_fetch, backend_fetch
 
 
-@pytest.mark.parametrize("build_name,build", BUILDS)
+# Build-system IDs stay stable when pytest changes long-value display rules.
+@pytest.mark.parametrize("build_name,build", BUILDS, ids=["cmake", "qmake"])
 def test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload(
         tmp_path, monkeypatch, build_name, build):
     """Real direct/facade parsing and warm replay retain both owners and spans."""

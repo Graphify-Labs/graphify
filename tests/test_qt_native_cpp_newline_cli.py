@@ -17,6 +17,8 @@ import sys
 
 import pytest
 
+from graphify.extractors.cpp_functions import free_definition_fact
+
 
 FILES = {
     "include/worker.h": "// Unicode α marker\nclass Worker {\npublic:\n"
@@ -86,6 +88,11 @@ def _validate(data, root):
         assert base64.b64decode(metadata["owner_b64"]) == b"Worker"
         _span(sources[source], metadata["span"], token)
         members.append(node)
+    # INC-QML-62's structural declarator span is independently byte-checked
+    # before physical offsets are removed by the LF/CRLF semantic projection.
+    declarator = _node(data, "include/worker.h", ".run()", "cpp_declarator")["metadata"]["cpp_declarator"]
+    assert declarator["contract_version"] == 1 and declarator["kind"] == "method"
+    _span(sources["include/worker.h"], declarator["span"], b"run()")
     declaration, definition = (node["metadata"]["cpp_constructor"] for node in members[2:])
     assert definition["owner_bound"] is True and definition["type_authorized"] is True
     assert declaration["signature"] == definition["signature"]
@@ -93,6 +100,11 @@ def _validate(data, root):
     # definition, not the header; validate it against that source-owned fact.
     assert declaration["definition_span"] == definition["span"]
     caller = _node(data, "src/worker.cpp", "useWorker()")
+    free = free_definition_fact(caller)
+    assert free and free["role"] == "definition" and free["namespace_proof"] == []
+    assert base64.b64decode(free["qualified_name_b64"]) == b"useWorker"
+    _span(sources["src/worker.cpp"], free["span"],
+          b"void useWorker() {\n    Worker worker(1);\n    worker.run();\n}")
     endpoints = {(edge["source"], edge["target"], edge["relation"], edge.get("context", ""))
                  for edge in _links(data)}
     assert (implementation["id"], header["id"], "imports", "import") in endpoints
@@ -111,7 +123,7 @@ def _semantic(data):
         record = deepcopy(node)
         record["id"] = anchors[node["id"]]
         for family, fact in record.get("metadata", {}).items():
-            assert family in {"cpp_class", "cpp_member", "cpp_constructor", "cpp_constructor_types"}
+            assert family in {"cpp_class", "cpp_member", "cpp_constructor", "cpp_constructor_types", "cpp_declarator", "cpp_function"}
             for field in ("span", "definition_span", "source_size"):
                 fact.pop(field, None)
             if family == "cpp_constructor_types":
@@ -180,7 +192,8 @@ def test_req_qml003_ac04_non_qt_cpp_cli_newlines_keep_source_ownership_and_topol
 
 @pytest.mark.parametrize("corruption", ["span", "consistent_span", "source_size", "include",
                                        "definition_span", "endpoint", "role", "member_omission",
-                                       "identity_permutation"])
+                                       "identity_permutation", "declarator_span", "declarator_consistent_span",
+                                       "declarator_kind", "declarator_omission", "function_span", "function_role", "function_omission"])
 def test_req_qml014_ac04_non_qt_cpp_newline_oracle_rejects_corruption(cpp_builds, corruption):
     """Physical-coordinate allowances cannot hide absent facts or changed ownership."""
     (accepted, root), _ = cpp_builds
@@ -196,6 +209,27 @@ def test_req_qml014_ac04_non_qt_cpp_newline_oracle_rejects_corruption(cpp_builds
             fact["source_size"] += 1
         else:
             fact["includes"][0]["literal_b64"] = base64.b64encode(b"other.h").decode()
+    elif corruption.startswith("declarator_"):
+        metadata = _node(changed, "include/worker.h", ".run()", "cpp_declarator")["metadata"]
+        if corruption == "declarator_omission":
+            metadata.pop("cpp_declarator")
+        elif corruption == "declarator_kind":
+            metadata["cpp_declarator"]["kind"] = "field"
+        else:
+            span = metadata["cpp_declarator"]["span"]
+            span["start_byte"] += 1
+            if corruption == "declarator_consistent_span":
+                span["start_column"] += 1
+    elif corruption.startswith("function_"):
+        metadata = _node(changed, "src/worker.cpp", "useWorker()", "cpp_function")["metadata"]
+        if corruption == "function_omission":
+            metadata.pop("cpp_function")
+        elif corruption == "function_role":
+            metadata["cpp_function"]["role"] = "declaration"
+        else:
+            span = metadata["cpp_function"]["span"]
+            span["start_byte"] += 1
+            span["start_column"] += 1
     elif corruption == "definition_span":
         _node(changed, "include/worker.h", ".Worker()")["metadata"]["cpp_constructor"]["definition_span"]["start_byte"] += 1
     elif corruption == "endpoint":

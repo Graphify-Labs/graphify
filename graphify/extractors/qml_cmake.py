@@ -12,6 +12,7 @@ from graphify.extractors.qml_cmake_properties import (
     native_source, properties_for, reject, source_properties, target_sources,
 )
 from graphify.extractors.qml_cmake_resources import add_resources
+from graphify.extractors.qml_cmake_type_exports import add_type_exports, export_plan, source_export_fields
 from graphify.extractors.qml_project_read import ProjectFacts, extract_project, failure, literal_path
 from graphify.extractors.qml_resources import resource_url
 
@@ -91,6 +92,13 @@ def _module(facts, command, properties, consumed):
                 fields["singleton_type"] = props["QT_QML_SINGLETON_TYPE"] in {"TRUE", "ON", "1"}
             if "HEADER_FILE_ONLY" in props:
                 fields["header_file_only"] = props["HEADER_FILE_ONLY"] in {"TRUE", "ON", "1"}
+            # Generated type names/versions have a separate declaration owner
+            # from resource URLs and physical source membership.
+            plan = export_plan(token, props, ver[0]) if kind == "qml" else None
+            if kind == "qml":
+                fields.update(source_export_fields(plan))
+                if plan is None:
+                    reject(facts, command, "internal_singleton_type_conflict")
             # Object compilation does not determine native header/AUTOMOC
             # ownership. Only nonnative IDE inputs become separate tooling facts;
             # each token keeps its own role without reclassifying its siblings.
@@ -98,8 +106,10 @@ def _module(facts, command, properties, consumed):
             if kind == "cpp" and fields.get("header_file_only") and not native_source(token):
                 fact_kind = "qt_tooling_source"
                 source_kind = "tooling"
-            facts.add_chars(fact_kind, (key, source_kind, token.value), token.value, token.start, token.end,
-                            owner=module, module_key=key, value=token.value, source_kind=source_kind, **fields)
+            source = facts.add_chars(fact_kind, (key, source_kind, token.value), token.value, token.start, token.end,
+                                     owner=module, module_key=key, value=token.value, source_kind=source_kind, **fields)
+            if kind == "qml":
+                add_type_exports(facts, source, module, key, token, plan)
     for group in ("IMPORTS", "DEPENDENCIES", "OPTIONAL_IMPORTS", "DEFAULT_IMPORTS"):
         if any(token.value == "TARGET" for token in sections.get(group, [])):
             facts.reject("target_import_requires_policy_and_target_resolution", start, end)

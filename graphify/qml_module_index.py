@@ -74,6 +74,10 @@ class QmlModuleIndex:
         return answer(candidates, reason="component_unavailable", evidence=(export,))
 
     def directory_type(self, directory: str, name: str, *, importer: str) -> Resolution:
+        # A source-local build rename/internal export controls that spelling;
+        # physical filenames cannot restore discarded type authority. Observed
+        # qmldir exports still compete with build declarations below.
+        built = self.project_index.directory_type(directory, name, importer=importer) if self.project_index else None
         exports = self.exports.get(directory)
         if exports is not None:
             matches = [nid for nid in exports if qml_metadata(self.nodes[nid]).get("raw_name") == name and
@@ -85,7 +89,9 @@ class QmlModuleIndex:
                 latest = max(versioned)
                 matches = [nid for nid, version in zip(matches, versions) if version == latest]
             results = [self._target(nid, importer=importer) for nid in matches]
-            return combine(results, reason="type_unavailable")
+            return combine(results + ([built] if built is not None else []), reason="type_unavailable")
+        if built is not None:
+            return built
         candidates = []
         for path, ids in self.components.items():
             if posixpath.dirname(path) == directory and posixpath.basename(path) == name + ".qml":

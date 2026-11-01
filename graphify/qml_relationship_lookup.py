@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from graphify.qml_resolution_types import Resolution, answer, qml_metadata, relative_reference
+from graphify.qml_enum_lookup import QmlEnumLookup
 
 
 class RelationshipLookup:
@@ -9,6 +10,7 @@ class RelationshipLookup:
 
     def __init__(self, index):
         self.index = index
+        self.enums = QmlEnumLookup(index)
         self.aliases, self.functions, self.exports, self.script_imports = {}, {}, {}, {}
         for nid, node in index.nodes.items():
             md, path = qml_metadata(node), index.paths[nid]
@@ -141,6 +143,13 @@ class RelationshipLookup:
                 result = Resolution(result.status, result.target_id, result.reason,
                                     tuple(dict.fromkeys(evidence + result.evidence)), result.candidates)
             return result
+        # Static enum namespaces are source declarations, independent of an
+        # instance. This narrow exception follows local/JS shadow rejection.
+        enum = self.enums.resolve(file, component, parts)
+        if enum is not None:
+            if md.get("kind") == "alias":
+                return Resolution("unsupported", reason="alias_target_is_not_property_or_object")
+            return enum
         script = self._qml_script(file, component, reference)
         if script.status in {"resolved", "ambiguous"} or script.evidence:
             return script

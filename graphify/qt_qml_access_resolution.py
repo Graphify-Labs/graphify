@@ -9,6 +9,7 @@ from graphify.qt_qml_access_index import QtQmlAccessIndex
 from graphify.qt_qml_event_access import resolve_qml_event_access
 from graphify.qt_context_bindings import project_context_access, resolve_context_bindings
 from graphify.qt_qml_bridge import build_qt_qml_bridge
+from graphify.qt_external_singletons import resolve_external_singletons
 
 
 def _annotate(site, resolution):
@@ -16,9 +17,10 @@ def _annotate(site, resolution):
               candidates=list(resolution.candidates), evidence=list(resolution.evidence), bridge_direction="cpp_to_qml")
 
 
-def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index=None):
+def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index=None, unknown_metaobject_ownership=()):
     """Only fresh facts are annotated; prior accepted dictionaries are lookup context."""
-    index = QtQmlAccessIndex(all_nodes, all_edges, root=root, project_index=project_index)
+    index = QtQmlAccessIndex(all_nodes, all_edges, root=root, project_index=project_index,
+                             unknown_metaobject_ownership=unknown_metaobject_ownership)
     results = list(per_file.values() if isinstance(per_file, dict) else per_file)
     sites = sorted([(site, result) for result in results if result for site in result.get("nodes", [])
                     if qt_metadata(site).get("kind") in {"qml_load", "qml_root", "qml_access", "qml_parent_mutation", "context_exposure", "initial_properties"}],
@@ -97,7 +99,11 @@ def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index
         result.setdefault("edges", []).extend(additions)
         if all_edges is not result["edges"]:
             all_edges.extend(additions)
-    bindings = resolve_context_bindings(results, index, all_nodes, all_edges)
-    bridge = build_qt_qml_bridge(all_nodes, all_edges, root=root, project_index=index.project)
+    resolve_external_singletons(results, index, all_nodes, all_edges)
+    bindings = resolve_context_bindings(results, index, all_nodes, all_edges,
+                                        unknown_metaobject_ownership=unknown_metaobject_ownership)
+    bridge = build_qt_qml_bridge(all_nodes, all_edges, root=root, project_index=index.project,
+                                unknown_metaobject_ownership=unknown_metaobject_ownership)
     project_context_access(results, bridge, bindings, all_nodes, all_edges, index.qml)
-    resolve_qml_event_access(results, index, all_nodes, all_edges)
+    resolve_qml_event_access(results, index, all_nodes, all_edges,
+                             unknown_metaobject_ownership=unknown_metaobject_ownership)

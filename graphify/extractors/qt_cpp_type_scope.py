@@ -119,11 +119,10 @@ class NativeTypeScope:
         prefix = next((scope[1] for scope in reversed(scopes) if scope[0] != "block"), "")
         return "::".join(filter(None, (prefix, name)))
 
-    @staticmethod
-    def _conditional(node):
+    def _conditional(self, node):
         node = node.parent
         while node is not None:
-            if node.type in _CONDITIONAL:
+            if node.type in _CONDITIONAL and not self.unit.include_guards.accepts(node):
                 return True
             node = node.parent
         return False

@@ -11,6 +11,7 @@ import re
 
 from graphify.extractors.qt_cpp_facts import scope_owner
 from graphify.extractors.qt_cpp_syntax import source_span, walk
+from graphify.extractors.qt_cpp_test_macros import opaque_test_declaration
 
 _SCOPES = {"compound_statement", "for_statement", "for_range_loop", "if_statement",
            "switch_statement", "while_statement", "catch_clause", "lambda_expression"}
@@ -51,7 +52,7 @@ class CppDeclarationIdentity:
         self.unit, self.mapping = unit, mapping
         self.declarations, self.writes, self.conditions = {}, [], []
         for syntax in walk(unit.tree):
-            if syntax.type in _CONDITIONS:
+            if syntax.type in _CONDITIONS and not unit.include_guards.accepts(syntax):
                 self.conditions.append(syntax)
             if syntax.type in {"assignment_expression", "update_expression"}:
                 left = syntax.child_by_field_name("left") or syntax.child_by_field_name("argument")
@@ -80,7 +81,8 @@ class CppDeclarationIdentity:
                     scope = owner["body"]
                 record = {"name": unit.text(name), "name_end": name.end_byte, "syntax": child,
                           "scope": scope, "owner": owner,
-                          "conditional": any(parent.type in _CONDITIONS for parent in _ancestors(syntax)),
+                          "conditional": any(parent.type in _CONDITIONS and not unit.include_guards.accepts(parent) for parent in _ancestors(syntax)),
+                          "opaque": opaque_test_declaration(unit, syntax),
                           "depth": sum(1 for _ in _ancestors(scope))}
                 self.declarations.setdefault(record["name"], []).append(record)
 
@@ -113,7 +115,7 @@ class CppDeclarationIdentity:
             return "", position
         owner = self.mapping.owner_at(position)
         record, _ = self._select(name, position, owner)
-        if record is None:
+        if record is None or record["opaque"]:
             return "", position
         declaration = record["syntax"].parent
         if declaration is None or declaration.type not in _DECLARATIONS:
@@ -125,7 +127,7 @@ class CppDeclarationIdentity:
         from graphify.extractors.qt_cpp_api_shape import declared_spelling
         owner = self.mapping.owner_at(position)
         record, _ = self._select(name, position, owner)
-        if record is None:
+        if record is None or record["opaque"]:
             return "", position
         declarator = record["syntax"]
         declaration = declarator.parent
@@ -152,6 +154,8 @@ class CppDeclarationIdentity:
         record, reason = self._select(name, position, owner)
         if record is None:
             return _answer("ambiguous" if reason == "declaration_ambiguous" else "unavailable", reason)
+        if record["opaque"]:
+            return _answer("unavailable", "test_data_runtime_identity_unverified")
         if record["conditional"]:
             return _answer("dynamic", "conditional_declaration")
         # A write belongs to the declaration visible at that write, not every
@@ -165,6 +169,24 @@ class CppDeclarationIdentity:
         return _answer("resolved", identity=self._identity(name, owner, declaration, scope),
                        declaration_span=source_span(self.unit.source, declaration.start_byte, declaration.end_byte),
                        scope_span=source_span(self.unit.source, scope.start_byte, scope.end_byte))
+
+    def potential_declaration(self, name, position):
+        """Rejection-only lexical identity; never execution, value or alias authority.
+
+        A conditional/reassigned use can still invalidate a claim of unique
+        ordering for its exact source declaration. Ordinary resolved lookups
+        retain their stronger existing gates and never consume this answer.
+        """
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_]\w*", name):
+            return _answer("unsupported", "reference_expression_unsupported")
+        owner = self.mapping.owner_at(position)
+        if not owner or owner.get("body") is None or not _inside(owner["body"], position):
+            return _answer("unavailable", "source_function_unavailable")
+        record, reason = self._select(name, position, owner)
+        if record is None:
+            return _answer("ambiguous" if reason == "declaration_ambiguous" else "unavailable", reason)
+        return _answer("source_only", "execution_and_value_unverified",
+                       identity=self._identity(name, owner, record["syntax"], record["scope"]))
 
 
 def reference_identity(unit, mapping, name, position):

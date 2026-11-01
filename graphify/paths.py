@@ -661,15 +661,24 @@ def load_node_link_graph(path_or_data):
     or an already-parsed dict (no size check — the caller owns any cap).
     """
     from networkx.readwrite import json_graph
+    from graphify.extractors.cpp_type_references import (
+        is_type_reference_unavailable, validate_type_reference_transport, validate_type_reference_graph)
     data = path_or_data
     if not isinstance(data, dict):
         p = Path(data)
         from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
         check_graph_file_size_cap(p)
         data = json.loads(p.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        # Inspect modes and both aliases before adoption can hide a promise.
+        validate_type_reference_transport(data, directed=data.get("directed", False))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     if isinstance(data, dict):
+        # Validate typed storage before any compatibility adapter can repair a
+        # malformed collection or mode into an apparently accepted source graph.
+        from graphify.source_relationships import adopt_transport
+        data = adopt_transport(data)
         # Semantic loading is the scoped dependency boundary: paths' low-level
         # atomic writers must not acquire a top-level cycle through build.
         # Validate transport before NetworkX adoption and detach mutable policy.
@@ -689,7 +698,8 @@ def load_node_link_graph(path_or_data):
             metadata = link.get("metadata", {})
             qml = metadata.get("qml", {}) if isinstance(metadata, dict) else {}
             qt = metadata.get("qt", {}) if isinstance(metadata, dict) else {}
-            if not any(isinstance(value, dict) and value.get("contract_version") == 1 for value in (qml, qt)):
+            if not (is_type_reference_unavailable(link) or any(
+                    isinstance(value, dict) and value.get("contract_version") == 1 for value in (qml, qt))):
                 continue
             source, target = link["source"], link["target"]
             attributes = (graph.edges[source, target, link.get("key", 0)]
@@ -699,4 +709,5 @@ def load_node_link_graph(path_or_data):
             # rejection; reload must not turn corrupt transport into proof.
             if "_src" not in attributes and "_tgt" not in attributes:
                 attributes["_src"], attributes["_tgt"] = source, target
+    validate_type_reference_graph(graph)
     return graph

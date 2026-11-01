@@ -105,7 +105,7 @@ def test_req_qml018_ac06_consumer_rejects_corrupt_declarator_shape(tmp_path, cor
         chosen = next(node for node in nodes if qt_metadata(node).get("kind") == kind
                       and qt_metadata(node).get("raw_name") == name)
         update_qt(chosen, api_type_spelling="Backend **" if corruption == "factory" else "Service *&")
-    assert not allows_qt_qml_edge(source, target, edge, source_id=source["id"], target_id=target["id"], nodes=by_id)
+    assert not allows_qt_qml_edge(source, target, edge, source_id=source["id"], target_id=target["id"], nodes=by_id, edges=edges)
 
 
 @pytest.mark.parametrize("mode", ["address", "local", "this", "reference_field"])

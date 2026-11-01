@@ -69,9 +69,12 @@ def test_generated_and_source_declarations_keep_both_origins_and_conflict(tmp_pa
     qml, generated = extract_qml(path, root=tmp_path), parse_qmltypes(SOURCE)
     cmake = parse_cmake("qt_add_qml_module(app URI Public.Tools VERSION 1.0 QML_FILES Main.qml)")
     nodes = qml["nodes"] + generated["nodes"] + cmake["nodes"]
-    before = copy.deepcopy(nodes)
-    index = QtProjectIndex(nodes, [], root=tmp_path)
-    assert nodes == before
+    # Build-declared exports require the real producer ownership chain; keeping
+    # only nodes would now discard source→export and module→source evidence.
+    edges = qml["edges"] + generated["edges"] + cmake["edges"]
+    before = copy.deepcopy((nodes, edges))
+    index = QtProjectIndex(nodes, edges, root=tmp_path)
+    assert (nodes, edges) == before
     assert index.diagnostics[0]["code"] == "QML_TYPES_CONFLICT"
     resolved = index.resolve_component("Public.Tools", "Main")
     assert qml_metadata(index.nodes[resolved.target_id])["kind"] == "component"

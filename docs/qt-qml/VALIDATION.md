@@ -1,6 +1,8 @@
 # Qt/QML validation record
 
-This chronological record preserves evidence for each tested revision. Current
+This chronological record preserves evidence for each tested revision. The
+INC-QML-61–97 Qt 6.12 audit uses package 0.9.99; its final acceptance is still in
+progress, as recorded at the end of this document. The earlier recorded
 INC-QML-49–52 integration uses package 0.9.76, schema 13 and policy 22. Its
 [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
 binds source 8b6c9d2, exact base 35adf43 and actual checkout 0863b2b to four full
@@ -2250,3 +2252,161 @@ are additional to that historical selection. The entire source suite has not
 been rerun in the expanded environment; no new global failure/skip total or
 passing contribution gate is inferred. Hosted OS/Python lanes, native interaction
 and live service proof remain outside this local dependency follow-up.
+
+
+## Qt 6.12 audit validation — development checkpoints
+
+INC-QML-61–97 remains in progress. The frozen runtime Git tree
+`bd7ad5c114160ca692b7856964ba6a8c22ff54c3` is a **tree, not a commit**. Its
+source-matched 0.9.99 wheel has SHA256
+`4cb46869f49437636e443b8741ec409ab2ba3c68146be4f4485d2940436472b9`; all
+377 packaged files, including 240 Python files, match raw Git blobs and both
+isolated installations. Git archive text conversion was disabled for this
+packaging operation; the contributor's global Git settings were preserved.
+
+Fresh core and QML/watch profiles retain respectively 31 and 35 distributions at
+marker-qualified frozen versions. Both pass isolated source-feature probes, the
+existing installed smoke, actual public CLI extract/update/reload, graph-target
+write rejection and recovery, unsupported SDK rejection and recovery, and repeated
+no-change byte/mtime checks. QML watch rebuild/repeat completes with thread
+cleanup. Four expected CLI exit-1 outcomes are rejection evidence, not successful
+commands. Optional provider/SQL/test/Qt-binding packages remain absent. These
+checks verify the named tree, not later INC-QML-96/97 corrections.
+
+The corrected full Pyright comparison at that checkpoint reports 684 inherited
+diagnostics across 1,049 inspected files: zero new diagnostics and five retired
+against the recorded 689-diagnostic baseline using the same checker. This is a
+baseline comparison, not a clean type-check claim. Ruff and generated-skill checks
+pass at their recorded snapshots; final-source gates remain required.
+
+Two incomplete full-suite attempts establish no full acceptance. The first used
+an unintended WSL Bash stub and reproduced two environment failures. The corrected
+shell attempt reached the XAML cases but encountered unrelated .NET project
+markers in the shared temporary directory. Sampled stacks confirmed broad XAML
+ancestor scans. That run was deliberately interrupted before reopening the source
+freeze for the independently reproduced INC-QML-96/97 findings. Source hashes and
+unrelated coverage remained unchanged. The next full run uses an isolated
+process-local TEMP/TMP/TMPDIR, retaining the real native Bash/sh, Node, existing
+assertions and dependency contracts; no unrelated temporary files are removed.
+
+The complete installed reference-corpus attempt at this tree was also deliberately
+interrupted after concrete memory pressure exposed repeated per-unit corpus
+indexes. Its input admission/exclusion outcomes and code-input order exactly
+match the baseline, but no complete extraction result or pass is claimed. Original
+input/dependency/package identities and phase/resource evidence remain local.
+All input blobs were reverified unchanged. Automatic approval review blocked
+native removal of the owned inert temporary fixture; that fixture is retained
+as private evidence and cleanup remains explicitly pending. No alternate deletion
+route is used. INC-QML-96 owns the storage correction and required repeat.
+No application checkout, graph, watcher, installed tool or SDK was changed.
+
+
+The later local harness attempt bound to runtime tree `1126069` was interrupted
+without full acceptance: placing TEMP under `.venv` correctly excluded test
+corpora from discovery, and its long path violated a Windows fixture's path
+budget. Exact focused reproduction separated those environment failures from
+product changes. A short owned temporary directory outside the repository, with
+the already-qualified native shell/tool profile, passes all 38 qualification
+cases, including both XAML cases and the exact earlier failures. The canonical
+checkout, source, assertions and dependencies remain unchanged. App-container
+redirection of LocalAppData also lengthened one attempted temp root; that attempt
+is retained separately. Final full-suite proof uses the qualified short root.
+
+At tree `1126069`, explicit-interpreter Pyright reports 684 inherited diagnostics
+and zero warnings across 1,054 files. A prior implicit-interpreter invocation
+selected the Windows Store alias and is invalid environment evidence; its larger
+error count is not compared as product diagnostics. Later BOM/directive-boundary
+refinement and final source still require their own complete checks.
+
+
+### Final corrective source gate — INC-QML-99/100/101
+
+Runtime Git tree `5b280fb` (a tree, not a commit) includes the caller-ownership,
+legacy metadata-absence and allocated-member-provenance corrections. The final
+explicit-interpreter Pyright run inspects 1,059 files and reports 684 inherited
+diagnostics, zero new and five retired against the same 689-diagnostic baseline.
+Ruff passes; all 134 generated artifacts match their authoritative sources.
+No assertion, dependency, platform assignment or checker severity is relaxed.
+
+The focused corrective branch run executes 158 tests without failures or skips.
+All 17 added executable statements and eight recorded arcs from the added lines
+execute. Independent semantic review checks partial caller retention versus owned
+call replacement; unpromised falsy metadata versus strict typed-carrier rejection;
+and standalone versus allocated native member identity. This is changed-branch
+evidence, not exhaustive Boolean-combination or whole-engine coverage.
+
+The canonical corrected full source suite runs without whole-suite coverage
+instrumentation, using a qualified short owned temporary root and real native
+Bash/sh, Node and interpreter dispatch. The separate focused coverage gate uses
+its own data file. Earlier full/interrupted runs retain their exact failures or
+limitations; they are not reclassified as final acceptance. Complete source,
+reference-corpus, installed-consumer and hosted gates remain separately bound.
+
+
+The final-source repository-only `graphify update .` succeeds using local AST
+analysis at schema33. Public reload accepts the resulting 31,335-node, 74,163-edge
+graph. The existing Luau fixture reports one partial-source region, and 26 files
+yield no modeled symbols; neither is hidden as universal source acceptance.
+Semantic documents are not reprocessed and no API call is made. Generated graph
+products remain local. This refresh changes no application graph or checkout.
+
+
+### Corrected full-source checkpoint — runtime tree 5b280fb
+
+The canonical full command is `python -X utf8 -m pytest tests -vv -ra --tb=short
+--durations=25 --junitxml=<owned-evidence-root>/pytest.xml`, using the reviewed
+raw-Git wheel via GRAPHIFY_QML_TEST_WHEEL, the qualified native Bash/sh and
+recorded interpreter/uv consumers, and a short owned TEMP/TMP/TMPDIR outside the
+repository and shared .NET discovery ancestors. Source/test and protected output
+hashes are captured before and after. Whole-suite coverage instrumentation is
+absent; the separate focused changed-branch gate retains its own coverage data.
+
+The [traceability checkpoint](../../tests/TRACEABILITY.md#corrected-full-source-checkpoint--runtime-tree-5b280fb)
+records the passing full outcome, all skip/expected-failure boundaries and the
+separate failing predecessor. The new-head hosted and complete installed
+reference-corpus gates remain independent and pending at this checkpoint.
+
+
+### INC-QML-102 permission-failure qualification
+
+A read-only destination is an actual replacement rejection on Windows under the
+existing writer policy. POSIX rename/replace instead requires write permission
+on the parent directory; destination-file write bits do not establish denial.
+The [Apple rename contract](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/rename.2.html)
+and [Python os.replace contract](https://docs.python.org/3.14/library/os.html#os.replace)
+corroborate the exact hosted counterexample. The original four failure cases
+executed on all four macOS Python lanes, with 5,047 passes and 81 skips per lane;
+they are real fixture failures, despite an additional generic runner-capacity
+annotation. They must not be infrastructure-retried or counted as successful.
+
+The corrected physical readonly setup uses the actual platform boundary and
+qualifies denial. Privileged POSIX bypass is an explicit unexecuted capability
+limit; it cannot establish a rejection pass. Graph-target-specific EIO cases run
+on every platform and retain actual production writer dispatch. Permission and
+injected-fault restoration precede recovery and repeat. Current Windows evidence
+cannot establish the new POSIX fixture; the ordinary new-head hosted source lanes
+own that result. The unsuccessful local WSL probe has no installed distribution
+and supplies no POSIX execution evidence. Runtime/package bytes remain unchanged.
+
+
+INC-QML-103's explicit byte-pair CLI and direct-producer procedure extends the
+existing native newline oracle to C#/CUDA/Metal. Test inputs are written as
+literal LF and CRLF, with each original offset/row/byte column checked before
+semantic comparison. The new production-CLI profiles and corruption controls
+pass locally in both clustering modes; the existing aggregate/admission/newline
+selection also passes. Exact case mappings/counts and the predecessor's two
+Linux failures are in [traceability](../../tests/TRACEABILITY.md#inc-qml-103--newline-oracle-validates-source-proof-before-comparison).
+Changing input bytes is not expected to preserve physical offsets. Every other
+field, source identity, edge multiplicity and uncertainty remains constrained;
+all fixtures and assigned platforms remain present. New-head hosted acceptance
+remains a separate pending boundary.
+
+
+After the INC-QML-102/103 test-only corrections, whole-repository Ruff and all
+134 generated-artifact checks pass. Explicit-interpreter Pyright inspects 1,064
+files and retains the same 684 inherited diagnostics with no additions or
+retirements relative to the final source checkpoint (five retired against the
+689 upstream baseline). The production package remains byte-identical.
+The required repository-only AST refresh also succeeds and public reload accepts
+31,400 nodes and 74,323 edges. This updates test-code navigation without an API
+call or application refresh. New-head hosted results remain separately pending.

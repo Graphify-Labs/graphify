@@ -96,7 +96,7 @@ def test_req_qml014_ac03_newline_profile_keeps_native_bytes_and_converts_other_t
         original = (FIXTURES / relative).read_bytes()
         expected = original
         if (relative.parts[0] == "qml" or relative.suffix.lower() in {
-            ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".qml",
+            ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cs", ".cu", ".cuh", ".metal", ".qml",
             ".qmltypes", ".cmake", ".pro", ".pri", ".qrc",
         } or relative.name in {"qmldir", "CMakeLists.txt"}):
             native.append(relative)

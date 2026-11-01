@@ -181,3 +181,79 @@ per-case wheel-byte attestation. Exact counts, source/native artifact evidence,
 failed advisory scans, baseline typing and physical interaction/runtime limits
 belong to the canonical checkpoint. Documentation follow-up revisions retain
 their own normal PR validation through the [PR checks](https://github.com/SlinkyRamey/graphify/pull/7/checks).
+
+
+## Qt 6.12 corrective branch evidence
+
+The bounded source corrections use Windows x64/Python3.12 and the frozen
+all-extras profile/pinned grammars. Source43ac285b passes all20 actual Linux,
+macOS and Windows jobs, with per-case/385-payload wheel/24-smoke/12-cleanup proof.
+The original bf3238 raw-tree wheel's fresh core/QML-watch consumers also pass;
+their package/input/execution identities remain separate from later code.
+The optional native selection includes `test_qt_`, `test_qml_`,
+`test_upstream_qt_`, `test_cpp_`, `test_csharp_`, `test_field_call_` and
+`test_source_relationship_` modules; Linux retains the full suite.
+INC127–129's current source gate passes751 local related cases, including163
+accepted-frame, legacy compatibility and projection2 recovery cases. Earlier
+version1 recovery has583 passes/13 existing capability skips at its own source.
+Source9ac's fresh installed consumers failed the unchanged legacy input contract;
+corrected-package/full/corpus/new-head gates retain separate revision-bound
+acceptance in the PR evidence table. Failed environments/assertions are preserved.
+No Qt SDK/runtime execution or cross-platform application build is inferred.
+
+The final local corrective profile uses the previously qualified native Bash/sh
+and interpreter wrappers in process-local PATH, never the Windows WSL launcher.
+An initial misconfigured full run was cancelled before completion and its two
+faithful shell failures retained separately; it does not count as a passed full
+run. The corrected full gate, source-matched isolated wheel consumers and hosted
+matrix retain their own source/revision identities and exclusions.
+
+### Frozen INC-QML-104–114 local profile
+
+The combined native Windows/Python 3.12 source gate has 2,048 passes, zero failures
+and four explicit external-`cpp` capability skips. They are the existing absolute-
+include, relative-traversal include, same-directory include and macro-expansion
+tests; none is counted as passed. Fresh isolated core/QML-watch wheel consumers
+pass their source/CLI, actual failure-retention/recovery and watcher-cleanup
+profiles with 31/35 frozen distributions and all 383 package files/246 Python
+files matching raw Git, packaging input, wheel and installation. All 1,121 source/
+test Python files and 14 protected file bytes remain unchanged in those runs.
+The full Windows source run and private reference-corpus audit remain separate
+pending work, as does new-head hosted validation. Source and runtime/SDK execution
+continue to be different claims; these checks execute no analyzed component.
+
+INC115's optional-wheel reporting gate passes19 focused local cases with zero
+skips, including real pytest XML success, assertion failure, invalid destination
+and actual write failure. Workflow configuration retains all twelve OS/Python
+lanes. No new native lane or hosted upload has executed for these changes yet;
+the local reporting gate supplies neither macOS execution nor194 hosted case
+successes. The subsequent full Windows run remains failed on its cold-reference
+directory-rename fixture. INC116 correction passes81 focused cases with no skips
+and independent read-only review; a fresh full run remains pending after later
+runtime corrections. AST38/Qt32 migration has104 scoped local passes plus the
+exact stale37 cache red/green control. INC117/118 final focused, fresh artifact,
+complete corpus and hosted execution retain their own pending source identities.
+
+Later local checkpoints: INC117 has304 unique scoped passes, including98 owned;
+the same four rebuild cases pass again after stronger assertions, without being
+added to that unique count. INC118 has94 final passes with no skips and renewed
+peer review. INC119 has209 broad passes before four additional same-line cases,
+then54 final owned passes; these overlap and are not summed. AST39/Qt33 has125
+compatibility passes. All are native Windows/Python3.12 evidence, with explicit
+coverage limits. The subsequent198 full-source/corpus attempts were interrupted
+after a fresh installed consumer exposed the direct-producer defect; neither is
+a pass and their finalizers remain unconfirmed. Fresh core/QML-watch consumers
+of the later385-payload wheel pass FAST8 and the complete existing CLI, failure
+recovery, source-observation and watcher-cleanup profiles with31/35 unchanged
+distributions. This is local Windows installed evidence. Full-source/corpus and
+actual new Linux/macOS/Windows hosted gates remain pending.
+
+INC120–124 local refinements retain explicit profile boundaries: activation
+1294 passes/17 existing skips; adapter190 passes; setup/publication broad474
+passes/13 existing skips and final renamed-path18 passes; stable IDs133 passes
+under each pytest9.1.1/9.2.0. These selections overlap. Local native permissions
+are Windows evidence, with deterministic I/O seams separately identified.
+The20-job0a51 hosted revision failed (nine failures,three automatic cancellations,
+eight successes); Mac readonly setup, malformed transport and old raw-adapter
+failures are executed results. New corrected package/full/corpus and actual
+POSIX/native hosted acceptance need their own revision-bound evidence.

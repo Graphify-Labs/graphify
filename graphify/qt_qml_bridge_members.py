@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.qml_resolution_types import Resolution
+from graphify.qt_metaobject import QtMetaobjectIndex
 
 
 class QtMemberViews:
@@ -10,7 +11,9 @@ class QtMemberViews:
     nodes: dict[str, dict]
     provider_records: dict[str, dict]
 
-    def __init__(self, nodes):
+    def __init__(self, nodes, edges=None, *, unknown_metaobject_ownership=()):
+        nodes = list(nodes)
+        self.metaobjects = QtMetaobjectIndex(nodes, edges, unknown_metaobject_ownership=unknown_metaobject_ownership)
         self.native_members, self.native_views, self.native_proofs = {}, {}, {}
         self.notify_accessors = {}
         for node in nodes:
@@ -37,6 +40,13 @@ class QtMemberViews:
         selected = properties[0] if properties else methods[0] if methods else None
         if selected is None:
             return Resolution("unavailable", reason="native_member_not_qml_visible")
+        # A registered or context-exposed QObject can retain its type/provider
+        # while its own meta APIs remain unavailable without own source moc.
+        metaobject = self.metaobjects.resolve(class_id)
+        if metaobject.status != "resolved":
+            return metaobject
+        if not self.metaobjects.declared.source_owned(selected):
+            return Resolution("unavailable", reason="native_metaobject_member_source_unavailable")
         md = qt_metadata(selected)
         if md.get("revision") or md.get("revisions"):
             return Resolution("unsupported", reason="native_member_revision_requires_supported_version")
@@ -52,10 +62,11 @@ class QtMemberViews:
                                      "provider_id": provider_id}
         if role == "signal":
             self.native_views[target]["parameter_names"] = list(md.get("parameter_names", []))
-        evidence = tuple(sorted(set(provider["evidence"] + (provider_id, selected["id"]))))
+        evidence = tuple(sorted(set(provider["evidence"] + (provider_id, selected["id"]) + metaobject.evidence)))
         self.native_proofs[(target, provider_id)] = {"class_id": class_id, "member_fact_id": selected["id"],
                                       "canonical_target_id": target, "provider_id": provider_id,
-                                      "evidence": list(evidence), "kind": role}
+                                      "evidence": list(evidence), "kind": role,
+                                      "metaobject_fact_id": metaobject.target_id}
         return Resolution("resolved", target, evidence=evidence)
 
     def property_notify(self, property_id, provider_id):

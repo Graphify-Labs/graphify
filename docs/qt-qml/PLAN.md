@@ -7,6 +7,22 @@ Shared installer, shell-fixture, filesystem-profile and Terraform verification
 continues separately under [INC-CORE-01–03](../COMPATIBILITY.md). These contribution
 gate corrections do not expand the Qt/QML language profile or advance its counter.
 
+Current delivery: INC-QML-61–129 implements the bounded Qt6.12 source audit,
+accepted-link export correction, ordinary caller compatibility and projection
+recovery on [PR #10](https://github.com/SlinkyRamey/graphify-with-qt-and-qml-support/pull/10).
+The current local gate has751 related passes, including163 focused cases:
+58 accepted-frame,75 legacy compatibility and30 version/recovery cases.
+Earlier27/596 recovery evidence retains its own version1 source binding.
+Final raw-wheel/full-source/installed/corpus/native/cleanup gates are individually
+revision-bound in PR #10's current evidence table. Source43ac's20 hosted passes
+and source9ac's failed installed consumers are historical, separate evidence.
+Unsupported/unverified SDK forms remain in the mechanism matrix; source-corpus
+declarations and every possible native binding are distinct claims.
+
+The following introduction preserves historical delivery checkpoints. Its old
+failure counts, PR identities and then-current statements do not replace the
+current summary above or the final source-bound records in traceability.
+
 Status: **INC-QML-11, INC-QML-15 and INC-QML-08a/b/c are implemented and locally
 complete for the bounded Windows x64/Python 3.12 profile**. INC-QML-28–38 close
 additional reproduced defects discovered during that development. The final
@@ -29,14 +45,14 @@ installs portable Bash and locked optional packages without product changes.
 Its selective rerun clears 40 of the original 59 failures, retains 19, and exposes
 two previously skipped hook path assertions. No full-suite gate is inferred.
 
-The current [native compatibility evidence](../../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05)
+The historical [native compatibility evidence](../../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05)
 at `463ca322` has 8,818 passes and no pytest failures, with separate setup replays.
 [Draft PR 6](https://github.com/SlinkyRamey/graphify/pull/6) publishes the adoption
 branch against the reviewed INC-QML-07 base. Its first hosted revision passes
 four Ubuntu wheel lanes but rejects CI configuration before job admission and
 fails eight Windows/macOS installed-smoke lanes. INC-CORE-06 corrects workflow
 admission; INC-QML-39 corrects the reproduced canonical input-alias mismatch.
-These failures remain unmet current hosted gates until corrected evidence exists.
+Those failures were unmet hosted gates at that checkpoint until corrected evidence existed.
 
 At hosted head `f95366d`, all twelve isolated QML/core wheel smoke profiles pass,
 and the four macOS QML source profiles pass. Ubuntu source jobs expose two
@@ -58,7 +74,8 @@ not promise individual whole-SDK semantics.
 
 Sections below preserve planning contracts and chronological checkpoint reviews.
 Earlier pending statements and epochs describe those checkpoints; the current
-delivery state is this summary and the final exit review. Commands marked
+delivery state is the opening current-delivery paragraph and the final source-bound
+exit records in traceability. Commands marked
 proposed are suggestions, not executed evidence. Increment identities remain
 distinct from requirements and their acceptance criteria.
 
@@ -3632,3 +3649,2178 @@ REQ-QML-014-AC03 require a controlled declined-source fixture plus retained
 missing-parser rejection coverage. Reproduce that profile locally, retain all
 four hosted failures, correct the test boundary without production/dependency/
 platform changes, and let the new source synchronization own fresh validation.
+
+## INC-QML-61 — Pinned Qt 6.12 inventory and reference-corpus audit
+
+Status: **In progress; findings are not implemented support**. Owner: integration
+maintainer. Baseline is `a0926ef84a26e9f3cb46f0b982ac495c21fc2255` (Graphify
+0.9.99, AST32/Qt26). Qt's released 6.12.0 documentation is the initial API
+snapshot; moving documentation and separate module versions require their own
+provenance. The completed upstream-sync PR remains unchanged while this work uses
+a separate feature branch in the same canonical workspace.
+
+REQ-QML-022-AC01/AC06 govern an exhaustive inventory-accounting ledger, not a
+claim of semantic completeness. Preserve class/type owners, overload/member
+anchors, qualified conversion names, source hashes and missing/external pages.
+Use official tagged generator source where generated tooling contracts are not
+fully described by prose. Keep explicit semantic support, generic source support,
+conservative exclusions and unverified forms distinct.
+
+A private reference application's committed main is audited through exact Git
+blobs and a frozen installed baseline. No dirty application files, branches,
+watchers, global tools or existing graphs change. Detached temporary input data
+is not another working checkout; actual detector paths define the code-only
+audit, and private evidence never enters this repository. Corpus/source/tool
+identities and exclusions are retained privately. Neutral fixtures reproduce
+each finding before a public correction is implemented.
+
+| Increment / criteria | Preimplementation acceptance, rejection and persistence matrix |
+| --- | --- |
+| INC-QML-62; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Retain scoped C++ reference/pointer/callback member declarations and destructor prototypes through direct/facade/export/reload. Preserve constructor/method distinction, overloads, access, original-byte spans and callable rejection for data fields. Characterize all nested declarator shapes before changing shared traversal. |
+| INC-QML-63; REQ-QML-008/014/016; REQ-QML-022-AC03/AC06 | Preserve ordinary identifiers sharing annotation names; apply actual Q_OBJECT/Q_GADGET access resets and later explicit labels. Admit supported export/namespace/new compiler annotations without inventing QObject/registration authority; comments/strings, malformed forms, BOM/CRLF and false-positive controls remain required. |
+| INC-QML-64; REQ-QML-003/005/006/010; REQ-QML-022-AC02/AC06 | Emit QML enum member/value facts and resolve legal type-qualified enum reads using accepted lexical/component identity. Preserve implicit/explicit values, ambiguity, same-named owners, source ranges, repeated relations and static-type rejection for ordinary instance properties/methods. |
+| INC-QML-65; REQ-QML-009/012/014; REQ-QML-022-AC04/AC06 | Admit every verified Qt6.12 qmltyperegistrar field with typed bounded validation. Opaque/type-only and file/line hints remain tooling facts, never creation/native ownership/cross-root read authority. Unknown, duplicate, malformed and contradictory descriptions still reject with prior-output retention/recovery. |
+| INC-QML-66; REQ-QML-006/008; REQ-QML-022-AC04/AC06 | Preserve Qt6.12 C++ VIRTUAL/OVERRIDE and QML virtual/override/final modifiers without swallowing accessor/member names or simulating engine/moc runtime enforcement. Validate combinations and false-positive identifier contexts; retain read/write/notify links and rejection evidence. |
+| INC-QML-67; REQ-QML-004/009/020; REQ-QML-022-AC05/AC06 | Analyze literal QML source type-name/version/internal CMake properties with their actual exported-name semantics, independent from filename/resource aliases. Scope, dynamic/unknown values, cross-root paths, conflicting metadata, metadata-only updates, stale-edge retirement and recovery need production regressions. |
+| INC-QML-68; REQ-QML-008/017/018; REQ-QML-022-AC05/AC06 | Record source-proven engine-specific external-singleton setup. Canonical type/module/instance and actual lexical engine govern joins; another engine, unregistered/unknown type, dynamic text/callback and ambiguous lifetime cannot authorize a guessed provider. |
+| INC-QML-69; REQ-QML-014/015; REQ-QML-022-AC01/AC06 | Recheck the complete inventory ledger and private admitted corpus with the corrected tool. Close each demonstrated gap with a neutral regression or explicit unresolved acceptance; run full compatibility, generation, lint/type, packaging/consumer and normal PR validation. Refresh the repository graph; keep upstream review, application adoption and runtime guarantees separate. |
+
+Diagnostic impact: existing parser/unsupported/ambiguity/cache/publication owners
+remain authoritative. New supported syntax must remove false diagnostics without
+masking real rejection or fabricating certainty. New codes or persisted fact
+contracts need their catalog, version, failure-retention and recovery evidence.
+Root owns shared cache/schema changes and generation; delegated owners have
+disjoint producer/test files. Further findings extend this sequence through new
+stable increments; they are not silently dismissed as covered by the inventory.
+
+
+### Additional declaration gaps found by INC-QML-61
+
+The reference-corpus and neutral AST audit expose adjacent declaration boundaries.
+They extend this authorized development rather than being hidden by aggregate
+name counts. These increments remain separate from mechanical migrations.
+
+| Increment / criteria | Preimplementation acceptance and compatibility matrix |
+| --- | --- |
+| INC-QML-70; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Admit source-proven C++ reference-only headers and free/namespace function prototypes with scoped identities, overloads, source ranges and prototype/definition distinction. Preserve C/Objective-C admission, function-pointer data, template/partial syntax, declaration roles and existing canonical joins. Test direct/facade/export/reload and cold/warm/full/incremental removal; unsupported headers must not be silently relabeled by spelling alone. |
+| INC-QML-71; REQ-QML-014; REQ-QML-022-AC02/AC06 | Investigate omitted C# class fields in the admitted mixed-language corpus and preserve source-owned class/member facts if confirmed at the production boundary. Do not infer function-local variable graph behavior from this class/member requirement. Record neutral failures before a scoped correction, retaining existing properties/methods/interface roles and all unrelated-language evidence. |
+| INC-QML-72; REQ-QML-003/014/018; REQ-QML-022-AC02/AC03/AC06 | Characterize valid C++ pointer-to-member data/function declarators rejected by the pinned parser. Add only source-preserving bounded compatibility where original tokens and declaration identity establish the role; never turn a qualified member-pointer into an invented field/class/method. Malformed/ambiguous syntax, source-byte parity, facade and update/export retention remain fail-closed. A parser rejection alone is an explicit gap until the source correction and regression evidence pass. |
+
+
+INC-QML-70 initially preserves legacy free-definition IDs while adding separately
+identified prototypes (qualified scope plus signature). This does not claim a
+prototype/definition join. Its call lookup must not select another scope or an
+arbitrary overload. The adjacent legacy collapse of same-named free definitions
+is a separate confirmed regression obligation:
+
+| Increment / criteria | Preimplementation acceptance and compatibility matrix |
+| --- | --- |
+| INC-QML-73; REQ-QML-003/014/018; REQ-QML-022-AC02/AC06 | Preserve distinct free-function definitions in namespaces/overloads and source-proven prototype/body identity without rewriting class/member joins. Characterize qualified/unqualified calls, local shadows, ambiguous signatures, static/template functions, header/cross-file pairs and partial input before changing legacy IDs. Actual canonical source scope/signature proof, not label enrichment or basename lookup, governs any join; schema retirement and full/incremental stale-edge removal are mandatory. |
+
+
+### Further admitted-header corrections
+
+The exact admitted-header comparison still finds valid source shapes outside the
+current header hint/parser profile. Preserve their original failures separately
+from successful reference-prototype recovery.
+
+| Increment / criteria | Preimplementation acceptance and compatibility matrix |
+| --- | --- |
+| INC-QML-74; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Recognize C++-only default member initializers in otherwise plain struct `.h` declarations without relabeling C initializers, bitwise expressions, comments/strings, function bodies or Objective-C. Header classification remains a bounded lexical admission hint; actual grammar and source identity govern facts. Test dispatch through direct/facade/cache/full/incremental paths and retain unrelated C behavior. |
+| INC-QML-75; REQ-QML-003/014/018; REQ-QML-022-AC03/AC06 | Characterize QtTest typed-argument/body-macro parser gaps, preserving source-only test declarations without running tests or expanding arbitrary macros. Recover only accepted source/SDK-context forms with original-byte locations and explicit local-override/ordinary-function/unevaluated/malformed rejection. Real calls/fields cannot be invented from macro type text; cache, export and publication retention need ordinary regressions. |
+
+
+### Context and metaobject authority findings
+
+| Increment / criteria | Preimplementation acceptance and architecture decision |
+| --- | --- |
+| INC-QML-76; REQ-QML-011/014; REQ-QML-022-AC02/AC06 | A changed/added/deleted accepted C# source or relevant project/discovery input refreshes the actual detector-admitted C# cohort through caller-owned update orchestration. Warm per-file syntax caches remain usable; extraction does not secretly read/reparse borrowed context. Prove partial-class canonical ownership, changed callers, sorted-earlier half additions/deletions, conditional/delegate field shadows, full/incremental parity, same-package AST-epoch retirement, failed-publication retention/recovery and settled no-change behavior. This conservative correctness boundary has an explicit resolver-cost tradeoff; dependency-directed cohort invalidation is a future characterized optimization. |
+| INC-QML-77; REQ-QML-008/016/017; REQ-QML-022-AC03/AC06 | QObject ancestry alone cannot authorize a class's own metaobject properties, invokable methods or signals. Require accepted source-owned metaobject declaration evidence for the actual declaring class, rejecting conditional/fabricated marker authority and wrong ownership while retaining valid own-Q_OBJECT and existing supported typed-Base providers. Unsupported inheritance profiles remain explicit; no enclosing/global class may lend missing authority. Cover direct/facade/QML reads/calls/handlers, sanitation/export/reload, cold/warm/full/incremental stale cleanup and rejected-update recovery. |
+
+INC-QML-71's conditional/delegate-field corrections additionally retain each
+source alternative and block storage/unknown conditional type as a concrete call
+or receiver. Actual methods and proved local callable shadows remain distinct.
+These are source-identity corrections, not preprocessing evaluation or runtime
+function-pointer dispatch.
+
+
+INC-QML-69 delivery targets a separate stacked review on the existing Qt/QML
+integration source while its default-branch sync PR remains open and unchanged.
+The normal `pull_request` event must run the same full/native/optional-wheel gates
+for that real `codex/qt-*` integration base. Extend only PR base-branch admission;
+retain existing default/release push coverage, matrix/platforms, permissions,
+workflow-specific concurrency and no-duplicate-dispatch sequencing. A source
+workflow-policy regression checks branch admission and unchanged push/gate shape;
+actual hosted acceptance still requires a new reviewed source/base/checkout.
+
+The same installed-wheel Windows/macOS source lanes also collect C++/C# and
+field-call ownership and source-relationship consumer tests for the shared declaration/caller/worker changes in
+this audit. Their grammars are existing core dependencies. Preserve every old
+source family, install/smoke/failure sequence, job and platform; Ubuntu remains
+artifact-only while Linux all-extras owns the complete suite. A launcher-bound
+regression proves the additional selection without weakening the clean optional
+profiles. Hosted results for the new source remain required.
+
+
+### Admitted include-context corrections
+
+| Increment / criteria | Preimplementation acceptance and profile decision |
+| --- | --- |
+| INC-QML-78; REQ-QML-003/011/014/018; REQ-QML-022-AC03/AC06 | Propagate QtTest SDK syntax context only through source-proven literal forward include chains over the caller's already-admitted C++ snapshot. Direct and transitive profiles must share explicit per-run context across generic production and Qt collectors; no ambient root, extra file discovery, system-header read or compiler execution. Preserve include order, unique in-root target identity, guards/shadow/override uncertainty, bounds and original source hashes. Partial APIs cannot read missing context. SDK-context-only edits must invalidate affected cached facts and preserve full/incremental/export/retention parity. |
+| INC-QML-79; REQ-QML-008/011/016/017; REQ-QML-022-AC03/AC06 | Treat a literal conventional whole-file `#ifndef`/matching first `#define` inclusion guard as transparent declaration admission in the static source profile. Reject feature/ifdef/else/elif, mismatched/incomplete/non-file-wide forms as ordinary conditional uncertainty. Apply one source predicate consistently to registration/metaobject, alias/type, engine identity and call context; preserve nested genuine conditions. Prove own-metaobject and guarded SDK alias/load positives, negative controls, byte ranges, stale conditional-state cleanup and accepted-publication recovery. This is source-profile interpretation, not evaluation of arbitrary compiler defines or a compiled/runtime claim. |
+
+### Callback-return callable ownership
+
+| Increment / criteria | Preimplementation acceptance and regression matrix |
+| --- | --- |
+| INC-QML-80; REQ-QML-003/008/014/018; REQ-QML-022-AC02/AC03/AC06 | A C++ method returning a callback retains the actual method's own name/parameters in declarations and out-of-line definitions. The nested returned callback signature cannot become an extra resolved Qt member or lend invokable/provider authority. Preserve nearest-binding role, source/header canonical ownership, original bytes and source-opaque return uncertainty through direct/facade/export/reload and cold/warm/full/incremental stale cleanup. Characterize data-member pointers, constructors and ordinary methods as adjacent controls; rejected or failed updates retain prior products and recover. |
+
+### Source-only test launcher admission
+
+| Increment / criteria | Preimplementation acceptance and uncertainty matrix |
+| --- | --- |
+| INC-QML-81; REQ-QML-003/008/014/018; REQ-QML-022-AC03/AC06 | Characterize documented translation-unit `QTEST_MAIN`, `QTEST_GUILESS_MAIN`, `QTEST_APPLESS_MAIN` and `QUICK_TEST_MAIN_WITH_SETUP` syntax that legitimately lacks a terminating semicolon. Admit only actual literal SDK-context/source-owner forms; retain a source-only launcher fact and original spans without inventing a generated main, runtime test execution, callback target or provider. Ordinary same-spelled identifiers, qualified/member/conditional/local overrides, malformed arguments and unsupported context remain explicit. An unknown quoted include after a source occurrence cannot retroactively remove its earlier context; the same possible interference before use remains unavailable. Prove direct/facade/header/source/worker parity, export/reload, relevant cold/warm/full/incremental cleanup, rejection/failure retention and recovery. No generated moc file is trusted, read outside the admitted set or executed. |
+
+### Quick Test assertion effects
+
+| Increment / criteria | Preimplementation acceptance and regression matrix |
+| --- | --- |
+| INC-QML-82; REQ-QML-017/018; REQ-QML-022-AC03/AC05/AC06 | Retain documented `QTRY_VERIFY_ACTIVE_FOCUS` and `QVERIFY_ACTIVE_FOCUS` source assertions under the exact QtQuickTest header family and supported literal one-argument statement profile. A repeated or unproved assertion argument cannot lend a unique ordered external-singleton setup merely because it contains the SDK setter. Preserve real inner call occurrences and original spans; no QQuickItem focus, engine identity or evaluation count is inferred. Retry repetition follows the documented mechanism; nonretry evaluation remains unverified. Explicit undef/ordinary same-spelled function controls retain ordinary call behavior. Cover direct/facade/export/reload, stale interference cleanup, cold/warm/full/incremental parity and failed/rejected publication recovery. |
+
+### Further declaration and lexical-call corrections
+
+| Increment / criteria | Preimplementation acceptance and regression matrix |
+| --- | --- |
+| INC-QML-83; REQ-QML-003/008/014/018; REQ-QML-022-AC02/AC03/AC06 | Recover a source-proven valid unnamed pointer parameter with a literal default where the pinned C++ grammar rejects the declaration/override body. Preserve actual pointer/reference layers, optional arity, overload identity and original-byte spans; no synthesized public parameter name, data binding or native provider authority may appear. Malformed and unsupported defaults remain explicit. Cover direct/facade/header/body/source facts, ordinary named and unnamed parameters, callback/constructor boundaries, cold/warm/full/incremental/export parity, rejected/failing publication retention and recovery. Compatibility policy is a focused parser boundary, not changed compiler semantics or a dependency upgrade. |
+| INC-QML-84; REQ-QML-014; REQ-QML-022-AC02/AC06 | Emit actual C# local-function declarations with lexical scope/ownership and source identity; valid calls obey block and forward visibility rather than class/global basename maps. Runtime delegate parameters/locals cannot target another class's same-named method, with or without a class field. Preserve valid local-function-over-field and typed receiver controls; reject ambiguous/conditional/out-of-scope claims. Local variables remain rejection-only binding evidence, not a new variable graph feature or runtime delegate/lambda dispatch. Cover source bytes, direct/facade/transport, nested/partial source identity, warm/full/incremental stale cleanup, real persistence failure/retention/recovery and unrelated-language compatibility. |
+| INC-QML-85; REQ-QML-003/014/018; REQ-QML-022-AC02/AC03/AC06 | Independently supported equal-byte C++/QtTest/member-pointer/default adapters must compose in the same file. Each stage proves only its exact source-owned repair; unrelated pending supported syntax cannot cause a valid local repair to disappear. The final Qt overlay whole-file parser/AST gate remains mandatory and rejects remaining malformed/unsupported input; generic C++ retains its existing partial-input result contract. Cover each isolated success, their failing-before combination, malformed neighbors, original-byte/callable/type identity, direct/facade/export and full/incremental/retention/recovery parity. This is coordinated parse-view ownership, not arbitrary macro expansion or relaxed final Qt acceptance. |
+| INC-QML-86; REQ-QML-003/014; REQ-QML-022-AC02/AC06 | Preserve source-proven optional argument arity when the existing empty-default adapter omits `={}` from its parse view. A function with a real accepted default cannot become required-arity merely because compatibility syntax was blanked. Original accepted parameter/default ownership governs arity; comments/strings, malformed defaults and unrelated declarations cannot supply one. Preserve ordinary unique IDs, overload uncertainty and separate prototype/body facts through direct/facade/cache/export/full/incremental and retained-write recovery. A signature hash alone does not establish default or type equivalence. |
+| INC-QML-87; REQ-QML-003/008/014/018; REQ-QML-022-AC03/AC06 | Retain selected QtTest macros used as actual standalone callable substatements under if/else/loop/case/label or feature-preprocessor bodies. Require the original statement relationship and actual function/lambda ancestry; preserve nearest lexical scope, opaque test data and unverified conditional/runtime status. For initializers, parameters, nested expressions, global/class declarations and unrelated parser errors, retain explicit rejection. Source macro occurrence never proves execution, count or native provider identity. Cover the seven demonstrated source failures and rejection control, original spans, callback shadowing, direct/facade/export, full/incremental cleanup and failure retention/recovery. |
+| INC-QML-88; REQ-QML-003/008/014/018; REQ-QML-022-AC03/AC06 | Retain a source-only QFETCH column in a real unbraced if/else/loop body when the pinned parser cannot admit its primitive declaration view. Use only an inert equal-byte expression statement with an explicit opaque parsed role and exact body-only scope ending at the original semicolon; invent no braces, declaration name/type or wider binding. Existing braced/preprocessor/case/label data paths retain their real opaque binder. Prove actual typed control-body ownership, outer same-named engine/callback behavior after the branch, no type-argument calls, condition/initializer rejection, original ranges, direct/facade/export and full/incremental/retention/recovery parity. Final Qt admission remains strict and execution/type/column agreement remains unverified. |
+| INC-QML-89; REQ-QML-014/015; REQ-QML-022-AC02/AC06 | A source-local function's containment and call relationships, including opposite logical directions, survive actual graph assembly, persistence/reload, remapping and source consumers. Use D40's typed optional source-relationship storage profile without changing ordinary legacy Graph/DiGraph behavior or replacing facts with fabricated scopes/duplicate owner metadata. Preserve existing same-relation evidence precedence; validate activation and source directions. Cover direct and durable CLI/watch parity/failure recovery, explain/query/wiki/HTML/vault/canvas/Cypher, graph diff, topology metrics and merge/global/keyed stale cleanup. Source-edge consumers enumerate relationships; explicit topology projections remain separate. |
+| INC-QML-90; REQ-QML-014; REQ-QML-022-AC02/AC06 | Emit actual explicit C# indexer declarations as source-owned noncallable members with return/parameter/interface/accessor provenance and distinct role/signature identities. Parameter count/type/mode and explicit-interface source syntax govern identity; return type, parameter names/defaults/body do not create another overload. Preserve repeated/conditional declarations without source loss, malformed/bounded metadata status, direct/facade/warm/full/incremental/export and failed-write recovery. Reuse owning class/type-reference emission; do not synthesize get_Item/set_Item, bind runtime element access, traverse new accessor-call ownership, or invent implicit positional-record properties. |
+| INC-QML-91; REQ-QML-014; REQ-QML-022-AC02/AC06 | A C# property whose declared receiver type is an actual lexical type parameter cannot borrow an unrelated same-spelled source class. Apply the existing field/local type-parameter rejection at the owning property receiver-inference boundary; retain property/source-type facts and concrete/qualified receiver controls. Cover class/method/nested-local scopes as applicable, direct/facade/export, warm/full/incremental stale false-edge retirement and failed/rejected publication recovery. This is lexical type identity, not generic substitution or runtime property evaluation. |
+
+| INC-QML-92; REQ-QML-003/008/014/018; REQ-QML-022-AC02/AC03/AC06 | Characterize the actual grammar failure for a documented Windows calling-convention function declarator. Recover only source-owned documented calling-convention tokens at their declarator role, keeping original byte spans, return/parameter/callable identity and opaque ABI hints. Do not infer runtime Windows availability, load headers, expand arbitrary macros or admit ordinary same-spelled identifiers. Cover direct/facade, malformed/override/conditional controls, cold/warm/full/incremental/export and rejected/failed-write retention/recovery. |
+| INC-QML-93; REQ-QML-005/011/014/018; REQ-QML-022-AC03/AC06 | Allow a literal quoted include to use explicit literal target-owned build include roots from the caller-admitted metadata snapshot. Require an unambiguous admitted target/source membership and literal include-root witness with exact metadata/source hashes and spans. Preserve source-relative precedence, include order, containment, root bounds, missing/duplicate/dynamic/conditional uncertainty and immutable shared worker context. Never guess by basename or discover/read unadmitted headers, execute CMake/qmake or borrow another target's paths. Cover metadata-only updates, stale authority retirement, full/incremental parity, corruption/rejected/failed publication retention and recovery. Initial acceptance is the independently tested literal CMake target profile; unsupported qmake/dynamic forms remain explicit. |
+| INC-QML-94; REQ-QML-014; REQ-QML-022-AC02/AC06 | The existing C# source-type reference collector retains nested generic argument facts under a source-qualified generic type, including a built-in global:: qualifier. Keep one authoritative collector for fields, properties, indexers, parameters and returns; source type references do not imply alias/CLR/generic-substitution or receiver resolution. Characterize qualified/unqualified/nested/alias/partial cases, exact original spans, direct/facade/export, cold/warm/full/incremental stale cleanup and failed-write retention/recovery. |
+
+INC-QML-90 boundary correction before exit: explicit indexers remain rejection-only
+data storage when the public partial C# facade receives accepted node-only context
+without ownership edges. Add a real node-only context regression for invoking an
+indexer-returned delegate and a genuine method positive. Missing ownership cannot
+turn a source indexer declaration into a concrete callee; extend the existing
+field storage policy rather than inventing accessor invocation or receiver facts.
+This remains the allocated indexer noncallability criterion, not a new runtime
+feature or a waiver of complete graph ownership validation.
+
+INC-QML-89 shared-type consumer correction: a real two-repository source-profile
+fixture reproduces a missing `same_type_as` fact when that accepted type pair
+already has a `references` relationship. The source-profile consumer must check
+its own relation and use the shared storage owner; retain the legacy simple-graph
+projection. Verify both independent facts and repeated application with no new
+fact. This is existing shared-type composition under D40, not broader type/CLR
+identity or cross-repository inference.
+
+INC-QML-93 caller-boundary acceptance includes an admitted C-compatible SDK
+forwarding header in the context-only native-header snapshot, with unchanged C
+source production/Qt-member classification and explicit Objective-C/non-native
+override rejection. This corrects a real facade failure hidden by direct snapshot
+fixtures; do not change the fixture into a C++ class or weaken dispatch policy.
+
+### INC-QML-95 — Bounded negative source-effect domains
+
+Scope: REQ-QML-005/011/014/018 and REQ-QML-022-AC03/AC06. Preserve INC-QML-93's
+literal positive root profiles and conservative unknown-effect rejection. Extend
+only rejection analysis with independently rederived finite source-data domains:
+literal `foreach(IN ITEMS)`, literal `set`/`list(APPEND)` values, ASCII TOLOWER,
+finite substitutions and conservative conditional joins. A DIRECTORY
+BUILDSYSTEM_TARGETS foreach iterator may carry a single-target-name role without
+inventing its enumerated values; get_target_property(SOURCES) stays unknown unless
+independently proven, and MATCHES/other conditions need not execute. Unknown
+conditions join possible finite values, never supply a positive configured fact.
+
+Prove both absence of relevant root/identity mutation or duplicate declaration
+of the candidate literal target and absence of competing ownership of its actual translation unit. A
+monotonic source append with a proven single target and complete possible source
+paths disjoint from the unit cannot add that unit to another owner. Unresolved
+payloads, list injection, option/FILE_SET ambiguity, unknown writers, scope/alias
+conflicts and excess bounds retain veto. New executable declarations additionally
+need complete finite owner values excluding the candidate target and source
+values excluding the candidate unit. Root mutation remains under the stricter
+INC-QML-93 owner/root contract; no arbitrary dynamic-root relaxation.
+
+No loop-generated positive profile, source discovery, directory-target snapshot,
+regex/configuration evaluation or project/build execution is introduced. Existing
+literal roots/source declarations remain the sole positive owners. New helpers
+stay at or below 300 lines, one effect-analysis owner per metadata input/run; all
+source/build bytes and semantic negative decisions revalidate at both checkpoints.
+
+Acceptance matrix: positive irrelevant literal/finite loop effects and actual
+facade source context; same-source/target collision, dynamic or tainted values,
+source-list/target-argument injection, unsupported commands/options and scoped
+shadowing rejection; source order and finite branch joins; bound exhaustion;
+worker/direct/facade/export and cold/warm/full/incremental parity; metadata-only
+retarget/stale authority retirement, accepted-product rejection/write-failure
+retention, recovery and no-change settling. The three corpus cases remain
+unaccepted until the exact original inputs pass through production with retained
+proof. If this bounded model cannot prove them, preserve the explicit limitation
+rather than weakening ownership or pretending configured-project uniqueness.
+
+### INC-QML-96 — One accepted C++ index per analysis run
+
+Scope: REQ-QML-014/018 and REQ-QML-022-AC02/AC03/AC06. The complete-corpus
+validation exposed retained per-unit copies of identical whole-corpus path,
+definition, accepted-node and parent indexes. Their creation predates this audit;
+admitting more source units amplifies the storage cost. Extract one run-owned
+accepted-source index and borrow it across mappings without changing declaration,
+ambiguity, parent, definition-path or provenance decisions. Per-unit syntax and
+mutable class/function records remain unit-owned. No ambient cache or mutable
+cross-run owner is introduced, and direct mapper callers retain their interface.
+
+Acceptance matrix before implementation: demonstrate repeated index construction
+on multiple neutral admitted units; assert one corpus index per enrichment run
+independently of unit count, with fresh ownership on a later run. Compare shared
+and standalone mapping outcomes for classes, overloads, out-of-line definitions,
+incomplete/ambiguous ownership and foreign source edges. Borrowed input nodes and
+edges remain unchanged; overlays cannot retroactively modify the accepted snapshot.
+Preserve direct/facade/worker, full/incremental/export and failure-retention cases.
+Use deterministic index/ownership assertions rather than machine-specific timing
+or RSS thresholds. Repeat the exact installed corpus and full acceptance gates
+after the source freezes; interrupted runs establish no acceptance.
+
+### INC-QML-97 — Cohort-wide identity of positive build commands
+
+Scope: REQ-QML-005/011/018 and REQ-QML-022-AC03/AC06. A command shadow declared in
+another caller-admitted CMake file must invalidate positive literal profiles that
+depend on that command's built-in identity. The existing cohort census already
+protects negative effect reasoning; apply the same conservative command-identity
+boundary to positive target/source/include-root profiles. Do not evaluate include,
+subdirectory or configured execution order to invent a safe identity.
+
+Acceptance matrix before implementation: reproduce a parent-file function/macro
+shadow of a positive command with the otherwise valid profile in an admitted
+child; preserve the ordinary unshadowed control and same-file rejection. Cover
+each owning positive command and unrelated-name controls, malformed census input,
+source/facade context checkpoints, metadata-only stale-authority rejection and
+actual failed/rejected publication retention/recovery. No missing command identity
+may be restored by a checksum, finite negative domain or parser success. Keep
+diagnostics bounded and distinct from a malformed transport integrity failure.
+
+
+### INC-QML-98 — Shadowed emission prefixes cannot become bare calls
+
+Scope: REQ-QML-016-AC01/AC04 and REQ-QML-022-AC03/AC06. Broader compatibility
+validation exposed old fixtures expecting a locally redefined emission prefix to
+be erased. Exact installed-baseline reproduction shows that this can fabricate a
+resolved bare signal call. Qt 6.12's documented `Q_EMIT`/`emit` empty macro
+definitions do not supply identity after a source-local define/undef. Preserve
+INC-QML-63's strict Q_EMIT rejection and apply the same source-order guard to the
+legacy native emit prefix recovery. Native keyword matching must use the existing
+equal-byte directive-masked matching view, preserving original preprocessing
+directives and continued bodies; the original source still owns override order.
+Do not preprocess arbitrary macro bodies.
+
+Acceptance matrix before implementation: retain exact old malformed prefix
+fixtures for both spellings as explicit whole-overlay QT_CPP_SYNTAX rejection
+with no fabricated Qt emission/endpoint authority. Demonstrate the plain emit
+false positive before the correction. Preserve unshadowed declared/unknown SDK
+emissions, original bytes/BOM/CRLF/spans, and genuine ordinary functions/calls
+named emit or Q_EMIT. Keep an earlier source observation when later shadowing is
+followed only by valid ordinary call syntax; an unsupported later prefix rejects
+the whole source under the existing final Qt gate rather than publishing partial
+overlays. Exercise direct/facade/export and actual manual/watch rejection retention,
+recovery and settled no-change behavior. No assertion is weakened to admit a
+false event: the old bare-event expectation is replaced by stronger rejection
+after recording the conflicting baseline, requirement and official definition.
+
+Native syntax recovery retains its existing persistence owner and generic partial
+input contract. Ordinary complete identifiers cannot acquire SDK roles, and a
+clean compatibility parse cannot authorize an erased unknown prefix.
+
+
+INC-QML-98 first-directive boundary refinement: independent review reproduced a
+valid ordinary function rejected when a UTF8 BOM immediately precedes the first
+define/undef. Recognize only that leading BOM in same-length directive matching
+and source-order override lookup; do not strip arbitrary UTF8 bytes or treat a
+midstream BOM as directive whitespace. Both emission spellings and other Qt
+annotation override ownership must use the same first-directive boundary. Capture
+first-line BOM positive and shadow-prefix negatives before correction; preserve
+original buffers/spans and continued-definition nonauthority. This is the same
+source/directive ownership contract, not preprocessing or a relaxed final gate.
+
+
+### INC-QML-99 — Free-call takeover requires caller ownership
+
+Scope: REQ-QML-003/014/018 and REQ-QML-022-AC02/AC06. The full unrelated-language
+compatibility gate reproduced an actual CUDA regression: a valid ordinary host
+call in a partially parsed kernel-launch body was removed by the new free-call
+owner, which then lacked caller proof to resolve it. Installed-baseline comparison
+retains that edge. Preserve D39's existing generic partial-input result contract
+by transferring call ownership only for a recorded C++ free caller or a validated
+native member/constructor caller. Unknown partial callers keep existing generic
+edges and raw-call transport; they receive no fabricated free-function, namespace
+or native authority. Retire free-label guesses only for callers actually owned.
+
+Acceptance matrix before implementation: retain the exact existing CUDA fixture
+and a neutral ordinary host-call reproduction through direct/facade cold/warm
+paths. Demonstrate the missing edge before correction. Preserve raw transport and
+existing partial status without manufacturing source proof. Recorded normal and
+scoped free callers keep precise resolution; recorded anonymous, conditional,
+ambiguous or unavailable scopes keep conservative deferral/retirement. Determine
+owned callers before namespace early rejection, and avoid newly eager native
+metadata decoding for recorded free callers. Include genuine native member and
+constructor controls, malformed borrowed proof rejection, full/incremental stale
+cleanup, actual publication failure retention and recovery. No CUDA build, SDK,
+kernel execution or broad parser-error relaxation is introduced.
+
+The same full gate exposed a dropped historical `#4854` issue reference in the
+AST-cache version comment. Restore that required upstream explanation alongside
+the unpublished audit schema33 rationale; retain the original assertion. The
+cache version and dependency contract do not change merely to clear the test.
+Final source, wheel, corpus and hosted evidence must be rebound after correction;
+interrupted c3dc corpus proof is incomplete and cannot establish final acceptance.
+
+
+Read-only follow-up of INC-QML-95's three remaining native contexts confirms that
+Qt 6.12 resource generation appends to preexisting output-variable contents. With
+no admitted prior initializer, inherited/cache contents remain unknown; generated
+basenames alone cannot prove source disjointness. Keep the veto rather than
+assuming an empty configured variable. This is an explicit unsupported source
+profile, not a new increment that can be completed by relaxing evidence. Later
+property/filter leaves retain separate dispositions even when compile-only.
+
+
+INC-QML-77 compatibility expectation conformance: the full suite's old ancestry
+fixture mutates definition/status/class identity while retaining a newer resolved
+source-metaobject promise. Exact original-format baseline replay returns an
+unavailable target because that format has no promise; current transport correctly
+raises bounded QT_METADATA before lookup. Preserve all seven corrupted inputs.
+The three contradictory promised-carrier cases must assert controlled rejection
+and unchanged input, while the other four retain their unavailable lookup checks.
+This follows the already implemented strict promise contract and ordinary marker
+regressions; it introduces no INC-QML-100 runtime change and weakens no assertion.
+
+
+### INC-QML-100 — Preserve unpromised legacy metadata absence
+
+Scope: D40, REQ-QML-014/015/018 and REQ-QML-022-AC02/AC06. The full compatibility
+gate found 12 regressions in existing direct/combined/reload legacy cases: False,
+zero, empty-list and empty-string graph metadata had historically represented
+absence without reserved context. The source-profile selector rejected their
+carrier type before determining whether source storage was promised. Exact
+installed-baseline replay accepts all 15 absence cases, including None.
+
+Acceptance matrix before implementation: preserve those original legacy cases and
+normal Graph/DiGraph types with actual nodes/edges, no fabricated marker or input
+mutation. Validate every local-function promise first; valid typed facts with the
+four nonmapping falsy carriers still reject, malformed promises cannot hide behind
+legacy absence, and truthy invalid carriers/invalid dictionary markers retain
+strict rejection. None/missing metadata retains current raw typed autodetection.
+Exercise direct assembly, combined build, JSON load, public rejection retention/
+recovery where affected, and ordinary positive typed serialization/reload. Do not
+coerce promised source metadata before validation or weaken any existing test.
+
+The existing SOURCE_RELATIONSHIPS_INVALID owner and publication boundary remain;
+only validation selection/order is corrected. No storage schema/cache epoch,
+dependency, platform or direction contract changes. Source, installed, complete-
+corpus and hosted gates must be rerun/rebound after the implementation.
+
+
+INC-QML-73 source-owner eligibility conformance: an older ambiguity fixture copies
+a now-typed free-function proof but changes its node ID to an invalid suffix.
+Current exact source-ID validation correctly excludes that peer; independently
+valid prefixed IDs still compete and withhold source ownership. Preserve the old
+suffix as an invalid-peer/no-extra-authority control, use two eligible peers for
+the original ambiguity assertion, and retain legacy no-proof ambiguity coverage.
+All borrowed inputs remain unchanged; no native class/provider authority follows
+from literal source containment. This is fixture eligibility correction under the
+existing precise-source contract, not an ambiguity relaxation or new runtime
+increment. Full-run evidence retains the original failing case before correction.
+
+
+INC-QML-67 projection expectation conformance: an older membership fixture now
+contains source-export ownership promises introduced by this increment. Moving
+only the parent module's source file contradicts the module/source/export same-
+file chain and must raise bounded QML_METADATA before projection. Retain the
+exact corruption with unchanged-input/no-published-membership assertions; the
+other ten membership parameters keep unavailable/no-edge checks. Existing export
+integrity tests already require this rejection. This is test-only contract
+conformance, not a new runtime increment or a weaker membership requirement.
+
+
+### INC-QML-101 — Member provenance uses allocated declaration identity
+
+Scope: REQ-QML-003/008/014/017/018 and REQ-QML-022-AC02/AC03/AC06. Exact LF/CRLF
+full-suite failures expose a preexisting producer gap: a class name colliding with
+its header-file ID receives a salted canonical identity, but the member augmenter
+reconstructs an unsalted identity and fails to stamp the actual method. INC-QML-77
+correctly withholds the resulting unproved native binding. Original-format
+baseline resolved it without member proof; do not relax the stricter guard.
+
+Acceptance matrix before implementation: Engine passes its already allocated
+per-unit CppIdentity to the member augmenter, matching the constructor boundary.
+Retain optional standalone construction for existing callers. Preserve the exact
+existing forward/body, file/class-collision and BOM/LF/CRLF fixtures; assert actual
+cpp_member source proof on the allocated node and one valid native QML endpoint.
+Cover ordinary noncolliding, namespace/overload/constructor controls, callback
+data noncallability, source/header provenance, direct/facade/cold/warm/export/load,
+full/incremental retarget/stale cleanup, rejected/failed publication retention,
+recovery and no-change settling. Do not guess an unsalted node, duplicate mutable
+identity owners, invent a member proof or grant authority from a label alone.
+
+No cache/storage schema, dependency, platform or analyzed-runtime execution
+changes are introduced. Existing unavailable diagnostics remain correct when
+proof is absent; this correction supplies the genuine producer proof. Measure
+source/test sizes and retain the engine's documented ceiling before the narrow
+hook, then rebind the final package, full source, corpus and hosted evidence.
+
+
+INC-QML-99 caller/target uncertainty distinction: characterization confirms that
+a recorded conditional or duplicate caller can still provide its actual lexical
+namespace for an observed source call. Its uncertainty flags do not imply that
+every unconditional unique target is unavailable. Keep such callers owned and
+resolved edges in precise source-owner context, without a legacy/global guess;
+conditional/ambiguous target definitions remain rejected. Anonymous or unavailable
+caller namespaces still cannot authorize a guessed edge. Tests must preserve this
+existing distinction rather than add a new blanket conditional-caller rejection.
+
+
+### INC-QML-102 — Platform-faithful persistence failure fixtures
+
+Scope decision: REQ-QML-012-AC02 and REQ-QML-022-AC06, test infrastructure only.
+The first reviewed hosted source exposes four macOS failures in the external
+singleton and QtTest update cohorts: clearing graph-file write bits does not deny
+POSIX atomic replacement. The existing writer correctly applies its destination
+read-only attribute guard on Windows; POSIX rename permission belongs to the
+parent directory. Preserve that runtime contract and diagnose the actual failure
+state before changing a rejection expectation.
+
+Acceptance matrix before implementation: retain both existing readonly parameters
+and force=False/True assertions. Windows uses a real read-only destination; POSIX
+uses a genuinely nonwritable output directory, with explicit privileged/capability
+limits rather than a passing skipped assertion. Add target-specific os.replace
+EIO failure cases on every platform through the production writer, while unrelated
+replacement calls retain the actual implementation. Repeated rejection must
+preserve graph, manifest, report and Qt state; restore permissions and fault hooks
+in finally/context boundaries, then prove recovery, clean rebuild parity and
+settled repeat. A POSIX destination-file-only read-only control must preserve the
+valid replacement outcome observed by the failed hosted tests. No runtime,
+assertion, dependency, assigned platform, cache epoch or graph-storage contract is
+weakened. Audit adjacent new readonly fixtures for the same setup error.
+
+Owner: test fault setup/helper and the two affected update cohorts. Native Windows
+can verify file-attribute and injected writer failures locally; real POSIX
+permission and replacement cases require the already assigned hosted source lanes.
+The old exact source/failure logs remain evidence; new head validation belongs to
+the ordinary PR synchronization event, without dispatching duplicate workflows.
+Private corpus analysis continues on identical runtime package bytes and remains
+independently bound. Exit requires actual assigned POSIX and Windows cases to
+execute successfully, plus reviewed fault restoration and retained-data assertions.
+
+
+### INC-QML-103 — Original-byte-aware aggregate newline oracle
+
+Scope decision before implementation: test conformance under
+REQ-QML-022-AC02/AC03/AC06, preserving production facts and all fixture admission.
+The first reviewed Linux full run reproduces two aggregate LF/CRLF equality
+failures. Four existing C#/CUDA/Metal fixtures now carry 14 original-byte source
+spans from the admitted shared producer profiles; changing their line endings
+must change physical offsets. Exact current direct-extractor LF/CRLF pairs prove
+each offset, raw row and byte column against its own input, with every other
+field, ID, edge and existing partial-parser diagnostic equal. Original installed
+A092 emitted no such spans. Windows fixture bytes were already CRLF, so its full
+run did not exercise a differing physical pair. This is a stale oracle against
+the intentional source-byte contract, not evidence for normalizing production
+coordinates or removing metadata.
+
+Acceptance matrix: retain every fixture, both aggregate cluster modes, all twelve
+aggregate tests and exact all-attribute equality for identical byte-owned inputs.
+Extend the byte-owning cohort to the admitted C# and C++-dispatched GPU variants;
+ordinary-language text still converts. An independent actual CLI oracle must
+construct literal LF/CRLF buffers with write_bytes in both modes, irrespective
+of checkout conversion, and validate each exact six-coordinate span against both
+raw buffers before semantic comparison. Compare all remaining fields, stable IDs,
+Counter topology/duplicates and uncertainty. Require the actual field/function/
+host-call facts to exclude symmetric omission. Reject corrupted offsets alone,
+consistent-but-wrong offset/column, semantic roles, stable-ID permutations,
+relationships/endpoints and missing facts in both outputs. Do not strip arbitrary
+metadata, drop inputs, skip platforms, alter source or weaken equality assertions.
+Physical source proof is a separate validated dimension, not incidental noise.
+
+Owner: aggregate test byte classification/admission controls and focused new
+original-byte CLI tests/helpers within300lines. Runtime/cache/schema/dependency
+contracts and all named prior acceptance identities remain unchanged. Exit needs
+the exact prior Linux failure to be excluded by stronger applicable coverage,
+both actual CLI modes and corruption controls locally, and complete assigned
+new-head hosted validation. Private analysis continues on unchanged package bytes;
+its receipt must be bound to the eventual delivery commit independently.
+
+
+### INC-QML-104 — Retain legacy tooling type-const fields
+
+Scope decision before implementation: REQ-QML-022-AC04/AC06 and existing metadata
+compatibility/retention criteria. The complete installed reference audit exposed
+two newly rejected tooling inputs with Method.isConstant. Neutral replay proves
+A092 accepts that boolean on Method, Signal, Parameter, Enum and Property, while
+the new Qt6.12 owner table rejects the first four. Versioned Qt6.8 qmltyperegistrar
+writeType emits this legacy type qualifier through those owners; Qt6.12 separates
+isTypeConstant, isPropertyConstant and isMethodConstant. The earlier support
+contract and the new module's own documentation promise legacy flag retention.
+
+Acceptance matrix before implementation: admit the legacy boolean on actual
+writeType owners, preserving its exact field spelling, owner, value, original
+span and tooling-only evidence. Keep modern fields distinct; do not turn legacy
+Method.isConstant into isMethodConstant or infer native const/creation authority.
+Property's legacy flag remains ambiguous and accepted with its prior write/notify
+combinations; the modern property-constant conflict checks remain strict. Retain
+wrong-owner, nonboolean, duplicate, malformed and bounded-field rejection. Cover
+true/false, separate modern/legacy flags, BOM/CRLF/Unicode, direct/facade/cold/warm,
+serialize/sanitize/export/reload, metadata-only edits and stale removal, actual
+publication failure retention/retry/repeat, and optional source-root hints that
+cannot authorize reads or native endpoints. Public reproductions are neutral;
+private source/names remain local.
+
+Inspect failure-cache and Qt-state ownership before selecting cache epochs.
+Previously failed input must retry at unchanged source/package identity after the
+correction; accepted prior fact payloads must remain identical. Document whether
+successful-cache shape or state acceptance changes rather than bumping versions
+merely for a green gate. Runtime owner: qml_types_contract field admission;
+existing producers and persistence retain ownership. A new runtime package must
+receive fresh raw-byte wheel/installed/source proof and current full-corpus
+validation; the completed pre-correction artifact remains findings evidence.
+Complete the existing retirement review before choosing the final validation
+cycle. No SDK execution, source-file repair, input exclusion, dependency/platform
+change or assertion weakening is authorized by this correction.
+
+
+Current user scope clarification: detailed variable coverage is class/component
+members and documented Qt APIs. Function-local C++/JavaScript variable graph
+expansion is outside this audit. Existing source provenance, shadow safety and
+local-function support remain intact. PR readiness must use the same requirements,
+regressions, documentation and exact evidence standard as this audit; passing
+hosted checks do not replace a completed reference-corpus review.
+
+
+### INC-QML-105 — Preserve captured receiver types in C# local functions
+
+Scope decision before implementation: REQ-QML-022-AC02/AC06 and existing scoped
+source-call compatibility. Private retirement review reproduced a real call loss:
+a local function keeps its own typed parameter, but drops source-proven receiver
+types captured from an enclosing method parameter, explicitly typed local or
+var initialized with new Worker(). With a competing Other.Run, installed A092
+retains four valid Worker.Run calls; the current runtime retains only the local
+function's own-parameter call. This is a source-call regression, not a request
+for function-local variable graph nodes.
+
+Acceptance matrix: carry only proven lexical receiver bindings across admissible
+local-function parent scopes, preserving declaration scope, shadowing and source
+type identity. Cover method/constructor/nested-local owners, direct/facade/cold/
+warm, serialized graph, metadata/source-only updates, stale removal and unchanged
+repeat. Preserve own-parameter priority; reject dynamic/ambiguous/out-of-scope or
+unsupported receiver expressions. Static local functions cannot capture outer
+instance/local bindings. Declaration order, block scope and reassignments must
+not manufacture a type proof. Existing rejection-only delegate binders stay
+negative and cannot authorize a same-spelled method. Competing unrelated Run
+methods make incorrect/global fallback observable. Do not infer execution order
+or lifetime. No local-variable graph expansion, runtime execution or dependency
+change is part of this correction. Accepted AST facts/calls change, so the final
+combined source profile must invalidate prior successful syntax facts through a
+recorded cache decision and verify failure retention/recovery at affected update
+boundaries. Final current-source full and installed-corpus proof remains required.
+
+### INC-QML-106 — Canonical same-unit member declaration/body provenance
+
+Scope decision before implementation: REQ-QML-003/008/014/017/018 and
+REQ-QML-022-AC02/AC06. The reference audit exposed an inherited class-member gap:
+a valid same-translation-unit Q_OBJECT class with a Q_INVOKABLE prototype and its
+out-of-line body collapses generic identity/provenance, producing an ambiguous
+member carrier and leaving the real body without usable member proof. Neutral
+A092/current direct and facade probes agree. Broader parsing exposes more such
+contexts. Existing ambiguity guards remain correct and must not be relaxed.
+
+Acceptance matrix: distinguish truly competing overloads/definitions from a
+source-proven declaration/body pair. Select actual allocated source identity and
+preserve both source occurrences/navigation, exact names/signatures/locations,
+owner class and canonical endpoint. Only a uniquely proven pair may supply member
+provenance; unsupported or conditional/duplicate/mismatched declarations remain
+unavailable. Cover constructors/destructors and ordinary/invokable/slot methods
+where applicable, overload/cv/ref distinctions, forward/header/body alternatives,
+file/class ID collisions, callback data and malformed source. Exercise direct,
+facade, graph assembly/export/reload, cold/warm and source-only edits/removal/
+retarget; rejected/failed publication must retain prior products and recover.
+Prove the exact old failure before correction and preserve native source authority
+checks. No label-based proof, invented source span or blanket ambiguous-carrier
+acceptance is allowed. Measure touched legacy sizes and document any required
+owner/seam change. Accepted source/native joins change, so final cache and Qt
+analysis-policy invalidation require an explicit combined decision and current
+full/installed/corpus/hosted evidence.
+
+
+Combined INC-QML-105/106 cache decision before integration: AST schema34 must
+retire schema33 successful syntax facts because captured-call relationships and
+canonical native-member source proof change at unchanged package/source identity.
+Qt policy28 must refresh policy27 accepted analysis context before its prior
+cross-language joins can be reused. Independent semantic cache entries remain
+unchanged. INC-QML-104 alone needs no epoch: tooling files bypass syntax cache,
+failed publication commits no accepted Qt stamp, and accepted prior payloads stay
+identical. The combined source correction is different: its previously accepted
+payloads change. Tests must write real predecessor33/27 entries/stamps, prove
+miss/refresh, preserve accepted products on rejection/failure, then verify repair,
+current stamp and settled repeat. Epoch updates preserve the upstream #4854
+identity-repair explanation and existing schema/version history.
+
+Focused progress: INC-QML-104 has54 owned and119 combined native passes without
+skips. INC-QML-105's original all-C#/field-call/language selection has1,088 passes;
+three further source controls bring its final owned cohort to42. INC-QML-106 has
+54 owned and31 established qualified/sibling controls, all85 passing. Exact
+duplicate body representations count as one original occurrence, while different
+implementation bodies cannot be selected through a later generic merge. Actual
+failure-before and corrected regression evidence is retained for both boundaries.
+Independent authority reviews are clear and all owned lint/type checks pass.
+
+The final combined current-source gate has207 passes without skips, including
+57 schema34/policy28 cases and real predecessor33/27 entries. A raw Git tree,
+explicitly not a commit, owns the corrected wheel: all378 package files/241Python
+files match raw Git. Fresh offline core31 and QML/watch35-distribution consumers
+retain exact installed/dependency bytes and pass the preserved CLI/source/failure/
+cleanup assertions plus new correction probes. Core tooling parser absence is
+explicitly tested separately from QML-profile tooling positives. Current full
+native source, complete installed reference-corpus and eventual committed-head
+hosted validation remain separate pending gates. No application adoption occurs.
+
+
+### INC-QML-107 — Preserve direct member-owned free calls
+
+Scope and acceptance matrix before implementation: REQ-QML-022-AC02/AC06,
+REQ-QML-008-AC02 and REQ-QML-014-AC03. Installed conformance replay confirms that
+ordinary and invokable same-unit member bodies lose a valid same-file helper-call
+edge in direct `extract_cpp`, while the facade restores it after canonicalization.
+All four LF/BOM-CRLF and ordinary/invokable profiles fail that direct acceptance.
+This is a public producer compatibility regression, not an accepted intermediate
+omission. Existing source-proven member facts correctly trigger precise handoff,
+but direct namespace lookup lacks the class edge owned by the prototype.
+
+Current/proposed owners: `cpp_member_identity` owns pair provenance and canonical
+mutation. Extract its existing pair validation into one shared read-only query in
+that cohesive owner where practical; preserve iteration and validation order,
+exact identities/spans, source-uniqueness and rejected ambiguity. The canonicalizer
+retains mutation. `cpp_free_calls` consumes only uniquely proven same-file pairs
+as invocation-local scope/shadow evidence. Actual allocated body caller IDs remain
+unchanged directly; the facade retains its existing canonical remapping. No
+invented class/body edge, direct canonical fold, callee basename guess, source read
+or native-authority relaxation is permitted. Engine is unchanged. Existing85
+pair/control cases characterize the extraction; source and input dictionaries must
+remain unmodified by the new query. No new persistence owner or process-global
+index is introduced; keep source files within300 lines.
+
+Success/boundary matrix: global and namespaced ordinary/invokable/slot bodies,
+actual class/file collision, LF/BOM/CRLF/Unicode and nested returned-callback forms
+retain exact direct body-caller/helper-callee evidence and facade canonical output.
+Reject competing bodies/prototypes, conditional or foreign class/scope, missing or
+corrupt method/file/body proof, signature/cv/ref mismatch and free-vs-class ambiguity.
+Actual class fields, callback storage, methods, local bindings and parameters must
+still shadow a same-named namespace helper. Use real producer/production resolver
+inputs, not a fake pair oracle. Verify direct/facade/build/export/reload, unchanged
+input snapshots, old-cache/cold/warm/full parity, retarget/stale cleanup and public
+manual/watch rejection/EIO retention, repair/repeat where affected. Existing free,
+partial CUDA, constructor, qualified-owner and unrelated-language controls remain.
+
+Cache decision before implementation: direct `extract_cpp` itself bypasses cache;
+existing schema34 entries retain the required raw call/body/member proof and the
+facade reruns resolution after canonicalization. Provisionally keep AST34/Qt28
+only if an actual pre-correction cached payload lacking the direct edge recovers
+to identical current cold/full facade output without source/package changes.
+Record the result rather than bumping or reusing proof by assumption. Semantic
+cache, parser/dependency contracts and native source authority stay independent.
+
+Diagnostic impact: accepted direct scope adds no warning; missing/ambiguous proof
+retains existing unavailable scope instead of a guessed call. Malformed source and
+corrupt promised transport retain their original rejection owners. Existing actual
+publication failure/retention/recovery diagnostics govern; no new error code or
+fallback is planned. Stop and preserve the prior source/corpus runs as interrupted
+nonacceptance evidence before runtime changes. The new runtime requires fresh
+raw-byte packaging, isolated consumers, full source, complete reference-corpus and
+eventual hosted acceptance; earlier207/installed passes are historical only.
+
+
+### INC-QML-108 — Source-owned local callback shadowing
+
+Preimplementation matrix: REQ-QML-022-AC02/AC06 and REQ-QML-014-AC03. A valid
+local zero-argument callback declaration parses without an error as an expression
+assignment/call under the pinned grammar. Existing binding collection therefore
+misses its name and the facade resolves a later callback invocation to an unrelated
+same-named free function. The new direct scope exposes the same false target.
+An `(int)` callback control is already recognized as data. This is source-role
+misclassification, not permission to treat all expression text as declarations.
+
+Owner: `cpp_call_sites` lexical binding collection. Preserve original AST/bytes,
+call locations and scope; use narrowly source-proven declaration identity for
+negative binding only, without new variable nodes, callable/type/native authority,
+parser replacement or project execution. An ambiguous alias/ordinary expression,
+literal/comment/directive or malformed source cannot lend declaration proof.
+Keep the pinned parser and final source/native gates. Other helper files require
+a focused ownership justification and the300-line ceiling.
+
+Exercise zero/nonzero callback forms, ordinary and member bodies, declaration
+order and block/loop/lambda windows, own-initializer point of declaration, nested
+class/function bindings that must not leak into the caller, and explicit global
+qualified calls that bypass a local shadow. Preserve ordinary expressions and
+unshadowed helpers, existing typed declarations and partial/generic source
+contracts. Direct/facade/export/reload, old cached shadow facts, cold/warm/full,
+source edit/removal, actual public rejection/EIO retention/recovery and unrelated
+language controls are required. Capture faithful failures before correction.
+Success adds no warning; unproved syntax remains conservative and malformed
+input retains its owning diagnostic. Existing persistence/failure owners remain.
+
+Old successful AST34 facts can contain a false `shadowed=false` raw call and lack
+the source binding witness. A complete facade cannot recreate that source evidence
+without parsing. The combined correction must therefore retire34 via AST35 and
+refresh accepted Qt policy28 context via29, preserving the independent semantic
+cache and upstream #4854 identity rationale. Verify actual predecessor entries,
+retention/recovery and settled repeat before claiming corrected compatibility.
+This differs from INC-QML-107 alone, whose old raw proof already suffices.
+
+
+### INC-QML-109 — Enclosing class lookup is not a namespace
+
+Preimplementation matrix: REQ-QML-022-AC02/AC06, REQ-QML-008-AC02 and
+REQ-QML-014-AC03. Neutral version-bound evidence proves a nested class's scope
+contains its enclosing class name, while existing free-call lookup interprets that
+string as namespace context and checks only the immediate class's members. An
+enclosing static method or callback can therefore incorrectly lend a global
+free-function target. This is confirmed in the prior facade and proposed direct
+path; baseline behavior differs by callback/method and remains recorded exactly.
+
+Use accepted source-owned class ancestry, exact class identity/span containment
+and extracted ownership to separate namespace scope from enclosing-class lookup.
+Do not insert guessed containment or infer execution/instance lifetime. Reuse
+`FieldCallPolicy` as a read-only member-name predicate; keep C++ ancestry logic in
+its source-domain owner and preserve unrelated languages. Existing class facts and
+edges are available; prove whether new transport is actually necessary before
+adding fields. Unknown, duplicate, conditional, foreign or corrupt ancestry cannot
+become namespace or member authority. Keep the actual direct body caller and
+facade canonical caller; no direct fold/native-proof relaxation is permitted.
+
+Cover outer callback/method/data names, inherited member shadows, multiple nesting,
+namespaced and no-shadow positives, explicit `::helper`/qualified namespace
+controls, class/file identity collisions, missing/foreign/corrupt containment,
+source ranges, duplicate bodies and source edit/removal. Source query inputs must
+remain unchanged. Test direct/facade/build/export/reload, cold/warm/full/incremental,
+public failure retention/recovery/repeat and generic/C# compatibility. Existing
+unresolved/dynamic profiles stay explicit. Success adds no diagnostic; unsupported
+ancestry declines authority through the existing source-resolution channel.
+
+Coordinate the direct resolver integration after INC-QML-107 source freezes so
+there is one owner per file. AST35/Qt29 owns the combined108/109 correction;
+new parser/dependency/platform/assertion changes are not part of this increment.
+Keep all preceding artifacts and stopped runs as historical evidence. Batch the
+confirmed corrections before the next new wheel/full-source/reference-corpus
+cycle, then update the PR with exact committed-head hosted evidence.
+
+INC-QML-109 producer decision before its hook: the real complete-parent-omission
+regression proves flattened class scope is insufficient. Add
+`cpp_class.lexical_scope_proof` from the already-read original AST: nested contract1,
+strict complete/conditional booleans and at most50 ordered class/namespace records
+with bounded literal-name transport and original six-coordinate spans. Preserve
+all original class IDs, names, flattened scope and source spans. A dedicated
+producer/reader helper owns this witness; `cpp_constructors` only attaches it at
+its existing class-fact boundary. No SDK/file read/reparse or second source index.
+The consumer must verify flattened spelling, nested physical containment,
+same-file exact accepted complete class ancestors and extracted containment,
+including consistency of each ancestor's witness prefix. Whole-parent omission,
+not only a removed edge, must reject authority. Function-local, anonymous,
+unsupported qualified out-of-line class, union/template/conditional or over-limit
+scope remains explicitly unavailable; truncated/display lists cannot authorize a
+namespace. Verify sanitation/export/reload, malformed/length/depth bounds and both
+helper-first and normal production import paths. Existing class/native predicates
+remain separate; no raw scope string or fabricated edge substitutes for the proof.
+This additional producer fact independently reinforces the AST35/Qt29 decision.
+
+
+### INC-QML-110 — Case-sensitive C++ class allocation
+
+Preimplementation matrix: REQ-QML-003-AC02/AC04, REQ-QML-008-AC02,
+REQ-QML-022-AC02/AC06 and REQ-QML-014-AC03. A neutral error-free source with
+global `Box` and `box` class declarations produces only one direct/facade class
+node, no valid class proof and missing member-body helper calls. These are distinct
+C++ declarations; normalized display/ID spelling cannot decide their ownership.
+The complete107–109 gate passes1,556 cases with four explicit skips, but omits
+this new failing identity scenario and is retained as bounded historical evidence.
+
+Inspect CppIdentity's normalized lexical IDs, its allocated-declaration map and
+the C++-specific Engine allocation seams before implementation. Preserve the
+generic DeclIdRegistry/#4854 contract and unrelated languages. Keep unambiguous
+legacy global and accepted qualified IDs stable; allocate collision-safe actual
+source identities for distinct exact C++ names without renaming every class.
+Exact qualified source spelling, not a normalized ID or lowercased label, must
+govern class lookup/forward-body equivalence. The existing producer remains the
+allocation owner; do not fabricate classes or restore facts only in the facade.
+
+Cover ordinary and QObject classes differing only by case, direct/facade actual
+class/member/type/alias/receiver endpoints, inline/out-of-line methods, independent
+constructor/destructor contracts, forward/full and genuine duplicate definitions,
+named namespace controls and file/class collisions such as Cpp/CPP. Preserve
+original names/spans across LF/BOM/CRLF, line insertion and root relocation. Test
+raw export/reload and assembled graphs, cache/full/incremental parity, stale
+removal/retarget, QML-only/metadata-only transitions when native ownership is
+affected, and actual rejection/EIO retention/recovery/repeat. Keep all source
+facts/uncertainty and exact caller/callee identities; no basename fallback or
+native guard relaxation. Record rejection/diagnostic impact through existing
+source and publication owners rather than adding a success warning.
+
+Current scope code remains otherwise frozen. Engine is11,138 lines against its
+existing11,145 ceiling; prefer a focused identity helper and narrow integration.
+Any required ceiling change needs a measured versioned rationale before growth.
+The old successful AST35 entry can lose a whole class declaration/proof, which
+cannot be repaired from cached retained facts. Retire35 through AST36 and accepted
+policy29 through Qt30, keeping the semantic cache independent and retaining the
+upstream #4854 explanation. Root owns these shared versions and their actual
+predecessor tests. Capture the real failure before correction and verify stable
+noncolliding IDs and unrelated-language behavior. New runtime bytes require a new
+wheel/installed/full-source/reference-corpus/committed-head hosted cycle; neither
+the previous1556 gate nor older207/consumer runs close this correction.
+
+Constructor compatibility decision before the producer change: collided class
+owners may supply a source-census exact-name domain before the existing constructor
+authorization suffix. Preserve the suffix and both existing identity/signature
+validators unchanged. Inline, out-of-line and augmentation paths must borrow the
+same invocation-owned class identity. Wrong-case owners, corrupted domains and
+ambiguous declarations cannot lend source/native authority. This is not permission
+to accept an arbitrary alternate ID or change generic declaration allocation.
+
+Two further faithful sibling-header/source failures require a literal qualified
+body-owner census when the implementation file has no local class record. Index
+only already-parsed callable qualifier spellings for collision-safe body IDs; this
+does not prove that a qualifier is a class or admit/read the header. Known classes
+use their existing class census. For unknown qualified owners, salt only a bucket
+with distinct literal spellings sharing the prior candidate; an isolated unknown
+owner retains its legacy ID. Real proven namespace free functions retain their
+separate identity owner. Constructor domains keep the unchanged authorization
+suffix. Actual sibling source/ownership/signature proof must still join bodies to
+classes; a textual qualifier alone cannot supply that authority.
+
+The split-source110 regression also proves global old-ID remapping can choose the
+last body when separate implementation files each retain a legitimate legacy ID.
+A focused `cpp_member_remap` helper may preflight already-validated pairs into
+old-ID target sets and source-file-qualified target sets. Unique global mappings
+retain compatibility. Multi-target source endpoints require accepted body-file
+and site evidence; inbound targets require explicit target provenance or the
+validated actual file-to-body containment edge, never the caller's filename as
+callee proof. If any referenced carrier/cardinality is unproved, block the whole
+old-ID bucket before mutation, retaining its original bodies and carriers rather
+than dropping endpoints or guessing. The canonicalizer remains mutation owner;
+the helper owns only the read-only plan. Test valid split calls, missing/corrupt
+file/site proof, whole-bucket retention, other independent buckets and idempotence.
+
+A later faithful class-domain lookalike probe exposes one more collision: a real
+literal class can have the spelling of a generated class ID. Reserve all original
+literal class candidates before assigning deterministic collision domains, using
+sorted exact names and bounded counter escapes rather than traversal/line order.
+Apply the same rule to provisional body-owner domains and coordinate their known
+class reservations. Preserve noncolliding legacy IDs and never displace a real
+literal declaration. Constructor consumers borrow the final source-census domain
+with the existing authorization suffix unchanged. Cover all three literal facts,
+reordering, actual references/member/native identity and repeated extraction; the
+prior43-case freeze is incomplete for this newly confirmed correction.
+
+### INC-QML-111 — Literal member names retain distinct identities
+
+Preimplementation matrix: REQ-QML-003-AC02/AC04, REQ-QML-008-AC02,
+REQ-QML-022-AC02/AC06 and REQ-QML-014-AC03. An error-free class declaring both
+`Field`/`field` and `Run`/`run` loses the second spelling at the normalized
+allocation boundary. C++ lookup is case-sensitive; a normalized key cannot decide
+which declaration, field type or callable owns later relationships. This is a
+separate confirmed correction from INC-QML-110's class-owner census.
+
+Inspect the existing C++ allocation owner before changing it. Preserve generic
+DeclIdRegistry/#4854 behavior and legacy IDs for noncolliding source declarations.
+Only actual distinct literal-name collisions may receive deterministic source-owned
+disambiguation; line insertion, traversal order or scan-root relocation cannot
+choose a winner. Exact same-name overload/declaration-body and duplicate ambiguity
+rules remain independent. Methods, fields and their actual allocated owner must
+stay distinct; a field or callback cannot become a callable merely to retain it.
+Root integrates shared Engine/cache/document changes after the class-owner seam
+freezes. Separate cohesive helpers/tests may proceed under explicit ownership.
+
+Capture faithful direct/facade failures first. Cover case-only and other admitted
+normalization collisions, field/callback types, method overloads, inline/out-of-line
+and invokable/slot forms, exact duplicate ambiguity, source spans, class/file
+collision and the noncolliding legacy controls. Verify actual endpoints through
+raw export/reload and graph assembly, cold/warm/full/incremental, rename/removal
+and stale-edge retirement. Exercise actual rejected publication and EIO with
+retention, recovery and repeat; relevant QML-only/metadata-only transitions cannot
+borrow a differently spelled member. Local-variable graph coverage, arbitrary
+compiler lookup and new unrelated language behavior remain outside scope.
+
+AST36/Qt30 retires successful35/29 facts that already omitted a member; it is
+shared with the preceding class correction, not a competing epoch. Semantic cache
+and dependency/parser/platform contracts remain unchanged. Accepted facts need no
+success diagnostic; unavailable/ambiguous proof and publication failure retain
+their current owners. New package/full-source/corpus/hosted evidence is required.
+
+Before implementation, the bounded `CppMemberNames(cpp_identity, cpp_functions)`
+helper owns one AST census using the existing declaration-role classifier. Its
+`candidate(syntax, legacy_candidate)` applies a full literal-name digest only
+within actual distinct-spelling buckets; same exact names/overloads retain their
+original ambiguity and noncolliding IDs stay unchanged. Existing source class,
+file/free and literal-name candidates are reservations, not new ownership proof;
+deterministic escapes must not depend on traversal or `seen_ids`. Constructors
+retain their independent signature/domain recipe. Field/prototype, inline method
+and nonfree qualified body integration occurs before allocation, followed by the
+existing actual `bind_member` hook. The helper supplies no source/Qt authority.
+The measured Engine hook/ceiling decision is recorded before growth in the
+[code reference](CODE_REFERENCE.md#inc-qml-107108109-source-context-owners).
+
+The repaired member ID uses the authoritative legacy owner prefix, `cppmember`
+and a full literal-name digest, replacing the colliding normalized member tail
+rather than appending its potentially long spelling. Preserve exact raw labels
+and source spans. Establish owner/candidate correspondence from the existing
+source index; underscore/basename splitting cannot invent an owner. Reserved
+literal candidates and deterministic escapes protect real source names that
+resemble a generated domain, without changing same-name/constructor semantics.
+
+Independent111 constructor-exclusion review confirms another real data collision:
+a valid field may literally resemble the existing constructor-signature ID,
+causing the constructor to disappear or the field to become callable depending
+on order. Preserve constructor IDs/signatures/authorization unchanged. Reserve
+their actual source-planned candidates as negative allocation evidence, then
+disambiguate the conflicting data member before either occurrence is emitted.
+Reuse the existing constructor declaration/signature owner and original aligned
+source rather than inventing a second classifier or deriving signatures from a
+normalized display. No new callable/native authority is introduced. Require both
+orders, exact data/callable roles and original spans, overload/file/class controls,
+direct/facade/export/reload and durable update/failure evidence. Coordinate any
+new shared producer interface and measured ceiling before edits.
+
+The approved shared seam is a read-only
+`cpp_constructors.constructor_candidate_ids(root, original_source, identities)`
+returning immutable existing candidates. Extract and reuse the augmentation
+owner's current declaration classifier; augmentation retains its original
+graph/by-ID/type-authority validation and ordering. The member helper consumes
+only the returned negative reservations from `functions.root/functions.source`.
+No Engine signature-source parameter or constructor ID change is needed.
+Characterize the existing source/authority paths before moving their predicates;
+keep the cohesive263-line constructor owner within300 and report final size.
+Original alias candidates must also be reserved even when their anonymous,
+oversized or unavailable qualified scope cannot enter positive alias planning.
+Negative reservation does not create an alias target or scope authority.
+
+### INC-QML-112 — Literal alias names retain distinct identities
+
+Preimplementation matrix: REQ-QML-003-AC02/AC04, REQ-QML-008-AC02,
+REQ-QML-022-AC02/AC06 and REQ-QML-014-AC03. Distinct `Alias`/`alias` declarations
+pointing to different source types collapse into one normalized graph identity.
+Retaining both textual lookup entries in a private index is insufficient when the
+public declaration or downstream references have already disappeared.
+
+Inspect the C++ alias producer, lexical lookup and actual allocated target mapping.
+Preserve exact qualified spelling, same-name ambiguity, source order, unsupported
+alias/template uncertainty, and noncolliding legacy IDs. Disambiguate only proved
+literal-name collision buckets, without changing the shared generic registry or
+using display labels as target proof. Coordinate any shared CppIdentity/Engine
+seam with INC-QML-110/111's single owner before edits. No facade-only repair,
+source reread, Qt execution or native-ownership relaxation is allowed.
+
+Cover using/typedef forms within their admitted profile, global/namespace/nested
+owners, case-only and other admitted normalization collisions, distinct targets,
+alias chains, forward/full classes, ambiguous/conditional/unresolved targets and
+noncolliding controls. Exact source identities/spans and class/member/receiver
+endpoints must survive direct/facade/export/reload, cold/warm/full/incremental,
+source rename/removal and stale-edge retirement. Rejected writes and actual EIO
+retain accepted state, followed by repair and settled repeat. QML/metadata-only
+updates cannot substitute the other spelling's target. Keep unsupported syntax
+and unavailable proof explicit rather than manufacturing a link.
+
+The combined AST36/Qt30 migration owns previously successful but incomplete alias
+facts, with actual35/29 predecessor tests. Source/ambiguity/publication diagnostics
+retain their existing boundaries; no additional warning is required for success.
+Whole-SDK completeness and function-local variable graph nodes are not claimed.
+Finish these confirmed identities before the next frozen wheel/full-source/corpus
+cycle. Further scope requires new concrete evidence and an independently recorded
+decision, not indiscriminate per-function enumeration.
+
+INC-QML-112 implementation decision before its helper: census only aliases already
+admitted by the existing `_cpp_alias_names` producer, passed as an explicit
+dependency rather than reimplemented. Group old candidates by exact qualified
+source spelling and add a deterministic full-spelling `cppalias` domain only to
+actual collision buckets before the unchanged generic registry. The existing
+created-only alias binding owns allocated IDs and exact lexical lookup; no second
+underlying-type inference or facade rewrite is introduced. Alias declarations
+currently promise source file and line location, not six-coordinate metadata.
+Preserve and validate that existing location against the original bytes; adding
+a new public alias-span fact/schema is outside this ID-only correction. Other
+already-promised six-coordinate class/member witnesses remain mandatory. This
+clarifies the earlier span matrix without weakening an existing alias contract.
+
+Admission readback confirms `_cpp_alias_names` intentionally excludes class-member
+aliases, including nested/guarded class bodies; existing regression tests require
+they do not become file nodes. Preserve this explicit public graph exclusion.
+Namespace aliases remain file-contained source declarations with separate exact
+lexical lookup. Native TypeScope retains its independent source-AST alias bindings.
+INC-QML-112 adds neither class-alias graph nodes nor new containment authority.
+
+Four faithful direct-producer assembly/export failures require producer-owned
+provenance in addition to distinct IDs. The facade already stamps AST origin,
+but direct same-label aliases can otherwise enter the legacy semantic-ghost
+merge. Stamp existing `_origin=ast` only on the actual newly created alias node
+at the Engine's existing created-only bind boundary, verifying its resolved ID.
+Do not change graph-builder ghost policy, infer an underlying type, invent alias
+metadata or repair only the facade. The existing AST-collision guard then owns
+preservation. Direct/facade/build/JSON/reload and native-endpoint invariance tests
+must cover the production correction. This adds one narrow producer hook within
+the predeclared Engine ceiling, not a new graph schema or source-authority family.
+
+Final adjacent tests expose an expectation discrepancy, not a foreign-scope
+binding: the old reused-alias fixture declares both `Left::Count=int` and
+`Right::Count=double` but expects Right's reference to be unsourced because the
+old allocator discarded that declaration. REQ-QML-022-AC02/AC06 now requires both
+real distinct aliases and the actual Right target. Refine only that expectation
+using the documented exact-QName collision-ID contract, preserving both same-line
+profiles and explicitly forbidding Left. Keep the separate no-local-alias lexical
+rejection controls unchanged in intent and add facade coverage to both scenarios.
+Do not weaken assertions or restore omission to obtain a passing count; retain
+the two failed adjacent receipts and record the corrected exact target evidence.
+
+### INC-QML-113 — Struct member callables select C++ header dispatch
+
+Preimplementation matrix: REQ-QML-003-AC02/AC04, REQ-QML-014-AC03 and
+REQ-QML-022-AC02/AC06. INC-QML-110's real `.h` sibling fixture exposes an
+independent admission defect: `struct Box{void run();};` and
+`struct Box{Box();};` are C++-only declarations but select the C producer, losing
+the class/member facts that direct `extract_cpp` retains. Keep that failed
+evidence; using unambiguous `.hpp` isolates110, not fixes113.
+
+Root owns `cpp_header_declarations` and new focused header tests. The existing
+parser-free bounded declaration hint remains the only new behavior owner;
+`cpp_header` masking, read limit and dispatch/persistence owners remain intact.
+Recognize complete callable heads in an actual struct/union declaration context,
+including its literal constructor/destructor name. Context must not leak through
+ordinary executable bodies. Grammar admission is not source/member/Qt authority:
+the actual C++ parser and all downstream proof gates still decide accepted facts.
+No parser dependency, SDK, project execution or general C/C++ semantic oracle.
+
+Capture faithful public failures before correction. Cover ordinary prototypes,
+inline bodies, constructor/destructor, parameters and const/ref suffixes where
+admitted; LF/BOM/CRLF and actual direct/facade/source spans, cold/warm/cache parity,
+serialization/reload and source edit/removal. Reject C function-pointer fields,
+bitfields/parenthesized expressions, aggregate initialization, inert strings/raw
+literals/comments/directives, top-level functions and local executable lookalikes.
+Actual manual/watch rejected-write/EIO retention, recovery and repeat protect the
+existing publication contract; unrelated C/C++ controls must remain unchanged.
+
+The combined still-unpublished AST36/Qt30 also retires successful35/29 facts
+from the wrong producer. No extra epoch or diagnostic is introduced. Success
+chooses the C++ grammar only; missing parser, malformed source and persistence
+failures retain their existing separate owners. Record physical limits, exact
+focused results and remaining lexical exclusions before final source freeze.
+
+INC-QML-113 focused result:90 native Windows cases pass without skips, comprising
+42 new admission/boundary cases, seven real cache/public-update/failure cases and
+41 established header/prototype controls. Exact prior production-hint replay
+retains18 genuine failures before correction. An adjacent three-case C attribute
+false-positive probe fails before its guard and passes after it. The129-line
+hint owner executes all80 statements/40 measured branches; this does not establish
+exhaustive Boolean/dialect behavior. Scoped Ruff and explicit-interpreter Pyright
+have zero diagnostics. New test modules measure101/97 lines. Four malformed/
+read-bound inputs stay intact after bounding only their pytest IDs, because the
+first default ID exceeded Windows' environment limit and disrupted teardown;
+that failed harness receipt remains distinct. Complete integration, installed,
+source/corpus and committed-head hosted gates remain pending. Existing QML CI
+prefix selection already includes these new C++ tests on Windows/macOS; full
+Linux CI owns all tests, so no workflow or platform-contract change is required.
+
+The independent113 peer then confirms four additional macro-attribute lookalikes
+that the initial type head admitted. A bounded return-head guard rejects the
+already-declared value plus unknown macro, without expanding macros or excluding
+ordinary builtin/user-type method controls. Four real failures precede this fix.
+The new frozen selection has98 passes, no skips/failures:50 owned admission and
+seven update/cache cases plus41 established controls. All85 statements/40 measured
+branches execute, scoped Ruff/explicit-interpreter Pyright remain clean, and all14
+protected file bytes stay exact. Final owner/tests measure139/107/97 lines. The
+earlier90-case source/coverage receipt is historical; final combined/runtime
+artifact/corpus/hosted gates remain separate pending acceptance.
+
+### INC-QML-114 — Lexical type rejection survives later reconciliation
+
+Preimplementation matrix: REQ-QML-003-AC02/AC04, REQ-QML-008-AC02,
+REQ-QML-014-AC03 and REQ-QML-022-AC02/AC06. Strengthening the existing no-local-
+alias test from direct-only to direct/facade exposes a genuine inherited failure:
+the producer leaves Right's unqualified `Count` unresolved, but unique-label
+reconciliation binds it to Left's sourced alias. Preserve the failing ordinary
+case. The preceding two-alias expectation correction is separate and already
+passes with its exact Right-only assertion. Inspect the corresponding known-class
+namespace rejection through the same facade as a paired mechanism boundary.
+
+Root owns shared Engine/facade/graph/epoch/document integration. A focused C++
+source-domain helper may own bounded lookup-rejection production/validation and
+its exact tests after a concrete interface decision. Preserve per-use/source
+availability instead of a global bare-stub flag that suppresses unrelated valid
+references. Any unresolved identity isolation must keep the real written name,
+source provenance and uncertainty; do not fabricate a qualified declaration,
+owner/frame, positive type, native endpoint or runtime fact. Keep literal lookup
+values distinct from escaped display values. Corpus rereads/build/SDK execution,
+generic rewire disablement and unrelated-language policy changes are out of scope.
+
+Cover actual named namespace/class lexical rejection, same/different literal case,
+valid same-scope/global/explicit-qualified and admitted cross-file references,
+function contexts with unavailable class scope, shared bare stubs referenced by
+other languages, and known class/alias pairing. Preserve original source ranges
+and stable IDs across root/line/byte profiles where promised. Exercise direct,
+facade, graph assembly/JSON/reload, sanitation and ID remapping, cold/warm/full/
+incremental, rejection removal/retarget, actual failed publication retention,
+repair and settled repeat. Malformed/omitted/over-limit promised handoff data must
+remain bounded and cannot reenable a guessed target. Record exact diagnostic and
+corruption policy before adding a new fact/transport contract.
+
+The source rejection is not currently durable in prior successful facts. Inspect
+whether existing complete transport can recover it faithfully; if a new source
+witness is needed, retire successful AST36/Qt30 through37/31 with real predecessor
+entries and no-source-change refresh tests. Semantic cache, dependencies, platform
+matrix and accepted-product persistence remain independent. Do not borrow the
+preceding51/43/55 focused or older hosted results for this correction. The final
+joint gate and artifact/full-source/reference-corpus cycles remain unstarted
+until this concrete source-boundary defect is corrected and reviewed.
+
+Contract decision before implementation: use edge
+`metadata.cpp_type_reference`, nested contract1/resolution `unavailable`, plus
+independent scalar `cpp_type_reference_version=1`. Either promise requires the
+other, so erasing metadata alone cannot restore legacy guessing. Fields retain
+bounded literal `raw_name_b64`, `lexical_scope_b64`, strict `scope_complete` and
+original six-coordinate `type_span`. Complete scope is at most384UTF8 bytes
+(encoded at most512); an oversized actual named scope is unavailable with
+`scope_complete=false, lexical_scope_b64=null`, never truncated into authority.
+The profile grants no positive target or native proof and carries no nested IDs.
+
+One shared helper validates the complete promised cohort before raw rewiring,
+graph adoption, reload or export mutation. It requires the unavailable target
+remain an existing same-literal sourceless stub; a sourced target contradicts the
+promise. Preserve existing logical endpoint handling and restore valid direction
+from serialized links on undirected reload. No new storage mode is activated;
+ordinary same-relation evidence folding retains its established projection,
+without converting a rejection to positive resolution. `CPP_REFERENCE_CONTEXT_INVALID`
+is one bounded ValueError/error contract owned by the helper, with re-extraction/
+repair guidance and existing prior-product retention. Missing/malformed promised
+members reject; absence of both promises is the legacy compatibility profile.
+
+Source production reuses one CppIdentity lookup-result query and passes explicit
+target/metadata through actual type-reference emission. It must retain genuine
+qualified spelling and actual type context; an outer template cannot silently
+stand in for a differently qualified argument. No ambient pending-edge queue,
+second type resolver or source scan/read is introduced. Original aligned bytes
+own spans, and opaque contexts remain explicitly unproved. Record exact Engine
+integration measurements before increasing its current ceiling if needed.
+
+This additional source witness requires AST37/Qt31, retiring successful36/30
+entries/stamps with no-source-change tests. Earlier36/30 decisions remain the
+historical pre114 checkpoint. Semantic data, dependencies, platforms and the
+existing publication ordering/retention owners are unchanged.
+
+Producer decisions before edits: global lexical scope is the proven empty string
+(`scope_complete=true`, encoded empty string); `None` still means unavailable
+function/anonymous context and retains its explicitly unproved legacy path.
+`CppAliasIds.literal_names` may expose only its immutable accepted named-scope
+literal census, without a new scan or lookup authority. Actual qualified and
+template-owned spelling must not be flattened: `raw_name_b64` identifies the
+literal graph/stub name, while bounded opaque `lookup_b64` records the exact
+written type path. Strict `lookup_complete` uses `false/null` when that path
+exceeds384UTF8 bytes. Opaque template paths may establish unavailability only;
+they cannot authorize positive resolution. Both complete flags and null forms
+are required parts of the still-unpublished contract1.
+
+The explicit rejected producer path bypasses sourced-node reuse and file-stem
+forwarding, reusing an existing bare stub only while it remains sourceless. A
+contradictory sourced bare ID must controlled-reject rather than repurpose source
+data; any later need for isolated IDs requires a real fixture and separate
+reservation decision. Consumer conversion may honor an already valid complete
+logical pair on a typed raw edge before graph matching/stamping, preserving
+physical undirected reversal. Existing arbitrary/partial/foreign pairs still
+reject. These decisions do not change ordinary unpromised edge behavior.
+
+Consumer integration exposed a real second-build discrepancy: the existing
+builder normalizes raw owner-node paths in place while normalized edge paths
+previously lived only in detached graph attributes. A valid absolute-path promise
+therefore became inconsistent on reuse or `original_links` export. Keep strict
+foreign-source rejection and the existing mutation contract; write the already
+accepted normalized path back only to its promised raw edge. Do not introduce
+ambient roots, basename equivalence, generic path normalization or a new transport
+owner. A reversed physical raw edge likewise vetoes only its accepted logical
+unavailable target in either physical slot. Exact ordinary regression cases retain
+both reproduced failures and verify recovery of these actual consumer paths.
+
+The new mixed-Python control initially assumed a shared bare C++ ID, but actual
+existing facade output owns a separate sourceless Python identity. Correct that
+new fixture expectation to the observed independent uncertainty, absent C++
+promise and retained valid Python call; no runtime behavior changes for that
+expectation. A separate real two-C++-producer case retains the stronger shared-
+stub/valid-parameter control. This distinction does not weaken the demonstrated
+foreign lexical-target rejection or its corruption assertions.
+
+Independent final review supplies two more actual raw-transport failures, still
+inside unpublished114. A payload with a valid typed `edges` alias but a different
+valid `links` alias can erase the restriction when reload selects `links`; each
+cohort passing alone is insufficient. Explicit nonboolean graph-mode flags are
+also coerced by NetworkX. Add one shared C++ raw-transport preflight: when either
+alias promises this family, validate both complete cohorts, reject conflicting
+aliases, and require any supplied `directed`/`multigraph` flags to be strict
+booleans before adoption. The selected directed mode passed by a typed consumer
+must likewise be boolean. Missing flags retain existing defaults. Fully absent
+C++ promises retain legacy behavior; do not change generic graph-mode selection,
+source-profile admission or unrelated-language transport.
+
+The accepted dual-alias case reveals an adjacent second-build failure too:
+normalizing only the selected promised edges leaves the unused accepted alias
+in the old absolute-path frame while raw nodes have changed. Normalize promised
+source paths coherently across both already-validated raw aliases through the
+builder's existing explicit root/path owner. Do not relax foreign-source checks,
+guess path equivalence or normalize unrelated legacy links. Keep preflight before
+all mutation. Actual source-produced cases must fail before correction, cover
+both alias orders, malformed flag values and valid/missing modes, preserve input
+on rejection and prove repeated accepted builds/export/reload. Prior107-unique
+focused acceptance remains bound to the source before this final review, not
+to the corrected transport. No additional cache epoch or graph schema is needed.
+
+The builder's coherent-frame decision uses one accepted mutable owner: after
+strictly proving both promised aliases equal, point its existing raw `links`
+alias at the existing `edges` list in place. Existing path/ID transformations
+then affect both names for the same accepted cohort. A real mixed-input probe
+shows why path-only copying is insufficient: the legacy numeric-ID adapter
+changes an ordinary edge's endpoint from7 to`"7"` in the used collection alone.
+Preserve that adapter and all evidence by sharing the already-equal cohort;
+do not create a second normalization pass or relax alias equality. Typed-only
+selected-edge source-path writeback remains necessary to match raw owner nodes.
+Retain a positive numeric-legacy peer and exact rejected-input immutability test.
+
+An actual persisted existing-source-profile wrapper supplies the paired adapter
+case: its accepted first build returns a MultiGraph but a second build fails
+because `adopt_transport` detaches the working outer/link objects while nodes
+still normalize in the original caller. Retain the explicit caller frame and
+adopt accepted final node/link references back to that same typed frame after
+complete validation. Preserve whichever raw aliases the caller supplied and
+their identical evidence; no new graph profile, ambient state or legacy mutation
+policy is introduced. Exercise simple and existing-source-multigraph profiles.
+The measured builder ceiling is recorded before this correction in code reference.
+
+The next167-case gate retains one genuine failure: an ordinary numeric peer in
+the existing-source-profile wrapper has an accepted integer logical marker, but
+the existing ID adapter changes only its physical endpoints to strings. The
+reconciled accepted caller frame therefore rejects on repeat. At the C++ promised
+frame plus explicitly present, successfully adopted source-profile boundary,
+carry those already-validated canonical logical endpoints through that same ID
+conversion. Presence of C# source facts or an unvalidated marker alone cannot
+authorize this repair. Preserve foreign/partial direction rejection, simple-mode
+behavior and unpromised legacy contracts. No new lookup/native authority, ID
+scheme, graph mode or cache epoch is introduced. Retain the failed case unchanged
+and test actual accepted repeat/export alongside contradictory-direction rejection.
+
+An independent export probe confirms a final selection boundary: a valid Graph
+contains one unavailable promise, while supplied `original_links` erase both
+promise fields. Each view passes alone, but export writes unrestricted links and
+later legacy rewire binds the foreign alias. The shared export preflight must
+also require every known Graph promised logical arc/source context/exact fact to
+remain represented in supplied links, including multiplicity retained by that
+Graph. Extra original parallel evidence remains allowed; do not require global
+Graph/list equality or demand evidence already folded out by a simple Graph.
+`original_links=None` retains normal Graph-derived output. Reject before shrink
+accounting or writes, including force, preserving Graph attributes and accepted
+disk bytes. Verify removed/changed promises, missing arcs and positive extra/raw
+parallel evidence through actual source/build/export/reload. Fully absent family
+data remains compatible. Prior167/static receipts remain bound to their exact
+pre-correction source; final combined and artifact gates are still unstarted.
+
+The final frozen INC-QML-114 owned gate passes 194 unique ordinary cases with no skips,
+errors or failures. It retains actual direct/facade/source-byte and negative
+scope controls, strict raw mode/alias adoption, accepted copied/numeric profile
+reuse, known-proof export inclusion, extra parallel restoration and public
+manual/watch failure/recovery. Helper coverage is164/166 statements and86/88
+measured branches; two defensive/out-of-annotated-API branches remain explicit.
+All 1,121 Python source/test files and 14 protected file bytes stay unchanged during
+that gate. The preceding 167-case run has one real failure and remains failed
+evidence. Complete combined compatibility, fresh isolated artifacts, full source,
+private corpus and reviewed-head hosted acceptance remain separate pending gates.
+No source/test edits are planned during those frozen-source checks.
+
+The full native suite exposes two missed compatibility-test expectations in
+`test_qt_upstream094_cache_contract.py`: both real18/22 predecessor profiles still
+assert current schema33 and a current directory suffix `s33`. An isolated replay
+confirms the exact failure `37 == 33`, with protected bytes retained. Intended
+behavior is the already documented AST37 migration; do not revert the production
+epoch or weaken old-entry misses, physical old-directory retirement, cold/warm
+graph parity or independent semantic-cache retention. After the active source
+guard finishes, update both current-epoch expectations to37 and replay that entire
+compatibility module. The frozen package payload does not change; retain the
+failed full-run/replay receipts and distinguish subsequent targeted evidence.
+
+Terminal full-run review extends that same diagnosis to the older combined-cache
+module: twelve version/schema profiles also expect33, and its replacement-fault
+selector still targets directory `s33`, so the intended real failure never fires.
+The run has15 failures confined to those two modules, with all source/protected
+bytes unchanged. Update all five current-epoch assertions/selectors to37, leaving
+historical producer versions/schemas intact and preserving every persistence,
+semantic-cache, retirement, repair and repeat assertion. Search the full test
+tree for paired current-schema/directory expectations before correction. Execute
+both modules, then a fresh complete native suite; no production package byte,
+dependency, skip or acceptance contract changes.
+
+### INC-QML-115 — Optional-wheel per-case hosted evidence
+
+Preimplementation matrix: REQ-CORE-004-AC03, REQ-QML-001-AC03,
+REQ-QML-014-AC01 and REQ-QML-022-AC06. Final hosted-audit preparation confirms
+that the existing optional-wheel native launcher emits aggregate pytest output
+without JUnit or individual passing identities. Its successful summary alone
+cannot establish every required new case. Preserve the old evidence limitation;
+do not infer 194 per-case successes from an aggregate or dispatch extra workflows.
+
+Root owns integration; the runner maintainer may own `tests/qml_ci.py`, its focused
+profiles/evidence tests and `.github/workflows/qml-wheel.yml` after the active
+source guard ends. Add an explicit owned JUnit destination to the existing actual
+pytest invocation, configured by its workflow. Consume that destination once and
+remove it from the pytest child's environment so nested profile/consumer tests
+cannot inherit and overwrite the outer report. Do not use `PYTEST_ADDOPTS` to
+inject the argument. Retain current clean core/QML smoke and native Terraform
+sequence, exact test selection, tools/dependencies, OS/Python matrix, triggers,
+permissions, concurrency and pytest failure propagation.
+
+Upload the report with the existing pinned artifact action on `always`, with
+OS/Python/run/attempt identity and an explicit missing-file failure. Native
+Windows/macOS evidence must record actual required-case outcomes; Ubuntu remains
+the separate three-case artifact-only profile. Preserve failed/skipped reports
+and distinguish runner acquisition with no execution from test failures. Existing
+run/job/checkout/dependency evidence remains separately bound; this reporting
+increment introduces no privileged proof, checkout change or new pipeline.
+
+Test successful argument delivery, absent local configuration, no leakage to
+nested pytest and unchanged native/artifact selection. Use the production
+launcher with only build/install boundaries faked and a real isolated pytest
+child to verify persisted per-case JUnit on both success and failure. Force a
+real report-write failure and retain its nonzero result; a mocked invocation or
+configuration substring alone cannot prove persistence. New source/test modules
+remain below300 lines. No product runtime, cache epoch, analyzed SDK/component,
+dependency contract or application graph changes. Final hosted upload and case
+verification remain pending until the normal PR event executes the changed job.
+
+Local implementation evidence: the final19-case launcher/profile/admission gate
+passes without skips. All ten final real-child reporting cases execute against
+the old launcher as a retained red control: nine fail and the unset-destination
+control passes. Existing-directory rejection occurs during pytest option
+validation; a separate regular-file parent forces actual report-write failure.
+Both profiles retain exact sentinel bytes and propagate nonzero results.
+Scoped Ruff and explicit-interpreter Pyright pass; the four owned files are
+60/51/174/145 physical lines. Runtime package payloads are unchanged. Hosted
+execution and successful upload for the eventual reviewed source remain pending.
+
+### INC-QML-116 — Same-root cold-reference output isolation
+
+Preimplementation decision, owned by the parity-test maintainer with root as
+integration owner. Acceptance remains REQ-QML-022-AC06 and
+REQ-CORE-004-AC03; no analyzed-language or persistence contract changes. The
+second full Windows run has one failure among15,225 cases: the cold-reference
+fixture cannot rename its newly written output directory (`WinError5`). Its
+accepted output was moved aside before the failure. An isolated replay passes,
+but does not erase that failed full run. Direct comparison of the retained
+accepted/cold products shows exact27-node/29-edge full-attribute parity.
+
+Replace only that fixture's move/restore ownership. A fresh isolated child uses
+the existing production `GRAPHIFY_OUT` setting before imports to publish a cold
+reference into a unique owned sibling output. Keep the original analysis root,
+actual CLI/watch raw publication owner and every parity assertion. Select the
+parent's admitted Graphify implementation explicitly; corpus/CWD/PATH cannot
+substitute another package. Static child source and literal arguments prevent
+corpus text from becoming executable harness code. The parent never renames,
+copies over or otherwise modifies accepted products. Keep one fixture owner;
+prefer replacing the existing helper in its current sub300-line module.
+
+Acceptance matrix before implementation: both manual and watch cold results
+retain every node/edge attribute and relation multiplicity at the same analysis
+root; source and all accepted product bytes remain exact. An actual child
+failure must remain nonpassing, retain diagnostic/cold-output evidence and leave
+accepted bytes intact; repaired retry and repeat must recover without fallback.
+Verify child import/output identity, fresh cache, and no directory movement,
+including the original allocated-member update/failure cases and affected helper
+callers. Do not change permissions, add retries/deadline allowances, weaken
+assertions, alter package payloads or borrow another root's IDs. Parent fixture
+restoration becomes inapplicable because accepted products are never moved.
+Cold-output failures retain ordinary production diagnostics; no new product
+diagnostic code is introduced. Focused/full/hosted execution remains pending.
+
+Local116 correction: four ordinary regression cases fail against the original
+helper and pass after replacement. The qualified15-module gate, including all
+fourteen existing helper import owners, passes81 cases with no skips/errors.
+All246 runtime Python files, both owned test files and14 protected file bytes
+remain exact during that gate. Ruff and explicit-interpreter Pyright pass.
+The helper's original module is176 lines and the new focused module87; no
+production package changes. Independent read-only review of both frozen hashes
+finds no concrete blocker. Fresh full suite and new-head hosted execution remain
+separate pending gates; neither previous failed full
+run is relabeled successful.
+
+### INC-QML-117 — Repeated source-reference export/reload composition
+
+Findings and preimplementation ownership: root owns design/integration; the
+source-relationship maintainer owns the eventual focused export helper and
+regressions after the representation decision is recorded. Existing
+REQ-QML-022-AC06 and REQ-QML-014-AC04 apply. A neutral C# class with a local
+function, generic base argument and same-typed field activates source storage
+and produces repeated logical `references` observations. Assembly folds the
+same direction/relation into one key; `to_json(original_links=...)` restores both
+raw records with the same key, returns success, and the strict public path
+loader rejects duplicate storage identity. Both graph directions reproduce;
+legacy unpromised graphs and Graph-derived export alone remain successful.
+
+Do not weaken the loader, remove evidence, change size caps or label an export
+return as persistence acceptance. The correction must preserve distinct
+field/generic/parameter context and original provenance, existing graph modes,
+source relation/direction identities and CPP114 known-proof inclusion. Record
+the chosen bounded representation, compatibility and ownership before editing.
+Required matrix includes direct/facade assembly, supplied/unsupplied original
+views, both directions, same/different relations and source sites, deterministic
+repeat, malformed promise/duplicate controls and actual disk/accounting
+retention/recovery on rejection. No analyzed code or application refresh runs.
+Representation decision, regression implementation and validation are pending.
+
+D46 records the pre-edit representation decision: retain version1 logical arc
+keys and the strict loader; preserve all distinct complete source observations
+in the existing source-profile `also_seen` list. One bounded helper validates,
+flattens and deterministically folds complete records, excluding only their
+parent-owned identity/direction/storage fields and list nesting. Identical
+records may deduplicate as evidence; distinct context/span/metadata cannot.
+Assembly, supplied-original export and reload/rebuild use the same owner;
+legacy graphs keep the old four-field behavior. CPP114 must validate independent
+promises across the full observation cohort and retain known-proof inclusion.
+No nonwinning record supplies resolution authority. Root has accepted this
+bounded representation; implementation/validation remain pending.
+
+Before changing accounting order, record a source-only persistence refinement:
+the current exporter consumes private dedup/prune counters even when a later
+write fails. A source-profile export must instead validate the prepared view and
+counter readability first, serialize detached metadata without the private
+counters, and consume them only after successful atomic publication. This keeps
+failure/rejection Graph/accounting/disk state for repair/retry without changing
+the legacy path or existing persistence owner. Test actual writer failure,
+malformed counter/promise rejection, successful consumption and repeat; no
+post-write validation may turn a committed write into a newly discovered
+counter failure. The source-evidence maintainer owns the slim exporter ordering
+change within the recorded ceiling.
+
+Adjacent real-publication reproduction finds an earlier loss: the raw update
+deduper returns success while retaining only generic-argument evidence and
+dropping the same-arc field observation. Extend that existing deduper with
+explicit actual source-node/graph-metadata/direction inputs for its two raw
+publication owners. Only a validated source profile selects the same complete
+evidence composer; absent legacy callers retain their exact behavior. Pass the
+actual metadata as well as nodes so a persisted storage profile does not lose
+its evidence rule merely when its last activating local function disappears.
+Strict public loaders remain unchanged. The same maintainer also owns these
+slim CLI/watch call sites after this recorded scope refinement.
+
+Verify actual manual/watch cold/full/incremental source publication, repeated
+same-arc contexts and source-profile lifetime after activation removal. Mix
+CPP114 unavailable and independently valid references with C# activation so
+coalescing cannot hide restrictions or lend authority to another observation;
+every applicable promise and accepted endpoint must survive. Failure retention,
+recovery and no-change repeat apply before and after raw publication as well
+as assembled Graph export. No new raw parser, loader repair or persistence owner
+is introduced.
+
+Before final117 folding, retain pre-normalization observations around the
+existing execution-wins policy. That policy still removes type-only status from
+the aggregate when an execution import exists, but source-only complete history
+must retain the original type-only/execution records as non-authoritative
+`also_seen` evidence. Keep the same primary import semantics and legacy behavior;
+prove both input orders and repeat without inventing another import mechanism.
+
+Final117 independent static review requires faithful probes before final source
+freeze. First, a malformed parent relation in a supplied original view must not
+be stripped from evidence validation, hashed and persisted as an invalid arc;
+apply the same strict parent identity/direction/relation rules to Graph-derived
+and overriding source views before accounting or write. Second, raw typed
+source activation must validate both supplied aliases and explicit boolean modes
+before adapters mutate a selected frame, even without an outer storage marker
+or C++ promise. Exact JSON record equality cannot be replaced by Python bool/int
+coercion. Valid raw observation composition and strict persisted duplicate-key
+rejection retain their separate boundaries. Third, an independent CPP promise
+carried only in secondary complete evidence cannot be accepted and later erased
+by legacy four-field folding when no source storage profile is active. Reject
+that unsupported secondary-promise carrier before mutation rather than silently
+promoting legacy storage or losing the restriction. Ordinary top-level CPP114
+promises and unpromised legacy evidence retain their existing behavior.
+
+The source-evidence owner first reproduces these review counterexamples at
+production boundaries after the active guarded run completes, then corrects
+only their owning preflights. Retain both-force modes, whole raw/Graph/accounting/
+disk state, repaired retry and repeat; final peer review rechecks the updated
+hashes. These are completion of the planned malformed-cohort matrix, not new
+graph modes or language capabilities.
+
+### INC-QML-118 — Same-unit anonymous helper preservation after member takeover
+
+Preimplementation decision: existing REQ-QML-022-AC02/AC06 and
+REQ-QML-003/014 source-call criteria apply. A neutral anonymous-namespace helper
+followed by an out-of-line member body has one actual direct/facade call in the
+reviewed older profile, but zero in the current candidate without parser/source
+failure. Repaired body ownership invokes the precise free-call owner, whose
+named-namespace-only target admission removes a valid same-unit helper call.
+This is a confirmed compatibility gap, not proof that all anonymous lookups are
+safe. Keep explicit cross-unit, conditional, shadowed and ambiguous negatives.
+
+The free-call maintainer owns only the narrow source target decision and focused
+regressions; root owns requirements/design/epochs/Git integration. Use original
+validated function/span/source and lexical namespace evidence to admit a unique
+preceding helper in the same translation unit. Do not resolve by display label,
+invent source/member ownership, admit runtime lookup or relax native exposure.
+Keep the existing named namespace/prototype/default-argument and generic partial
+caller contracts. Record current/proposed helper measurements before exceeding
+300 lines; do not combine a mechanical refactor with this correction.
+
+Acceptance matrix: direct and facade positive calls retain actual body/canonical
+callers, target IDs and source bytes; named/nested namespace and ordinary free
+caller controls keep their contracts. Same spelling in another translation unit,
+later/unavailable declarations, class/local shadows, conditional ambiguity and
+same-name competing helpers cannot lend authority. Test cold/warm and full/manual/
+watch removal, repaired retry, no-change repeat, public reload and actual failed
+publication retention. Root retires earlier AST/Qt policy caches after the fact
+contract changes; semantic cache and dependencies remain unchanged. Targeted,
+combined, installed, fresh reference-corpus and reviewed-head hosted evidence
+must be rebound after the correction; earlier candidate proof stays historical.
+
+Pre-edit ownership refinement: existing function transport records anonymous
+status but not the original anonymous namespace's span/role. A hash or status
+alone cannot prove lexical reachability. The same maintainer therefore also
+owns the narrow `cpp_functions` producer/validator seam and one cohesive bounded
+namespace-witness helper if needed. Capture original anonymous/named ancestor
+spans during the existing AST traversal; validate source/containment/order at
+the consuming boundary without rereading or executing corpus input. Record
+the fact-version compatibility/absence policy and helper measurements before
+implementation. This is one source-proof correction, not permission for
+unrelated function transport or namespace refactoring.
+
+D47 records the intended new derived-fact epochs, AST38/Qt32, before the root
+updates the constants and paired compatibility/fault-selector expectations.
+Add real37/31 predecessor cases without changing historical producer identities,
+semantic-cache retention, actual rejected publication, recovery or repeat.
+The namespace proof remains optional within function transport1 and has its own
+version1/complete shape; absent older facts cannot resolve a new positive call.
+Source IDs and documented public runtime/dependency contracts remain stable.
+
+Local118 evidence:68 ordinary focused cases pass without skips, with six owned
+files and14 protected file bytes unchanged. Initial direct/facade red proof has
+23 failures and16 retained controls. Source modules measure119/276/269 lines;
+tests measure117/103/83, all below300. Ruff and explicit-interpreter Pyright
+pass; independent read-only review verifies all six frozen hashes without a
+concrete blocker. Qualified lookup, nested anonymous scopes, named descendants
+inside anonymous scopes and competing candidates retain explicit unavailability.
+Measured helper coverage is72/86 statements and30/40 branches; defensive and
+alternate identity exits remain unexecuted, not claimed complete coverage.
+
+Root's paired AST38/Qt32 migration gate passes104 cases across the five existing
+compatibility/state modules, including actual37/31 predecessor writes, physical
+retirement, semantic cache preservation, failed publication and recovery. The
+new exact C++ fragment successfully loads under37 while lacking both namespace
+witness and helper call;38 misses it and cold/warm source regeneration restores
+the call without source edits. A final in-memory37 control fails on actual
+stale-cache acceptance, while the exact corrected case passes. Epoch source,
+owned tests and all14 protected bytes remain unchanged during their own gates;
+other explicitly allocated source work is outside that scoped guard. Combined,
+fresh package/corpus and reviewed-head hosted gates remain pending.
+
+An independent118 negative-boundary probe before the combined gate finds a
+newly introduced overbroad veto: an unsupported nested anonymous helper in an
+unrelated named namespace suppresses a valid global named helper. The older
+candidate retains that call in both direct/facade paths. Correct only the
+rejection scope, with ordinary regressions before editing: a fully validated
+original namespace role sequence may bound negative evidence to its actual
+named namespace; unsupported anonymous forms still cannot supply a positive
+target. Include named roles both before and after an anonymous role, unrelated
+valid named/global targets, same-host ambiguity, malformed/absent proof and both
+extraction paths. A prefix shortened before the first anonymous role must not
+become a global veto. Earlier68-case/peer receipts remain historical until the
+updated files pass focused and renewed independent review. This is correction
+of the unpublished118 rejection boundary, not new positive lookup scope.
+
+Before editing the prototype producer, add the adjacent declaration-order
+boundary: a preceding anonymous declaration can compete with a named target
+even when its definition follows the call. Definition-only indexing cannot
+silently treat that declaration as harmless late source. The free-call
+maintainer additionally owns the narrow `cpp_prototypes` witness producer seam
+and a role/ID-validated rejection-only declaration reader in the same bounded
+helper. No positive prototype-to-body binding, default-argument expansion,
+foreign-unit or native authority is introduced. Include both extraction paths,
+unrelated namespace declarations, later declaration-only controls and a matching
+anonymous declaration/preceding definition so negative evidence does not erase
+an already proven helper. Same-name competing declarations must remain
+unavailable unless their accepted source role/signature proves they do not
+compete. Record actual measurements and renewed focused/peer evidence before
+the final combined/package gate; earlier76-case proof stays historical.
+
+Renewed118 review confirms another negative-key collision before final gates:
+a fully validated anonymous/named/anonymous path containing `Public` must not
+veto a caller in a distinct ordinary `Public` namespace. Both direct/facade older
+profiles retain the actual named helper; the current flattened negative host
+loses it. Preserve original anonymous role markers in rejection-only identity,
+trimming only terminal anonymous roles that inject names into their containing
+scope. Supported named-only caller identity cannot match an internal anonymous
+namespace merely by spelling. Add exact same-spelling role-order and reopened
+namespace controls, retaining same-host ambiguity and malformed-proof deferral.
+The positive single-terminal-anonymous profile is unchanged. Earlier90-case
+proof stays historical; updated focused and independent peer review are required.
+
+The117 adjacent gate also catches three stale current-epoch test assertions in
+alias/header/type-reference update modules after root's38 change. Preserve their
+actual35/36 predecessor payloads and every miss/repair/repeat assertion; change
+only current37 expectations to38 and search the full test tree for paired stale
+current values. Root owns these expectation refinements. The failed adjacent
+gate remains failed evidence; a later final gate must execute the corrected
+cases rather than borrowing its other passing counts.
+
+### INC-QML-119 — Direct C++ definition/prototype provenance in assembly
+
+Preimplementation finding and ownership: a fresh isolated core/QML consumer
+exposes a real direct-producer composition gap. With a global helper definition,
+member call and distinct later anonymous prototype, direct extraction correctly
+targets the preceding definition. Assembly drops that source body and redirects
+the EXTRACTED call to the unrelated later declaration. Both graph directions
+reproduce; facade output remains correct because only that entry point supplies
+the existing AST provenance marker. The failed fresh-consumer wrapper remains
+failed; independent117 arms and preserved legacy checks cannot establish its
+complete acceptance. The in-flight full-source and private scans were stopped,
+their process absence and protected/source bytes verified, with interrupted
+finalizers/observer restoration explicitly unconfirmed. No partial run is a pass.
+
+Root owns integration/requirements/epochs/Git; a C++ producer maintainer owns the
+narrow function/prototype producer correction, with a separate regression owner.
+Existing REQ-QML-022-AC02/AC06, REQ-QML-014-AC04 and direct source-provenance policy
+apply. Stamp existing AST provenance at the actual source declaration producer,
+using the established marker without promoting semantic/placeholder records or
+using origin alone as native/callable authority. Preserve source roles, original
+spans/IDs, independent namespace/prototype identity and legitimate canonical
+declaration/body behavior. Do not bypass generic deduplication globally, depend
+on facade postprocessing or relax the installed probe.
+
+Acceptance matrix before implementation: reproduce the actual direct/facade,
+both-direction build/export/public-reload loss; source definitions/prototypes
+and actual call endpoints remain distinct after correction. Include same-name
+different scopes, valid same-entity declaration/body, ordinary legacy and
+semantic-placeholder controls, malformed/partial source and unchanged native
+authority boundaries. Exercise source removal, cold/warm and manual/watch
+recovery, actual graph replacement failure/retention/repeat and source/cache
+upgrade where affected. Record exact producer measurements before growth;
+new source/test helpers remain below300 lines. AST39/Qt33 retire earlier derived
+facts/products at unchanged package/source versions; preserve every historical
+epoch and failure selector while updating all current expectations. Complete
+new source/artifact/corpus/hosted proof must bind the corrected package; the
+198c62 tree/wheel remain historical and no application adoption occurs.
+
+INC119 local implementation stamps the existing AST marker only on the actual
+allocated C++ definition/prototype producers. The qualified pre-fix gate has14
+failures and30 passing controls. The corrected broad selection passes209 cases
+(50 owned plus159 adjacent controls), then the final54-case owned selection adds
+four same-line namespace identity cases and passes without skips. These are
+separate overlapping executions, not one213-case run. Two earlier lifecycle
+fixtures correctly hit the existing shrink guard before their intended write
+failure; actual replacement source keeps the original six-node count so the
+final cases reach EIO, retain output, remove stale targets, recover and repeat.
+No shrink policy or assertion is weakened. The two new provenance writes execute;
+the prototype dictionary continuation has no separate coverage event. Existing
+defensive/signature exits remain explicit uncovered limits.
+
+The paired AST39/Qt33 gate passes125 cases across eight modules, without skips.
+An actual saved38 fragment successfully reads while missing producer provenance;
+current39 rejects and retires it, preserving independent semantic bytes and
+regenerating actual body/prototype/call identities cold and warm. A separate
+in-memory38 control fails on stale acceptance; the corrected exact case passes.
+All guarded source and14 protected file bytes remain exact. Scoped Ruff/Pyright
+pass. Fresh raw-Git wheel consumers must first replay the exact eight installed
+failure boundaries in each profile before new long full-source/corpus gates.
+Those gates, repository graph refresh and new reviewed-head hosted evidence
+remain pending; interrupted198 runs and earlier package evidence are historical.
+
+The first complete119 artifact checkpoint passes: all385 shipped files/248 Python
+files match raw Git tree `24f994cb6e21e8a68d6bdc7979087fd4c213ab4e`, inert build
+input, wheel and both fresh installations. That object is a tree, not a commit.
+Core/QML-watch retain31/35 frozen distributions. Both FAST8 replays, complete
+legacy26 CLI plus two direction operations, real syntax/write failure retention,
+repair/repeat, watcher cleanup and the unchanged281-line extended probe pass.
+All1,138 source/test Python files and14 protected files stay exact. Ruff passes,
+all134 generated artifacts match and full explicit-interpreter Pyright retains
+684 baseline diagnostics with zero new or retired identities. Static checks find
+no broken443 local links,929 exact test references, unknown criteria or new
+handwritten files over300 lines. Full-source/corpus runs are active separately,
+not accepted. Draft PR synchronization may own the new hosted matrix in parallel;
+no merge, duplicate dispatch, application adoption or reviewer request follows.
+
+### INC-QML-120 — Controlled malformed source-profile activation
+
+Preimplementation finding: normal PR validation of source `0a51f2bf` exposes an
+existing transport regression: a promised source graph with `nodes:null` reaches
+`source_profile` iteration before controlled structural rejection. The existing
+ordinary C# transport test fails with TypeError on Windows, Linux and macOS.
+This is a product error, not an acquisition failure. Root stops the current
+local full-source and reference-corpus attempts; their bytes/process guards pass
+but interrupted finalizers remain unconfirmed. No incomplete run is acceptance.
+
+The source-profile maintainer owns only its existing261/300-line module and
+focused sub300-line regressions. REQ-QML-022-AC06 and REQ-QML-012-AC01/AC02 apply.
+Before production edits, reproduce the original public builder/load boundary and
+adjacent malformed carriers, explicit/automatic typed activation, complete
+promised-fact validation, valid graph-node views and existing legacy absence.
+Correct admission/validation ordering without converting corrupt promises into
+absence, mutating inputs or granting storage/native authority. Verify accepted
+output and counters remain exact, repair and repeat. Existing source fact schema
+and accepted successful profiles are unchanged; AST39/Qt33 remain current rather
+than advancing epochs solely for rejected-input diagnostics. New package/full/
+corpus/hosted proof must bind the corrected revision.
+
+### INC-QML-121 — Raw direction fault adapter follows the production interface
+
+The same executed Linux/macOS jobs expose32 raw-output regression cases whose
+old test callback rejects the new `source_nodes` keyword before injecting damage
+or setting its observation. Root owns the test adapter in
+`test_qt_update_direction_integrity.py`. Forward the real deduper's keyword
+context through that existing seam, then corrupt only its actual result. Keep
+all32 rejection, no-writer, graph/cache/cohort retention, diagnostic redaction,
+repair/repeat and changed-source assertions. No production behavior, graph
+contract, dependency or native lane changes. Existing REQ-QML-010/012/022 criteria
+remain authoritative; this is restoration of executable regression coverage.
+
+### INC-QML-122 — Readonly publication qualification after actual lock admission
+
+An executed POSIX struct-update fixture makes the output parent nonwritable
+before the manual path can create its rebuild lock. It therefore fails before
+the intended publication boundary. The update/lock maintainer owns the existing
+struct fixture and narrow neutral helpers. Qualify writer denial at actual
+transaction preparation, after the real mutex and pending-request coordination,
+retaining native ownership/release and readonly permissions. A real nonblocking
+contender must confirm ownership; restore permissions before late queue/lock
+cleanup. Do not bypass locking, replace validation, relax output/diagnostic
+assertions or manufacture publication results. Both manual/watch and actual
+replacement-EIO controls must retain all products/permissions, recover and repeat.
+Windows actual readonly-file behavior and POSIX qualification remain separately
+proved. A platform-only skip does not establish the other platform's evidence.
+
+### INC-QML-123 — Unavailable rebuild-lock storage is a distinct controlled error
+
+The fixture also exposes a separate operational gap: actual lock-file/directory
+access denial can escape the update owner as an unhandled OSError. Do not hide
+that outcome by moving the publication fixture. Root records D48 and
+REQ-QML-012-AC01/AC02 before the lock maintainer's implementation. Reproduce denied
+lock storage independently, using actual native denial where available and a
+bounded filesystem seam for deterministic error/control coverage. Define one
+safe actionable `REBUILD_SETUP_FAILED` diagnostic with `stage=queue` or
+`stage=lock`, distinct from contention and writer failure, without disclosing
+backend bodies or private paths. Only queue setup/context entry are guarded;
+analysis, writer and lock-exit failures remain outside this classification.
+Existing append/coalescing and partial-append semantics are unchanged. The command
+must fail before analysis/cache/publication, retain accepted products and
+holder/queued state, and permit repaired retry/repeat. Preserve native advisory
+locking, inode-race retries, holder cleanup and all ordinary lock controls.
+Record any unavailable native platform and remaining failure boundaries exactly.
+No broad mutex refactor, lock bypass or new runtime dependency is authorized.
+
+### INC-QML-124 — Stable source-defined case identities across pytest versions
+
+The failed0a51 native XML also exposes a separate proof gap: nine canonical
+required identities use long auto-generated parameter labels under local
+pytest9.1.1, while hosted9.2.0 uses short fallback labels. Corresponding functions
+execute, but no alias pass is assigned. The test-evidence maintainer owns only
+explicit IDs on five complete axes in four existing modules: C++ type-reference
+bounds, C# captured receivers, Qt analysis state and legacy qmltypes qualifiers.
+All31 parameter values, ordering, test bodies, assertions, markers and skips stay
+exact. Use unique short semantic ASCII labels for complete axes, preserving
+function/criterion/increment identities and old revision-bound evidence.
+
+Before editing, capture actual native mismatches and source AST/value/body
+fingerprints. Afterward compare complete real collections under both available
+pytest versions and execute the exact corrected modules. Duplicate, omitted or
+ambiguous case identities reject the proof; no dependency pin/change, assertion
+relaxation or inferred alias can make the failed revision accepted. The owning
+REQ-CORE-004-AC03 gains this explicit evidence contract. New packaging/source and
+hosted manifests bind the final IDs; old source0a51 receipts remain unchanged.
+
+INC120–124 complete the recorded scoped local correction gates and independent
+read-only reviews. Fresh raw-Git packaging input is tree
+`bf3238f55810bdea646914a1353848c09b35bf51`, explicitly not a commit. Its385 shipped
+payloads/248 Python files match raw objects, inert input and unmodified wheel
+SHA256 `9f7e229165f42767ab7d5210bf050ec2aada2dc23fb82eaab69d8631f9d947c3`.
+Both fresh offline31/35-distribution profiles finish all six phases in40.703
+seconds: unchanged FAST8,24 admission cases,6 setup mechanisms and3 controls per
+profile, then complete original CLI/direction/source probes and watcher cleanup.
+Actual Windows readonly lock qualification and reached writer EIO pass; the
+writer baseline first warms valid candidate caches through actual extraction
+and cache readback while preserving old AST entries and accepted graph bytes.
+Setup rejection still preserves every cache/product/input/holder byte before
+analysis. This distinction does not promise cache rollback after valid analysis.
+
+All1,142 source/test files,14 protected files,28 harness files and historical17
+inputs/nine assertion/configuration copies stay exact. Root Ruff and134 generated
+artifacts pass; full explicit-interpreter typing retains684 inherited diagnostics,
+zero additions/retirements. Static341-file review finds no broken443 local links,
+934 exact test references, unknown criteria or new handwritten file over300.
+The new full-source and reference-corpus gates run separately against this
+artifact. Draft PR synchronization may run in parallel; old failed0a51 jobs,
+interrupted local attempts and earlier raw packages remain separate evidence.
+
+### INC-QML-125 — Stable mixed-build integration case labels
+
+Fresh complete required-set collection discovers one further cross-tool identity
+difference outside the four INC124 modules: the shared mixed-build integration
+axis embeds a long qmake source literal under pytest9.1.1 and uses a short
+fallback under9.2.0. This is distinct from a failed product assertion. Its current
+mandatory51 assignment belongs to full Linux evidence; actual lane tool versions
+and XML must be checked rather than treating a narrower isolated collection as
+equivalent. Two optional FalkorDB cases are absent from the isolated collection
+and remain explicitly unexecuted there.
+
+The test-evidence maintainer may prepare the two-value build-axis ID patch and
+logical-input/body fingerprints now, but must not edit public Python until the
+active full-source guard finishes. Add only unique source-defined semantic
+qmake/CMake IDs in existing value order; preserve every test body, input, marker,
+dependency and workflow selector. Execute the actual cases under both available
+pytest versions, with per-case XML matching collection. Recollect affected
+required manifests at the new revision without retroactive verdict aliases.
+Runtime payloads remain unchanged, so the independently bound installed private
+scan may continue. A future source commit still receives normal PR validation;
+the current2922 job evidence retains its own exact source/base/checkout identity.
+
+The complete Windows source gate finishes before the one-file125 edit:
+15,494 passes,188 explicit skips,one inherited expected failure,zero failures,
+with all1,142 source/test and14 protected files exact. Source2922's normal hosted
+Main/QML runs complete all20 jobs successfully with exact per-lane required IDs,
+source-matched385-payload wheels,24 smokes and12 cleanup markers. The private
+installed-corpus scan remains running and unaccepted until its durable consumer
+audit finishes.
+
+INC125 then passes its entire four-case module under both actual pytest9.1.1
+and isolated9.2.0 with equal collection/logical-input/XML identities. Only IDs
+and a comment change; runtime source/dependencies remain exact. Final reviewed-
+head validation must run normally at the new source. Existing runtime wheel
+proof may transfer only through independent385-payload equality; its original
+build tree and all earlier execution identities remain explicitly unchanged.
+
+### INC-QML-126 — Workflow inventory follows the stable build IDs
+
+The normal7ab PR run exposes one missed125 dependency: the production workflow's
+combined51-case gate still contains the two former source-derived build
+labels. The existing automatically collected source-gate test correctly fails
+closed. This is an integration omission, not a runner-acquisition failure or
+reason to relax the gate. Root owns only the two inventory strings in the main
+workflow; the existing strict gate and all source tests remain unchanged.
+
+Before editing, replay the exact existing gate failure. Replace only the two
+names with current cmake/qmake identities, retaining all46 joint cases and five
+other required cases, required statuses, duplicate/missing/foreign rejection,
+workflow triggers,
+permissions, profiles and dependencies. Execute the complete gate module and
+the actual affected integration module; verify collected identities and count
+match the literal workflow. Inspect other current source-ID consumers for stale
+references. Record the failed7ab run and three automatic Linux cancellations
+separately. No retry/dispatch/merge or private-scan interruption is authorized;
+the runtime payload remains identical. Normal new-head PR synchronization owns
+full validation after this scoped correction and source/required-manifest review.
+
+The original collected production gate reproduces one failure: only the shared
+integration module rejects. The first unchanged-workflow local attempt also
+fails and remains failed evidence; an ignored verifier initially confused the
+46 joint cases with the combined51 assignments. The qualified correction changes
+only two literal names. The complete source-gate and shared-integration modules
+then pass all14 cases without skips, including missing/duplicate/foreign/growth
+and nonpassing-outcome rejection. Workflow/test bytes remain unchanged during
+execution, as do all14 protected files. CI-owner workflow size remains650/650;
+no test assertion, runtime package, trigger or dependency changes.
+
+### INC-QML-127 — Accepted-link projection agrees across export
+
+The fresh completed reference-corpus consumer exposes two distinct owning-boundary
+gaps despite successful43ac hosted validation. Assembly accepts38 real imports
+after remapping endpoint IDs, but the original-link export receives stale IDs and
+drops them. Conversely, original-link preservation restores calls that assembly
+rejects through its existing cross-language policy. Raw source, assembly and
+durable export observations establish the disagreement; aggregate totals alone
+cannot establish its correction. No application adoption has occurred.
+
+Affected acceptance is REQ-QML-010-AC02/AC03 and the shared-boundary regression
+obligation in REQ-QML-022-AC06. Root owns requirements/design/integration/Git;
+the source auditor owns private original-byte dispositions; separate read-only
+reproduction and design reviewers must qualify the neutral production-boundary
+failures before an implementation owner edits production code. This is a scoped
+common build/export correction, not a producer/parser rewrite or a reason to
+weaken caps, assertions, dependencies or existing language-admission contracts.
+
+The pre-implementation matrix covers accepted import remaps and exact reload,
+ambiguous/unresolved endpoints, rejected cross-language calls, accepted Qt/QML
+exceptions, parallel mechanisms and all original attributes, cold/warm and
+full/incremental parity, stale-edge removal, actual failed graph replacement,
+retention/recovery/repeat, and legacy manual/extra-original-link compatibility.
+Inspect the real caller-frame and existing source-only primary/secondary storage
+contracts. Keep resolution/rejection authoritative at its existing owner; do not
+add an independent guessed resolver or replay graph construction during export.
+New handwritten owners stay below300 lines; legacy sizes/ceilings must be recorded
+before growth. The exact design and affected diagnostic contract remain pending
+qualified reproductions and ownership review. Ordinary PR synchronization owns
+new-head validation; successful43ac evidence retains its own revision identity.
+
+INC127's qualified neutral production-boundary reproductions confirm eight
+failures across source/legacy storage and both directions: four remapped imports
+are lost only with original-link export, and four rejected cross-family inferred
+calls return. The four external-import ordering observations become positive
+acceptance under D49: a real extracted imported-module call is admitted from the
+complete valid import cohort; a call without import/declaration cannot mint a
+target. New automatically collected regressions must fail before production
+changes. Preserve failed evidence and immutable raw corpus output.
+
+### INC-QML-128 — Successful projection version drives forward recovery
+
+Affected acceptance: REQ-QML-011-AC03/AC04 and REQ-QML-012-AC01/AC02 for existing
+failure retention. A corrected consumer alone cannot silently repair products
+that an unchanged watch would otherwise skip. Add one projection-version scalar
+to the existing build-state owner; missing/older versions trigger a complete
+accepted-corpus re-projection with normal raw-cache reuse. Promote caller-supplied
+partial watch inputs through existing discovery rather than discarding unrelated
+source facts. Stamp only with the actual successful product cohort; failed or
+rejected writes retain prior products/state and allow repaired retry/repeat.
+
+The watch owner and new focused regression files are disjoint from INC127's
+builder/helper and test owners. Public Python changes are sequenced around
+frozen red/green guards; independent design/preparation may run concurrently.
+Success, missing/old/current versions, generic Python/C# and Qt profiles, source
+edit/deletion, valid cache reuse, actual replacement failure, retention/recovery,
+partial/full parity and unchanged no-op are the pre-implementation matrix.
+Setup/contended/invalid-input paths cannot stamp success. No parser/schema or
+dependency bump, new discovery boundary, cap override or global upgrade occurs.
+Final source/native/full/installed and real corpus-consumer proof belongs to
+the resulting revision; successful43ac remains historical evidence.
+
+INC128 implementation adds the strict scalar/reader, normal full promotion and
+early/three equality guards to the existing rebuild owner: watch3,432/3,450.
+Ordinary red has25 failures/two controls; green has27 passes. The596-case adjacent
+gate has583 passes/13 existing skips and includes those27. All changed executable
+lines/arcs, valid caches, native contention, invalid prior transport, real EIO,
+recovery and repeat have source-frozen independent evidence. No source-fact epoch
+or dependency changes. Current-revision raw package, full suite, installed consumer,
+real corpus consumer and normal hosted checks remain separately bound release
+gates. Live per-revision state belongs to PR #10's evidence table; older successful
+and failed source checkpoints are not promoted to a later revision.
+
+### INC-QML-129 — Ordinary caller field absences survive projection
+
+Fresh isolated core31/QML-watch35 consumers for source9ac fail the unchanged
+historical legacy100 invariant after FAST8/admission/setup/control success.
+Graph type, two nodes, one call and absent source-storage profile remain correct;
+the caller dictionary alone changes. Accepted-link adoption copied synthesized
+_src/_tgt, and a neighboring absent-source_file case copied synthesized
+provenance. The failed profiles and every original assertion remain preserved;
+later CLI/new supplemental/finalization phases were not executed.
+
+Affected acceptance is REQ-QML-010-AC02, the unpromised legacy compatibility
+contract in REQ-QML-022-AC06 and REQ-QML-011-AC04 forward recovery. Before
+implementation, the new ordinary module reproduces26 failures/49 controls
+in75 cases: the exact48 legacy100 matrix and adjacent absence, explicit direction,
+source-profile, held-reference, numeric/unknown metadata, actual rejection and
+accepted-product retention checks. All1,148 earlier Python files and14 protected
+files remain exact; the new196-line module is frozen. No old assertion changes.
+
+The production owner may suppress only builder-synthesized _src/_tgt/source_file
+when absent from an ordinary working edge. Keep source-profile complete records,
+canonical endpoints, rejection/pruning, valid explicit pair remapping, invalid
+pair rejection, transient removal and present-field repairs. Do not filter all
+unknown attributes or discard D49. The invocation-local helper remains the owner;
+build/export/watch need no implementation change. New helper is proposed174/300,
+from167; existing builder3,328/3,345 and watch3,432/3,450 remain frozen.
+
+Advance projection_version1 to2 because original-link JSON field shape changes.
+AST39/Qt33/package0.9.99 and dependency profiles remain unchanged. Add old-int1
+and current-equal float2.0/text2 version controls without removing the existing
+seven values/assertions; current integer2 remains accepted. Sequence ordinary
+red, helper green, new version tests and broader frozen gates with disjoint test/
+production ownership. Fresh failed environments are not reused; source9ac CI
+continues undisturbed until normal new-source PR synchronization replaces it.
+Final new package/full/installed/corpus/native proof remains revision-bound.
+
+INC129's source-frozen correction passes75 new cases, then163 combined cases,
+then751 related cases, with no failures/skips. The three new watch-version values
+retain all earlier cases/assertions and pass the complete30-case module.
+Helper174/300, projection2 and no other runtime body changes are independently
+reviewed. New absence-filter lines/branches execute; prior defensive gaps stay
+explicit. Final current-revision source/package/installed/corpus/native and
+cleanup evidence remains separately bound; failed9ac consumers are never reused.
+
+### INC-QML-130 — Raw autoactivation and accepted logical endpoint basis
+
+Current sourceb645 reproduces nine failures in97 unchanged existing cases:
+one C++ unavailable-reference case with reversed physical storage and valid
+logical markers, and eight genuine producer-fact autoactivation cases with
+missing/null graph metadata. The latter retain correct graph type/direction but
+acquire synthetic marker keys in caller input. Four actual macOS lanes independently
+report the same nine failures. Ordinary/context/recluster cases now pass, so the
+earlier129 repair must not be reverted or treated as whole compatibility proof.
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and projection
+recovery under REQ-QML-011-AC04. Existing automatically collected regression
+assertions remain unchanged. Distinguish an explicit validated persisted source
+profile from raw fact-driven source storage: only the former owns canonical
+wire enrichment of the caller frame. Genuine raw producer facts still select
+source storage and retain all source validation; activation alone cannot change
+the raw caller's field absences. Explicit-profile129 controls remain authoritative.
+
+For reversed C++ reference storage, graph assembly already owns the accepted
+logical endpoints. The caller-frame adapter must receive that endpoint basis
+explicitly and avoid converting a valid logical pair through physical keys again.
+No spelling/role guess or second resolver belongs in the generic frame helper.
+Preserve invalid-pair rejection, aliases, actual remaps/pruning, independent
+observations and complete C++ context. The exact minimal helper/builder interface
+and measured ceilings precede public production edits. Advance projection3 for
+the corrected publication algorithm; AST39/Qt33/package/dependencies remain fixed.
+
+The owned long Windows run for b645 was stopped at9% after exact current failure
+qualification. Its four owned Python processes are confirmed absent;1,149 sources
+and14 protected files remain exact, partial log retained and no XML/full-pass
+claim is made. Hosted b645 jobs remain undisturbed and revision-bound. The separate
+installed b645 corpus consumer has completed against immutable raw facts; its
+per-dataset evidence cannot establish compatibility of the nine failing inputs.
+
+INC130's helper measures182/300 and builder3,331/3,345; exporter/watch retain
+their previous bytes and ceilings. The helper captures explicit profile intent
+separately from storage mode and accepts the builder's already-logical basis,
+preserving physical caller parents and later directed rejection. The combined
+owner validates every chunk, propagating only a caller-supplied explicit profile.
+Mixed explicit/raw calls retain one cohort-wide canonical profile; no per-chunk
+mutation registry is introduced. Sixteen adjacent cases cover actual typed facts,
+both orders, deduplication/direction, removal of typed activation, malformed
+explicit peers, public PATH round trips and retained accepted disk output.
+
+The exact unchanged97-case run progresses from nine failures/88 controls to
+four combined-input failures/93 passes, then97 passes after correcting explicit
+marker propagation. Earlier failing receipts are retained. Projection3 adds
+integer2/float3.0/text3 parameters without changing the earlier ten values or
+any assertion. Broader, quality, installed, full-source, corpus and hosted gates
+remain separate; final exit requires evidence for the resulting reviewed source.
+
+The first related gate passes941 cases with no skips/errors. Add adjacent
+actual C++ alias cases because the corrected physical basis also feeds present
+from/to fields. Coverage already executes that assignment; its missing line143
+is the pre-existing defensive lost-logical-direction rejection, not an uncovered
+alias assignment. Unflagged reversed physical parents remain contradictory to
+directed storage; the existing explicit transport adapter may canonicalize its
+working parents before frame acceptance. Do not infer a new per-input wire
+contract or weaken old assertions from that defensive coverage limitation.
+
+The new alias fixture initially supplied only a reserved graph marker while
+expecting the persisted adapter's canonical physical slots: three raw controls
+pass and three explicit-marker cases fail in the retained six-case diagnostic.
+Actual `build_from_json` enters that adapter only with the marker plus `links`
+or `multigraph`; marker-only extraction takes the raw path. The combined builder
+constructs its own raw merged frame and does not copy those transport slots.
+This is a new test-setup error, not evidence to change production behavior.
+Before the next source freeze, cover all three carriers through direct/combined
+owners, expecting canonical working slots only for actual direct persisted
+adoption. Preserve the failed gate, the original nine regression assertions and
+the stated physical/logical contracts.
+
+The retained947-case run has944 passes and those three new fixture errors only;
+all original nine regressions pass. Corrected carrier-aware alias execution has
+18 passes, then the complete final related gate passes959 cases with no errors/
+skips in184.125 seconds, including all34 mixed/alias and33 recovery cases.
+Changed normal-path helper statements execute; the existing source-key invariant
+rejection and other historical defensive gaps remain unverified.
+Source1,150/protected14 bytes match and the successful
+owned neutral fixture is confirmed removed. Failed fixture evidence remains.
+Final Ruff/generated checks pass; explicit-interpreter typing retains exactly
+684 inherited diagnostics with no additions/retirements. The source-fact and
+dependency contracts remain unchanged; final package/installed/full/corpus/
+hosted evidence is separately bound, without inheriting old revision passes.
+
+A subsequent bounded source qualification finds a real additional numeric-peer
+conversion defect, reserved for INC131. Six valid actual C# producer/ordinary
+numeric-ID transports pass preflight. Persisted direct build rejects after
+parent7 becomes string7 while its explicit source marker remains integer7;
+the other five raw/marker/combined paths build but reject original-link export.
+Default export alone would conceal those five failures. This reachable boundary
+is not established by INC130's959 passing cases; release acceptance remains
+blocked pending the separate correction and ordinary regression coverage.
+
+### INC-QML-131 — Valid numeric direction markers share identity normalization
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and existing
+REQ-QML-011-AC04 forward recovery; REQ-QML-012-AC02 retains actual publication
+failure/recovery evidence. The six qualified numeric-peer failures use genuine
+C# source facts and an ordinary accepted numeric node, without native authority
+fabrication. All six pass raw source preflight. Normalizing parent identity7 to
+string7 while retaining integer7 direction markers breaks valid correspondence.
+
+Before production edits, the existing numeric normalization owner must validate
+the original explicit pair with the shared direction contract. Only a previously
+valid pair may share the exact existing `_coerce_id` transformation of parents
+and endpoint aliases. Partial, foreign, boolean/numeric type-conflicting or
+otherwise invalid marker pairs must remain invalid, including under force.
+An undirected reversed pair must keep its orientation; the numeric conversion
+cannot remove a later directed-storage contradiction. Missing markers remain
+absent. Do not normalize arbitrary metadata or introduce native target lookup.
+
+Root owns production/docs/Git; the delegated test owner owns only the new
+ordinary collected numeric-direction module. Record its red gate before the
+production correction. Cover the six exact failures, integer/finite-float and
+ordinary/source activation, forward/reversed logical pairs, present aliases,
+partial/foreign/type-conflicting rejection, public original-link export/PATH
+reload, accepted disk retention and repaired repeat. Keep existing D49 limits
+on earlier legacy repair rollback rather than inventing a global transaction.
+
+`build.py` currently measures3,331/3,345. A bounded extension of its existing
+numeric normalizer is proposed within that same ceiling; the graph-assembly
+maintainer and focused extraction exit path remain unchanged. The frame remains
+182/300 except projection3-to4; watcher/exporter bodies and source-fact epochs
+39/33, dependencies/platforms/caps stay unchanged. Append old integer3 and
+current-looking float4.0/text4 to the existing thirteen update parameters without
+changing any earlier value/ID/body/assertion. Fresh package/installed/full/
+corpus/native and repository-graph proof belongs to the final resulting source,
+not the still-unpublished scoped INC130 checkpoint.
+
+The first ordinary regression module has88 cases:53 failures/35 controls,
+zero errors/skips, with1,151 source/14 protected bytes and backups exact.
+Its valid numeric, ordinary/profile and original-view persistence cases expose
+the marker mismatch; three additional reverse-directed combined cases expose
+the merged frame's missing `directed` field. The child preflight defaults to
+undirected although the owning invocation assembles a directed graph. Propagate
+that actual invocation mode before its existing source preflight; no new
+direction policy or input-chunk mode authority is introduced. Together with
+the prepared numeric loop this remains within build.py's3,345-line ceiling.
+
+Before correction, review the newly authored EIO tail against the actual writer:
+real replacement failure propagates `OSError`, while guard rejection returns
+False. The initial six persistence cases fail before reaching that tail, so
+they establish no writer success. Correct only that new, unexecuted expectation
+to require actual EIO, retained state/disk and successful repeat; preserve the
+original red receipt and rerun ordinary red before production changes.
+
+The corrected ordinary red retains the same88 IDs/statuses and frozen assertions
+for valid logical arcs. Numeric conversion plus actual merged-mode propagation
+then passes78 cases, leaving ten valid undirected reverse cases whose caller
+markers are now correct but assembled graph arcs still use physical direction.
+The builder currently selects a logical basis only for unavailable C++ references.
+Apply that existing basis selection to all validated source-profile links and
+pass the same explicit basis to the caller-frame adapter; do not infer a native
+role or change unpromised legacy graph semantics. These ten existing strong
+assertions remain unchanged. This closes the same accepted numeric-direction
+contract at graph assembly as well as raw caller publication.
+
+The complete related gate then passes1,050 cases with no skips/errors in211.203
+seconds, source1,151/protected14 exact and successful neutral-fixture cleanup.
+Quality retains684 baseline type diagnostics, zero additions/retirements, with
+Ruff success and134 matching generated artifacts. These results include the
+unchanged88 numeric cases and36 projection4 update cases.
+
+Review identifies one remaining execution gap: numeric combined cases explicitly
+disable deduplication, although the default pre-dedup path shares the same
+normalizer. Append six default-build forward/reverse carrier successes and three
+default reverse-directed rejections using the actual public default invocation.
+Preserve the entire existing166-line module prefix and all88 bodies/parameters;
+this adds controls rather than changing the corrected expectations. No production
+change is proposed. Guarded execution of the complete extended module and final
+whole-suite/source-native evidence remain required before release acceptance.
+
+The extended201-line numeric module passes97 cases, zero failures/errors/skips,
+9.297 seconds. Its original166 raw-byte prefix and88 earlier bodies/axes remain
+exact, as do every other1,150 source file and14 protected files/backups. Ruff and
+qualified module typing pass; successful owned fixture cleanup is confirmed.
+No production change follows the1,050-case gate. The two overlapping gates
+remain separately bound and are not added into a fictional single invocation.
+Final raw package/installed/full/corpus/hosted and repository refresh now belong
+to the resulting reviewed source; earlier failed packages/environments stay intact.

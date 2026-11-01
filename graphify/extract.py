@@ -102,6 +102,7 @@ from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
 
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.field_call_policy import FieldCallPolicy
 
 from graphify.extractors.resolution import (  # noqa: E402,F401
     _DECLDEF_HEADER_SUFFIXES,
@@ -231,7 +232,7 @@ def _redact_rationale_labels(result: dict) -> dict:
 
 
 def _safe_extract(
-    extractor: Callable, path: Path, *, scan_root: Path | None = None
+    extractor: Callable, path: Path, *, scan_root: Path | None = None, qt_test_context=None
 ) -> dict:
     try:
         # Root-aware Qt collectors share the same post-extraction secret
@@ -239,6 +240,8 @@ def _safe_extract(
         if extractor in (extract_python, extract_qml, extract_qmldir,
                          extract_cmake, extract_qmake, extract_qrc, extract_qmltypes):
             return _redact_rationale_labels(extractor(path, root=scan_root))
+        if extractor is extract_cpp and qt_test_context is not None:
+            return _redact_rationale_labels(extractor(path, qt_test_context=qt_test_context))
         return _redact_rationale_labels(extractor(path))
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
@@ -1558,7 +1561,7 @@ _CSHARP_CONFIG = LanguageConfig(
         # type node that those references bind to.
         "delegate_declaration",
     }),
-    function_types=frozenset({"method_declaration"}),
+    function_types=frozenset({"method_declaration", "local_function_statement"}),
     import_types=frozenset({"using_directive"}),
     # `object_creation_expression` joins the invocation node so `new Foo(...)`
     # links the constructing method to Foo, the way Java has since #1373.
@@ -1567,7 +1570,7 @@ _CSHARP_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_access_expression"}),
     call_accessor_field="name",
     body_fallback_child_types=("declaration_list",),
-    function_boundary_types=frozenset({"method_declaration"}),
+    function_boundary_types=frozenset({"method_declaration", "local_function_statement"}),
     import_handler=_import_csharp,
 )
 
@@ -3393,7 +3396,7 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
     return _CPP_EXPORT_MACRO_RE.sub(repl, source)
 
 
-def extract_cpp(path: Path) -> dict:
+def extract_cpp(path: Path, *, qt_test_context=None) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
     C++/CLI sources are normalized to standard C++ first (#2876); see
@@ -3410,8 +3413,15 @@ def extract_cpp(path: Path) -> dict:
     from graphify.extractors.qt_cpp_syntax import normalize_qt_cpp
     source_override = _normalize_cpp_cli(source) or source
     source_override = _normalize_cpp_export_macros(source_override)
-    source_override = normalize_qt_cpp(source_override) or source_override
-    result = _extract_generic(path, _CPP_CONFIG, source_override=source_override)
+    source_override = normalize_qt_cpp(source_override, qt_test_context=qt_test_context, original_source=source) or source_override
+    result = _extract_generic(path, _CPP_CONFIG, source_override=source_override, cpp_original_source=source)
+    if result.get("error") == "CPP_SOURCE_VIEW_MISMATCH":
+        from graphify.extractors.cpp_source_views import source_view_failure
+        return source_view_failure(result, path)
+    # Syntax compatibility retains the original member-pointer qualifier as
+    # source evidence; it never supplies a class target or callable provider.
+    from graphify.extractors.cpp_member_pointers import annotate_member_pointer_fields
+    annotate_member_pointer_fields(result, source, source_override or source)
     return _augment_cpp_string_tests(path, result)
 
 
@@ -3960,6 +3970,9 @@ def _rewire_unique_stub_nodes(
     nodes: list[dict], edges: list[dict], root: Path | None = None,
 ) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
+    # A source-local rejection belongs to one edge, not the shared bare stub.
+    from graphify.extractors.cpp_type_references import is_type_reference_unavailable, validate_type_references
+    validate_type_references(nodes, edges)
     scan_root = Path(root).resolve() if root is not None else None
     crate_by_dir: dict[Path, str | None] = {}
 
@@ -4229,8 +4242,11 @@ def _rewire_unique_stub_nodes(
             _is_dotnet_source_file(str(edge.get("source_file", "")))
             and edge.get("relation") in csharp_scoped_relations
         )
+        # The preflight proved any explicit pair; veto its logical target only.
+        unavailable_target = (edge.get("_tgt", edge.get("target"))
+                              if is_type_reference_unavailable(edge) else None)
         source = edge.get("source")
-        if source in remap:
+        if source in remap and source != unavailable_target:
             remapped_source = remap[str(source)]
             if not (
                 is_csharp_scoped_edge
@@ -4243,7 +4259,7 @@ def _rewire_unique_stub_nodes(
             if not (
                 is_csharp_scoped_edge
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
-            ) and not _names_own_builtin_base(
+            ) and target != unavailable_target and not _names_own_builtin_base(
                 edge, str(target), remapped_target
             ) and not _cross_language_candidate(edge, remapped_target):
                 edge["target"] = remapped_target
@@ -5688,13 +5704,14 @@ def _resolve_cpp_member_calls(
     # declared `void bar();` resolves. `method` wins when a key has both.
     method_index: dict[tuple[str, str], str] = {}
     enclosing_type: dict[str, str] = {}
+    storage_ids = FieldCallPolicy(all_nodes, all_edges).storage
     for rel in ("defines", "method"):
         for e in all_edges:
             if e.get("relation") != rel:
                 continue
             src, tgt = e.get("source"), e.get("target")
             tnode = node_by_id.get(tgt)
-            if tnode is None:
+            if tnode is None or tnode.get("_callable") is not True or tnode.get("_callable_class") or tgt in storage_ids:
                 continue
             enclosing_type.setdefault(tgt, src)
             method_index[(src, _key(tnode.get("label", "")))] = tgt
@@ -5733,7 +5750,7 @@ def _resolve_cpp_member_calls(
         # Only resolve C++ raw_calls (other languages share the raw_calls list;
         # a `.h` may route to either extract_cpp or extract_objc by content, so the
         # extractor-stamped `lang` tag — not the suffix — is the unambiguous gate).
-        if rc.get("lang") != "cpp":
+        if rc.get("lang") != "cpp" or rc.get("_cpp_free_handled"):
             continue
         # Determine the receiver's type and the resulting confidence.
         qualified_fallback_label: str | None = None
@@ -5743,7 +5760,7 @@ def _resolve_cpp_member_calls(
             if not type_nid:
                 continue
             type_qualified = True
-        elif receiver[:1].isupper():
+        elif rc.get("cpp_qualified") or receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
             qualified_fallback_label = f"{receiver}::{callee}()"
             type_defs = type_def_nids.get(_key(receiver), [])
@@ -6032,6 +6049,8 @@ def _resolve_csharp_member_calls(
         if len(hits) != 1:
             return None
         owner_nid, field_type = next(iter(hits))
+        if not field_type:
+            return None
         owner = node_by_id.get(owner_nid)
         return _resolve_type_name_nid(
             field_type, owner, (owner or {}).get("source_file", "")
@@ -6210,7 +6229,10 @@ def _bind_member_field_tables(
             merged = bound.setdefault(candidates[0]["id"], {})
             for fname, tname in fields.items():
                 if merged.get(fname) not in (None, tname):
-                    merged.pop(fname, None)  # cross-shard conflict: no guess
+                    if lang == "csharp":
+                        merged[fname] = ""  # preserve an unavailable binding across further shards
+                    else:
+                        merged.pop(fname, None)  # cross-shard conflict: no guess
                 else:
                     merged[fname] = tname
     return bound
@@ -9261,14 +9283,15 @@ def _get_extractor(path: Path) -> Any | None:
     return _DISPATCH.get(suffix)
 
 
-def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
+def _safe_extract_with_xaml_root(extractor, path: Path, root: Path, *, qt_test_context=None) -> dict:
     # Publish the in-flight scan root on extractors.base (the correct import
     # direction) so root-dependent extractors — Markdown link resolution, the
     # XAML C# project clamp — can read it without reaching back into this module
     # (#3666). Despite the XAML-era name this wraps every extractor.
     previous_root = set_active_scan_root(root.resolve())
     try:
-        return _safe_extract(extractor, path, scan_root=root)
+        options = {"qt_test_context": qt_test_context} if qt_test_context is not None else {}
+        return _safe_extract(extractor, path, scan_root=root, **options)
     finally:
         set_active_scan_root(previous_root)
 
@@ -9295,12 +9318,16 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     Returns:
         (index, result_dict) so results can be placed back in order.
     """
-    native_cache_bypass = bool(args[4]) if len(args) == 5 else False
-    if len(args) in (4, 5):
+    native_cache_bypass = bool(args[4]) if len(args) >= 5 else False
+    context_options = {"qt_test_context": args[5]} if len(args) >= 6 and args[5] is not None else {}
+    if len(args) >= 4:
         idx, path_str, root_str, cache_location_str = args[:4]
-    else:  # legacy 3-tuple: location == anchor
+    elif len(args) == 3:  # legacy 3-tuple: location == anchor
         idx, path_str, root_str = args
         cache_location_str = root_str
+    else:
+        # Reject incomplete internal work items before touching paths or cache.
+        raise ValueError("worker arguments require at least three items")
     path = Path(path_str)
     root = Path(root_str)
     cache_location = Path(cache_location_str)
@@ -9318,7 +9345,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     if extractor is None:
         return idx, {"nodes": [], "edges": []}
 
-    result = _safe_extract_with_xaml_root(extractor, path, root)
+    result = _safe_extract_with_xaml_root(extractor, path, root, **context_options)
     # Never cache a zero-node result for an extractable file. Every supported
     # source produces at least a file node, so an empty node list is anomalous
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
@@ -9377,6 +9404,7 @@ def _extract_parallel(
     total_files: int,
     cache_location: Path | None = None,
     native_cache_bypass: bool = False,
+    qt_test_contexts=None,
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -9428,6 +9456,9 @@ def _extract_parallel(
     cache_loc_str = str(cache_location if cache_location is not None else root)
     work_items = [(idx, str(path), root_str, cache_loc_str, True) if native_cache_bypass
                   else (idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    if qt_test_contexts is not None:
+        work_items = [(idx, str(path), root_str, cache_loc_str, native_cache_bypass, qt_test_contexts.for_path(path))
+                      for idx, path in uncached_work]
 
     done_count = 0
     failed: list[int] = []  # positions into uncached_work whose future failed
@@ -9503,7 +9534,8 @@ def _extract_parallel(
         # a second failure into an error-carrying result.
         _extract_sequential(
             [uncached_work[pos] for pos in failed],
-            per_file, root, total_files, cache_location,
+            per_file, root, total_files, cache_location, native_cache_bypass=native_cache_bypass,
+            **({"qt_test_contexts": qt_test_contexts} if qt_test_contexts is not None else {}),
         )
     if total_files >= _PROGRESS_INTERVAL:
         # Report the same denominator the intermediate lines used (uncached files
@@ -9525,6 +9557,7 @@ def _extract_sequential(
     total_files: int,
     cache_location: Path | None = None,
     native_cache_bypass: bool = False,
+    qt_test_contexts=None,
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
@@ -9545,7 +9578,8 @@ def _extract_sequential(
         bypass_cache = (effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
                         or qt_syntax_cache_bypass(path, native=native_cache_bypass))
         # XAML boundary anchors on `root` (the corpus), not the cache location.
-        result = _safe_extract_with_xaml_root(extractor, path, root)
+        context_options = {"qt_test_context": qt_test_contexts.for_path(path)} if qt_test_contexts is not None else {}
+        result = _safe_extract_with_xaml_root(extractor, path, root, **context_options)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
         # but cache intentional declines/virtual manifests carrying `skipped` (#3910).
         if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
@@ -9714,8 +9748,18 @@ def extract(
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
 
-    native_cache_bypass = refresh_native or requires_native_refresh(paths)
+    # Context-only C-compatible headers may forward literal includes without
+    # changing their actual producer or admitting Objective-C/non-native data.
+    context_paths = [path for path in paths if _get_extractor(path) is extract_cpp
+                     or path.suffix.lower() in {".h", ".hpp", ".hh", ".hxx"} and _get_extractor(path) is extract_c]
+    # Borrowed graph nodes never authorize opening source or build metadata.
+    from graphify.extractors.qt_cpp_test_context import build_qt_test_contexts
+    qt_test_contexts = build_qt_test_contexts(context_paths, root=root,
+        project_paths=[path for path in paths if _get_extractor(path) is extract_cmake])
+    native_cache_bypass = refresh_native or requires_native_refresh(paths) or qt_test_contexts.requires_native_refresh
     native_policy_kwargs = {"native_cache_bypass": True} if native_cache_bypass else {}
+    if qt_test_contexts.requires_native_refresh:
+        native_policy_kwargs["qt_test_contexts"] = qt_test_contexts
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
@@ -10759,13 +10803,26 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    field_calls = FieldCallPolicy(resolution_nodes, [*all_edges, *(resolution_context_edges or ())])
+    from graphify.extractors.csharp_lexical_calls import local_function_ids
+    local_csharp_ids = local_function_ids(resolution_nodes, [*all_edges, *(resolution_context_edges or ())])
+    from graphify.extractors.cpp_free_calls import resolve_free_function_calls
+    resolve_free_function_calls(resolution_nodes, all_edges, all_raw_calls)
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
+            continue
+        if n["id"] in field_calls.storage or n["id"] in local_csharp_ids:
             continue
         # Dedicated QML scopes resolve these facts; shared label guessing must
         # not bind generic language calls to QML declarations or source sites.
         _qml_metadata = n.get("metadata", {}).get("qml", {})
         if _qml_metadata.get("contract_version") == 1:
+            continue
+        # A free C++ prototype proves a declaration, not a selected body/scope
+        # or overload. Keep it out of shared label-based call guessing.
+        if n.get("metadata", {}).get("cpp_prototype", {}).get("contract_version") == 1:
+            continue
+        if "cpp_function" in n.get("metadata", {}):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
@@ -10904,10 +10961,15 @@ def extract(
     _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
     _csharp_overload_cache: dict = {}  # filled on first use (#4584)
     for rc in all_raw_calls:
+        if rc.get("_cpp_free_deferred") or rc.get("_cpp_free_handled"):
+            continue
         if rc.get("_ambiguous_python_import"):
             continue
         callee = rc.get("callee", "")
         if not callee:
+            continue
+        if field_calls.shadows(rc.get("caller_nid"), callee,
+                is_member=rc.get("is_member_call", False), receiver=rc.get("receiver")):
             continue
         if callee in _LANGUAGE_BUILTIN_GLOBALS:
             continue
@@ -11490,7 +11552,8 @@ def extract(
                                 all_nodes, all_edges, root=root,
                                 import_roots=qml_import_roots,
                                 context_nodes=resolution_context_nodes,
-                                context_edges=resolution_context_edges):
+                                context_edges=resolution_context_edges,
+                                **({"qt_test_contexts": qt_test_contexts} if qt_test_contexts.requires_native_refresh else {})):
         if failed not in _failed_sources:
             _failed_sources.append(failed)
 

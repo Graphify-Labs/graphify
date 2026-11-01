@@ -5,7 +5,7 @@ Current criterion IDs use `REQ-QML-`; completion increments use `INC-QML-`.
 Recorded test identities retain their historical evidence; current renamed viewer
 tests are mapped to their actual functions below. Source annotations keep their IDs.
 
-The current catalog contains twenty-one requirements and eighty-five stable
+The current catalog contains twenty-two requirements and ninety-one stable
 acceptance criteria. REQ-QML-018 has seven criteria, including the separate AC07
 header-dispatch contract; REQ-QML-019/020/021 retain four/three/three criteria.
 INC-QML-00–07 hosted proof describes its original seventeen-requirement,
@@ -1347,7 +1347,7 @@ substitution, borrowed source/span/scope corruption and local/qualified controls
 | Acceptance | Exact ordinary coverage | Source result |
 | --- | --- | --- |
 | REQ-QML-018-AC04/AC06; REQ-QML-017-AC02/AC04; REQ-QML-010-AC03/AC04 | `tests/test_qt_bridge_mechanism_integrity.py::test_source_mechanisms_survive_builder_export_and_reload`; `tests/test_qt_bridge_mechanism_integrity.py::test_source_mechanism_substitution_is_rejected_before_graph_assembly`; `tests/test_qt_bridge_mechanism_integrity.py::test_context_access_revalidates_original_read_or_call`; `tests/test_qt_bridge_mechanism_integrity.py::test_endpoint_role_cannot_be_changed_to_repair_relation`; `tests/test_qt_bridge_mechanism_integrity.py::test_cross_language_flow_cannot_be_reversed_by_metadata`; `tests/test_qt_bridge_mechanism_integrity.py::test_reverse_reflection_repeats_original_supported_operation` | 166 new cases pass across 18 mechanisms; typed `uses` paths cannot bypass assembly proof. Reviewed installed suite passes; final profile and limits appear below. |
-| REQ-QML-011-AC01/AC04; REQ-QML-018-AC05/AC06 | `tests/test_qt_publication_stub_origin.py::test_first_raw_stub_has_explicit_semantic_origin`; `tests/test_qt_publication_stub_origin.py::test_first_raw_import_repeat_preserves_bytes_mtime_and_genuine_edit`; `tests/test_qt_publication_stub_origin.py::test_existing_authored_endpoint_is_not_stamped_by_minting`; `tests/test_qt_publication_stub_origin.py::test_first_stamped_cpp_import_deletion_restoration_and_repeat`; `tests/test_qt_publication_stub_origin.py::test_new_stub_replacement_failure_retains_cohort_cache_then_retries` | 22 new cold manual/watch C++/Python, origin-preservation and injected replacement-failure/retry cases pass. Actual Windows denial is separately mapped above. Reviewed installed suite passes; final profile and limits appear below. |
+| REQ-QML-011-AC01/AC04; REQ-QML-018-AC05/AC06 | historical `test_first_raw_stub_has_explicit_semantic_origin` (current: `tests/test_qt_publication_stub_origin.py::test_first_raw_stub_is_tierless`); `tests/test_qt_publication_stub_origin.py::test_first_raw_import_repeat_preserves_bytes_mtime_and_genuine_edit`; `tests/test_qt_publication_stub_origin.py::test_existing_authored_endpoint_is_not_stamped_by_minting`; historical `test_first_stamped_cpp_import_deletion_restoration_and_repeat` (current: `tests/test_qt_publication_stub_origin.py::test_first_tierless_cpp_import_deletion_restoration_and_repeat`); `tests/test_qt_publication_stub_origin.py::test_new_stub_replacement_failure_retains_cohort_cache_then_retries` | 22 new cold manual/watch C++/Python, origin-preservation and injected replacement-failure/retry cases pass. Actual Windows denial is separately mapped above. Reviewed installed suite passes; final profile and limits appear below. |
 
 ## Final adoption delivery
 
@@ -1652,7 +1652,7 @@ assignments and shell-environment disposition follow those checkpoints.
 | REQ-QML-009-AC01/AC03; REQ-QML-010-AC01; production joins | `tests/test_qt_cmake_mutation_updates.py::test_REQ_QML_009_private_source_and_resource_additions_reach_real_producer_and_warm_cache`: a private native header exposes the actual QML type/property and resource membership resolves to the accepted component through normal collection/build/reload; repeated/warm output equals a clean rebuild |
 | REQ-QML-011-AC01/AC02/AC04; metadata-only lifecycle | `test_REQ_QML_011_metadata_only_retarget_and_source_removal_replace_stale_joins` in that module: changing CMake alone retargets the resource endpoint, removes the deleted native provider binding from unchanged consumers and equals a full accepted-corpus rebuild |
 | REQ-QML-012-AC02; publication retention | `test_REQ_QML_011_rejected_addition_preserves_prior_published_graph_manifest_and_report` in that module: a later dynamic addition rejects a forced update while preserving the actual graph/manifest and an existing separately owned report byte for byte |
-| REQ-QML-011-AC03/AC04; policy invalidation | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_policy22_and_repeats`: prior policy-22 acceptance changes once without package/source changes, current policy commits, unchanged repeat is stable. Complete integration execution is pending at this evidence checkpoint |
+| REQ-QML-011-AC03/AC04; policy invalidation | historical `test_req_qml018_ac02_literal_parser_upgrade_retires_policy22_and_repeats` (current: `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats`): prior policy-22 acceptance changes once without package/source changes, current policy commits, unchanged repeat is stable. Complete integration execution is pending at this evidence checkpoint |
 
 ### Regression evidence and commands
 
@@ -1968,7 +1968,7 @@ hosted and application verification remain pending.
 | REQ-QML-009-AC01/AC04; REQ-QML-010-AC02/AC04 | `tests/test_qt_cmake_rc_dependencies.py::test_req_qml009_ac04_rc_compile_properties_remain_opaque_with_original_spans`: literal RC lists, INCLUDE_DIRECTORIES/OBJECT_DEPENDS individually, both orders and repeated allowed names; scoped commands, opaque computed values, BOM/CRLF/Unicode and original neighboring declaration spans. No RC property/runtime provider/resource fact is created. Pass in the frozen 277-case local source selection; zero skips. |
 | REQ-QML-009-AC04; REQ-QML-012-AC01/AC04; REQ-QML-020-AC02 | `test_req_qml012_ac01_rc_exemption_rejects_unproven_source_scope_or_property` in that module protects selector-first rejection, dynamic/list source paths, mixed non-RC/runtime/unknown properties and malformed pairs. `test_req_qml009_ac04_rc_dependencies_and_authoring_targets_never_expand_accepted_corpus` guards real outside-file reads while retaining the in-corpus native HEADER_FILE_ONLY provider and explicit unavailable outside membership. Pass in the frozen 277-case local source selection; zero skips. |
 | REQ-QML-011-AC01/AC02/AC04; REQ-QML-012-AC02; REQ-QML-018-AC06 | `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac02_rc_dependency_only_changes_match_full_and_repeat` and `test_req_qml012_ac02_rc_rejection_preserves_products_and_recovers`: property/prerequisite-only parity, stable analysis state, forced/non-forced repeated rejection retaining graph/manifest/report/policy bytes, repair and clean/repeated rebuild. Pass in the frozen 277-case local source selection; zero skips. |
-| REQ-QML-011-AC03/AC04; REQ-QML-018-AC02/AC06 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers earlier policy checkpoints. `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits25` proves actual policy-23/24 accepted products survive rejected forced refresh, then repaired retry/repeat commits policy 25 and matches a clean rebuild. Schema 13 remains unchanged. Local source and frozen-wheel/install execution pass; hosted outcomes remain separately pending. |
+| REQ-QML-011-AC03/AC04; REQ-QML-018-AC02/AC06 | `tests/test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` covers earlier policy checkpoints. historical `test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits25` (current: `tests/test_qt_cmake_rc_updates.py::test_req_qml011_ac04_prior_policy_refresh_rejection_retains_products_then_commits26`) proves actual policy-23/24 accepted products survive rejected forced refresh, then repaired retry/repeat commits policy 25 and matches a clean rebuild. Schema 13 remains unchanged. Local source and frozen-wheel/install execution pass; hosted outcomes remain separately pending. |
 
 Public fixtures must contain only synthetic project data. This refinement neither
 reads external prerequisite/source contents nor changes corpus admission, native
@@ -4143,3 +4143,1845 @@ remain separately recorded in delivery receipts and the live PR descriptions.
 Whole-repository Ruff passes after this fixture correction. Pyright 1.1.414
 again reports 689 errors/899 files, zero warnings and zero new merge-owned
 occurrences against the same independently executed parent baselines.
+
+
+## Qt 6.12 source-coverage audit — INC-QML-61 onward
+
+Status: **In progress**. Evidence below belongs to the working corrective branch,
+not the previously successful upstream-sync source. No full-SDK/runtime, new hosted
+platform, merged commit or application adoption claim follows from these cases.
+The private reference corpus remains read-only; public tests use neutral fixtures.
+A frozen installed pre-audit wheel independently reproduces failures before the
+corrections. Final source/lock/parser identities and complete gate results must be
+recorded at handoff; intermediate test caches are not final accepted evidence.
+
+| New criterion | Exact automated assignment or explicit accounting gap | Current boundary |
+| --- | --- | --- |
+| REQ-QML-022-AC01 | [versioned inventory checkpoint](../docs/qt-qml/QT_API_COVERAGE.md#qt-6120-inventory-checkpoint-inc-qml-61); retained derived-record digest, index/owner/anchor reconciliation | 81,472 structured facts; one linked owner 404, 22 absent function anchors and 101 separately versioned owners/892 links remain explicit gaps. This is inventory accounting, not semantic API verification. |
+| REQ-QML-022-AC02 | `test_cpp_member_declarators.py`; `test_cpp_member_declarator_persistence.py`; `test_cpp_function_prototypes.py`; `test_cpp_prototype_updates.py`; `test_qml_enums.py`; `test_qml_enum_updates.py`; `test_csharp_field_members.py`; `test_csharp_field_updates.py` | Direct/facade/source-byte, exact ownership, uncertainty, cold/warm/full/incremental, export/reload and real replacement-failure evidence. Free-definition/member-pointer/header source corrections are implemented with the exact assignments below; final full/installed/platform acceptance remains pending. C# extends the earlier intentional property-only contract with collision-safe field nodes. |
+| REQ-QML-022-AC03 | `test_qt_612_annotation_roles.py::test_annotation_spelling_can_name_an_ordinary_member`; `::test_macro_named_types_constructors_and_destructors_are_not_annotations`; `::test_actual_annotation_resets_access_in_source_order`; `::test_access_reset_is_owned_by_innermost_class`; `::test_executable_body_cannot_supply_class_or_namespace_annotation`; `::test_local_preprocessor_override_cannot_supply_sdk_annotation_authority`; `test_qt_612_annotation_updates.py` | Original bytes, actual source-role/access ordering, source-only namespace/gadget markers and compiler hints, explicit malformed/scope/override rejection, durable QML member visibility and repeated forced/nonforced publication retention/recovery. |
+| REQ-QML-022-AC04 | `test_qml_types_qt612.py`; `test_qml_types_qt612_updates.py`; `test_qt_property_modifiers.py`; `test_qml_source_modifiers.py`; `test_qml_source_modifier_updates.py` | Typed generator fields/ownership/bounds, opaque nonauthority, metadata corruption and real Windows rejected-write recovery; C++ and QML modifiers retain source-only meaning. Override engine enforcement is unverified and not simulated. |
+| REQ-QML-022-AC05 | `test_qt_cmake_type_exports.py`; `test_qt_cmake_type_export_updates.py`; `test_qt_external_singletons.py`; `test_qt_external_singleton_updates.py` | Actual module/type versions/internal membership and source engine/provider/load identity. Final corruption/ownership review is pending. Runtime singleton return value, object lifetime/ownership, callback factories and arbitrary build evaluation are not established. |
+| REQ-QML-022-AC06 | The production update/export cases above; `test_qt_upstream099_cache_contract.py::test_req_qml011_ac01_ac03_ac04_upstream099_retires_both_predecessors` (now also schema32); `test_qt_analysis_state.py::test_req_qml018_ac02_literal_parser_upgrade_retires_prior_policy_and_repeats` (now also policy26); `test_qt_cmake_rc_updates.py` | AST33/Qt27 retire old same-package facts without invalidating semantic data. Final full-suite, minimal-profile wheel/source-byte consumer and exact private-corpus comparison remain pending. Prior hosted results cannot be borrowed. |
+
+The executed focused commands use Windows Python3.12 with the existing all-extras
+frozen dependency profile: `.venv/Scripts/python.exe -m pytest <assigned modules>
+-q --tb=short` (JUnit/retained logs are separate local evidence). The whole admitted
+reference corpus uses a separate installed baseline and actual detector list,
+not a forced include or application graph refresh. Platform-specific skips remain
+unverified, and the existing advisory/type baselines remain separate gates.
+
+INC-QML-79 adds `test_qt_include_guard_authority.py` and
+`test_qt_include_guard_updates.py` for REQ-QML-022-AC03/AC06. Nineteen ordinary
+cases cover exact whole-file admission, original marker bytes, feature and
+mismatched guards, nested conditions, SDK alias/engine/load identity, both manual
+and watched guard-only edits, fresh/full parity, settled publication bytes and
+actual Windows rejected replacement with retained graph/manifest/state and retry.
+The frozen installed pre-audit source fails four declaration-authority cases
+(six controls pass) and all three new update cases at the expected missing native
+authority assertion. The corrected source passes all nineteen with no skips.
+Independent review of the initial guard helper additionally reproduced accepted
+synthetic missing delimiters and later own-guard writes. Ordinary regressions now
+reject those forms, including nested unknown feature writes, while unrelated
+defines and quoted directive text remain positive controls.
+The shared graph-context work-bound regression passes separately: twenty actual
+native edges retain proof while at most two full validation indexes are built.
+These are focused Windows results, not final whole-corpus or hosted acceptance.
+
+`test_qt_include_guard_work_bounds.py::test_guarded_declarations_reuse_one_source_guard_classification`
+passes with no skips for REQ-QML-022-AC03/AC06. A real guarded file with 200 locals
+preserves all 201 declarations and accepted engine identity while delegating the
+real guard predicate at most twice per immutable source unit. The pre-correction
+production identity index was independently measured at 202 complete guard scans
+and 204,424 named-node visits for this case; this is a source-work regression,
+not an elapsed-time benchmark or a cache that spans unrelated files.
+
+Additional exact criterion assignments for the corrective sequence (final
+source-bound aggregate acceptance remains pending):
+
+| Criterion / increment | Exact production-bound regression assignment |
+| --- | --- |
+| REQ-QML-022-AC02; INC-QML-62/70/73 | `test_cpp_member_declarators.py::test_req_qml022_ac02_member_fields_are_owned_noncallable_declarations`; `::test_req_qml022_ac02_function_binding_stays_callable_through_return_wrappers`; `::test_req_qml022_ac02_destructor_prototypes_have_distinct_callable_identity`; `test_cpp_function_prototypes.py::test_req_qml022_ac02_scoped_overloads_have_exact_bytes_and_survive_reload`; `test_cpp_free_function_identity.py::test_req_qml022_ac02_free_definitions_preserve_case_scope_and_overload_identity` |
+| REQ-QML-022-AC02/AC06; INC-QML-71/76 | `test_csharp_field_members.py::test_field_method_and_property_name_collisions_preserve_each_symbol`; `::test_conditional_field_type_cannot_select_the_last_branchs_receiver`; `test_field_call_ownership.py::test_req_qml022_ac06_base_storage_calls_remain_data`; `test_csharp_cohort_updates.py::test_req_qml022_ac06_added_and_deleted_earlier_partial_half_retire_unchanged_owners`; `::test_req_qml022_ac06_watch_project_edit_uses_actual_csharp_cohort_and_warm_cache` |
+| REQ-QML-022-AC03/AC06; INC-QML-77 | `test_qt_metaobject_authority.py::test_req_qml022_ac03_ancestry_cannot_supply_own_metaobject_members`; `::test_req_qml022_ac06_corrupt_positive_marker_contract_rejects_before_lookup`; `::test_req_qml022_ac06_own_marker_bytes_and_proof_survive_cold_warm_export`; `test_qt_metaobject_context.py::test_list_source_context_rejects_replaced_element_after_success`; the real update/count-limit/replacement cases in `test_qt_metaobject_updates.py` |
+| REQ-QML-022-AC03/AC06; INC-QML-75/78 | `test_qt_test_include_context.py::test_req_qml022_ac03_admitted_literal_chain_shared_before_generic_and_qt_facts`; `::test_req_qml022_ac06_partial_extraction_never_discovers_unprovided_header`; `::test_req_qml022_ac06_conditional_header_interference_cannot_leave_direct_sdk_authority`; `::test_req_qml022_ac06_unknown_header_effect_is_forward_only`; `test_qt_test_context_updates.py::test_req_qml022_ac06_real_header_mutation_between_producers_rejects_same_snapshot` |
+| REQ-QML-022-AC02/AC03/AC06; INC-QML-80 | `test_qt_callback_return_ownership.py::test_req_qml022_ac02_callback_return_header_definition_keep_actual_signature`; `::test_req_qml022_ac03_declared_provider_rejects_callback_pointee_with_ordinary_control`; `::test_req_qml022_ac06_callback_return_ranges_remain_original_bom_crlf_unicode_bytes`; production update/rejection/replacement cases in `test_qt_callback_return_updates.py` |
+| REQ-QML-022-AC04; INC-QML-65/66 | `test_qml_types_qt612.py::test_req_qml022_ac04_generated_fields_preserve_original_owner_and_bytes`; `::test_req_qml022_ac04_opaque_types_have_no_creation_or_native_authority`; `::test_req_qml022_ac04_typed_fields_reject_corruption_without_partial_facts`; `::test_req_qml022_ac04_field_boundaries_are_lossless`; actual modifier and update cases in the criterion's assigned modules above |
+| REQ-QML-022-AC05/AC06; INC-QML-67/68 | `test_qt_cmake_type_exports.py::test_req_qml022_ac05_type_name_versions_and_resource_alias_have_distinct_authority`; `::test_req_qml022_ac05_internal_type_requires_actual_importer_module_membership`; `::test_req_qml022_ac06_export_metadata_cannot_replace_actual_producer_ownership`; `test_qt_external_singletons.py::test_req_qml022_ac05_external_singleton_setup_has_exact_source_binding_and_json`; `::test_req_qml022_ac06_corrupt_external_setup_transport_rejects_before_lookup`; interference/update cases in the assigned modules above |
+
+The named source suites supplement existing criteria; they do not establish
+runtime dispatch, test execution, engine ownership/lifetime or whole-SDK support.
+INC-QML-81 launcher and related focus/statement families now have ordinary
+collected source regressions. Their final frozen full/installed/platform acceptance
+remains pending, separately from local focused source evidence.
+
+`test_qml_ci_profiles.py::test_req_qml022_ac06_native_profile_collects_shared_cpp_csharp_ownership`
+is the INC-QML-69/REQ-QML-022-AC06 launcher-bound assignment for native platform
+collection. It fails against the prior source selector, then passes with all
+seven existing profile/workflow controls (eight cases total, no skips). Real
+launcher argument construction retains every clean wheel/core smoke, failure
+gate and old Qt family while adding existing-core C++/C#, field-call and source-relationship suites.
+This local subprocess-boundary test does not replace actual installed-wheel
+execution on Windows/macOS or Linux's full source suite.
+
+### INC-QML-89 source-relationship projection and consumer regressions
+
+REQ-QML-014/015 and REQ-QML-022-AC02/AC06 map to ordinary collected
+`tests/test_csharp_source_relationships.py`, `test_csharp_source_topology.py`,
+`test_csharp_local_persistence.py`, `test_source_relationship_consumers.py`,
+`test_source_relationship_merge.py` and `test_source_relationship_failures.py`.
+The real C# producer supplies typed local functions; tests cover contains/calls,
+opposite direction, evidence precedence, legacy/malformed activation, remapping,
+JSON/reload, derived topology, exact logical diff, keyed cleanup, explain/wiki,
+canvas/query/HTML/Cypher, mixed merge/global promotion, stale source retirement,
+manual/watch full/warm/incremental parity and real EIO replacement retention,
+recovery and idempotence. Contradictory serialized storage flags were reproduced
+as two additional failures before switching merge/global adoption to the shared
+validated loader. These tests retain assertions against the original loss.
+Local focused evidence is not final installed-wheel, full-suite or hosted proof;
+final commands/results and remaining gaps are recorded after source freeze.
+
+INC-QML-89 focused development evidence: the source/consumer/shared compatibility
+selection executed 136 passing cases, zero skips (before the final null-role
+control and read-only CLI/raw-merge preflight additions). Typed role-list/dict and
+class-flag corruption were independently reproduced as three additional reds;
+explicit type guards keep rejection controlled. Native Windows/macOS selection
+now also admits `test_source_relationship_` after unchanged isolated wheel smokes:
+the actual-launcher selection regression failed before correction and all eight
+profile/workflow-policy cases pass afterward. These counts describe their exact
+local snapshots and do not replace final source-bound gates.
+
+Further INC-QML-89 ordinary regressions are `test_csharp_source_identity.py`
+(direct producer, same-line distinct local scopes, both builders/dedup modes) and
+`test_csharp_source_transport.py` (typed mode/collection/link/relation corruption,
+coercing or duplicate IDs and missing endpoints). Two direct-identity cases and
+thirteen transport cases failed before their scoped corrections. The native
+source-role identity bypass is independent of `_origin`, while all legacy
+AST/semantic ghost controls remain. Exact type checks precede compatibility
+repair and NetworkX adoption; metadata/profile keys never grant resolution.
+
+### INC-QML-91/94 C# lexical and qualified type evidence
+
+REQ-QML-014 and REQ-QML-022-AC02/AC06 map to
+`tests/test_csharp_property_generic_receivers.py` (actual lexical type-parameter
+property rejection and concrete/local/inherited controls),
+`test_csharp_qualified_type_children.py` (five owning declaration roles, dotted and
+nested qualifier arguments, lexical type-parameter exclusion, exact builtin
+`global::` lookup and unknown alias rejection), and
+`test_csharp_source_type_updates.py` (manual/watch property/qualified-argument
+edits, stale retirement, full/warm parity, settling and real replacement EIO
+retention/recovery). Source reds were four property and nine qualified-type cases
+plus the indexer generic-child fixture. The shared focused selection executed
+101 passing assertions; all eight actual update/failure cases pass. Type-source
+facts are not CLR/alias execution or generic-substitution proof. Final frozen
+wheel/full/hosted source evidence remains required.
+
+### INC-QML-92 Windows convention source syntax
+
+REQ-QML-003/008/014/018 and REQ-QML-022-AC02/AC03/AC06 map to ordinary
+`tests/test_cpp_windows_calling_conventions.py`,
+`test_cpp_windows_convention_boundaries.py` and
+`test_cpp_windows_convention_updates.py`. Six source failures and an additional
+accepted-annotation-payload composition failure were reproduced before their
+corrections. Controls cover existing literal `__stdcall`, ordinary macro-named
+identifiers, guard/override/include interference, malformed/unsupported callback
+typedefs, BOM/CRLF/Unicode original ranges, direct/header/facade/cache/export,
+stale callable cleanup and real rejected/failed-publication recovery. Latest
+owned source/boundary/update/annotation selection executed 117 cases, zero skips;
+Ruff and owned Pyright are clean. This proves the bounded static source profile,
+not Windows SDK installation, compiled ABI or runtime callback delivery. Final
+frozen full/platform/installed-wheel evidence remains pending.
+
+### Additional exact corrective-family assignments
+
+Every AC suffix below belongs to REQ-QML-022. The representative exact case
+identifies a real collected test; its assigned module also owns paired success,
+rejection, bounds and persistence cases as named in that module. AC IDs embedded
+in individual names retain their narrower scenario assignment. Final frozen
+commands/results and profile exclusions remain a separate evidence gate.
+
+| Increment / criterion family | Exact collected representative and assigned module |
+| --- | --- |
+| INC-QML-72; AC02/AC06 | `test_cpp_member_pointers.py::test_req_qml022_ac02_member_pointer_fields_keep_original_qualification`; all ordinary cases in this assigned module |
+| INC-QML-72; AC02/AC06 | `test_cpp_member_pointer_updates.py::test_req_qml022_ac06_member_pointer_cold_warm_incremental_cleanup_matches_full`; all ordinary cases in this assigned module |
+| INC-QML-73; AC02/AC06 | `test_cpp_free_body_proof.py::test_req_qml022_ac06_original_member_body_and_two_constructor_bodies_keep_calls`; all ordinary cases in this assigned module |
+| INC-QML-73; AC02/AC06 | `test_cpp_free_function_boundaries.py::test_req_qml022_ac06_global_qualification_bypasses_enclosing_namespace`; all ordinary cases in this assigned module |
+| INC-QML-73; AC02/AC06 | `test_cpp_free_function_updates.py::test_req_qml022_ac06_source_facts_and_targets_survive_cold_warm_export_reload`; all ordinary cases in this assigned module |
+| INC-QML-73; AC02/AC06 | `test_cpp_free_lookup_scopes.py::test_req_qml022_ac06_local_type_alias_cannot_authorize_namespace_or_foreign_class`; all ordinary cases in this assigned module |
+| INC-QML-73; AC02/AC06 | `test_qt_cpp_free_mapping.py::test_req_qml022_ac06_namespace_free_definition_keeps_sdk_body_without_native_member`; all ordinary cases in this assigned module |
+| INC-QML-74; AC02/AC06 | `test_cpp_struct_header_admission.py::test_req_qml022_ac02_default_member_initializer_selects_cpp_and_keeps_field`; all ordinary cases in this assigned module |
+| INC-QML-63; AC03/AC06 | `test_qt_annotation_token_boundaries.py::test_req_qml022_ac06_annotation_fragment_cannot_erase_ordinary_source_identifier`; all ordinary cases in this assigned module |
+| INC-QML-68; AC05/AC06 | `test_qt_external_singleton_interference.py::test_req_qml022_ac05_unevaluated_external_setup_never_authorizes_binding`; all ordinary cases in this assigned module |
+| INC-QML-77; AC03/AC06 | `test_qt_metaobject_events.py::test_req_qml022_ac03_signal_and_emission_require_declaring_metaobject`; all ordinary cases in this assigned module |
+| INC-QML-77; AC03/AC06 | `test_qt_metaobject_partial_context.py::test_node_only_borrowed_alias_keeps_source_without_own_meta_authority`; all ordinary cases in this assigned module |
+| INC-QML-77; AC03/AC06 | `test_qt_metaobject_work_bounds.py::test_graph_assembly_reuses_own_metaobject_context_for_repeated_native_edges`; all ordinary cases in this assigned module |
+| INC-QML-75/78; AC03/AC06 | `test_qt_test_boundaries.py::test_req_qml022_ac03_data_type_is_opaque_even_when_original_prefix_names_sdk_alias`; all ordinary cases in this assigned module |
+| INC-QML-75/78; AC03/AC06 | `test_qt_test_context_paths.py::test_req_qml022_ac06_unresolvable_quoted_path_is_explicitly_unavailable`; all ordinary cases in this assigned module |
+| INC-QML-75/78; AC03/AC06 | `test_qt_test_context_workers.py::test_req_qml022_ac03_failed_future_retry_preserves_context_and_native_cache_policy`; all ordinary cases in this assigned module |
+| INC-QML-75/78; AC03/AC06 | `test_qt_test_macros.py::test_req_qml022_ac03_qt_test_data_and_retry_keep_source_and_real_inner_calls`; all ordinary cases in this assigned module |
+| INC-QML-75/78; AC03/AC06 | `test_qt_test_updates.py::test_req_qml022_ac06_direct_qt_overlay_borrows_canonical_owners_without_mutation`; all ordinary cases in this assigned module |
+| INC-QML-81; AC03/AC06 | `test_qt_test_launchers.py::test_req_qml022_ac03_qt_test_launcher_preserves_actual_body_without_invented_main`; all ordinary cases in this assigned module |
+| INC-QML-81; AC03/AC06 | `test_qt_test_launcher_updates.py::test_req_qml022_ac06_launcher_cold_warm_source_removal_matches_full`; all ordinary cases in this assigned module |
+| INC-QML-82; AC03/AC05/AC06 | `test_qt_quick_focus_macros.py::test_req_qml022_ac03_quick_focus_assertion_keeps_source_and_genuine_argument_call`; all ordinary cases in this assigned module |
+| INC-QML-83; AC02/AC03/AC06 | `test_cpp_unnamed_pointer_defaults.py::test_req_qml022_ac02_actual_unnamed_pointer_default_override_preserves_type_and_span`; all ordinary cases in this assigned module |
+| INC-QML-83; AC02/AC03/AC06 | `test_cpp_unnamed_pointer_updates.py::test_req_qml022_ac06_unnamed_pointer_cold_warm_type_change_matches_clean`; all ordinary cases in this assigned module |
+| INC-QML-83; AC02/AC03/AC06 | `test_cpp_source_views.py::test_req_qml022_ac06_explicit_original_view_owns_free_signature_without_reread`; all ordinary cases in this assigned module |
+| INC-QML-84; AC02/AC06 | `test_csharp_lexical_calls.py::test_req_qml022_ac02_local_function_is_source_owned_callable_and_beats_field`; all ordinary cases in this assigned module |
+| INC-QML-84; AC02/AC06 | `test_csharp_lexical_scope_boundaries.py::test_req_qml022_ac06_data_binding_rejection_ends_at_its_actual_scope`; all ordinary cases in this assigned module |
+| INC-QML-84; AC02/AC06 | `test_csharp_local_persistence.py::test_req_qml022_ac06_local_containment_and_call_remain_distinct_after_build_reload`; all ordinary cases in this assigned module |
+| INC-QML-85; AC02/AC03/AC06 | `test_cpp_adapter_composition.py::test_req_qml022_ac06_member_pointer_and_qt_test_supported_views_compose`; all ordinary cases in this assigned module |
+| INC-QML-85; AC02/AC03/AC06 | `test_cpp_adapter_composition_updates.py::test_req_qml022_ac06_composed_adapters_cache_stale_cleanup_and_rejection_recovery`; all ordinary cases in this assigned module |
+| INC-QML-86; AC02/AC06 | `test_cpp_default_proof_transport.py::test_req_qml022_ac06_malformed_erased_default_proof_never_lends_optional_arity`; all ordinary cases in this assigned module |
+| INC-QML-86; AC02/AC06 | `test_cpp_empty_default_arity.py::test_req_qml022_ac06_erased_empty_default_retains_actual_zero_argument_call`; all ordinary cases in this assigned module |
+| INC-QML-86; AC02/AC06 | `test_cpp_empty_default_updates.py::test_req_qml022_ac06_empty_default_cold_warm_required_transition_matches_clean`; all ordinary cases in this assigned module |
+| INC-QML-87/88; AC03/AC06 | `test_qt_test_statement_boundaries.py::test_req_qml022_ac03_typed_statement_paths_keep_actual_source_owner`; all ordinary cases in this assigned module |
+| INC-QML-87/88; AC03/AC06 | `test_qt_test_statement_composition.py::test_req_qml022_ac06_statement_repair_coexists_with_supported_member_pointer`; all ordinary cases in this assigned module |
+| INC-QML-87/88; AC03/AC06 | `test_qt_test_statement_context.py::test_req_qml022_ac03_retry_is_a_standalone_statement_under_actual_flow`; all ordinary cases in this assigned module |
+| INC-QML-87/88; AC03/AC06 | `test_qt_test_statement_updates.py::test_req_qml022_ac06_control_scope_edits_retire_old_facts_match_full_and_recover`; all ordinary cases in this assigned module |
+| INC-QML-87/88; AC03/AC06 | `test_qt_test_implicit_data.py::test_req_qml022_ac03_unbraced_data_keeps_exact_implicit_lifetime_without_declaration`; all ordinary cases in this assigned module |
+| INC-QML-87/88; AC03/AC06 | `test_qt_test_implicit_updates.py::test_req_qml022_ac06_direct_implicit_column_uses_actual_canonical_owner`; all ordinary cases in this assigned module |
+| INC-QML-90; AC02/AC06 | `test_csharp_indexer_boundaries.py::test_req_qml022_ac02_source_signature_ignores_layout_but_preserves_literal_case_and_interface`; all ordinary cases in this assigned module |
+| INC-QML-90; AC02/AC06 | `test_csharp_indexer_call_safety.py::test_req_qml022_ac06_indexer_role_rejects_callable_guess_without_borrowed_owner_edge`; all ordinary cases in this assigned module |
+| INC-QML-90; AC02/AC06 | `test_csharp_indexer_updates.py::test_req_qml022_ac06_signature_change_removes_old_member_matches_full_and_preserves_unrelated`; all ordinary cases in this assigned module |
+| INC-QML-90; AC02/AC06 | `test_csharp_indexers.py::test_req_qml022_ac02_explicit_indexer_has_its_actual_containing_type`; all ordinary cases in this assigned module |
+| INC-QML-69; AC06 | `test_qt_audit_workflow_admission.py::test_qt_audit_stack_base_receives_normal_pull_request_validation`; all ordinary cases in this assigned module |
+
+`test_csharp_source_raw_publication.py::test_req_qml022_ac06_raw_publication_persists_profile_keys_and_settles`
+adds manual/watch cases at the actual raw writer. Both failed before the profile
+publication hook, then both pass with all 17 associated local persistence and
+rejected/global-publication controls (19 cases, no skips). It verifies explicit
+multigraph/profile/key persistence and byte-identical no-change settling.
+
+### INC-QML-93 caller-admitted literal build include context
+
+REQ-QML-005/011/014/018 and REQ-QML-022-AC03/AC06 map to ordinary
+`test_qt_build_include_context.py`, `test_qt_build_include_boundaries.py`,
+`test_qt_build_include_workers.py` and `test_qt_build_include_updates.py`.
+These exercise actual CMake command inputs, direct/facade/read_cpp, source-relative
+precedence, admitted C-compatible forwarding-header dispatch, separate target
+root domains, UTF8/foreign path and source/metadata/absence corruption, all-proof
+omission, actual spawn and legacy worker payloads, metadata-only/stale-context
+updates, post-exposure witness races, real repeated Windows replacement failures,
+retained graph/manifest/report/state, recovery and settling. The later unknown
+root/property-setter owner correction retains a global cohort veto; literal
+unrelated owners remain isolated. The 911-pass/two-symlink-skip joint checkpoint
+predates this last guard and is not reused as exact final-source proof.
+
+### INC-QML-95 bounded negative source-effect context
+
+REQ-QML-005/011/014/018 and REQ-QML-022-AC03/AC06 map to ordinary
+`test_qt_build_source_effects.py`, `test_qt_build_effect_boundaries.py` and
+`test_qt_build_effect_updates.py`. Finite literal/loop/append/lowercase domains
+prove only disjointness; no generated target becomes a positive owner. Tests
+preserve same-source/target collisions, unknown/tainted values, option/list
+injection, cohort/local command shadowing, source order, loop-carried writes,
+zero-iteration and bounds. Source reds and independent loop/shadow counterexamples
+failed before correction. The focused/adjacent frozen selection executed 136 passing cases, two explicit
+host symlink-creation skips, zero failures, bound to its retained source/test
+manifest. It predates the later explicit typing/invariant corrections and is not
+borrowed as exact bd7 final-source proof; the corrected full gates own that proof.
+Actual manual/watch source and metadata-only updates preserve IDs, rederive build
+proof, retire stale authority, match full scans, settle without writes, and retain
+accepted products on rejection/EIO then recover. Separate CMake source-append
+metadata rejection remains; it is not cleared or passed through allow-partial.
+
+The exact three reference-corpus test translation units remain unsupported by
+this bounded build profile: the first verified unknown payload comes from
+`qt_add_resources` generated sources, with target-SOURCES/property/filter handling
+also outside the profile. They are rejected with zero build witnesses, not omitted
+or declared parsed. No broader configure/generator/SOURCES evaluation is implied.
+This is distinct from new analyzer regressions and from the two archived JSON
+inputs beyond the existing 1 MiB source cap. Final installed whole-corpus evidence remains pending after the deliberate
+INC-QML-96 interruption; it must record every admitted input and failure
+separately, including the existing CMake diagnostics and intentional skip policy.
+
+| Increment / criteria | Additional exact representative |
+| --- | --- |
+| INC-QML-93; REQ-QML-022-AC03/AC06 | `test_qt_build_include_context.py::test_req_qml022_ac03_no_build_metadata_keeps_existing_unknown_include_rejection`; remaining paired cases in the assigned module |
+| INC-QML-93; REQ-QML-022-AC03/AC06 | `test_qt_build_include_boundaries.py::test_req_qml022_ac03_competing_unsupported_membership_or_roots_cannot_choose_target`; remaining paired cases in the assigned module |
+| INC-QML-93; REQ-QML-022-AC03/AC06 | `test_qt_build_include_workers.py::test_req_qml022_ac06_actual_worker_payload_preserves_target_context`; remaining paired cases in the assigned module |
+| INC-QML-93; REQ-QML-022-AC03/AC06 | `test_qt_build_include_updates.py::test_req_qml022_ac06_metadata_only_root_retarget_refreshes_stable_source_facts`; remaining paired cases in the assigned module |
+| INC-QML-95; REQ-QML-022-AC03/AC06 | `test_qt_build_source_effects.py::test_req_qml022_ac03_finite_disjoint_source_effect_preserves_only_existing_literal_profile`; remaining paired cases in the assigned module |
+| INC-QML-95; REQ-QML-022-AC03/AC06 | `test_qt_build_effect_boundaries.py::test_req_qml022_ac03_carried_or_shadowed_bindings_cannot_be_a_finite_proof`; remaining paired cases in the assigned module |
+| INC-QML-95; REQ-QML-022-AC03/AC06 | `test_qt_build_effect_updates.py::test_req_qml022_ac06_finite_effect_cpp_edit_matches_full_and_settles`; remaining paired cases in the assigned module |
+
+
+### INC-QML-96 exposure index ownership
+
+REQ-QML-014/018 and REQ-QML-022-AC02/AC03/AC06 map to
+`test_qt_cpp_shared_index.py::test_req_qml022_ac06_enrichment_indexes_unrelated_corpus_fact_once_across_all_units`
+and
+`test_qt_cpp_shared_index.py::test_req_qml022_ac06_shared_mapping_matches_public_direct_constructor_and_definition_provenance`.
+The production red resolves the same unrelated accepted source fact four times
+for four actually admitted native mappings; the corrected count is one without
+losing units, class/body ownership or unchanged inputs. Shared versus standalone
+construction preserves the original semantic records, ordering and provenance.
+
+`test_qt_cpp_index_lifetime.py::test_req_qml022_ac06_index_membership_is_frozen_at_entry_and_new_calls_see_new_cohorts`,
+`test_qt_cpp_index_lifetime.py::test_req_qml022_ac06_separate_roots_and_invocations_never_reuse_index_or_unit_state`,
+`test_qt_cpp_index_lifetime.py::test_req_qml022_ac06_unmapped_or_rejected_source_never_constructs_index`,
+`test_qt_cpp_index_lifetime.py::test_req_qml022_ac06_index_containers_are_readonly_without_deepcopying_borrowed_facts`
+and
+`test_qt_cpp_index_lifetime.py::test_req_qml022_ac06_index_failure_retains_products_and_recovery_matches_full`
+cover snapshot lifetime, lazy rejection timing, independent roots/state, immutable
+index containers, actual failed publication retention, recovery and full parity.
+Final full-suite, installed and complete-corpus outcomes remain pending.
+
+### INC-QML-97 positive build-command identity
+
+REQ-QML-005/011/014/018 and REQ-QML-022-AC03/AC06 map to the ordinary
+`test_qt_build_positive_shadow.py` module. Its seven tests include parameterized
+function/macro and case forms for every modeled positive command across separate
+admitted manifests, malformed/dynamic census input, scoped/order controls,
+BOM/CRLF/UTF8 original bytes and fresh-hash semantic replay. The recorded red
+selection has 19 failures and 14 valid controls; the corrected expanded selection
+has 38 passes and no skips under its retained source/test manifest.
+
+Exact update/retention representatives are
+`test_qt_build_positive_shadow.py::test_req_qml022_ac06_fresh_hashes_cannot_repair_positive_profile_with_new_shadowed_owner`
+and
+`test_qt_build_positive_shadow.py::test_req_qml022_ac06_metadata_only_positive_shadow_rejects_retains_recovers_and_settles`.
+Manual/watch and normal/force attempts cannot publish stale command authority;
+rejection retains accepted products, corrected metadata recovers, and repeated
+application settles. Unsupported source context and corrupted/stale promised
+transport retain distinct diagnostics. New-head full/installed/hosted evidence
+is required; the earlier bd7 tree's consumer results do not verify this correction.
+
+
+### INC-QML-98 overridden emission prefix and directive regressions
+
+REQ-QML-016-AC01/AC04 and REQ-QML-022-AC03/AC06 retain the exact source fixtures in
+`test_qt_explicit_emissions.py::test_req_qml016_ac01_local_macro_override_cannot_inherit_qt_annotation_role`,
+`test_qt_explicit_emissions.py::test_req_qml016_ac01_override_cannot_recover_annotation_by_prefix`
+and the historically named
+`test_qt_explicit_emissions.py::test_req_qml016_ac01_macro_override_order_preserves_prior_explicit_observation`.
+The last retains its original unsupported-later-prefix input and now asserts
+whole-unit rejection. Exact installed-baseline reproduction showed the older
+expectation could fabricate a bare signal call after erasing a source-redefined
+prefix. REQ-QML-022's source/annotation boundary and the versioned Qt definitions
+require rejection, not that invented call. Generic partial source results remain
+separate from accepted Qt overlays.
+
+The supported source-order positive is
+`test_qt_emission_override_updates.py::test_req_qml016_ac01_earlier_sdk_observation_survives_later_valid_ordinary_identifier`.
+Its later ordinary syntax remains valid and preserves the earlier observation;
+this does not promise partial acceptance of malformed/unsupported later prefixes.
+`test_qt_emission_override_updates.py::test_req_qml022_ac03_real_ordinary_function_and_call_preserve_original_bytes`
+proves genuine emit/Q_EMIT functions and calls retain their source role without
+SDK authority. A preprocessing directive was previously rewritten by native
+keyword matching; this faithful valid positive failed before the correction.
+
+`test_qt_emission_override_updates.py::test_req_qml022_ac03_override_prefix_has_exact_bom_crlf_rejection_span`
+and
+`test_qt_emission_override_updates.py::test_req_qml022_ac06_override_update_retains_publication_recovers_and_settles`
+cover exact BOM/CRLF/Unicode ranges and actual manual/watch graph/manifest/report/
+Qt-state retention, recovery, full parity and no-change settling. The recorded
+focused red has eight failures and 32 passing controls; corrected focused40 and
+eight-module adjacent149 both pass with no skips. Scoped Ruff/Pyright are clean.
+These receipts bind their own source/test hashes; final full/installed/hosted
+evidence remains independently required.
+
+
+The final INC-QML-98 BOM refinement additionally maps
+`test_qt_emission_override_updates.py::test_req_qml022_ac03_bom_immediately_before_undef_keeps_real_ordinary_identifier`,
+`test_qt_emission_override_updates.py::test_req_qml022_ac03_first_bom_directive_cannot_restore_overridden_prefix_authority`,
+`test_qt_emission_override_updates.py::test_req_qml022_ac03_only_initial_bom_can_admit_directive_whitespace`
+and
+`test_qt_emission_override_updates.py::test_req_qml022_ac03_first_bom_continued_macro_body_stays_original_and_inert`.
+Six new red failures with 12 passing controls established the immediate-first-
+directive gap; corrected selections pass 46 source cases, 22 BOM-boundary cases
+and the final eight-module 159 cases with no skips. The source/generic entry
+points share the same unchanged original bytes. Independently checked first-line
+BOM ordinary controls accept; overridden prefixes reject at their actual token;
+midstream BOM is not directive whitespace. Final full gates remain separate.
+
+
+The remaining resource-output context veto was checked against the
+[Qt 6.12.0 resource helper](https://github.com/qt/qtbase/blob/v6.12.0/src/corelib/Qt6CoreMacros.cmake#L429-L448):
+it appends generated sources to the output variable's existing contents. The
+reference inputs have no source-owned prior initialization for that first-veto
+output. Its enclosing/cache contents remain Unknown and could include the
+candidate translation unit. A generated-basename-only exclusion would discard
+that uncertainty; it is not an accepted correction. No implicit empty-variable
+assumption, project execution or configured-source uniqueness is introduced.
+
+
+The INC-QML-77 full-suite expectation reconciliation retains every parameter of
+`test_qt_construction_authority.py::test_req_qml017_ac02_native_ancestry_reads_only_accepted_complete_source_facts`.
+Definition/status/identity mutation contradicts an existing resolved metaobject
+promise and must fail at index construction with QT_METADATA; input nodes/edges
+remain unchanged. Origin/base/canonical-status/missing-base controls continue to
+require unavailable lookup. The original-format installed baseline has no such
+promise and returns unavailable for the former three, explaining the expectation
+discrepancy without relaxing current source authority. The retained full
+seven-case red has three failures and four passes before expectation correction;
+new-source execution remains required after that test-only conformance change.
+
+
+INC-QML-73 full-suite source-owner conformance retains
+`test_qt_member_source_links.py::test_req_qml008_ac02_source_fallback_rejects_unproved_or_noncallable_context`
+with a source-ID-eligible duplicate for its ambiguity scenario and unchanged
+rejection assertions. The exact old invalid-suffix peer is retained separately
+as a nonauthority control. Original-format baseline data has no typed free
+proof and remains ambiguous for duplicate generic peers; current two-valid-proof
+data also remains ambiguous. Current exclusion of an invalid-ID peer is the
+intended precise source-proof boundary, independent of INC-QML-96 indexing and
+INC-QML-77 metaobject validation. New focused identities/results are recorded
+when the held test-only conformance correction executes.
+
+
+The INC-QML-67 full-suite conformance case
+`test_qt_project_membership.py::test_req_qml020_ac02_source_projection_rejects_unproved_membership[foreign_module]`
+now carries a typed source-export chain. Its original parent-source mutation must
+reject with QML_METADATA before projection and leave borrowed inputs unchanged.
+The remaining ten cases retain unavailable/no-edge behavior. This matches
+`test_qt_cmake_type_exports.py::test_req_qml022_ac06_export_metadata_cannot_replace_actual_producer_ownership`;
+the retained pre-correction full/focused failure is not a false membership binding.
+New-source conformance execution remains required after the held test correction.
+
+
+### INC-QML-99/100/101 final correction cohorts
+
+REQ-QML-022-AC02/AC03/AC06 and the owning REQ-QML-003/008/014/015/017/018 criteria
+map to the ordinary production-boundary cases below. The completed diagnostic
+full run at tree c3dc170 reports 14,059 passes, 23 failures, 183 skips and one
+expected failure, with all 1,054 Python inputs and protected files unchanged.
+Every failure is classified in retained JUnit evidence; that run is not acceptance.
+
+| Correction | Exact representatives and executed focused result |
+| --- | --- |
+| INC-QML-99 partial caller ownership | `test_cpp_partial_caller_transport.py::test_req_qml022_ac06_partial_caller_retains_legacy_host_edge_raw_call_and_uncertainty`; `test_req_qml022_ac06_partial_host_call_survives_facade_cold_warm_and_export`; `test_req_qml022_ac06_recorded_uncertain_callers_cannot_regain_generic_free_label_guesses`; `test_req_qml022_ac06_accepted_native_member_and_constructor_callers_keep_free_calls`; `test_req_qml022_ac06_owned_scoped_caller_keeps_its_exact_namespace_target`; `test_req_qml022_ac06_owned_callers_still_reject_uncertain_target_definitions`. Existing CUDA failure and new neutral reds precede the correction. |
+| INC-QML-100 legacy carrier selection | `test_source_relationship_legacy_metadata.py::test_req_qml022_ac06_nonempty_legacy_empty_carrier_preserves_graph_facts_and_input`; `test_req_qml022_ac06_typed_source_cannot_hide_invalid_carrier_as_legacy_absence`; `test_req_qml022_ac06_missing_or_null_typed_metadata_still_selects_source_storage`; `test_req_qml022_ac06_valid_typed_peer_cannot_mask_later_malformed_promise`; `test_req_qml022_ac06_nonempty_invalid_carrier_remains_controlled_rejection`; `test_req_qml022_ac06_invalid_reserved_profile_remains_rejected`; `test_req_qml022_ac06_rejected_typed_carrier_retains_json_then_recovers_and_repeats`. The original 15 legacy cases remain untouched. New nonempty production reds: 24 failures and six controls before correction; storage/transport/merge/failure selection: 266 passed, no skips. |
+| INC-QML-101 allocated member identity | `test_cpp_allocated_member_proof.py::test_req_qml022_ac02_member_fact_uses_allocated_owner_after_forward_and_file_collision`; `test_req_qml022_ac06_standalone_member_augmentation_retains_legacy_optional_index_default`; `test_req_qml022_ac02_qualified_owners_do_not_stamp_callback_data_or_borrow_sibling_method`; `test_cpp_allocated_member_updates.py::test_req_qml022_ac06_allocated_member_cpp_and_qml_updates_remove_stale_endpoint_then_recover`; `test_req_qml022_ac06_allocated_member_graph_write_failure_retains_products_and_retries`; `test_req_qml022_ac02_noninvokable_member_cannot_borrow_same_named_global_callable`. Original LF/CRLF forward/body failures retain their assertions. |
+
+The final INC-QML-99/101 combined source/adjacent selection executes 808 passes
+with no failures or skips. Scoped Ruff/Pyright are clean; full typing and whole-
+suite evidence remain separate. Conditional/duplicate callers retain precise
+source-owned resolution when their namespace and unique target are known;
+uncertain targets and unavailable/anonymous caller namespaces remain conservative.
+No provider proof is manufactured for partial callers.
+
+The test-only conformance selection executes 77 passes with no skips across
+construction authority, source links, project membership and the new
+`test_qt_member_source_ambiguity_contract.py::test_req_qml022_ac02_source_fallback_preserves_proof_eligibility_and_real_ambiguity`
+(three profiles in both orders). Actual producer-edge admission and original
+node-only integrity rejection in `test_qt_resource_resolution.py` pass its
+22 cases; the resource/type-export/update selection passes 69, with no skips.
+Source transport, source-ID eligibility and complete ownership promises are
+strengthened rather than bypassed. The cache issue-reference assertion and
+EOF-only AST-identical formatting correction execute 21 passing cases.
+
+INC-QML-101 update parity compares actual same-root, same-owner cold no-cluster
+publication with incremental no-cluster output, preserving every node/edge field
+and duplicate count. Independent current and original installed-baseline probes
+agree. Raw observations and assembled Graph evidence folding are different
+existing publication profiles; a generic forward/body contains link can become
+a selected source location plus also_seen after assembly. No evidence is dropped
+to hide that distinction. Typed Qt/QML metadata and native endpoint proofs remain
+exact across the separately checked profiles. Mixed C# local-function/C++
+forward-body raw publication and reload also succeed; intentionally duplicated
+serialized source links still reject. No new runtime increment follows from that
+unreproduced duplicate-storage hypothesis.
+
+Final corrected whole-suite, complete installed-corpus and hosted results are
+pending and must bind the corrected revision rather than borrow c3dc evidence.
+
+
+### Corrected full-source checkpoint — runtime tree 5b280fb
+
+The qualified native Windows Python 3.12 full source run executes all 14,389
+collected cases: 14,205 pass, 183 skip and one inherited expected failure remains;
+there are zero failures/errors. Pytest exits zero after 2,200.97 seconds (wrapper
+elapsed 2,204.35 seconds), with 4,760 reported warnings. All 1,059 source/test
+Python files, the unrelated root coverage data and the 13 protected result files
+remain unchanged. The reviewed raw-Git wheel is the same 378-file/241-Python
+payload used by both fresh isolated consumer profiles.
+
+Skipped cases retain individual reasons. They include Windows/POSIX and symlink
+capability boundaries, POSIX-only emitted-script fixtures, four absent native
+preprocessor cases and two unavailable local graph-service cases, optional live
+provider probes, interpreter-specific fallbacks and one existing unmodeled C++
+namespace-node control. The inherited two-manifest expected failure is recorded
+as expected failure, never as a pass. Hosted assigned POSIX/service/Python/native
+profiles must execute their own gates; this local result cannot substitute for
+them. No assertion, platform assignment, dependency contract or required gate is
+weakened. The earlier 23-failure run remains a distinct failing checkpoint;
+INC-QML-99/100/101 and stronger source-promise fixture conformance own the repairs.
+
+Complete installed reference-corpus and new-head hosted results remain pending.
+
+
+### INC-QML-102 — Physical permission and target-write fault evidence
+
+REQ-QML-012-AC02 and REQ-QML-022-AC06 retain the exact failure/force parameters in
+`test_qt_external_singleton_updates.py::test_req_qml022_ac06_external_setup_failure_retains_products_and_recovers`
+and `test_qt_test_updates.py::test_req_qml022_ac06_qt_test_failure_retains_graph_and_recovers`.
+Both keep two rejected attempts, byte-for-byte graph/manifest/report/Qt-state
+retention, correction, clean rebuild parity and settled repeat. Physical readonly
+setup now owns the actual host boundary; a new `replace` parameter reaches the
+real graph-target replacement at least twice with EIO. Bounded rejection
+messages are asserted, and fault hooks/modes restore before recovery.
+
+`test_qt_publication_fault_contracts.py::test_req_qml022_ac06_graph_replace_eio_delegates_and_restores_after_exception`
+proves unrelated replacements remain real and the original callable is restored
+after an exception. `test_qt_publication_fault_contracts.py::test_req_qml022_ac06_readonly_fault_qualifies_actual_denial_and_restores_modes`
+exercises the atomic writer under qualified physical denial, verifies retained
+bytes/no probe or staging leftovers, and retries after exact mode restoration.
+The POSIX-only positive controls are
+`test_qt_publication_fault_contracts.py::test_req_qml022_ac06_posix_readonly_file_alone_allows_real_atomic_replace`
+and `test_qt_publication_fault_contracts.py::test_req_qml022_ac06_posix_readonly_file_pipeline_accepts_valid_update`;
+the latter covers both mechanisms and force values, accepted graph changes,
+expected source facts and restored-source repeat.
+
+Current local Windows evidence: the owned three-module selection has 21 passes
+and five explicitly POSIX-only positive-control skips. The broader adjacent
+selection has 85 passes and the same five skips; Ruff and explicit-interpreter
+Pyright report zero findings on the four owned files. All four original Windows
+readonly cases execute, as do all four new EIO/force cases. Seven other changed
+readonly fixtures and the wider Qt readonly census have explicit native guards;
+no further unguarded instance was found. Runtime/package, assertions, dependencies
+and platform assignments are unchanged. Actual POSIX parent-denial and all five
+positive controls remain unverified until the assigned new-head hosted lanes
+execute them. The predecessor's four actual macOS failures per lane remain
+failed evidence; generic capacity annotations cannot change that outcome.
+
+
+### INC-QML-103 — Newline oracle validates source proof before comparison
+
+REQ-QML-022-AC02/AC03/AC06 map to
+`test_qt_source_byte_admission.py::test_req_qml022_ac02_source_byte_admission_is_independent_of_checkout`,
+`test_qt_source_newline_cli.py::test_req_qml022_ac02_source_byte_profiles_keep_cli_semantics`,
+`test_qt_source_newline_cli.py::test_req_qml022_ac02_all_direct_source_witnesses_keep_original_bytes`
+and
+`test_qt_source_newline_cli.py::test_req_qml022_ac06_source_newline_oracle_rejects_corruption`.
+The four suffix admission cases construct literal LF bytes, exercise the actual
+selected extractor and retain every copied fixture while ordinary Python text
+converts. The independent actual CLI pairs construct LF/CRLF bytes explicitly in
+both clustering modes; every ID, semantic field, uncertainty value and counted
+edge remains compared after each physical witness is independently validated.
+
+The four real existing fixtures expose 12 six-coordinate witnesses in exported
+graphs and 14 through direct producers. The two additional CUDA raw-call/caller
+spans are intermediate transport and are not claimed exported. All raw offsets,
+rows, byte columns and required source fragments match their own original buffer.
+Ten required fields, two function definitions, source ownership and both observed
+CUDA host calls prevent symmetric omission. Eight corruption controls per mode
+reject wrong offset, consistently shifted offset/column, semantic role, ID
+permutation, relation, endpoint, duplicate edge and missing required fact in both
+outputs. Arbitrary metadata is never stripped; production coordinates/schema are
+unchanged.
+
+Before correction, the four explicit byte-admission tests fail with 22 passing
+controls. After correction, the focused 26 cases pass without skips. The adjacent
+60 cases also pass without skips, including all twelve aggregate invariance tests,
+existing exact admission/copy assertions and both prior native newline CLI
+modules. Ruff and explicit-interpreter Pyright are clean for all five owned
+files. Literal byte construction exercises a real differing pair on Windows,
+where repository CRLF conversion concealed the older aggregate mismatch.
+The first hosted Linux predecessor has six failures: these two aggregate cases
+and the four INC-QML-102 permission fixtures; 14,232 passes, 145 skips and one
+inherited expected failure remain separate. Three other Linux matrix lanes were
+cancelled by fail-fast and cannot establish passing acceptance. New-head complete
+hosted execution remains required.
+
+
+### INC-QML-104 — Legacy type-constant tooling compatibility
+
+REQ-QML-022-AC04 maps to the following exact cases in
+`test_qt_qmltypes_legacy_constant.py`:
+`test_qt_qmltypes_legacy_constant.py::test_req_qml022_ac04_legacy_type_constant_preserves_owner_value_and_bytes`,
+`test_qt_qmltypes_legacy_constant.py::test_req_qml022_ac04_legacy_constant_is_not_modern_member_constant`,
+`test_qt_qmltypes_legacy_constant.py::test_req_qml022_ac04_legacy_constant_rejects_nonboolean_values`,
+`test_qt_qmltypes_legacy_constant.py::test_req_qml022_ac04_legacy_constant_rejects_wrong_owners_and_duplicates`
+and
+`test_qt_qmltypes_legacy_constant.py::test_req_qml022_ac04_legacy_constant_tooling_cannot_authorize_native_reads`.
+They cover both boolean values and actual type-bearing owners, independent modern
+flags, BOM/CRLF/Unicode spans, direct/facade/export/reload and rejection/authority
+controls. REQ-QML-022-AC06 maps to
+`test_qt_qmltypes_legacy_updates.py::test_req_qml022_ac06_legacy_metadata_updates_retire_flags_and_keep_full_parity`
+and
+`test_qt_qmltypes_legacy_updates.py::test_req_qml022_ac06_legacy_metadata_rejection_retains_and_retries`.
+Both actual update mechanisms cover stale flag removal, wrong metadata rejection,
+real replacement EIO, prior-product retention, unchanged-source recovery and
+settled repeat against a full reference.
+
+The pre-correction ordinary selection has26 failures and28 passing controls.
+Current native Windows evidence is54 owned passes and119 combined owned/adjacent
+passes, zero skips/failures. Scoped Ruff/Pyright report zero findings in four
+owned files; independent source/authority review is clear. Actual unchanged bytes
+rejected by the installed predecessor recover under the corrected field table;
+accepted prior payloads stay identical. No syntax-cache epoch is needed for this
+tooling correction alone. Combined runtime, installed, reference-corpus and hosted
+evidence must use the new package bytes rather than the older completed audit.
+
+Primary compatibility evidence is the official
+[Qt6.8 creator](https://github.com/qt/qtdeclarative/blob/v6.8.0/src/qmltyperegistrar/qqmltypescreator.cpp)
+`writeType` and its Method/Signal/Property/Parameter consumers, compared with the
+[Qt6.12 creator](https://github.com/qt/qtdeclarative/blob/v6.12.0/src/qmltyperegistrar/qqmltypescreator.cpp).
+The old spelling is not a modern method-const claim.
+
+
+### INC-QML-105 — Captured C# receiver compatibility
+
+REQ-QML-022-AC02 maps to
+`test_csharp_captured_receivers.py::test_req_qml022_ac02_local_receiver_captures_keep_source_caller_and_class_target`,
+`test_csharp_captured_receivers.py::test_req_qml022_ac02_local_parameter_owns_receiver_before_outer_capture`
+and
+`test_csharp_captured_receivers.py::test_req_qml022_ac02_capture_static_own_parameters_and_literal_aliases_remain_valid`.
+Method/constructor/nested-local parameters, explicitly typed and `var new`
+locals, using/await-using declarations and escaped names keep the actual source
+caller and class-method target. REQ-QML-022-AC06 maps to
+`test_csharp_captured_receivers.py::test_req_qml022_ac06_capture_rejects_out_of_scope_unproved_or_static_bindings`,
+`test_csharp_captured_receivers.py::test_req_qml022_ac06_captured_delegate_stays_data_without_new_variable_nodes`,
+`test_csharp_captured_receivers.py::test_req_qml022_ac06_capture_modifier_checks_do_not_rescan_callable_bodies`,
+`test_csharp_captured_receivers.py::test_req_qml022_ac06_capture_context_is_per_run_and_preserves_collector_inputs`
+and
+`test_csharp_captured_receivers.py::test_req_qml022_ac06_pre_capture_schema_cannot_replay_missing_receiver_proof`.
+These retain nearest/own-parameter precedence, conditional/duplicate/late/static
+function and lambda barriers, delegate negatives, immutable input tables and the
+actual schema33 cache retirement. Twenty captures cause zero full-body modifier
+decodes; the pre-correction performance probe performed40.
+
+`test_csharp_capture_updates.py::test_req_qml022_ac06_capture_updates_retarget_then_remove_stale_edges`
+and
+`test_csharp_capture_updates.py::test_req_qml022_ac06_capture_write_failure_retains_and_retries_unchanged_source`
+exercise both actual update mechanisms, exact retarget/removal, full-reference
+parity, unrelated Python retention, real EIO, unchanged-source recovery and
+idempotence. Initial neutral replay exposed14 capture failures with11 passing
+controls; later ordinary boundary cases cover static lambda and work bounds.
+The initial owned cohort has39 passes. The single all-C#/field-call/language
+selection has1,088 passes, zero skips/failures;284 runtime/selected-test source
+hashes remain unchanged throughout. Three later production-source controls add
+actual for/ordinary using-statement exclusions and a proven typed-lambda parameter
+capture. The final combined correction gate executes all42 owned cases. Scoped Ruff/Pyright and independent lexical
+authority review are clear. Unproved for/foreach/pattern/ordinary using-statement
+captures and deferred-factory receiver types remain conservative, with no new
+local-variable graph nodes. Corrected whole-suite/package/corpus/hosted evidence
+is a separate pending gate.
+
+Shared epoch regressions execute with
+`python -m pytest tests/test_qt_upstream099_cache_contract.py tests/test_qt_analysis_state.py tests/test_qt_cmake_rc_updates.py -q`:
+57 native Windows passes, no skips/failures. Real schema33 writes miss under34;
+policy27 contexts refresh under28, with rejected/failing publication retention,
+repair/repeat and independent semantic-cache preservation. Older policy/schema
+cases and the upstream #4854 identity-repair rationale remain intact.
+
+
+### INC-QML-106 — Same-unit member occurrence and canonical provenance
+
+REQ-QML-022-AC02 and the changed source/identity portions of
+REQ-QML-003-AC02/AC04, REQ-QML-008-AC02/AC04 and REQ-QML-018-AC02 map to
+`test_cpp_same_unit_members.py::test_req_qml022_ac02_direct_same_unit_members_keep_both_original_occurrences`
+and
+`test_cpp_same_unit_members.py::test_req_qml022_ac02_same_unit_canonical_member_and_native_endpoint_roundtrip`.
+Direct extraction retains two genuine occurrence facts with separately allocated
+IDs and original spans. The facade retains one canonical declaration plus exact
+body navigation; invokable/slot profiles and an actual file/class-ID collision
+keep native endpoints through both graph directions and durable reload. Ordinary
+unexposed methods cannot acquire the same bridge.
+
+Boundary portions of REQ-QML-008-AC03 and REQ-QML-022-AC02/AC06 map to
+`test_cpp_same_unit_boundaries.py::test_req_qml022_ac02_same_unit_exact_cv_reference_signature_joins`,
+`test_cpp_same_unit_boundaries.py::test_req_qml022_ac06_same_unit_unproved_or_competing_pair_stays_separate`,
+`test_cpp_same_unit_boundaries.py::test_req_qml022_ac02_same_unit_include_guard_and_inline_special_members_remain_source_owned`,
+`test_cpp_same_unit_boundaries.py::test_req_qml022_ac02_same_unit_callback_return_method_does_not_borrow_return_parameters`,
+`test_cpp_same_unit_boundaries.py::test_req_qml022_ac06_parenthesized_name_and_callback_data_roles_remain_distinct`
+and
+`test_cpp_same_unit_boundaries.py::test_req_qml022_ac06_same_unit_fold_remaps_only_identity_slots_and_is_idempotent`.
+These distinguish actual cv/ref signatures, duplicate bodies even when the
+generic allocator reuses an ID, conditional/mismatched/unknown owners, include
+guards, existing constructor/destructor ownership, callback-return methods,
+ordinary parenthesized free/class names and callback data. Only explicit identity
+slots remap; literal metadata is unchanged and repeated canonicalization settles.
+
+REQ-QML-022-AC06's native-authority boundary maps to
+`test_cpp_same_unit_body_authority.py::test_req_qml022_ac06_navigation_span_cannot_replace_actual_member_body_proof`.
+Three corruptions of the real caller-body proof cannot be repaired by an equal
+navigation span. An ambiguous declaration carrier cannot lend native authority.
+The strict member predicate and caller-body validator remain the production
+owners, rather than trusting top-level navigation metadata.
+
+Changed update/retention portions of REQ-QML-017-AC04,
+REQ-QML-018-AC04/AC06 and REQ-QML-022-AC06 map to
+`test_cpp_same_unit_updates.py::test_req_qml022_ac06_same_unit_source_qml_metadata_updates_retire_and_retarget`
+and
+`test_cpp_same_unit_updates.py::test_req_qml022_ac06_same_unit_member_failure_retains_then_recovers`.
+Both actual manual/watch boundaries exercise independent C++-only, QML-only and
+metadata-only changes, exact stale-edge retirement/retarget, cold/full parity,
+unrelated retention, repeated parser rejection, qualified real replacement EIO,
+unchanged-source recovery and first-success repeat.
+
+The original ordinary allocation cohort has25 failures and15 passing controls.
+Later boundary execution exposed two additional real gaps: duplicate generic body
+IDs hiding distinct occurrences, and valid callback-return bodies omitted by name
+recovery. Paired parenthesized-name controls exposed a valid inline class-method
+omission too; its baseline/current source proof and failing assertion are retained.
+A test-only assertion was corrected to treat an absent callable flag as false,
+while preserving explicit field/nonmember checks. No product assertion or false
+authority guard was removed. That focused cohort has52 native Windows passes
+with no skips/failures; the919 adjacent cases passed before the later sibling
+guard and are retained as that historical checkpoint.
+
+Further REQ-QML-022-AC06 coverage is
+`test_cpp_competing_sibling_bodies.py::test_req_qml022_ac06_competing_sibling_bodies_preserve_each_original_occurrence`:
+actual header plus `.cpp`/`.cc` implementations exposed a second merger selecting
+one body after precise canonicalization had declined competition. The faithful
+facade regression fails before correction and now preserves all three source
+occurrences with distinct portable facade IDs, exact proof and no arbitrary
+definition navigation through build/export/reload. Direct sibling extensions keep
+their established shared stem-ID contract; the test does not invent direct IDs
+or revoke independent declaration authority.
+
+REQ-QML-008-AC02 maps additionally to
+`test_cpp_competing_sibling_bodies.py::test_req_qml008_ac02_duplicate_representation_of_one_body_retains_unique_join`.
+Real extracted prototype/body facts and their edges, with an exact copied body,
+exposed raw row counting as a false rejection at the production merger. Both
+pair selection and the later generic merger now count validated source occurrences
+by original file/complete span/owner/name/signature. Repeated representations
+remain one body; different implementation files remain distinct. Missing source
+identity cannot authorize a join. This second faithful red is retained.
+
+The final54 owned cases plus31 established qualified/sibling controls pass
+together:85 passes, no skips/failures. All changed executable lines in the two
+owned occurrence/member sources execute. Defensive no-callable and missing-path
+exits remain explicit unexecuted branches because accepted production hooks and
+producer paths supply those inputs; no fake AST or fabricated proof was added to
+inflate coverage. The final root combined gate has207 native passes without
+skips, covering all150 owned correction cases plus57 real epoch/state cases.
+Complete source, corpus and new-head hosted gates remain separate; these counts
+do not establish whole criterion/platform or whole-SDK acceptance.
+
+
+### INC-QML-107 — Direct producer conformance regression under correction
+
+Independent installed replay of the preceding raw tree finds zero qualified
+direct member-body/helper edges versus one facade edge in each ordinary/invokable
+and LF/BOM-CRLF profile. Filter by the actual fixture source and allocated body
+caller; an unrelated same-named helper cannot satisfy this check. Valid body proof
+triggers precise handoff but the direct resolver has no class edge to that actual
+body until later facade canonicalization. This violates REQ-QML-022-AC06 rather
+than defining an acceptable intermediate omission. Native ordinary exclusion and
+invokable facade endpoints remain correct. INC-QML-107's preimplementation matrix
+and shared read-only pair/scope design are in the increment plan.
+
+The9e36cd7f60869b2993be917d92899a3ff24f7256 raw Git tree is not a commit.
+Its wheel SHA256 is
+`f9fa40201c53f1f7752fa65936ec0d511786f8084e2f18126b5d269159f6bc47`;
+all378 package/241Python bytes and fresh offline31/35-distribution profiles match
+before/after. Preserved smokes,26CLI operations, two direction audits, real EIO/
+rejection retention/recovery/repeat, watcher cleanup and new104–106 probes pass.
+Core has10 explicit missing-tooling-parser controls; QML has10 actual legacy
+boolean-owner positives.193/196 loaded module origins belong to the isolated
+installed package. This is bounded historical evidence and misses the newly found
+direct-call assertion; it cannot close corrected acceptance.
+
+Both current full runs were stopped before source edits. The native source run
+observed5,384 pass lines and then stopped at37%, without a terminal suite/JUnit
+result. The reference run attempted all1,757 code inputs and reached native
+enrichment with one exposure-index build, but produced no final result artifact.
+Neither is a passing full run. Owned process exit and unchanged package/input/
+source bytes were checked; interrupted fixture/Python-finally cleanup is explicitly
+unconfirmed. Private source and application state remain local and unchanged.
+Fresh corrected runtime proof is required after the new regression passes.
+
+### INC-QML-107/108/109 — Corrected source-context regression evidence
+
+The preceding107 failure/stopped-run record remains historical. Correction107
+shares read-only `proven_member_pairs` validation with canonicalization, preserving
+the actual direct body caller and facade canonical caller without fabricating a
+class/body edge. Its first direct gate has25 faithful failures before correction,
+then25 passes; five separate cache/update/failure cases pass. These early results
+precede108/109 and are not independently final-source acceptance.
+
+| Acceptance | Exact executable anchors |
+| --- | --- |
+| REQ-QML-022-AC06; REQ-QML-008-AC02 | `test_cpp_direct_member_calls.py::test_req_qml022_ac06_direct_actual_body_caller_keeps_source_call`; `::test_req_qml022_ac06_callback_return_method_preserves_direct_body_call` |
+| REQ-QML-022-AC02/AC06; REQ-QML-008-AC02 | `test_cpp_direct_member_boundaries.py::test_req_qml022_ac06_direct_proxy_keeps_actual_member_and_local_shadowing`; `::test_req_qml022_ac06_unproved_direct_member_scope_cannot_borrow_a_class`; `::test_req_qml022_ac06_direct_scope_rejects_corrupt_or_unavailable_actual_ownership`; `::test_req_qml022_ac06_namespace_free_body_is_not_relabelled_as_a_native_member` |
+| REQ-QML-022-AC06; REQ-QML-014-AC03 | `test_cpp_direct_member_updates.py::test_req_qml022_ac06_pre107_cached_raw_body_proof_rebuilds_identical_facade`; `::test_req_qml022_ac06_direct_source_call_export_replacement_retains_then_recovers`; `::test_req_qml022_ac06_direct_scope_refresh_write_failure_and_callee_retirement` |
+
+Correction108 admits only source-proven negative local callback bindings and fixes
+actual declaration-point/parameter/implicit-loop/range scopes. Faithful failures
+precede each scope correction. The final owned source-bound runs have43 cases and
+two disjoint rejected-context controls, all passing without skips; those are two
+invocations, not one45-case run. The unreachable-from-production ancestorless
+parameter defensive exit remains unexecuted; no fake AST was added for coverage.
+
+| Acceptance | Exact executable anchors |
+| --- | --- |
+| REQ-QML-022-AC02/AC06 | `test_cpp_local_callback_bindings.py::test_req_qml022_ac06_callback_binding_blocks_direct_and_facade_guesses`; `::test_req_qml022_ac06_callback_point_of_declaration_precedes_own_initializer`; `::test_req_qml022_ac06_callback_shadow_stays_in_actual_order_and_scope`; `::test_req_qml022_ac06_callback_parameter_remains_data_and_explicit_global_bypasses_local` |
+| REQ-QML-022-AC02/AC06 rejection | `test_cpp_local_callback_bindings.py::test_req_qml022_ac06_callback_lookalikes_cannot_create_a_binding`; `::test_req_qml022_ac06_compound_assignment_is_not_a_callback_declaration`; `::test_req_qml022_ac06_nonstatement_or_multiple_argument_shape_lends_no_binder` |
+| REQ-QML-022-AC06; REQ-QML-014-AC03 | `test_cpp_local_callback_updates.py::test_req_qml022_ac06_pre_callback_schema_cannot_replay_false_global_target`; `::test_req_qml022_ac06_callback_edit_removes_stale_target_and_recovers_by_scope`; `::test_req_qml022_ac06_callback_public_rejection_retains_then_recovers`; `::test_req_qml022_ac06_callback_direct_export_failure_keeps_original_graph` |
+
+Correction109 carries bounded original-AST class/namespace roles and validates
+actual same-file parent ownership, complete six-coordinate containment and every
+ancestor-witness prefix. Whole-parent omission, malformed edge/path scalars and
+foreign member-owner substitution have faithful failing reproductions. Constructor
+scope cannot consume unrelated member-only using transport. Function-local,
+anonymous, template/union/conditional, unsupported qualified out-of-line class and
+over-limit scope remain unavailable; no runtime lookup is inferred.
+
+| Acceptance | Exact executable anchors |
+| --- | --- |
+| REQ-QML-022-AC02/AC06; REQ-QML-008-AC02 | `test_cpp_nested_class_calls.py::test_req_qml022_ac06_enclosing_class_members_hide_free_functions`; `::test_req_qml022_ac06_nested_namespace_and_explicit_lookup_keep_real_calls`; `::test_req_qml022_ac06_source_proven_member_owner_usings_keep_explicit_free_call`; `::test_req_qml022_ac06_inline_nested_body_uses_the_same_source_class_ancestry` |
+| REQ-QML-022-AC06 source boundary | `test_cpp_nested_class_boundaries.py::test_req_qml022_ac06_nested_ancestry_damage_declines_instead_of_using_global`; `::test_req_qml022_ac06_conditional_nested_owner_cannot_supply_namespace_or_members`; `::test_req_qml022_ac06_nested_qualified_name_does_not_select_foreign_same_label`; `::test_req_qml022_ac06_canonical_method_edge_cannot_change_source_proven_owner` |
+| REQ-QML-022-AC06 transport boundary | `test_cpp_class_scope_proof.py::test_req_qml022_ac06_scope_role_transport_rejects_malformed_or_incomplete_proof`; `::test_req_qml022_ac06_malformed_parent_edge_declines_without_hashing_untrusted_values`; `::test_req_qml022_ac06_contradicted_source_scope_roles_cannot_replace_actual_classes`; `::test_req_qml022_ac06_invalid_parent_source_scalar_declines_before_indexing`; `::test_req_qml022_ac06_constructor_cannot_consume_member_only_using_transport`; `::test_req_qml022_ac06_constructor_extra_using_cannot_authorize_a_foreign_owner`; `::test_req_qml022_ac06_scope_role_limit_is_explicit_before_sanitation`; `::test_req_qml022_ac06_scope_view_is_read_only_and_run_local`; `::test_req_qml022_ac06_scope_witness_preserves_conventional_guard_and_original_bytes`; `::test_req_qml022_ac06_scope_helper_first_import_preserves_producer_import_direction`; `::test_req_qml022_ac06_unsupported_class_scope_shapes_gain_no_new_scope_authority` |
+| REQ-QML-022-AC06; REQ-QML-014-AC03 | `test_cpp_nested_class_updates.py::test_req_qml022_ac06_nested_direct_export_failure_preserves_then_replaces_accepted_calls`; `::test_req_qml022_ac06_nested_parent_edit_retains_on_failure_then_retires_and_recovers`; `test_cpp_nested_context_updates.py::test_req_qml022_ac06_qml_and_metadata_only_updates_keep_nested_cpp_proof` |
+
+The109 source-bound integration run has371 passes, no skips/failures, including
+all55 direct-member107 cases and116 then-owned109 cases. Two subsequent actual
+QML-only/metadata-only manual/watch cases pass separately, totaling373 invocations
+and118 owned109 cases. Its new focused helper executes115 statements/60 branches
+at100% measured coverage; exhaustive Boolean combinations are not implied. Scoped
+Ruff/Pyright for107,108 and109 owners have zero diagnostics at their frozen hashes.
+
+The root source-bound integration/branch command was
+`.venv/Scripts/python.exe -X utf8 .venv/qt612-audit/root-review/run_final_107_109_joint.py`.
+The wrapper expands every `tests/test_cpp_*.py` plus C# capture/update,
+field-call ownership, languages, legacy tooling and all three epoch/state modules,
+then invokes pytest with explicit ignored coverage/JUnit paths. It finishes with
+**1,556 passes, four skips, zero failures/errors**,1,560 collected. The four exact
+skips are `test_cpp_preprocess.py::test_absolute_include_cannot_read_host_file`,
+`::test_relative_traversal_include_cannot_escape_the_corpus`,
+`::test_same_directory_include_also_stripped` and
+`::test_macro_expansion_still_works`: local `cpp` is unavailable. Those checks
+are not counted as passes. All1,089 source/test Python files and14 protected
+coverage/result file bytes remain unchanged across this execution. The complete
+command, selection, source manifests, coverage and JUnit remain in local receipts.
+
+This gate predates confirmed110–112 literal identity corrections. It closes no
+new complete package, full-source/reference-corpus, new-head hosted or whole-SDK
+acceptance. AST35/Qt29 correctly retires108/109 missing binding/role facts; the
+new identity correction's36/30 migration and actual35/29 predecessor cases have
+their own source-bound assignment. The107 cache test at current epoch proves an
+actual extractor-disabled cache hit missing only the intermediate edge; it does
+not claim an obsolete schema is accepted. Old raw34 recovery was proven only at
+the historical107 checkpoint. Independent semantic cache and accepted products
+retain their original lifetime and persistence owners.
+
+### INC-QML-113 — Struct callable header dispatch
+
+REQ-QML-003-AC02/AC04 and REQ-QML-022-AC02 map to
+`test_cpp_struct_method_admission.py::test_req_qml022_ac02_struct_callable_selects_cpp_and_retains_actual_facts`:
+actual `.h` dispatch, ordinary/const-ref/inline/constructor/destructor/default/
+pure/union profiles in LF and BOM-CRLF, exact owner/member edges and every
+existing six-coordinate proof against original bytes, cold/warm and JSON reload.
+The constructor initializer-list profile is included. Existing proof families,
+not a newly invented inline metadata contract, supply those byte witnesses.
+
+REQ-QML-022-AC06 rejection/boundaries map to
+`test_cpp_struct_method_admission.py::test_req_qml022_ac06_struct_callable_hint_cannot_relabel_c_data_or_inert_text`
+and `::test_req_qml022_ac06_partial_or_outside_read_bound_source_cannot_supply_member_hint`.
+C callback/parenthesized/bitfield/attribute forms, aggregate/local expressions,
+raw/ordinary literals, comments/continued/BOM-prefixed directives, unmatched
+scopes/parameters and the unchanged256KiB reader bound cannot supply the new hint.
+Source contents are unchanged. The oversized fixture has an explicit bounded
+pytest ID; its original automatic ID caused an actual Windows environment-length
+setup/teardown failure and prevented the next fixture's setup. That failed receipt
+is retained; all four original sources/assertions remain in normal discovery.
+
+REQ-QML-022-AC06 and REQ-QML-014-AC03 map to
+`test_cpp_struct_method_updates.py::test_req_qml022_ac06_pre_struct_callable_schema_reparses_actual_c_payload`,
+`::test_req_qml022_ac06_struct_callable_edit_changes_dispatch_then_recovers` and
+`::test_req_qml022_ac06_struct_callable_publication_failure_retains_then_recovers`.
+Actual successful C-producer data is written/read at35 and must miss under36.
+Real manual/watch edits remove the only C++ cue, retire stale class/member facts,
+restore them and match the complete cold publication profile. Two real Windows
+readonly/target EIO rejections preserve graph/manifest/report/state bytes, followed
+by exact recovery, unrelated Python retention, settled repeat and no temporary
+writer remnants. POSIX permission applicability is a distinct hosted assignment.
+
+The focused command expands the two new modules plus
+`tests/test_cpp_struct_header_admission.py` and `tests/test_cpp_function_prototypes.py`
+under `.venv/Scripts/python.exe -X utf8 -m pytest`, with explicit ignored
+`COVERAGE_FILE`, `--cov=graphify.cpp_header_declarations --cov-branch`, coverage
+JSON and JUnit paths. It has **90 passes, zero failures/errors/skips**:42 new
+admission cases, seven new update/cache cases and41 established controls. All80
+statements/40 measured branches execute; exhaustive combinations are not implied.
+At that checkpoint the owner/new tests measure129/101/97 physical lines and scoped Ruff/Pyright with
+an explicit `.venv/Scripts/python.exe` interpreter have zero diagnostics. An
+earlier implicit Store-alias type-check launcher failed import discovery and
+is not source/dependency evidence. Protected coverage bytes remain exact.
+
+The exact prior production-hint replay retains18 genuine failing admissions;
+three new C attribute lookalikes separately fail before their guard, then pass.
+Earlier17-failure and86-pass checkpoints remain bound to their smaller test sets.
+These focused results do not close final combined source, installed package,
+complete reference-corpus or new-head hosted acceptance. The ordinary full Linux
+and existing QML Windows/macOS prefix selections already collect the new modules;
+no duplicate dispatch, dependency/platform or assertion change is required.
+
+Independent peer review subsequently exposes four actual C macro-attribute false
+positives: builtin/user-type value declarations followed by an unknown attribute
+macro. The ordinary rejection matrix retains all four faithful failures before
+the bounded return-head correction. New unsigned-long and const-user-type pointer
+method controls remain admitted. Final source-bound command/selection is unchanged
+except those eight added cases; it has **98 passes, no failures/errors/skips**:
+50 new admission, seven real update/cache and41 existing controls. All85 statements
+and40 measured branches execute. Final owner/test sizes are139/107/97; scoped Ruff
+and explicit-interpreter Pyright have zero diagnostics. All14 protected file bytes
+are unchanged. The90-case and80-statement receipts remain distinct historical
+checkpoints. Unknown macro-expanded/complex return heads are not newly proved by
+this finite lexical hint, and final complete source/artifact/platform acceptance
+is still separate.
+
+### INC-QML-110 — Literal class identity and source-qualified remapping
+
+| Acceptance | Exact executable anchors |
+| --- | --- |
+| REQ-QML-022-AC02; REQ-QML-003-AC02/AC04; REQ-QML-008-AC02 | `test_cpp_class_case_identity.py::test_req_qml022_ac02_distinct_global_class_case_keeps_actual_members`; `::test_req_qml008_ac02_class_case_ids_are_order_line_and_root_independent`; `::test_req_qml008_ac02_unambiguous_global_and_namespace_ids_preserve_legacy_contract`; `::test_req_qml008_ac02_file_class_collision_keeps_actual_file_and_literal_owners`; `::test_req_qml022_ac02_class_case_type_and_unambiguous_alias_targets_remain_distinct`; `::test_req_qml022_ac06_case_census_cannot_choose_an_unproved_complete_class` |
+| REQ-QML-022-AC02/AC06; REQ-QML-008-AC02 | `test_cpp_class_case_consumers.py::test_req_qml022_ac02_class_case_inline_constructors_and_destructors_keep_owners`; `::test_req_qml022_ac06_collision_constructor_suffix_does_not_replace_source_ownership`; `::test_req_qml008_ac02_class_case_sibling_header_source_keeps_both_actual_bodies`; `::test_req_qml008_ac02_class_case_asymmetric_and_split_bodies_keep_exact_source_caller`; `::test_req_qml022_ac02_class_case_native_qml_members_use_actual_class_ids` |
+| REQ-QML-022-AC06 source/transport | `test_cpp_class_case_remap.py::test_req_qml022_ac06_unproved_multitarget_carrier_retains_complete_bucket`; `::test_req_qml022_ac06_explicit_callee_file_remaps_without_using_caller_file`; `::test_req_qml022_ac02_standalone_member_augmentation_uses_literal_collision_index`; `::test_req_qml022_ac06_facade_does_not_undo_unproved_multiowner_join` |
+| REQ-QML-022-AC06; REQ-QML-014-AC03 | `test_cpp_class_case_updates.py::test_req_qml022_ac06_predecessor35_missing_class_facts_cannot_replay`; `::test_req_qml022_ac06_class_collision_addition_retains_on_eio_then_retires_and_restores_ids` |
+| REQ-QML-008-AC02; REQ-QML-022-AC02/AC06 reservations | `test_cpp_class_case_identity.py::test_req_qml008_ac02_literal_class_domain_lookalike_keeps_legacy_identity`; `test_cpp_class_case_consumers.py::test_req_qml008_ac02_body_owner_domains_reserve_literal_qualifier_candidates`; `::test_req_qml008_ac02_class_collision_domain_reserves_provisional_body_owner` |
+
+Direct and facade profiles retain distinct real classes, fields/methods/calls and
+all original spans, with ordinary/invokable, namespace, class/file, forward/full,
+conditional and duplicate-owner controls. A source-only qualifier census gives no
+class/namespace/header authority. Constructor signatures and suffix validators
+remain unchanged; actual source/edge/binding rejects wrong-case or unowned-prefix
+authority. Real `.hpp` plus separate/asymmetric `.cpp`/`.cc` bodies keep actual
+callers. The independent plain `.h` admission failures belong to113, not an
+excuse to change110's class-identity assertions.
+
+Multi-target canonicalization preflights every explicit carrier. Missing/foreign
+file/site, unknown/contradictory callee metadata and a5000-digit explicit site
+veto the complete old-ID bucket without changing its bodies or leaving newly
+dangling edges. The oversized site produced a real integer-conversion exception
+before the bounded guard; explicit invalid sites cannot borrow a legacy line.
+Independent joins still progress. Direct/class/graph/export/reload, complete
+facade retention, source input nonmutation and idempotence are covered.
+
+The first class gate has14 faithful failures and one legacy-ID control. Sibling
+and split-body failures are separately retained. The43-case corrected checkpoint
+then receives six new literal-domain reservation failures: real source names
+matching generated domains must survive with their legacy identities. Sorted
+source-census reservation and deterministic escapes fix these; two additional
+mixed class/provisional-owner cases preserve their actual declaration/definition
+roles. An initial test-author role mismatch is retained and corrected to assert
+all three distinct source facts and their established exact roles, without a
+runtime behavior change.
+
+Final110 owned selection has **51 passes, zero skips/failures/errors**; all10
+owned files pass Ruff and nine small owners pass qualified Pyright. Exact files,
+commands and hashes are in local source-bound receipts. The earlier1,031-pass,
+one-skip26-module adjacent gate predates the oversized-site guard and reservations
+and is explicitly historical. No final complete source, installed/corpus or
+new-head hosted acceptance is borrowed from it. AST36/Qt30 predecessor35/29
+retirement and the later111/112 composition have separate final assignments.
+
+### INC-QML-111 constructor candidate-query characterization
+
+REQ-QML-022-AC06's unchanged producer/authority boundary maps to
+`test_cpp_constructor_candidates.py::test_req_qml022_ac06_constructor_exclusions_match_actual_source_producer_without_mutation`,
+`::test_req_qml022_ac06_constructor_query_uses_original_pointer_signature_bytes`
+and `::test_req_qml022_ac06_partial_constructor_tree_supplies_no_allocator_exclusions`.
+The existing constructor source classifier is reused by augmentation and the new
+read-only candidate query. The query's immutable IDs are negative reservations,
+not graph/signature/native proof. Original pointer/BOM/CRLF bytes, unsupported
+and conditional forms, callback data, namespace/nesting and local/anonymous
+exclusions retain their previous semantics.
+
+Before moving predicates,79 existing constructor/signature/source-view cases
+pass. After extraction,144 cases pass with no skips/failures, comprising those79,
+51 class cases and14 new query cases. Eleven complete producer outputs are exactly
+equal before/after, including all node/edge fields/direction, IDs, raw calls,
+spans and uncertainty/type authority. Source/query tests pass Ruff and qualified
+Pyright; sizes282/73 stay within300. These counts characterize the source-query
+extraction, independently from111's subsequent actual constructor/data collision
+and add/remove lifecycle acceptance.
+
+### INC-QML-111 — Literal member allocation and role transitions
+
+| Acceptance | Exact executable anchors |
+| --- | --- |
+| REQ-QML-022-AC02/AC06; REQ-QML-008-AC02 | `test_cpp_member_name_identity.py::test_req_qml022_ac02_literal_members_keep_exact_roles_owners_and_source_bytes`; `::test_req_qml022_ac02_mixed_and_punctuation_names_keep_each_source_fact`; `::test_req_qml022_ac06_noncolliding_and_exact_overload_ids_keep_the_prior_contract`; `::test_req_qml022_ac06_member_collision_ids_ignore_declaration_order_and_line_insertion` |
+| REQ-QML-022-AC02/AC06 source/identity boundaries | `test_cpp_member_name_boundaries.py::test_req_qml022_ac06_literal_generated_name_reservations_do_not_choose_a_winner`; `::test_req_qml022_ac06_ordinary_alias_reserves_the_repaired_member_domain`; `::test_req_qml022_ac06_constructor_signature_domain_is_not_a_member_name_collision`; `::test_req_qml022_ac06_same_spelling_overloads_do_not_poison_distinct_lowercase_slot`; `::test_req_qml022_ac06_namespaced_header_body_pairs_keep_exact_case_endpoints`; `::test_req_qml022_ac06_body_only_owner_and_member_collisions_compose_without_fact_loss`; `::test_req_qml022_ac06_source_candidate_cannot_borrow_a_foreign_allocated_owner` |
+| REQ-QML-022-AC06; REQ-QML-014-AC03 | `test_cpp_member_name_updates.py::test_req_qml022_ac06_pre_literal_member_schema_misses_successful_omitted_facts`; `::test_req_qml022_ac06_member_case_rename_removal_and_context_refresh_retire_old_ids`; `::test_req_qml022_ac06_member_name_failure_keeps_accepted_graph_before_recovery`; `::test_req_qml022_ac06_direct_member_repair_export_eio_retains_then_repeats` |
+| REQ-QML-022-AC02/AC06 constructor/data independence | `test_cpp_member_constructor_reservations.py::test_req_qml022_ac06_literal_field_cannot_steal_or_borrow_constructor_signature`; `::test_req_qml022_ac06_constructor_reservation_uses_original_unnamed_pointer_signature`; `test_cpp_member_constructor_updates.py::test_req_qml022_ac06_constructor_removal_cannot_leave_authority_on_same_id_field` |
+| REQ-QML-022-AC06 lifetime/work | `test_cpp_member_name_work_bounds.py::test_req_qml022_ac06_member_candidate_work_is_linear_in_real_literal_declarations`; `::test_req_qml022_ac06_literal_census_and_plans_never_cross_source_runs` |
+
+Twenty functions collect43 cases. Case, underscore, operator/destructor and mixed
+field/method names retain exact original roles, IDs and six-coordinate bytes.
+Qualified body allocation borrows the actual provisional owner domain; its first
+composition test produced two of four functions and now retains all four.
+Actual generated-domain names and ordinary aliases cannot swallow repaired fields.
+Five constructor-domain failures precede negative original-source reservation;
+constructor IDs stay unchanged and only conflicting data IDs escape.
+
+Six real add/remove lifecycle cases verify that a field may reuse the former
+constructor's legacy ID after removal but cannot retain callable/constructor
+proof, stale method/call/native edges or another target's authority. Actual
+syntax/EIO rejection twice preserves products; recovery/full cold/repeat and
+unrelated native/Python retention pass. An initial test-author call omitted the
+actual node ID when validating NetworkX attributes; the corrected call includes
+that ID and additionally forbids raw constructor metadata on data. Runtime was
+unchanged for this test correction.
+
+The source-bound owned execution has **43 passes, zero skips/failures**; runtime,
+eight owned files and14 protected files stay exact. Its coordinator correctly
+rejects a whole-Python equality claim because another agent changes a separate
+alias-boundary test during that run. Both before/after maps are retained. This is
+not a runtime/product failure or a new coverage overwrite. Helper coverage at
+that checkpoint executes124/131 statements and43/52 branches; defensive malformed/
+missing-owner exits are explicit gaps. Two actual parsed-source omitted-owner
+fallback assertions were added afterward and await final joint execution. Scoped
+Ruff/explicit-interpreter Pyright pass all eight owners. Final combined source,
+artifact/corpus/hosted acceptance remains pending, including INC114.
+
+### INC-QML-112 — Literal alias identity and direct AST provenance
+
+| Acceptance | Exact executable anchors |
+| --- | --- |
+| REQ-QML-022-AC02/AC06 | `test_cpp_alias_literal_identity.py::test_req_qml022_ac06_literal_aliases_keep_actual_source_reference_targets`; `::test_req_qml022_ac06_alias_chain_does_not_erase_its_case_distinct_source_declaration` |
+| REQ-QML-008-AC02; REQ-QML-022-AC06 | `test_cpp_alias_id_boundaries.py::test_req_qml008_ac02_alias_collision_identity_ignores_order_lines_and_target_edits`; `::test_req_qml008_ac02_alias_census_is_bound_to_actual_tree_and_original_candidate`; `::test_req_qml008_ac02_literal_alias_resembling_generated_domain_keeps_own_legacy_id`; `::test_req_qml008_ac02_noncolliding_aliases_preserve_existing_ids`; `::test_req_qml008_ac02_same_exact_alias_name_is_not_a_distinct_collision_bucket` |
+| REQ-QML-003-AC04; REQ-QML-022-AC06 profile | `test_cpp_alias_id_boundaries.py::test_req_qml003_ac04_class_aliases_keep_existing_public_graph_exclusion`; `::test_req_qml003_ac04_namespace_aliases_keep_file_containment_and_lexical_reference`; `::test_req_qml022_ac06_unavailable_qualified_alias_scope_cannot_invent_a_collision_name` |
+| REQ-QML-022-AC06; REQ-QML-014-AC03 | `test_cpp_alias_literal_updates.py::test_req_qml022_ac06_alias_direct_export_failure_retains_then_recovers`; `::test_req_qml022_ac06_actual_schema35_incomplete_alias_fragment_cannot_replay`; `::test_req_qml022_ac06_alias_rename_eio_retention_and_context_updates` |
+| REQ-QML-022-AC02 native invariance | `test_cpp_alias_native_identity.py::test_req_qml022_ac02_case_distinct_aliases_preserve_actual_native_signal_owners` |
+
+Initial ordinary identity tests retain34 failures before integration. The first
+49-pass/four-failure correction reveals that direct same-label namespace aliases
+still collapse during build/JSON. Actual created-node AST provenance fixes that
+without changing ghost policy. The53-case owned gate then passes without skips;
+source and protected bytes remain exact. Native endpoints already resolve before
+the ID correction and remain unchanged; the new tests require both graph aliases
+as well as those actual signal endpoints/direction. Two further unavailable-scope
+reservation failures are corrected, with oversized nested-scope control retained.
+
+The later adjacent run has120 passes and two old expectation failures. Its reused-
+alias fixture actually declares both Left and Right aliases, so the approved
+test correction requires two sourced IDs and Right-only references, never Left.
+Both same-line modes remain. Direct/facade coverage is also added to the existing
+qualified/no-local-alias rejection test. Seven of those eight cases pass; the
+facade's unqualified no-local-alias case exposes a genuine inherited wrong-scope
+rewire. Its failing ordinary assertion is retained and assigned to INC114,
+separately from the corrected expectation. No omission or assertion weakening is
+accepted as a fix. All seven scoped files pass Ruff/qualified Pyright; no current
+full-source/installed/corpus/hosted acceptance is claimed until114 and the final
+joint gate complete.
+
+
+## INC-QML-114 source-local type rejection and transport closure
+
+This source-bound Windows/Python3.12 profile corrects actual class and alias
+foreign-scope rewiring, then closes raw adoption and export-override paths that
+could erase the source decision. It grants no positive/native type authority.
+AST37/Qt31 retire successful36/30 entries and stamps; semantic cache, dependencies,
+platform selections and durable publication retain their existing owners.
+
+The final command is the qualified environment interpreter with `-X utf8 -m
+pytest`, the seven modules below, `--cov=graphify.extractors.cpp_type_references
+--cov-branch`, a fresh ignored explicit `COVERAGE_FILE`, JSON coverage and JUnit
+outputs. It executes **194 unique cases, zero failures/errors/skips** in 53.151
+pytest seconds. All 1,121 runtime/test Python files and 14 protected file bytes are
+unchanged during execution. This is focused source acceptance, not final combined,
+installed, complete corpus or committed-head hosted acceptance. Those gates remain
+separate pending results.
+
+The 270-line helper executes 164/166 statements and 86/88 measured branches. Remaining
+branches are a non-list unpromised `original_links` outside the annotated list API
+and a defensive direction recheck after the same cohort's prior validation.
+Coverage counts do not prove SDK semantics or exhaustive input behavior. Scoped
+Ruff/Pyright and final combined quality checks retain their own source binding.
+
+Affected criteria and exact ordinary collected regressions follow; parameterized
+profiles remain in the actual JUnit records rather than being counted as distinct
+function names.
+
+**REQ-QML-003-AC02 / AC04; REQ-QML-014-AC03; REQ-QML-022-AC02 / AC06**
+
+- `tests/test_cpp_type_reference_rejection.py::test_req_qml014_ac03_named_rejection_survives_real_source_and_transport`
+- `tests/test_cpp_type_reference_rejection.py::test_req_qml014_ac03_explicit_qualified_type_remains_positive`
+- `tests/test_cpp_type_reference_rejection.py::test_req_qml014_ac03_case_mismatch_does_not_invent_a_literal_rejection`
+- `tests/test_cpp_type_reference_rejection.py::test_req_qml014_ac03_crossfile_type_without_known_local_literal_keeps_fallback`
+
+**REQ-QML-003-AC02; REQ-QML-014-AC03; REQ-QML-022-AC06**
+
+- `tests/test_cpp_type_reference_scopes.py::test_req_qml014_ac03_foreign_literal_scope_and_source_order_remain_unavailable`
+- `tests/test_cpp_type_reference_scopes.py::test_req_qml014_ac03_actual_qualified_template_argument_cannot_supply_unqualified_peer`
+- `tests/test_cpp_type_reference_scopes.py::test_req_qml014_ac03_shared_actual_cpp_stub_copies_keep_parameter_positive`
+- `tests/test_cpp_type_reference_scopes.py::test_req_qml014_ac03_opaque_templated_qualifier_remains_unavailable`
+- `tests/test_cpp_type_reference_scopes.py::test_req_qml014_ac03_same_literal_other_language_reference_does_not_inherit_cpp_policy`
+
+**REQ-QML-003-AC04; REQ-QML-008-AC02; REQ-QML-014-AC03; REQ-QML-022-AC06**
+
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_literal_and_scope_bound_survive_sanitation`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_oversized_named_scope_is_unavailable_without_truncated_names`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_unrepresentable_literal_is_controlled_not_truncated`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_encoder_rejects_invalid_source_inputs_with_bounded_error`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_encoder_does_not_borrow_an_invalid_source_scope`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_opaque_lookup_and_global_scope_never_gain_positive_authority`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_actual_oversized_qualifier_keeps_unavailable_leaf`
+- `tests/test_cpp_type_reference_bounds.py::test_req_qml014_ac03_actual_missing_or_mismatched_promise_never_changes_source`
+
+**REQ-QML-008-AC02; REQ-QML-014-AC03; REQ-QML-022-AC06**
+
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_promised_context_is_validated_before_any_rewire`
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_raw_public_consumers_reject_partial_context_before_adoption`
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_both_raw_edge_aliases_are_validated_even_when_one_is_unused`
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_export_context_failure_preserves_real_existing_json`
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_legacy_absence_and_valid_reversed_direction_keep_existing_contract`
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_undirected_reversed_storage_preserves_actual_reference_direction`
+- `tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_legacy_and_promised_collection_boundaries_remain_distinct`
+
+**REQ-QML-008-AC02; REQ-QML-014-AC03; REQ-QML-022-AC06**
+
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_typed_mode_flags_reject_before_input_mutation`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_dual_alias_conflicts_cannot_select_an_unrestricted_view`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_valid_dual_aliases_repeat_build_export_reload_in_one_source_frame`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_missing_flags_keep_existing_typed_defaults`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_selected_build_mode_is_strict_for_promised_inputs`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_dual_alias_owner_retains_actual_numeric_legacy_peer`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_unpromised_legacy_modes_and_aliases_keep_existing_compatibility`
+- `tests/test_cpp_type_reference_transport.py::test_req_qml014_ac03_promised_scalar_edge_collection_is_not_legacy_absence`
+
+**REQ-QML-008-AC02; REQ-QML-014-AC03; REQ-QML-022-AC06**
+
+- `tests/test_cpp_type_reference_export_links.py::test_req_qml014_ac03_supplied_links_cannot_erase_known_graph_context`
+- `tests/test_cpp_type_reference_export_links.py::test_req_qml014_ac03_supplied_extra_actual_parallel_evidence_is_preserved`
+- `tests/test_cpp_type_reference_export_links.py::test_req_qml014_ac03_legacy_original_links_remain_an_independent_supported_view`
+
+**REQ-QML-003-AC02 / AC04; REQ-QML-008-AC02; REQ-QML-014-AC03; REQ-QML-022-AC06**
+
+- `tests/test_cpp_type_reference_updates.py::test_req_qml014_ac03_ac06_scoped_rejection_refresh_retarget_and_write_recovery`
+- `tests/test_cpp_type_reference_updates.py::test_req_qml014_ac03_actual_successful_schema36_cannot_replay_without_rejection`
+
+The earlier 107-case source checkpoint and subsequent 167-case run are retained
+separately. The latter has 166 passes and one genuine accepted numeric-direction
+repeat failure; it is not a successful gate. Exact source-produced malformed
+mode/alias and missing-export-promise failures precede their corrections. New
+positive controls keep strict foreign/partial direction rejection, accepted
+simple/source-multigraph profiles, missing-mode defaults, numeric legacy peers,
+shared-stub independent valid parameters and absent-family legacy behavior.
+
+Two fixture expectations were corrected with observed production evidence: mixed
+Python uses retain their own existing sourceless ID, and original parallel JSON
+restoration retains two actual source observations even when the input simple
+Graph holds one. Neither changes runtime policy or weakens the negative assertions.
+Actual extra original evidence remains accepted; dropping known Graph proof,
+including both promise fields, rejects before accounting/write under force too.
+Graph/nodes/edges/raw links and existing disk bytes remain exact on rejection.
+Manual/watch tests execute QML-only, metadata-only and source retarget/removal,
+real replacement EIO, prior-product retention, cold/full parity, repair and settled
+repeat. No SDK, analyzed build or component executes. Function/anonymous lookup
+and no-known-local-literal references retain their explicit legacy uncertainty;
+this is bounded source availability, not a general C++ compiler lookup contract.
+
+### Frozen corrective compatibility and installed artifact — INC-QML-104–114
+
+Native Windows x64/Python 3.12 executes the qualified interpreter with `-X utf8
+-m pytest -q --tb=short --cov-branch`, explicit ignored coverage/JUnit outputs,
+and the frozen selection of all `tests/test_cpp_*.py` modules plus the fourteen
+siblings below (95 modules total). The result is **2,048 passed, four skipped,
+zero failures/errors**, 937.10 pytest seconds. The four skips are exactly
+`tests/test_cpp_preprocess.py::test_absolute_include_cannot_read_host_file`,
+`test_relative_traversal_include_cannot_escape_the_corpus`,
+`test_same_directory_include_also_stripped` and `test_macro_expansion_still_works`:
+the external `cpp` executable is unavailable. They remain unexecuted capability
+checks, not successful assertions. Hosted Linux/platform evidence must be new-head
+specific; previous successful runners are not borrowed.
+
+The selected siblings are `test_csharp_captured_receivers.py`,
+`test_csharp_capture_updates.py`, `test_field_call_ownership.py`,
+`test_languages.py`, `test_qt_qmltypes_legacy_constant.py`,
+`test_qt_qmltypes_legacy_updates.py`, `test_qt_upstream099_cache_contract.py`,
+`test_qt_analysis_state.py`, `test_qt_cmake_rc_updates.py`,
+`test_qt_construction_authority.py`, `test_qt_constructor_ownership.py`,
+`test_qt_member_source_ambiguity_contract.py`, `test_qt_member_source_links.py`
+and `test_qt_source_links_upgrade.py`, all under `tests/`. Branch instrumentation
+covers the changed focused C++/C#/tooling owners and header hint, rather than
+claiming execution coverage for analyzed applications. INC111's late omitted-owner
+control now executes in this gate. Remaining member-name branches are defensive
+parentless/domain-none exits, unsupported declarator shape and missing authoritative
+owner-record fallback. The CPP context gaps remain those recorded above.
+
+All 1,121 source/test Python files and 14 protected file bytes stay exact during
+the combined gate. Full Ruff and generated-skill checks pass, including all 134
+generated artifacts. Explicit-interpreter whole-tree Pyright still fails with
+684 diagnostics: its exact file/severity/rule/message multiset matches the prior
+reviewed source, ignoring only line/column shifts. There are zero new or retired
+diagnostics; this is baseline comparison, not a successful type check.
+
+The noneditable local wheel is bound to raw Git tree
+`c27fce189ecd6b63a853073b8225861ff57f7133` (a tree, not a source commit), SHA256
+`f3aec3057ec231006903de15ac5c323c9e7ebdc2b59be5f87379817e2343e5d0`.
+All 383 package files, including 246 Python files, match raw Git/packaging input/
+wheel and both fresh installations. Canonical Windows and Git newline bytes are
+compared explicitly; they are not conflated. Offline core/QML-watch profiles
+retain 31/35 frozen distributions before/after, qualified isolated module origins,
+original smokes/source checks, 26 public CLI calls and two direction calls, actual
+syntax/replacement rejection, retention/recovery/repeat and QML watcher cleanup.
+Installed INC104–114 probes pass in both profiles. All 17 staged harness/config
+files remain exact, including nine historical assertion/config files. No global
+tool, SDK, provider, private application or dependency contract changes.
+
+This installed proof is independent of the complete source run, private-corpus
+comparison and reviewed-head hosted runs. Those remain separate pending gates;
+successful installation or aggregate counts do not establish whole-SDK semantics.
+
+### INC-QML-115 — Optional-wheel per-case report retention
+
+Acceptance: REQ-CORE-004-AC03, with unchanged QML001/014/022 platform and case
+assignments. The focused local gate executes19 cases, all passing, zero skips.
+The ten final real-child cases replayed against the old launcher produce nine
+failures and one passing unset-destination control. Scoped Ruff and explicit
+interpreter Pyright pass. Production package payloads remain unchanged.
+
+| Acceptance | Exact production-boundary tests | Evidence and limitation |
+| --- | --- | --- |
+| REQ-CORE-004-AC03 | `tests/test_qml_ci_evidence.py::test_req_core004_ac03_actual_profiles_persist_individual_passes`; `::test_req_core004_ac03_failed_profile_retains_exact_failed_case` | Both native/artifact profiles run real isolated pytest children, persist individual successful/failed XML outcomes and propagate actual nonzero failure. The report destination is absent from the child environment. |
+| REQ-CORE-004-AC03 | `tests/test_qml_ci_evidence.py::test_req_core004_ac03_directory_report_destination_retains_owned_sentinel`; `::test_req_core004_ac03_actual_report_write_failure_retains_accepted_parent` | Existing directory rejects in pytest option validation; a separate regular-file parent causes actual writer failure. Both profiles retain exact prior sentinel bytes. |
+| REQ-CORE-004-AC03 | `tests/test_qml_ci_evidence.py::test_req_core004_ac03_unset_report_path_preserves_local_command`; `tests/test_qml_ci_profiles.py::test_req_core004_ac03_workflow_retains_matrix_bound_xml_on_all_outcomes` | Unset local command retains legacy behavior. Actual workflow configuration keeps twelve lanes, pins the artifact action, always uploads unique lane/run/attempt XML and rejects a missing report. Configuration/local persistence does not prove hosted upload. |
+
+The command is `.venv/Scripts/python.exe -X utf8 -m pytest
+tests/test_qml_ci_evidence.py tests/test_qml_ci_profiles.py
+tests/test_qt_audit_workflow_admission.py -q --tb=short -ra`, with an isolated
+pytest configuration, owned base temporary directory and explicit JUnit output;
+the complete argument vector is retained in the execution receipt. New-head
+actual native required-case and upload proof remains pending;
+historical aggregate-only native output cannot establish individual new passes.
+
+### INC-QML-116 — Cold-reference fixture isolation
+
+| Acceptance | Exact tests | Executed local result and limit |
+| --- | --- | --- |
+| REQ-QML-022-AC06; REQ-CORE-004-AC03 | `tests/test_cpp_cold_reference_isolation.py::test_req_qml022_ac06_cold_output_preserves_all_bytes_without_directory_moves` | Both manual/watch profiles publish through real same-root owners with unavailable parent directory moves and a CWD import decoy. Every source/accepted file stays exact; full graph attributes, selected implementation, isolated child and fresh cache are checked. |
+| REQ-QML-022-AC06; REQ-CORE-004-AC03 | `tests/test_cpp_cold_reference_isolation.py::test_req_qml022_ac06_failed_cold_child_retains_accepted_then_repairs_and_repeats` | Both profiles reject actual malformed QML through a nonzero child, retain diagnostics and all accepted/source bytes, then repair and repeat against fresh outputs with exact full-attribute parity. |
+| REQ-QML-022-AC06 | Existing five cases in `tests/test_cpp_allocated_member_updates.py` and all fourteen existing helper import modules | Qualified15-module command passes81 cases, zero skips/failures/errors,181.547 seconds. All246 runtime Python files, two owned test files and14 protected file bytes remain exact. Ruff/Pyright pass. |
+
+The retained old-helper replay has four failed regression cases. The first
+corrected selection has nine passes; the qualified selection covers all helper
+callers without relaxing their assertions. The two earlier complete Windows
+runs remain failed: fifteen obsolete epoch-oracle/fault-selector failures in the
+first, then one cold-reference `WinError5` directory rename in the second.
+Thirty cache compatibility cases pass after the oracle/selectors match actual
+AST37. Full source and hosted acceptance after subsequent runtime corrections
+must execute independently; targeted success does not erase those failures.
+
+### INC-QML-118 — Original anonymous namespace helper proof
+
+Acceptance: REQ-QML-022-AC02/AC06 and existing source-call criteria. The final
+three-module owned gate passes68 cases with zero skips/failures,32.80 seconds.
+Initial direct/facade regressions retain23 failures and16 passing controls before
+the correction. All six owned file hashes and14 protected file bytes remain
+exact during the final gate. Ruff/explicit-interpreter Pyright pass; independent
+read-only review verifies the same hashes without a concrete blocker.
+
+| Acceptance | Exact tests | Scope and observed result |
+| --- | --- | --- |
+| REQ-QML-022-AC02/AC06 | `tests/test_cpp_anonymous_helper_calls.py::test_req_qml022_ac06_anonymous_helper_keeps_the_actual_member_body_call` | Direct/facade LF and BOM/CRLF positives cover global, named/reopened namespace and separate anonymous blocks; original source witnesses and actual body/canonical callers remain. |
+| REQ-QML-022-AC06 | `tests/test_cpp_anonymous_helper_calls.py::test_req_qml022_ac06_anonymous_helpers_do_not_borrow_unsupported_lookup`; `::test_req_qml022_ac06_anonymous_helper_cannot_cross_translation_units`; `::test_req_qml022_ac06_anonymous_scope_promise_is_not_positive_from_status_or_hash` | Class/local shadows, conditional/duplicate/named-target ambiguity, foreign namespace/unit, late and unsupported nested forms retain unavailable lookup; status/hash alone grants no target. |
+| REQ-QML-022-AC06 | `tests/test_cpp_anonymous_namespace_contract.py::test_req_qml022_ac06_anonymous_lookup_preserves_existing_caller_roles`; `::test_req_qml022_ac06_anonymous_scope_survives_assembly_sanitation_export_and_path_reload` | Ordinary/proven member caller roles and full metadata/source witnesses survive production assembly, sanitation, export and strict public path reload. |
+| REQ-QML-022-AC06 | `tests/test_cpp_anonymous_namespace_contract.py::test_req_qml022_ac06_anonymous_scope_bounds_never_truncate_positive_authority`; `::test_req_qml022_ac06_malformed_anonymous_witness_is_controlled_unavailable`; `::test_req_qml022_ac06_anonymous_target_needs_its_actual_extracted_file_containment`; `::test_req_qml022_ac06_anonymous_candidates_keep_existing_original_arity_limits` | Bounded/incomplete/corrupt namespace proof, absent containment and wrong argument counts supply no positive call. |
+| REQ-QML-022-AC06 | `tests/test_cpp_anonymous_helper_updates.py::test_req_qml022_ac06_anonymous_direct_failed_replace_retains_and_recovers`; `::test_req_qml022_ac06_anonymous_source_qml_metadata_updates_replay_and_retain_on_failure` | Actual manual/watch source/QML/metadata changes, cold full parity, real graph-target replacement failure, retention, repaired retry and no-change repeat. |
+| REQ-QML-022-AC06; REQ-QML-011-AC01/AC03/AC04 | `tests/test_qt_upstream099_cache_contract.py::test_req_qml022_ac06_schema37_missing_anonymous_call_regenerates_without_source_change` | An actual saved37 C++ fragment successfully reads without the helper call/witness. Current38 rejects/retires it and regenerates direct/facade cold/warm calls without changing input or independent semantic bytes. An in-memory37 control fails on real stale acceptance; the final exact case passes. |
+
+The paired five-module epoch/state gate has104 passes, zero skips,38.531 seconds,
+with all seven owned files and14 protected files exact during execution. It
+also exercises actual31-policy rejected publication/recovery and directory
+retirement/fault selectors at38. The last test-order clarification is verified
+by the separate exact old-epoch red/corrected green case. Qualified anonymous
+lookup, nested anonymous scopes, named descendants inside anonymous scopes and
+competing candidates remain unsupported. Helper instrumentation covers72/86
+statements and30/40 branches; defensive and alternate occurrence-identity exits
+remain unexecuted. These gates do not establish whole-compiler/SDK support.
+Final combined, installed, fresh reference-corpus and reviewed-head hosted proof
+remain separate pending evidence after the complete source correction.
+
+### Final INC-QML-117/118 focused checkpoints
+
+INC117 canonical-root execution passes304 unique cases without skips, including
+98 owned source-observation cases. The same four public-rebuild cases pass again
+after stronger assertions and are not added to that unique count. Complete
+source observations, pre-normalized type-only history, raw alias/mode validation,
+parent identity/direction, secondary C++ promises and supplied original-link
+carriers are checked before mutation/accounting. Actual write failure retains
+accepted state, then repair and repeat succeed. The final source relationships,
+evidence and type-reference owners measure261/136/292 lines; scoped Ruff/Pyright
+and independent read-only review pass. The earlier520-case checkpoint includes
+three explicit platform skips and is not presented as the later304-source gate.
+
+INC118 final seven-file checkpoint passes94 cases, zero skips, with renewed
+independent review. It adds declaration-order rejection, unrelated named/global
+noninterference and same-spelling named/anonymous role-key boundaries to the
+earlier68/76/90 checkpoints. The helper measures172 lines. Defensive and alternate
+identity exits remain uncovered; nested/mixed anonymous lookup, opaque prototype
+equivalence, defaults and cross-unit positive binding remain unsupported.
+
+### INC-QML-119 — Actual direct source producer provenance
+
+| Acceptance | Exact automated tests | Executed native Windows/Python3.12 result |
+| --- | --- | --- |
+| REQ-QML-022-AC02/AC06 | `tests/test_cpp_direct_source_provenance.py::test_req_qml022_ac06_direct_source_body_and_foreign_prototype_survive_consumers`; `::test_req_qml022_ac02_same_named_source_namespace_bodies_stay_distinct` | Actual direct/facade source roles, IDs, original LF/BOM/CRLF spans and call endpoints survive builder/export/public path reload/rebuild in both directions. Same-line and separate-line namespaces stay distinct. |
+| REQ-QML-022-AC02/AC06 | `tests/test_cpp_direct_source_provenance.py::test_req_qml022_ac06_legitimate_declaration_body_keeps_the_actual_definition`; `::test_req_qml022_ac06_richer_semantic_record_cannot_erase_a_direct_definition`; `::test_req_qml022_ac02_provenance_does_not_invent_a_missing_or_partial_definition` | Canonical same-entity declarations retain actual bodies; semantic records cannot erase AST source; partial input keeps existing generic calls without fabricating a prototype/definition. |
+| REQ-QML-014-AC04; REQ-QML-022-AC06 | `tests/test_cpp_direct_source_provenance_updates.py::test_req_qml014_ac04_direct_producer_publication_failure_retains_body_and_recovers`; `::test_req_qml022_ac06_provenance_refresh_source_removal_failed_write_and_repeat` | Both force profiles reach actual EIO, retain accepted input/output, recover and repeat; source removal, QML/metadata changes and manual/watch refresh keep actual targets and remove stale facts. |
+| REQ-QML-022-AC06; REQ-QML-011-AC01/AC03/AC04 | `tests/test_qt_upstream099_cache_contract.py::test_req_qml022_ac06_schema38_missing_direct_origin_reparses_source_roles` | A real saved38 fragment loads without direct provenance. Current39 misses/retires it and regenerates cold/warm source identities without changing independent semantic bytes; separate stale38 control fails and corrected exact case passes. |
+
+Qualified pre-fix44-case execution has14 real producer-loss failures and30
+controls. Corrected broad execution passes209 cases (50 owned/159 adjacent),
+then final owned execution passes54 with four added same-line cases, zero skips.
+Do not sum these overlapping runs. Earlier two lifecycle setup failures hit the
+existing six-to-five shrink rejection; a real replacement source function keeps
+six nodes so the final tests exercise their intended EIO. Initial partial-input
+expectation corrections preserve the agreed generic-call contract. All original
+failed receipts remain retained, without weakening production policy.
+
+The two new producer writes execute. Function coverage178/212 statements and
+79/112 branches; prototype63/73 and24/34. The prototype dictionary continuation
+line has no independent trace event; its owning append executes and distinct
+declaration assertions pass. Existing signature/bounds/defensive exits remain
+uncovered; no new production conditional branch is introduced. Scoped Ruff and
+explicit-interpreter Pyright pass. The eight-module AST39/Qt33 compatibility
+selection passes125 cases with no skips. Commands use the canonical venv,
+explicit owned `COVERAGE_FILE`, isolated pytest configuration, `-q --tb=short
+-ra` and retained JUnit XML; complete argument vectors are retained in receipts.
+Source/owned test and14 protected file bytes stay exact during their gates.
+
+These are scoped local checkpoints. The failed198 installed wrapper and its
+interrupted full-source/private attempts remain failed/interrupted, with
+unconfirmed finalizers. Fresh raw-Git package/installed eight-case replay and
+full legacy consumers, complete source/corpus runs, repository graph refresh
+and actual new reviewed-head hosted matrix remain pending separate acceptance.
+
+### INC-QML-119 fresh artifact and complete minimal-consumer checkpoint
+
+| Boundary | Actual local evidence and limit |
+| --- | --- |
+| Raw source/build | Git tree `24f994cb6e21e8a68d6bdc7979087fd4c213ab4e` is an inert packaging input, not a source commit or alternate checkout. Every385 shipped payload/248 Python file matches its raw Git blob, build input and unmodified wheel ZIP. Wheel SHA256 `b401a9bfbe7a050f777a9ac3d8d4fd2e4a417762a92dc1b4663231a91f11f975`; dependency/lock contract remains unchanged. |
+| Core/QML-watch installed | Fresh offline31/35 distribution profiles each pass FAST8 through direct/facade, both directions, original BOM/CRLF spans, builder/export/public path reload;198 module origins belong to that isolated install. Full source-observation/helper/direct-producer probes pass with199 installed origins. All385 installed payloads/248 Python files and dependencies remain exact before/after. |
+| Existing consumer contract | Complete existing26 public CLI operations plus two direction audits, smoke, actual syntax/EIO failure retention, recovery, repeat and QML watcher join/cleanup pass. The281-line extended probe and nine historical assertion/configuration copies remain byte-identical; all17 historical inputs stay exact. Core intentionally lacks optional QML parsing and verifies rejection, not QML extraction success. |
+| Guard/quality | Five consumer phases finish successfully in38.094 seconds. All1,138 source/test Python files,14 protected files and25 harness files remain exact. Ruff and134 generated artifacts pass. Full explicit-interpreter Pyright reports684 inherited diagnostics across1,138 files, zero additions/retirements; this is baseline parity, not a clean type check. |
+
+The original archive-based unqualified build was rejected before installation
+because Windows newline conversion changed input bytes. The qualified builder
+reads every input from its raw Git blob before building; it never normalizes a
+built wheel. The failed198 consumer remains failed and its environment is not
+reused. Current full-source and reference-corpus executions are active separate
+gates, with finalizers not yet established. These fresh minimal results do not
+claim native Qt execution, clustering determinism or hosted acceptance. Final
+publication must independently compare every package payload with its actual
+source commit; the original build tree identity remains unchanged.
+
+### Complete Windows source and hosted acceptance at2922
+
+The canonical Windows Python3.12 full invocation against the bf3238/9f7e wheel
+input completes with15,494 passed,188 explicit skips,one inherited expected
+failure,zero failures/errors,2,590.22 pytest seconds. Its parent exits0 after
+2,593.856 seconds and confirms all1,142 source/test files and14 protected files
+remain exact. The actual command runs the complete tests directory with ordinary
+configuration, explicit owned coverage/JUnit and qualified Bash/sh/Python/Node.
+Skipped/expected-failure identities remain in XML; none is counted as passing.
+
+Normal PR source `2922f800abb9e21b1863f4a6f53257a287949e17`, base
+`a0926ef84a26e9f3cb46f0b982ac495c21fc2255` and synthetic checkout
+`b50da313afdfb074701b1c68616306d5fe4e64af` complete Main41259149118 and
+QML41259149124, attempt1, with all20 actual jobs individually successful.
+Four Linux lanes each pass every1,516 assigned required identity; Python3.10 has
+15,533 passes/144 skips/one inherited expected failure, while3.12/3.13/3.14 each
+have15,532/145/one. Each of their four wheels matches385 raw source payloads/
+248 Python files, with retained inputs/dependencies and confirmed service removal.
+Windows compatibility passes all33 assigned identities (1,101 passes/56 skips).
+
+Each macOS native lane has6,345 passes/81 skips and every1,472 required identity
+passed. Each Windows native lane has6,402/24 and all1,467 required identities
+passed; five POSIX critical controls retain separately checked Windows skips.
+All1,420 supplemental cases pass in all eight native lanes, including178
+activation,11 setup and68 direction cases. All34 former macOS and33 former
+Windows failures pass individually, without aliasing old verdicts. All24 clean
+smokes and12 cleanup markers complete. No manual dispatch/retry/cancel occurred.
+This proves2922's exact reviewed state, not a future test/document revision;
+private corpus extraction/strict consumer comparison remains pending separately.
+
+### INC-QML-125 — Mixed-build identity-only refinement
+
+After the complete Windows source parent/guards finish, only the existing
+BUILDS parameter axis in `tests/test_upstream_qt_shared_integration.py` gains
+explicit cmake/qmake IDs and a comment. Every value/order/body/assertion/marker/
+import remains exact by independent AST and actual logical-input fingerprints.
+Both existing pytest9.1.1 and isolated9.2.0 collect the same four module cases and
+execute four passes,zero skips/errors each; target CMake/qmake cases really run.
+Actual XML IDs equal collection. The167-line file and14 protected files stay
+exact; all248 runtime Python bytes and root dependencies remain unchanged.
+Scoped Ruff/Pyright pass. The isolated tooling profile's two broader optional
+FalkorDB cases remain uncollected; this narrow test result claims no equivalence
+for that separate service profile.
+
+This is a test-identity refinement, not a new runtime package or source-fact
+schema. Keep the original bf3238 build-tree/wheel identity, independently compare
+all385 payloads with the new commit, and let normal PR synchronization validate
+the final reviewed source. The earlier full invocation and2922 hosted proof
+retain their actual identities; no test name or historical result is rewritten.
+
+### Failed0a51 complete hosted revision and INC-QML-121 replay
+
+Ordinary PR source `0a51f2bf28189f89da3aadee094d348fdf030510`, base
+`a0926ef84a26e9f3cb46f0b982ac495c21fc2255` and synthetic checkout
+`0ead6423573dacbeee980465a1660f96351e800a` execute Main41254014083 and optional
+QML41254014077, attempt1. All20 jobs are terminal: eight successful, nine failed,
+three Linux lanes automatically cancelled by the existing matrix fail-fast.
+The complete Linux3.14 XML has34 failures,15,309 passes,145 skips and one inherited
+expected failure. Every macOS lane has34 failures/6,122 passes/81 skips; every
+Windows native lane has33 failures/6,180 passes/24 skips; four Ubuntu artifact
+lanes pass their three cases. These are executed failures, not capacity gaps.
+
+The exact failures are one malformed promised-node collection,32 stale raw
+deduper fault-adapter cases and one POSIX readonly-manual lock interception.
+Four source-matched hosted wheels, successful24 clean smokes,12 cleanup markers
+and passing Windows compatibility do not establish those failed test gates.
+Cancelled Linux artifacts have no test XML and receive no execution credit.
+Nine native required-ID mismatches additionally remain unaccepted pending124;
+the corresponding short-label results are not counted as aliases.
+
+INC121's exact original raw case
+`tests/test_qt_update_direction_integrity.py::test_actual_corrupt_candidate_refuses_shortcut_publication_and_repairs[partial_source-False-True-manual]`
+reproduces the KeyError after argument binding prevents the actual corruption
+observer. The corrected callback forwards production context to the real
+deduper, then injects the same damage. The complete module plus
+`tests/test_build.py` and `tests/test_type_only_import_cycles.py` pass190 cases,
+zero skips/failures,45.156 seconds. All existing rejection/no-writer/cohort/cache/
+redaction/repair/repeat assertions remain. Scoped Ruff/Pyright pass; the owned
+adapter/build files and14 protected bytes stay exact during execution. An earlier
+ignored harness placed its fixture beneath `.venv`, causing ordinary discovery
+exclusion before the intended boundary; it remains failed setup evidence. The
+qualified red uses a separately owned neutral temporary root and reaches the
+actual callback failure. Other disjoint source owners are outside this scoped
+guard; this checkpoint does not establish a new complete source freeze.
+
+### INC-QML-120 — Controlled activation checkpoint
+
+| Acceptance | Exact tests | Actual local evidence |
+| --- | --- | --- |
+| REQ-QML-022-AC06; REQ-QML-012-AC01/AC02 | Existing `test_csharp_source_transport.py::test_req_qml022_ac06_corrupt_source_transport_is_controlled_and_retains_publication[nodes_null-build]`; complete `tests/test_source_relationship_activation_contract.py` and `tests/test_source_relationship_activation_consumers.py` | Real producer data through builder and public load, both directions; malformed carriers/records, every promised fact, tuple/view/generator and successful legacy normalization; accepted graph/input/disk retention, actual reached EIO, repair and repeat. |
+
+Ordinary176-case red has59 failures/117 controls; first corrected176 passes.
+The final52-module gate has1,294 passes,17 existing platform-capability skips,
+zero failures/errors,285.812 seconds; all178 owned cases pass. These overlapping
+executions are not summed. The source-profile block has no missing executable
+lines or branch arcs. Overall owner coverage179/187 statements and71/80 branches
+leaves eight/nine unchanged defensive/merge/direction/key gaps explicit.
+Source284/300 and helper/contract/consumer54/134/103 remain exact; all1,141 Python
+files and14 protected files match before/after. Scoped Ruff/Pyright and independent
+read-only peer pass. Current whole-revision package/corpus/hosted acceptance is
+separate;17 skips do not establish POSIX support.
+
+### INC-QML-124 — Test identity compatibility checkpoint
+
+REQ-CORE-004-AC03: five complete parameter axes in
+`tests/test_cpp_type_reference_bounds.py`, `tests/test_csharp_captured_receivers.py`,
+`tests/test_qt_analysis_state.py` and `tests/test_qt_qmltypes_legacy_constant.py`
+now define short unique semantic IDs. All31 parameter expressions/order and
+every function body/assertion/marker/skip remain identical by AST and actual
+logical-value fingerprints. All102 unaffected IDs remain unchanged.
+
+Actual canonical pytest9.1.1 and fresh isolated pytest9.2.0 each collect133
+identical IDs/ordered logical inputs and execute133 passes, zero skips/errors;
+their actual JUnit identities match collection. They are two executions of the
+same cases, not266 unique tests. The old nine literal/fallback discrepancies
+remain retained at0a51 without alias passes. The four owned files and14 protected
+bytes stay exact. Scoped Ruff/Pyright pass. Tooling9.2 is confined to a fresh
+ignored environment; root204 distributions, package metadata and lockfile remain
+unchanged. This source-ID checkpoint needs new reviewed-head runner proof.
+
+### INC-QML-122/123 — Setup and actual publication boundaries
+
+| Acceptance | Exact ordinary tests | Observed boundary |
+| --- | --- | --- |
+| REQ-QML-012-AC01/AC02 | `tests/test_qt_rebuild_setup.py::test_req_qml012_ac01_lock_storage_denial_retains_then_recovers`; `::test_req_qml012_ac02_queue_setup_denial_is_controlled_before_lock` | Real native Windows readonly lock storage plus exact open/mkdir/queue append/full-marker denials fail before analysis. Bounded queue/lock-stage diagnostics, input/product/cache/state/holder retention, prior request preservation, repair and repeat. Existing queued requests may gain the legitimate new watch request; native CRLF append bytes are checked exactly. |
+| REQ-QML-012-AC01/AC02 | `tests/test_qt_rebuild_setup.py::test_req_qml012_ac01_real_contention_keeps_holder_and_pending_requests`; `::test_req_qml012_ac02_body_error_is_not_relabelled_as_lock_storage` | Actual native contention keeps its holder and pending requests; body errors propagate past the setup guard and release the actual mutex. This seam isolates body failure; the separate struct EIO cases reach the real writer. |
+| REQ-QML-022-AC06; REQ-QML-012-AC02; REQ-QML-014-AC03 | `tests/test_cpp_struct_method_updates.py::test_req_qml022_ac06_struct_callable_publication_failure_retains_then_recovers` | Both manual/watch failures use actual acquisition and contender=False. Native readonly/EIO arms at the real transaction factory after coordination, before preparation. Modes restore before late drain/native release. Retention, diagnostics, shrink, input, temporary, repaired cold parity and repeat assertions remain. |
+
+The ordinary lock red has eight faithful failures/three controls, zero skips.
+Corrected focused lock11 passes; combined lock/struct18 passes. The broader
+20-module gate executes487 cases:474 passed,13 existing platform-capability
+skips,zero failures/errors,354.344 seconds. The renamed final-path18-case gate
+passes without skips in21.125 seconds. These overlap and are not summed.
+All1,142 Python source/test files and14 protected files remain exact within
+their respective whole-source gates. Native evidence is Windows locally;
+POSIX permission/native behavior still needs the intended hosted profiles.
+
+The initial new queue oracle expected LF on Windows; corrected qualification
+keeps exact old bytes plus one actual os.linesep request per failed attempt.
+No production normalization or retention assertion is weakened. The probe's
+full-clean/incremental state transition is checked as the existing contract:
+only the exact full_clean True-to-False invocation-mode change is permitted
+after successful recovery; denial preserves every original state byte.
+The first ignored standalone CLI re-exec and overbroad state comparison remain
+failed setup probes, not correction acceptance.
+
+Every new setup statement/branch executes. The fixture has112/113 statements
+and4/4 branches; only its deliberate post-success mode assertion is unreachable
+when faulted preparation fails. Actual finally restoration, repeated denial and
+real recovery supplement that explicit gap. Ruff passes; scoped watch typing
+retains31 exact inherited diagnostics with zero additions/retirements and no
+new test diagnostics. Native advisory algorithms, queue append and shared fault/
+same-unit helpers remain byte-identical. Independent read-only peer is clear.
+No partial-append transaction, native unlock/exit recovery or SDK execution is
+claimed. Final source/package/corpus and new-head hosted proof remain pending.
+
+### Corrected INC120–124 raw package and complete installed checkpoint
+
+Raw tree `bf3238f55810bdea646914a1353848c09b35bf51` is an inert input, not an
+alternate checkout or commit. All385 payloads/248 Python files match raw Git,
+build input and wheel SHA256
+`9f7e229165f42767ab7d5210bf050ec2aada2dc23fb82eaab69d8631f9d947c3`.
+Fresh core/QML-watch31/35-distribution profiles finish all six phases once,
+40.703 seconds. Each passes unchanged FAST8 plus24 actual C# source-profile
+admission cases,6 setup mechanisms and3 real controls. Native Windows denial is
+qualified, body replacement EIO is reached, no early source reads occur on setup
+failure, and actual candidate-cache readback/old AST preservation establishes the
+body-EIO baseline without fabricating analysis or relaxing setup retention.
+All original26 CLI/two direction operations, syntax/EIO retention and recovery,
+repeat, the unchanged281-line extended probe and QML watcher cleanup pass.
+
+All385 installed payloads/248 Python files and dependency inventories remain
+exact before/after. Execution/final readback retains1,142 source/test files,
+14 protected files,28 harness files,17 historical inputs and nine copied
+assertion/configuration files. Actual isolated module origins count198 for
+FAST8 and204 for the new admission/setup probe. These are local Windows installed
+checks; native POSIX/full-source/corpus/new-head hosted gates remain separate.
+The resulting source commit must independently match all385 payloads before
+publication; the original build tree identity remains unchanged.
+
+### INC-QML-126 — Production workflow inventory correction
+
+Affected acceptance: REQ-CORE-004-AC03 and REQ-QML-014-AC04. Source
+`7abeca464dbcd70044202e43e8a1a065f135b52e`, base
+`a0926ef84a26e9f3cb46f0b982ac495c21fc2255`, synthetic
+`c09cbf39ae5189fe21c9a527df8fa7b67279d3dc` fails normal Main41262285837:
+Python3.14 reports one failure,15,531 passes,145 skips and one inherited expected
+failure. The existing collected production-gate test identifies only the shared
+integration inventory as false. All four actual shared-module cases pass; the
+failure is its two stale literal workflow names. Three other Linux jobs are
+automatically cancelled, not accepted. Native QML jobs retain their own results.
+
+Reproduction executes
+`python -m pytest tests/test_ci_source_cases.py::test_req_qml014_ac04_source_gate_accepts_every_collected_joint_case -q -o addopts=`:
+one actual failure. An initial unchanged-workflow full-module attempt retains
+one failure/13 passes; an ignored qualifier initially mistakes46 joint cases
+for the combined51 assignments. Independent retained-collection evaluation
+qualifies the original boundary:46 joint cases, five other required cases,
+only the shared module rejected. No assertion or case assignment changes.
+
+After replacing only the two workflow names with explicit cmake/qmake IDs,
+`python -m pytest tests/test_ci_source_cases.py tests/test_upstream_qt_shared_integration.py -q -o addopts=`
+passes14 cases, zero failures/errors/skips,8.078 seconds. This executes the actual
+workflow code for complete acceptance, missing/duplicate/replaced/foreign cases,
+unreviewed matrix growth and skipped/failed/error rejection, plus all four real
+integration cases. Test/workflow bytes and14 protected files remain exact during
+execution. Existing explicit isolated coverage/output paths preserve unrelated
+results. Workflow policy/platform/dependencies and all385 runtime payloads stay
+unchanged. New-head hosted acceptance remains pending normal PR synchronization;
+prior2922 successful evidence and failed7ab evidence are not relabelled.
+
+### INC-QML-127 — Accepted caller-frame links across export
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-012-AC02 and shared-boundary
+regressions under REQ-QML-018-AC04/REQ-QML-022-AC06. The actual reference consumer's38 import
+losses and six restored rejected calls become neutral production-boundary cases;
+the seventh ordering disagreement is a genuine extracted imported-module call.
+No private source, identifiers or raw graphs are published.
+
+`tests/test_source_relationship_projection.py::test_req_qml010_ac02_accepted_normalized_import_survives_original_view`
+uses actual Python parser facts and documented transport casing drift through
+real build/export/public path reload. Its four cases fail before correction.
+`tests/test_source_relationship_projection.py::test_req_qml010_ac03_rejected_cross_family_call_cannot_return`
+adds four real owning-policy rejection failures. The four
+`tests/test_source_relationship_projection.py::test_req_qml010_ac02_import_cohort_admits_extracted_call_independent_of_order`
+cases also fail before correction after D49 establishes complete-import-cohort
+admission. Initial ordinary red is12 intended failures/10 passing controls,
+zero errors/skips. Two initial overbroad new legacy whole-file-byte controls are
+retained as expectation failures: established legacy transport metadata can
+change on reload; exact serialized links remain required, while source-profile
+whole-file parity is retained. No prior test or acceptance assertion is weakened.
+
+Initial22 green passes before independent review finds a one-pass import-chain
+regression. An actual original9f-wheel/current runtime comparison qualifies it:
+old runtime retains both anchored imports in all8 profile/direction/order cases;
+the first implementation loses four dependent-first cases. The new
+`tests/test_source_relationship_projection_adoption.py::test_req_qml010_ac02_anchored_external_import_chain_is_input_order_independent`
+and32 controls yield4 red/32 passes before the deterministic source queue.
+Held same/equal-copy alias lists/dictionaries and late real-validator fault
+retention/retry are covered by
+`tests/test_source_relationship_projection_adoption.py::test_req_qml010_ac02_held_alias_lists_and_dictionaries_adopt_one_accepted_frame`
+and
+`tests/test_source_relationship_projection_adoption.py::test_req_qml018_ac04_final_validation_failure_precedes_frame_adoption`.
+Unanchored/missing-source/call-only inputs cannot manufacture targets.
+
+The final ordinary selection of both modules passes58 cases, zero failures,
+errors or skips,6.44 seconds. The related build/export/type/source/direction/raw/
+stub selection passes646 cases, including those58, zero skips/errors,112.64
+pytest seconds; these overlapping results are not summed. Actual failed atomic
+replacement retains accepted graph bytes and accounting, then real recovery/
+repeat succeeds for guarded/forced and directed/undirected legacy profiles.
+The exact persistence assignment is REQ-QML-012-AC02 to
+`tests/test_source_relationship_projection.py::test_req_qml018_ac04_original_view_write_failure_retains_and_recovers`;
+its broader Qt interoperability label does not establish native provider/member
+resolution or replace the primary persistence criterion. Parallel/manual view
+controls contribute to REQ-QML-010-AC03; held-reference/final-validation controls
+contribute to REQ-QML-010-AC02. Native bridge evidence retains its separate tests.
+Independent parallel observations preserve their own scores and absent fields;
+manual empty/extra-original views retain their established contract.
+
+All1,146 source files and14 protected files stay exact during the final gates.
+Scoped Ruff/helper Pyright pass; build's ten diagnostics match the qualified
+684-diagnostic baseline with zero additions/retirements. Helper coverage is83%
+statements/76% branches; defensive seeded-rejection/exception cleanup, malformed
+legacy direction and internal correspondence invariants remain explicit gaps,
+not100% evidence. Real current admission cannot reject a freshly minted empty-
+suffix external stub by typed-pair/two-known-family checks; no fake predicate
+is substituted to claim that defensive branch executed. First development
+callback NameErrors and the corrected owned-temp cleanup failure remain retained.
+
+Source43ac/baseA092/synthetic795de9d6 normal Main41263931753 and QML41263931769
+already pass all20 actual jobs with individual required cases,385-payload wheels,
+24 smokes/12 cleanup markers and four confirmed service removals. This is
+historical proof, not validation of the new consumer. Original extraction's
+immutable raw source facts and their original package identity remain retained;
+a new consumer/wheel must get fresh export/reload/source-disposition accounting.
+INC128 forward recovery and final new-head validation remain pending.
+
+### INC-QML-128 — Projection-version recovery at the real rebuild boundary
+
+Affected acceptance: REQ-QML-011-AC03/AC04 and REQ-QML-012-AC01/AC02. The added
+publication-version field is independent of AST39/Qt33/package0.9.99. The current
+accepted-input contract and per-file cache owner remain unchanged.
+
+The ordinary pre-correction selection has27 cases:25 actual failures/two controls,
+zero errors/skips. It reaches real extraction, CLI/rebuild, cached facts, product
+transactions and public path reload; fake facts/resolvers are not substituted.
+Missing/old/boolean/float/text/null/container versions previously permit stale
+no-change/partial behavior and skip the modeled actual replacement fault. Red
+input, interpreter/import origins and all1,148 source/protected guards are retained.
+
+Exact acceptance mapping in `tests/test_source_relationship_projection_updates.py`:
+
+| Criterion | Exact automated test | Profile/outcome |
+| --- | --- | --- |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_noncurrent_strict_projection_refreshes_once` | Seven explicit version values trigger one real full publication; strict current version is not bool/float equality. |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_missing_version_republishes_even_equal_topology` | Raw/clustered paths cannot stamp new projection from old equality shortcuts. |
+| REQ-QML-011-AC03/AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_current_projection_and_raw_cache_keep_existing_policy` | Valid cache reuse and complete source admission keep their existing owners. |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_current_strict_version_keeps_existing_skip` | Strict current full no-change retains the existing fast no-op. |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_unavailable_state_promotes_partial_event` | Missing/malformed/nonobject/unreadable retained state cannot authorize a partial old projection. |
+| REQ-QML-011-AC03/AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_partial_event_promotes_full_admitted_corpus` | Python, C# and Qt edit/deletion profiles preserve unchanged sources, actual typed facts and cold/full parity. |
+| REQ-QML-012-AC02 | `tests/test_source_relationship_projection_updates.py::test_req_qml012_ac02_projection_failed_publication_retains_then_recovers` | Manual/watch and raw/clustered actual EIO preserves accepted products, prior successful caches and old version; recovery/repeat succeeds. |
+| REQ-QML-012-AC01/AC02 | `tests/test_source_relationship_projection_updates.py::test_req_qml012_ac02_projection_contention_keeps_state_and_pending_request` | Real native holder/pending state is preserved without new version acceptance. |
+| REQ-QML-012-AC02 | `tests/test_source_relationship_projection_updates.py::test_req_qml012_ac02_projection_cannot_adopt_invalid_prior_source_transport` | Existing integrity rejection remains before adoption/publication. |
+
+The final owned module passes27/27, zero skips/errors,36.25 seconds. The adjacent
+27-module selection passes583/596 with13 existing explicit capability skips,
+zero failures/errors,443.156 seconds; it includes those27 and is not summed.
+Changed executable lines/origin arcs are fully covered, including actual strict
+reader outcomes and the current-version clustered arm left unhit by owned27.
+An explicit partial repeat retains the existing full_clean True-to-False mode
+transition while graph/source facts and successful projection version stay exact.
+
+All1,148 Python files and14 protected files remain exact during final gates.
+Scoped Ruff passes. The first Pyright invocation used an unavailable ambient
+interpreter and remains invalid setup evidence; qualified actual-venv typing
+retains31 watch diagnostics/zero new-test diagnostics. The independent complete
+source quality run retains684 baseline diagnostics, zero additions/retirements,
+Ruff success and134 matching generated artifacts. Independent terminal peer
+confirms all owned source hashes, XML/skip classifications and coverage.
+
+The new filename is admitted by the actual unchanged native source selector;
+no platform/profile/dependency/assertion is weakened. New wheel/full-source/
+installed/corpus/native acceptance belongs to the resulting reviewed revision,
+with individual current evidence in PR #10. Original producer/raw facts retain
+their original source identity when a newly bound consumer re-projects them.
+
+### INC-QML-129 — Ordinary caller field absences and projection2
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and
+REQ-QML-011-AC04, with accepted-product retention under REQ-QML-012-AC02.
+Source9ac's fresh raw-tree wheel matches386 payloads/249 Python files, but both
+new offline core31/QML-watch35 consumers fail the unchanged historical legacy100
+input invariant after FAST8/admission/setup/control success. Graph type/two
+nodes/one call/no source-profile conjuncts pass; only caller data changes.
+Four phases entered in19.234 seconds; later original CLI/new supplemental/
+finalization phases remain unexecuted. Failed environments, original17 historical
+inputs/nine oldest assertion/config files and the complete failure receipt remain
+immutable. Package/dependency/source1,148/protected14/harness guards match.
+
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml022_ac06_legacy100_falsy_graph_keeps_input_exact`
+promotes30 exact ordinary fixture/boundary/direction cases. Its typed-falsy and
+typed-absence neighbors promote the other18 historical matrix cases. The first
+canonical readback proves synthesized _src/_tgt are the mutation; the neighboring
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml010_ac02_legacy_source_field_absence_is_not_backfilled_in_input`
+proves the same issue for absent source_file. The new ordinary module has75
+cases:26 actual failures/49 controls before correction, no errors/skips.
+
+The helper suppresses only those three synthesized keys for ordinary records
+when absent from the working edge. All other methods/ordering/imports remain
+AST-exact; source-profile attrs and present-field repairs remain authoritative.
+The exact tests
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml010_ac02_required_remap_and_rejected_peer_still_adopt`
+and
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml010_ac02_source_profile_keeps_canonical_derived_fields`
+prevent reverting accepted remaps/rejection or source-profile canonical output.
+The explicit direction, numeric/unknown field and invalid-marker tests retain
+valid pair remaps, arbitrary metadata, forced rejection and accepted disk bytes.
+All new absence-filter executable lines and branches execute; earlier defensive
+helper coverage limits remain explicit, not claimed100%.
+
+Projection1 advances to2 because caller records may be persisted by original-link
+export. The existing strict-version test adds old integer1 and current-equal
+float2.0/text2 with unique IDs; all seven earlier values/IDs/order and every test
+body/assertion/import remain AST-exact. Its complete module now passes30 cases,
+zero skips/errors,24.187 seconds. Earlier27 XML namespace differences remain
+recorded rather than rewritten or used as alias passes.
+
+Final new75 pass; combined75+58+30 passes163, zero skips/errors,48.922 seconds.
+The related source/direction/build/export/type/raw/stub gate passes751 cases,
+including163, zero skips/errors,153.141 seconds. These overlapping runs are not
+summed. All1,149 current Python files and14 protected files remain exact, with
+restorable backups and confirmed neutral-fixture cleanup. Scoped Ruff/Pyright
+pass. An independent AST diff and terminal peer bind the exact helper174-line
+source; builder/exporter/watch and248 other runtime Python files remain exact
+apart from the documented checkout newline representation.
+
+Fresh package/full-source/installed/corpus/native acceptance belongs to the new
+reviewed source. The old source9ac workflow result cannot establish the corrected
+installed contract. Preserve original producer/raw extraction identity when
+re-projecting retained facts; no source-fact epoch, dependency, cap, assertion or
+platform selection is weakened to obtain success.
+
+### INC-QML-130 — Raw activation and single logical-basis conversion
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and
+REQ-QML-011-AC04, with existing real-write failure retention under
+REQ-QML-012-AC02. Exact sourceb645 fails nine of97 unchanged cases: eight raw
+typed input mutations and one reversed unavailable C++ reference. Linux3.13 and
+all eight native macOS/Windows lanes independently confirm those nine; three
+automatically cancelled Linux lanes have no full-pass credit. B645's successful
+installed and corpus-consumer scenarios cannot establish these failed contracts.
+
+`tests/test_source_relationship_legacy_metadata.py::test_req_qml022_ac06_missing_or_null_typed_metadata_still_selects_source_storage`
+retains every existing assertion, proving genuine C# producer facts select source
+storage while a raw caller with missing/null metadata remains unchanged through
+direct/combined boundaries. The existing invalid-carrier and valid-peer/corrupt-
+later-promise cases retain pre-adoption validation and rejection. The unchanged
+`tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_undirected_reversed_storage_preserves_actual_reference_direction`
+proves valid logical direction survives real builder adoption and that the same
+physically reversed raw pair still rejects when later treated as directed.
+All other cases in those modules remain ordinary collected regressions.
+
+The source-frozen97-case gate first has nine failures/88 passes, then four
+combined-input failures/93 passes after the helper correction, then97 passes
+after explicit-only profile propagation. These are separate receipts, never
+summed. Existing context-owned emission and actual recluster scenarios are also
+included, preventing regression of the preceding ordinary compatibility fix.
+
+`tests/test_source_relationship_projection_mixed.py::test_req_qml010_ac02_mixed_profile_keeps_explicit_cohort_and_raw_facts`
+covers eight actual producer/order/deduplication/direction combinations through
+the public combined builder, writer and PATH reload. Explicit wire selection
+remains authoritative after typed facts disappear; an unflagged ordinary chunk
+retains simple storage. The eight matching
+`tests/test_source_relationship_projection_mixed.py::test_req_qml022_ac06_raw_peer_cannot_mask_invalid_explicit_profile`
+cases reject a boolean reserved version before changing either chunk or a real
+previously accepted JSON file. Success/failure policy is the real production
+owner, without replacing an admission predicate or executing corpus code.
+
+Projection3 extends the existing strict-version test with prior integer2 and
+current-looking float3.0/text3. Every earlier value/ID/order/body/assertion is
+retained. This exercises the existing publication recovery, actual write-fault
+retention, retry and unchanged repeat rather than only comparing a scalar.
+Source-fact epochs39/33, dependency profiles and all platform selections remain
+unchanged. Final broad/quality/package/installed/full/corpus/hosted acceptance
+is bound to its actual new reviewed revision; earlier passes are not inherited.
+
+The new
+`tests/test_source_relationship_projection_mixed.py::test_req_qml010_ac03_cpp_physical_aliases_follow_owning_transport`
+has18 actual C++ producer cases: from/to/both aliases through direct/combined
+raw, marker-only and persisted carriers. Actual direct persisted transport
+canonicalizes working slots; marker-only and combined frames retain physical
+slots and reject contradictory directed reuse. All cases perform original-link
+publication and real PATH reload with unchanged logical reference direction.
+The first six-case fixture incorrectly expected adaptation from a marker alone;
+its three failures/three controls and947-case gate (944 passes/three failures)
+are retained as test-setup evidence. No product policy was changed for them.
+
+Final carrier-aware alias execution passes18; the complete related gate then
+passes959 cases, zero failures/errors/skips,184.125 seconds. This includes the
+whole original C++ contract/legacy metadata/context/recluster modules,34 mixed/
+alias cases,33 recovery cases and the preceding accepted-frame regressions.
+Overlapping97/18/941/959 runs are not summed. Changed normal-path helper
+statements execute. The existing source-key lost-logical-direction rejection,
+other defensive correspondence invariants and stub-cleanup branches remain
+unverified; no claim of their unreachability follows from successful preflight.
+Source1,150/protected14 guards match; successful neutral
+fixture cleanup is confirmed, failed evidence retained. Ruff succeeds,134
+generated artifacts match and typing retains exactly684 inherited diagnostics,
+zero additions/retirements. New package/full/installed/corpus/native gates stay
+revision-bound and separately required in PR #10.
+
+Subsequent numeric-peer qualification supplies a real route to the source-key
+guard: actual typed C# facts plus a valid ordinary integer7 endpoint with matching
+explicit markers pass preflight, then only the parent is string-normalized.
+Persisted direct build rejects; five other carrier/combined paths reject supplied
+original links despite successful default export. Accepted disk bytes and
+source/protected guards remain intact. INC131 owns this newly observed gap;
+neither the959-case result nor an earlier defensive-branch label establishes
+its acceptance or unreachability.
+
+### INC-QML-131 — Valid numeric marker normalization and logical assembly
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and
+REQ-QML-011-AC04; actual source publication retention/recovery maps additionally
+to REQ-QML-012-AC02. The neutral six-case production qualification uses actual
+C# facts plus a numeric ordinary peer, all accepted by source preflight. One
+direct persisted build rejects; five other direct/combined raw/marker paths
+build but reject the caller's supplied original links. Default export alone
+would conceal those five failures. Source/protected bytes remain unchanged.
+
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_valid_numeric_direction_survives_original_view_and_path`
+supplies36 cases across integer/finite-float, direct/combined, raw/marker/wire
+and valid directed/undirected forward/reverse inputs. Exact caller objects,
+logical graph arcs, custom metadata and original-link/PATH repeated publication
+are asserted together. The eight ordinary/explicit-storage controls use
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_numeric_ordinary_and_explicit_storage_keep_their_profiles`.
+The thirty
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac03_invalid_numeric_source_pair_is_not_healed`
+cases preserve partial/foreign/boolean-type and reverse-directed rejection;
+combined legacy normalization does not gain a global caller rollback guarantee.
+Eight malformed ordinary controls additionally require guarded and forced
+original-view rejection with accepted disk/input retained after assembly.
+
+The six
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_numeric_original_view_write_failure_retains_and_recovers`
+cases map REQ-QML-012-AC02 to actual reached replacement EIO, fault qualification,
+retained source-profile graph/input/disk, repaired retry and repeated byte equality.
+The new test tail initially assumed False where the existing writer propagates
+OSError; it was still unreachable in the first red. Only that newly authored
+tail was corrected to require actual errno.EIO before a fresh ordinary red.
+Both88-case reds have the same53 failures/35 controls and exact case IDs; no
+existing historical test or assertion changes.
+
+The first source correction passes78, leaving ten strong reverse-arc graph
+assertions failing although caller marker types are fixed. Assembly was still
+overwriting logical source-profile direction with physical ordering. The owning
+builder now selects the same validated logical basis for all source profiles
+and passes it explicitly to the frame adapter. The unchanged88-case module then
+passes88, zero skips/errors,8.312 seconds; source1,151/protected14 guards match.
+No native predicate, validator or corpus execution is substituted.
+
+Projection4 adds old integer3/current-looking float4.0/text4 without changing
+the existing thirteen parameter values/IDs/order or any test body/assertion.
+Broader and resulting-source quality/package/installed/full/corpus/hosted gates
+remain separately required; earlier source revisions never supply new passes.
+
+The related source gate passes1,050 cases, zero skips/errors,211.203 seconds,
+including the88 frozen numeric cases and36 projection4 updates. Review then
+adds nine default-dedup controls without a production change. The six
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_default_dedup_numeric_pair_keeps_one_caller_frame`
+cases use actual default `build([data], root=...)`, raw/marker/persisted carriers
+and forward/reverse pairs, held references/custom metadata, graph arcs and
+repeated original-view/PATH publication. The three
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac03_default_dedup_cannot_heal_reverse_directed_numeric_pair`
+controls reject contradictory selected-directed input and retain accepted disk.
+
+The complete extended module passes97 cases, zero skips/errors,9.297 seconds;
+the original166 raw-byte prefix and all88 prior body/parameter ASTs are exact.
+All other1,150 source files/runtime hashes,14 protected files and backups match;
+successful neutral fixture cleanup is confirmed. Scoped Ruff/typing pass.
+Overlapping1,050/97 runs are reported separately, with final full-source and
+native/package gates still required. Neither an aggregate count nor unchanged
+production bytes alone establishes an unexecuted platform/profile.

@@ -587,3 +587,23 @@ added diagnostics. Current hosted OS/Python lanes, live service proof and native
 browser/device interaction remain unverified. Static declared API compatibility
 does not establish Qt build success, plugin availability, runtime conversion,
 overload dispatch, allocation, ordering, lifetime or thread safety.
+
+
+## Qt 6.12 source-coverage development
+
+INC-QML-61 through INC-QML-101 extend the 0.9.99 integration under
+D38/REQ-QML-022. Scoped declarations, source annotations, QML enum/property facts,
+typed tooling, literal build exports, engine-specific singleton evidence, admitted
+header context and mixed-language relationship storage have ordinary regressions.
+The final corrections preserve partial CUDA caller transport, unpromised legacy
+metadata absence and genuinely allocated C++ member provenance; their owners and
+compatibility boundaries are in the [code reference](CODE_REFERENCE.md#inc-qml-99100101-corrected-boundaries).
+AST schema33 and Qt policy27 retire pre-audit facts while retaining the existing
+semantic-cache owner. Fresh isolated installed profiles and focused source gates
+pass. The corrected native whole suite passes with explicit skips/expected failure
+in [traceability](../../tests/TRACEABILITY.md#corrected-full-source-checkpoint--runtime-tree-5b280fb).
+Complete reference-corpus and new-head hosted platform acceptance remain pending.
+The earlier adoption results above describe their named historical revisions.
+No application checkout, SDK, global tool or application graph is changed by this
+audit. C# class fields intentionally extend the prior property-only graph model;
+function-local variables remain outside this member-focused requirement.

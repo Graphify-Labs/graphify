@@ -79,8 +79,10 @@ def fault_actual_pair(monkeypatch, *, raw, corruption):
     if raw:
         original = builder.dedupe_edges
 
-        def malformed_raw(edges):
-            result = original(edges)
+        def malformed_raw(edges, **context):
+            # Forward the real source-profile context before damaging its result;
+            # this seam must reach publication guards, not fail at argument binding.
+            result = original(edges, **context)
             edge = next(data for data in result if data.get("relation") == "contains")
             damage(edge, corruption, edge["source"], edge["target"])
             observed["before"] = copy.deepcopy(result)

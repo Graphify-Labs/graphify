@@ -7,15 +7,39 @@ from graphify.extractors.qt_cpp_mapping import normalize_type
 from graphify.extractors.qt_cpp_registration import conditional_offset
 from graphify.extractors.qt_cpp_api_types import api_type_fields
 
-_ATTRIBUTE = re.compile(r"\b(READ|WRITE|MEMBER|RESET|NOTIFY|REVISION|DESIGNABLE|SCRIPTABLE|STORED|USER|BINDABLE|CONSTANT|FINAL|REQUIRED)\b")
+_ATTRIBUTE = re.compile(r"\b(READ|WRITE|MEMBER|RESET|NOTIFY|REVISION|DESIGNABLE|SCRIPTABLE|STORED|USER|BINDABLE|CONSTANT|FINAL|VIRTUAL|OVERRIDE|REQUIRED)\b")
+_HEAD = re.compile(r"\s*(.+?)(?:\s+|(?<=[*&]))([A-Za-z_]\w*)\s*")
+_MODIFIERS = {"VIRTUAL", "OVERRIDE"}
+_VALUES = {"READ", "WRITE", "MEMBER", "RESET", "NOTIFY", "BINDABLE",
+           "REVISION", "DESIGNABLE", "SCRIPTABLE", "STORED", "USER"}
+
+
+def _property_parts(text):
+    """Attribute position cannot turn an ordinary property/accessor name into a flag."""
+    matches = list(_ATTRIBUTE.finditer(text))
+    # A keyword spelling may itself be the type or property name. Attribute
+    # interpretation starts only after a complete declaration head exists.
+    for index, token in enumerate(matches):
+        if head := _HEAD.fullmatch(text[:token.start()]):
+            matches = matches[index:]
+            break
+    else:
+        return _HEAD.fullmatch(text), []
+    tokens = []
+    for token in matches:
+        # READ VIRTUAL / MEMBER OVERRIDE consume the word as their value. A
+        # subsequent modifier remains distinct, even with the same spelling.
+        if token[1] in _MODIFIERS and tokens and tokens[-1][1] in _VALUES:
+            if not text[tokens[-1].end():token.start()].strip():
+                continue
+        tokens.append(token)
+    return head, tokens
 
 
 def property_fields(macro):
     """Keep unsupported expressions literal; never expand a preprocessor wrapper."""
     text = macro["args"][0] if len(macro["args"]) == 1 else ""
-    tokens = list(_ATTRIBUTE.finditer(text))
-    head = text[:tokens[0].start()] if tokens else text
-    match = re.fullmatch(r"\s*(.+?)(?:\s+|(?<=[*&]))([A-Za-z_]\w*)\s*", head)
+    match, tokens = _property_parts(text)
     if not match:
         return {"status": "unsupported", "reason": "property_declaration_unsupported", "raw_name": ""}
     fields = {"raw_name": match[2], "raw_type": normalize_type(match[1]), "status": "resolved", "reason": ""}
@@ -24,6 +48,10 @@ def property_fields(macro):
         key = token[1].lower()
         if key in fields:
             fields.update(status="unsupported", reason="duplicate_property_attribute")
+        # These are source markers, not value clauses or proof of runtime/moc
+        # override validity. Preserve combinations without simulating an engine.
+        if token[1] in _MODIFIERS and value:
+            fields.update(status="unsupported", reason="property_modifier_value_unsupported")
         fields[key] = value or True
     if not fields.get("read") and not fields.get("member"):
         fields.update(status="unsupported", reason="property_read_or_member_missing")

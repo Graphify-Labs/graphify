@@ -1339,3 +1339,311 @@ its unrelated SQL input at the existing dispatcher seam, preserving real Qt
 parsing, manifest persistence, retention and recovery. Keep missing-parser
 acceptance rejection separately protected; do not loosen the production guard,
 add an unrelated parser dependency or skip macOS to satisfy this test.
+
+
+## D38 — Versioned Qt 6.12 source coverage and finite evidence
+
+The extension remains a bounded static analyzer. A pinned official API inventory
+accounts for documented owners, overloads, properties, variables, macros and QML
+members; it does not confer native identity or prove every runtime mechanism.
+External independently versioned modules and missing documentation retain explicit
+provenance gaps. No SDK loading, build hook, constructor or corpus code executes.
+
+Use a frozen installed baseline against exact committed private input blobs,
+then publish neutral reproductions only. The application checkout, existing graph,
+watcher and installed tool are separate adoption boundaries and remain untouched.
+Member declarations, enum values, annotations, generated tooling fields and literal
+project/export metadata retain their respective source owners. Source annotations
+and tooling descriptions cannot replace canonical C++/engine/provider evidence.
+
+Correct confirmed gaps in separate increments under REQ-QML-022. Generic source
+facts, Qt semantic facts and tooling-only hints have different authority. Preserve
+source bytes, uncertainty, unsupported diagnostics, cache invalidation and accepted
+product retention. New producers require direct/facade/export/reload and relevant
+cold/warm/full/incremental evidence before their criteria become verified.
+
+## D39 — Original-source semantics across compatibility parse views
+
+One file read owns immutable original bytes and any aligned compatibility view.
+The tree proves syntactic ownership; original tokens govern parameter operators,
+signature identity, optional defaults and exported source ranges. A parse-view
+pointer-to-reference substitution cannot become semantic reference authority.
+Alignment is necessary, not sufficient: each local adapter still needs its exact
+source/span/role proof, with final clean Qt-overlay admission. Generic C++ keeps
+its established marked partial-input contract. Reject unaligned internal buffers
+through the source-integrity retention channel rather than a normalized fallback.
+
+Reject blanket macro expansion, invented names/braces and ambient mutable source
+state. When an unbraced source test-data declaration needs an inert statement
+view, retain a distinct opaque parsed role and the real implicit body-only
+source scope; do not publish a synthesized declaration or wider binding. Reuse
+the existing typed source/containment and persistence owners. SDK runtime,
+preprocessor outcomes and generated executable behavior remain unverified.
+
+The same separation applies to incomplete borrowed resolver contexts: unknown
+ownership is an invocation-local availability state, never a metadata flag that
+can repair canonical source or corrupt complete graph transport. Complete graph
+assembly/export still requires all promised ownership evidence. These decisions
+extend D38's finite static profile without adding another runtime or executing
+analyzed code.
+
+## D40 — Typed source relationships retain parallel facts
+
+The new C# local-function profile has real declaration containment and a direct
+call between the same endpoints. A simple Graph projection cannot own both.
+Inputs carrying the validated typed source-role contract therefore use an
+optional MultiGraph/MultiDiGraph storage profile with logical source/target and
+relation identity. Ordinary legacy inputs retain their Graph/DiGraph behavior;
+this is not a mandatory repository-wide migration. Persist the standard graph
+mode and bounded deterministic storage keys after endpoint remapping. Storage
+selection confers no callable, Qt or runtime authority.
+
+Reject overwriting a relationship, duplicating mutable owner IDs, fabricated
+scope nodes, and persistence-only sidecars that still lose in-memory facts.
+Different relationships and opposite logical directions remain independent;
+duplicate evidence for one relationship retains the existing confidence/source
+precedence. All existing schema, source and Qt projection gates precede storage.
+Malformed typed activation/direction transport rejects boundedly.
+
+Source-edge consumers enumerate all relations, including query/explain, wiki,
+HTML, notes/canvas, database export, diff and merged/global graphs. Keyed cleanup
+removes only its owned relation. Clustering and topology-ratio/centrality work may
+use an explicit derived simple projection without replacing the accepted source
+graph. Test existing consumers before broadening this optional profile to other
+producer families. Complete source/durable/failure/platform evidence is required
+before this compatibility increment is verified.
+
+## D41 — Source-key proof may eliminate irrelevant unknown build effects
+
+A global veto is safe but can reject a literal source/root profile because of
+independent source appends in foreach loops. Analyze a bounded source-data domain
+only to prove irrelevance; never execute configuration or turn generated targets
+into positive owners. Known single-target roles and complete finite source values
+must exclude both candidate-target root/identity mutation or collision and competing ownership of
+its translation unit. Unknown values/effects retain the existing veto. Guards may
+join finite possibilities without evaluating runtime MATCHES. Original metadata
+bytes and a fresh semantic replay own this negative proof; a flag/checksum cannot
+replace missing evidence. Positive build roots stay literal and caller-admitted.
+This avoids a general CMake interpreter and preserves source/runtime separation.
+
+## D42 — Run-owned accepted-source index, unit-owned mapping records
+
+Native enrichment uses one immutable-in-practice accepted-source snapshot per
+analysis run for path/definition identity, node lookup and parent relationships.
+Individual parsed units borrow that index; their syntax and mutable resolution
+records remain independent. Avoid retaining identical whole-corpus indexes for
+every source unit, and avoid a process-global cache with stale roots or facts.
+Standalone mapper calls keep their own fresh snapshot. This changes storage
+ownership only; source authority, iteration order, ambiguity and publication
+ordering must remain equivalent under deterministic characterization.
+
+
+INC-QML-104/105/106 preserve D38/D39's finite static profile and D40's source
+relationship ownership. Legacy tooling flags remain uninterpreted tooling data;
+lexical captures reuse the producer's accepted type evidence; member proof follows
+the same run's allocated occurrence identity. Only the existing canonicalization
+boundary may fold a proven declaration/body pair. Body navigation cannot supply
+missing native authority. No second runtime, type collector, source-discovery
+pass, persistence owner or global mutable scope is introduced. The combined
+successful-fact correction retires older syntax/Qt-context epochs; independent
+semantic caches and accepted durable products retain their existing ownership.
+
+
+## D43 — Lexical class roles must survive source transport
+
+Flattened qualified spelling cannot distinguish an enclosing class from a
+namespace when an ancestor node is omitted. Preserve a bounded producer-owned
+scope-role witness on the existing C++ class fact, using the original AST/bytes.
+It supplements identity without renaming classes or adding runtime entities.
+Complete named namespace roles and verified lexical class ancestry have different
+lookup responsibilities; member-name rejection includes actual enclosing classes.
+
+The run-local reader validates witness shape, original spans, exact same-file
+class identity/containment and ancestor-prefix consistency before deriving namespace
+or shadow context. Missing/partial/conditional/corrupt/oversized proof gives no
+authority. Read-only direct scope and facade canonicalization keep their distinct
+caller IDs and existing native guards. Reject basename reconstruction, a default
+namespace from missing ancestors, invented ownership edges, or reparsing/discovery
+inside a resolver. Literal names stay separate from escaped display values;
+bounded transport cannot truncate away a class ancestor into a valid namespace.
+
+The existing class producer attaches the witness through a focused helper. The
+helper's source-production and validation dependency/import paths must work both
+standalone and through normal augmentation; no extractor child imports the facade.
+AST35 retires prior successful facts without scope/binding evidence; Qt29 refreshes
+accepted context before old wrong relationships can persist. Semantic-cache and
+durable-publication ownership remain unchanged. This is bounded static source
+support, not Qt/C++ execution, general type inference or a whole-SDK guarantee.
+
+## D44 — Literal source identity precedes normalized allocation
+
+Distinct C++ class, member and alias names can normalize to the same legacy ID.
+Preserve the shared generic registry and noncolliding legacy IDs. The C++ source
+owner must census actual literal qualified names and disambiguate only proved
+collision buckets before allocation. Source spelling, not traversal/line order or
+display labels, governs forward/body equivalence and type lookup. Genuine exact
+duplicate ambiguity and existing callable signature rules remain independent.
+
+Each consumer borrows the same invocation-owned identity; rebuilding a normalized
+name later cannot substitute for allocation. Constructor compatibility preserves
+its current authorization suffix and validators; any collision domain precedes
+that suffix and still requires actual class/span/name/signature proof. Do not
+relax native guards, change generic registry semantics for unrelated languages or
+repair lost declarations only after facade assembly. INC-QML-110/111/112 own
+separate class/member/alias corrections and source-bound regression evidence.
+
+Successful prior AST35/Qt29 facts may have omitted an entire declaration. AST36
+and Qt30 therefore force regeneration at their respective owning boundaries;
+independent semantic cache and durable rejection/retention/recovery remain intact.
+This is a bounded identity correction, not new runtime inference, general C++
+compiler lookup, local-variable graph scope or universal Qt API support.
+
+## D45 — Source lookup rejection belongs to its reference
+
+A named C++ lookup can be unavailable while another use of the same global stub
+legitimately resolves. Preserve rejection on the actual reference edge instead
+of disabling generic reconciliation or poisoning the shared stub. Source-owned
+unavailability survives the producer, facade, graph and durable consumers; it
+does not create a qualified declaration, runtime frame, target or native proof.
+
+An optional typed edge promise has an independent version marker and bounded
+literal/source-context metadata. Validate the complete promised cohort before
+mutation, reject contradictions and keep absent legacy data compatible. An
+oversized named scope stays explicitly unavailable without truncated lookup
+authority. Existing logical-direction and source-evidence projection rules remain;
+this does not select a new graph mode. One C++ helper owns typed production and
+validation; generic consumers borrow its gate, while the existing source index,
+allocation and atomic publication retain ownership. AST37/Qt31 invalidates prior
+successful facts missing this new source decision. SDK/runtime semantics and
+general C++ compiler lookup remain outside this bounded correction.
+
+Raw adoption cannot choose between conflicting promised aliases or coerce
+explicit malformed mode flags. One shared preflight validates those choices
+before existing adapters run; fully unpromised legacy transport is unaffected.
+Accepted equal aliases follow one mutable source frame through existing path/ID
+normalization, with the explicit original caller frame reconciled only after
+final validation. This includes existing source-multigraph adapters without
+adding another graph mode, normalization owner or persistence boundary.
+
+## D46 — Source relation identity and complete observation evidence are distinct
+
+The optional source profile retains its existing version1 key for logical
+source, target and relation. Repeated observations of that same arc do not
+create per-occurrence storage identities. Their distinct source context,
+metadata, independent fact promises and provenance must nevertheless survive
+assembly, original-link export, public reload and rebuild. Extend the existing
+`also_seen` evidence representation only within the accepted source profile;
+ordinary legacy graphs retain their established four-field evidence fold.
+
+One bounded source-evidence helper owns complete-record validation, flattening,
+deduplication and deterministic folding. Identity/direction/storage fields belong
+to the parent logical arc, never a nested competing endpoint. Refeeding accepted
+evidence is idempotent and does not nest evidence lists. Existing winner/confidence
+policy remains authoritative; a losing observation grants no target or native
+authority. All independent typed promises remain validated before adoption,
+accounting or writing, including promises carried by nonwinning observations.
+
+Reject loader repair, per-occurrence key changes and truncated evidence as fixes
+for serializer composition. A valid original view must be written in the profile
+that its strict loader accepts. Malformed promises and duplicate persisted
+storage identities still reject, retaining prior durable state. Existing atomic
+writers, graph modes, relation semantics, size caps and absent legacy contracts
+remain unchanged. INC117 owns this source-only evidence correction and its
+negative/persistence regressions.
+
+## D47 — Anonymous helper reachability requires original namespace evidence
+
+Repaired source-owned member callers must preserve a uniquely proven preceding
+helper in the same translation unit. An anonymous status flag or scope hash
+alone cannot establish that reachability. Capture original ordered namespace
+roles and six-coordinate spans during the existing AST pass, with complete
+bounded ancestry and validation against the function's actual source/identity.
+One focused helper owns that witness and read-only same-unit lookup; original
+function production and the existing free-call owner borrow it.
+
+The optional proof has its own version1 contract. Absent, incomplete or corrupt
+proof remains unavailable; no display truncation becomes lexical authority.
+Foreign translation units, inaccessible namespaces, later declarations, shadowed
+names, competing targets and conditional/ambiguous source do not supply a call.
+This is bounded static source evidence, without namespace export, native member,
+runtime ordering or general compiler lookup. Existing IDs, generic partial
+callers, named namespace behavior and native exposure guards remain independent.
+AST38 and Qt32 retire earlier accepted37/31 facts and products that could omit
+the source-owned helper call; semantic cache and dependency policy are unchanged.
+## D48 — Rebuild setup denial stays distinct from contention and publication
+
+Decision recorded before INC123 implementation: queue/lock storage setup
+belongs to the existing rebuild owner. A denied/missing/unavailable setup path
+must not masquerade as another active holder or a failed graph replacement.
+Report `REBUILD_SETUP_FAILED` with `stage=queue` or `stage=lock`, and fail before analysis or mutable
+publication, retaining prior products, pending requests and legitimate holder
+state. A failed queue setup cannot claim a new request was queued. Existing
+append/coalescing and partial-append behavior is unchanged; no transactional
+queue rollback is introduced. Ordinary retry uses the same native mutex.
+
+The readonly writer fixture is a separate boundary and must arm only after
+actual lock acquisition. Its correction cannot erase independent denied-lock
+regression coverage. Keep native flock/msvcrt behavior, contention semantics,
+inode revalidation and ownership-aware cleanup. A new mutex backend, arbitrary
+retry framework or broad watcher refactor would require a separate decision.
+Status: implemented with local focused/broad evidence and independent peer.
+Fresh installed profiles pass; full-corpus and POSIX/reviewed-head hosted gates
+remain separate.
+
+## D49 — Assembly owns the accepted caller-frame link projection
+
+Decision recorded before INC127 production changes. Graph assembly remains the
+single owner of endpoint canonicalization, external-import stub admission and
+semantic edge rejection. Capture the selected caller frame and its owned alias
+lists before transport adoption can copy them. Stage detached accepted records
+after semantic admission and before simple-graph/source-storage folding. Only
+after final graph/type/cohort validation succeeds may the builder update the
+retained caller dictionaries/lists in place. Preserve every accepted parallel
+mechanism and original independent secondary observation, not only G.edges.
+
+Establish the complete valid import-family stub cohort before call attachment,
+so a genuine extracted call through an admitted external import is independent
+of edge sorting. A call alone cannot mint a target, and an inferred Python call
+cannot borrow a JSON field as its target. This is bounded source analysis, not
+an external SDK binding or runtime call claim.
+
+The exporter consumes the corrected shared caller frame without a second
+resolver or graph reconstruction. Manual graphs and caller-authorized independent
+original-link views retain their existing compatibility contract; arbitrary
+detached views do not gain an inferred builder ancestry guarantee. Do not store
+an ambient registry or new graph-owned private projection plan that can leak
+into GraphML/JSON or disappear on graph copying. Accepted-record adoption must
+not consume publication accounting or mutate caller/cache lists on builder
+failure. Existing atomic writer retention remains the persistence owner.
+
+INC128 separately owns forward recovery through a graph-projection version in
+the existing build-state fingerprint. Package0.9.99 and source-fact AST39/Qt33
+stay unchanged because the source producer contract is unchanged. Current source
+facts may be re-projected; a damaged old export cannot reconstruct absent facts
+by itself. A version mismatch promotes partial watch input to the complete
+normally admitted corpus, using valid raw caches, and stamps only after actual
+publication. Existing discovery/exclusion and writer/rollback owners remain.
+INC130 distinguishes source-storage activation from explicit persisted-profile
+intent before adapters copy the input. Raw producer promises alone do not request
+wire enrichment. The combined builder propagates only an explicitly supplied
+validated profile, with one cohort-wide owner; every chunk still validates.
+For an unavailable C++ reference the builder explicitly identifies its accepted
+logical endpoint basis. The frame converts that validated basis once, preserving
+physical caller slots and the later rejection of contradictory directed storage.
+No generic helper guesses native roles or invents endpoint authority.
+
+Status: INC127–130 retain the same D49 owners. Projection3 repairs publication
+through the existing version-recovery mechanism. INC130 passes959 related cases,
+including the nine original failures, mixed carriers/physical aliases and recovery.
+Final package/full/corpus/hosted acceptance requires separately bound evidence.
+Earlier source43ac success and b645 failure remain historical, rather than
+later-revision passes.
+
+INC131 retains the existing numeric identity owner: only an originally valid
+explicit direction pair shares the same scalar conversion as its parents and
+endpoint aliases. Invalid pairs cannot become authoritative through normalization.
+The combined builder supplies its actual selected direction to existing source
+preflight. All validated source-profile links use the same explicit logical
+basis for assembly and caller-frame projection; this supplies no native member
+or target identity. Projection4 reuses existing publication recovery. Scoped
+numeric regressions pass88; full resulting-source acceptance stays separate.

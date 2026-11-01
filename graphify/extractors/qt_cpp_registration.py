@@ -7,6 +7,7 @@ import re
 from graphify.extractors.qt_cpp_mapping import normalize_type
 from graphify.extractors.qt_cpp_syntax import split_arguments, walk
 from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
+from graphify.extractors.cpp_include_guards import is_include_guard
 
 _SUPPORTED = {"qmlRegisterType", "qmlRegisterUncreatableType", "qmlRegisterSingletonType",
               "qmlRegisterSingletonInstance", "qmlRegisterAnonymousType"}
@@ -22,11 +23,12 @@ def literal_string(value):
         return None
 
 
-def conditional(syntax):
+def conditional(syntax, *, guard_index=None):
+    guarded = guard_index.accepts if guard_index is not None else is_include_guard
     parent = syntax.parent
     while parent:
         if parent.type in {"if_statement", "switch_statement", "for_statement", "while_statement",
-                           "do_statement", "conditional_expression", "preproc_if", "preproc_ifdef", "preproc_else"}:
+                           "do_statement", "conditional_expression", "preproc_if", "preproc_ifdef", "preproc_else"} and not guarded(parent):
             return True
         parent = parent.parent
     return False
@@ -34,7 +36,7 @@ def conditional(syntax):
 
 def conditional_offset(unit, byte):
     return any(node.type in {"preproc_if", "preproc_ifdef", "preproc_else"}
-               and node.start_byte <= byte < node.end_byte for node in walk(unit.tree))
+               and not unit.include_guards.accepts(node) and node.start_byte <= byte < node.end_byte for node in walk(unit.tree))
 
 
 def class_target(unit, syntax, raw_type, classes, *, type_scope=None):
@@ -64,7 +66,7 @@ def add_macro_registration(mapping, facts, record):
     unsupported = sorted(name for name in macros if name.startswith("QML_") and name not in allowed)
     if unsupported:
         status, reason = "unsupported", "foreign_extended_or_attached_mapping_unsupported"
-    if conditional(record["syntax"]) or conditional_offset(mapping.unit, named["start_byte"]):
+    if conditional(record["syntax"], guard_index=mapping.unit.include_guards) or conditional_offset(mapping.unit, named["start_byte"]):
         status, reason = "dynamic", "conditional_exposure"
     fields = {"class_id": record["node_id"], "generic_target_id": record["node_id"],
               "class_name": record["qualified_name"], "mechanism": named["name"], "status": status,
@@ -120,6 +122,6 @@ def add_literal_registrations(mapping, facts, classes, *, alias_nodes=None):
                               status="resolved" if len(ids) == 1 else "ambiguous" if ids else "unavailable", reason=reason)
                 records = [record for record in classes if record["node_id"] == fields["class_id"]]
                 fields["class_name"] = records[0]["qualified_name"] if records else ""
-        if conditional(syntax):
+        if conditional(syntax, guard_index=unit.include_guards):
             fields.update(status="dynamic", reason="conditional_registration")
         facts.add("registration", raw_name or "", syntax, owner=owner["node_id"] if owner and owner["node_id"] else None, **fields)

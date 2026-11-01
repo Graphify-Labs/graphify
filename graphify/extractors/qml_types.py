@@ -9,19 +9,9 @@ from graphify.extractors.qml_ast import QmlInputError, load_parser
 from graphify.extractors.qml_cmake import uri, version
 from graphify.extractors.qml_facts import field, text
 from graphify.extractors.qml_project_read import MetadataError, ProjectFacts, extract_project, failure
-
-_COMPONENT_FIELDS = {"name", "prototype", "file", "exports", "exportMetaObjectRevisions",
-                     "isSingleton", "isCreatable", "isComposite", "defaultProperty", "attachedType",
-                     "extension", "accessSemantics", "interfaces", "isStructured", "isValueType",
-                     "isSequence", "sequenceValueType", "isRoot", "isCustomParser", "deferredNames",
-                     "immediateNames", "isScript", "isExtendedTypeNamespace", "extensionIsJavaScript",
-                     "hasCustomParser", "enforcesScopedEnums", "valueType", "aliases",
-                     "extensionIsNamespace", "isJavaScriptBuiltin"}
-_MEMBER_FIELDS = {"name", "type", "isReadonly", "isList", "isPointer", "revision", "isRequired",
-                  "isFinal", "index", "read", "write", "notify", "bindable", "isConstructor",
-                  "isJavaScriptFunction", "isCloned", "isConst", "isMethodConstant", "values",
-                  "alias", "isFlag", "isScoped", "isEnum", "isUnderlyingType", "underlyingType",
-                  "privateClass", "isConstant", "reset"}
+from graphify.extractors.qml_types_contract import (
+    COMPONENT_FIELDS as _COMPONENT_FIELDS, MEMBER_FIELDS as _MEMBER_FIELDS, validate_description,
+)
 
 
 def _literal(node, raw):
@@ -68,11 +58,7 @@ def _bindings(syntax, facts, allowed):
         if value is None:
             raise MetadataError("QML_TYPES_UNSUPPORTED", "missing_description_value")
         values[name] = _literal(value, facts.raw)
-        literal = values[name]
-        if name.startswith(("is", "has", "enforces")) and not isinstance(literal, bool):
-            raise MetadataError("QML_TYPES_UNSUPPORTED", "invalid_boolean_description_field")
-        if name in {"name", "type", "prototype", "file", "notify", "read", "write", "bindable"} and not isinstance(literal, str):
-            raise MetadataError("QML_TYPES_UNSUPPORTED", "invalid_string_description_field")
+    validate_description(values, field(syntax, "type_name", facts.raw))
     return values, nested
 
 
@@ -99,7 +85,8 @@ def _component(syntax, facts):
     component = facts.add("qmltypes_component", name, name, syntax.start_byte, syntax.end_byte,
                           raw_name=name, prototype=values.get("prototype", ""),
                           singleton=values.get("isSingleton", False),
-                          creatable=values.get("isCreatable", True), generated=True,
+                          creatable=False if values.get("isTypeOpaque") else values.get("isCreatable", True),
+                          opaque=values.get("isTypeOpaque", False), generated=True,
                           evidence_role="tooling_description", declared_file=values.get("file", ""))
     _field_records(facts, component, values, syntax)
     exports = values.get("exports", [])

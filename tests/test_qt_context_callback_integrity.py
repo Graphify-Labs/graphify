@@ -34,7 +34,7 @@ def callback_view(tmp_path, result, stage, form):
     source_id, target_id = edge["source"], edge["target"]
     def accepted():
         return allows_qt_qml_edge(by_id[source_id], by_id[target_id], edge,
-                                  source_id=source_id, target_id=target_id, nodes=by_id)
+                                  source_id=source_id, target_id=target_id, nodes=by_id, edges=edges)
     assert accepted()
     return by_id, by_id[source_id], accepted
 

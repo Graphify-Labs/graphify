@@ -10,20 +10,28 @@ from graphify.qml_module_index import QmlModuleIndex
 from graphify.qml_resolution_types import Resolution, answer, qml_metadata, source_path
 from graphify.qt_generated_conflicts import generated_conflicts
 from graphify.qt_resource_index import QtResourceIndex, normalize_url
+from graphify.qt_qml_source_exports import QmlSourceExports, export_ownership, validate_source_export
+from graphify.qt_metaobject import validate_metaobject_transport
 
 
 class QtProjectIndex:
     """Borrow all source dictionaries read-only; derived lookup records stay local."""
     def __init__(self, nodes, edges, *, root: Path, import_roots=None):
         self.root = Path(root).resolve()
+        edges = tuple(edges)
         self.nodes, self.paths, self.modules, self.sources = {}, {}, {}, {}
         accepted, declarations = [], {}
         for node in nodes:
+            # New own-metaobject keys must reject before generic metadata-kind
+            # indexing; unrelated legacy transport keeps its existing owner.
+            validate_metaobject_transport(node)
             md = qml_metadata(node)
+            if md.get("kind") == "qt_source" and "qml_export_contract" in md:
+                validate_source_export(md)
             # Only this index's source-owned providers have declaration-local
             # identity. Generic namespaces intentionally share IDs across files;
             # their ordinary graph identity/provenance policy remains unchanged.
-            if node.get("id") and md.get("kind") in {"qt_module", "qt_source", "resource_alias"}:
+            if node.get("id") and md.get("kind") in {"qt_module", "qt_source", "qt_qml_export", "resource_alias"}:
                 previous = declarations.get(node["id"])
                 if previous is not None:
                     if previous != node:
@@ -40,6 +48,9 @@ class QtProjectIndex:
                     self.sources.setdefault(md.get("module_key"), []).append(node["id"])
         # Repeated transport copies of one declaration ID do not create another
         # provider. Distinct source declarations retain their separate identities.
+        # Validate required new chains before generic endpoint hashing. This
+        # deliberately imposes no new limits on unrelated legacy metadata IDs.
+        export_ownership(self.nodes, edges)
         self.module_index = QmlModuleIndex(accepted, edges, root=self.root, import_roots=import_roots)
         self.resource_index = QtResourceIndex(accepted, root=self.root)
         self.memberships, self.qml_files = {}, {}
@@ -59,6 +70,8 @@ class QtProjectIndex:
                             target = alias.get("target_path")
                             if target in self.module_index.components:
                                 self.qml_files.setdefault(key, []).append((target, aid))
+        self.source_exports = QmlSourceExports(self.nodes, self.paths, self.modules, self.sources,
+                                               self.memberships, self.module_index.components, edges)
         self.diagnostics = generated_conflicts(self)
 
     def module_metadata(self, module_id: str) -> dict:
@@ -72,11 +85,7 @@ class QtProjectIndex:
                           tuple(sorted(set(ids))[:50]), result.candidates)
 
     def _eligible(self, md, major, minor):
-        if major is None:
-            return True
-        if major != md.get("major"):
-            return False
-        return minor is None or (isinstance(md.get("minor"), int) and minor <= md["minor"])
+        return self.source_exports.module_available(md, major, minor)
 
     def module_import(self, uri: str, major=None, minor=None) -> Resolution:
         """Build-declared namespaces require exact URI/version/provider evidence."""
@@ -99,9 +108,9 @@ class QtProjectIndex:
 
     def module_type(self, uri, major, minor, name, *, importer="", **kwargs) -> Resolution:
         """Match the established QML index seam without adding runtime visibility."""
-        return self.resolve_component(uri, name, major, minor)
+        return self.resolve_component(uri, name, major, minor, importer=importer)
 
-    def resolve_component(self, uri: str, type_name: str, major=None, minor=None) -> Resolution:
+    def resolve_component(self, uri: str, type_name: str, major=None, minor=None, *, importer="") -> Resolution:
         """Resolve declared module QML sources, plus established qmldir visibility."""
         namespace = self.module_import(uri, major, minor)
         if namespace.status == "ambiguous":
@@ -115,13 +124,21 @@ class QtProjectIndex:
                 providers.append(mid)
                 if not self._eligible(md, major, minor):
                     continue
+                built = self.source_exports.module_type(key, type_name, major, minor, importer)
+                if built.status in {"ambiguous", "unsupported"}:
+                    return built
+                if built.target_id:
+                    candidates.append(built.target_id)
+                    evidence.extend(built.evidence)
                 for path, sid in self.qml_files.get(key, []):
+                    if sid in self.source_exports.controlled:
+                        continue
                     name = posixpath.basename(path).removesuffix(".ui.qml").removesuffix(".qml")
                     if name == type_name and name[:1].isupper():
                         candidates.extend(self.module_index.components.get(path, []))
                         evidence.extend((mid, sid))
         declared = answer(candidates, reason="module_type_unavailable", evidence=evidence)
-        existing = self.module_index.module_type(uri, major, minor, type_name, importer="")
+        existing = self.module_index.module_type(uri, major, minor, type_name, importer=importer)
         if existing.status in {"ambiguous", "unsupported"}:
             return existing
         if existing.target_id:
@@ -131,6 +148,10 @@ class QtProjectIndex:
         if providers:
             return Resolution("unavailable", reason="module_type_or_version_unavailable", evidence=tuple(providers[:50]))
         return existing
+
+    def directory_type(self, directory, name, *, importer):
+        """Build export authority may suppress a physical-name fallback after rename."""
+        return self.source_exports.directory_type(directory, name, importer)
 
     def resolve_url(self, literal_url: str, base_url: str | None = None) -> Resolution:
         # Explicit QRC/CMake aliases and module-generated mappings compete in

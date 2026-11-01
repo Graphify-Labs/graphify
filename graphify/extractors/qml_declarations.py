@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from graphify.extractors.qml_facts import FactBuilder, encode_metadata, field, make_scope_key, qml_metadata, span, text
 from graphify.extractors.qml_literals import literal_fields
+from graphify.extractors.qml_enums import add_enum_members
+from graphify.extractors.qml_source_modifiers import modifier_fields
 
 
 class Declarations:
@@ -106,9 +108,14 @@ class Declarations:
                          component_key=component_key, object_scope_key=scope,
                          parent_scope_key=scope, raw_type=field(syntax, "type", self.source),
                          modifiers=modifiers, signature=text(parameters, self.source),
+                         **modifier_fields(modifiers),
                          return_type=field(syntax, "return_type", self.source), parameter_names=parameter_names,
                          **(literal_fields(syntax.child_by_field_name("value"), self.source) if kind == "property" else {}))
         self.members.append((syntax, node))
+        # Enum entries are declarations owned by this precise enum occurrence;
+        # their values never become instance properties or executable bindings.
+        if kind == "enum":
+            add_enum_members(facts, syntax, node)
         value = syntax.child_by_field_name("value")
         if value and value.type in {"ui_object_definition", "ui_object_array"}:
             template = field(syntax, "type", self.source).rsplit(".", 1)[-1] == "Component"

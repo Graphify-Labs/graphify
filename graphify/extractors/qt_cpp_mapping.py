@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import re
 
-from graphify.qml_resolution_types import source_path
 from graphify.extractors.qt_cpp_syntax import walk, source_span
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.cpp_constructors import constructor_class_authorized
 from graphify.extractors.cpp_class_proof import class_fact, class_matches
 from graphify.extractors.cpp_constructor_binding import syntax_matches
+from graphify.extractors.qt_cpp_annotations import member_roles
+from graphify.extractors.cpp_declarators import callable_declarator
+from graphify.extractors.cpp_functions import free_definition_fact
 
 
 def normalize_type(value: str) -> str:
@@ -64,51 +66,29 @@ def _parameters(unit, declarator):
 
 
 def _roles(unit, declaration, class_syntax):
-    access = "private" if class_syntax and class_syntax.type == "class_specifier" else "public"
-    roles = []
-    if class_syntax:
-        body = class_syntax.child_by_field_name("body")
-        previous = class_syntax.start_byte
-        for child in body.named_children if body else []:
-            if child.start_byte >= declaration.start_byte:
-                break
-            if child.type == "access_specifier":
-                literal = unit.code[child.start_byte:child.end_byte].decode().strip()
-                access = "private" if "private" in literal else "protected" if "protected" in literal else "public"
-                gap_end = unit.code.find(b":", child.end_byte)
-                text = unit.code[child.start_byte:gap_end + 1].decode() if gap_end >= 0 else literal
-                roles = ["signal"] if re.search(r"\b(?:signals|Q_SIGNALS)\b", text) else ["slot"] if re.search(r"\b(?:slots|Q_SLOTS)\b", text) else []
-            previous = max(previous, child.end_byte)
-        prefix = unit.code[previous:declaration.start_byte].decode()
-        if re.search(r"\b(?:Q_SIGNAL)\b", prefix):
-            roles = list(set(roles + ["signal"]))
-        if re.search(r"\b(?:Q_SLOT)\b", prefix):
-            roles = list(set(roles + ["slot"]))
-        if re.search(r"\bQ_INVOKABLE\b", prefix):
-            roles = list(set(roles + ["invokable"]))
-    return sorted(roles), access
+    return member_roles(unit, declaration, class_syntax, walk=walk)
 
 
 class CppMapping:
     """Borrowed generic nodes remain unchanged; source records retain ambiguity."""
 
     def __init__(self, unit, nodes, edges, *, root):
-        self.unit, self.nodes, self.edges = unit, list(nodes), list(edges)
+        from graphify.extractors.qt_cpp_accepted_index import accepted_cpp_index
+        self._initialize(unit, accepted_cpp_index(nodes, edges, root=root))
+
+    @classmethod
+    def _from_index(cls, unit, index):
+        """Only the invocation-bound mapper supplies a coherent accepted snapshot."""
+        result = cls.__new__(cls)
+        result._initialize(unit, index)
+        return result
+
+    def _initialize(self, unit, index):
+        # Classes/functions and syntax remain unit-owned; lookup data is read-only.
+        self.unit, self.nodes, self.edges = unit, index.nodes, index.edges
+        self.paths, self.definition_paths, self.accepted = index.paths, index.definition_paths, index.accepted
+        self.parents, self.class_parents = index.parents, index.class_parents
         self.classes, self.functions = [], []
-        self.paths = {id(node): source_path(node, root) for node in self.nodes}
-        self.definition_paths = {id(node): source_path({"source_file": node.get("definition_file")}, root)
-                                 for node in self.nodes}
-        self.parents = {}
-        self.class_parents = {}
-        accepted = {node["id"]: node for node in self.nodes}
-        self.accepted = accepted
-        for edge in self.edges:
-            if edge.get("relation") in {"method", "contains"}:
-                self.parents.setdefault(edge["target"], set()).add(edge["source"])
-                parent = accepted.get(edge["source"], {})
-                if (edge.get("confidence") == "EXTRACTED" and parent.get("_callable_class") is True
-                        and source_path(edge, root) == source_path(parent, root)):
-                    self.class_parents.setdefault(edge["target"], set()).add(edge["source"])
         syntax_nodes = list(walk(unit.tree))
         for syntax in syntax_nodes:
             if syntax.type not in {"class_specifier", "struct_specifier"}:
@@ -148,6 +128,13 @@ class CppMapping:
             declaration = declaration.parent
         if declaration is None:
             return
+        # A callback/member-function-pointer field contains function syntax but
+        # its nearest binding is data. Only actual method declarators own Qt
+        # method roles; parameter/return callback signatures cannot lend one.
+        if not any(
+                callable_declarator(item, self.unit.parsed_source) == declarator
+                for item in declaration.children_by_field_name("declarator")):
+            return
         name = _name(self.unit, declarator.child_by_field_name("declarator"))
         if not name:
             return
@@ -180,6 +167,15 @@ class CppMapping:
             class_id = next(iter(owners)) if len(owners) == 1 else ""
         qualified = _qualified(self.unit, declaration, name)
         record = self._record(declaration, short, qualified, matches)
+        # A producer-proven free definition retains its callable/body for SDK
+        # source sites. Its namespace qualifier cannot supply class authority;
+        # require the exact original occurrence, not a neighboring name match.
+        free_matches = [candidate for candidate in matches
+                        if (proof := free_definition_fact(self.accepted[candidate]))
+                        and proof["span"] == record["span"]
+                        and self.paths[id(self.accepted[candidate])] == self.unit.relative_file]
+        if free_matches and class_record is None:
+            record = self._record(declaration, short, qualified, free_matches)
         parameters = _parameters(self.unit, declarator)
         roles, access = _roles(self.unit, declaration, class_record["syntax"] if class_record else None)
         record.update(class_id=class_id, class_name=class_record["qualified_name"] if class_record else qualified.rsplit("::", 1)[0] if "::" in qualified else "",
@@ -191,6 +187,9 @@ class CppMapping:
             class_record is None and declaration.type == "function_definition"
             and not record["return_type"] and "::" in name and name.split("::")[-2] == short)
         record["constructor"] = constructor
+        if free_matches and class_record is None:
+            record.update(class_id="", class_name="", definition_owners=[], constructor=False,
+                          out_of_line_constructor=False)
         self.functions.append(record)
 
     def owner_at(self, byte):

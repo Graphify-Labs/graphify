@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+from graphify.extractors.cpp_unnamed_pointer_defaults import needs_unnamed_pointer_recovery, recover_unnamed_pointer_defaults
+from graphify.extractors.cpp_windows_calling_conventions import needs_windows_convention_recovery, recover_windows_calling_conventions
 
 _UNUSED = re.compile(rb"\bQ_UNUSED\s*\(")
 _EMPTY = re.compile(rb"=\s*\{\s*\}")
@@ -10,7 +12,7 @@ _LOCAL_UNUSED = re.compile(rb"(?m)^\s*#\s*(?:define|undef)\s+Q_UNUSED\b")
 
 def needs_recovery(code: bytes) -> bool:
     """Cheap admission avoids extra parse work for unrelated C++ syntax."""
-    return bool(_UNUSED.search(code) or _EMPTY.search(code))
+    return bool(_UNUSED.search(code) or _EMPTY.search(code) or needs_unnamed_pointer_recovery(code) or needs_windows_convention_recovery(code))
 
 
 def _statement_code(code):
@@ -150,7 +152,7 @@ def _declaration_parameter(node):
     parameters = node.parent
     function = parameters.parent if parameters is not None else None
     if (parameters is None or parameters.type != "parameter_list" or function is None
-            or function.type != "function_declarator"):
+            or function.type != "function_declarator" or function.has_error):
         return False
     name = function.child_by_field_name("declarator")
     if name is None or name.type not in {"identifier", "field_identifier", "qualified_identifier"}:
@@ -160,7 +162,10 @@ def _declaration_parameter(node):
         if owner.type in {"parameter_list", "argument_list", "init_declarator"}:
             return False
         if owner.type in {"declaration", "field_declaration", "function_definition"}:
-            return True
+            if owner.type == "function_definition":
+                body = owner.child_by_field_name("body")
+                return not any(child.has_error for child in owner.children if child != body)
+            return not owner.has_error
         owner = owner.parent
     return False
 
@@ -181,8 +186,9 @@ def _reclassified_template_defaults(source, code, *, parse, walk):
     for match in candidates:
         proposed[match.start():match.end()] = re.sub(rb"[^\r\n]", b" ", source[match.start():match.end()])
     tree = parse(bytes(proposed))
-    if tree.has_error:
-        return source
+    # Only these actual parameter/declaration nodes own this repair. Unrelated
+    # QtTest/member-pointer errors may await their own bounded adapters; the
+    # final Qt source gate still rejects any remaining whole-file parse error.
     parameters = [node for node in walk(tree)
                   if node.type == "parameter_declaration" and not node.has_error
                   and _declaration_parameter(node) and _template_parameter(node, walk)]
@@ -215,6 +221,8 @@ def recover_cpp_syntax(source: bytes, code: bytes, *, parse, walk) -> bytes:
     """
     if not needs_recovery(code):
         return source
+    source = recover_windows_calling_conventions(source, code, parse=parse, walk=walk)
+    source = recover_unnamed_pointer_defaults(source, _statement_code(code), parse=parse, walk=walk)
     tree = parse(source)
     recovered = _unused_statements(source, code, tree, parse=parse, walk=walk)
     if recovered != source:

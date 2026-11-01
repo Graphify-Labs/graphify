@@ -7,6 +7,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from tests import qml_ci
 
@@ -36,6 +37,8 @@ def profile(tmp_path, monkeypatch):
                             extra=workspace / "extra", core=workspace / "core", calls=[], failure=None)
     monkeypatch.setattr(qml_ci, "__file__", str(tests / "qml_ci.py"))
     monkeypatch.setattr(qml_ci.sys, "argv", ["qml_ci.py"])
+    # Existing local command contracts are independent of an outer CI report.
+    monkeypatch.delenv("GRAPHIFY_QML_JUNIT_PATH", raising=False)
 
     def external_process(arguments, *, check, **kwargs):
         """A successful uv build creates its sole artifact; failures preserve real check semantics."""
@@ -116,6 +119,20 @@ def test_req_core004_ac02_artifact_profile_preserves_clean_optional_boundaries(p
     assert profile.calls[-1].wheel_environment == str(profile.wheel)
 
 
+def test_req_qml022_ac06_native_profile_collects_shared_cpp_csharp_ownership(profile):
+    """Core parser regressions join native source lanes after unchanged isolated-wheel smokes."""
+    names = ("test_cpp_members.py", "test_csharp_fields.py", "test_field_call_ownership.py",
+             "test_source_relationship_consumers.py")
+    for name in names:
+        (profile.root / "tests" / name).write_text("def test_boundary(): pass\n", encoding="utf-8")
+    qml_ci.main()
+    selected = profile.calls[-1].arguments
+    assert all(str(Path("tests") / name) in selected for name in names)
+    assert str(Path("tests") / "test_unrelated.py") not in selected
+    assert [call.arguments for call in profile.calls[:-1]] == [*clean_prefix(profile), addon(profile)]
+    assert_neutral_smokes(profile)
+
+
 def test_req_core004_ac03_failed_addon_stops_before_native_pytest(profile):
     """A failed declared-extra install remains a failed lane without retrying a reduced test set."""
     profile.failure = "addon"
@@ -133,3 +150,25 @@ def test_req_core004_ac03_failed_clean_smoke_cannot_admit_native_addon(profile, 
         qml_ci.main()
     expected = clean_prefix(profile)[:6 if mode == "qml" else 7]
     assert [call.arguments for call in profile.calls] == expected
+
+
+def test_req_core004_ac03_workflow_retains_matrix_bound_xml_on_all_outcomes():
+    """The actual existing matrix retains each job's report even on a failed pytest exit."""
+    path = Path(__file__).resolve().parents[1] / ".github/workflows/qml-wheel.yml"
+    workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["qml-wheel"]
+    assert job["strategy"]["matrix"] == {
+        "os": ["ubuntu-latest", "windows-latest", "macos-latest"],
+        "python": ["3.10", "3.12", "3.13", "3.14"]}
+    steps = job["steps"]
+    verify = next(step for step in steps if step.get("name") == "Verify installed wheels and platform contracts")
+    report = next(step for step in steps if step.get("name") == "Retain per-case QML test evidence")
+    expected = "${{ runner.temp }}/graphify-qml-results/tests.xml"
+    assert verify["env"] == {"GRAPHIFY_QML_JUNIT_PATH": expected}
+    assert verify["run"] == ("uv run --no-project --python ${{ matrix.python }} python tests/qml_ci.py "
+                             "${{ runner.os == 'Linux' && '--artifact-only' || '' }}")
+    assert report["if"] == "always()"
+    assert report["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert report["with"] == {
+        "name": "qml-wheel-tests-${{ matrix.os }}-python-${{ matrix.python }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        "path": expected, "retention-days": "14", "if-no-files-found": "error"}

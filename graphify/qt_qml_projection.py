@@ -5,6 +5,7 @@ from graphify.extractors.qml_facts import qml_metadata
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.qt_context_paths import valid_context_chain, valid_context_endpoint
 from graphify.qt_qml_callback_proof import valid_subscription_callback
+from graphify.qt_metaobject import valid_metaobject_proof
 
 _CPP = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
 
@@ -109,7 +110,7 @@ def _cpp_mechanism(source, md, target_md, edge, nodes, target_id):
     return md.get("bridge_direction") == "cpp_to_qml" and expected == (edge.get("relation"), edge.get("context"))
 
 
-def allows_qt_qml_edge(source, target, edge, *, source_id, target_id, nodes):
+def allows_qt_qml_edge(source, target, edge, *, source_id, target_id, nodes, edges=None, metaobject_index=None):
     """A context label cannot authorize a bridge to an unrelated declaration."""
     if edge.get("confidence") != "INFERRED" or edge.get("source_file") != source.get("source_file"):
         return False
@@ -147,7 +148,8 @@ def allows_qt_qml_edge(source, target, edge, *, source_id, target_id, nodes):
                     and source_qt.get("bridge_direction") == qt_metadata(edge).get("bridge_direction") == "qml_to_cpp"
                     and binding.get("status") == "resolved" and source_qt.get("target_id") == target_id
                     and proof.get("canonical_target_id") == target_id and proof.get("provider_id") == binding_id
-                    and valid_context_chain(binding, proof, nodes) and valid_context_endpoint(proof, nodes)
+                    and valid_context_chain(binding, proof, nodes)
+                    and valid_context_endpoint(proof, nodes, edges, metaobject_index)
                     and member.get("class_id") == proof.get("class_id")
                     and expected == target_id and component.get("component_key") == owner.get("component_key")
                     and nodes[component_id].get("source_file") == source.get("source_file")
@@ -171,6 +173,7 @@ def allows_qt_qml_edge(source, target, edge, *, source_id, target_id, nodes):
             expected = member_id if member.get("kind") == "property" else member.get("generic_target_id")
             return (member.get("class_id") == class_id and expected == target_id
                     and member.get("kind") in {"property", "member"}
+                    and valid_metaobject_proof(proof, nodes, edges, metaobject_index)
                     and _native_mechanism(smd, proof, member, edge, target_id))
         if src_ext in _CPP and tgt_ext == ".qml" and tmd.get("contract_version") == 1:
             proof = qt_metadata(edge)

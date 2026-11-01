@@ -27,13 +27,13 @@ def _role(site, target, role, result, additions, edges):
     ownership["confidence"] = "EXTRACTED"
     edges.append(ownership)
     edges.append(qt_edge(node, target, "references", "qt_" + site.get("metadata", {}).get("qt", {}).get("kind", "connect") + "_" + role,
-                         role=role, bridge_direction="cpp_to_cpp"))
+                         role=role, bridge_direction="cpp_to_cpp", evidence=list(result.evidence)))
 
 
-def resolve_qt_events(per_file, all_nodes, all_edges, *, root, project_index=None):
+def resolve_qt_events(per_file, all_nodes, all_edges, *, root, project_index=None, unknown_metaobject_ownership=()):
     """Mutate only fresh source-owned sites; borrowed accepted corpus stays read-only."""
     del root, project_index
-    index = QtEventIndex(all_nodes)
+    index = QtEventIndex(all_nodes, all_edges, unknown_metaobject_ownership=unknown_metaobject_ownership)
     connection_handles = {}
     results = per_file.values() if isinstance(per_file, dict) else per_file
     for result in results:
@@ -48,7 +48,8 @@ def resolve_qt_events(per_file, all_nodes, all_edges, *, root, project_index=Non
                 update_qt(site, status=resolution.status, target_id=resolution.target_id or "", reason=resolution.reason,
                           candidates=list(resolution.candidates), bridge_direction="cpp_to_cpp")
                 if resolution.target_id:
-                    projected.append(qt_edge(site, resolution.target_id, "uses", "qt_signal_emit", bridge_direction="cpp_to_cpp"))
+                    projected.append(qt_edge(site, resolution.target_id, "uses", "qt_signal_emit", bridge_direction="cpp_to_cpp",
+                                             evidence=list(resolution.evidence)))
                 continue
             if kind not in {"connect", "disconnect"}:
                 continue

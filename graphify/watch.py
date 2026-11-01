@@ -1808,6 +1808,7 @@ def _current_build_state(
     vouch for it.
     """
     import hashlib
+    from graphify.accepted_link_frame import BUILD_PROJECTION_VERSION
 
     rc = watch_root / RC_FILENAME
     try:
@@ -1820,6 +1821,7 @@ def _current_build_state(
         rc_digest = ""
     return {
         "epoch": _extractor_epoch(),
+        "projection_version": BUILD_PROJECTION_VERSION,
         "scan_root": str(watch_root),
         "scan_digest": scan_digest,
         "follow_symlinks": bool(follow_symlinks),
@@ -1834,6 +1836,16 @@ def _current_build_state(
         "viz_node_limit": os.environ.get("GRAPHIFY_VIZ_NODE_LIMIT", ""),
         "ambiguous_scale": os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE", ""),
     }
+
+
+def _projection_refresh_required(out: Path, state: dict) -> bool:
+    """Raw AST compatibility cannot vouch for an old publication algorithm."""
+    try:
+        previous = json.loads((out / _BUILD_STATE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    version = previous.get("projection_version") if isinstance(previous, dict) else None
+    return type(version) is not int or version != state["projection_version"]
 
 
 def _graph_json_is_complete(path: Path) -> bool:
@@ -2038,6 +2050,8 @@ def _rebuild_code(
     in ``changed_paths`` (paths that no longer exist on disk) are dropped from
     the preserved set. When ``changed_paths`` is None the full code corpus is
     re-extracted (used by the watcher and post-checkout hook).
+    A stale publication projection promotes a provided change list to that full
+    path while retaining the ordinary raw AST cache policy.
 
     ``acquire_lock`` (default True) takes a non-blocking per-repo flock around
     the rebuild so concurrent post-commit hooks across multiple repos do not
@@ -2061,14 +2075,24 @@ def _rebuild_code(
         # Incremental requests append their paths to .pending_changes; full-
         # corpus requests leave a .pending_full marker (#4274).
         queued = False
-        if not block_on_lock:
-            if changed_paths is None:
-                _queue_pending_full(out)
-                queued = True
-            elif changed_paths:
-                _queue_pending(out, list(changed_paths))
-                queued = True
-        with _rebuild_lock(out, blocking=block_on_lock) as got:
+        with contextlib.ExitStack() as lock_scope:
+            # Guard only pre-analysis coordination I/O. Writer/body failures and
+            # the native mutex's release remain owned by their existing paths.
+            stage = "queue"
+            try:
+                if not block_on_lock:
+                    if changed_paths is None:
+                        _queue_pending_full(out)
+                        queued = True
+                    elif changed_paths:
+                        _queue_pending(out, list(changed_paths))
+                        queued = True
+                stage = "lock"
+                got = lock_scope.enter_context(_rebuild_lock(out, blocking=block_on_lock))
+            except OSError:
+                print(f"[graphify watch] REBUILD_SETUP_FAILED: stage={stage}; "
+                      "check output permissions/storage availability and retry.")
+                return False
             if not got:
                 print("[graphify watch] Rebuild already in progress for "
                       f"{watch_path.resolve()} - "
@@ -2182,10 +2206,17 @@ def _rebuild_code(
             excludes=_persisted_excludes,
             scan_digest=_scan_digest(detected),
         )
+        # A partial event cannot retain unchanged sources in an older projection.
+        # Keep the ordinary raw-cache policy; publish the full accepted corpus
+        # before its new version can enter the existing successful-build stamp.
+        # Topology equality cannot certify evidence omitted by the old serializer.
+        projection_refresh = _projection_refresh_required(out, _build_state_now)
+        if projection_refresh:
+            changed_paths = None
 
         # Qt acceptance also owns import-root/profile and durable context state;
         # identical corpus hashes cannot authorize skipping their required refresh.
-        if changed_paths is None and not force and not qt_full_refresh:
+        if changed_paths is None and not force and not qt_full_refresh and not projection_refresh:
             if (
                 _inputs_unchanged(detected, out / "manifest.json", watch_root)
                 and _build_state_matches(out, _build_state_now)
@@ -2405,6 +2436,8 @@ def _rebuild_code(
             if qt_full_refresh or qml_refresh_required(code_files, changed_paths):
                 wanted = [p for p in code_files if p not in semantic_doc_files]
                 print("[graphify watch] Qt/QML inputs changed; refreshing the live code corpus.")
+            from graphify.csharp_incremental import refresh_csharp_paths
+            wanted = refresh_csharp_paths(wanted, code_files, removed=deleted_paths, profile_changed=qt_state.changed)
             if not wanted and not deleted_paths and not qt_full_refresh:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -2521,7 +2554,9 @@ def _rebuild_code(
                     if edge.get("relation") not in (
                         "contains", "method", "inherits", "imports", "imports_from"
                     ):
-                        if not (edge.get("relation") == "references" and edge.get("context") == "return_type"):
+                        if not ((edge.get("relation") == "references" and edge.get("context") == "return_type")
+                                or (edge.get("relation") == "defines" and edge.get("context") == "field"
+                                    and edge.get("confidence") == "EXTRACTED")):
                             continue
                     if not _is_ast_tier(edge):
                         continue
@@ -2536,6 +2571,11 @@ def _rebuild_code(
                     }
                     if edge.get("context") == "return_type":
                         context_edge["context"] = "return_type"
+                    if edge.get("relation") == "defines":
+                        # Same source-owned field contract as manual updates;
+                        # storage is an exclusion, never callback target proof.
+                        context_edge.update(context="field", confidence="EXTRACTED",
+                                            source_location=edge.get("source_location"), metadata=edge.get("metadata", {}))
                     edge_metadata = edge.get("metadata")
                     if (
                         isinstance(edge_metadata, dict)
@@ -2749,13 +2789,16 @@ def _rebuild_code(
             _disamb_labels(raw_nodes)
             _qualify_cs_methods(raw_nodes, result.get("edges", []))
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
+            from graphify.source_relationships import inherit_source_snapshot
+            inherit_source_snapshot(result, existing_graph_data)
             candidate_graph_data = {
                 **{
                     k: v for k, v in result.items()
                     if k not in ("edges", "nodes") and k not in _RUN_ONLY_KEYS
                 },
                 "nodes": raw_nodes,
-                "links": _dedupe_edges(result.get("edges", [])),
+                "links": _dedupe_edges(result.get("edges", []), source_nodes=raw_nodes,
+                                        graph_metadata=result.get("graph"), directed=bool((existing_graph_data or {}).get("directed", False))),
                 # A first build's fresh extraction may carry no hyperedges key,
                 # while a reconciled rebuild always does; write it either way so
                 # the two builds of one tree give the same file.
@@ -2774,6 +2817,10 @@ def _rebuild_code(
             # the shared finalizer preserves authored roles outside its exact
             # legacy-shape convention and retires only unreferenced placeholders.
             _finalize_raw_graph_endpoints(candidate_graph_data)
+            # Raw publication declares the typed profile before persistence,
+            # using the same validation/key owner as clustered JSON storage.
+            from graphify.source_relationships import adopt_transport
+            candidate_graph_data = adopt_transport(candidate_graph_data)
             if not _valid_publication_direction(
                     ((edge["source"], edge["target"], edge) for edge in candidate_graph_data["links"]),
                     directed=candidate_graph_data["directed"]):
@@ -2803,7 +2850,7 @@ def _rebuild_code(
                     )
                 except Exception:
                     same_graph = False
-            same_graph = same_graph and not legacy_layout
+            same_graph = same_graph and not legacy_layout and not projection_refresh
             if not same_graph:
                 if not _check_shrink(
                     force, existing_graph_data, candidate_graph_data,
@@ -2852,7 +2899,7 @@ def _rebuild_code(
         if not _valid_publication_direction(G.edges(data=True), directed=G.is_directed()):
             return False
         candidate_topology = _topology_from_graph(G)
-        if existing_graph_data and not legacy_layout:
+        if existing_graph_data and not legacy_layout and not projection_refresh:
             try:
                 same_topology = (
                     json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False)
@@ -3043,7 +3090,7 @@ def _rebuild_code(
                 )
             except Exception:
                 same_graph = False
-        same_graph = same_graph and not legacy_layout
+        same_graph = same_graph and not legacy_layout and not projection_refresh
         if report_path.exists():
             old_report = report_path.read_text(encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)

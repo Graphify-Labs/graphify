@@ -40,8 +40,8 @@ def _qml_endpoint(index, metadata, prefix):
     return result
 
 
-def resolve_qml_event_access(results, index, all_nodes, all_edges):
-    native = QtEventIndex(all_nodes)
+def resolve_qml_event_access(results, index, all_nodes, all_edges, *, unknown_metaobject_ownership=()):
+    native = QtEventIndex(all_nodes, all_edges, unknown_metaobject_ownership=unknown_metaobject_ownership)
     for result in results:
         if not result:
             continue

@@ -56,7 +56,7 @@ def selected(result, context):
 def accepted(result, edge):
     nodes = {node["id"]: node for node in result["nodes"]}
     return allows_qt_qml_edge(nodes[edge["source"]], nodes[edge["target"]], edge,
-                             source_id=edge["source"], target_id=edge["target"], nodes=nodes)
+                             source_id=edge["source"], target_id=edge["target"], nodes=nodes, edges=result["edges"])
 
 
 CASES = [("context", value) for value in ("qt_context_member", "qt_context_subscription")]
@@ -82,9 +82,11 @@ def test_source_mechanisms_survive_builder_export_and_reload(tmp_path, profile, 
     restored = load_node_link_graph(path)
     source, target = edge["source"], edge["target"]
     data = restored.edges[source, target]
+    owned = [{**value, "source": value.get("_src", left), "target": value.get("_tgt", right)}
+             for left, right, value in restored.edges(data=True)]
     assert data["relation"] == edge["relation"] and data["context"] == context
     assert allows_qt_qml_edge(restored.nodes[source], restored.nodes[target], data,
-                             source_id=source, target_id=target, nodes=restored.nodes)
+                             source_id=source, target_id=target, nodes=restored.nodes, edges=owned)
     assert any(node.get("source_file") == "keep.py" for _, node in restored.nodes(data=True))
 
 

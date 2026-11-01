@@ -11,10 +11,13 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-# Literal CMake QRC output pairs extend accepted metadata at unchanged package
-# and source identity. Retire prior context through the existing state owner;
-# metadata bypasses the syntax cache, whose schema remains unchanged.
-QT_POLICY_VERSION = 26
+# Qt6.12 source/tooling/export and engine-specific setup contracts extend the
+# accepted facts at unchanged package/source identity. Prior context must refresh
+# through the existing accepted-product owner; syntax has its separate epoch.
+# Scoped lookup and literal/class/binding proof retire prior accepted joins.
+# Same-unit anonymous helpers need their original namespace witness as well.
+# Direct source declarations must retain their AST tier before graph composition.
+QT_POLICY_VERSION = 33
 
 
 def is_qt_metadata(path: str | Path) -> bool:
