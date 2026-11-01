@@ -2,9 +2,13 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## Unreleased
+## 0.9.101 (unreleased)
 
 - Fix: **query** a heuristic `--context` inferred from ordinary wording (`modules`, `template`, `return`, …) is discarded when it matches no edges, or leaves the seed nodes with no remaining edges, instead of collapsing the traversal to the seeds and reading as a confident empty answer. `--context call` also keeps `calls` edges on graphs that never set a `context` attribute (#2529).
+- Fix: **python** a bare call inside a method (`do_thing()`) no longer wrongly self-binds to a same-named method on the class; it resolves to the imported or module-level function it actually names, and a bare call with no such target emits no edge (#4933, thanks @nothariharan).
+- Fix: **python** imports resolve across PEP 420 namespace packages split over multiple `src/` roots (no `__init__.py`), while a module ambiguously provided by two roots stays unresolved and loose/stdlib-named modules are left alone (#4929, thanks @nothariharan).
+- Fix: **go** a method value reached through a receiver field (`m.UseMiddleware(hs.handler.Middleware)`) is linked as an `indirect_call`, extending the method-value-as-argument handling to field chains rooted at the method's own receiver (#1566, #4931, thanks @nothariharan).
+- Fix: **go** a package-level `var` initialiser references the types it names (`var s = wire.NewSet(new(T), ...)`, composite literals, `new(T)`), the type-reference complement to crediting its calls to the file, so a wire-set file no longer extracts as no symbols (#2360, #4932, thanks @nothariharan).
 
 ## 0.9.100 (2026-11-01)
 
