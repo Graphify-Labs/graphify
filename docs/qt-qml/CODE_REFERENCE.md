@@ -1818,3 +1818,27 @@ The update module measures223/300 with33 cases. Final related source execution
 passes959 cases; changed normal-path helper statements execute. Existing
 source-key invariant rejection, correspondence and stub-cleanup defensive
 branches remain explicitly unverified.
+
+## Numeric identity and selected direction — INC131
+
+The graph-assembly maintainer retains `_coerce_non_string_ids` as the sole numeric
+normalization owner. It uses the existing pure `graph_direction.logical_endpoints`
+primitive on original parent/from-to aliases before coercion. Only a valid
+explicit pair adds _src/_tgt to the same `_coerce_id` loop; absent/partial/foreign/
+type-conflicting markers are not synthesized or healed. Unknown metadata remains
+untouched. All other normalization responsibilities stay at their prior owners.
+
+The combined builder passes its actual `directed` invocation mode into the merged
+raw frame before source preflight. The main assembly loop selects logical
+endpoints for validated source profiles as well as unavailable C++ references,
+and passes the same basis to `AcceptedLinkFrame.accept`. The helper continues to
+reconstruct working physical parents and present aliases; it does not guess
+native roles. Build.py measures3,339/3,345; helper182/300 now holds projection4.
+Exporter1,527/1,540 and watcher3,432/3,450 are unchanged. The same focused legacy
+extraction path and owners remain; no new cohesion exception is needed.
+
+The new numeric module measures201/300 after nine default-dedup controls; its
+original166-line prefix and all88 earlier bodies remain exact. Existing projection updates measure224/
+300 after three appended v4 controls, retaining thirteen earlier parameters and
+every earlier test body/assertion. Packaging, installed consumers, full source,
+corpus projection and native hosted checks retain separate revision identities.

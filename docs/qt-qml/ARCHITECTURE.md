@@ -1638,3 +1638,12 @@ including the nine original failures, mixed carriers/physical aliases and recove
 Final package/full/corpus/hosted acceptance requires separately bound evidence.
 Earlier source43ac success and b645 failure remain historical, rather than
 later-revision passes.
+
+INC131 retains the existing numeric identity owner: only an originally valid
+explicit direction pair shares the same scalar conversion as its parents and
+endpoint aliases. Invalid pairs cannot become authoritative through normalization.
+The combined builder supplies its actual selected direction to existing source
+preflight. All validated source-profile links use the same explicit logical
+basis for assembly and caller-frame projection; this supplies no native member
+or target identity. Projection4 reuses existing publication recovery. Scoped
+numeric regressions pass88; full resulting-source acceptance stays separate.

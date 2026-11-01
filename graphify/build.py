@@ -32,6 +32,7 @@ from collections.abc import Iterable
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
+from .graph_direction import logical_endpoints as _accepted_edge_pair
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
 from .validate import VALID_CONFIDENCES, validate_extraction
@@ -778,7 +779,14 @@ def _coerce_non_string_ids(extraction: dict) -> None:
     for edge in extraction.get("edges") or ():
         if not isinstance(edge, dict):
             continue
-        for key in ("source", "target", "from", "to"):
+        # Only originally valid markers share numeric parent conversion.
+        # Undirected recognition preserves reversed physical storage, including
+        # its existing contradiction when later treated as a directed arc.
+        keys = ("source", "target", "from", "to")
+        if _accepted_edge_pair(edge.get("source", edge.get("from")), edge.get("target", edge.get("to")),
+                               edge, directed=False) is not None:
+            keys += ("_src", "_tgt")
+        for key in keys:
             if key in edge:
                 edge[key] = _coerce_id(edge[key])
     for he in extraction.get("hyperedges") or ():
@@ -2041,8 +2049,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if "source" not in edge or "target" not in edge:
             continue
         src, tgt = edge["source"], edge["target"]
-        # Typed rejection follows its accepted direction, never physical storage.
-        if is_type_reference_unavailable(edge):
+        # Source transport and typed rejection follow logical, not physical, direction.
+        if _source_profile or is_type_reference_unavailable(edge):
             src, tgt = logical_endpoints(G, src, tgt, edge)
         # Skip edges with non-hashable endpoints (e.g. a list emitted by a buggy
         # LLM extraction) so the `not in node_set` membership test below never
@@ -2091,7 +2099,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         attrs["_src"] = src
         attrs["_tgt"] = tgt
         link_frame.accept(edge, src, tgt, attrs, directed=directed,
-                          already_logical=is_type_reference_unavailable(edge))
+                          already_logical=_source_profile or is_type_reference_unavailable(edge))
         if is_source_graph(G):
             add_source_relationship(G, src, tgt, attrs)
             continue
@@ -2281,7 +2289,7 @@ def build(
     # identities. The final accepted graph supplies legitimate role transitions.
     retained_import_ids = frozenset().union(*(read_import_retention(ext, is_placeholder=_is_external_stub)
                                               for ext in extractions))
-    combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "directed": directed}
     for ext in extractions:
         if source_profile(ext.get("nodes", ()), ext.get("graph")):
             # Raw facts activate storage without requesting persisted-wire enrichment.

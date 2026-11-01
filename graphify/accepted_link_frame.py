@@ -12,7 +12,7 @@ from copy import deepcopy
 from graphify.graph_direction import logical_endpoints
 from graphify.source_relationships import FIELD, source_profile, storage_key
 
-BUILD_PROJECTION_VERSION = 3
+BUILD_PROJECTION_VERSION = 4
 
 
 class AcceptedLinkFrame:

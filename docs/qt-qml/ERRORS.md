@@ -1012,3 +1012,20 @@ arc still rejects with `CPP_REFERENCE_CONTEXT_INVALID`; this fix must not erase
 the contradictory evidence. No new diagnostic, parser epoch or persistence
 boundary is introduced. Projection3 uses the existing real-write retention,
 recovery and no-change repeat contracts; old source evidence is not relabelled.
+
+### Numeric ID/direction consistency — INC131
+
+Valid numeric parents and matching explicit markers normalize together without
+a warning. The earlier prevalidated source-key guard failure is not an invalid
+input: stale numeric marker types were introduced by the consumer. The fix does
+not reinterpret partial/foreign/type-conflicting source pairs as valid; existing
+`SOURCE_RELATIONSHIPS_INVALID` rejection and legacy original-view guard rejection
+remain. Combined source preflight sees the actual selected graph direction, so
+a contradictory directed pair cannot borrow an undirected default.
+
+Actual atomic replacement EIO propagates `OSError`; a publication guard returning
+False is a separate outcome. Source-profile failures retain prior disk/input/
+graph state and allow repaired retry/repeat at the unchanged owning writer.
+Earlier legacy accounting behavior is not generalized into a new transaction.
+Projection4 drives corrected publication with valid raw-cache reuse; no parser
+epoch, diagnostic framework, dependency or platform contract changes.

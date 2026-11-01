@@ -5736,3 +5736,91 @@ the other five raw/marker/combined paths build but reject original-link export.
 Default export alone would conceal those five failures. This reachable boundary
 is not established by INC130's959 passing cases; release acceptance remains
 blocked pending the separate correction and ordinary regression coverage.
+
+### INC-QML-131 — Valid numeric direction markers share identity normalization
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and existing
+REQ-QML-011-AC04 forward recovery; REQ-QML-012-AC02 retains actual publication
+failure/recovery evidence. The six qualified numeric-peer failures use genuine
+C# source facts and an ordinary accepted numeric node, without native authority
+fabrication. All six pass raw source preflight. Normalizing parent identity7 to
+string7 while retaining integer7 direction markers breaks valid correspondence.
+
+Before production edits, the existing numeric normalization owner must validate
+the original explicit pair with the shared direction contract. Only a previously
+valid pair may share the exact existing `_coerce_id` transformation of parents
+and endpoint aliases. Partial, foreign, boolean/numeric type-conflicting or
+otherwise invalid marker pairs must remain invalid, including under force.
+An undirected reversed pair must keep its orientation; the numeric conversion
+cannot remove a later directed-storage contradiction. Missing markers remain
+absent. Do not normalize arbitrary metadata or introduce native target lookup.
+
+Root owns production/docs/Git; the delegated test owner owns only the new
+ordinary collected numeric-direction module. Record its red gate before the
+production correction. Cover the six exact failures, integer/finite-float and
+ordinary/source activation, forward/reversed logical pairs, present aliases,
+partial/foreign/type-conflicting rejection, public original-link export/PATH
+reload, accepted disk retention and repaired repeat. Keep existing D49 limits
+on earlier legacy repair rollback rather than inventing a global transaction.
+
+`build.py` currently measures3,331/3,345. A bounded extension of its existing
+numeric normalizer is proposed within that same ceiling; the graph-assembly
+maintainer and focused extraction exit path remain unchanged. The frame remains
+182/300 except projection3-to4; watcher/exporter bodies and source-fact epochs
+39/33, dependencies/platforms/caps stay unchanged. Append old integer3 and
+current-looking float4.0/text4 to the existing thirteen update parameters without
+changing any earlier value/ID/body/assertion. Fresh package/installed/full/
+corpus/native and repository-graph proof belongs to the final resulting source,
+not the still-unpublished scoped INC130 checkpoint.
+
+The first ordinary regression module has88 cases:53 failures/35 controls,
+zero errors/skips, with1,151 source/14 protected bytes and backups exact.
+Its valid numeric, ordinary/profile and original-view persistence cases expose
+the marker mismatch; three additional reverse-directed combined cases expose
+the merged frame's missing `directed` field. The child preflight defaults to
+undirected although the owning invocation assembles a directed graph. Propagate
+that actual invocation mode before its existing source preflight; no new
+direction policy or input-chunk mode authority is introduced. Together with
+the prepared numeric loop this remains within build.py's3,345-line ceiling.
+
+Before correction, review the newly authored EIO tail against the actual writer:
+real replacement failure propagates `OSError`, while guard rejection returns
+False. The initial six persistence cases fail before reaching that tail, so
+they establish no writer success. Correct only that new, unexecuted expectation
+to require actual EIO, retained state/disk and successful repeat; preserve the
+original red receipt and rerun ordinary red before production changes.
+
+The corrected ordinary red retains the same88 IDs/statuses and frozen assertions
+for valid logical arcs. Numeric conversion plus actual merged-mode propagation
+then passes78 cases, leaving ten valid undirected reverse cases whose caller
+markers are now correct but assembled graph arcs still use physical direction.
+The builder currently selects a logical basis only for unavailable C++ references.
+Apply that existing basis selection to all validated source-profile links and
+pass the same explicit basis to the caller-frame adapter; do not infer a native
+role or change unpromised legacy graph semantics. These ten existing strong
+assertions remain unchanged. This closes the same accepted numeric-direction
+contract at graph assembly as well as raw caller publication.
+
+The complete related gate then passes1,050 cases with no skips/errors in211.203
+seconds, source1,151/protected14 exact and successful neutral-fixture cleanup.
+Quality retains684 baseline type diagnostics, zero additions/retirements, with
+Ruff success and134 matching generated artifacts. These results include the
+unchanged88 numeric cases and36 projection4 update cases.
+
+Review identifies one remaining execution gap: numeric combined cases explicitly
+disable deduplication, although the default pre-dedup path shares the same
+normalizer. Append six default-build forward/reverse carrier successes and three
+default reverse-directed rejections using the actual public default invocation.
+Preserve the entire existing166-line module prefix and all88 bodies/parameters;
+this adds controls rather than changing the corrected expectations. No production
+change is proposed. Guarded execution of the complete extended module and final
+whole-suite/source-native evidence remain required before release acceptance.
+
+The extended201-line numeric module passes97 cases, zero failures/errors/skips,
+9.297 seconds. Its original166 raw-byte prefix and88 earlier bodies/axes remain
+exact, as do every other1,150 source file and14 protected files/backups. Ruff and
+qualified module typing pass; successful owned fixture cleanup is confirmed.
+No production change follows the1,050-case gate. The two overlapping gates
+remain separately bound and are not added into a fictional single invocation.
+Final raw package/installed/full/corpus/hosted and repository refresh now belong
+to the resulting reviewed source; earlier failed packages/environments stay intact.

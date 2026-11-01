@@ -3474,3 +3474,28 @@ Its caller records retain physical slots; graph storage/public serialization
 still use the validated logical pair. Only actual persisted-adapter output has
 already-canonical working physical slots. The frame follows that owning input
 basis, without deriving physical transport intent from the marker alone.
+
+### Numeric identity and validated direction conversion — INC131
+
+The existing `_coerce_non_string_ids` owner normalizes numeric node IDs,
+source/target and from/to aliases. Its omission of a matching explicit logical
+pair is now a real prevalidated source failure, including original-link export
+when graph-only publication succeeds. Normalize those marker values in the same
+owning pass only when the original parent/alias pair is valid under the shared
+strict direction primitive. Do not repair an originally malformed marker pair,
+change physical ordering, normalize unknown metadata or infer native identity.
+The undirected precheck may recognize a reversed physical pair; retaining its
+orientation still leaves contradictory directed reuse invalid.
+
+This is a consumer normalization correction, with projection4 forward recovery
+and unchanged raw source/cache epochs. No new persistence owner, diagnostic
+framework or global rollback promise is introduced. Valid corrected input can
+retry through the existing atomic writer after failed original-view publication.
+
+Validated source-profile links use their actual logical pair for graph assembly,
+as unavailable C++ references already do. The builder passes that same basis to
+the frame adapter, which preserves the working physical caller slots. Numeric
+marker normalization alone cannot establish direction correctness if graph
+assembly then overwrites a valid reversed pair with physical ordering. This
+extends the existing explicit basis owner, with no new resolver/native-role
+guess and no change to unpromised ordinary graph direction conventions.

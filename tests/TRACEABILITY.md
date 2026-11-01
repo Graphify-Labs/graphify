@@ -5921,3 +5921,67 @@ original links despite successful default export. Accepted disk bytes and
 source/protected guards remain intact. INC131 owns this newly observed gap;
 neither the959-case result nor an earlier defensive-branch label establishes
 its acceptance or unreachability.
+
+### INC-QML-131 — Valid numeric marker normalization and logical assembly
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and
+REQ-QML-011-AC04; actual source publication retention/recovery maps additionally
+to REQ-QML-012-AC02. The neutral six-case production qualification uses actual
+C# facts plus a numeric ordinary peer, all accepted by source preflight. One
+direct persisted build rejects; five other direct/combined raw/marker paths
+build but reject the caller's supplied original links. Default export alone
+would conceal those five failures. Source/protected bytes remain unchanged.
+
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_valid_numeric_direction_survives_original_view_and_path`
+supplies36 cases across integer/finite-float, direct/combined, raw/marker/wire
+and valid directed/undirected forward/reverse inputs. Exact caller objects,
+logical graph arcs, custom metadata and original-link/PATH repeated publication
+are asserted together. The eight ordinary/explicit-storage controls use
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_numeric_ordinary_and_explicit_storage_keep_their_profiles`.
+The thirty
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac03_invalid_numeric_source_pair_is_not_healed`
+cases preserve partial/foreign/boolean-type and reverse-directed rejection;
+combined legacy normalization does not gain a global caller rollback guarantee.
+Eight malformed ordinary controls additionally require guarded and forced
+original-view rejection with accepted disk/input retained after assembly.
+
+The six
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_numeric_original_view_write_failure_retains_and_recovers`
+cases map REQ-QML-012-AC02 to actual reached replacement EIO, fault qualification,
+retained source-profile graph/input/disk, repaired retry and repeated byte equality.
+The new test tail initially assumed False where the existing writer propagates
+OSError; it was still unreachable in the first red. Only that newly authored
+tail was corrected to require actual errno.EIO before a fresh ordinary red.
+Both88-case reds have the same53 failures/35 controls and exact case IDs; no
+existing historical test or assertion changes.
+
+The first source correction passes78, leaving ten strong reverse-arc graph
+assertions failing although caller marker types are fixed. Assembly was still
+overwriting logical source-profile direction with physical ordering. The owning
+builder now selects the same validated logical basis for all source profiles
+and passes it explicitly to the frame adapter. The unchanged88-case module then
+passes88, zero skips/errors,8.312 seconds; source1,151/protected14 guards match.
+No native predicate, validator or corpus execution is substituted.
+
+Projection4 adds old integer3/current-looking float4.0/text4 without changing
+the existing thirteen parameter values/IDs/order or any test body/assertion.
+Broader and resulting-source quality/package/installed/full/corpus/hosted gates
+remain separately required; earlier source revisions never supply new passes.
+
+The related source gate passes1,050 cases, zero skips/errors,211.203 seconds,
+including the88 frozen numeric cases and36 projection4 updates. Review then
+adds nine default-dedup controls without a production change. The six
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac02_default_dedup_numeric_pair_keeps_one_caller_frame`
+cases use actual default `build([data], root=...)`, raw/marker/persisted carriers
+and forward/reverse pairs, held references/custom metadata, graph arcs and
+repeated original-view/PATH publication. The three
+`tests/test_source_relationship_numeric_identity.py::test_req_qml010_ac03_default_dedup_cannot_heal_reverse_directed_numeric_pair`
+controls reject contradictory selected-directed input and retain accepted disk.
+
+The complete extended module passes97 cases, zero skips/errors,9.297 seconds;
+the original166 raw-byte prefix and all88 prior body/parameter ASTs are exact.
+All other1,150 source files/runtime hashes,14 protected files and backups match;
+successful neutral fixture cleanup is confirmed. Scoped Ruff/typing pass.
+Overlapping1,050/97 runs are reported separately, with final full-source and
+native/package gates still required. Neither an aggregate count nor unchanged
+production bytes alone establishes an unexecuted platform/profile.
