@@ -95,3 +95,60 @@ def test_a_package_function_value_is_not_read_as_a_method_value(tmp_path):
         "func Register(s *Server) any {\n\treturn keep(routing.Wrap)\n}\n\n"
         "func keep(v any) any { return v }\n"))
     assert not [k for k in edges if k[1] == "indirect_call"], edges
+
+
+# A method value reached through a field of the method's own receiver:
+# `m.UseMiddleware(hs.ContextHandler.Middleware)`. The field types the receiver, as it
+# does for a direct `hs.ContextHandler.Middleware()`.
+
+HANDLER = (
+    "package api\n\ntype ContextHandler struct{}\n\n"
+    "func (h *ContextHandler) Middleware(next int) int { return next }\n"
+)
+HTTP_SERVER = (
+    "package api\n\ntype Macaron struct{}\n\n"
+    "func (m *Macaron) UseMiddleware(f func(int) int) {}\n\n"
+    "type HTTPServer struct {\n\tContextHandler *ContextHandler\n}\n"
+)
+ADD_MIDDLEWARES = (
+    "func (hs *HTTPServer) addMiddlewares(m *Macaron) {\n"
+    "\tm.UseMiddleware(hs.ContextHandler.Middleware)\n}\n"
+)
+
+
+def test_a_method_value_through_a_receiver_field_is_an_indirect_call(tmp_path):
+    edges = _edges(tmp_path, {
+        "go.mod": "module example.com/m\n\ngo 1.22\n",
+        "api/handler.go": HANDLER,
+        "api/http_server.go": HTTP_SERVER + "\n" + ADD_MIDDLEWARES,
+    })
+    edge = edges.get((".addMiddlewares()", "indirect_call", ".Middleware()"))
+    assert edge is not None, edges
+    assert edge["confidence"] == "INFERRED"
+    assert (".addMiddlewares()", "calls", ".Middleware()") not in edges, edges
+    assert (".addMiddlewares()", "calls", ".UseMiddleware()") in edges, edges
+
+
+def test_a_method_value_through_a_field_declared_in_a_sibling_file(tmp_path):
+    edges = _edges(tmp_path, {
+        "go.mod": "module example.com/m\n\ngo 1.22\n",
+        "api/handler.go": HANDLER,
+        "api/http_server.go": HTTP_SERVER,
+        "api/middlewares.go": "package api\n\n" + ADD_MIDDLEWARES,
+    })
+    assert (".addMiddlewares()", "indirect_call", ".Middleware()") in edges, edges
+
+
+def test_a_method_value_through_a_field_of_unknown_type_links_and_parks_nothing(tmp_path):
+    files = {
+        "go.mod": "module example.com/m\n\ngo 1.22\n",
+        "api/handler.go": HANDLER,
+        "api/http_server.go": HTTP_SERVER.replace("*ContextHandler", "*Missing")
+        + "\n" + ADD_MIDDLEWARES,
+    }
+    edges = _edges(tmp_path, files)
+    assert not [k for k in edges if k[1] == "indirect_call"], edges
+    result = extract([tmp_path / n for n in files if n.endswith(".go")],
+                     cache_root=tmp_path / "graphify-out", parallel=False)
+    caller = next(n for n in result["nodes"] if n["label"] == ".addMiddlewares()")
+    assert not (caller.get("metadata") or {}).get("unresolved_calls"), caller

@@ -876,17 +876,33 @@ def extract_go(path: Path) -> dict:
             # `r.Get("/p", s.Handle)`) is how Go registers a handler or callback. It is
             # not a call here, so it never reached the branch above and the method had
             # no caller. Record it for the member-call resolver as an indirect call
-            # through the receiver's declared type (#1566).
+            # through the receiver's declared type (#1566). `s.field.Handle` is typed
+            # through the field, as a direct `s.field.M()` is, only when `s` is this
+            # method's own receiver.
             args = node.child_by_field_name("arguments")
             for arg in args.children if args is not None else ():
                 if arg.type != "selector_expression":
                     continue
                 operand = arg.child_by_field_name("operand")
                 field = arg.child_by_field_name("field")
-                if operand is None or field is None or operand.type != "identifier":
+                if operand is None or field is None:
                     continue
-                name = _read_text(operand, source)
-                if name in go_imported_pkgs:
+                arg_field_owner: str | None = None
+                if operand.type == "identifier":
+                    name = _read_text(operand, source)
+                    if name in go_imported_pkgs:
+                        continue
+                    arg_receiver_type = (self_type if self_name and name == self_name
+                                         else scope_types.get(name))
+                elif operand.type == "selector_expression":
+                    inner = operand.child_by_field_name("operand")
+                    if not (self_name and inner is not None and inner.type == "identifier"
+                            and _read_text(inner, source) == self_name):
+                        continue
+                    name = _read_text(operand.child_by_field_name("field"), source)
+                    arg_receiver_type = None
+                    arg_field_owner = self_type
+                else:
                     continue
                 raw_calls.append({
                     "caller_nid": caller_nid,
@@ -897,8 +913,8 @@ def extract_go(path: Path) -> dict:
                     "language": "go",
                     "receiver": None,
                     "member_receiver": name,
-                    "receiver_type": self_type if self_name and name == self_name
-                    else scope_types.get(name),
+                    "receiver_type": arg_receiver_type,
+                    "field_owner": arg_field_owner,
                     "import_path": None,
                     "source_file": str_path,
                     "source_location": f"L{arg.start_point[0] + 1}",
