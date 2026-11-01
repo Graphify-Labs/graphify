@@ -840,6 +840,7 @@ def _run_cli() -> None:
     # Skip during install/uninstall (hook writes trigger a fresh check anyway).
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
+    from graphify.connect import COMMAND_NAME as _CONNECT_CMD
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
     _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
     _help_flags = {"-h", "--help", "-?"}
@@ -849,7 +850,9 @@ def _run_cli() -> None:
         or sys.argv[1] in {"-v", "--version", "version", *_help_flags}
         or (sys.argv[1] not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]))
     )
-    if not any(arg in _silent_cmds for arg in sys.argv):
+    # `connect` writes MCP config only and keeps --json output clean, so it skips too.
+    _connecting = len(sys.argv) > 1 and sys.argv[1] == _CONNECT_CMD
+    if not _connecting and not any(arg in _silent_cmds for arg in sys.argv):
         # A package upgrade leaves every installed skill at the old version;
         # refresh them first, so the check below only fires for copies the
         # refresh could not or must not touch (#1805).
@@ -876,6 +879,10 @@ def _run_cli() -> None:
         # hand-maintaining it (amp, copilot, antigravity-windows had been missed, #4655).
         _platform_values = "|".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
         print(f"  install [--platform P]  copy skill to platform config dir ({_platform_values})")
+        print(f"  {_CONNECT_CMD:<24}add the Graphify MCP server to Cursor, Claude Code, Codex, VS Code")
+        print("    --server hosted|local|both  hosted (default) or graphify-mcp over this checkout")
+        print("    --dry-run               print the plan and diffs, write nothing")
+        print(f"                            (see `graphify {_CONNECT_CMD} --help` for every option)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -1104,8 +1111,14 @@ def _run_cli() -> None:
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
-    if cmd not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]):
+    # `connect` parses its own options (argparse), so its --help is safe to honor.
+    if cmd not in _FREE_TEXT_CMDS and cmd != _CONNECT_CMD and any(a in _help_flags for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
+        return
+
+    if cmd == _CONNECT_CMD:
+        from graphify.connect import main as _connect_main
+        _connect_main()
         return
 
     if dispatch_install_cli(cmd):

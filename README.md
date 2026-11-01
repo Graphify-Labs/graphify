@@ -323,7 +323,22 @@ The instructions installed by `graphify install` and those supplied with a Graph
 
 Both encourage scoped graph queries before broad source searches. Choose the instructions that match the tools your assistant can actually access; neither block establishes a universal precedence rule for your assistant's instruction files. If you use both integrations, identify which graph each queries and choose a primary query path instead of copying two unconditional instruction blocks into `AGENTS.md`.
 
-`graphify install` installs the local assistant integration; it does not establish an MCP connection. An MCP client does not need to run local CLI queries to use its connected server. A locally hosted server still needs its own Graphify installation and graph, while a hosted connection may serve a graph that is not present in the client's working directory. If the expected tools are missing, check the relevant CLI installation or MCP connection rather than treating the other setup's instructions as interchangeable.
+`graphify install` installs the local assistant integration; it does not establish an MCP connection (`graphify connect` does, see below). An MCP client does not need to run local CLI queries to use its connected server. A locally hosted server still needs its own Graphify installation and graph, while a hosted connection may serve a graph that is not present in the client's working directory. If the expected tools are missing, check the relevant CLI installation or MCP connection rather than treating the other setup's instructions as interchangeable.
+
+
+### Connect your agents to the Graphify MCP server
+
+`graphify connect` adds the Graphify MCP server to Cursor, Claude Code, Codex and VS Code in one step. It finds the clients installed on this machine, shows what it will change, and asks once before writing anything.
+
+```bash
+graphify connect --dry-run          # show the plan and the diff of each file, write nothing
+graphify connect                    # hosted server (https://api.graphify.com/mcp), every detected client
+graphify connect --server local     # graphify-mcp over ./graphify-out/graph.json, written to this repo's config
+graphify connect --client cursor,codex --scope project
+graphify connect --remove           # remove only the entries it added
+```
+
+It only adds, updates or removes the `graphify` and `graphify-local` entries; other servers and settings are left as they are, and a re-run with nothing to change writes nothing. Each changed file is backed up first (`<file>.graphify.<timestamp>.bak`). A file it can't parse (for example JSON with comments) is skipped, with the entry to add by hand printed instead. Where a client has its own command for this (`claude mcp add`, `codex mcp add`, `code --add-mcp`), user-scope entries are added through it. The hosted server signs in with OAuth inside each client, so no key is written; the command prints each client's sign-in step and a link to [Check it's working](https://docs.graphify.com/platform/verify-connection). Add `--with-skills` to also run `graphify install` for each client, `--yes` to skip the prompt, and `--json` for a machine-readable result.
 
 ---
 
