@@ -26,8 +26,8 @@ _SEARCH_NUDGE = json.dumps({
             'graphify: this project has a knowledge graph at graphify-out/graph.json. '
             '`graphify query "<question>"` returns the files and relations that '
             'matter for a question, usually in far fewer tokens than grepping raw '
-            'files. Grep works best once the graph or an earlier read has pointed '
-            'to the exact file and lines.'
+            'files. Finding where something lives is what the graph answers; grep '
+            'finds exact text in files the graph has already named.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
