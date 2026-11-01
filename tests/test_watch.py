@@ -5832,3 +5832,56 @@ def test_sourceless_ast_collision_keeps_semantic_tier(tmp_path):
     assert nodes["memory"]["_origin"] == "semantic"
     assert len(nodes) == 2
     assert next(i for i in nodes if i != "memory").startswith("memory__ast_")
+
+@pytest.mark.parametrize("full_rebuild", [False, True])
+def test_multiple_ast_records_colliding_with_reviewed_semantic_id(
+    tmp_path, full_rebuild,
+):
+    """Two distinct AST sources sharing an ID must not hijack semantic evidence.
+    They retain their existing AST-side coalescing and reuse one stable alias.
+    """
+    import json
+    from graphify.watch import _reconcile_existing_graph
+
+    (tmp_path / "notes.md").write_text("## Reviewed node\n")
+    a, b = tmp_path / "a.py", tmp_path / "b.py"
+    a.write_text("def one(): pass\n")
+    b.write_text("def two(): pass\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(tmp_path))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [{"id": "shared_registry", "label": "Registry",
+                   "_origin": "semantic", "file_type": "document",
+                   "source_file": "notes.md",
+                   "rationale": "Original reviewed registry"}],
+        "links": [], "hyperedges": [],
+    }))
+    records = [
+        {"id": "shared_registry", "_origin": "ast", "label": "Registry",
+         "file_type": "code", "source_file": str(path),
+         "source_location": "L1"} for path in (a, b)
+    ]
+    edges = [
+        {"source": "shared_registry", "target": "ast_target",
+         "source_file": str(a), "_origin": "ast"},
+    ]
+    result, _ = _reconcile_existing_graph(
+        graph, {"nodes": records, "edges": edges, "hyperedges": []},
+        out=out, project_root=tmp_path, watch_root=tmp_path,
+        code_files=[a, b], extract_targets=[a, b],
+        full_rebuild=full_rebuild, deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+    sem = next(
+        n for n in result["nodes"] if n.get("id") == "shared_registry"
+    )
+    assert sem["rationale"] == "Original reviewed registry"
+    aliases = [
+        n["id"] for n in result["nodes"]
+        if n.get("_origin") == "ast" and n.get("label") == "Registry"
+    ]
+    assert len(aliases) == 2 and aliases[0] == aliases[1]
+    assert aliases[0].startswith("shared_registry__ast_")
+    assert result["edges"][0]["source"] == aliases[0]
