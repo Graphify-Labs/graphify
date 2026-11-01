@@ -5616,6 +5616,75 @@ def _resolve_typescript_member_calls(
         })
 
 
+def _attach_cpp_out_of_line_methods(
+    nodes: list[dict], edges: list[dict], raw_calls: list[dict], *,
+    context_nodes: list[dict] | None = None, context_edges: list[dict] | None = None,
+) -> None:
+    """Attach qualified definitions only to a unique explicitly included owner."""
+    by_id = {n["id"]: n for n in context_nodes or []}
+    by_id.update({n["id"]: n for n in nodes})
+    basenames = {str(n["source_file"]): "" for n in by_id.values() if n.get("source_file")}
+    basenames = {sf: Path(sf).name for sf in basenames}
+    file_ids = {str(n["source_file"]): n["id"] for n in by_id.values()
+                if n.get("source_file") and n.get("label") == basenames[str(n["source_file"])]}
+    imports: dict[str, set[str]] = {}
+    class_files: dict[str, str] = {}
+    members: dict[str, set[str]] = {}
+    already_owned = set()
+    for edge in edges + (context_edges or []):
+        source, target = edge.get("source"), edge.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        if edge.get("relation") == "imports":
+            imports.setdefault(source, set()).add(target)
+        elif edge.get("relation") == "contains" and by_id.get(target, {}).get("_callable_class"):
+            class_files[target] = source
+        elif edge.get("relation") in {"method", "defines"}:
+            label = str(by_id.get(target, {}).get("label", ""))
+            if label.startswith(".") and label.endswith("()"):
+                members.setdefault(source, set()).add(label[1:-2])
+                already_owned.add(target)
+    by_name: dict[str, list[str]] = {}
+    for owner in members:
+        identity = by_id.get(owner, {}).get("_cpp_qualified")
+        if isinstance(identity, str) and identity:
+            by_name.setdefault(identity, []).append(owner)
+    visible_members: dict[str, set[str]] = {}
+    for node in nodes:
+        label = str(node.get("label", ""))
+        sf = str(node.get("source_file", ""))
+        if (node["id"] in already_owned or not label.endswith("()") or "::" not in label
+                or Path(sf).suffix.lower() not in {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cu"}):
+            continue
+        qualified = node.get("_cpp_qualified")
+        if not isinstance(qualified, str) or "::" not in qualified:
+            continue
+        scope, method = qualified.rsplit("::", 1)
+        own_file = file_ids.get(sf)
+        if own_file is None:
+            continue
+        visible = imports.get(own_file, set()) | {own_file}
+        candidates = [owner for owner in by_name.get(scope, ())
+                      if method in members[owner] and class_files.get(owner) in visible]
+        if not candidates:
+            continue
+        visible_members[node["id"]] = set().union(*(members[c] for c in candidates))
+        if len(candidates) == 1:
+            edges.append({"source": candidates[0], "target": node["id"], "relation": "method",
+                          "confidence": "EXTRACTED", "source_file": sf,
+                          "source_location": node.get("source_location"), "weight": 1.0})
+    for call in raw_calls:
+        caller = call.get("caller_nid")
+        if not isinstance(caller, str):
+            continue
+        if (call.get("lang") == "cpp" and not call.get("is_member_call")
+                and call.get("callee") in visible_members.get(caller, set())):
+            # Keep the global bare-name pass out, including an ambiguous owner.
+            # The receiver resolver can bind only after the ownership edge exists.
+            call["is_member_call"] = True
+            call["receiver"] = "this"
+
+
 def _resolve_cpp_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -10838,6 +10907,11 @@ def extract(
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
     # Enum members (`case_of`) and fields/properties (`defines`) are never what a
+    _attach_cpp_out_of_line_methods(
+        all_nodes, all_edges, all_raw_calls,
+        context_nodes=resolution_context_nodes, context_edges=resolution_context_edges,
+    )
+
     # C# `new X()` constructs. Same exclusion the C# type-definition index uses
     # (#3815); without it a `new List<T>()` binds to an enum member named `List`.
     _member_nids = {

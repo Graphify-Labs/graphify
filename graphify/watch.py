@@ -2351,7 +2351,7 @@ def _rebuild_code(
                     # label: callability protects indirect calls (#2438), and
                     # Rust impl identity connects alpha-renamed generic blocks.
                     for marker in (
-                        "_callable", "_callable_class", "_elixir_module",
+                        "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",
