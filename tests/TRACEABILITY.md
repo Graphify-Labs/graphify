@@ -5640,3 +5640,34 @@ FAST8 and204 for the new admission/setup probe. These are local Windows installe
 checks; native POSIX/full-source/corpus/new-head hosted gates remain separate.
 The resulting source commit must independently match all385 payloads before
 publication; the original build tree identity remains unchanged.
+
+### INC-QML-126 — Production workflow inventory correction
+
+Affected acceptance: REQ-CORE-004-AC03 and REQ-QML-014-AC04. Source
+`7abeca464dbcd70044202e43e8a1a065f135b52e`, base
+`a0926ef84a26e9f3cb46f0b982ac495c21fc2255`, synthetic
+`c09cbf39ae5189fe21c9a527df8fa7b67279d3dc` fails normal Main41262285837:
+Python3.14 reports one failure,15,531 passes,145 skips and one inherited expected
+failure. The existing collected production-gate test identifies only the shared
+integration inventory as false. All four actual shared-module cases pass; the
+failure is its two stale literal workflow names. Three other Linux jobs are
+automatically cancelled, not accepted. Native QML jobs retain their own results.
+
+Reproduction executes
+`python -m pytest tests/test_ci_source_cases.py::test_req_qml014_ac04_source_gate_accepts_every_collected_joint_case -q -o addopts=`:
+one actual failure. An initial unchanged-workflow full-module attempt retains
+one failure/13 passes; an ignored qualifier initially mistakes46 joint cases
+for the combined51 assignments. Independent retained-collection evaluation
+qualifies the original boundary:46 joint cases, five other required cases,
+only the shared module rejected. No assertion or case assignment changes.
+
+After replacing only the two workflow names with explicit cmake/qmake IDs,
+`python -m pytest tests/test_ci_source_cases.py tests/test_upstream_qt_shared_integration.py -q -o addopts=`
+passes14 cases, zero failures/errors/skips,8.078 seconds. This executes the actual
+workflow code for complete acceptance, missing/duplicate/replaced/foreign cases,
+unreviewed matrix growth and skipped/failed/error rejection, plus all four real
+integration cases. Test/workflow bytes and14 protected files remain exact during
+execution. Existing explicit isolated coverage/output paths preserve unrelated
+results. Workflow policy/platform/dependencies and all385 runtime payloads stay
+unchanged. New-head hosted acceptance remains pending normal PR synchronization;
+prior2922 successful evidence and failed7ab evidence are not relabelled.

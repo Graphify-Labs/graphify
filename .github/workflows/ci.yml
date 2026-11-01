@@ -275,8 +275,8 @@ jobs:
                   'test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess',
               },
               'tests.test_upstream_qt_shared_integration': {
-                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[CMakeLists.txt-qt_add_qml_module(app URI Public.Tools VERSION 1.0 QML_FILES Main.qml SOURCES backend.h)\\n]',
-                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[app.pro-CONFIG += qmltypes\\nQML_IMPORT_NAME = Public.Tools\\nQML_IMPORT_MAJOR_VERSION = 1\\nHEADERS += backend.h\\nDISTFILES += Main.qml\\n]',
+                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[cmake]',
+                  'test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload[qmake]',
                   'test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint[manual]',
                   'test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint[watch]',
               },

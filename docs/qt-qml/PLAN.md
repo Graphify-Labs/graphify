@@ -5492,3 +5492,34 @@ and a comment change; runtime source/dependencies remain exact. Final reviewed-
 head validation must run normally at the new source. Existing runtime wheel
 proof may transfer only through independent385-payload equality; its original
 build tree and all earlier execution identities remain explicitly unchanged.
+
+### INC-QML-126 — Workflow inventory follows the stable build IDs
+
+The normal7ab PR run exposes one missed125 dependency: the production workflow's
+combined51-case gate still contains the two former source-derived build
+labels. The existing automatically collected source-gate test correctly fails
+closed. This is an integration omission, not a runner-acquisition failure or
+reason to relax the gate. Root owns only the two inventory strings in the main
+workflow; the existing strict gate and all source tests remain unchanged.
+
+Before editing, replay the exact existing gate failure. Replace only the two
+names with current cmake/qmake identities, retaining all46 joint cases and five
+other required cases, required statuses, duplicate/missing/foreign rejection,
+workflow triggers,
+permissions, profiles and dependencies. Execute the complete gate module and
+the actual affected integration module; verify collected identities and count
+match the literal workflow. Inspect other current source-ID consumers for stale
+references. Record the failed7ab run and three automatic Linux cancellations
+separately. No retry/dispatch/merge or private-scan interruption is authorized;
+the runtime payload remains identical. Normal new-head PR synchronization owns
+full validation after this scoped correction and source/required-manifest review.
+
+The original collected production gate reproduces one failure: only the shared
+integration module rejects. The first unchanged-workflow local attempt also
+fails and remains failed evidence; an ignored verifier initially confused the
+46 joint cases with the combined51 assignments. The qualified correction changes
+only two literal names. The complete source-gate and shared-integration modules
+then pass all14 cases without skips, including missing/duplicate/foreign/growth
+and nonpassing-outcome rejection. Workflow/test bytes remain unchanged during
+execution, as do all14 protected files. CI-owner workflow size remains650/650;
+no test assertion, runtime package, trigger or dependency changes.

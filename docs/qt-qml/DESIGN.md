@@ -3345,3 +3345,14 @@ after real mutex acquisition and request drain. An actual contender confirms
 ownership. The actual publication preparation fails; permissions restore before
 late queue/mutex cleanup. This is separate from native denied-lock setup, with
 no fake mutex, writer result or production persistence-policy change.
+
+### Explicit workflow case inventories — INC-QML-126
+
+The existing source-evidence owner keeps its literal workflow inventory aligned
+with stable test-defined parameter IDs. Its46 joint integration cases and five
+other required cases retain exact identity and nonpassing-outcome rejection.
+A parameter-label correction must update every owning literal inventory in the
+same change set; the existing collection-driven production-gate tests expose
+drift before publication. This changes evidence identity only. Runtime facts,
+cache/persistence, workflow triggers, permissions and dependency profiles retain
+their existing owners and contracts.

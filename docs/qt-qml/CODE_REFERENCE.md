@@ -1727,3 +1727,12 @@ INC124 only adds explicit IDs/comments to four existing test modules, measuring
 116/181/163/116 lines. Every function body/value/order/marker is unchanged, with
 133 real cases executed under both pytest versions. This is evidence identity
 ownership, not a production extraction or dependency-contract change.
+
+INC125 gives the existing shared mixed-build integration axis explicit cmake/
+qmake labels. INC126 aligns its two literal CI inventory entries with those
+labels. The CI source-evidence maintainer retains the single inline audit owner,
+46 joint cases plus five other required cases, and the unchanged collection-
+driven rejection controls in `tests/test_ci_source_cases.py`. The touched
+workflow measures650 physical lines before/after under its existing650-line
+ceiling; no growth or new cohesion exception is introduced. Future extraction
+remains the documented CI-owner path, separate from this two-string correction.
