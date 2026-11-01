@@ -3178,7 +3178,7 @@ def extract_corpus_parallel(
         print(
             f"[graphify] WARNING: {len(omitted)}/{len(dispatched)} dispatched file(s) "
             f"produced no nodes and are absent from the graph: {shown}{more}. The model "
-            "returned a response but did not cover them. They are re-sent on every run, "
+            "returned a response but omitted them. They are re-sent on every run, "
             "but with the same --token-budget the model will likely skip them again.",
             file=sys.stderr,
         )
