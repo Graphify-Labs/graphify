@@ -5847,3 +5847,119 @@ def test_full_yaml_rebuild_retains_rich_source_provenance_with_same_basename(tmp
             n.get("_origin") == "ast" and n.get("source_file") == path
             for n in candidate["nodes"]
         ), f"expected freshly extracted AST for {path}"
+
+@pytest.mark.parametrize("incremental", [False, True])
+def test_full_rebuild_ast_id_collision_keeps_reviewed_yaml_node_and_edges(tmp_path, incremental):
+    """New YAML AST ID equal to a legacy semantic ID must keep BOTH tiers.
+    A subsequent rebuild must reuse the same deterministic AST alias.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    root = tmp_path / "watch"
+    root.mkdir()
+    target = root / "config" / "settings.yaml"
+    target.parent.mkdir()
+    target.write_text("tasks:\n  - id: build\n    enabled: true\n", encoding="utf-8")
+    assert _rebuild_code(root, changed_paths=None, block_on_lock=True, no_cluster=False)
+    output = root / "graphify-out" / "graph.json"
+    payload = json.loads(output.read_text())
+    ast = next(
+        n for n in payload["nodes"]
+        if n.get("_origin") == "ast" and n.get("label") == "settings.yaml"
+    )
+    protected_id = ast["id"]
+    ast.update({
+        "_origin": "semantic", "source_location": None,
+        "file_type": "document", "rationale": "Reviewed setting",
+        "author": "QA", "captured_at": "2026-11-01",
+    })
+    payload["nodes"].append({
+        "id": "reviewed_context", "label": "Reviewed context",
+        "_origin": "semantic", "file_type": "concept",
+        "source_file": "config/settings.yaml",
+    })
+    payload["links"].append({
+        "source": "reviewed_context", "target": protected_id,
+        "relation": "references", "source_file": "config/settings.yaml",
+        "_origin": "semantic",
+    })
+    output.write_text(json.dumps(payload))
+    assert _rebuild_code(
+        root, changed_paths=[target] if incremental else None,
+        block_on_lock=True, no_cluster=False
+    )
+    current = json.loads(output.read_text())
+    records = {n["id"]: n for n in current["nodes"]}
+    assert records[protected_id]["_origin"] == "semantic"
+    for field in ("rationale", "author", "captured_at"):
+        assert records[protected_id][field] == ast[field]
+    ast_aliases = [
+        n for n in records.values()
+        if n.get("_origin") == "ast" and n.get("label") == "settings.yaml"
+    ]
+    assert len(ast_aliases) == 1
+    alias = ast_aliases[0]["id"]
+    assert alias != protected_id and alias.startswith(protected_id + "__ast_")
+    assert any(
+        {e["source"], e["target"]} == {"reviewed_context", protected_id}
+        for e in current["links"]
+    )
+    assert any(
+        alias in (e["source"], e["target"])
+        for e in current["links"]
+    ), "fresh AST links must target the rekeyed AST file"
+    assert _rebuild_code(root, changed_paths=None, block_on_lock=True, no_cluster=False)
+    again = json.loads(output.read_text())
+    later = {n["id"]: n for n in again["nodes"]}
+    assert later[protected_id]["rationale"] == "Reviewed setting"
+    assert later[alias]["_origin"] == "ast"
+
+
+def test_metadata_shrink_guard_rejects_same_id_ast_overwrite():
+    """A node count increase never compensates for lost semantic rationale."""
+    from graphify.watch import _check_shrink
+    saved = {"nodes": [
+        {"id": "yaml_node", "_origin": "semantic",
+         "source_file": "config/settings.yaml", "rationale": "Reviewed"}
+    ]}
+    damaged = {"nodes": [
+        {"id": "yaml_node", "_origin": "ast",
+         "source_file": "config/settings.yaml", "source_location": "L1"},
+        {"id": "new_function", "_origin": "ast"}
+    ]}
+    assert _check_shrink(False, saved, damaged) is False
+    kept = {"nodes": [dict(saved["nodes"][0]), {"id": "new_function"}]}
+    assert _check_shrink(False, saved, kept) is True
+
+def test_sourceless_ast_collision_keeps_semantic_tier(tmp_path):
+    """A sourceless AST placeholder must not clobber a reviewed semantic ID."""
+    import json
+    from graphify.watch import _reconcile_existing_graph
+
+    doc = tmp_path / "notes.md"
+    doc.write_text("## Record\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(tmp_path))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [{"id": "memory", "label": "Memory",
+                   "_origin": "semantic", "file_type": "document",
+                   "source_file": "notes.md", "rationale": "Reviewed evidence"}],
+        "links": [], "hyperedges": [],
+    }))
+    fresh = {"nodes": [{
+        "id": "memory", "_origin": "ast", "label": "Memory",
+        "file_type": "code", "source_file": "", "source_location": "",
+    }], "edges": [], "hyperedges": []}
+    result, _ = _reconcile_existing_graph(
+        graph, fresh, out=out, project_root=tmp_path, watch_root=tmp_path,
+        code_files=[], extract_targets=[], full_rebuild=True,
+        deleted_paths=set(), deleted_source_identities=set(),
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    assert nodes["memory"]["rationale"] == "Reviewed evidence"
+    assert nodes["memory"]["_origin"] == "semantic"
+    assert len(nodes) == 2
+    assert next(i for i in nodes if i != "memory").startswith("memory__ast_")

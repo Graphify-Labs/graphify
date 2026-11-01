@@ -1136,8 +1136,10 @@ def _reconcile_existing_graph(
         # Deletion evicts edges regardless of tier; re-extraction only owns a
         # source's AST-tier edges (checked per-edge below, #1865).
         edge_evicted_source_identities = set(deleted_source_identities)
-        if not full_rebuild:
-            node_evicted_source_identities.update(rebuilt_source_identities)
+        # Re-extraction only owns AST-tier nodes. Adding rebuilt sources to
+        # provenance-blind node eviction would delete semantic nodes from the
+        # exact YAML file being incrementally rebuilt (#4896 follow-up).
+        # Node eviction below is reserved for actual deletion/ignore evidence.
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
@@ -1285,6 +1287,78 @@ def _reconcile_existing_graph(
                 "changed?). Add them to .graphifyignore if the exclusion is intentional."
             )
 
+        # #4896 follow-up: an extractor upgrade can mint an AST node with
+        # exactly the ID of a saved independently evidenced semantic node.
+        # Pure ID-based replacement below would silently replace its rationale,
+        # author, and capture information, and _check_shrink would miss it
+        # because the ID still exists. Keep the existing semantic ID stable;
+        # move the new AST node to a stable source-qualified ID and retarget
+        # *fresh AST* edges/hyperedges, never the preserved semantic edges.
+        from graphify.build import _has_independent_semantic_evidence
+        from hashlib import sha256
+        old_nodes_by_id = {
+            n["id"]: n for n in existing.get("nodes", [])
+            if isinstance(n, dict) and isinstance(n.get("id"), str)
+        }
+        collisions = {}
+        for fresh in result["nodes"]:
+            nid = fresh.get("id")
+            old = old_nodes_by_id.get(nid)
+            if (
+                not isinstance(nid, str) or not old
+                or _is_ast_tier(old)
+                or not _has_independent_semantic_evidence(old)
+                or source_paths.is_evicted(old, node_evicted_source_identities)
+            ):
+                continue
+            if fresh.get("_origin") != "ast":
+                raise ValueError(
+                    f"Cannot safely reconcile same-ID semantic and non-AST node: {nid}"
+                )
+            fresh_source = source_paths.normalize(fresh.get("source_file")) or ""
+            # External/import-only AST stubs can be sourceless. Include their
+            # label/type/location in the identity to keep the alternate ID
+            # stable without claiming the semantic source belongs to the AST.
+            identity = (
+                fresh_source if fresh_source else
+                "\0".join(str(fresh.get(k) or "")
+                          for k in ("label", "file_type", "source_location"))
+            )
+            salt = sha256((nid + "\0" + identity).encode("utf-8")).hexdigest()[:16]
+            alias = nid + "__ast_" + salt
+            former = old_nodes_by_id.get(alias)
+            if (alias in new_ast_ids or
+                    (former is not None and (
+                        not _is_ast_tier(former)
+                        or (
+                            (source_paths.normalize(former.get("source_file")) or "")
+                            != fresh_source
+                        )
+                    ))):
+                raise ValueError(f"AST ID collision cannot be safely rekeyed: {nid}")
+            if nid in collisions:
+                raise ValueError(f"Multiple fresh nodes claim protected ID: {nid}")
+            collisions[nid] = alias
+            fresh["id"] = alias
+        if collisions:
+            for edge in result.get("edges", []):
+                for field in ("source", "target"):
+                    if edge.get(field) in collisions:
+                        edge[field] = collisions[edge[field]]
+            for hyperedge in result.get("hyperedges", []):
+                for field in ("nodes", "members", "node_ids"):
+                    vals = hyperedge.get(field)
+                    if isinstance(vals, list):
+                        hyperedge[field] = [
+                            collisions.get(value, value) if isinstance(value, str) else value
+                            for value in vals
+                        ]
+            new_ast_ids = {n["id"] for n in result["nodes"]}
+            print(
+                "[graphify watch] preserved "
+                f"{len(collisions)} independent semantic node(s) from AST ID collision"
+            )
+
         # A full re-extraction owns the AST nodes of every source it actually
         # re-extracted (extract_targets, via rebuilt_source_identities) — NOT
         # every AST node under watch_root: a semantic-backed doc is excluded
@@ -1308,8 +1382,7 @@ def _reconcile_existing_graph(
                         and (full_rebuild or not code_files)
                     )
                     or (
-                        full_rebuild
-                        and source_paths.is_evicted(node, rebuilt_source_identities)
+                        source_paths.is_evicted(node, rebuilt_source_identities)
                         and not source_paths.is_evicted(node, excluded_alive_files)
                     )
                 )
@@ -1647,6 +1720,42 @@ def _check_shrink(
                 f"Pass --force to override.",
                 file=sys.stderr,
             )
+        return False
+    # A node ID can remain present while its independent semantic metadata
+    # disappears (e.g. a newly supported YAML AST extractor mints the same ID).
+    # This is semantic data loss, not an ordinary node-count change. Fail closed.
+    from graphify.build import _has_independent_semantic_evidence, _is_ast_tier
+    new_by_id = {
+        node.get("id"): node for node in new_nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    provenance_fields = (
+        "rationale", "source_url", "author", "contributor", "captured_at", "metadata"
+    )
+    stripped = []
+    for old in existing_nodes:
+        if not isinstance(old, dict) or _is_ast_tier(old):
+            continue
+        if not _has_independent_semantic_evidence(old):
+            continue
+        fresh = new_by_id.get(old.get("id"))
+        if fresh is None:
+            continue  # Missing IDs are already checked above.
+        if any(
+            old.get(field) not in (None, "", [], {})
+            and fresh.get(field) in (None, "", [], {})
+            for field in provenance_fields
+        ):
+            stripped.append(old["id"])
+    if stripped:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        print(
+            "[graphify] WARNING: Refusing to overwrite — saved semantic "
+            "provenance field(s) stripped from "
+            f"{len(stripped)} node(s): {', '.join(str(x) for x in stripped[:10])}.",
+            file=sys.stderr,
+        )
         return False
     if len(new_nodes) >= len(existing_nodes):
         return True
