@@ -810,8 +810,8 @@ _CS_RULES = ("namespace Acme.Rules {\n"
 # H19 (#4570 review) -- an INFERRED VB -> C# call survives the cross-language phantom filter
 @_needs_vbnet
 @pytest.mark.parametrize("body, inherits, callee", [
-    ("Acme.Rules.NsRules.Check(1)", " Inherits System.Windows.Forms.Form\n", "Check()"),
-    ("Dim r As New Acme.Rules.Inst()\n  r.Run()", "", "Run()"),
+    ("Acme.Rules.NsRules.Check(1)", " Inherits System.Windows.Forms.Form\n", "NsRules.Check()"),
+    ("Dim r As New Acme.Rules.Inst()\n  r.Run()", "", "Inst.Run()"),
 ], ids=["external_base", "typed_local"])
 def test_an_inferred_vb_call_into_csharp_is_kept_in_the_built_graph(tmp_path, body, inherits, callee):
     result = _extract_files(tmp_path, {"NsRules.cs": _CS_RULES, "Caller.vb": _caller(body, inherits=inherits)})
