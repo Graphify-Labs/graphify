@@ -4337,6 +4337,12 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
 
+        # #4923: a flagless extract that is really ingesting docs (it got past
+        # the key check above) is an explicit scope change back to a full graph.
+        # An aborted run or a corpus with no docs leaves the recorded scope alone.
+        if not code_only and semantic_files:
+            _write_build_cfg(graphify_out, excludes=None, code_only=False)
+
         # Track whether this run's extraction was incomplete (a whole extractor
         # pass crashed, or some semantic chunks failed). A partial result must not
         # be force-written over a good complete graph — the final write falls back
