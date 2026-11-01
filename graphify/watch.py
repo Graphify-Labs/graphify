@@ -1315,29 +1315,21 @@ def _reconcile_existing_graph(
                 raise ValueError(
                     f"Cannot safely reconcile same-ID semantic and non-AST node: {nid}"
                 )
-            fresh_source = source_paths.normalize(fresh.get("source_file")) or ""
-            # External/import-only AST stubs can be sourceless. Include their
-            # label/type/location in the identity to keep the alternate ID
-            # stable without claiming the semantic source belongs to the AST.
-            identity = (
-                fresh_source if fresh_source else
-                "\0".join(str(fresh.get(k) or "")
-                          for k in ("label", "file_type", "source_location"))
-            )
-            salt = sha256((nid + "\0" + identity).encode("utf-8")).hexdigest()[:16]
+            # Different AST extractors may emit multiple source records with
+            # the same legacy AST ID. These already coalesce in build_from_json.
+            # Alias by the *original AST ID* (not a varying source) so every
+            # occurrence and its edges use the same stable successor across
+            # full/incremental rebuilds. This preserves existing AST collision
+            # behavior while keeping the independent semantic record separate.
+            salt = sha256(nid.encode("utf-8")).hexdigest()[:16]
             alias = nid + "__ast_" + salt
             former = old_nodes_by_id.get(alias)
-            if (alias in new_ast_ids or
-                    (former is not None and (
-                        not _is_ast_tier(former)
-                        or (
-                            (source_paths.normalize(former.get("source_file")) or "")
-                            != fresh_source
-                        )
-                    ))):
+            if alias in new_ast_ids or (
+                former is not None and not _is_ast_tier(former)
+            ):
                 raise ValueError(f"AST ID collision cannot be safely rekeyed: {nid}")
-            if nid in collisions:
-                raise ValueError(f"Multiple fresh nodes claim protected ID: {nid}")
+            if nid in collisions and collisions[nid] != alias:
+                raise ValueError(f"Ambiguous AST successor ID: {nid}")
             collisions[nid] = alias
             fresh["id"] = alias
         if collisions:

@@ -182,8 +182,11 @@ A newly supported AST extractor can mint an ID that is already owned by an
 independently evidenced semantic node in a saved graph, even when the two nodes
 refer to the same file. Watch reconciliation retains the saved semantic ID and
 its rationale/attribution, assigns the fresh AST record a deterministic
-source-qualified ast-suffix ID, and rewrites only fresh AST edge/hyperedge
+ID-derived AST suffix, and rewrites only fresh AST edge/hyperedge
 references. This applies to full and incremental re-extractions; incrementally
 rebuilt sources are not positive evidence of semantic deletion. The shrink
 guard refuses same-ID losses of semantic provenance even when the total node
 count grows, preventing the ordinary missing-ID guard from being bypassed.
+If multiple new AST records already share that ID, all use one deterministic
+AST successor ID: this retains their preexisting AST coalescing behavior while
+ensuring they cannot overwrite independent semantic provenance.
