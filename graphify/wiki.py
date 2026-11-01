@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import networkx as nx
 
-from graphify.build import edge_data
+from graphify.build import edge_datas
 from graphify.paths import stem_filename_budget, write_text_atomic_if_changed
 
 # Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
@@ -218,12 +218,14 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     by_relation: dict[str, list[str]] = {}
     for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
         nd = G.nodes[neighbor]
-        ed = edge_data(G, nid, neighbor)
-        rel = ed.get("relation", "related")
         neighbor_label = nd.get("label", neighbor)
-        conf = ed.get("confidence", "")
-        conf_str = f" `{conf}`" if conf else ""
-        by_relation.setdefault(rel, []).append(f"{_md_link(neighbor_label, resolver)}{conf_str}")
+        for ed in edge_datas(G, nid, neighbor):
+            rel = ed.get("relation", "related")
+            conf = ed.get("confidence", "")
+            conf_str = f" `{conf}`" if conf else ""
+            by_relation.setdefault(rel, []).append(
+                f"{_md_link(neighbor_label, resolver)}{conf_str}"
+            )
 
     lines += ["## Connections by Relation", ""]
     for rel, targets in sorted(by_relation.items()):

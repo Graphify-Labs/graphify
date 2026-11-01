@@ -979,6 +979,8 @@ def _run_cli() -> None:
         print("                            and OPENAI_MODEL to the model name your server serves")
         print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
+        print("                            GRAPHIFY_CLAUDE_PROMPT_CACHE=0 disables Claude system-prompt caching")
+        print("                            (default: enabled; set 1 to explicitly enable)")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --force                 full re-scan and re-dispatch: skip the incremental")

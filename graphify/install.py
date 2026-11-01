@@ -2186,6 +2186,9 @@ def _kilo_uninstall_global() -> list[str]:
         version_file = skill_dst.parent / ".graphify_version"
         if version_file.exists():
             version_file.unlink()
+        refs_dir = skill_dst.parent / "references"
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir)
         for d in (
             skill_dst.parent,
             skill_dst.parent.parent,
@@ -2334,12 +2337,14 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _antigravity_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
-    # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
-    # AGENTS.md cleanup above does not touch.
-    _remove_skill_file("amp")
-    # The generic agents platform's user-scope skill lives at ~/.agents/skills,
-    # which neither the AGENTS.md cleanup nor amp's removal reaches.
-    _remove_skill_file("agents")
+    # `install --platform X` drops a user-scope skill (~/.codex/skills,
+    # ~/.config/agents/skills for amp, ~/.agents/skills, ...) that the AGENTS.md
+    # cleanup above does not touch, so remove every platform's.
+    for platform_name in _PLATFORM_CONFIG:
+        _remove_skill_file(platform_name)
+    # Kilo's global command sits outside its skill dir.
+    for line in _kilo_uninstall_global():
+        print(f"  {line}")
     _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=pd))
     # `graphify install --platform opencode` writes the plugin here (#3398).
     _uninstall_opencode_plugin(_opencode_dir(project=False))

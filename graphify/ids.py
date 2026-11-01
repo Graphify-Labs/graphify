@@ -108,6 +108,7 @@ class DeclIdRegistry:
         }
         self._by_name: dict[tuple[str, str], set[str]] = {}
         self._salted: set[str] = set()
+        self._spelled: dict[str, str] = {}
 
     def resolve(self, nid: str, name: str, kind: str, taken) -> str:
         key = (kind, nid)
@@ -117,6 +118,7 @@ class DeclIdRegistry:
         if nid not in taken and owner is None:
             self._owners[nid] = key
             self._assigned[key] = nid
+            self._spelled[nid] = name
             self._by_name.setdefault((kind, normalize_id(name)), set()).add(nid)
             return nid
         assigned = self._assigned.get(key)
@@ -125,9 +127,12 @@ class DeclIdRegistry:
         # An id already used by a real declaration is a duplicate reference to
         # that declaration (prototype owner, same name re-declared); reuse it
         # instead of minting a second node. Only a salted id, whose owner stole
-        # the spelling from this declaration, forces a counter-salt (#4854).
+        # the spelling from this declaration, forces a counter-salt (#4854). A
+        # different kind only counts as a duplicate when spelled the same (TS
+        # `class Foo` + `namespace Foo`): `class Foo` + `function foo` are two (#4904).
         if (nid in taken and owner is not None and owner[0] != "file"
-                and nid not in self._salted):
+                and nid not in self._salted
+                and (owner[0] == kind or self._spelled.get(nid) == name)):
             return nid
         base = make_id(nid, decl_salt(name))
         candidate = base
