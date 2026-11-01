@@ -15,7 +15,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
-from graphify.build import edge_data, has_parallel_links
+from graphify.build import edge_datas, has_parallel_links
 from graphify.paths import (
     os_replace_with_fallback,
     stem_filename_budget,
@@ -75,18 +75,25 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     backup_dir = out / today
     graph_src = out / "graph.json"
 
-    # Skip re-copying if today's backup already has identical graph.json content.
-    # If content differs (graph changed since the last backup today), overwrite
-    # the backup in place — one folder per day, always the latest pre-overwrite state.
-    if backup_dir.exists() and (backup_dir / "graph.json").exists():
-        src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
-        bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
-        if src_hash == bak_hash:
-            return backup_dir  # identical content, nothing to do
-
     try:
+        # Skip re-copying if today's backup already holds every artifact with an
+        # identical graph.json. graph.json alone is not proof of completeness: a
+        # snapshot missing a sidecar (an earlier copy attempt failed part-way)
+        # must fall through and retry the copy instead of reporting itself
+        # complete forever (#3769). If content differs, overwrite the backup in
+        # place — one folder per day, always the latest pre-overwrite state.
+        if backup_dir.exists() and (backup_dir / "graph.json").exists():
+            src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
+            bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
+            if src_hash == bak_hash and all(
+                (backup_dir / name).exists()
+                for name in _BACKUP_ARTIFACTS
+                if (out / name).exists()
+            ):
+                return backup_dir  # identical content, nothing to do
         backup_dir.mkdir(parents=True, exist_ok=True)
         copied = 0
+        failed: list[str] = []
         for name in _BACKUP_ARTIFACTS:
             src = out / name
             if src.exists():
@@ -94,12 +101,21 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
                     shutil.copy2(src, backup_dir / name)
                     copied += 1
                 except Exception:
-                    pass
+                    failed.append(name)
+        if failed:
+            # A partial snapshot reported as a successful backup lets a stale
+            # graph.json survive the next overwrite unnoticed (#3769). Best-effort
+            # is unchanged: warn, report no backup, do not block the write.
+            print(
+                f"[graphify] warning: backup incomplete - could not copy "
+                f"{', '.join(failed)} -> {backup_dir.name}/ - continuing with overwrite",
+                file=sys.stderr,
+            )
+            return None
         if copied:
             print(f"[graphify] backed up {reason} graph ({copied} files) -> {backup_dir.name}/")
         return backup_dir
     except Exception as exc:
-        import sys
         print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
         return None
 
@@ -340,7 +356,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
                 for node_id, attrs in G.nodes(data=True)
             ]
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set())
+            folded: dict[str, str] = {}
+            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set(), folded)
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)
@@ -350,7 +367,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
-            if new_n < existing_n:
+            # A saved semantic node merged into an AST twin that was already
+            # saved is one node, not two; a reload-and-recluster folds it (#4389).
+            # A twin new to this run does not offset some other node's loss.
+            existing_ids = {n.get("id") for n in existing_nodes if isinstance(n, dict)}
+            merged = sum(twin in existing_ids for twin in folded.values())
+            if new_n < existing_n - merged:
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
@@ -558,7 +580,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
             (data.get("file_type", "unknown") or "unknown").capitalize(),
             "Entity",
         )
-        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
+        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}'}}) SET n.label = '{label}';")
     lines.append("")
     for u, v, data in G.edges(data=True):
         u, v = data.get("_src", u), data.get("_tgt", v)
@@ -889,11 +911,20 @@ def to_obsidian(
         if neighbors:
             lines.append("## Connections")
             for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
-                edata = edge_data(G, node_id, neighbor)
                 neighbor_label = node_filename[neighbor]
-                relation = edata.get("relation", "")
-                confidence = edata.get("confidence", "EXTRACTED")
-                lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
+                # One bullet per parallel edge, not per neighbour: graph.json is
+                # reloaded as a MultiGraph when it carries parallel edges
+                # (#4500), and `edge_data()` returns only the FIRST of them — so
+                # a pair joined by both `imports` and `calls` lost one relation
+                # from the note. Sorted so the note is byte-stable regardless of
+                # the order the parallel edges were inserted in.
+                for edata in sorted(
+                    edge_datas(G, node_id, neighbor),
+                    key=lambda d: (str(d.get("relation", "")), str(d.get("confidence", "EXTRACTED"))),
+                ):
+                    relation = edata.get("relation", "")
+                    confidence = edata.get("confidence", "EXTRACTED")
+                    lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
             lines.append("")
 
         # Inline tags at bottom of note body (for Obsidian tag panel)

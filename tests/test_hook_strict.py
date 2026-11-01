@@ -70,7 +70,7 @@ def test_strict_first_read_denies_then_nudges(tmp_path, monkeypatch):
     assert (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.denied").exists()
     # same session again -> soft nudge, not a second deny
     out2 = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out2) and "MANDATORY" in out2
+    assert not _is_deny(out2) and "knowledge graph at" in out2
 
 
 def test_strict_new_session_denies_again(tmp_path, monkeypatch):
@@ -88,7 +88,7 @@ def test_fresh_query_stamp_suppresses_deny(tmp_path, monkeypatch):
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
     # Recently oriented: no block. This session's first nudge still fires, since
     # the project-wide stamp cannot tell which agent queried (#3435).
-    assert not _is_deny(out) and "MANDATORY" in out
+    assert not _is_deny(out) and "knowledge graph at" in out
     assert _invoke("read", _read(f), tmp_path, monkeypatch, strict=True) == ""
 
 
@@ -106,7 +106,7 @@ def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
 def test_soft_mode_never_denies(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=False)
-    assert not _is_deny(out) and "MANDATORY" in out
+    assert not _is_deny(out) and "knowledge graph at" in out
 
 
 def test_env_forces_strict_on(tmp_path, monkeypatch):
@@ -133,7 +133,7 @@ def test_stale_graph_softens_never_denies(tmp_path, monkeypatch):
     f = _fixture(tmp_path, fresh=False)  # source newer than graph
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
     assert not _is_deny(out)
-    assert "stale" in out.lower() and "MANDATORY" not in out
+    assert "stale" in out.lower() and "knowledge graph at" not in out
 
 
 def test_needs_update_flag_softens(tmp_path, monkeypatch):

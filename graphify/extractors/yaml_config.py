@@ -47,7 +47,7 @@ _CONFIG_YAML_KEYS = frozenset({
 })
 
 
-def _is_config_yaml(path: Path, data: Any) -> bool:
+def _is_config_yaml(path: Path, data: Any, key_texts: set[str] | None = None) -> bool:
     """True if a YAML document is a recognized config/manifest worth extracting.
 
     Matches by filename first, then a ``.github/workflows`` path, then a
@@ -56,6 +56,10 @@ def _is_config_yaml(path: Path, data: Any) -> bool:
     key (for example an i18n string bundle). Errs toward extracting (a mapping
     with any nested value is treated as config) so an arbitrarily-named real
     config is not silently dropped.
+
+    ``key_texts`` are the top-level keys as written in the source. PyYAML
+    resolves YAML 1.1 booleans, so the constructed key of a workflow's ``on:``
+    is ``True``; the written spelling is what the key probe must see.
     """
     name = path.name.casefold()
     if name in _CONFIG_YAML_NAMES:
@@ -72,7 +76,7 @@ def _is_config_yaml(path: Path, data: Any) -> bool:
         )
     if not isinstance(data, dict):
         return False
-    keys = {str(k).casefold() for k in data.keys()}
+    keys = key_texts if key_texts is not None else {str(k).casefold() for k in data.keys()}
     if ("openapi" in keys or "swagger" in keys) and "paths" in keys:
         return False  # an API spec is data-heavy, not a config to walk (#2255-style)
     if "$schema" in keys and ({"$defs", "definitions", "$id"} & keys):
@@ -93,6 +97,39 @@ def _doc_label(doc: Any, index: int) -> str:
             nm = meta.get("name") if isinstance(meta, dict) else None
             return f"{kind} {nm}" if isinstance(nm, str) and nm else kind
     return f"doc {index}"
+
+
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def _mapping_pairs(node: Any) -> list[tuple[str, Any, Any]]:
+    """(key text, key node, value node) for a composed mapping, in the order the
+    constructed dict would hold them.
+
+    Keys come back as written (``on``, not the YAML 1.1 boolean ``True``) and
+    carry their own line. A ``<<`` merge contributes its mapping's pairs first,
+    and a repeated key keeps its first position but takes the last value and
+    line, mirroring PyYAML's ``flatten_mapping`` plus dict insertion. A non-scalar key
+    has no written name to label a node with and is skipped.
+    """
+    import yaml  # type: ignore
+
+    merged: list[tuple[str, Any, Any]] = []
+    explicit: list[tuple[str, Any, Any]] = []
+    for key_node, value_node in node.value:
+        if key_node.tag == _MERGE_TAG:
+            sources = value_node.value if isinstance(value_node, yaml.SequenceNode) else [value_node]
+            for src in sources:
+                if isinstance(src, yaml.MappingNode):
+                    merged.extend(_mapping_pairs(src))
+        elif isinstance(key_node, yaml.ScalarNode):
+            explicit.append((key_node.value, key_node, value_node))
+    pairs: dict[str, tuple[str, Any, Any]] = {}
+    for text, key_node, value_node in merged + explicit:
+        # Reassigning keeps the dict position; the later key node (an explicit
+        # override of a merged key) is the one whose line holds the value.
+        pairs[text] = (text, key_node, value_node)
+    return list(pairs.values())
 
 
 def extract_yaml(path: Path) -> dict:
@@ -116,13 +153,23 @@ def extract_yaml(path: Path) -> dict:
             return {"nodes": [], "edges": [], "error": "yaml file too large to index"}
         text = raw.decode("utf-8", errors="ignore")
         docs = list(yaml.safe_load_all(text))
+        # The constructed values drive the config gate and document labels; the
+        # composed node tree (same documents, same order, nothing constructed)
+        # supplies keys as written and their lines, which construction discards.
+        trees = list(yaml.compose_all(text, Loader=yaml.SafeLoader))
     except Exception as exc:  # noqa: BLE001 - surface any parse failure to caller
         return {"nodes": [], "edges": [], "error": str(exc)}
 
-    structured = [d for d in docs if isinstance(d, (dict, list))]
+    structured = [(d, n) for d, n in zip(docs, trees) if isinstance(d, (dict, list))]
     if not structured:
         return {"nodes": [], "edges": [], "skipped": "scalar yaml"}
-    config_docs = [d for d in structured if _is_config_yaml(path, d)]
+
+    def _top_keys(tree: Any) -> set[str] | None:
+        if isinstance(tree, yaml.MappingNode):
+            return {text.casefold() for text, _k, _v in _mapping_pairs(tree)}
+        return None
+
+    config_docs = [(d, n) for d, n in structured if _is_config_yaml(path, d, _top_keys(n))]
     if not config_docs:
         return {"nodes": [], "edges": [], "skipped": "data yaml (not a config/manifest)"}
 
@@ -156,33 +203,33 @@ def extract_yaml(path: Path) -> dict:
 
     pair_count = [0]
 
-    def walk(obj: Any, parent_nid: str, parent_key: str | None, depth: int) -> None:
+    def walk(node: Any, parent_nid: str, parent_key: str | None, depth: int) -> None:
         if depth > _MAX_DEPTH:
             return
-        if isinstance(obj, dict):
-            for key, val in obj.items():
+        if isinstance(node, yaml.MappingNode):
+            for key_str, key_node, val in _mapping_pairs(node):
                 if pair_count[0] >= _MAX_PAIRS:
                     return
                 pair_count[0] += 1
-                key_str = str(key)
                 if not normalize_id(key_str):
                     continue
                 key_nid = _make_id(stem, *(([parent_key] if parent_key else []) + [key_str]))
                 if not key_nid:
                     continue
-                add_node(key_nid, key_str)
-                add_edge(parent_nid, key_nid, "contains")
-                if isinstance(val, (dict, list)):
+                line = key_node.start_mark.line + 1
+                add_node(key_nid, key_str, line)
+                add_edge(parent_nid, key_nid, "contains", line)
+                if isinstance(val, (yaml.MappingNode, yaml.SequenceNode)):
                     walk(val, key_nid, key_str, depth + 1)
-        elif isinstance(obj, list):
+        elif isinstance(node, yaml.SequenceNode):
             # Lists of scalars carry no key structure; only recurse into
             # structured items without minting index nodes (avoids explosion).
-            for item in obj:
-                if isinstance(item, (dict, list)):
+            for item in node.value:
+                if isinstance(item, (yaml.MappingNode, yaml.SequenceNode)):
                     walk(item, parent_nid, parent_key, depth + 1)
 
     multi = len(config_docs) > 1
-    for index, doc in enumerate(config_docs):
+    for index, (doc, tree) in enumerate(config_docs):
         if multi:
             # Keep each document of a multi-document stream distinct (a k8s file
             # holding a Deployment and a Service must not merge their metadata).
@@ -190,10 +237,11 @@ def extract_yaml(path: Path) -> dict:
             doc_nid = _make_id(stem, f"doc{index}", label) or _make_id(stem, f"doc{index}")
             if not doc_nid:
                 continue
-            add_node(doc_nid, label)
-            add_edge(file_nid, doc_nid, "contains")
-            walk(doc, doc_nid, label, 1)
+            doc_line = tree.start_mark.line + 1
+            add_node(doc_nid, label, doc_line)
+            add_edge(file_nid, doc_nid, "contains", doc_line)
+            walk(tree, doc_nid, label, 1)
         else:
-            walk(doc, file_nid, None, 0)
+            walk(tree, file_nid, None, 0)
 
     return {"nodes": nodes, "edges": edges}

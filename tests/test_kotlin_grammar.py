@@ -345,7 +345,7 @@ def test_kotlin_partial_parse_warns_with_file_and_line(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "syntax errors" in err
     assert "Broken.kt" in err
-    assert re.search(r"first error at line \d+", err)
+    assert re.search(r"error region at line \d+", err)
     # The marker must survive the per-file AST cache: a warm re-run (same
     # cache_root) warns again.
     old = os.getcwd()
