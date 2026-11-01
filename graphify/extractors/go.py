@@ -311,6 +311,10 @@ def extract_go(path: Path) -> dict:
     # guard and the cross-repo member-call pass both read them off the node.
     callable_nids: set[str] = set()
     callable_class_nids: set[str] = set()
+    # Go interfaces are satisfied implicitly, so nothing else in the output tells an
+    # interface's method requirements from a struct's methods; `graphify.go_dispatch`
+    # reads this stamp to know which owners are interfaces.
+    interface_nids: set[str] = set()
     # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
 
@@ -647,6 +651,7 @@ def extract_go(path: Path) -> dict:
                                     add_edge(type_nid, tgt, "references",
                                              field.start_point[0] + 1, context=ctx)
                 elif type_body.type == "interface_type":
+                    interface_nids.add(type_nid)
                     for elem in type_body.children:
                         if elem.type == "method_elem":
                             # A method requirement declared in the interface body
@@ -754,6 +759,8 @@ def extract_go(path: Path) -> dict:
             n["_callable"] = True
             if n["id"] in callable_class_nids:
                 n["_callable_class"] = True
+        if n["id"] in interface_nids:
+            n["metadata"] = {"language": "go", "kind": "interface"}
 
     # The field types of the structs this file declares ride on the file node, keyed by
     # struct id, so a method in a sibling file can type `s.field` (#3368). Not on the
