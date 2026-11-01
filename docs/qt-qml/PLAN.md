@@ -5455,3 +5455,40 @@ zero additions/retirements. Static341-file review finds no broken443 local links
 The new full-source and reference-corpus gates run separately against this
 artifact. Draft PR synchronization may run in parallel; old failed0a51 jobs,
 interrupted local attempts and earlier raw packages remain separate evidence.
+
+### INC-QML-125 — Stable mixed-build integration case labels
+
+Fresh complete required-set collection discovers one further cross-tool identity
+difference outside the four INC124 modules: the shared mixed-build integration
+axis embeds a long qmake source literal under pytest9.1.1 and uses a short
+fallback under9.2.0. This is distinct from a failed product assertion. Its current
+mandatory51 assignment belongs to full Linux evidence; actual lane tool versions
+and XML must be checked rather than treating a narrower isolated collection as
+equivalent. Two optional FalkorDB cases are absent from the isolated collection
+and remain explicitly unexecuted there.
+
+The test-evidence maintainer may prepare the two-value build-axis ID patch and
+logical-input/body fingerprints now, but must not edit public Python until the
+active full-source guard finishes. Add only unique source-defined semantic
+qmake/CMake IDs in existing value order; preserve every test body, input, marker,
+dependency and workflow selector. Execute the actual cases under both available
+pytest versions, with per-case XML matching collection. Recollect affected
+required manifests at the new revision without retroactive verdict aliases.
+Runtime payloads remain unchanged, so the independently bound installed private
+scan may continue. A future source commit still receives normal PR validation;
+the current2922 job evidence retains its own exact source/base/checkout identity.
+
+The complete Windows source gate finishes before the one-file125 edit:
+15,494 passes,188 explicit skips,one inherited expected failure,zero failures,
+with all1,142 source/test and14 protected files exact. Source2922's normal hosted
+Main/QML runs complete all20 jobs successfully with exact per-lane required IDs,
+source-matched385-payload wheels,24 smokes and12 cleanup markers. The private
+installed-corpus scan remains running and unaccepted until its durable consumer
+audit finishes.
+
+INC125 then passes its entire four-case module under both actual pytest9.1.1
+and isolated9.2.0 with equal collection/logical-input/XML identities. Only IDs
+and a comment change; runtime source/dependencies remain exact. Final reviewed-
+head validation must run normally at the new source. Existing runtime wheel
+proof may transfer only through independent385-payload equality; its original
+build tree and all earlier execution identities remain explicitly unchanged.

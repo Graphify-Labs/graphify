@@ -5461,6 +5461,56 @@ claim native Qt execution, clustering determinism or hosted acceptance. Final
 publication must independently compare every package payload with its actual
 source commit; the original build tree identity remains unchanged.
 
+### Complete Windows source and hosted acceptance at2922
+
+The canonical Windows Python3.12 full invocation against the bf3238/9f7e wheel
+input completes with15,494 passed,188 explicit skips,one inherited expected
+failure,zero failures/errors,2,590.22 pytest seconds. Its parent exits0 after
+2,593.856 seconds and confirms all1,142 source/test files and14 protected files
+remain exact. The actual command runs the complete tests directory with ordinary
+configuration, explicit owned coverage/JUnit and qualified Bash/sh/Python/Node.
+Skipped/expected-failure identities remain in XML; none is counted as passing.
+
+Normal PR source `2922f800abb9e21b1863f4a6f53257a287949e17`, base
+`a0926ef84a26e9f3cb46f0b982ac495c21fc2255` and synthetic checkout
+`b50da313afdfb074701b1c68616306d5fe4e64af` complete Main41259149118 and
+QML41259149124, attempt1, with all20 actual jobs individually successful.
+Four Linux lanes each pass every1,516 assigned required identity; Python3.10 has
+15,533 passes/144 skips/one inherited expected failure, while3.12/3.13/3.14 each
+have15,532/145/one. Each of their four wheels matches385 raw source payloads/
+248 Python files, with retained inputs/dependencies and confirmed service removal.
+Windows compatibility passes all33 assigned identities (1,101 passes/56 skips).
+
+Each macOS native lane has6,345 passes/81 skips and every1,472 required identity
+passed. Each Windows native lane has6,402/24 and all1,467 required identities
+passed; five POSIX critical controls retain separately checked Windows skips.
+All1,420 supplemental cases pass in all eight native lanes, including178
+activation,11 setup and68 direction cases. All34 former macOS and33 former
+Windows failures pass individually, without aliasing old verdicts. All24 clean
+smokes and12 cleanup markers complete. No manual dispatch/retry/cancel occurred.
+This proves2922's exact reviewed state, not a future test/document revision;
+private corpus extraction/strict consumer comparison remains pending separately.
+
+### INC-QML-125 — Mixed-build identity-only refinement
+
+After the complete Windows source parent/guards finish, only the existing
+BUILDS parameter axis in `tests/test_upstream_qt_shared_integration.py` gains
+explicit cmake/qmake IDs and a comment. Every value/order/body/assertion/marker/
+import remains exact by independent AST and actual logical-input fingerprints.
+Both existing pytest9.1.1 and isolated9.2.0 collect the same four module cases and
+execute four passes,zero skips/errors each; target CMake/qmake cases really run.
+Actual XML IDs equal collection. The167-line file and14 protected files stay
+exact; all248 runtime Python bytes and root dependencies remain unchanged.
+Scoped Ruff/Pyright pass. The isolated tooling profile's two broader optional
+FalkorDB cases remain uncollected; this narrow test result claims no equivalence
+for that separate service profile.
+
+This is a test-identity refinement, not a new runtime package or source-fact
+schema. Keep the original bf3238 build-tree/wheel identity, independently compare
+all385 payloads with the new commit, and let normal PR synchronization validate
+the final reviewed source. The earlier full invocation and2922 hosted proof
+retain their actual identities; no test name or historical result is rewritten.
+
 ### Failed0a51 complete hosted revision and INC-QML-121 replay
 
 Ordinary PR source `0a51f2bf28189f89da3aadee094d348fdf030510`, base
