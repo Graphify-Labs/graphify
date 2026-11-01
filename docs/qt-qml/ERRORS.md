@@ -934,8 +934,9 @@ logging framework or externally visible failure taxonomy is introduced.
 
 ### REBUILD_SETUP_FAILED — INC-QML-123
 
-- Status: implemented; focused native Windows/filesystem and broad local checks
-  pass. POSIX native and final package/reviewed-head hosted evidence are pending.
+- Status: implemented; native Windows/local and source43ac POSIX/native hosted
+  cases pass. The original bf3238 package has fresh installed proof. Later
+  consumer/recovery revisions need their own applicable final-head evidence.
 - Severity/owner: error at rebuild setup, before analysis/cache or publication,
   with stable `stage=queue` or `stage=lock`. Native contention retains its result.
 - Context/message: bounded code/stage and actionable output-permission/availability
@@ -951,3 +952,22 @@ logging framework or externally visible failure taxonomy is introduced.
 - Evidence: independently exercise actual denied lock storage and readonly graph
   publication after real lock acquisition; available native platform and bounded
   filesystem-seam outcomes stay distinct. No native-platform success is inferred.
+
+### Accepted caller-frame consistency — INC127
+
+No new diagnostic framework or public code is introduced. Existing
+`SOURCE_RELATIONSHIPS_INVALID` reports lost adapter/record correspondence or
+invalid promised logical direction before new caller-frame adoption. The owning
+builder validates graph/type/cohort state before adoption; earlier legacy repair
+mutations do not acquire a new global rollback guarantee. Existing export
+rejection, atomic-write failure, accepted-product retention and repaired retry
+keep their separate owners. A missing non-import target cannot mint authority;
+unanchored import cycles and unsupported cross-family inferred calls remain
+excluded by the existing policy rather than being reported as parser success.
+
+The seeded-import rejection/exception cleanup branches are defensive under the
+current policy: a newly minted external stub has no source suffix and cannot
+form a typed QML/C++ pair or a pair of known differing language families.
+Their unexecuted branches are not claimed verified; declared-target typed and
+cross-family rejection use the real admission gate. Correspondence invariants
+and malformed legacy direction handling retain explicit coverage limitations.

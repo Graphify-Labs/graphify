@@ -3356,3 +3356,59 @@ same change set; the existing collection-driven production-gate tests expose
 drift before publication. This changes evidence identity only. Runtime facts,
 cache/persistence, workflow triggers, permissions and dependency profiles retain
 their existing owners and contracts.
+
+### Accepted-link projection disagreement — INC-QML-127 diagnosis
+
+Observed current behavior: the generic assembly loop can remap source/target into
+local variables without updating caller-owned original-link endpoints. The JSON
+export's endpoint filter then drops an assembled import. The same preservation
+path can restore a generic inferred call that assembly filtered by language.
+Both are caller-frame consistency defects; successful typed source-witness
+round trips alone do not establish preservation of every accepted generic link.
+
+The correction is planned, not implemented. Its authoritative owner must carry
+the existing assembly decision into export while preserving parallel evidence,
+legacy manual exports, source promises and atomic-write retention. Requirements,
+neutral regression failures and the agreed interface/state lifetime precede
+production changes. No second resolver, new corpus interpretation, graph-cap
+override or SDK/runtime execution is proposed.
+
+### Accepted caller-frame projection interfaces — D49 / INC127
+
+Implemented owner `accepted_link_frame.py` receives explicit caller/working frames
+and graph-build dependencies; it owns only bounded accepted-record staging and
+delayed adoption. It must not import the extractor facade, retain ambient roots,
+resolve corpus names independently, write cache/products or derive all records
+from simple-graph storage. Builder hooks capture before transport copies, stage
+after owning admission, and commit after final validation. Input alias agreement,
+paired logical endpoints and source-only primary/secondary evidence remain
+validated. Numeric/transient-field normalization must follow the existing owning
+policy; copying arbitrary G edge attributes is not a substitute.
+
+Before code edits, build.py measures3,332 under its3,345 ceiling and export.py
+1,527 under1,540. The new focused helper and tests retain the300-line normal
+limit. Owners must record any necessary bounded legacy ceiling change before
+growth and keep a focused extraction exit path; this is no broad file split.
+Source facts/AST39/Qt33 remain unchanged. Existing immutable extraction artifacts
+may support a fresh consumer only with explicit producer/input identity binding;
+their original extraction revision is never relabelled as the corrected runtime.
+
+INC128 adds `BUILD_PROJECTION_VERSION` to the existing build-state fingerprint.
+It owns no new state file, timer, queue, resolver or persistence transaction.
+The exact partial-input promotion seam and failure/recovery tests must be proven
+before implementation; watch.py currently measures3,411 under3,450. The scalar
+belongs to successful graph publication, not source-cache acceptance or setup.
+
+The complete external-import cohort uses a deterministic source-index/work
+queue. Each candidate is considered after its source is admitted, at most once;
+an accepted stub can unlock another import without repeated whole-list scans.
+Unanchored cycles, rejected imports and call-only targets supply no authority.
+An ordinary regression must preserve old-runtime anchored import chains across
+input permutations, rather than accepting a newly introduced one-pass loss.
+
+Projection recovery promotes a partial event to the existing full mode. A later
+explicit partial invocation may retain the established full_clean True-to-False
+state transition; it must preserve graph/source facts and the accepted projection
+version. The normal full no-change entry remains byte-stable after recovery.
+Valid new raw-cache entries retain their existing pre-publication policy; failed
+publication cannot replace prior successful entries or stamp a new projection.

@@ -185,13 +185,17 @@ their own normal PR validation through the [PR checks](https://github.com/Slinky
 
 ## Qt 6.12 corrective branch evidence
 
-The source corrections in INC-QML-61 onward are being verified locally on Windows
-x64/Python3.12 with the existing frozen all-extras profile and pinned grammars.
-The optional-wheel native Windows/macOS selection includes `test_qt_`,
-`test_qml_`, `test_upstream_qt_`, `test_cpp_`, `test_csharp_`, `test_field_call_`
-and `test_source_relationship_` modules. Existing-core grammar dependencies and
-clean QML/core smoke boundaries remain; Linux retains the full suite. New hosted runs and final isolated QML/core consumers are still
-pending. Historical successful lanes above do not verify this new working source.
+The bounded source corrections use Windows x64/Python3.12 and the frozen
+all-extras profile/pinned grammars. Source43ac285b passes all20 actual Linux,
+macOS and Windows jobs, with per-case/385-payload wheel/24-smoke/12-cleanup proof.
+The original bf3238 raw-tree wheel's fresh core/QML-watch consumers also pass;
+their package/input/execution identities remain separate from later code.
+The optional native selection includes `test_qt_`, `test_qml_`,
+`test_upstream_qt_`, `test_cpp_`, `test_csharp_`, `test_field_call_` and
+`test_source_relationship_` modules; Linux retains the full suite.
+INC127's new consumer correction passes646 local related cases including58
+ordinary regressions/controls, but corrected-package/full/corpus/new-head gates
+remain pending. INC128 unchanged-source projection recovery remains planned.
 No Qt SDK/runtime execution or cross-platform application build is inferred.
 
 The final local corrective profile uses the previously qualified native Bash/sh

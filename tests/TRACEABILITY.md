@@ -5671,3 +5671,70 @@ execution. Existing explicit isolated coverage/output paths preserve unrelated
 results. Workflow policy/platform/dependencies and all385 runtime payloads stay
 unchanged. New-head hosted acceptance remains pending normal PR synchronization;
 prior2922 successful evidence and failed7ab evidence are not relabelled.
+
+### INC-QML-127 — Accepted caller-frame links across export
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-012-AC02 and shared-boundary
+regressions under REQ-QML-018-AC04/REQ-QML-022-AC06. The actual reference consumer's38 import
+losses and six restored rejected calls become neutral production-boundary cases;
+the seventh ordering disagreement is a genuine extracted imported-module call.
+No private source, identifiers or raw graphs are published.
+
+`tests/test_source_relationship_projection.py::test_req_qml010_ac02_accepted_normalized_import_survives_original_view`
+uses actual Python parser facts and documented transport casing drift through
+real build/export/public path reload. Its four cases fail before correction.
+`tests/test_source_relationship_projection.py::test_req_qml010_ac03_rejected_cross_family_call_cannot_return`
+adds four real owning-policy rejection failures. The four
+`tests/test_source_relationship_projection.py::test_req_qml010_ac02_import_cohort_admits_extracted_call_independent_of_order`
+cases also fail before correction after D49 establishes complete-import-cohort
+admission. Initial ordinary red is12 intended failures/10 passing controls,
+zero errors/skips. Two initial overbroad new legacy whole-file-byte controls are
+retained as expectation failures: established legacy transport metadata can
+change on reload; exact serialized links remain required, while source-profile
+whole-file parity is retained. No prior test or acceptance assertion is weakened.
+
+Initial22 green passes before independent review finds a one-pass import-chain
+regression. An actual original9f-wheel/current runtime comparison qualifies it:
+old runtime retains both anchored imports in all8 profile/direction/order cases;
+the first implementation loses four dependent-first cases. The new
+`tests/test_source_relationship_projection_adoption.py::test_req_qml010_ac02_anchored_external_import_chain_is_input_order_independent`
+and32 controls yield4 red/32 passes before the deterministic source queue.
+Held same/equal-copy alias lists/dictionaries and late real-validator fault
+retention/retry are covered by
+`tests/test_source_relationship_projection_adoption.py::test_req_qml010_ac02_held_alias_lists_and_dictionaries_adopt_one_accepted_frame`
+and
+`tests/test_source_relationship_projection_adoption.py::test_req_qml018_ac04_final_validation_failure_precedes_frame_adoption`.
+Unanchored/missing-source/call-only inputs cannot manufacture targets.
+
+The final ordinary selection of both modules passes58 cases, zero failures,
+errors or skips,6.44 seconds. The related build/export/type/source/direction/raw/
+stub selection passes646 cases, including those58, zero skips/errors,112.64
+pytest seconds; these overlapping results are not summed. Actual failed atomic
+replacement retains accepted graph bytes and accounting, then real recovery/
+repeat succeeds for guarded/forced and directed/undirected legacy profiles.
+The exact persistence assignment is REQ-QML-012-AC02 to
+`tests/test_source_relationship_projection.py::test_req_qml018_ac04_original_view_write_failure_retains_and_recovers`;
+its broader Qt interoperability label does not establish native provider/member
+resolution or replace the primary persistence criterion. Parallel/manual view
+controls contribute to REQ-QML-010-AC03; held-reference/final-validation controls
+contribute to REQ-QML-010-AC02. Native bridge evidence retains its separate tests.
+Independent parallel observations preserve their own scores and absent fields;
+manual empty/extra-original views retain their established contract.
+
+All1,146 source files and14 protected files stay exact during the final gates.
+Scoped Ruff/helper Pyright pass; build's ten diagnostics match the qualified
+684-diagnostic baseline with zero additions/retirements. Helper coverage is83%
+statements/76% branches; defensive seeded-rejection/exception cleanup, malformed
+legacy direction and internal correspondence invariants remain explicit gaps,
+not100% evidence. Real current admission cannot reject a freshly minted empty-
+suffix external stub by typed-pair/two-known-family checks; no fake predicate
+is substituted to claim that defensive branch executed. First development
+callback NameErrors and the corrected owned-temp cleanup failure remain retained.
+
+Source43ac/baseA092/synthetic795de9d6 normal Main41263931753 and QML41263931769
+already pass all20 actual jobs with individual required cases,385-payload wheels,
+24 smokes/12 cleanup markers and four confirmed service removals. This is
+historical proof, not validation of the new consumer. Original extraction's
+immutable raw source facts and their original package identity remain retained;
+a new consumer/wheel must get fresh export/reload/source-disposition accounting.
+INC128 forward recovery and final new-head validation remain pending.

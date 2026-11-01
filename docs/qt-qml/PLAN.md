@@ -7,14 +7,16 @@ Shared installer, shell-fixture, filesystem-profile and Terraform verification
 continues separately under [INC-CORE-01–03](../COMPATIBILITY.md). These contribution
 gate corrections do not expand the Qt/QML language profile or advance its counter.
 
-Current delivery: INC-QML-61–114 implements the bounded Qt 6.12 source audit and
-subsequent reproduced compatibility corrections on
+Current delivery: INC-QML-61–127 implements the bounded Qt6.12 source audit
+and reproduced source/consumer corrections on
 [draft PR #10](https://github.com/SlinkyRamey/graphify-with-qt-and-qml-support/pull/10).
-The latest 194-case INC114 source gate passes without failures or skips; final
-combined compatibility, installed artifacts, complete source/corpus and new-head
-hosted validation remain pending. Earlier hosted success applies to its recorded
-`349e4443` source, not the current unpublished corrections. The mechanism matrix retains
-explicit unsupported/unverified SDK forms; this is no whole-SDK guarantee.
+INC128 forward projection recovery is planned and remains unverified. Source
+`43ac285b` passes all20 hosted jobs and exact native/case/wheel/cleanup audits;
+that is historical evidence for the new unpublished consumer correction.
+INC127 passes58 ordinary cases within646 related regressions. Fresh corrected
+package, full-source, corpus-consumer and final-head hosted proof remain pending.
+The mechanism matrix retains unsupported/unverified SDK forms; source-corpus
+declarations and every possible native binding are distinct claims.
 
 The following introduction preserves historical delivery checkpoints. Its old
 failure counts, PR identities and then-current statements do not replace the
@@ -5523,3 +5525,65 @@ then pass all14 cases without skips, including missing/duplicate/foreign/growth
 and nonpassing-outcome rejection. Workflow/test bytes remain unchanged during
 execution, as do all14 protected files. CI-owner workflow size remains650/650;
 no test assertion, runtime package, trigger or dependency changes.
+
+### INC-QML-127 — Accepted-link projection agrees across export
+
+The fresh completed reference-corpus consumer exposes two distinct owning-boundary
+gaps despite successful43ac hosted validation. Assembly accepts38 real imports
+after remapping endpoint IDs, but the original-link export receives stale IDs and
+drops them. Conversely, original-link preservation restores calls that assembly
+rejects through its existing cross-language policy. Raw source, assembly and
+durable export observations establish the disagreement; aggregate totals alone
+cannot establish its correction. No application adoption has occurred.
+
+Affected acceptance is REQ-QML-010-AC02/AC03 and the shared-boundary regression
+obligation in REQ-QML-022-AC06. Root owns requirements/design/integration/Git;
+the source auditor owns private original-byte dispositions; separate read-only
+reproduction and design reviewers must qualify the neutral production-boundary
+failures before an implementation owner edits production code. This is a scoped
+common build/export correction, not a producer/parser rewrite or a reason to
+weaken caps, assertions, dependencies or existing language-admission contracts.
+
+The pre-implementation matrix covers accepted import remaps and exact reload,
+ambiguous/unresolved endpoints, rejected cross-language calls, accepted Qt/QML
+exceptions, parallel mechanisms and all original attributes, cold/warm and
+full/incremental parity, stale-edge removal, actual failed graph replacement,
+retention/recovery/repeat, and legacy manual/extra-original-link compatibility.
+Inspect the real caller-frame and existing source-only primary/secondary storage
+contracts. Keep resolution/rejection authoritative at its existing owner; do not
+add an independent guessed resolver or replay graph construction during export.
+New handwritten owners stay below300 lines; legacy sizes/ceilings must be recorded
+before growth. The exact design and affected diagnostic contract remain pending
+qualified reproductions and ownership review. Ordinary PR synchronization owns
+new-head validation; successful43ac evidence retains its own revision identity.
+
+INC127's qualified neutral production-boundary reproductions confirm eight
+failures across source/legacy storage and both directions: four remapped imports
+are lost only with original-link export, and four rejected cross-family inferred
+calls return. The four external-import ordering observations become positive
+acceptance under D49: a real extracted imported-module call is admitted from the
+complete valid import cohort; a call without import/declaration cannot mint a
+target. New automatically collected regressions must fail before production
+changes. Preserve failed evidence and immutable raw corpus output.
+
+### INC-QML-128 — Successful projection version drives forward recovery
+
+Affected acceptance: REQ-QML-011-AC03/AC04 and REQ-QML-012-AC01/AC02 for existing
+failure retention. A corrected consumer alone cannot silently repair products
+that an unchanged watch would otherwise skip. Add one projection-version scalar
+to the existing build-state owner; missing/older versions trigger a complete
+accepted-corpus re-projection with normal raw-cache reuse. Promote caller-supplied
+partial watch inputs through existing discovery rather than discarding unrelated
+source facts. Stamp only with the actual successful product cohort; failed or
+rejected writes retain prior products/state and allow repaired retry/repeat.
+
+The watch owner and new focused regression files are disjoint from INC127's
+builder/helper and test owners. Public Python changes are sequenced around
+frozen red/green guards; independent design/preparation may run concurrently.
+Success, missing/old/current versions, generic Python/C# and Qt profiles, source
+edit/deletion, valid cache reuse, actual replacement failure, retention/recovery,
+partial/full parity and unchanged no-op are the pre-implementation matrix.
+Setup/contended/invalid-input paths cannot stamp success. No parser/schema or
+dependency bump, new discovery boundary, cap override or global upgrade occurs.
+Final source/native/full/installed and real corpus-consumer proof belongs to
+the resulting revision; successful43ac remains historical evidence.

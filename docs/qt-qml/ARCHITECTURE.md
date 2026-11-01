@@ -1589,3 +1589,38 @@ retry framework or broad watcher refactor would require a separate decision.
 Status: implemented with local focused/broad evidence and independent peer.
 Fresh installed profiles pass; full-corpus and POSIX/reviewed-head hosted gates
 remain separate.
+
+## D49 — Assembly owns the accepted caller-frame link projection
+
+Decision recorded before INC127 production changes. Graph assembly remains the
+single owner of endpoint canonicalization, external-import stub admission and
+semantic edge rejection. Capture the selected caller frame and its owned alias
+lists before transport adoption can copy them. Stage detached accepted records
+after semantic admission and before simple-graph/source-storage folding. Only
+after final graph/type/cohort validation succeeds may the builder update the
+retained caller dictionaries/lists in place. Preserve every accepted parallel
+mechanism and original independent secondary observation, not only G.edges.
+
+Establish the complete valid import-family stub cohort before call attachment,
+so a genuine extracted call through an admitted external import is independent
+of edge sorting. A call alone cannot mint a target, and an inferred Python call
+cannot borrow a JSON field as its target. This is bounded source analysis, not
+an external SDK binding or runtime call claim.
+
+The exporter consumes the corrected shared caller frame without a second
+resolver or graph reconstruction. Manual graphs and caller-authorized independent
+original-link views retain their existing compatibility contract; arbitrary
+detached views do not gain an inferred builder ancestry guarantee. Do not store
+an ambient registry or new graph-owned private projection plan that can leak
+into GraphML/JSON or disappear on graph copying. Accepted-record adoption must
+not consume publication accounting or mutate caller/cache lists on builder
+failure. Existing atomic writer retention remains the persistence owner.
+
+INC128 separately owns forward recovery through a graph-projection version in
+the existing build-state fingerprint. Package0.9.99 and source-fact AST39/Qt33
+stay unchanged because the source producer contract is unchanged. Current source
+facts may be re-projected; a damaged old export cannot reconstruct absent facts
+by itself. A version mismatch promotes partial watch input to the complete
+normally admitted corpus, using valid raw caches, and stamps only after actual
+publication. Existing discovery/exclusion and writer/rollback owners remain.
+Status: INC127 implemented with58 passing ordinary cases and646 related local regressions. INC128 forward recovery and final corrected-package/full/corpus/hosted proof remain pending.

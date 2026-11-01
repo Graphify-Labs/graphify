@@ -1736,3 +1736,22 @@ driven rejection controls in `tests/test_ci_source_cases.py`. The touched
 workflow measures650 physical lines before/after under its existing650-line
 ceiling; no growth or new cohesion exception is introduced. Future extraction
 remains the documented CI-owner path, separate from this two-string correction.
+
+## Accepted caller-frame projection — INC127 / D49
+
+`graphify/accepted_link_frame.py` (167/300) owns one invocation's captured caller
+and working frames. `AcceptedLinkFrame.bind` preserves ordered adapter-copy
+correspondence; `seed_external_targets` consumes the builder's exact import-family
+set, repair callback and admission callback through a deterministic source queue;
+`accept` snapshots complete admitted records before storage folding; `commit`
+validates and adopts owned list/dictionary references after final graph checks.
+No graph metadata registry, writer, extractor import or ambient root is added.
+`BUILD_PROJECTION_VERSION = 1` is declared for planned INC128 recovery.
+
+The graph-assembly maintainer owns minimal `build_from_json` hooks and its shared
+invocation-local preparation/admission callbacks: build.py measures3,328/3,345,
+down from3,332. Export.py stays byte-identical at1,527/1,540. The existing export
+accepts the corrected shared caller frame; independent manual/extra-original
+views retain their documented compatibility boundary. New tests/helper measure
+179/143/76 physical lines. Final package/installed/source and corpus proof remain
+separate from scoped source tests and branch coverage.

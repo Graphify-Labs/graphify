@@ -1480,12 +1480,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     """
     # Validate before repair; accepted typed aliases retain one mutable owner.
     from graphify.source_relationships import validate_source_transport
+    from graphify.accepted_link_frame import AcceptedLinkFrame
     validate_source_transport(extraction)
     from graphify.extractors.cpp_type_references import (
         is_type_reference_unavailable, validate_type_reference_transport, validate_type_reference_graph)
     cpp_reference_profile = validate_type_reference_transport(extraction, directed=directed)
-    cpp_reference_owner = extraction if cpp_reference_profile else None
-    cpp_reference_aliases = tuple(key for key in ("edges", "links") if key in extraction)
+    link_frame = AcceptedLinkFrame(extraction)
     # Input context is validated before normalization/dedup can repair or hide
     # corrupt transport. Applying after accepted transformations clears only
     # actual node removal/role changes; the marker never supplies endpoint proof.
@@ -1507,6 +1507,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         extraction = dict(extraction, edges=extraction["links"])
     if cpp_reference_profile and "edges" in extraction and "links" in extraction:
         extraction["links"] = extraction["edges"]
+    link_frame.bind(extraction)
 
     # Hyperedge persistence is dual-slot (#2485): to_json writes BOTH a
     # top-level `hyperedges` key AND the nested `graph.hyperedges` (node_link
@@ -1915,60 +1916,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     qt_ownership_edges = tuple(qt_ownership_edges)
     from graphify.qt_metaobject import QtMetaobjectIndex
     qt_metaobject_index = QtMetaobjectIndex(G.nodes, qt_ownership_edges)
-    for edge in sorted(
-        extraction.get("edges", []),
-        key=lambda e: (
-            str(e.get("source", e.get("from", ""))),
-            str(e.get("target", e.get("to", ""))),
-            str(e.get("relation", "")),
-        ),
-    ):
-        if "source" not in edge and "from" in edge:
-            edge["source"] = edge["from"]
-        if "target" not in edge and "to" in edge:
-            edge["target"] = edge["to"]
-        if "source" not in edge or "target" not in edge:
-            continue
-        src, tgt = edge["source"], edge["target"]
-        # Typed rejection follows its accepted direction, never physical storage.
-        if is_type_reference_unavailable(edge):
-            src, tgt = logical_endpoints(G, src, tgt, edge)
-        # Skip edges with non-hashable endpoints (e.g. a list emitted by a buggy
-        # LLM extraction) so the `not in node_set` membership test below never
-        # raises TypeError: unhashable type. The validator already reported these.
-        try:
-            hash(src)
-            hash(tgt)
-        except TypeError:
-            print(
-                f"[graphify] WARNING: skipping edge with non-hashable endpoint "
-                f"(source={src!r}, target={tgt!r}).",
-                file=sys.stderr,
-            )
-            continue
-        # Remap mismatched IDs via normalization before dropping the edge.
-        if src not in node_set:
-            src = norm_to_id.get(_normalize_id(src), src)
-        if tgt not in node_set:
-            tgt = norm_to_id.get(_normalize_id(tgt), tgt)
-        if src not in node_set or tgt not in node_set:
-            # An import/re-export whose target is not a declared node points at
-            # an external module (stdlib / third-party / another repo). Mint a
-            # typed external stub so the on-disk graph.json has no undeclared
-            # endpoint (#2873), rather than dropping the edge and leaving loaders
-            # to materialise an attribute-less phantom. Only the missing *target*
-            # of an import-family edge is stubbed; a dangling source, or a
-            # missing endpoint on any other relation (e.g. a sourceless external
-            # call target, suppressed by #3156), is still dropped.
-            if (
-                edge.get("relation") in _EXTERNAL_STUB_RELATIONS
-                and src in node_set
-                and tgt not in node_set
-                and isinstance(tgt, str)
-            ):
-                _mint_external_stub(G, node_set, tgt)
-            else:
-                continue  # external/stdlib target on a non-import relation - expected
+    # One existing policy serves both complete import cohorts and ordinary rows.
+    def _prepare_edge_attributes(edge, src, tgt):
         # `target_file` is a transient import-disambiguation salt hint (#1814)
         # with no downstream reader; it holds an absolute path, so it must never
         # be persisted. Disambiguation already pops it off fresh extractions —
@@ -2025,17 +1974,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 edge["source_file"] = attrs["source_file"]
                 if "also_seen" in attrs:
                     edge["also_seen"] = deepcopy(attrs["also_seen"])
-        # Relation aliases are folded before validation, but a still-missing
-        # relation has no trustworthy default. Other historically tolerated edge
-        # gaps have repair/default paths elsewhere in this builder; relation does
-        # not. Fail closed rather than persist an uninterpretable edge (#4809).
-        if "relation" not in attrs:
-            dropped_schema_edges += 1
-            continue
-        if attrs.get("definition_file"):
+        if "relation" in attrs and attrs.get("definition_file"):
             # Same portability rule as source_file (#3223); heals a graph
             # written before the fix on its next rebuild.
             attrs["definition_file"] = _norm_source_file(attrs["definition_file"], _root)
+        return attrs
+
+    def _admit_edge(src, tgt, attrs):
         # Drop cross-language phantom edges — the same short names (render, parse,
         # time, ...) recur across language boundaries, so an unresolved target can
         # bind to a same-named node in another language. The extraction spec forbids
@@ -2048,7 +1993,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if is_typed_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs) and not allows_qt_qml_edge(
                 G.nodes[src], G.nodes[tgt], attrs, source_id=src, target_id=tgt, nodes=G.nodes,
                 edges=qt_ownership_edges, metaobject_index=qt_metaobject_index):
-            continue
+            return False
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
             from graphify.qml_projection import allows_qml_script_edge
@@ -2068,13 +2013,69 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     and src_ext and tgt_ext and src_fam != tgt_fam
                     and not (qml_script_edge or qt_qml_edge)
                 ):
-                    continue
+                    return False
             else:
                 # imports/references: drop only when BOTH endpoints are known code
                 # languages of different families, so a config->code reference
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
                 if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam and not (qml_script_edge or qt_qml_edge):
-                    continue
+                    return False
+        return True
+
+    link_frame.seed_external_targets(G, extraction.get("edges", []), node_set, norm_to_id,
+                                     normalize=_normalize_id, mint=_mint_external_stub,
+                                     prepare=_prepare_edge_attributes, admit=_admit_edge,
+                                     relations=_EXTERNAL_STUB_RELATIONS)
+    for edge in sorted(
+        extraction.get("edges", []),
+        key=lambda e: (
+            str(e.get("source", e.get("from", ""))),
+            str(e.get("target", e.get("to", ""))),
+            str(e.get("relation", "")),
+        ),
+    ):
+        if "source" not in edge and "from" in edge:
+            edge["source"] = edge["from"]
+        if "target" not in edge and "to" in edge:
+            edge["target"] = edge["to"]
+        if "source" not in edge or "target" not in edge:
+            continue
+        src, tgt = edge["source"], edge["target"]
+        # Typed rejection follows its accepted direction, never physical storage.
+        if is_type_reference_unavailable(edge):
+            src, tgt = logical_endpoints(G, src, tgt, edge)
+        # Skip edges with non-hashable endpoints (e.g. a list emitted by a buggy
+        # LLM extraction) so the `not in node_set` membership test below never
+        # raises TypeError: unhashable type. The validator already reported these.
+        try:
+            hash(src)
+            hash(tgt)
+        except TypeError:
+            print(
+                f"[graphify] WARNING: skipping edge with non-hashable endpoint "
+                f"(source={src!r}, target={tgt!r}).",
+                file=sys.stderr,
+            )
+            continue
+        # Remap mismatched IDs via normalization before dropping the edge.
+        if src not in node_set:
+            src = norm_to_id.get(_normalize_id(src), src)
+        if tgt not in node_set:
+            tgt = norm_to_id.get(_normalize_id(tgt), tgt)
+        # Complete admitted import cohorts already own external targets; calls alone never mint them.
+        if src not in node_set or tgt not in node_set:
+            continue
+        attrs = _prepare_edge_attributes(edge, src, tgt)
+        # Relation aliases are folded before validation, but a still-missing
+        # relation has no trustworthy default. Other historically tolerated edge
+        # gaps have repair/default paths elsewhere in this builder; relation does
+        # not. Fail closed rather than persist an uninterpretable edge (#4809).
+        if "relation" not in attrs:
+            dropped_schema_edges += 1
+            continue
+        if not _admit_edge(src, tgt, attrs):
+            continue
+        _edge_rel = attrs.get("relation")
         # A file-level import or re-export cannot carry useful connectivity when
         # both endpoints resolve to the same node.  This most often happens when
         # the target is an unresolved bare module name (``builtins``, ``poseidon``)
@@ -2089,6 +2090,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # causing display functions to show edges backwards.
         attrs["_src"] = src
         attrs["_tgt"] = tgt
+        link_frame.accept(edge, src, tgt, attrs, directed=directed)
         if is_source_graph(G):
             add_source_relationship(G, src, tgt, attrs)
             continue
@@ -2240,15 +2242,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         G.graph = apply_import_retention(node_link_view(G), retained_import_ids,
                                         is_placeholder=_is_external_stub).get("graph", {})
     validate_type_reference_graph(G)
-    # Compatibility adapters may copy the frame or replace its effective list.
-    if cpp_reference_owner is not None:
-        selected_edges = extraction.get("edges", ())
-        if "links" in extraction:
-            extraction["links"] = selected_edges
-        validate_type_reference_transport(extraction, directed=directed)
-        cpp_reference_owner["nodes"] = extraction["nodes"]
-        for alias in cpp_reference_aliases:
-            cpp_reference_owner[alias] = selected_edges
+    # Adopt only after graph/cohort validation; exports reuse this accepted caller frame.
+    link_frame.commit(extraction, directed=directed,
+                      validate=validate_type_reference_transport if cpp_reference_profile else None)
     return G
 
 

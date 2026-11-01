@@ -22,7 +22,7 @@ legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
 Future requirements continue with `REQ-QML-023`; future top-level increments
-continue with `INC-QML-127`. INC-QML-61 owns the versioned Qt 6.12 audit;
+continue with `INC-QML-129`. INC-QML-61 owns the versioned Qt 6.12 audit;
 INC-QML-62–101 own its scoped correction and delivery sequence; INC-QML-102
 owns platform-faithful persistence fault fixtures without runtime changes. INC-QML-103
 owns the original-byte-aware aggregate newline oracle and explicit CLI pairs. INC-QML-104
