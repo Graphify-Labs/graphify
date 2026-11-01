@@ -499,14 +499,20 @@ def _flush_stat_index() -> None:
 
 
 def _normalize_path(path: Path) -> Path:
-    """Normalize path for consistent cache keys across Windows path spellings."""
+    """Normalize a path for cache identity without folding case.
+
+    Windows spellings can differ in separators and in the optional
+    extended-length prefix. Case is not equivalent on every volume a Windows
+    process can reach, so the key keeps the caller's case. Use
+    paths.os_long_path() for the path handed to the filesystem.
+    """
     import sys
     if sys.platform != "win32":
         return path
     s = str(path)
     if s.startswith("\\\\?\\"):
         s = s[4:]  # strip extended-length prefix \\?\
-    return Path(os.path.normcase(s))
+    return Path(os.path.normpath(s))
 
 
 def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
@@ -553,7 +559,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
         # Preserve the existing fallback for a target outside the corpus. An
         # in-root symlink to such a target is excluded by collect_files(), but
         # direct cache callers still rely on the resolved external identity.
-        salt = resolved.as_posix().lower()
+        salt = resolved.as_posix()
     else:
         walked = Path(os.path.abspath(p))
         walked_root = Path(os.path.abspath(root))
@@ -574,7 +580,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
                     continue
             if walked_rel is None:
                 walked_rel = resolved_rel
-        salt = walked_rel.as_posix().lower()
+        salt = walked_rel.as_posix()
 
     st: "os.stat_result | None" = None
     try:
