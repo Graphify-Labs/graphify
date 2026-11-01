@@ -2012,6 +2012,7 @@ def ignored_predicate(
             if line:
                 patterns.append((root, line))
                 explicit_patterns.append((root, line))
+    linked_boundaries: dict[Path, bool] = {}
     cache: dict[Path, bool] = {}
     explicit_cache: dict[Path, bool] = {}
     # root's own ignore file is the last entry of _load_graphifyignore's chain.
@@ -2032,6 +2033,13 @@ def ignored_predicate(
             if _is_noise_dir(part, parent):
                 return True
             parent = parent / part
+            if parent not in linked_boundaries:
+                main_root = _linked_worktree_main_root(parent)
+                linked_boundaries[parent] = (
+                    main_root is not None and _resolves_under_root(main_root, root)
+                )
+            if linked_boundaries[parent]:
+                return True
         # Load ignore files along this path's own lineage — detect()'s walk
         # would have loaded exactly these before reaching the file (#1206).
         ancestor = root
