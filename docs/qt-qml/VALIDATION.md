@@ -2422,3 +2422,21 @@ installation disabled in analyzed snippets, and isolate tool targets, applicatio
 configuration and temporary roots. No global PATH change or WSL installation is
 required. Keep the failed alias-selected profile separate from qualified source,
 installed, native hosted and resulting-commit evidence.
+
+The leading-shebang regression must prove shell discovery reaches its private
+non-script launcher before testing rejection. On MSYS a plain-text file without
+a shebang can be skipped despite chmod; an ambient real Graphify launcher then
+tests a different route. A non-script MZ fixture admits the private launcher on
+both POSIX and MSYS, while its first line names a real probe-passing decoy.
+Record actual command-v identity, exact private-tool fallback and a pre-gate
+negative control that would adopt that decoy. Do not repair this test by hiding
+the ambient launcher, changing production precedence or skipping Windows.
+
+After correction the focused installer/generated/native-profile/hook selection
+passes274 cases with24 documented existing exclusions. The unchanged strict
+installed-core budget accepts789 lines. Whole Ruff and all five generated
+validators pass; the qualified688 inherited type diagnostics are unchanged.
+The full source command gathers every failure without fail-fast, uses the fresh
+raw-Git wheel for required package cases, and hashes all tracked inputs as well
+as unrelated coverage/result files. Full/native/installed/hosted and eventual
+resulting-commit evidence remains separately revision-bound.

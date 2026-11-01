@@ -5898,3 +5898,20 @@ These changes correct analysis/CI qualification, not raw AST source facts. AST40
 Qt33 and projection4 remain unchanged. Failed source56b1ee6, its graph snapshot,
 package and passing narrower consumers remain distinct historical evidence and
 cannot establish acceptance of the correction.
+
+The next source `da4ab45f` exposed further qualification gaps before any fork
+merge: the installed Claude lean core reached803 lines against its unchanged
+strict `<800` contract, and the native wheel runner's characterization evaluated
+the moved selection expression without its actual `selected_tests` owner.
+Compress only authoritative manifest commentary while preserving instructions
+and executable examples; regenerate normally. Exercise the production pure
+selection helper with real fixture files and retain artifact-only isolation.
+Neither correction changes assertions, dependencies or assigned platforms.
+
+The local hook leading-shebang regression also reached an ambient launcher
+instead of its intended non-script fixture under MSYS. Correct its binary
+fixture so real shell discovery reaches it, then prove the existing rejection
+against the pre-gate mutation. A pass obtained by bypassing that parser boundary
+cannot establish acceptance. Hook production behavior and tool qualification
+remain unchanged. New source full/static/generated/native/installed/hosted gates
+must finish independently; all failed and interrupted attempts stay retained.

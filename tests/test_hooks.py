@@ -976,15 +976,29 @@ def test_shebang_parse_requires_leading_hash_bang(tmp_path):
     (and here, a decoy path) reached the shebang parse (#2852)."""
     home, stub_bin = _broken_uv_machine(tmp_path)
     mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
-    decoy = stub_bin / "fakepy"
+    decoy = stub_bin / "MZfakepy"
     decoy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
     decoy.chmod(0o755)
     launcher = stub_bin / "graphify"
+    # MZ keeps the non-script launcher executable to MSYS while its first line
+    # still names a real PATH decoy. Plain text is not executable there and
+    # would let command-v bypass this fixture for an ambient graphify launcher.
     launcher.write_text(
-        f"{decoy}\nnot a script — the first line just names a python\n",
+        f"{decoy.name}\nnot a script — the first line just names a python\n",
         encoding="utf-8", newline="\n",
     )
     launcher.chmod(0o755)
+    # Prove the real shell reaches this private launcher before evaluating the
+    # production shebang gate; a passing fallback alone cannot establish that.
+    route_env = dict(os.environ, HOME=str(home),
+                     PATH=str(stub_bin) + os.pathsep + os.environ["PATH"])
+    route_env.pop("UV_TOOL_DIR", None)
+    route = subprocess.run(
+        [select_shell_executable("sh"), "-c", "command -v graphify"],
+        cwd=str(tmp_path), env=route_env, capture_output=True, text=True,
+    )
+    assert route.returncode == 0, route.stderr
+    assert resolve_shell_path(route.stdout.strip()) == launcher.resolve()
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
     # The successful fallback must be this exact tool env, never the launcher

@@ -6042,3 +6042,34 @@ qualified native shell/interpreter discovery. Failed56b1ee6/interrupted full
 results, unexecuted later cases and two alias-selected failures are not relabelled
 as full-source support. New full/installed/hosted gates remain pending for the
 corrected reviewed source.
+
+Source `da4ab45f` still failed existing acceptance before merge:
+`test_install_references.py::test_claude_install_ships_lean_core_and_references`
+observed803 lines under the retained strict `<800` bound, and
+`test_qml_platform_matrix.py::test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries`
+raised `NameError` at its moved selection helper. These map to
+REQ-QML-015-AC01/AC02 and REQ-QML-014-AC01/AC04 respectively. Their real
+installer/native-runner reproductions are retained; regeneration and the actual
+pure selection owner must clear the same assertions without relaxing them.
+
+`test_hooks.py::test_shebang_parse_requires_leading_hash_bang` maps to
+REQ-CORE-004-AC02 and REQ-QML-014-AC03. Its local failure exposed a fixture
+discovery gap: the plain non-script replacement was not executable under MSYS,
+allowing the real development launcher to win before the intended gate. The
+revised fixture must be reached by the actual shell and reject adoption of its
+decoy; removing the leading-shebang gate must fail the same assertion. This is
+test qualification, not a hooks production correction or a new platform skip.
+Resulting-source acceptance remains pending until all assigned checks execute.
+
+The corrected qualification selection executes298 cases:274 pass and24 retain
+their existing limits (one complete-bundle installer fallback, two installer
+symlink cases, two hook symlink cases, one POSIX-only executable-layout case
+and eighteen existing POSIX hook exclusions). The shell's real
+private-launcher route passes, and an isolated pre-gate mutation adopts the
+decoy and fails the original acceptance. The installed Claude core is789 lines;
+all executable fragment lines, Qt/QML paragraphs, links and issue IDs remain
+unchanged. Both authoritative generation modes and all five independent
+validators pass. Whole Ruff passes; qualified Pyright retains exactly688
+diagnostic identities, no additions or retirements relative to `da4ab45f`, with
+the previously established raw-parent classification retained. Full source,
+fresh package/consumers, native PR and resulting-v8 gates remain separate.

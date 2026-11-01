@@ -3533,3 +3533,14 @@ CI workflow cohesion exception:657 physical lines, permitted ceiling700,
 integration/CI owner. Six exact source-gate identities remain adjacent to their
 existing mandatory invocation. Extract the gate only under a separate reviewed
 workflow ownership change; do not weaken its per-case accounting.
+
+INC132 validation-fixture correction keeps the shipped hook interpreter owner
+unchanged. The existing hook test module measures2,204 lines before this edit;
+permit at most2,250 solely for a discoverable non-script launcher fixture and
+its route/decoy assertions. Owner: integration/testing maintainer. Keep this
+regression adjacent to its existing emitted-probe helpers; extract that complete
+fixture family in a separate characterization-led change before unrelated
+growth. The native platform characterization remains below300 lines and uses
+the runner's existing pure selection owner instead of evaluating an orphaned
+call expression. Authoritative skill commentary may be shortened without
+removing executable examples, policy, provenance links or Qt/QML guidance.

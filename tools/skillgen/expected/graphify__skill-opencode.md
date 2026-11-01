@@ -640,38 +640,24 @@ from graphify.detect import save_manifest
 # Save manifest for --update
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-# In --update mode, 'all_files' carries the full corpus; 'files' is the changed
-# subset. Full-rebuild mode populates only 'files', so the fallback handles that.
-# root= relativizes the manifest keys to the scan root (same base as the build),
-# so the on-disk manifest is portable across clones/machines and a later --update
-# matches cached files instead of missing every one (#1417).
-#
-# Only stamp semantic files (docs/papers/images) that ACTUALLY produced output:
-# a detected file whose chunk failed or was omitted must stay unstamped so the
-# next --update re-queues it, otherwise it is marked done and its content is lost
-# forever (#2015). This mirrors the library extract path exactly
-# (cli._stamped_manifest_files + clear_semantic + scan_corpus); do not stamp the
-# raw corpus. Code files are always stamped (AST is deterministic); only semantic
-# types are gated on output.
+# In --update, all_files is the full corpus and files the changed subset; full rebuilds only populate files.
+# root= uses the build's scan root so portable manifest keys match cached files across clones/machines (#1417).
+# Stamp semantic files (docs/papers/images) only when they produced output; failed or omitted chunks
+# stay unstamped for retry, avoiding permanent content loss (#2015). Match the library extract path:
+# cli._stamped_manifest_files + clear_semantic + scan_corpus; never stamp the raw corpus. Always stamp deterministic AST code files.
 from graphify.cli import _stamped_manifest_files
 _corpus = detect.get('all_files') or detect['files']
-# A file a subagent only partly read DID produce output, so the stamp filter alone would
-# keep it - but its node set covers just the head of the file, and stamping it means
-# detect_incremental reads it as done and never re-queues it, leaving the truncated graph
-# live forever. Name those files so they stay unstamped and are retried next run (#2225).
+# Partial reads produced output but cover only the file head. Keep them unstamped so detect_incremental
+# retries them rather than accepting a permanently truncated graph (#2225).
 _pf = Path('graphify-out/.graphify_partial.txt')
 _partial = {l.strip() for l in _pf.read_text(encoding=\"utf-8\").splitlines() if l.strip()} if _pf.exists() else set()
 _manifest_files = _stamped_manifest_files(_corpus, extract, Path('INPUT_PATH'), partial_source_files=_partial)
-# Files dispatched this run (the changed subset) but NOT stamped above still carry
-# a stale semantic_hash from a prior run; clear it so detect_incremental re-queues
-# them instead of reading them as unchanged (#1948).
+# Clear prior semantic_hash values for dispatched but unstamped files so detect_incremental re-queues them (#1948).
 _sem_types = ('document', 'paper', 'image')
 _dispatched = {f for t, fl in detect['files'].items() if t in _sem_types for f in fl}
 _stamped = {f for fl in _manifest_files.values() for f in fl}
 _cleared = _dispatched - _stamped
-# scan_corpus = the RAW full corpus (not the stamp-filtered subset) so in-root
-# files newly excluded since last run are dropped rather than masquerading as
-# deletions; untouched files' prior rows are still preserved (#1908).
+# scan_corpus is the raw full (not stamp-filtered) corpus: drop newly excluded in-root files without treating them as deletions; preserve untouched rows (#1908).
 _scan = {f for fl in _corpus.values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 

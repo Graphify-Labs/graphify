@@ -1863,3 +1863,12 @@ corpus projection and native hosted checks retain separate revision identities.
 
 The root upstream architecture remains authoritative. D50 describes this bounded
 composition; no general JVM compiler/runtime or Qt SDK completeness is claimed.
+
+INC132 retains the `test_hooks.py` emitted interpreter-probe fixture owner;
+its2,204-line predecessor has a scoped2,250-line ceiling for the discoverable
+binary/non-shebang decoy case and exact launcher-route proof. Split that entire
+fixture family separately before unrelated additions. The native platform test
+characterizes the actual pure `selected_tests` helper. Skill comments remain
+authoritative in `tools/skillgen/fragments/core/core.md`; both packaged resources
+and expected snapshots are regenerated, retaining the strict installed-core
+line budget and all executable examples/guidance.

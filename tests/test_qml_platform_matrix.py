@@ -5,7 +5,9 @@ import ast
 from itertools import product
 from pathlib import Path
 import re
-from types import SimpleNamespace
+
+from tests.qml_ci import selected_tests
+from tests.test_qml_ci_upstream_inventory import EXPECTED
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,18 +39,17 @@ def test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries(
     assert 'interpreter(extra), "-I", smoke' in runner
     assert 'interpreter(core), "-I", smoke, "--core-only"' in runner
     assert '"GRAPHIFY_QML_TEST_WHEEL"' in runner or "GRAPHIFY_QML_TEST_WHEEL=" in runner
-    # Execute only the trusted runner's selection expression against real files.
+    # Exercise the trusted runner's selection owner against real files.
     # This preserves native joint-case admission and Linux artifact isolation
     # without invoking builds, installs or the runner's subprocess boundary.
-    selection = next(node.value for node in ast.walk(tree)
-                     if isinstance(node, ast.Assign)
-                     and any(isinstance(target, ast.Name) and target.id == "tests"
-                             for target in node.targets))
-    expression = compile(ast.Expression(selection), "qml_ci.py selection", "eval")
     corpus = tmp_path / "tests"
     corpus.mkdir()
     selected = ["test_qml_wheel_artifact.py", "test_qml_contract.py",
-                "test_qt_contract.py", "test_upstream_qt_contract.py"]
+                "test_qt_contract.py", "test_upstream_qt_contract.py",
+                "test_upstream_100_publication.py", "test_upstream_100_extraction.py",
+                "test_upstream_100_jvm_updates.py", "test_4874_jvm_resolution.py",
+                "test_4909_reference_binding_scale.py", "test_case_only_decl_ids_4904.py",
+                "test_scala_extension_methods.py", "test_php_class_const_initializer_refs.py"]
     for name in [*reversed(selected), "test_python_contract.py", "qml_ci.py",
                  "test_upstream_other.py", "test_qt_contract.txt"]:
         (corpus / name).write_text("", encoding="utf-8")
@@ -63,8 +64,13 @@ def test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries(
     monkeypatch.setattr(Path, "glob", unsorted_glob)
     for arguments, expected in [([], sorted(f"tests/{name}" for name in selected)),
                                 (["--artifact-only"], ["tests/test_qml_wheel_artifact.py"])]:
-        actual = eval(expression, {"root": tmp_path, "sys": SimpleNamespace(argv=arguments)})
+        actual = selected_tests(tmp_path, artifact_only="--artifact-only" in arguments)
         assert [Path(path).as_posix() for path in actual] == expected
+    # The reviewed 107-case merge matrix must reach native lanes through that
+    # same owner; its separate collection guard checks every parametrized ID.
+    assert sum(map(len, EXPECTED.values())) == 107
+    reviewed = {module.replace(".", "/") + ".py" for module in EXPECTED}
+    assert reviewed <= {Path(path).as_posix() for path in selected_tests(ROOT)}
     assert '"socket.connect"' in smoke and '"subprocess.Popen"' in smoke
     assert "sys.addaudithook(offline_guard)" in smoke
     assert "QML_PARSER_MISSING" in smoke
