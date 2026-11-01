@@ -1191,6 +1191,23 @@ def _reconcile_existing_graph(
                     node_evicted_source_identities.add(identity)
                     edge_evicted_source_identities.add(identity)
                     hyperedge_evicted_source_identities.add(identity)
+        # Edges and hyperedges may own a source with no corresponding node.
+        # Positive exclusion evidence applies to these records too (#4912).
+        seen_record_sources: set[str] = set()
+        for item in existing.get("links", existing.get("edges", [])) + existing.get("hyperedges", []):
+            source_file = item.get("source_file")
+            if source_file in seen_record_sources:
+                continue
+            if source_file:
+                seen_record_sources.add(source_file)
+            if (not source_file or _is_remote_source(source_file)
+                    or not source_paths.in_watch_root(source_file)):
+                continue
+            identity = source_paths.identity(source_file)
+            if identity and identity not in current_sources and Path(identity).exists() and _ignored_now(identity):
+                edge_evicted_source_identities.add(identity)
+                hyperedge_evicted_source_identities.add(identity)
+                newly_ignored_files.add(identity)
         if newly_ignored_files:
             print(
                 f"[graphify watch] pruned {newly_ignored_nodes} node(s) from "
