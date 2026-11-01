@@ -193,10 +193,12 @@ their package/input/execution identities remain separate from later code.
 The optional native selection includes `test_qt_`, `test_qml_`,
 `test_upstream_qt_`, `test_cpp_`, `test_csharp_`, `test_field_call_` and
 `test_source_relationship_` modules; Linux retains the full suite.
-INC127's new consumer correction passes646 local related cases including58
-ordinary regressions/controls. INC128 projection recovery has27 local passes
-within583 passes/13 existing capability skips. Corrected-package/full/corpus/
-new-head gates retain separate revision-bound acceptance in the PR evidence table.
+INC127–129's current source gate passes751 local related cases, including163
+accepted-frame, legacy compatibility and projection2 recovery cases. Earlier
+version1 recovery has583 passes/13 existing capability skips at its own source.
+Source9ac's fresh installed consumers failed the unchanged legacy input contract;
+corrected-package/full/corpus/new-head gates retain separate revision-bound
+acceptance in the PR evidence table. Failed environments/assertions are preserved.
 No Qt SDK/runtime execution or cross-platform application build is inferred.
 
 The final local corrective profile uses the previously qualified native Bash/sh

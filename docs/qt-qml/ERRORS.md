@@ -984,3 +984,15 @@ pre-publication policy; prior successful entries and accepted products remain
 protected. Successful publication records the version; a default full no-change
 repeat is stable, while an explicit partial repeat may change only the existing
 full_clean mode field. No new public diagnostic code/logger is introduced.
+
+### Ordinary field-absence compatibility — INC129
+
+Normal canonical unpromised legacy input must not acquire graph-only direction/
+provenance keys simply because a graph was assembled. This compatibility repair
+adds no warning/code and grants no provenance or native identity. Existing
+explicit malformed markers still reject at their owning boundary; force cannot
+repair them into authority. Source profiles remain canonical. Projection2 uses
+the existing transactional version-recovery path; no parser/cache schema change
+or new persistence failure category is introduced. Old caller mutation cannot
+be inferred away from a serialized graph; correct source/cache facts and fresh
+consumer receipts retain their respective roles.

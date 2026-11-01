@@ -5787,3 +5787,59 @@ no platform/profile/dependency/assertion is weakened. New wheel/full-source/
 installed/corpus/native acceptance belongs to the resulting reviewed revision,
 with individual current evidence in PR #10. Original producer/raw facts retain
 their original source identity when a newly bound consumer re-projects them.
+
+### INC-QML-129 — Ordinary caller field absences and projection2
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and
+REQ-QML-011-AC04, with accepted-product retention under REQ-QML-012-AC02.
+Source9ac's fresh raw-tree wheel matches386 payloads/249 Python files, but both
+new offline core31/QML-watch35 consumers fail the unchanged historical legacy100
+input invariant after FAST8/admission/setup/control success. Graph type/two
+nodes/one call/no source-profile conjuncts pass; only caller data changes.
+Four phases entered in19.234 seconds; later original CLI/new supplemental/
+finalization phases remain unexecuted. Failed environments, original17 historical
+inputs/nine oldest assertion/config files and the complete failure receipt remain
+immutable. Package/dependency/source1,148/protected14/harness guards match.
+
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml022_ac06_legacy100_falsy_graph_keeps_input_exact`
+promotes30 exact ordinary fixture/boundary/direction cases. Its typed-falsy and
+typed-absence neighbors promote the other18 historical matrix cases. The first
+canonical readback proves synthesized _src/_tgt are the mutation; the neighboring
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml010_ac02_legacy_source_field_absence_is_not_backfilled_in_input`
+proves the same issue for absent source_file. The new ordinary module has75
+cases:26 actual failures/49 controls before correction, no errors/skips.
+
+The helper suppresses only those three synthesized keys for ordinary records
+when absent from the working edge. All other methods/ordering/imports remain
+AST-exact; source-profile attrs and present-field repairs remain authoritative.
+The exact tests
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml010_ac02_required_remap_and_rejected_peer_still_adopt`
+and
+`tests/test_source_relationship_projection_legacy_inputs.py::test_req_qml010_ac02_source_profile_keeps_canonical_derived_fields`
+prevent reverting accepted remaps/rejection or source-profile canonical output.
+The explicit direction, numeric/unknown field and invalid-marker tests retain
+valid pair remaps, arbitrary metadata, forced rejection and accepted disk bytes.
+All new absence-filter executable lines and branches execute; earlier defensive
+helper coverage limits remain explicit, not claimed100%.
+
+Projection1 advances to2 because caller records may be persisted by original-link
+export. The existing strict-version test adds old integer1 and current-equal
+float2.0/text2 with unique IDs; all seven earlier values/IDs/order and every test
+body/assertion/import remain AST-exact. Its complete module now passes30 cases,
+zero skips/errors,24.187 seconds. Earlier27 XML namespace differences remain
+recorded rather than rewritten or used as alias passes.
+
+Final new75 pass; combined75+58+30 passes163, zero skips/errors,48.922 seconds.
+The related source/direction/build/export/type/raw/stub gate passes751 cases,
+including163, zero skips/errors,153.141 seconds. These overlapping runs are not
+summed. All1,149 current Python files and14 protected files remain exact, with
+restorable backups and confirmed neutral-fixture cleanup. Scoped Ruff/Pyright
+pass. An independent AST diff and terminal peer bind the exact helper174-line
+source; builder/exporter/watch and248 other runtime Python files remain exact
+apart from the documented checkout newline representation.
+
+Fresh package/full-source/installed/corpus/native acceptance belongs to the new
+reviewed source. The old source9ac workflow result cannot establish the corrected
+installed contract. Preserve original producer/raw extraction identity when
+re-projecting retained facts; no source-fact epoch, dependency, cap, assertion or
+platform selection is weakened to obtain success.

@@ -3412,3 +3412,27 @@ state transition; it must preserve graph/source facts and the accepted projectio
 version. The normal full no-change entry remains byte-stable after recovery.
 Valid new raw-cache entries retain their existing pre-publication policy; failed
 publication cannot replace prior successful entries or stamp a new projection.
+
+### Ordinary caller absence compatibility — INC129 / D49
+
+Observed source9ac regression: complete graph-side attributes were copied into
+ordinary caller records even when no semantic correction was required. The new
+red module and unchanged installed legacy100 probe show synthesized direction
+and source-file keys are the difference; successful graph output alone does
+not establish preservation of the library caller's input contract.
+
+The implemented correction retains canonical source/target and explicitly present
+ordinary fields, including their existing normalization. Only the three known
+graph-side synthesized fields are suppressed when absent from the ordinary
+working edge; unknown metadata must not be generically filtered. Source-profile
+adoption remains complete and strict. Accepted endpoint changes and rejected
+relationships still change their owned caller frame as D49 requires.
+
+Projection version2 drives existing INC128 recovery from version1 using valid
+raw facts; this is not a source-fact schema/parser change. Older accepted graphs
+cannot prove which fields were originally absent, so the writer must not guess
+that provenance from serialized values. Fresh producer facts retain their own
+identity; input data and failed installed evidence remain immutable on disk.
+No new diagnostic code, state file, persistence owner, SDK or corpus execution
+is introduced. Correspondence failure and atomic publication retain their
+existing diagnostics/retention/retry contracts.

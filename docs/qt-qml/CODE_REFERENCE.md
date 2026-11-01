@@ -1746,7 +1746,7 @@ set, repair callback and admission callback through a deterministic source queue
 `accept` snapshots complete admitted records before storage folding; `commit`
 validates and adopts owned list/dictionary references after final graph checks.
 No graph metadata registry, writer, extractor import or ambient root is added.
-`BUILD_PROJECTION_VERSION = 1` is declared for INC128 recovery.
+`BUILD_PROJECTION_VERSION` starts at1 for INC128 and advances to2 for the INC129 caller-field compatibility correction.
 
 The graph-assembly maintainer owns minimal `build_from_json` hooks and its shared
 invocation-local preparation/admission callbacks: build.py measures3,328/3,345,
@@ -1773,3 +1773,17 @@ No new state file, parser epoch, dependency, SDK or discovery policy is added.
 All changed executable lines/arcs, including current-version clustered topology,
 execute in the recorded scoped/adjacent source gates. Complete package/installed/
 corpus/hosted evidence remains distinct and revision-bound.
+
+## Ordinary caller field compatibility — INC129
+
+The same `AcceptedLinkFrame.accept` owner now omits only synthesized _src/_tgt/
+source_file when absent from an ordinary working record. Source-profile records,
+explicit valid/invalid markers, unknown metadata, canonical endpoints, rejection,
+transient removal and existing-present-field repair retain their prior owners.
+The helper measures174/300; builder3,328/3,345, exporter1,527/1,540 and
+watch3,432/3,450 remain unchanged. Projection2 invokes the existing successful
+publication recovery from1; AST39/Qt33/package/dependency contracts are unchanged.
+The new legacy regression module measures196 lines; the existing update module
+measures222 after three stable parameter additions, with all old values/bodies
+and assertions retained. No failed installed environment or assertion is reused
+as passing evidence.

@@ -7,15 +7,15 @@ Shared installer, shell-fixture, filesystem-profile and Terraform verification
 continues separately under [INC-CORE-01–03](../COMPATIBILITY.md). These contribution
 gate corrections do not expand the Qt/QML language profile or advance its counter.
 
-Current delivery: INC-QML-61–128 implements the bounded Qt6.12 source audit,
-accepted-link export correction and forward projection recovery on
-[PR #10](https://github.com/SlinkyRamey/graphify-with-qt-and-qml-support/pull/10).
-INC127 has58 ordinary passes within646 related regressions; INC128 has27
-ordinary passes within583 passes/13 explicit skips in its596-case adjacent gate.
-Source43ac's20 successful hosted jobs retain their historical revision binding.
-The resulting correction requires its own source/package/corpus/native/cleanup
-proof. Current per-revision delivery state belongs to PR #10's evidence table;
-individual receipts establish acceptance, not implementation status or totals.
+Current delivery: INC-QML-61–129 implements the bounded Qt6.12 source audit,
+accepted-link export correction, ordinary caller compatibility and projection
+recovery on [PR #10](https://github.com/SlinkyRamey/graphify-with-qt-and-qml-support/pull/10).
+The current local gate has751 related passes, including163 focused cases:
+58 accepted-frame,75 legacy compatibility and30 version/recovery cases.
+Earlier27/596 recovery evidence retains its own version1 source binding.
+Final raw-wheel/full-source/installed/corpus/native/cleanup gates are individually
+revision-bound in PR #10's current evidence table. Source43ac's20 hosted passes
+and source9ac's failed installed consumers are historical, separate evidence.
 Unsupported/unverified SDK forms remain in the mechanism matrix; source-corpus
 declarations and every possible native binding are distinct claims.
 
@@ -5599,3 +5599,46 @@ or dependency changes. Current-revision raw package, full suite, installed consu
 real corpus consumer and normal hosted checks remain separately bound release
 gates. Live per-revision state belongs to PR #10's evidence table; older successful
 and failed source checkpoints are not promoted to a later revision.
+
+### INC-QML-129 — Ordinary caller field absences survive projection
+
+Fresh isolated core31/QML-watch35 consumers for source9ac fail the unchanged
+historical legacy100 invariant after FAST8/admission/setup/control success.
+Graph type, two nodes, one call and absent source-storage profile remain correct;
+the caller dictionary alone changes. Accepted-link adoption copied synthesized
+_src/_tgt, and a neighboring absent-source_file case copied synthesized
+provenance. The failed profiles and every original assertion remain preserved;
+later CLI/new supplemental/finalization phases were not executed.
+
+Affected acceptance is REQ-QML-010-AC02, the unpromised legacy compatibility
+contract in REQ-QML-022-AC06 and REQ-QML-011-AC04 forward recovery. Before
+implementation, the new ordinary module reproduces26 failures/49 controls
+in75 cases: the exact48 legacy100 matrix and adjacent absence, explicit direction,
+source-profile, held-reference, numeric/unknown metadata, actual rejection and
+accepted-product retention checks. All1,148 earlier Python files and14 protected
+files remain exact; the new196-line module is frozen. No old assertion changes.
+
+The production owner may suppress only builder-synthesized _src/_tgt/source_file
+when absent from an ordinary working edge. Keep source-profile complete records,
+canonical endpoints, rejection/pruning, valid explicit pair remapping, invalid
+pair rejection, transient removal and present-field repairs. Do not filter all
+unknown attributes or discard D49. The invocation-local helper remains the owner;
+build/export/watch need no implementation change. New helper is proposed174/300,
+from167; existing builder3,328/3,345 and watch3,432/3,450 remain frozen.
+
+Advance projection_version1 to2 because original-link JSON field shape changes.
+AST39/Qt33/package0.9.99 and dependency profiles remain unchanged. Add old-int1
+and current-equal float2.0/text2 version controls without removing the existing
+seven values/assertions; current integer2 remains accepted. Sequence ordinary
+red, helper green, new version tests and broader frozen gates with disjoint test/
+production ownership. Fresh failed environments are not reused; source9ac CI
+continues undisturbed until normal new-source PR synchronization replaces it.
+Final new package/full/installed/corpus/native proof remains revision-bound.
+
+INC129's source-frozen correction passes75 new cases, then163 combined cases,
+then751 related cases, with no failures/skips. The three new watch-version values
+retain all earlier cases/assertions and pass the complete30-case module.
+Helper174/300, projection2 and no other runtime body changes are independently
+reviewed. New absence-filter lines/branches execute; prior defensive gaps stay
+explicit. Final current-revision source/package/installed/corpus/native and
+cleanup evidence remains separately bound; failed9ac consumers are never reused.

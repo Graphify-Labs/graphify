@@ -12,7 +12,7 @@ from copy import deepcopy
 from graphify.graph_direction import logical_endpoints
 from graphify.source_relationships import source_profile, storage_key
 
-BUILD_PROJECTION_VERSION = 1
+BUILD_PROJECTION_VERSION = 2
 
 
 class AcceptedLinkFrame:
@@ -105,6 +105,13 @@ class AcceptedLinkFrame:
         if position is None:
             raise ValueError("SOURCE_RELATIONSHIPS_INVALID: accepted edge lost caller correspondence")
         record = {**deepcopy(attributes), "source": source, "target": target}
+        # Storage-only direction and inferred provenance must not expand an
+        # ordinary caller's schema. Source-profile publication stays canonical;
+        # explicit working fields still receive the owning builder's repairs.
+        if not self.source:
+            for name in ("_src", "_tgt", "source_file"):
+                if name not in edge:
+                    record.pop(name, None)
         for name, value in (("from", source), ("to", target)):
             if name in record:
                 record[name] = value
