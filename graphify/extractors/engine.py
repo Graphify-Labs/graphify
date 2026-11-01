@@ -4965,11 +4965,54 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
         return True
     return False
 
+def _scala_extension_receiver_name(node, source: bytes) -> str | None:
+    """The type an `extension_definition` extends, or None if it names no type.
+
+    The receiver is the single parameter of the first non-`using` parameter
+    clause: `extension (using c: Ctx)(x: Int)` extends `Int`, not `Ctx`. A
+    generic (`List[A]`) or qualified (`pkg.Thing`) receiver binds to its type
+    name. A receiver typed by the extension's own type parameter
+    (`extension [T](t: T)`) extends every type, so there is no type to own it.
+    """
+    clause = next(
+        (c for c in node.children
+         if c.type == "parameters" and not any(cc.type == "using" for cc in c.children)),
+        None,
+    )
+    if clause is None:
+        return None
+    param = next((c for c in clause.children if c.type == "parameter"), None)
+    if param is None:
+        return None
+    type_node = next(
+        (c for c in param.children
+         if c.type in ("type_identifier", "generic_type", "stable_type_identifier")),
+        None,
+    )
+    if type_node is not None and type_node.type == "generic_type":
+        type_node = next(
+            (c for c in type_node.children
+             if c.type in ("type_identifier", "stable_type_identifier")),
+            None,
+        )
+    if type_node is not None and type_node.type == "stable_type_identifier":
+        type_node = next(
+            (c for c in reversed(type_node.children) if c.type == "type_identifier"),
+            None,
+        )
+    if type_node is None:
+        return None
+    name = _read_text(type_node, source).strip()
+    if not name or name in _scala_type_parameters_in_scope(node, source):
+        return None
+    return name
+
 def _scala_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                       nodes: list, edges: list, seen_ids: set, function_bodies: list,
                       parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                      walk_fn) -> bool:
-    """Emit a node per Scala 3 enum case with a case_of edge. Returns True if handled.
+                      walk_fn, ensure_named_node_fn) -> bool:
+    """Emit a node per Scala 3 enum case with a case_of edge, and scope extension
+    methods to their receiver type. Returns True if handled.
 
     tree-sitter-scala wraps the members of an `enum` in `enum_case_definitions`,
     whose children are `simple_enum_case` (`case Red`) or `full_enum_case`
@@ -5002,6 +5045,23 @@ def _scala_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
             if case_nid not in seen_ids:
                 add_node_fn(case_nid, case_name, line)
                 add_edge_fn(parent_class_nid, case_nid, "case_of", line)
+        return True
+    if node.type == "extension_definition":
+        # `extension (p: Point) def flip` adds `flip` to `Point`. The node has no
+        # name of its own, so without this its methods fell through to file
+        # scope with no edge to the type they extend (#2044). The receiver is
+        # resolved like a type reference: a `Point` declared in this file keeps
+        # its one node, and any other type gets the sourceless stub the corpus
+        # rewire collapses onto its real definition, never a sourced copy that
+        # would duplicate it (#1402).
+        receiver = _scala_extension_receiver_name(node, source)
+        if receiver is None:
+            return False
+        receiver_nid = ensure_named_node_fn(receiver, node.start_point[0] + 1)
+        # `body` is a repeated field (each `def`, plus the braces of a braced
+        # body), so child_by_field_name would return only the first member.
+        for member in node.children_by_field_name("body"):
+            walk_fn(member, parent_class_nid=receiver_nid)
         return True
     return False
 
@@ -6376,6 +6436,21 @@ def _extract_generic(
 
     decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
+    def _php_const_ref_target(cca) -> "str | None":
+        # #4648: resolve a Scope::MEMBER class scope to a real local node; skip
+        # self::/static::/parent:: and never mint a stub for an unknown scope.
+        first = next((c for c in cca.children if c.is_named), None)
+        if first is None or first.type not in ("name", "qualified_name"):
+            return None
+        name = _read_text(first, source)
+        if first.type == "qualified_name":
+            name = name.rsplit("\\", 1)[-1]
+        declared = decl_registry.lookup(name)
+        if declared is not None:
+            return declared
+        nid = _make_id(stem, ".".join(namespace_stack), name)
+        return nid if (nid in seen_ids and nid != file_nid) else None
+
     def decl_node(nid: str, name: str, kind: str, label: str, line: int,
                   **kwargs) -> str:
         resolved = decl_registry.resolve(nid, name, kind, seen_ids)
@@ -7579,6 +7654,22 @@ def _extract_generic(
                              line, context=ctx)
             return
 
+        if (config.ts_module == "tree_sitter_php" and parent_class_nid
+                and t in ("const_declaration", "property_declaration")):
+            # #4648: Scope::MEMBER accesses in class-level initializers sit
+            # outside any function body, so emit their references_constant here.
+            seen_here: set[str] = set()
+            stack = list(node.children)
+            while stack:
+                sub = stack.pop()
+                if sub.type == "class_constant_access_expression":
+                    tgt = _php_const_ref_target(sub)
+                    if tgt is not None and tgt != parent_class_nid and tgt not in seen_here:
+                        seen_here.add(tgt)
+                        add_edge(parent_class_nid, tgt, "references_constant",
+                                 sub.start_point[0] + 1)
+                stack.extend(sub.children)
+
         if (config.ts_module == "tree_sitter_php"
                 and t == "property_declaration"
                 and parent_class_nid):
@@ -8180,6 +8271,20 @@ def _extract_generic(
                                 fctx = "generic_arg" if role == "generic_arg" else "field"
                                 add_edge(parent_class_nid, target_nid, "references",
                                          line, context=fctx)
+                        # #4648: a Scope::MEMBER in a parameter default is outside
+                        # the body, so emit its references_constant edge here.
+                        const_src = parent_class_nid or func_nid
+                        seen_param: set[str] = set()
+                        pstack = list(p.children)
+                        while pstack:
+                            psub = pstack.pop()
+                            if psub.type == "class_constant_access_expression":
+                                ptgt = _php_const_ref_target(psub)
+                                if ptgt is not None and ptgt != const_src and ptgt not in seen_param:
+                                    seen_param.add(ptgt)
+                                    add_edge(const_src, ptgt, "references_constant",
+                                             psub.start_point[0] + 1)
+                            pstack.extend(psub.children)
                 return_node = _php_method_return_type_node(node)
                 if return_node is not None:
                     refs = []
@@ -8642,7 +8747,8 @@ def _extract_generic(
         if config.ts_module == "tree_sitter_scala":
             if _scala_extra_walk(node, source, file_nid, stem, str_path,
                                  nodes, edges, seen_ids, function_bodies,
-                                 parent_class_nid, add_node, add_edge, walk):
+                                 parent_class_nid, add_node, add_edge, walk,
+                                 ensure_named_node):
                 return
 
         # C++ enumerators (`Red`, `Green = 2`) inside an enum / enum class body.

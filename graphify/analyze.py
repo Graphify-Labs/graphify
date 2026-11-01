@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import networkx as nx
 
-from graphify.build import edge_data
+from graphify.build import edge_datas
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -410,18 +410,22 @@ def _cross_community_surprises(
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
-            data = edge_data(G, u, v)
-            result.append({
-                "source": G.nodes[u].get("label", u),
-                "target": G.nodes[v].get("label", v),
-                "source_files": [
-                    G.nodes[u].get("source_file", ""),
-                    G.nodes[v].get("source_file", ""),
-                ],
-                "confidence": data.get("confidence", "EXTRACTED"),
-                "relation": data.get("relation", ""),
-                "note": f"Bridges graph structure (betweenness={score:.3f})",
-            })
+            for data in edge_datas(G, u, v):
+                result.append({
+                    "source": G.nodes[u].get("label", u),
+                    "target": G.nodes[v].get("label", v),
+                    "source_files": [
+                        G.nodes[u].get("source_file", ""),
+                        G.nodes[v].get("source_file", ""),
+                    ],
+                    "confidence": data.get("confidence", "EXTRACTED"),
+                    "relation": data.get("relation", ""),
+                    "note": f"Bridges graph structure (betweenness={score:.3f})",
+                })
+                if len(result) >= top_n:
+                    break
+            if len(result) >= top_n:
+                break
         return result
 
     # Build node → community map
@@ -579,11 +583,19 @@ def suggest_questions(
         and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
+        has_semantic_layer = any(
+            G.nodes[n].get("file_type") in ("document", "paper", "image")
+            for n in G.nodes()
+        )
+        reason = (
+            "possible documentation gaps or missing edges" if has_semantic_layer
+            else "possible missing edges"
+        )
         labels = [G.nodes[n].get("label", n) for n in isolated[:3]]
         questions.append({
             "type": "isolated_nodes",
             "question": f"What connects {', '.join(f'`{l}`' for l in labels)} to the rest of the system?",
-            "why": f"{len(isolated)} weakly-connected nodes found - possible documentation gaps or missing edges.",
+            "why": f"{len(isolated)} weakly-connected nodes found - {reason}.",
         })
 
     # 5. Low-cohesion communities → structural questions
