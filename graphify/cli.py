@@ -1092,6 +1092,8 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     quoted spans, split on shell operators, and match the executable at each
     command position (wrappers like sudo/xargs/env skipped; `git grep` and
     `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    `sed` and `awk` count too, unless they read a pipe or edit in place: run on
+    files, they are a grep or a read of the codebase by another name.
     """
     text = cmd_str
     # Drop heredoc bodies: from the line after `<<WORD` through the line that
@@ -1113,9 +1115,12 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     # here - anything quoted is an argument, never the executable).
     text = re.sub(r"'[^']*'", " ", text)
     text = re.sub(r'"[^"]*"', " ", text)
-    # Split into command segments at shell operators / substitution boundaries.
-    for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
-        tokens = segment.split()
+    # Split into command segments at shell operators / substitution boundaries,
+    # keeping each operator so a segment knows whether it reads a pipe.
+    parts = re.split(r"(\|\|?|[;&\n]|\$\(|`|\(|\)|\{|\})", text)
+    for index in range(0, len(parts), 2):
+        piped = index > 0 and parts[index - 1] == "|"
+        tokens = parts[index].split()
         i = 0
         while i < len(tokens):
             tok = tokens[i]
@@ -1134,6 +1139,10 @@ def _bash_invokes_search(cmd_str: str) -> bool:
                 return True
             if name == "git" and any(
                 t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
+            ):
+                return True
+            if name in ("sed", "awk") and not piped and not any(
+                t2.startswith(("-i", "--in-place")) for t2 in tokens[i + 1:]
             ):
                 return True
             break  # first real token decides this segment
