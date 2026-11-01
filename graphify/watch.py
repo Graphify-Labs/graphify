@@ -1,6 +1,7 @@
 # monitor a folder and auto-trigger --update when files change
 from __future__ import annotations
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -209,6 +210,22 @@ def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     return out
 
 
+# msvcrt.locking reports a byte range held by another handle as EACCES
+# (EDEADLOCK is the LK_LOCK flavour). Any other errno means the lock call
+# itself is unsupported on this filesystem, so waiting for it is pointless.
+_WIN_LOCK_CONTENDED_ERRNOS = frozenset({errno.EACCES, errno.EDEADLK})
+
+
+def _win_try_lock(fh, msvcrt, offset: int) -> OSError | None:
+    """One non-blocking msvcrt lock attempt: None on success, else the error."""
+    try:
+        fh.seek(offset)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        return exc
+    return None
+
+
 @contextlib.contextmanager
 def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     """Per-repo advisory lock around a rebuild.
@@ -224,6 +241,11 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     waits for the lock to clear by polling for its absence unblocks promptly.
 
     Falls back to a no-op yield(True) on platforms without fcntl or msvcrt.
+    On Windows, a filesystem where msvcrt.locking is unsupported (e.g. the WSL
+    share \\wsl.localhost) also gets yield(True), with a warning on stderr,
+    instead of waiting forever for a lock that can never be taken (#4924). That
+    path leaves an existing ``.rebuild.lock`` untouched: it may belong to a
+    flock holder on the other side of the share.
     """
     try:
         import fcntl
@@ -243,6 +265,7 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     # "a+" creates the file if missing without truncating an existing holder's
     # PID payload — important because another process may have already written
     # its PID before we attempt the flock.
+    created_lock_file = not lock_path.exists()
     fh = open(lock_path, "a+", encoding="utf-8")
     acquired = False
     # On Windows, byte-range locks are mandatory. Locking byte offset 4096 allows
@@ -301,21 +324,39 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
                 yield False
                 return
         else:
-            if blocking:
-                while True:
-                    try:
-                        fh.seek(_win_lock_offset)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-                        break
-                    except OSError:
-                        time.sleep(0.05)
-            else:
-                try:
-                    fh.seek(_win_lock_offset)
-                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError:
+            while True:
+                lock_error = _win_try_lock(fh, msvcrt, _win_lock_offset)
+                if lock_error is None:
+                    break
+                if lock_error.errno not in _WIN_LOCK_CONTENDED_ERRNOS:
+                    # The filesystem cannot byte-range lock at all (EINVAL on
+                    # the WSL share \\wsl.localhost seen from Windows, #4924).
+                    # Retrying can never succeed, and treating it as "held"
+                    # made blocking callers spin forever and non-blocking ones
+                    # never rebuild. Proceed unlocked, like the no-locking-API
+                    # fallback above, without taking over the lock file: a
+                    # WSL-side flock holder may own it, and writing our PID
+                    # into it or unlinking it on release would let a second
+                    # WSL-side caller in on a fresh inode (#4273). Only undo
+                    # our own creation of an empty file, before the rebuild.
+                    print(
+                        f"[graphify watch] cannot lock {lock_path} "
+                        f"({lock_error.__class__.__name__}: {lock_error}); this "
+                        "filesystem does not support byte-range locks, so "
+                        "rebuilds of this graph are not serialized.",
+                        file=sys.stderr,
+                    )
+                    fh.close()
+                    if created_lock_file:
+                        with contextlib.suppress(OSError):
+                            if lock_path.stat().st_size == 0:
+                                lock_path.unlink()
+                    yield True
+                    return
+                if not blocking:
                     yield False
                     return
+                time.sleep(0.05)
         acquired = True
         # Replace any prior owner's PID with ours so external readers see a
         # single parseable line, not a digit-concatenation across rebuilds.

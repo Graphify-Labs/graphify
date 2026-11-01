@@ -309,6 +309,137 @@ def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
         assert not lock_path.exists()
 
 
+# --- _rebuild_lock: msvcrt branch on a filesystem without byte-range locks (#4924) ---
+#
+# On the WSL share (\\wsl.localhost\<distro>\...) seen from Windows,
+# msvcrt.locking raises EINVAL on every call. The Windows branch used to treat
+# every OSError as "another rebuild holds it": the blocking `graphify update`
+# CLI spun in a `while True` forever, and the non-blocking git hooks queued
+# their change and returned with no lock holder left to drain it. These run the
+# msvcrt branch on any OS through a stand-in module, with fcntl hidden.
+
+
+def _use_fake_msvcrt(monkeypatch, *, errnos=(), always=None):
+    """Install a stand-in msvcrt whose locking() raises OSError(code) for each
+    code in ``errnos`` (then succeeds), or for every call when ``always`` is set.
+    Unlock calls always succeed. Returns the list of lock attempts made."""
+    import types
+
+    attempts = []
+    pending = list(errnos)
+
+    def locking(fd, mode, nbytes):
+        if mode == fake.LK_UNLCK:
+            return
+        attempts.append(mode)
+        code = always if always is not None else (pending.pop(0) if pending else None)
+        if code is not None:
+            raise OSError(code, os.strerror(code))
+
+    fake = types.SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # `import fcntl` -> ImportError
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    return attempts
+
+
+def _bounded_sleep(monkeypatch, limit=20):
+    """Replace watch's time.sleep so a retry loop that never ends fails the test
+    instead of hanging it. Returns the list of requested sleeps."""
+    import types
+    import graphify.watch as watch
+
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) > limit:
+            raise AssertionError("_rebuild_lock kept retrying a lock error that can never clear")
+
+    monkeypatch.setattr(watch, "time", types.SimpleNamespace(sleep=sleep))
+    return slept
+
+
+def test_rebuild_lock_blocking_does_not_spin_when_filesystem_cannot_lock(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    attempts = _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=True) as got:
+        assert got is True
+        # It created the file only to try the lock; that empty file is gone
+        # again before the rebuild runs, so no stale lock is left (GH-858).
+        assert not (out / ".rebuild.lock").exists()
+    assert slept == []
+    assert len(attempts) == 1
+    err = capsys.readouterr().err
+    assert "does not support byte-range locks" in err
+    assert str(out / ".rebuild.lock") in err
+    assert not (out / ".rebuild.lock").exists()
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_rebuild_lock_unsupported_filesystem_leaves_another_holders_lock_file_alone(
+    tmp_path, monkeypatch, capsys, blocking
+):
+    """The repo is on the WSL share and a WSL-side rebuild already holds a
+    flock on .rebuild.lock (its PID inside). The Windows caller that cannot lock
+    must not write its PID over the holder's or unlink the path on release:
+    unlinking lets the next WSL-side caller flock a fresh inode while the first
+    holder is still rebuilding (#4273)."""
+    import errno
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    lock_path = out / ".rebuild.lock"
+    lock_path.write_text("12345\n", encoding="utf-8")
+    inode_before = os.stat(lock_path).st_ino
+    _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=blocking) as got:
+        assert got is True
+        assert lock_path.read_text(encoding="utf-8") == "12345\n"
+    assert lock_path.read_text(encoding="utf-8") == "12345\n"
+    assert os.stat(lock_path).st_ino == inode_before
+    assert "does not support byte-range locks" in capsys.readouterr().err
+
+
+def test_rebuild_lock_non_blocking_proceeds_when_filesystem_cannot_lock(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=False) as got:
+        assert got is True, "an unsupported lock is not 'another rebuild is running'"
+    assert "does not support byte-range locks" in capsys.readouterr().err
+
+
+def test_rebuild_lock_blocking_still_waits_while_msvcrt_lock_is_contended(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    attempts = _use_fake_msvcrt(monkeypatch, errnos=(errno.EACCES, errno.EACCES))
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=True) as got:
+        assert got is True
+    assert len(attempts) == 3
+    assert slept == [0.05, 0.05]
+    assert "byte-range" not in capsys.readouterr().err
+
+
+def test_rebuild_lock_non_blocking_still_yields_false_while_msvcrt_lock_is_contended(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    _use_fake_msvcrt(monkeypatch, always=errno.EACCES)
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=False) as got:
+        assert got is False
+    assert slept == []
+    assert "byte-range" not in capsys.readouterr().err
+
+
 def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_path, monkeypatch):
     """#777: ``.graphify_root`` stores the user-supplied path (``.``), not the
     resolved absolute, so a committed ``graphify-out/.graphify_root`` is
