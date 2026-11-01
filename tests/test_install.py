@@ -5,6 +5,8 @@ import sys
 from unittest.mock import patch
 import pytest
 
+from graphify.install import _PLATFORM_CONFIG
+
 
 PLATFORMS = {
     "claude": (".claude/skills/graphify/SKILL.md",),
@@ -764,6 +766,25 @@ def test_uninstall_project_without_platform_removes_project_installs(tmp_path, m
     assert not (project / ".claude" / "CLAUDE.md").exists()
 
 
+@pytest.mark.parametrize("platform", sorted(_PLATFORM_CONFIG))
+def test_uninstall_removes_every_platform_user_skill(tmp_path, monkeypatch, platform):
+    """Bare `graphify uninstall` removes the user-scope skill `install --platform X`
+    wrote for every platform, not only claude/codebuddy/amp/agents."""
+    from graphify.__main__ import main
+    from graphify.install import _platform_skill_destination
+    home = tmp_path / "home"
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", platform])
+        main()
+        skill = _platform_skill_destination(platform)
+        assert skill.exists()
+        monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])
+        main()
+    assert not skill.parent.exists()
+    assert not (home / ".config" / "kilo" / "command" / "graphify.md").exists()
+
+
 def test_antigravity_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"
@@ -981,6 +1002,54 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     assert plugin.exists()
     assert "tool.execute.before" in plugin.read_text()
+
+
+def test_opencode_global_install_writes_plugin_to_config_dir(tmp_path, monkeypatch):
+    """A global install puts the plugin in ~/.config/opencode/plugins, where
+    OpenCode loads global plugins, and writes nothing under the cwd (#3398)."""
+    from graphify.install import install
+
+    cwd = tmp_path / "some-project"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    install("opencode")
+
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    assert "tool.execute.before" in plugin.read_text(encoding="utf-8")
+    assert not (cwd / ".opencode").exists()
+    assert not (Path.home() / ".config" / "opencode" / ".opencode").exists()
+
+
+def test_opencode_project_install_keeps_plugin_in_project(tmp_path, monkeypatch):
+    from graphify.install import install
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    install("opencode", project=True, project_dir=proj)
+
+    assert (proj / ".opencode" / "plugins" / "graphify.js").exists()
+    assert not (Path.home() / ".config" / "opencode" / "plugins").exists()
+    assert not (elsewhere / ".opencode").exists()
+
+
+def test_uninstall_all_removes_the_global_opencode_plugin(tmp_path, monkeypatch):
+    from graphify.install import install, uninstall_all
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    install("opencode")
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    assert plugin.exists()
+
+    uninstall_all(proj)
+
+    assert not plugin.exists()
 
 
 def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
@@ -1365,9 +1434,8 @@ def test_kilo_uninstall_removes_plugin_registration_and_command(tmp_path):
     _kilo_install(project_dir, home_dir)
     _kilo_uninstall(project_dir, home_dir)
     assert not (home_dir / ".config" / "kilo" / "command" / "graphify.md").exists()
-    assert not (
-        home_dir / ".config" / "kilo" / "skills" / "graphify" / "SKILL.md"
-    ).exists()
+    # The whole skill dir, references/ included, not only SKILL.md.
+    assert not (home_dir / ".config" / "kilo" / "skills" / "graphify").exists()
     assert not (project_dir / ".kilo" / "plugins" / "graphify.js").exists()
     config_file = project_dir / ".kilo" / "kilo.json"
     if config_file.exists():

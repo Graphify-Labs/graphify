@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from graphify.ids import DeclIdRegistry
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -179,13 +180,33 @@ def _go_single_type_name(node, source: bytes) -> str | None:
     return name if name and name not in _GO_PREDECLARED_TYPES else None
 
 
+def _go_inferred_composite_bindings(names, values, source: bytes):
+    """Pair same-position declared names with composite-literal values.
+
+    Shared by `x := T{}` (`short_var_declaration`) and `var x = T{}` (a
+    type-less `var_spec`): both bind a name to the type of a same-position
+    `T{}` / `&T{}` value. Yields (name text, inferred type) for each pair
+    that is in fact a composite literal.
+    """
+    for name_node, value in zip(names, values):
+        if value.type == "unary_expression":
+            value = value.child_by_field_name("operand") or value
+        if value.type != "composite_literal":
+            continue
+        type_name = _go_single_type_name(value.child_by_field_name("type"), source)
+        if type_name:
+            yield _read_text(name_node, source), type_name
+
+
 def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
     """Collect ``name -> TypeName`` for every Go receiver whose type is written down.
 
-    Four sources: a struct field, a parameter (which covers the method receiver
-    `func (s *Server)`), `var x T`, and `x := T{}` / `x := &T{}`. Flat over the subtree it is
-    given, first binding wins — run over one function it is that function's own scope, and
-    over the file it is the fallback for a struct field. Children are pushed reversed so the
+    Five sources: a struct field, a parameter (which covers the method receiver
+    `func (s *Server)`), `var x T`, `x := T{}` / `x := &T{}`, and `var x = T{}` /
+    `var x = &T{}` (the same composite-literal inference, spelled with `var`
+    instead of `:=`). Flat over the subtree it is given, first binding wins —
+    run over one function it is that function's own scope, and over the file it
+    is the fallback for a struct field. Children are pushed reversed so the
     walk yields document order and "first" means first in the source.
     """
     table: dict[str, str] = {}
@@ -195,25 +216,65 @@ def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
         t = n.type
         if t in ("field_declaration", "parameter_declaration", "var_spec"):
             type_name = _go_single_type_name(n.child_by_field_name("type"), source)
-            for c in n.children if type_name else ():
-                if c.type in ("field_identifier", "identifier"):
-                    table.setdefault(_read_text(c, source), type_name)
+            if type_name:
+                for c in n.children:
+                    if c.type in ("field_identifier", "identifier"):
+                        table.setdefault(_read_text(c, source), type_name)
+            elif t == "var_spec":
+                value = n.child_by_field_name("value")
+                if value is not None:
+                    names = [c for c in n.children if c.type == "identifier"]
+                    values = [c for c in value.children if c.is_named]
+                    for name_text, inferred in _go_inferred_composite_bindings(
+                        names, values, source
+                    ):
+                        table.setdefault(name_text, inferred)
         elif t == "short_var_declaration":
             left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
             if left is not None and right is not None:
                 names = [c for c in left.children if c.type == "identifier"]
                 values = [c for c in right.children if c.is_named]
-                for name_node, value in zip(names, values):
-                    if value.type == "unary_expression":
-                        value = value.child_by_field_name("operand") or value
-                    if value.type != "composite_literal":
-                        continue
-                    type_name = _go_single_type_name(
-                        value.child_by_field_name("type"), source)
-                    if type_name:
-                        table.setdefault(_read_text(name_node, source), type_name)
+                for name_text, inferred in _go_inferred_composite_bindings(
+                    names, values, source
+                ):
+                    table.setdefault(name_text, inferred)
         stack.extend(reversed(n.children))
     return table
+
+
+def _go_struct_field_types(root, source: bytes) -> dict[str, dict[str, str]]:
+    """``struct name -> {field name -> TypeName}`` for every struct this file declares.
+
+    Only a named field whose type `_go_single_type_name` accepts is kept, the same rule
+    the flat receiver table applies. Unlike that table it stays keyed by the struct, so a
+    method in another file of the package can read the fields of its own receiver.
+    """
+    fields_by_struct: dict[str, dict[str, str]] = {}
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("function_declaration", "method_declaration"):
+            continue
+        if n.type == "type_spec":
+            name_node = n.child_by_field_name("name")
+            body = n.child_by_field_name("type")
+            if name_node is not None and body is not None and body.type == "struct_type":
+                fields: dict[str, str] = {}
+                for fdl in body.children:
+                    if fdl.type != "field_declaration_list":
+                        continue
+                    for field in fdl.children:
+                        if field.type != "field_declaration":
+                            continue
+                        type_name = _go_single_type_name(field.child_by_field_name("type"), source)
+                        for c in field.children if type_name else ():
+                            if c.type == "field_identifier":
+                                fields.setdefault(_read_text(c, source), type_name)
+                if fields:
+                    fields_by_struct[_read_text(name_node, source)] = fields
+            continue
+        stack.extend(n.children)
+    return fields_by_struct
 
 
 def extract_go(path: Path) -> dict:
@@ -282,6 +343,7 @@ def extract_go(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = type_symbol_nid(name)
@@ -446,21 +508,20 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             _scan_declarations(child)
 
-    def symbol_nid(plain_nid: str, name: str) -> str:
+    def symbol_nid(plain_nid: str, name: str, kind: str = "fn") -> str:
+        nid = plain_nid
         names = case_groups.get(plain_nid) or set()
-        if len(names) < 2:
-            return plain_nid
-        exported = [n for n in names if n[:1].isupper()]
-        if len(exported) == 1 and name == exported[0]:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
+        if len(names) >= 2 and not (len([n for n in names if n[:1].isupper()]) == 1
+                                    and name == [n for n in names if n[:1].isupper()][0]):
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(plain_nid, salt)
+        return decl_registry.resolve(nid, name, kind, seen_ids)
 
     def type_symbol_nid(name: str) -> str:
         plain_nid = _make_id(pkg_scope, name)
         if name not in case_groups.get(plain_nid, ()):
-            return plain_nid
-        return symbol_nid(plain_nid, name)
+            return decl_registry.resolve(plain_nid, name, "type", seen_ids)
+        return symbol_nid(plain_nid, name, "type")
 
     def walk(node) -> None:
         t = node.type
@@ -640,6 +701,16 @@ def extract_go(path: Path) -> dict:
                                          elem.start_point[0] + 1, context="generic_arg")
             return
 
+        if t == "var_declaration" and node.parent is not None and node.parent.type == "source_file":
+            # A package-level `var` initialiser runs at package init and has no enclosing
+            # function, so its calls, including those inside a `var f = func() {...}`
+            # closure, are credited to the file, the owner a module-level call already
+            # gets elsewhere. Without this they were never walked and the callee lost the
+            # caller (#2360).
+            function_bodies.append(
+                (file_nid, node, None, None, _go_receiver_type_table(node, source)))
+            return
+
         if t == "import_declaration":
             for child in node.children:
                 if child.type == "import_spec_list":
@@ -684,6 +755,18 @@ def extract_go(path: Path) -> dict:
             if n["id"] in callable_class_nids:
                 n["_callable_class"] = True
 
+    # The field types of the structs this file declares ride on the file node, keyed by
+    # struct id, so a method in a sibling file can type `s.field` (#3368). Not on the
+    # struct node: every file holding a method of the struct emits that id too, so an
+    # incremental rebuild of a method file would shadow the declaring file's copy.
+    struct_fields = {
+        type_symbol_nid(name): dict(sorted(fields.items()))
+        for name, fields in _go_struct_field_types(root, source).items()
+    }
+    if struct_fields:
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        file_node["_go_fields"] = dict(sorted(struct_fields.items()))
+
     type_table = _go_receiver_type_table(root, source)
 
     label_to_nid: dict[str, str] = {}
@@ -707,6 +790,7 @@ def extract_go(path: Path) -> dict:
             package_receiver: str | None = None
             member_receiver: str | None = None
             member_receiver_type: str | None = None
+            field_owner: str | None = None
             import_path: str | None = None
             if func_node:
                 if func_node.type == "identifier":
@@ -737,6 +821,7 @@ def extract_go(path: Path) -> dict:
                                 and _read_text(inner, source) == self_name):
                             member_receiver = _read_text(
                                 operand.child_by_field_name("field"), source)
+                            field_owner = self_type
                     if field:
                         callee_name = _read_text(field, source)
             if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
@@ -779,10 +864,45 @@ def extract_go(path: Path) -> dict:
                         # declarations are in scope here; the flat table is the fallback for
                         # a struct field, and must not answer a name this scope rebinds.
                         "receiver_type": member_receiver_type,
+                        # The struct whose field `member_receiver` is, for `s.field.M()`:
+                        # the struct may be declared in another file of the package, where
+                        # this file's flat table cannot see its fields.
+                        "field_owner": field_owner,
                         "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
+            # A method value passed as an argument (`routing.Wrap(s.Handle)`,
+            # `r.Get("/p", s.Handle)`) is how Go registers a handler or callback. It is
+            # not a call here, so it never reached the branch above and the method had
+            # no caller. Record it for the member-call resolver as an indirect call
+            # through the receiver's declared type (#1566).
+            args = node.child_by_field_name("arguments")
+            for arg in args.children if args is not None else ():
+                if arg.type != "selector_expression":
+                    continue
+                operand = arg.child_by_field_name("operand")
+                field = arg.child_by_field_name("field")
+                if operand is None or field is None or operand.type != "identifier":
+                    continue
+                name = _read_text(operand, source)
+                if name in go_imported_pkgs:
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": _read_text(field, source),
+                    "is_member_call": True,
+                    "indirect": True,
+                    "context": "argument",
+                    "language": "go",
+                    "receiver": None,
+                    "member_receiver": name,
+                    "receiver_type": self_type if self_name and name == self_name
+                    else scope_types.get(name),
+                    "import_path": None,
+                    "source_file": str_path,
+                    "source_location": f"L{arg.start_point[0] + 1}",
+                })
         for child in node.children:
             walk_calls(child, caller_nid, self_name, self_type, scope_types)
 

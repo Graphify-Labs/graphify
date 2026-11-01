@@ -67,6 +67,7 @@ def _pdf_text(path: Path) -> str:
 # rather than once per slice, and so a file rewritten mid-run is re-read instead
 # of served a stale body. Bounded: the entries are whole documents, and a large
 # corpus should not pin all of them in memory.
+# Resolve the path so relative names in different corpus roots cannot share text.
 _CONVERTED_TEXT_CACHE: "dict[tuple, str]" = {}
 _CONVERTED_TEXT_CACHE_MAX = 64
 
@@ -82,7 +83,7 @@ def unit_source_text(path: Path) -> str:
         return _read_source_text(path, warn=False)
     try:
         st = path.stat()
-        key = (str(path), st.st_size, st.st_mtime_ns)
+        key = (str(path.resolve()), st.st_size, st.st_mtime_ns)
     except OSError:
         return _pdf_text(path)
     hit = _CONVERTED_TEXT_CACHE.get(key)

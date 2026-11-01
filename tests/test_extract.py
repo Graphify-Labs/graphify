@@ -5661,6 +5661,47 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     assert "105/105 files" not in out, "final line must not switch to total_files (#1693)"
 
 
+def test_extract_reports_ast_cache_hit_rate_over_file_total(tmp_path, capsys):
+    # #4740: every progress line counts against uncached_work, so a run whose
+    # only uncached files are the JS/TS ones ends at "5/5 uncached files (100%)"
+    # and reads as a perfect cache hit rate. The new "AST cache:" line reports
+    # the hit rate against the FILE TOTAL, so the denominator cannot shrink to
+    # the uncached set.
+    py = []
+    for i in range(100):
+        p = tmp_path / f"m{i}.py"
+        p.write_text(f"def f{i}():\n    return {i}\n")
+        py.append(p)
+    ts = []
+    for i in range(5):
+        p = tmp_path / f"t{i}.ts"  # JS/TS bypass the AST cache entirely
+        p.write_text(f"export function g{i}() {{ return {i}; }}\n")
+        ts.append(p)
+
+    # 1. cold run: nothing is cached yet, so the hit count is 0 of the total
+    extract(py, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "AST cache: 0/100 files served from cache (0%); 100 to extract" in out
+    assert "100/100 uncached files (100%)" in out  # progress line is unchanged
+
+    # 2. warm run over the cacheable-only corpus: every file served from cache
+    extract(py, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "AST cache: 100/100 files served from cache (100%); 0 to extract" in out
+
+    # 3. mixed corpus: only the 5 .ts files are uncached, so the progress line
+    #    reports "5/5 uncached files (100%)" while the real hit rate over the 105
+    #    files is 95%. This is the case the fix exists for.
+    extract(py + ts, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "AST cache: 100/105 files served from cache (95%); 5 to extract" in out
+    assert "5/5 uncached files (100%)" in out, (
+        "the progress line still counts the uncached set; only the summary line "
+        "reports the total (#4740)"
+    )
+    assert "105/105 uncached files" not in out
+
+
 def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     # #1702: .m is shared by Objective-C and MATLAB. A real ObjC .m still routes to
     # extract_objc, but a MATLAB .m must NOT be force-parsed by the ObjC grammar

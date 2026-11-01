@@ -217,8 +217,14 @@ def extract_zig(path: Path) -> dict:
                 fn_text = _read_text(fn, source)
                 callee = fn_text.split(".")[-1]
                 is_member_call = "." in fn_text
-                tgt_nid = next((n["id"] for n in nodes if n["label"] in
-                                (f"{callee}()", f".{callee}()")), None)
+                # A dotted call (`obj.helper()`) names a method, never a free
+                # function; a bare call (`helper()`) names a free function,
+                # never a method. Matching either label for both call shapes
+                # let a bare call cross-resolve onto an unrelated struct's
+                # method of the same name (and vice versa) whenever the two
+                # just happened to coexist in the file.
+                wanted_label = f".{callee}()" if is_member_call else f"{callee}()"
+                tgt_nid = next((n["id"] for n in nodes if n["label"] == wanted_label), None)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:

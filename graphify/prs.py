@@ -186,6 +186,14 @@ def _detect_default_branch(repo: str | None = None) -> str:
 
 _CI_FAILURE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"})
 
+# CheckStatusState has six values: REQUESTED, QUEUED, IN_PROGRESS, COMPLETED,
+# WAITING and PENDING. Every one but COMPLETED means the run has not finished,
+# so it carries no conclusion yet and nothing else in the rollup speaks for it.
+# Matching only IN_PROGRESS/QUEUED left WAITING (a job held by a deployment
+# protection rule), REQUESTED and PENDING runs invisible — NONE on their own,
+# and masked as SUCCESS by any sibling check that had already passed.
+_CI_PENDING_STATUSES = frozenset({"REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING"})
+
 
 def _parse_ci(rollup: list) -> str:
     if not rollup:
@@ -198,7 +206,7 @@ def _parse_ci(rollup: list) -> str:
     if conclusions & (_CI_FAILURE_CONCLUSIONS | {"ERROR"}):
         return "FAILURE"
     statuses = {r.get("status") for r in rollup}
-    if "IN_PROGRESS" in statuses or "QUEUED" in statuses or conclusions & {"PENDING", "EXPECTED"}:
+    if statuses & _CI_PENDING_STATUSES or conclusions & {"PENDING", "EXPECTED"}:
         return "PENDING"
     if "SUCCESS" in conclusions:
         return "SUCCESS"
