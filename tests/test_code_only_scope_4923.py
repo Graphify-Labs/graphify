@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify.watch import _rebuild_code
+from graphify.watch import _current_build_state, _rebuild_code
 
 DOC_SUFFIXES = (".md", ".mdx", ".qmd")
 
@@ -177,3 +177,9 @@ def test_doc_nodes_already_in_graph_survive_turning_scope_on(tmp_path):
     assert _gfy(tmp_path, "extract", str(tmp_path), "--code-only").returncode == 0
     assert _rebuild_code(tmp_path, acquire_lock=False)          # now scoped
     assert {n["id"] for n in _docs(tmp_path)} == before         # preserved, not evicted
+
+
+def test_build_state_differs_by_scope(tmp_path):
+    kw = dict(watch_root=tmp_path, follow_symlinks=False, no_cluster=False,
+              gitignore=True, excludes=None, scan_digest="x")
+    assert _current_build_state(**kw, code_only=True) != _current_build_state(**kw, code_only=False)

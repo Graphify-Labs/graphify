@@ -1759,6 +1759,7 @@ def _current_build_state(
     gitignore: bool,
     excludes: list[str] | None,
     scan_digest: str,
+    code_only: bool = False,
 ) -> dict:
     """Everything besides file content that a rebuild's output depends on (#4740).
 
@@ -1785,6 +1786,7 @@ def _current_build_state(
         "no_cluster": bool(no_cluster),
         "gitignore": bool(gitignore),
         "excludes": sorted(excludes or []),
+        "code_only": bool(code_only),
         "rcfile": rc_digest,
         # Env knobs that change the written output rather than just the timing:
         # the viz cap removes graph.html outright, and the ambiguous-edge scale
@@ -2132,6 +2134,7 @@ def _rebuild_code(
             gitignore=_gitignore_enabled,
             excludes=_persisted_excludes,
             scan_digest=_scan_digest(detected),
+            code_only=_code_only,
         )
 
         if changed_paths is None and not force:
