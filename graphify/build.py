@@ -164,10 +164,15 @@ def _lost_saved_semantic_nodes(
                 if folded is not None:
                     folded[str(node_id)] = new_ast_loc_nodes[loc_key]
                 continue
-        # A document that names a file stamps the file's name as label but its
-        # own path as source_file; Pass 2b folds it into the one AST file node
-        # that label names. Two or more matches stay unmerged there.
-        file_twins = [nid for nid, sf in new_ast_file_nodes if _is_file_node_label(lbl, sf)] if lbl else []
+        # Only an evidence-free mention is eligible for Pass 2b's label-only
+        # fold. Rich semantic records from unrelated source files are distinct
+        # provenance, even if their label happens to be a real file name.
+        # Mirror build_from_json exactly; otherwise the shrink guard would
+        # silently exempt a lost record that the builder no longer folds.
+        file_twins = (
+            [nid for nid, sf in new_ast_file_nodes if _is_file_node_label(lbl, sf)]
+            if lbl and not _has_independent_semantic_evidence(node) else []
+        )
         if len(file_twins) == 1:
             if folded is not None:
                 folded[str(node_id)] = file_twins[0]
@@ -860,6 +865,21 @@ def _is_file_node_label(label: "str | None", source_file: "str | None") -> bool:
     if lbl == sf.rsplit("/", 1)[-1]:
         return True
     return "/" in lbl and (sf == lbl or sf.endswith("/" + lbl))
+
+
+def _has_independent_semantic_evidence(node: dict) -> bool:
+    """Do not label-fold a semantic record with evidence of its own.
+
+    A file mention can legitimately be folded into an AST file-self node,
+    but such a fold discards the semantic record's independent explanation
+    and attribution. Keep these records distinct unless the same-source
+    (source_file, label) twin rule already matched them.
+    """
+    return any(
+        node.get(field) not in (None, "", [], {})
+        for field in ("rationale", "source_url", "author", "contributor",
+                      "captured_at", "metadata")
+    )
 
 
 def _shortest_unique_suffix(sf: str, all_sfs: "set[str]") -> str:
@@ -1809,7 +1829,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 ast_id for ast_id, ast_sf in _ast_file_nodes
                 if _is_file_node_label(label, ast_sf)
             }
-            if len(matches) == 1:
+            if len(matches) == 1 and not _has_independent_semantic_evidence(attrs):
                 _ghost_remap[nid] = next(iter(matches))
 
     # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.

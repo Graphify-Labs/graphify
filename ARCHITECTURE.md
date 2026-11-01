@@ -79,6 +79,21 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+
+## Semantic provenance during file-node folding
+
+`build_from_json()` normally folds an evidence-free semantic mention of a
+filename into its unique AST file-self node (Pass 2b, #3344); references to
+that mention are rewired to the AST node. A cross-source semantic record that
+contains its own `rationale`, source URL, author/contributor, capture time,
+or metadata is **not** a disposable mention: a label-only fold would discard
+its explanation or attribution. Such records remain separate even when their
+label matches a unique AST file node. This is intentionally conservative:
+a richly annotated mention may remain distinct until an explicit
+provenance-preserving merge is available. The saved-semantic-node shrink guard
+uses the same rule and still rejects any unexplained loss. Same-source AST/
+semantic twins keep their existing exact-path merge rule (#4389/#4391).
+
 ## Edge direction in graph.json
 
 `graph.json` is written `"directed": false`, but every link is directed: **arc order is the direction** (`source` → `target`, #563). Older canonicalized files carry it in `_src`/`_tgt` markers instead, and those win where present (#2309).
