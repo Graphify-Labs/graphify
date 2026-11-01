@@ -2410,3 +2410,15 @@ retirements relative to the final source checkpoint (five retired against the
 The required repository-only AST refresh also succeeds and public reload accepts
 31,400 nodes and 74,323 edges. This updates test-code navigation without an API
 call or application refresh. New-head hosted results remain separately pending.
+
+## INC-QML-132 local Windows tool qualification
+
+Use the canonical development interpreter and a reviewed native Git Bash/sh for
+source-shell tests. Windows WSL/store aliases are discovery results, not evidence
+of an installed Linux distribution or a working interpreter. Qualify the actual
+resolved executable and a shell-invoked Python import before the full suite.
+Use an owned validation shim to forward POSIX python3 to that interpreter, keep
+installation disabled in analyzed snippets, and isolate tool targets, application
+configuration and temporary roots. No global PATH change or WSL installation is
+required. Keep the failed alias-selected profile separate from qualified source,
+installed, native hosted and resulting-commit evidence.

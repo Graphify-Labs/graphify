@@ -111,3 +111,25 @@ def test_req_qml014_ac04_source_gate_rejects_unreviewed_matrix_growth(collected_
     cases = deepcopy(collected_cases)
     cases.append(ET.Element("testcase", classname=MODULES[0], name="unreviewed_new_combination"))
     assert _outcomes(cases)[MODULES[0]] is False
+
+
+@pytest.mark.parametrize("outcome", ["missing", "skipped"])
+@pytest.mark.parametrize("old_schema", [33, 39])
+@pytest.mark.parametrize("old_version", ["0.9.74", "0.9.76", "0.9.92"])
+def test_req_qml003_ac04_qml018_ac05_current_migrations_require_individual_passes(
+        collected_cases, old_version, old_schema, outcome):
+    """Each actual predecessor migration must execute; a passing subset cannot hide its loss."""
+    module = "tests.test_upstream_qt_cache_integration"
+    name = ("test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh"
+            f"[{old_version}-{old_schema}]")
+    _, inventory = _gate()
+    assert name in inventory[module]
+    assert _outcomes(collected_cases)[module] is True
+    cases = deepcopy(collected_cases)
+    selected = next(case for case in cases
+                    if case.get("classname") == module and case.get("name") == name)
+    if outcome == "missing":
+        cases.remove(selected)
+    else:
+        ET.SubElement(selected, "skipped")
+    assert _outcomes(cases)[module] is False

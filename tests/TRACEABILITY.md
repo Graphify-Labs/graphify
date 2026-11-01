@@ -6029,3 +6029,16 @@ The first parent-fixture attempt lacked tools/ and is retained as an input gap;
 qualified fixtures include its real imports. Typing remains a failing baseline,
 not zero-error acceptance. New source full/installed/hosted/resulting-commit
 qualification remains assigned to the delivery PR rather than either parent.
+
+INC132 correction maps the existing
+`test_csharp_source_topology.py::test_req_qml022_ac06_source_relationship_metrics_use_explicit_topology`
+and eight added `test_upstream_100_publication.py` topology/profile/direction/bound
+controls to REQ-QML-022-AC06. Their94-case focused selection passes without skip.
+`test_ci_source_cases.py` adds twelve per-migration missing/skipped rejection
+controls; actual source gate retains all prior51 mandatory cases plus six new
+cache identities, and final native inventory is107. The gate/inventory selection
+passes24 cases. The four original full-run failures pass an exact replay with
+qualified native shell/interpreter discovery. Failed56b1ee6/interrupted full
+results, unexecuted later cases and two alias-selected failures are not relabelled
+as full-source support. New full/installed/hosted gates remain pending for the
+corrected reviewed source.

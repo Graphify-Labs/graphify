@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 
+import networkx as nx
 import pytest
 
 import graphify.__main__ as entrypoint
+from graphify.analyze import surprising_connections
+from graphify.build import add_source_relationship
 from graphify.paths import load_node_link_graph
-from graphify.source_relationships import FIELD, is_source_graph
+from graphify.source_relationships import FIELD, is_source_graph, make_source_graph
 from tests.source_relationship_projection_watch_helpers import products
 from tests.test_qt_final_incremental_parity import run
 
@@ -83,3 +87,39 @@ def test_req_qml022_ac06_ordinary_raw_flags_reflect_parallel_links(
     assert stored_links
     pairs = [frozenset((edge["source"], edge["target"])) for edge in stored_links]
     assert (len(pairs) != len(set(pairs))) is parallel
+
+
+@pytest.mark.parametrize("source_profile", [False, True], ids=["legacy", "source"])
+@pytest.mark.parametrize("directed", [False, True], ids=["undirected", "directed"])
+@pytest.mark.parametrize("top_n", [1, 5], ids=["bounded", "all"])
+def test_req_qml022_ac06_bridge_rows_keep_profile_topology_and_generic_relations(
+    source_profile, directed, top_n,
+):
+    """The source topology view stays bounded and directed while generic rows retain every relation."""
+    graph = (make_source_graph(directed=directed, graph_metadata={FIELD: {"contract_version": 1}})
+             if source_profile else (nx.MultiDiGraph() if directed else nx.MultiGraph()))
+    # Reverse physical node order so an undirected source row must recover its
+    # accepted logical direction rather than borrow adjacency enumeration.
+    graph.add_nodes_from([("second", {"label": "Second"}), ("first", {"label": "First"})])
+    for source, target, relation in (("first", "second", "contains"),
+                                     ("first", "second", "calls"), ("second", "first", "calls")):
+        attrs = {"relation": relation, "confidence": "EXTRACTED"}
+        if source_profile:
+            add_source_relationship(graph, source, target, attrs)
+        else:
+            graph.add_edge(source, target, **attrs)
+    before = json.dumps(nx.node_link_data(graph, edges="links"), sort_keys=True)
+    rows = surprising_connections(graph, {}, top_n=top_n)
+    expected_count = (2 if directed else 1) if source_profile else 3
+    assert len(rows) == min(top_n, expected_count)
+    assert all(row["note"].startswith("Bridges graph structure") for row in rows)
+    if source_profile:
+        expected_directions = ({("First", "Second"), ("Second", "First")}
+                               if directed else {("First", "Second")})
+        assert {(row["source"], row["target"]) for row in rows} <= expected_directions
+        if top_n == 5:
+            assert {(row["source"], row["target"]) for row in rows} == expected_directions
+    elif top_n == 5:
+        assert Counter(row["relation"] for row in rows) == {"contains": 1, "calls": 2}
+    assert graph.number_of_edges() == 3
+    assert json.dumps(nx.node_link_data(graph, edges="links"), sort_keys=True) == before

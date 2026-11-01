@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import networkx as nx
 
-from graphify.build import edge_datas
+from graphify.build import edge_data, edge_datas
 from graphify.source_relationships import is_source_graph, logical_endpoints
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
@@ -413,14 +413,20 @@ def _cross_community_surprises(
         betweenness = nx.edge_betweenness_centrality(topology)
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
+        # Source mechanisms remain distinct facts, but this fallback ranks one
+        # topology bridge per pair. Ordinary multigraphs retain upstream's
+        # per-relation rows; their parallel mechanisms are not source promises.
+        source_graph = is_source_graph(G)
         for (u, v), score in top_edges:
-            for data in edge_datas(G, u, v):
+            observations = [edge_data(G, u, v)] if source_graph else edge_datas(G, u, v)
+            for data in observations:
+                source, target = logical_endpoints(G, u, v, data) if source_graph else (u, v)
                 result.append({
-                    "source": G.nodes[u].get("label", u),
-                    "target": G.nodes[v].get("label", v),
+                    "source": G.nodes[source].get("label", source),
+                    "target": G.nodes[target].get("label", target),
                     "source_files": [
-                        G.nodes[u].get("source_file", ""),
-                        G.nodes[v].get("source_file", ""),
+                        G.nodes[source].get("source_file", ""),
+                        G.nodes[target].get("source_file", ""),
                     ],
                     "confidence": data.get("confidence", "EXTRACTED"),
                     "relation": data.get("relation", ""),

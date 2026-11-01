@@ -5873,3 +5873,28 @@ incoming core-grammar control modules. Its actual launcher failed that admission
 assertion before correction. The revised pure selection owner is used by the
 real launcher; exact pytest collection checks the final reviewed inventory.
 Clean core/QML wheel smoke and subsequent Terraform extra ordering are retained.
+
+Qualification correction after source56b1ee6: the full local attempt exposed four
+existing assertions, confirmed by an exact four-case replay. The literal Linux
+source gate omitted the six new33/39 cache-migration IDs (52 joint cases versus
+46 listed); the corrected gate retains all prior51 mandatory identities and adds
+the six (57 total), with twelve explicit missing/skipped-migration rejection
+controls. The accepted-source centrality fallback must still emit one topology
+bridge per pair, in its selected fact's logical direction; ordinary generic
+multigraphs retain upstream per-relation observations. The unchanged source
+topology test plus eight new profile/direction/bound controls now pass in a
+94-case selection. Native inventory is107 actual cases.
+
+The other two full-run failures selected Windows WSL/store aliases rather than
+the previously qualified native validation tools. An isolated child environment
+now uses the existing real Git Bash/sh and canonical development interpreter,
+with a private short temporary root and no global installation/environment
+change. The original failing and interrupted attempt is retained; the exact four
+assertions pass under the qualified profile. The failed local process tree was
+stopped and its absence verified before correction; hosted runs were not
+manually cancelled. Full validation restarts at the corrected source.
+
+These changes correct analysis/CI qualification, not raw AST source facts. AST40,
+Qt33 and projection4 remain unchanged. Failed source56b1ee6, its graph snapshot,
+package and passing narrower consumers remain distinct historical evidence and
+cannot establish acceptance of the correction.

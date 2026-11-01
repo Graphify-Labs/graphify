@@ -22,6 +22,9 @@ EXPECTED = {
           for operation in ("extract", "manual", "watch")),
         *(f"test_req_qml022_ac06_ordinary_raw_flags_reflect_parallel_links[{parallel}-{operation}]"
           for parallel in ("False", "True") for operation in ("extract", "manual", "watch")),
+        *(f"test_req_qml022_ac06_bridge_rows_keep_profile_topology_and_generic_relations[{limit}-{direction}-{profile}]"
+          for limit in ("bounded", "all") for direction in ("undirected", "directed")
+          for profile in ("legacy", "source")),
     },
     "tests.test_upstream_100_extraction": {
         "test_req_qml010_ac01_ac02_ac03_req_qml022_ac02_ac06_case_only_roles_round_trip[type-first]",

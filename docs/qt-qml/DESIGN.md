@@ -3517,7 +3517,7 @@ and projection4 do not change. Prompt-owned semantic entries retain their own
 lifetime. Package0.9.100's new PyAV<19 cap is an incoming transcription API
 compatibility contract, not a general dependency refresh.
 
-Touched legacy cohesion exceptions: integration owner; analyze861 lines with
+Touched legacy cohesion exceptions: integration owner; analyze867 lines with
 permitted ceiling900 (sibling analyses); cli5575/ceiling5600 (command-owned
 publication, extraction path raw publication helper); watch3444/ceiling3450
 (single watcher lifetime/publication owner); wiki485/ceiling520 (article render
@@ -3528,3 +3528,8 @@ ceiling4450 (existing cross-file resolver). No mechanical extraction is mixed
 with conflict correction; revisit ceilings before unrelated growth. New focused
 regression files remain below300 physical lines. Existing generated outputs are
 regenerated from authoritative fragments rather than edited directly.
+
+CI workflow cohesion exception:657 physical lines, permitted ceiling700,
+integration/CI owner. Six exact source-gate identities remain adjacent to their
+existing mandatory invocation. Extract the gate only under a separate reviewed
+workflow ownership change; do not weaken its per-case accounting.
