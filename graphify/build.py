@@ -160,10 +160,34 @@ def _lost_saved_semantic_nodes(
         lbl = str(node.get("label", "")).strip()
         if source and lbl:
             loc_key = (source, lbl)
-            if loc_key in new_ast_loc_nodes and loc_key not in ast_loc_collisions:
+            if (
+                not _has_independent_semantic_evidence(node)
+                and loc_key in new_ast_loc_nodes
+                and loc_key not in ast_loc_collisions
+            ):
                 if folded is not None:
                     folded[str(node_id)] = new_ast_loc_nodes[loc_key]
                 continue
+        # Full-code rebuilds can relabel an AST file node with a path-qualified
+        # suffix when several files share a basename. The exact (source_file,
+        # label) key then disappears even though Pass 2 legitimately folded
+        # an evidence-free same-source file mention. Match by exact source
+        # identity, not bare filename, to avoid either silent data loss or a
+        # spurious fail-closed refusal on an unrelated identically named file.
+        if source and lbl and not _has_independent_semantic_evidence(node):
+            same_source_twins = {
+                nid for nid, sf in new_ast_file_nodes
+                if _norm_source_file(sf) == source
+                and _is_file_node_label(lbl, sf)
+            }
+            if len(same_source_twins) == 1:
+                if folded is not None:
+                    folded[str(node_id)] = next(iter(same_source_twins))
+                continue
+        # Only a mention of SOME OTHER file is eligible for label-only
+        # folding. If the semantic node's label names its OWN source file,
+        # it is a file-self record; it must not fold into a different source's
+        # AST file just because the basename happens to match.
         # Only an evidence-free mention is eligible for Pass 2b's label-only
         # fold. Rich semantic records from unrelated source files are distinct
         # provenance, even if their label happens to be a real file name.
@@ -171,7 +195,11 @@ def _lost_saved_semantic_nodes(
         # silently exempt a lost record that the builder no longer folds.
         file_twins = (
             [nid for nid, sf in new_ast_file_nodes if _is_file_node_label(lbl, sf)]
-            if lbl and not _has_independent_semantic_evidence(node) else []
+            if (
+                lbl
+                and not _has_independent_semantic_evidence(node)
+                and not _is_file_node_label(lbl, source)
+            ) else []
         )
         if len(file_twins) == 1:
             if folded is not None:
@@ -1786,6 +1814,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if key in _loc_nodes and _loc_nodes[key] != nid:
             if not dedup and G.nodes[_loc_nodes[key]].get("_origin") != "ast":
                 continue
+            # #4896: an independent semantic explanation is not a disposable
+            # AST twin even when it names the SAME physical source file.
+            # Preserve the original semantic id, rationale and source attribution.
+            if _has_independent_semantic_evidence(attrs):
+                continue
             _noloc_nodes[key] = nid
         elif key not in _loc_nodes:
             # Spec-conformant method ghost omitting class segment / leading dot
@@ -1829,7 +1862,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 ast_id for ast_id, ast_sf in _ast_file_nodes
                 if _is_file_node_label(label, ast_sf)
             }
-            if len(matches) == 1 and not _has_independent_semantic_evidence(attrs):
+            if (
+                len(matches) == 1
+                and not _has_independent_semantic_evidence(attrs)
+                and not _is_file_node_label(label, attrs.get("source_file"))
+            ):
                 _ghost_remap[nid] = next(iter(matches))
 
     # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
