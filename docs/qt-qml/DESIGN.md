@@ -3436,3 +3436,41 @@ identity; input data and failed installed evidence remain immutable on disk.
 No new diagnostic code, state file, persistence owner, SDK or corpus execution
 is introduced. Correspondence failure and atomic publication retain their
 existing diagnostics/retention/retry contracts.
+
+### Raw producer activation and logical projection basis — INC130 / D49
+
+Observed b645 contracts disagree with two current frame assumptions. Source
+storage may auto-activate from genuine typed producer facts while caller graph
+metadata is missing/null; this is not an explicit serialized storage-profile
+request. The frame must capture that distinction before transport adoption.
+Storage/source-role validation remains unchanged, while raw caller absences
+remain protected. Canonical publication of an explicitly persisted profile is
+a separate, retained contract; no existing test expectation is weakened.
+
+An unavailable C++ reference can arrive in reversed physical undirected storage
+with a valid logical marker pair. The builder already extracts logical source/
+target before admission. Mapping that pair again through physical-edge keys
+in the caller adapter reverses its context and triggers the genuine C++ validator.
+The corrected adapter must consume an explicit owning-builder endpoint basis,
+not infer native role or direction from convenient text or normalized IDs.
+Projection3 requires the existing successful-publication recovery; source-fact
+format/cache and original producer evidence remain independent.
+
+The merged `build()` invocation has one storage-profile owner. An explicitly
+validated profile in any input chunk applies to that complete merged caller
+frame, including borrowed raw edges; it may add canonical wire attributes.
+With no explicit profile in any chunk, genuine producer facts still activate
+source storage without that enrichment. Each chunk's actual `source_profile`
+preflight still runs, so a valid peer cannot mask a malformed explicit marker.
+This preserves the existing cohort-wide profile rather than introducing a
+per-chunk mutation registry or another admission policy.
+
+Profile intent and physical transport adoption are distinct. The direct builder
+invokes the existing transport adapter only when the reserved marker accompanies
+`links` or `multigraph`. Marker-only raw extraction retains physical slots even
+though its accepted records receive explicit-profile enrichment. The combined
+builder constructs a raw merged frame without copying those transport carriers.
+Its caller records retain physical slots; graph storage/public serialization
+still use the validated logical pair. Only actual persisted-adapter output has
+already-canonical working physical slots. The frame follows that owning input
+basis, without deriving physical transport intent from the marker alone.

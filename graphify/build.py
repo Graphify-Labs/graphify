@@ -2090,7 +2090,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # causing display functions to show edges backwards.
         attrs["_src"] = src
         attrs["_tgt"] = tgt
-        link_frame.accept(edge, src, tgt, attrs, directed=directed)
+        link_frame.accept(edge, src, tgt, attrs, directed=directed,
+                          already_logical=is_type_reference_unavailable(edge))
         if is_source_graph(G):
             add_source_relationship(G, src, tgt, attrs)
             continue
@@ -2283,7 +2284,9 @@ def build(
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
     for ext in extractions:
         if source_profile(ext.get("nodes", ()), ext.get("graph")):
-            combined["graph"] = {SOURCE_RELATIONSHIPS: {"contract_version": 1}}
+            # Raw facts activate storage without requesting persisted-wire enrichment.
+            if isinstance(ext.get("graph"), dict) and SOURCE_RELATIONSHIPS in ext["graph"]:
+                combined["graph"] = {SOURCE_RELATIONSHIPS: {"contract_version": 1}}
         combined["nodes"].extend(ext.get("nodes", []))
         combined["edges"].extend(ext.get("edges", []))
         combined["hyperedges"].extend(ext.get("hyperedges", []))

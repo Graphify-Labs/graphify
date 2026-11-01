@@ -1623,4 +1623,18 @@ facts may be re-projected; a damaged old export cannot reconstruct absent facts
 by itself. A version mismatch promotes partial watch input to the complete
 normally admitted corpus, using valid raw caches, and stamps only after actual
 publication. Existing discovery/exclusion and writer/rollback owners remain.
-Status: INC127–129 implemented with source-frozen local regressions and independent peers. Ordinary caller-field compatibility and projection2 retain the same D49 owners. Final corrected-package/full/corpus/hosted acceptance is established only by its separately bound receipts and live PR evidence table; earlier source43ac success remains historical.
+INC130 distinguishes source-storage activation from explicit persisted-profile
+intent before adapters copy the input. Raw producer promises alone do not request
+wire enrichment. The combined builder propagates only an explicitly supplied
+validated profile, with one cohort-wide owner; every chunk still validates.
+For an unavailable C++ reference the builder explicitly identifies its accepted
+logical endpoint basis. The frame converts that validated basis once, preserving
+physical caller slots and the later rejection of contradictory directed storage.
+No generic helper guesses native roles or invents endpoint authority.
+
+Status: INC127–130 retain the same D49 owners. Projection3 repairs publication
+through the existing version-recovery mechanism. INC130 passes959 related cases,
+including the nine original failures, mixed carriers/physical aliases and recovery.
+Final package/full/corpus/hosted acceptance requires separately bound evidence.
+Earlier source43ac success and b645 failure remain historical, rather than
+later-revision passes.

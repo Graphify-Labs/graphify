@@ -5642,3 +5642,97 @@ Helper174/300, projection2 and no other runtime body changes are independently
 reviewed. New absence-filter lines/branches execute; prior defensive gaps stay
 explicit. Final current-revision source/package/installed/corpus/native and
 cleanup evidence remains separately bound; failed9ac consumers are never reused.
+
+### INC-QML-130 — Raw autoactivation and accepted logical endpoint basis
+
+Current sourceb645 reproduces nine failures in97 unchanged existing cases:
+one C++ unavailable-reference case with reversed physical storage and valid
+logical markers, and eight genuine producer-fact autoactivation cases with
+missing/null graph metadata. The latter retain correct graph type/direction but
+acquire synthetic marker keys in caller input. Four actual macOS lanes independently
+report the same nine failures. Ordinary/context/recluster cases now pass, so the
+earlier129 repair must not be reverted or treated as whole compatibility proof.
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and projection
+recovery under REQ-QML-011-AC04. Existing automatically collected regression
+assertions remain unchanged. Distinguish an explicit validated persisted source
+profile from raw fact-driven source storage: only the former owns canonical
+wire enrichment of the caller frame. Genuine raw producer facts still select
+source storage and retain all source validation; activation alone cannot change
+the raw caller's field absences. Explicit-profile129 controls remain authoritative.
+
+For reversed C++ reference storage, graph assembly already owns the accepted
+logical endpoints. The caller-frame adapter must receive that endpoint basis
+explicitly and avoid converting a valid logical pair through physical keys again.
+No spelling/role guess or second resolver belongs in the generic frame helper.
+Preserve invalid-pair rejection, aliases, actual remaps/pruning, independent
+observations and complete C++ context. The exact minimal helper/builder interface
+and measured ceilings precede public production edits. Advance projection3 for
+the corrected publication algorithm; AST39/Qt33/package/dependencies remain fixed.
+
+The owned long Windows run for b645 was stopped at9% after exact current failure
+qualification. Its four owned Python processes are confirmed absent;1,149 sources
+and14 protected files remain exact, partial log retained and no XML/full-pass
+claim is made. Hosted b645 jobs remain undisturbed and revision-bound. The separate
+installed b645 corpus consumer has completed against immutable raw facts; its
+per-dataset evidence cannot establish compatibility of the nine failing inputs.
+
+INC130's helper measures182/300 and builder3,331/3,345; exporter/watch retain
+their previous bytes and ceilings. The helper captures explicit profile intent
+separately from storage mode and accepts the builder's already-logical basis,
+preserving physical caller parents and later directed rejection. The combined
+owner validates every chunk, propagating only a caller-supplied explicit profile.
+Mixed explicit/raw calls retain one cohort-wide canonical profile; no per-chunk
+mutation registry is introduced. Sixteen adjacent cases cover actual typed facts,
+both orders, deduplication/direction, removal of typed activation, malformed
+explicit peers, public PATH round trips and retained accepted disk output.
+
+The exact unchanged97-case run progresses from nine failures/88 controls to
+four combined-input failures/93 passes, then97 passes after correcting explicit
+marker propagation. Earlier failing receipts are retained. Projection3 adds
+integer2/float3.0/text3 parameters without changing the earlier ten values or
+any assertion. Broader, quality, installed, full-source, corpus and hosted gates
+remain separate; final exit requires evidence for the resulting reviewed source.
+
+The first related gate passes941 cases with no skips/errors. Add adjacent
+actual C++ alias cases because the corrected physical basis also feeds present
+from/to fields. Coverage already executes that assignment; its missing line143
+is the pre-existing defensive lost-logical-direction rejection, not an uncovered
+alias assignment. Unflagged reversed physical parents remain contradictory to
+directed storage; the existing explicit transport adapter may canonicalize its
+working parents before frame acceptance. Do not infer a new per-input wire
+contract or weaken old assertions from that defensive coverage limitation.
+
+The new alias fixture initially supplied only a reserved graph marker while
+expecting the persisted adapter's canonical physical slots: three raw controls
+pass and three explicit-marker cases fail in the retained six-case diagnostic.
+Actual `build_from_json` enters that adapter only with the marker plus `links`
+or `multigraph`; marker-only extraction takes the raw path. The combined builder
+constructs its own raw merged frame and does not copy those transport slots.
+This is a new test-setup error, not evidence to change production behavior.
+Before the next source freeze, cover all three carriers through direct/combined
+owners, expecting canonical working slots only for actual direct persisted
+adoption. Preserve the failed gate, the original nine regression assertions and
+the stated physical/logical contracts.
+
+The retained947-case run has944 passes and those three new fixture errors only;
+all original nine regressions pass. Corrected carrier-aware alias execution has
+18 passes, then the complete final related gate passes959 cases with no errors/
+skips in184.125 seconds, including all34 mixed/alias and33 recovery cases.
+Changed normal-path helper statements execute; the existing source-key invariant
+rejection and other historical defensive gaps remain unverified.
+Source1,150/protected14 bytes match and the successful
+owned neutral fixture is confirmed removed. Failed fixture evidence remains.
+Final Ruff/generated checks pass; explicit-interpreter typing retains exactly
+684 inherited diagnostics with no additions/retirements. The source-fact and
+dependency contracts remain unchanged; final package/installed/full/corpus/
+hosted evidence is separately bound, without inheriting old revision passes.
+
+A subsequent bounded source qualification finds a real additional numeric-peer
+conversion defect, reserved for INC131. Six valid actual C# producer/ordinary
+numeric-ID transports pass preflight. Persisted direct build rejects after
+parent7 becomes string7 while its explicit source marker remains integer7;
+the other five raw/marker/combined paths build but reject original-link export.
+Default export alone would conceal those five failures. This reachable boundary
+is not established by INC130's959 passing cases; release acceptance remains
+blocked pending the separate correction and ordinary regression coverage.

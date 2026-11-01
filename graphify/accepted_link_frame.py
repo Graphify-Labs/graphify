@@ -10,9 +10,9 @@ from collections import deque
 from copy import deepcopy
 
 from graphify.graph_direction import logical_endpoints
-from graphify.source_relationships import source_profile, storage_key
+from graphify.source_relationships import FIELD, source_profile, storage_key
 
-BUILD_PROJECTION_VERSION = 2
+BUILD_PROJECTION_VERSION = 3
 
 
 class AcceptedLinkFrame:
@@ -27,6 +27,8 @@ class AcceptedLinkFrame:
         self.positions = {}
         self.accepted = {}
         self.source = source_profile(raw.get("nodes", ()), raw.get("graph"))
+        self.explicit_profile = (self.source and isinstance(raw.get("graph"), dict)
+                                 and FIELD in raw["graph"])
         if self.original is None:
             return
         # A conflicting ordinary legacy view remains independent. Source-mode
@@ -96,7 +98,8 @@ class AcceptedLinkFrame:
                     graph.remove_node(target)
                     node_ids.discard(target)
 
-    def accept(self, edge: dict, source, target, attributes: dict, *, directed: bool) -> None:
+    def accept(self, edge: dict, source, target, attributes: dict, *,
+               directed: bool, already_logical: bool = False) -> None:
         """Capture before graph composition; peers keep their own full attributes."""
         if self.original is None:
             return
@@ -106,15 +109,12 @@ class AcceptedLinkFrame:
             raise ValueError("SOURCE_RELATIONSHIPS_INVALID: accepted edge lost caller correspondence")
         record = {**deepcopy(attributes), "source": source, "target": target}
         # Storage-only direction and inferred provenance must not expand an
-        # ordinary caller's schema. Source-profile publication stays canonical;
-        # explicit working fields still receive the owning builder's repairs.
-        if not self.source:
+        # ordinary caller's schema merely through source autoactivation. Explicit
+        # persisted profiles stay canonical; present fields retain owning repairs.
+        if not self.explicit_profile:
             for name in ("_src", "_tgt", "source_file"):
                 if name not in edge:
                     record.pop(name, None)
-        for name, value in (("from", source), ("to", target)):
-            if name in record:
-                record[name] = value
         # Existing legacy exporter rejection must not be bypassed by repairing
         # an invalid explicit pair. Valid pairs follow accepted ID conversion.
         if "_src" in edge or "_tgt" in edge:
@@ -127,10 +127,18 @@ class AcceptedLinkFrame:
                     else:
                         record.pop(name, None)
             else:
-                converted = {old_source: source, old_target: target}
+                # The builder alone vouches that its arguments already use
+                # this validated logical basis; preserve raw physical direction.
+                basis = pair if already_logical else (old_source, old_target)
+                converted = {basis[0]: source, basis[1]: target}
+                if already_logical:
+                    record["source"], record["target"] = converted[old_source], converted[old_target]
                 record["_src"], record["_tgt"] = converted[pair[0]], converted[pair[1]]
+        for name, value in (("from", record["source"]), ("to", record["target"])):
+            if name in record:
+                record[name] = value
         if self.source and "key" in record:
-            pair = logical_endpoints(source, target, record, directed=directed)
+            pair = logical_endpoints(record["source"], record["target"], record, directed=directed)
             if pair is None:
                 raise ValueError("SOURCE_RELATIONSHIPS_INVALID: accepted edge lost logical direction")
             record["key"] = storage_key(*pair, record["relation"])

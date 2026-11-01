@@ -17,9 +17,10 @@ from tests.source_relationship_projection_watch_helpers import (
 from tests.test_cpp_allocated_member_updates import full_fields
 
 
-@pytest.mark.parametrize("old", [0, True, 1.0, "1", None, [], {}, 1, 2.0, "2"],
+@pytest.mark.parametrize("old", [0, True, 1.0, "1", None, [], {}, 1, 2.0, "2", 2, 3.0, "3"],
                          ids=["old", "bool", "float", "text", "null", "list", "object",
-                              "prior-int-one", "current-equal-float", "current-equal-text"])
+                              "prior-int-one", "current-equal-float", "current-equal-text",
+                              "prior-int-two", "v3-equal-float", "v3-equal-text"])
 def test_req_qml011_ac04_noncurrent_strict_projection_refreshes_once(tmp_path, monkeypatch, old):
     """Equal-looking scalars cannot let unchanged inputs skip a required projection."""
     root = project(tmp_path / "case", monkeypatch)

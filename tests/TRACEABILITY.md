@@ -5843,3 +5843,81 @@ reviewed source. The old source9ac workflow result cannot establish the correcte
 installed contract. Preserve original producer/raw extraction identity when
 re-projecting retained facts; no source-fact epoch, dependency, cap, assertion or
 platform selection is weakened to obtain success.
+
+### INC-QML-130 — Raw activation and single logical-basis conversion
+
+Affected acceptance: REQ-QML-010-AC02/AC03, REQ-QML-022-AC06 and
+REQ-QML-011-AC04, with existing real-write failure retention under
+REQ-QML-012-AC02. Exact sourceb645 fails nine of97 unchanged cases: eight raw
+typed input mutations and one reversed unavailable C++ reference. Linux3.13 and
+all eight native macOS/Windows lanes independently confirm those nine; three
+automatically cancelled Linux lanes have no full-pass credit. B645's successful
+installed and corpus-consumer scenarios cannot establish these failed contracts.
+
+`tests/test_source_relationship_legacy_metadata.py::test_req_qml022_ac06_missing_or_null_typed_metadata_still_selects_source_storage`
+retains every existing assertion, proving genuine C# producer facts select source
+storage while a raw caller with missing/null metadata remains unchanged through
+direct/combined boundaries. The existing invalid-carrier and valid-peer/corrupt-
+later-promise cases retain pre-adoption validation and rejection. The unchanged
+`tests/test_cpp_type_reference_contract.py::test_req_qml014_ac03_undirected_reversed_storage_preserves_actual_reference_direction`
+proves valid logical direction survives real builder adoption and that the same
+physically reversed raw pair still rejects when later treated as directed.
+All other cases in those modules remain ordinary collected regressions.
+
+The source-frozen97-case gate first has nine failures/88 passes, then four
+combined-input failures/93 passes after the helper correction, then97 passes
+after explicit-only profile propagation. These are separate receipts, never
+summed. Existing context-owned emission and actual recluster scenarios are also
+included, preventing regression of the preceding ordinary compatibility fix.
+
+`tests/test_source_relationship_projection_mixed.py::test_req_qml010_ac02_mixed_profile_keeps_explicit_cohort_and_raw_facts`
+covers eight actual producer/order/deduplication/direction combinations through
+the public combined builder, writer and PATH reload. Explicit wire selection
+remains authoritative after typed facts disappear; an unflagged ordinary chunk
+retains simple storage. The eight matching
+`tests/test_source_relationship_projection_mixed.py::test_req_qml022_ac06_raw_peer_cannot_mask_invalid_explicit_profile`
+cases reject a boolean reserved version before changing either chunk or a real
+previously accepted JSON file. Success/failure policy is the real production
+owner, without replacing an admission predicate or executing corpus code.
+
+Projection3 extends the existing strict-version test with prior integer2 and
+current-looking float3.0/text3. Every earlier value/ID/order/body/assertion is
+retained. This exercises the existing publication recovery, actual write-fault
+retention, retry and unchanged repeat rather than only comparing a scalar.
+Source-fact epochs39/33, dependency profiles and all platform selections remain
+unchanged. Final broad/quality/package/installed/full/corpus/hosted acceptance
+is bound to its actual new reviewed revision; earlier passes are not inherited.
+
+The new
+`tests/test_source_relationship_projection_mixed.py::test_req_qml010_ac03_cpp_physical_aliases_follow_owning_transport`
+has18 actual C++ producer cases: from/to/both aliases through direct/combined
+raw, marker-only and persisted carriers. Actual direct persisted transport
+canonicalizes working slots; marker-only and combined frames retain physical
+slots and reject contradictory directed reuse. All cases perform original-link
+publication and real PATH reload with unchanged logical reference direction.
+The first six-case fixture incorrectly expected adaptation from a marker alone;
+its three failures/three controls and947-case gate (944 passes/three failures)
+are retained as test-setup evidence. No product policy was changed for them.
+
+Final carrier-aware alias execution passes18; the complete related gate then
+passes959 cases, zero failures/errors/skips,184.125 seconds. This includes the
+whole original C++ contract/legacy metadata/context/recluster modules,34 mixed/
+alias cases,33 recovery cases and the preceding accepted-frame regressions.
+Overlapping97/18/941/959 runs are not summed. Changed normal-path helper
+statements execute. The existing source-key lost-logical-direction rejection,
+other defensive correspondence invariants and stub-cleanup branches remain
+unverified; no claim of their unreachability follows from successful preflight.
+Source1,150/protected14 guards match; successful neutral
+fixture cleanup is confirmed, failed evidence retained. Ruff succeeds,134
+generated artifacts match and typing retains exactly684 inherited diagnostics,
+zero additions/retirements. New package/full/installed/corpus/native gates stay
+revision-bound and separately required in PR #10.
+
+Subsequent numeric-peer qualification supplies a real route to the source-key
+guard: actual typed C# facts plus a valid ordinary integer7 endpoint with matching
+explicit markers pass preflight, then only the parent is string-normalized.
+Persisted direct build rejects; five other carrier/combined paths reject supplied
+original links despite successful default export. Accepted disk bytes and
+source/protected guards remain intact. INC131 owns this newly observed gap;
+neither the959-case result nor an earlier defensive-branch label establishes
+its acceptance or unreachability.

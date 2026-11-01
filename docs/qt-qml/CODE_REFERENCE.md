@@ -1746,7 +1746,8 @@ set, repair callback and admission callback through a deterministic source queue
 `accept` snapshots complete admitted records before storage folding; `commit`
 validates and adopts owned list/dictionary references after final graph checks.
 No graph metadata registry, writer, extractor import or ambient root is added.
-`BUILD_PROJECTION_VERSION` starts at1 for INC128 and advances to2 for the INC129 caller-field compatibility correction.
+`BUILD_PROJECTION_VERSION` starts at1 for INC128, advances to2 for INC129 and
+to3 for INC130's raw-autoactivation and logical-basis corrections.
 
 The graph-assembly maintainer owns minimal `build_from_json` hooks and its shared
 invocation-local preparation/admission callbacks: build.py measures3,328/3,345,
@@ -1787,3 +1788,33 @@ The new legacy regression module measures196 lines; the existing update module
 measures222 after three stable parameter additions, with all old values/bodies
 and assertions retained. No failed installed environment or assertion is reused
 as passing evidence.
+
+## Raw activation and logical endpoint basis — INC130
+
+`AcceptedLinkFrame` now measures182/300. Its existing `source` flag continues to
+own storage/alias handling; `explicit_profile` separately captures validated
+persisted-profile intent before adapters. `accept(..., already_logical=False)`
+receives a true value only from the builder's actual unavailable-reference
+predicate. It maps the validated logical basis and reconstructs physical caller
+parents before updating present from/to aliases and any source-storage key.
+Invalid explicit pairs remain invalid. The frame does not resolve native roles.
+
+`build.py` measures3,331/3,345, from3,328. Its combined path retains every real
+`source_profile` validation while propagating only an explicit reserved marker.
+One explicit chunk selects canonical publication for the complete merged frame;
+with none, retained raw facts autoactivate source storage without wire enrichment.
+The same graph-assembly owner and focused extraction exit condition remain;
+exporter1,527/1,540 and watch3,432/3,450 are unchanged.
+
+The existing update regression adds old integer2/current-looking float3.0/text3
+without changing its ten earlier parameters or any test body/assertion. The new
+mixed-input module exercises actual C# source production, both input orders,
+deduplication settings/directions, real PATH export/reload and invalid-profile
+retention. Existing C++ and raw-autoactivation regressions remain unmodified.
+
+The current mixed-input module measures114/300 and has34 cases, including18
+physical-alias scenarios through direct/combined raw/marker/persisted carriers.
+The update module measures223/300 with33 cases. Final related source execution
+passes959 cases; changed normal-path helper statements execute. Existing
+source-key invariant rejection, correspondence and stub-cleanup defensive
+branches remain explicitly unverified.

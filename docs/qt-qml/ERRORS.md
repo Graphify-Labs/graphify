@@ -996,3 +996,19 @@ the existing transactional version-recovery path; no parser/cache schema change
 or new persistence failure category is introduced. Old caller mutation cannot
 be inferred away from a serialized graph; correct source/cache facts and fresh
 consumer receipts retain their respective roles.
+
+### Raw activation and logical-basis correction — INC130
+
+Valid raw typed facts with absent/null graph metadata remain a normal storage
+selection, without a warning or automatic caller wire enrichment. An explicit
+profile still validates and governs its merged frame; a valid raw peer cannot
+mask a malformed reserved marker. `SOURCE_RELATIONSHIPS_INVALID` retains its
+existing rejection boundary and recovery policy.
+
+A valid reversed undirected unavailable-reference pair must pass the existing
+C++ context validator. The accepted logical basis is converted once while its
+physical caller parents remain reversed. Reusing that raw pair as a directed
+arc still rejects with `CPP_REFERENCE_CONTEXT_INVALID`; this fix must not erase
+the contradictory evidence. No new diagnostic, parser epoch or persistence
+boundary is introduced. Projection3 uses the existing real-write retention,
+recovery and no-change repeat contracts; old source evidence is not relabelled.
