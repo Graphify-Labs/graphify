@@ -74,14 +74,21 @@ def test_sed_and_awk_reading_files_fire(cmd):
     assert _bash_invokes_search(cmd) is True
 
 
-# On the receiving end of a pipe they only reshape another command's output, and
-# `sed -i` edits; neither is looking for something in the codebase.
+# On the receiving end of a pipe they only reshape another command's output, `sed -i`
+# (alone or in a flag cluster) edits, and a program with no file operand reads stdin;
+# none of them is looking for something in the codebase.
 @pytest.mark.parametrize("cmd", [
     "ps aux | awk '{print $2}'",
     "git log --oneline | sed -n 1,5p",
     "echo x | sed s/a/b/",
     "sed -i 's/a/b/' f.txt",
     "gh pr list | awk -F'\\t' '{print $1}'",
+    "sed -Ei 's/a/b/' f.txt",
+    "sed -ni 's/a/b/p' f.txt",
+    "git log |\n  awk '{print $1}'",
+    "make 2>&1 |& sed -n 1,5p",
+    "awk 'BEGIN { print 1 }'",
+    "sed -n 1,5p",
 ])
 def test_sed_and_awk_on_a_pipe_or_in_place_stay_quiet(cmd):
     assert _bash_invokes_search(cmd) is False
