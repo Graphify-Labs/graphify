@@ -2,6 +2,7 @@
 hook-style rebuilds. Assertions are on the final graph only, so the same file
 can judge any candidate fix (persisted flag, hook flag, rc key)."""
 import json
+import os
 import subprocess
 import sys
 import time
@@ -143,3 +144,36 @@ def test_issue_repro_via_real_post_commit_hook(tmp_path):
     # The hook is detached: wait until the new code symbol lands, then judge.
     assert _wait_for(lambda: any(l.startswith("added") for l in _labels(_graph(tmp_path))))
     assert _doc_nodes(_graph(tmp_path)) == []
+
+
+# --- scope lifecycle: what happens when the scope changes -------------------
+
+def _corpus(root):
+    (root / "a.py").write_text("def foo():\n    return 1\n")
+    (root / "guide.md").write_text("# Guide\n\n## Install\n\ntext\n\n## Usage\n\nmore\n")
+
+
+def _gfy(root, *args, env=None):
+    e = {**os.environ, **(env or {})}
+    return subprocess.run([sys.executable, "-m", "graphify", *args], cwd=root,
+                          capture_output=True, text=True, env=e, timeout=120)
+
+
+def _docs(root):
+    g = json.loads((root / "graphify-out/graph.json").read_text())
+    return [n for n in g["nodes"]
+            if str(n.get("source_file", "")).lower().endswith(DOC_SUFFIXES)]
+
+
+def _cfg(root):
+    return json.loads((root / "graphify-out/.graphify_build.json").read_text())
+
+
+def test_doc_nodes_already_in_graph_survive_turning_scope_on(tmp_path):
+    _corpus(tmp_path)
+    assert _rebuild_code(tmp_path, acquire_lock=False)          # full graph, md present
+    before = {n["id"] for n in _docs(tmp_path)}
+    assert before
+    assert _gfy(tmp_path, "extract", str(tmp_path), "--code-only").returncode == 0
+    assert _rebuild_code(tmp_path, acquire_lock=False)          # now scoped
+    assert {n["id"] for n in _docs(tmp_path)} == before         # preserved, not evicted
