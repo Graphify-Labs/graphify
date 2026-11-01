@@ -42,16 +42,19 @@ def test_split_hosts_are_discovered():
 
 @pytest.mark.parametrize("platform", _split_hosts(), ids=lambda p: p.key)
 def test_part_a_passes_an_explicit_root(platform: gen.Platform):
+    """The scan root now comes from ``read_scan_root()``, not a pasted placeholder (#4309)."""
     calls = _part_a_calls(platform)
     assert calls, f"[{platform.key}] Part A extract() call not found"
     for call in calls:
-        assert "root=Path('INPUT_PATH')" in call.replace("cache_root=Path('INPUT_PATH')", ""), (
+        assert "root=read_scan_root()" in call.replace("cache_root=read_scan_root()", ""), (
             f"[{platform.key}] Part A calls extract() with cache_root but no root= (#3727): {call!r}"
         )
 
 
 def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
-    """Run the shipped call twice, moving nothing but the cache: ids must not change."""
+    """Run the shipped call twice, moving nothing but the cache: ids must not change.
+
+    The scan root is read with ``read_scan_root()``, stubbed here (#4309)."""
     scan_root = tmp_path / "proj"
     (scan_root / "pkg").mkdir(parents=True)
     module = scan_root / "pkg" / "mod.py"
@@ -61,13 +64,12 @@ def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
 
     (call,) = _part_a_calls(gen.load_platforms()["claude"])
     expression = call.removeprefix("result = ")
-    in_place = expression.replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
-    relocated = expression.replace(
-        "cache_root=Path('INPUT_PATH')", f"cache_root=Path({str(elsewhere)!r})"
-    ).replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
+    in_place = expression
+    relocated = expression.replace("cache_root=read_scan_root()", f"cache_root=Path({str(elsewhere)!r})")
     assert in_place != relocated
 
-    scope = {"extract": extract, "Path": Path, "code_files": [module]}
+    scope = {"extract": extract, "Path": Path, "code_files": [module],
+             "read_scan_root": lambda: scan_root}
     ids_in_place = sorted(n["id"] for n in eval(in_place, dict(scope))["nodes"])
     ids_relocated = sorted(n["id"] for n in eval(relocated, dict(scope))["nodes"])
 

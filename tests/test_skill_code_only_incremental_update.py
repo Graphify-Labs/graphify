@@ -102,6 +102,8 @@ def test_codex_code_only_update_materializes_and_merges_fresh_ast(tmp_path: Path
     deleted = root / "deleted.py"
     out = tmp_path / "graphify-out"
     out.mkdir()
+    # Step 1 records the scan root here; the update blocks read it via read_scan_root() (#4309).
+    (out / ".graphify_root").write_text(str(root), encoding="utf-8")
 
     # Normal cleanup leaves no final extraction. Seed a stale semantic sidecar
     # to ensure the fast path replaces it rather than carrying it into Part C.
