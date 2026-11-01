@@ -1746,7 +1746,7 @@ set, repair callback and admission callback through a deterministic source queue
 `accept` snapshots complete admitted records before storage folding; `commit`
 validates and adopts owned list/dictionary references after final graph checks.
 No graph metadata registry, writer, extractor import or ambient root is added.
-`BUILD_PROJECTION_VERSION = 1` is declared for planned INC128 recovery.
+`BUILD_PROJECTION_VERSION = 1` is declared for INC128 recovery.
 
 The graph-assembly maintainer owns minimal `build_from_json` hooks and its shared
 invocation-local preparation/admission callbacks: build.py measures3,328/3,345,
@@ -1755,3 +1755,21 @@ accepts the corrected shared caller frame; independent manual/extra-original
 views retain their documented compatibility boundary. New tests/helper measure
 179/143/76 physical lines. Final package/installed/source and corpus proof remain
 separate from scoped source tests and branch coverage.
+
+## Projection-version forward recovery — INC128 / D49
+
+The existing watch/rebuild maintainer owns `watch.py::_current_build_state` and
+`_projection_refresh_required`: a strict projection-version scalar is independent
+of AST39/Qt33. Missing, noncurrent or invalid retained versions promote existing
+partial input selection to the complete already-admitted corpus. The early
+no-change skip and three old-output equality exits cannot stamp that version
+without actual product publication. Current-version paths and the documented
+full_clean invocation-mode transition retain their original ownership.
+
+Watch.py measures3,432/3,450, from3,411. New update regression/helper modules
+measure221/136 physical lines; both are below300, and the test's existing
+`test_source_relationship_` prefix is admitted by the unchanged native selector.
+No new state file, parser epoch, dependency, SDK or discovery policy is added.
+All changed executable lines/arcs, including current-version clustered topology,
+execute in the recorded scoped/adjacent source gates. Complete package/installed/
+corpus/hosted evidence remains distinct and revision-bound.

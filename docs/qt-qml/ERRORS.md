@@ -971,3 +971,16 @@ form a typed QML/C++ pair or a pair of known differing language families.
 Their unexecuted branches are not claimed verified; declared-target typed and
 cross-family rejection use the real admission gate. Correspondence invariants
 and malformed legacy direction handling retain explicit coverage limitations.
+
+### Projection-version recovery — INC128
+
+A missing, noncurrent or malformed retained publication version is a normal
+re-projection trigger, not parser success, a new native capability or an adopted
+untrusted graph schema. Reuse ordinary raw-cache/source admission and the existing
+product transaction. A malformed prior source transport, unavailable setup,
+contention or actual failed replacement keeps its existing diagnostic/owner and
+cannot stamp a new version. Valid new raw-cache entries retain their existing
+pre-publication policy; prior successful entries and accepted products remain
+protected. Successful publication records the version; a default full no-change
+repeat is stable, while an explicit partial repeat may change only the existing
+full_clean mode field. No new public diagnostic code/logger is introduced.

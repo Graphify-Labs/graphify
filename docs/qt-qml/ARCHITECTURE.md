@@ -1623,4 +1623,4 @@ facts may be re-projected; a damaged old export cannot reconstruct absent facts
 by itself. A version mismatch promotes partial watch input to the complete
 normally admitted corpus, using valid raw caches, and stamps only after actual
 publication. Existing discovery/exclusion and writer/rollback owners remain.
-Status: INC127 implemented with58 passing ordinary cases and646 related local regressions. INC128 forward recovery and final corrected-package/full/corpus/hosted proof remain pending.
+Status: INC127 and INC128 implemented with source-frozen local regressions and independent peers. Final corrected-package/full/corpus/hosted acceptance is established only by its separately bound receipts and live PR evidence table; earlier source43ac success remains historical.

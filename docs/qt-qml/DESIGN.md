@@ -3359,17 +3359,17 @@ their existing owners and contracts.
 
 ### Accepted-link projection disagreement — INC-QML-127 diagnosis
 
-Observed current behavior: the generic assembly loop can remap source/target into
+Observed source43ac behavior: the generic assembly loop can remap source/target into
 local variables without updating caller-owned original-link endpoints. The JSON
 export's endpoint filter then drops an assembled import. The same preservation
 path can restore a generic inferred call that assembly filtered by language.
 Both are caller-frame consistency defects; successful typed source-witness
 round trips alone do not establish preservation of every accepted generic link.
 
-The correction is planned, not implemented. Its authoritative owner must carry
-the existing assembly decision into export while preserving parallel evidence,
+This diagnosis preceded the implemented D49 correction. Its authoritative owner
+carries the existing assembly decision into export while preserving parallel evidence,
 legacy manual exports, source promises and atomic-write retention. Requirements,
-neutral regression failures and the agreed interface/state lifetime precede
+neutral regression failures and the agreed interface/state lifetime preceded
 production changes. No second resolver, new corpus interpretation, graph-cap
 override or SDK/runtime execution is proposed.
 
@@ -3395,8 +3395,8 @@ their original extraction revision is never relabelled as the corrected runtime.
 
 INC128 adds `BUILD_PROJECTION_VERSION` to the existing build-state fingerprint.
 It owns no new state file, timer, queue, resolver or persistence transaction.
-The exact partial-input promotion seam and failure/recovery tests must be proven
-before implementation; watch.py currently measures3,411 under3,450. The scalar
+The partial-input promotion seam and failure/recovery tests are covered by the
+recorded INC128 gates; watch.py measures3,432 under3,450, from3,411. The scalar
 belongs to successful graph publication, not source-cache acceptance or setup.
 
 The complete external-import cohort uses a deterministic source-index/work

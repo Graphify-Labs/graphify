@@ -194,8 +194,9 @@ The optional native selection includes `test_qt_`, `test_qml_`,
 `test_upstream_qt_`, `test_cpp_`, `test_csharp_`, `test_field_call_` and
 `test_source_relationship_` modules; Linux retains the full suite.
 INC127's new consumer correction passes646 local related cases including58
-ordinary regressions/controls, but corrected-package/full/corpus/new-head gates
-remain pending. INC128 unchanged-source projection recovery remains planned.
+ordinary regressions/controls. INC128 projection recovery has27 local passes
+within583 passes/13 existing capability skips. Corrected-package/full/corpus/
+new-head gates retain separate revision-bound acceptance in the PR evidence table.
 No Qt SDK/runtime execution or cross-platform application build is inferred.
 
 The final local corrective profile uses the previously qualified native Bash/sh

@@ -7,15 +7,16 @@ Shared installer, shell-fixture, filesystem-profile and Terraform verification
 continues separately under [INC-CORE-01–03](../COMPATIBILITY.md). These contribution
 gate corrections do not expand the Qt/QML language profile or advance its counter.
 
-Current delivery: INC-QML-61–127 implements the bounded Qt6.12 source audit
-and reproduced source/consumer corrections on
-[draft PR #10](https://github.com/SlinkyRamey/graphify-with-qt-and-qml-support/pull/10).
-INC128 forward projection recovery is planned and remains unverified. Source
-`43ac285b` passes all20 hosted jobs and exact native/case/wheel/cleanup audits;
-that is historical evidence for the new unpublished consumer correction.
-INC127 passes58 ordinary cases within646 related regressions. Fresh corrected
-package, full-source, corpus-consumer and final-head hosted proof remain pending.
-The mechanism matrix retains unsupported/unverified SDK forms; source-corpus
+Current delivery: INC-QML-61–128 implements the bounded Qt6.12 source audit,
+accepted-link export correction and forward projection recovery on
+[PR #10](https://github.com/SlinkyRamey/graphify-with-qt-and-qml-support/pull/10).
+INC127 has58 ordinary passes within646 related regressions; INC128 has27
+ordinary passes within583 passes/13 explicit skips in its596-case adjacent gate.
+Source43ac's20 successful hosted jobs retain their historical revision binding.
+The resulting correction requires its own source/package/corpus/native/cleanup
+proof. Current per-revision delivery state belongs to PR #10's evidence table;
+individual receipts establish acceptance, not implementation status or totals.
+Unsupported/unverified SDK forms remain in the mechanism matrix; source-corpus
 declarations and every possible native binding are distinct claims.
 
 The following introduction preserves historical delivery checkpoints. Its old
@@ -5587,3 +5588,14 @@ Setup/contended/invalid-input paths cannot stamp success. No parser/schema or
 dependency bump, new discovery boundary, cap override or global upgrade occurs.
 Final source/native/full/installed and real corpus-consumer proof belongs to
 the resulting revision; successful43ac remains historical evidence.
+
+INC128 implementation adds the strict scalar/reader, normal full promotion and
+early/three equality guards to the existing rebuild owner: watch3,432/3,450.
+Ordinary red has25 failures/two controls; green has27 passes. The596-case adjacent
+gate has583 passes/13 existing skips and includes those27. All changed executable
+lines/arcs, valid caches, native contention, invalid prior transport, real EIO,
+recovery and repeat have source-frozen independent evidence. No source-fact epoch
+or dependency changes. Current-revision raw package, full suite, installed consumer,
+real corpus consumer and normal hosted checks remain separately bound release
+gates. Live per-revision state belongs to PR #10's evidence table; older successful
+and failed source checkpoints are not promoted to a later revision.

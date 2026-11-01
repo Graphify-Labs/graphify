@@ -1808,6 +1808,7 @@ def _current_build_state(
     vouch for it.
     """
     import hashlib
+    from graphify.accepted_link_frame import BUILD_PROJECTION_VERSION
 
     rc = watch_root / RC_FILENAME
     try:
@@ -1820,6 +1821,7 @@ def _current_build_state(
         rc_digest = ""
     return {
         "epoch": _extractor_epoch(),
+        "projection_version": BUILD_PROJECTION_VERSION,
         "scan_root": str(watch_root),
         "scan_digest": scan_digest,
         "follow_symlinks": bool(follow_symlinks),
@@ -1834,6 +1836,16 @@ def _current_build_state(
         "viz_node_limit": os.environ.get("GRAPHIFY_VIZ_NODE_LIMIT", ""),
         "ambiguous_scale": os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE", ""),
     }
+
+
+def _projection_refresh_required(out: Path, state: dict) -> bool:
+    """Raw AST compatibility cannot vouch for an old publication algorithm."""
+    try:
+        previous = json.loads((out / _BUILD_STATE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    version = previous.get("projection_version") if isinstance(previous, dict) else None
+    return type(version) is not int or version != state["projection_version"]
 
 
 def _graph_json_is_complete(path: Path) -> bool:
@@ -2038,6 +2050,8 @@ def _rebuild_code(
     in ``changed_paths`` (paths that no longer exist on disk) are dropped from
     the preserved set. When ``changed_paths`` is None the full code corpus is
     re-extracted (used by the watcher and post-checkout hook).
+    A stale publication projection promotes a provided change list to that full
+    path while retaining the ordinary raw AST cache policy.
 
     ``acquire_lock`` (default True) takes a non-blocking per-repo flock around
     the rebuild so concurrent post-commit hooks across multiple repos do not
@@ -2192,10 +2206,17 @@ def _rebuild_code(
             excludes=_persisted_excludes,
             scan_digest=_scan_digest(detected),
         )
+        # A partial event cannot retain unchanged sources in an older projection.
+        # Keep the ordinary raw-cache policy; publish the full accepted corpus
+        # before its new version can enter the existing successful-build stamp.
+        # Topology equality cannot certify evidence omitted by the old serializer.
+        projection_refresh = _projection_refresh_required(out, _build_state_now)
+        if projection_refresh:
+            changed_paths = None
 
         # Qt acceptance also owns import-root/profile and durable context state;
         # identical corpus hashes cannot authorize skipping their required refresh.
-        if changed_paths is None and not force and not qt_full_refresh:
+        if changed_paths is None and not force and not qt_full_refresh and not projection_refresh:
             if (
                 _inputs_unchanged(detected, out / "manifest.json", watch_root)
                 and _build_state_matches(out, _build_state_now)
@@ -2829,7 +2850,7 @@ def _rebuild_code(
                     )
                 except Exception:
                     same_graph = False
-            same_graph = same_graph and not legacy_layout
+            same_graph = same_graph and not legacy_layout and not projection_refresh
             if not same_graph:
                 if not _check_shrink(
                     force, existing_graph_data, candidate_graph_data,
@@ -2878,7 +2899,7 @@ def _rebuild_code(
         if not _valid_publication_direction(G.edges(data=True), directed=G.is_directed()):
             return False
         candidate_topology = _topology_from_graph(G)
-        if existing_graph_data and not legacy_layout:
+        if existing_graph_data and not legacy_layout and not projection_refresh:
             try:
                 same_topology = (
                     json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False)
@@ -3069,7 +3090,7 @@ def _rebuild_code(
                 )
             except Exception:
                 same_graph = False
-        same_graph = same_graph and not legacy_layout
+        same_graph = same_graph and not legacy_layout and not projection_refresh
         if report_path.exists():
             old_report = report_path.read_text(encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)

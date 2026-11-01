@@ -5738,3 +5738,52 @@ historical proof, not validation of the new consumer. Original extraction's
 immutable raw source facts and their original package identity remain retained;
 a new consumer/wheel must get fresh export/reload/source-disposition accounting.
 INC128 forward recovery and final new-head validation remain pending.
+
+### INC-QML-128 — Projection-version recovery at the real rebuild boundary
+
+Affected acceptance: REQ-QML-011-AC03/AC04 and REQ-QML-012-AC01/AC02. The added
+publication-version field is independent of AST39/Qt33/package0.9.99. The current
+accepted-input contract and per-file cache owner remain unchanged.
+
+The ordinary pre-correction selection has27 cases:25 actual failures/two controls,
+zero errors/skips. It reaches real extraction, CLI/rebuild, cached facts, product
+transactions and public path reload; fake facts/resolvers are not substituted.
+Missing/old/boolean/float/text/null/container versions previously permit stale
+no-change/partial behavior and skip the modeled actual replacement fault. Red
+input, interpreter/import origins and all1,148 source/protected guards are retained.
+
+Exact acceptance mapping in `tests/test_source_relationship_projection_updates.py`:
+
+| Criterion | Exact automated test | Profile/outcome |
+| --- | --- | --- |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_noncurrent_strict_projection_refreshes_once` | Seven explicit version values trigger one real full publication; strict current version is not bool/float equality. |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_missing_version_republishes_even_equal_topology` | Raw/clustered paths cannot stamp new projection from old equality shortcuts. |
+| REQ-QML-011-AC03/AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_current_projection_and_raw_cache_keep_existing_policy` | Valid cache reuse and complete source admission keep their existing owners. |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_current_strict_version_keeps_existing_skip` | Strict current full no-change retains the existing fast no-op. |
+| REQ-QML-011-AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_unavailable_state_promotes_partial_event` | Missing/malformed/nonobject/unreadable retained state cannot authorize a partial old projection. |
+| REQ-QML-011-AC03/AC04 | `tests/test_source_relationship_projection_updates.py::test_req_qml011_ac04_partial_event_promotes_full_admitted_corpus` | Python, C# and Qt edit/deletion profiles preserve unchanged sources, actual typed facts and cold/full parity. |
+| REQ-QML-012-AC02 | `tests/test_source_relationship_projection_updates.py::test_req_qml012_ac02_projection_failed_publication_retains_then_recovers` | Manual/watch and raw/clustered actual EIO preserves accepted products, prior successful caches and old version; recovery/repeat succeeds. |
+| REQ-QML-012-AC01/AC02 | `tests/test_source_relationship_projection_updates.py::test_req_qml012_ac02_projection_contention_keeps_state_and_pending_request` | Real native holder/pending state is preserved without new version acceptance. |
+| REQ-QML-012-AC02 | `tests/test_source_relationship_projection_updates.py::test_req_qml012_ac02_projection_cannot_adopt_invalid_prior_source_transport` | Existing integrity rejection remains before adoption/publication. |
+
+The final owned module passes27/27, zero skips/errors,36.25 seconds. The adjacent
+27-module selection passes583/596 with13 existing explicit capability skips,
+zero failures/errors,443.156 seconds; it includes those27 and is not summed.
+Changed executable lines/origin arcs are fully covered, including actual strict
+reader outcomes and the current-version clustered arm left unhit by owned27.
+An explicit partial repeat retains the existing full_clean True-to-False mode
+transition while graph/source facts and successful projection version stay exact.
+
+All1,148 Python files and14 protected files remain exact during final gates.
+Scoped Ruff passes. The first Pyright invocation used an unavailable ambient
+interpreter and remains invalid setup evidence; qualified actual-venv typing
+retains31 watch diagnostics/zero new-test diagnostics. The independent complete
+source quality run retains684 baseline diagnostics, zero additions/retirements,
+Ruff success and134 matching generated artifacts. Independent terminal peer
+confirms all owned source hashes, XML/skip classifications and coverage.
+
+The new filename is admitted by the actual unchanged native source selector;
+no platform/profile/dependency/assertion is weakened. New wheel/full-source/
+installed/corpus/native acceptance belongs to the resulting reviewed revision,
+with individual current evidence in PR #10. Original producer/raw facts retain
+their original source identity when a newly bound consumer re-projects them.
