@@ -255,3 +255,62 @@ def test_to_json_new_twin_does_not_offset_another_loss(tmp_path, capsys):
     G = build_from_json({"nodes": [_ast_file("src_config", "src/config.php")], "edges": []})
     assert to_json(G, {}, str(out)) is False
     assert "new graph has 1 nodes" in capsys.readouterr().err
+
+
+def test_same_source_yaml_semantic_evidence_survives_new_ast_full_build(tmp_path):
+    """#4896: updating a formerly semantic-only YAML must retain source-specific
+    rationale even when that exact YAML becomes AST-extractable in newer Graphify.
+    """
+    rich = {**_mention("legacy_yaml_id", "automation.yaml", "config/automation.yaml"),
+            "file_type": "document", "rationale": "Reviewed migration contract"}
+    ast = _ast_file("canonical_yaml_ast", "config/automation.yaml")
+    related = {"id": "docs_review", "label": "Review", "file_type": "concept",
+               "source_file": "docs/review.md", "_origin": "semantic"}
+    payload = {"nodes": [ast, rich, related],
+               "edges": [{"source": "docs_review", "target": "legacy_yaml_id",
+                          "relation": "references", "confidence": "EXTRACTED",
+                          "source_file": "docs/review.md"}]}
+    g = build_from_json(payload)
+    assert "canonical_yaml_ast" in g and "legacy_yaml_id" in g
+    assert g.nodes["legacy_yaml_id"]["rationale"] == rich["rationale"]
+    assert g.has_edge("docs_review", "legacy_yaml_id")
+    out = tmp_path / "graph.json"
+    assert to_json(g, {}, str(out)) is True
+    reloaded = build_from_json(json.loads(out.read_text()))
+    assert "legacy_yaml_id" in reloaded
+    assert reloaded.nodes["legacy_yaml_id"]["rationale"] == rich["rationale"]
+    assert _lost_saved_semantic_nodes([rich], [
+        {"id": n, **dict(reloaded.nodes[n])} for n in reloaded.nodes
+    ]) == []
+    # An AST-only candidate may NOT claim this independently evidenced
+    # semantic node has been safely folded.
+    assert [n["id"] for n in _lost_saved_semantic_nodes([rich], [ast])] == [
+        "legacy_yaml_id"
+    ]
+
+
+def test_disambiguated_yaml_ast_file_excuses_only_matching_bare_mention():
+    """Full corpus may path-qualify the AST file label after a same-source
+    bare YAML mention was legitimately folded into the real file node.
+    """
+    saved = [_mention("legacy_case", "case-a.yaml", "cases/a/case-a.yaml")]
+    ast_one = {**_ast_file("case_a_ast", "cases/a/case-a.yaml"),
+               "label": "a/case-a.yaml"}
+    ast_other = {**_ast_file("other_ast", "cases/b/case-a.yaml"),
+                 "label": "b/case-a.yaml"}
+    folded = {}
+    assert _lost_saved_semantic_nodes(saved, [ast_one, ast_other], folded=folded) == []
+    assert folded == {"legacy_case": "case_a_ast"}
+    assert [n["id"] for n in _lost_saved_semantic_nodes(saved, [ast_other])] == [
+        "legacy_case"
+    ]
+
+
+def test_evidence_free_same_source_file_mention_still_folds():
+    saved = [_mention("plain_yaml_mention", "config.yaml", "config/config.yaml")]
+    ast = _ast_file("config_ast", "config/config.yaml")
+    g = build_from_json({"nodes": [ast, *saved], "edges": []})
+    assert "config_ast" in g and "plain_yaml_mention" not in g
+    assert _lost_saved_semantic_nodes(saved, [
+        {"id": n, **dict(g.nodes[n])} for n in g.nodes
+    ]) == []

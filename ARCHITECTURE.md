@@ -91,8 +91,12 @@ its explanation or attribution. Such records remain separate even when their
 label matches a unique AST file node. This is intentionally conservative:
 a richly annotated mention may remain distinct until an explicit
 provenance-preserving merge is available. The saved-semantic-node shrink guard
-uses the same rule and still rejects any unexplained loss. Same-source AST/
-semantic twins keep their existing exact-path merge rule (#4389/#4391).
+uses the same rule and still rejects any unexplained loss. Same-source AST/semantic twins that are evidence-free keep their
+existing exact-path merge rule (#4389/#4391), but an independently evidenced
+semantic YAML/document record is retained across a later AST extractor
+upgrade. If AST disambiguation path-qualifies a file-node label, the shrink
+guard accounts for a plain same-source fold using the exact source identity
+instead of accepting a mere basename collision.
 
 ## Edge direction in graph.json
 

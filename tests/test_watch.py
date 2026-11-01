@@ -5663,3 +5663,56 @@ def test_rebuild_code_sidecar_writes_are_atomic_and_labels_first(tmp_path, monke
     # Both sidecars must be parseable — a torn write would fail here.
     assert json.loads(sig_file.read_text(encoding="utf-8")) is not None
     assert json.loads(labels_file.read_text(encoding="utf-8")) is not None
+
+
+def test_full_yaml_rebuild_retains_rich_source_provenance_with_same_basename(tmp_path):
+    """#4896: AST-upgrading same-named YAML files must not lose reviewed
+    source-specific semantic data, while an evidence-free file twin may fold.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    for sub in ("a", "b"):
+        src = root / sub / "case-a.yaml"
+        src.parent.mkdir()
+        src.write_text(
+            "case_id: A\nmode: strict\nrequired_set:\n"
+            "  - lint\nresults:\n  lint:\n    status: PASS\n",
+            encoding="utf-8",
+        )
+
+    out = root / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(root))
+    saved = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "reviewed_yaml", "label": "case-a.yaml",
+             "source_file": "a/case-a.yaml", "file_type": "document",
+             "_origin": "semantic", "source_location": None,
+             "rationale": "Separately reviewed semantic finding"},
+            {"id": "plain_yaml", "label": "case-a.yaml",
+             "source_file": "b/case-a.yaml", "file_type": "code",
+             "_origin": "semantic", "source_location": None},
+        ],
+        "links": [], "hyperedges": [],
+    }
+    graph = out / "graph.json"
+    graph.write_text(json.dumps(saved), encoding="utf-8")
+    assert _rebuild_code(root, changed_paths=None, no_cluster=False,
+                         block_on_lock=True) is True
+
+    candidate = json.loads(graph.read_text(encoding="utf-8"))
+    nodes = {n["id"]: n for n in candidate["nodes"]}
+    assert nodes["reviewed_yaml"]["rationale"] == (
+        "Separately reviewed semantic finding"
+    )
+    assert nodes["reviewed_yaml"]["source_file"] == "a/case-a.yaml"
+    assert "plain_yaml" not in nodes  # accounted same-source AST fold
+    for path in ("a/case-a.yaml", "b/case-a.yaml"):
+        assert any(
+            n.get("_origin") == "ast" and n.get("source_file") == path
+            for n in candidate["nodes"]
+        ), f"expected freshly extracted AST for {path}"
