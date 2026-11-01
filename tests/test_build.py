@@ -631,6 +631,41 @@ def test_ghost_merge_wrong_source_file_resolved_by_label():
     assert G.has_edge("some_query_node", "apps_customer_app_index")
 
 
+def test_label_only_file_fold_preserves_distinct_semantic_evidence():
+    """#4896: two source documents can discuss the same file differently.
+
+    Their independent explanations must not disappear just because an AST file
+    with the same basename is present; ordinary evidence-free mentions still
+    fold as before.
+    """
+    ext = {
+        "nodes": [
+            {"id": "ast_file", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "ast",
+             "source_file": "src/validate_canonical_load.py", "source_location": "L1"},
+            {"id": "sem_a", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/a.md", "rationale": "EVIDENCE_ALPHA"},
+            {"id": "sem_b", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/b.yaml", "rationale": "EVIDENCE_BETA"},
+            {"id": "mention_only", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "README.md"},
+        ],
+        "edges": [
+            {"source": "sem_a", "target": "sem_b", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "memory/plan/archive/a.md"},
+        ],
+    }
+    graph = build_from_json(ext)
+    assert {"ast_file", "sem_a", "sem_b"} <= set(graph.nodes())
+    assert "mention_only" not in graph
+    assert graph.nodes["sem_a"]["rationale"] == "EVIDENCE_ALPHA"
+    assert graph.nodes["sem_b"]["rationale"] == "EVIDENCE_BETA"
+    assert graph.has_edge("sem_a", "sem_b")
+
+
 def test_ghost_merge_wrong_source_file_ambiguous_basename_left_alone():
     """#3344: the label-alone fallback must stay conservative — a phantom
     mentioning a bare basename that TWO different real files share (an

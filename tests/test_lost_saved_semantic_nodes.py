@@ -169,6 +169,45 @@ def test_file_mention_folded_into_ast_file_node_is_not_lost():
     assert folded == {"readme_config": "src_config"}
 
 
+def test_rich_semantic_file_mention_is_not_exempt_from_shrink_guard():
+    """#4896: the builder preserves rich cross-file semantics, so the
+    shrink guard must not pretend that a missing one was folded away.
+    """
+    rich = {**_mention("semantic_doc", "config.php", "notes/plan.md"),
+            "rationale": "Unique source-specific analysis"}
+    ast = _ast_file("src_config", "src/config.php")
+    assert [n["id"] for n in _lost_saved_semantic_nodes([rich], [ast])] == [
+        "semantic_doc"
+    ]
+    payload = {"nodes": [rich, ast], "edges": [], "hyperedges": []}
+    graph = build_from_json(payload)
+    assert {"semantic_doc", "src_config"} <= set(graph.nodes)
+    folded = {}
+    assert _lost_saved_semantic_nodes([rich], [
+        {**dict(graph.nodes[nid]), "id": nid} for nid in graph.nodes
+    ], folded=folded) == []
+    assert folded == {}
+
+
+def test_rich_semantics_survive_repeated_build_and_serialization(tmp_path):
+    """#4896: the source-specific rationales must survive cold reloading."""
+    rich_a = {**_mention("sem_a", "config.php", "docs/a.md"),
+              "rationale": "First source's unique explanation"}
+    rich_b = {**_mention("sem_b", "config.php", "docs/b.yaml"),
+              "rationale": "Second source's separate explanation"}
+    bare = _mention("bare_mention", "config.php", "README.md")
+    ast = _ast_file("src_config", "src/config.php")
+    graph = build_from_json({"nodes": [ast, rich_a, rich_b, bare], "edges": []})
+    output = tmp_path / "graph.json"
+    for _ in range(2):
+        assert {"src_config", "sem_a", "sem_b"} <= set(graph.nodes)
+        assert "bare_mention" not in graph.nodes
+        assert graph.nodes["sem_a"]["rationale"] == rich_a["rationale"]
+        assert graph.nodes["sem_b"]["rationale"] == rich_b["rationale"]
+        assert to_json(graph, {}, str(output))
+        graph = build_from_json(json.loads(output.read_text(encoding="utf-8")))
+
+
 def test_file_mention_matching_two_ast_files_is_still_lost():
     # Pass 2b leaves an ambiguous label unmerged, so its absence is a real loss.
     saved = [_mention("readme_index", "index.ts", "README.md")]
