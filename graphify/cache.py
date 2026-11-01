@@ -531,20 +531,26 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
 
     For Markdown files (.md), only the body below the YAML frontmatter is hashed,
     so metadata-only changes (e.g. reviewed, status, tags) do not invalidate the cache.
+
+    The path handed to the filesystem comes from os_long_path(); the cache key
+    preserves case because case sensitivity belongs to the volume, not the
+    platform (#4925).
     """
     global _stat_index_dirty
-    p = _normalize_path(Path(path))
-    root = _normalize_path(Path(root))
-    if not p.is_file():
-        raise IsADirectoryError(f"file_hash requires a file, got: {p}")
+    raw_path = Path(path)
+    raw_root = Path(root)
+    src = Path(_os_long_path(raw_path))
+    root_src = Path(_os_long_path(raw_root))
+    if not src.is_file():
+        raise IsADirectoryError(f"file_hash requires a file, got: {src}")
 
     # The stat index is a cache artifact, so it must follow the cache location
     # (cache_root), not the key-anchor root — otherwise it leaves a stray
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
-    _ensure_stat_index(root, cache_root=cache_root)
-    resolved = p.resolve()
-    abs_key = str(resolved)
+    _ensure_stat_index(root_src, cache_root=cache_root)
+    resolved = src.resolve()
+    abs_key = str(_normalize_path(resolved))
     # The salt is the path component that enters the digest (relative to root, or
     # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
     # the same file hashed under two different roots yields two different digests
@@ -552,7 +558,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # path served whichever was computed first — making file_hash order-dependent
     # and poisoning the persisted stat-index across runs (#1989). Store one digest
     # per salt so alternating roots don't force re-reads.
-    resolved_root = root.resolve()
+    resolved_root = root_src.resolve()
     try:
         resolved_rel = resolved.relative_to(resolved_root)
     except ValueError:
@@ -561,8 +567,8 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
         # direct cache callers still rely on the resolved external identity.
         salt = resolved.as_posix()
     else:
-        walked = Path(os.path.abspath(p))
-        walked_root = Path(os.path.abspath(root))
+        walked = Path(os.path.abspath(raw_path))
+        walked_root = Path(os.path.abspath(raw_root))
         try:
             walked_rel = walked.relative_to(walked_root)
         except ValueError:
@@ -584,7 +590,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
 
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = src.stat()
         if _stat_sig_fresh(_stat_index.get(abs_key), st):
             hashes = _stat_index[abs_key].get("hashes")
             if isinstance(hashes, dict):
@@ -599,8 +605,8 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # Captured BEFORE the read so the stamp can never post-date content that
     # changed while we were reading it (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    raw = p.read_bytes()
-    content = _body_content(raw) if p.suffix.lower() == ".md" else raw
+    raw = src.read_bytes()
+    content = _body_content(raw) if src.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
     h.update(content)
     h.update(b"\x00")
