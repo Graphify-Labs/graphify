@@ -62,3 +62,16 @@ def test_ambiguous_included_owner_fails_closed(tmp_path):
     r = extract([*paths, cpp, other], root=tmp_path, parallel=False, cache_root=tmp_path)
     caller = next(n["id"] for n in r["nodes"] if n["label"] == "Foo::run()")
     assert not any(e["source"] == caller and e["relation"] == "calls" for e in r["edges"])
+
+
+def test_colliding_namespace_types_do_not_manufacture_an_owner(tmp_path):
+    header = tmp_path / "foo.h"
+    header.write_text("namespace Left {class Foo {public: void run(); void say();};}\n"
+                      "namespace Right {class Foo {public: void run(); void say();};}", encoding="utf-8")
+    cpp = tmp_path / "main.cpp"
+    cpp.write_text('#include "foo.h"\nvoid Right::Foo::run(){say();}', encoding="utf-8")
+    r = extract([header, cpp], root=tmp_path, parallel=False, cache_root=tmp_path)
+    caller = next(n["id"] for n in r["nodes"] if n["label"] == "Right::Foo::run()")
+    # The existing declaration-id collision is outside this fix. Incomplete
+    # class identity must not turn into positive evidence of an owning type.
+    assert not any(e["relation"] == "method" and e["target"] == caller for e in r["edges"])
