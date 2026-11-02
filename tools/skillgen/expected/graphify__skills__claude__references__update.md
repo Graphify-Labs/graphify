@@ -14,7 +14,7 @@ from pathlib import Path
 
 from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
-result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
+result = detect_incremental(Path('INPUT_PATH'), kind=\"ast\", extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 nf = result.get('new_files', {})
 print(json.dumps({
