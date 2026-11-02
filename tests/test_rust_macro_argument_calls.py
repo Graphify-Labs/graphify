@@ -82,3 +82,30 @@ def test_macro_rules_body_is_not_scanned(tmp_path):
         "fn idle() {}\n"
     )})
     assert not any(tgt == "helper()" for _, tgt, _ in calls)
+
+
+def test_a_parsed_call_keeps_extracted_when_the_macro_comes_first(tmp_path):
+    calls = _calls(tmp_path, {"lib.rs": (
+        "fn compute(x: u8) -> u8 { x }\n"
+        "fn run() { println!(\"{}\", compute(1)); let _y = compute(2); }\n"
+    )})
+    assert ("run()", "compute()", "EXTRACTED") in calls
+    assert ("run()", "compute()", "INFERRED") not in calls
+
+
+def test_dsl_macros_are_not_scanned(tmp_path):
+    calls = _calls(tmp_path, {"lib.rs": (
+        "fn users() {}\n"
+        "fn name() {}\n"
+        "table! { users (id) { id -> Int4, } }\n"
+        "fn gen() { quote! { #name(1) }; html! { <div>{ users() }</div> }; }\n"
+    )})
+    assert not any(tgt in ("users()", "name()") for _, tgt, _ in calls)
+
+
+def test_a_path_qualified_log_macro_is_scanned(tmp_path):
+    calls = _calls(tmp_path, {"lib.rs": (
+        "fn state() -> u8 { 0 }\n"
+        "fn tick() { log::info!(\"{}\", state()); }\n"
+    )})
+    assert ("tick()", "state()", "INFERRED") in calls
