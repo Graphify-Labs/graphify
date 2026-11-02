@@ -295,7 +295,9 @@ def extract_objc(path: Path) -> dict:
         accepted = []
         for macro in descendants(root, "macro_type_specifier"):
             macro_name = macro.child_by_field_name("name")
-            if macro_name is None or _read(macro_name) not in ("NS_ENUM", "NS_OPTIONS"):
+            if macro_name is None or _read(macro_name) not in (
+                "NS_ENUM", "NS_OPTIONS", "NS_CLOSED_ENUM"
+            ):
                 continue
 
             # The closest preceding structural token in an enclosing node must
@@ -622,7 +624,7 @@ def extract_objc(path: Path) -> dict:
             # `typedef enum { ... } Name;` / `typedef enum Tag { ... } Name;`.
             # The enum body sits on a child enum_specifier that carries no usable
             # name; the name callers reference is the typedef alias (the trailing
-            # type_identifier). NS_ENUM/NS_OPTIONS are handled separately through
+            # type_identifier). NS_ENUM/NS_OPTIONS/NS_CLOSED_ENUM are handled separately through
             # their structural macro headers and isolated enum body fragments.
             enum_spec = next((c for c in node.children if c.type == "enum_specifier"), None)
             if enum_spec is not None and any(

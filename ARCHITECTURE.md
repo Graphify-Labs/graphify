@@ -33,6 +33,12 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
+Detection counts words from text and converted documents. Supported raster images,
+audio and video stay in the discovered corpus, but their raw bytes are never decoded
+for word counting; detection also bypasses any older cached counts for them. SVG
+remains text-readable, and PDF/Office files retain their existing text converters.
+This avoids reading and splitting entire binary media files just to size the corpus.
+
 ### Calling `extract()` from your own code
 
 `extract()` takes a **list** of paths, and `root` is keyword-only and optional:
@@ -48,6 +54,15 @@ result = extract(paths, root=Path(".").resolve())   # pass root explicitly
 Always pass `root`. Node ids and `source_file` values are derived relative to it; when it is omitted, `extract()` infers one from the paths you passed, which is the common parent of *that list* rather than your project root. A single-file call therefore anchors to that file's own directory, and ids can end up carrying path segments from the machine they were extracted on.
 
 ## Extraction output schema
+
+Terraform/HCL per-file AST results record the scope used to mint their node IDs.
+After a cache hit, extraction consumes that scope to rewrite node IDs and edge
+endpoints relative to the current scan root, including when the cache was copied
+from another checkout. Module-source topology is still resolved against the
+current permitted corpus. The scope marker is internal and is not exported in
+the graph. AST cache schema 33 retires entries without this marker; the semantic
+cache is unchanged. Existing graphs with stale absolute Terraform IDs need a full
+code rebuild: `graphify extract . --code-only --force`.
 
 Every extractor returns:
 
@@ -117,6 +132,16 @@ Python nested class ids include their enclosing class id. Same-named nested
 classes under different parents retain separate definitions, methods, and
 containment edges; top-level class ids are unchanged. AST cache schema 7 prevents
 older cached definitions from retaining the collapsed identities.
+
+Python injected fields retain an unchanged parameter/local's declared class
+through `self.field = value`. A local assigned a member-call result can use the
+resolved method's single scalar return-type reference. The link uses the exact
+producer call's byte span, not a same-line argument or a bare method name.
+Unknown types, conflicting assignments, shadowed names, container returns, and
+ambiguous return references emit no inferred call. Resulting call edges remain
+`INFERRED`. Changed-caller rebuilds carry unchanged methods' return-type references
+as resolver context. Changes to a producer's return annotation require a full
+rebuild to recompute unchanged callers' inferred relationships.
 
 C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one

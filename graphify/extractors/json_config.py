@@ -234,7 +234,7 @@ def extract_json(path: Path) -> dict:
                     if ref_nid:
                         add_edge(parent_nid, ref_nid, "references", line)
 
-                elif parent_key in _DEP_KEYS and val_text:
+                elif parent_key in _DEP_KEYS and val_text.strip():
                     # Two defects fixed here, both from the #1764 shape:
                     #
                     # 1. The edge ran `key_nid -> dep_nid`, and both nodes carry
@@ -253,10 +253,34 @@ def extract_json(path: Path) -> dict:
                     #    `types` could then be collapsed onto a same-named local
                     #    module by build.py's alias index -- the #1638 failure
                     #    mode reached through a different door.
+                    #
+                    # 3. Moving that edge to the manifest also cut the only link between the
+                    #    dependency's key node (its manifest entry, reached through
+                    #    `dependencies --contains-->`) and its ref node, so the entry and
+                    #    the code that imports the package landed in different communities
+                    #    (#4569). `key_nid --declares--> dep_nid` reconnects them, and the
+                    #    entry is relabelled `name@range` so the two nodes no longer share a
+                    #    label: a same-label edge is the `react -> react` view #1764
+                    #    removed, and two `react` nodes made `explain`/`affected`
+                    #    ambiguous. The ref node keeps the bare name, which is what
+                    #    `import "react"` resolves to. The range is one line, capped at 40
+                    #    characters; a blank one links nothing (like an empty one) and the
+                    #    entry keeps its bare name.
                     dep_nid = _make_id("ref", key)
                     if dep_nid:
                         add_node(dep_nid, key, line, file_type="concept")
                         add_edge(file_nid, dep_nid, "imports", line, context="import")
+                        add_edge(key_nid, dep_nid, "declares", line)
+                        version = " ".join(val_text.split())
+                        if len(version) > 40:
+                            version = version[:37] + "..."
+                        # `add_node` kept the first node under this id (the same key under
+                        # two sibling blocks shares it), so relabel only the pair that
+                        # node's line belongs to: label and line then name one entry.
+                        for node in nodes:
+                            if node["id"] == key_nid and node["source_location"] == f"L{line}":
+                                node["label"] = f"{key}@{version}"
+                                break
 
     # Entry: find root document → object
     doc = root

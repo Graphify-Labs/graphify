@@ -433,6 +433,35 @@ def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
         assert "Node: unique_helper" in unique, unique
 
 
+def test_get_node_resolves_a_name_spelled_exactly_when_the_tie_is_only_case(tmp_path):
+    """Go keeps `CheckHealth` and `checkHealth` apart (#2779); the tools lowercased the
+    query before resolving it, so neither could be reached by name."""
+    graph = {
+        "directed": True,
+        "nodes": [
+            {"id": "srv_checkhealth", "label": ".CheckHealth()", "community": 0,
+             "source_file": "api/server.go", "source_location": "L9"},
+            {"id": "srv_checkhealth_efb2ee", "label": ".checkHealth()", "community": 0,
+             "source_file": "api/server.go", "source_location": "L13"},
+        ],
+        "edges": [
+            {"source": "srv_checkhealth", "target": "srv_checkhealth_efb2ee",
+             "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph), encoding="utf-8")
+    app = serve_mod._build_http_app(str(p), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        node = _call_tool(client, headers, "get_node", {"label": "checkHealth"}, rid=2)
+        assert "ID: srv_checkhealth_efb2ee" in node, node
+        neighbors = _call_tool(client, headers, "get_neighbors", {"label": "CheckHealth"}, rid=3)
+        assert neighbors.startswith("Neighbors of .CheckHealth()"), neighbors
+        folded = _call_tool(client, headers, "get_node", {"label": "checkhealth"}, rid=4)
+        assert folded.startswith("Ambiguous:"), folded
+
+
 # --- graph_stats build commit (#3354) ----------------------------------------
 
 _STATS_NO_COMMIT = (
@@ -536,3 +565,20 @@ def test_graph_stats_commit_follows_project_path(tmp_path):
         default = _call_tool(client, headers, "graph_stats", {}, rid=3)
     assert scoped == _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n"
     assert default == _STATS_NO_COMMIT
+
+
+@pytest.mark.parametrize("host_header", ["[::1]:8080", "[::1]"])
+def test_ipv6_loopback_bind_accepts_bracketed_host_header(tmp_path, host_header):
+    """An IPv6 bind is reached as http://[::1]:8080, whose Host header is
+    bracketed; the DNS-rebinding allowlist must use that form, not bare ::1."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), host="::1", port=8080, json_response=True)
+    with _client(app) as client:
+        resp = client.post("/mcp", headers={**_MCP_HEADERS, "Host": host_header}, json=_INIT_BODY)
+        assert resp.status_code == 200
+
+
+def test_ipv6_loopback_bind_still_rejects_foreign_host_header(tmp_path):
+    app = serve_mod._build_http_app(_graph_file(tmp_path), host="::1", port=8080, json_response=True)
+    with _client(app) as client:
+        resp = client.post("/mcp", headers={**_MCP_HEADERS, "Host": "evil.example:8080"}, json=_INIT_BODY)
+        assert resp.status_code == 421
