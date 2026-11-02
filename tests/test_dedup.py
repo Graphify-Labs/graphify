@@ -890,6 +890,186 @@ def test_sourced_node_survives_a_source_less_namesake_order_independent():
         assert out[0] == sourced
 
 
+# #4859: pkg.md sits beside pkg/test_x.py. The AST id for the file is
+# `pkg_test_x`, and `pkg_` is also a slice of pkg.md's own path, so a doc node
+# reusing that id defines it too and both pass the first `_collision_rank` key.
+_AST_FILE = {"id": "pkg_test_x", "label": "test_x.py", "file_type": "code",
+             "source_file": "pkg/test_x.py", "source_location": "L1",
+             "_origin": "ast"}
+# Fresh semantic chunks arrive without `_origin`; a loaded graph backfills it.
+_DOC_COPY = {"id": "pkg_test_x", "label": "Tests", "file_type": "code",
+             "source_file": "pkg.md"}
+
+
+@pytest.mark.parametrize("origin", [None, "semantic"], ids=["unstamped", "stamped"])
+@pytest.mark.parametrize("doc_label", ["Tests", "test_x.py (tests)"])
+def test_ast_definer_beats_semantic_definer_order_independent(doc_label, origin):
+    """#4859: when both colliding nodes define the id, the AST node keeps it.
+    A doc label shorter than the code label used to win on label length; the
+    longer label is the control that already passed."""
+    import itertools
+    doc = dict(_DOC_COPY, label=doc_label)
+    if origin:
+        doc["_origin"] = origin
+    assert _defines_id(_AST_FILE) and _defines_id(doc)
+    for perm in itertools.permutations([_AST_FILE, doc]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["source_file"] == "pkg/test_x.py"
+        assert out[0]["label"] == "test_x.py"
+
+
+def test_semantic_definer_still_beats_ast_reference():
+    """#4859 boundary: the AST preference only separates two definers. A semantic
+    node that defines the id still outranks an AST node that merely references it."""
+    definer = {"id": "pkg_overview", "label": "Overview", "file_type": "document",
+               "source_file": "pkg.md", "_origin": "semantic"}
+    reference = {"id": "pkg_overview", "label": "overview", "file_type": "code",
+                 "source_file": "other/mod.py", "source_location": "L4",
+                 "_origin": "ast"}
+    import itertools
+    for perm in itertools.permutations([definer, reference]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["source_file"] == "pkg.md"
+
+
+def test_doc_reextract_keeps_ast_node_with_shared_id(tmp_path):
+    """#4859 end to end: an --update that re-extracts only pkg.md, whose node reuses
+    the AST id of pkg/test_x.py, must not take the code node over, and a later
+    re-extract of pkg.md without that node must not delete it."""
+    import json
+    from networkx.readwrite import json_graph
+    from graphify.build import build_merge
+
+    other = {"id": "pkg_test_x_run", "label": "run()", "file_type": "code",
+             "source_file": "pkg/test_x.py", "source_location": "L3",
+             "_origin": "ast"}
+    graph = {"directed": False, "multigraph": False, "graph": {},
+             "hyperedges": [], "nodes": [dict(_AST_FILE), other],
+             "links": [{"source": "pkg_test_x", "target": "pkg_test_x_run",
+                        "relation": "contains", "confidence": "EXTRACTED",
+                        "source_file": "pkg/test_x.py", "_origin": "ast"}]}
+    (tmp_path / "graph.json").write_text(json.dumps(graph))
+    overview = {"id": "pkg_overview", "label": "Overview", "file_type": "document",
+                "source_file": "pkg.md"}
+    doc = {"nodes": [dict(_DOC_COPY), dict(overview)],
+           "edges": [{"source": "pkg_overview", "target": "pkg_test_x",
+                      "relation": "describes", "confidence": "EXTRACTED",
+                      "source_file": "pkg.md"}],
+           "hyperedges": []}
+    G = build_merge([doc], graph_path=tmp_path / "graph.json")
+    assert G.nodes["pkg_test_x"]["source_file"] == "pkg/test_x.py"
+    assert G.has_edge("pkg_overview", "pkg_test_x")
+
+    (tmp_path / "graph2.json").write_text(
+        json.dumps(json_graph.node_link_data(G, edges="links")))
+    doc2 = {"nodes": [dict(overview)], "edges": [], "hyperedges": []}
+    G2 = build_merge([doc2], graph_path=tmp_path / "graph2.json")
+    assert "pkg_test_x" in G2
+    assert G2.nodes["pkg_test_x"]["source_file"] == "pkg/test_x.py"
+
+
+def test_extension_twin_ids_ignore_the_ast_preference():
+    """#4859 boundary: x.py and x.html are distinct entities, so which twin keeps
+    the bare id must not change because one is AST. A shorter html label keeps it,
+    as before."""
+    import itertools
+    py = {"id": "firmware_lib_portal", "label": "portal.py helper module",
+          "file_type": "code", "source_file": "firmware/lib/portal.py",
+          "source_location": "L1", "_origin": "ast"}
+    html = {"id": "firmware_lib_portal", "label": "portal", "file_type": "document",
+            "source_file": "firmware/lib/portal.html"}
+    for perm in itertools.permutations([py, html]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        ids = {n["source_file"]: n["id"] for n in out}
+        assert ids == {"firmware/lib/portal.html": "firmware_lib_portal",
+                       "firmware/lib/portal.py": "firmware_lib_portal_py"}
+
+
+def test_same_file_ast_and_semantic_definers_rank_as_before():
+    """#4859 boundary: the AST preference is only for ids defined from two or more
+    files. An AST node and its semantic enrichment from the same file (#2091) keep
+    the shorter label as before."""
+    import itertools
+    ast = {"id": "m_run", "label": "run()", "file_type": "code",
+           "source_file": "m.py", "source_location": "L3", "_origin": "ast"}
+    sem = {"id": "m_run", "label": "run", "file_type": "code", "source_file": "m.py",
+           "summary": "Runs the job."}
+    for perm in itertools.permutations([ast, sem]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["label"] == "run"
+
+
+def test_cross_file_doc_loses_but_same_file_pair_keeps_its_label():
+    """#4859: a doc from another file loses to the AST node (it won on v8 with an
+    equally short label), while the AST node and its same-file semantic
+    enrichment (#2091) still rank on label length between themselves."""
+    import itertools
+    ast = {"id": "m_run", "label": "run()", "file_type": "code",
+           "source_file": "m.py", "source_location": "L3", "_origin": "ast"}
+    sem = {"id": "m_run", "label": "run", "file_type": "code", "source_file": "m.py"}
+    doc = {"id": "m_run", "label": "Run", "file_type": "document",
+           "source_file": "docs/m.md"}
+    for perm in itertools.permutations([ast, sem, doc]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["source_file"] == "m.py"
+        assert out[0]["label"] == "run"
+
+
+def test_unsplit_extension_twins_rank_as_before():
+    """#4859 boundary: when x.py cannot take its extension-qualified id because
+    another node already holds it, the twins collapse onto one id, and the
+    survivor is chosen exactly as on v8 (here the shorter html label)."""
+    import itertools
+    py = {"id": "firmware_lib_portal", "label": "portal.py helper module",
+          "file_type": "code", "source_file": "firmware/lib/portal.py",
+          "source_location": "L1", "_origin": "ast"}
+    html = {"id": "firmware_lib_portal", "label": "portal", "file_type": "document",
+            "source_file": "firmware/lib/portal.html"}
+    taken = {"id": "firmware_lib_portal_py", "label": "portal_py notes",
+             "file_type": "document", "source_file": "notes.md"}
+    for perm in itertools.permutations([py, html, taken]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        bare = [n for n in out if n["id"] == "firmware_lib_portal"]
+        assert len(bare) == 1
+        assert bare[0]["source_file"] == "firmware/lib/portal.html"
+
+
+def test_slug_twin_semantic_definer_ranks_as_before():
+    """#4859 boundary: pkg/service.py and pkg_service.py share a full stem, so an
+    AST node from one does not outrank a semantic definer from the other."""
+    import itertools
+    ast = {"id": "pkg_service_run", "label": "run()", "file_type": "code",
+           "source_file": "pkg/service.py", "source_location": "L2", "_origin": "ast"}
+    sem = {"id": "pkg_service_run", "label": "run", "file_type": "code",
+           "source_file": "pkg_service.py"}
+    for perm in itertools.permutations([ast, sem]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["source_file"] == "pkg_service.py"
+
+
+def test_semantic_enrichment_is_not_outranked_by_another_files_ast():
+    """#4859 boundary: a file with its own AST definer keeps its #2091 pairing even
+    when a slug twin from another file also has an AST definer for the id."""
+    import itertools
+    a = {"id": "pkg_service_run", "label": "run()", "file_type": "code",
+         "source_file": "pkg/service.py", "source_location": "L2", "_origin": "ast"}
+    b = {"id": "pkg_service_run", "label": "run()", "file_type": "code",
+         "source_file": "pkg_service.py", "source_location": "L2", "_origin": "ast"}
+    sem = {"id": "pkg_service_run", "label": "run", "file_type": "code",
+           "source_file": "pkg/service.py"}
+    survivors = set()
+    for perm in itertools.permutations([a, b, sem]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        survivors.add((out[0]["source_file"], out[0]["label"]))
+    assert survivors == {("pkg/service.py", "run")}
+
+
 def test_checkout_dir_lifecycle_name_does_not_mark_paths(tmp_path):
     """Gap in #2540: markers must be matched on ROOT-RELATIVE segments only. An
     absolute source_file stored under a checkout directory named `wip` must not

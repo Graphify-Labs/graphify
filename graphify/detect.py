@@ -1485,6 +1485,51 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+def _linked_worktree_main_root(directory: Path) -> Path | None:
+    """Return the main worktree's root for a linked-worktree dir, else None.
+
+    ``git worktree add`` gives the linked checkout a ``.git`` FILE reading
+    ``gitdir: <main>/.git/worktrees/<name>``, and writes a ``commondir`` file
+    inside that gitdir pointing back at the shared git dir ``<main>/.git`` —
+    so the main checkout's root is the common dir's parent. A submodule's
+    ``.git`` file points at ``<super>/.git/modules/<name>``, which carries no
+    ``commondir``; a bare repo's shared git dir is not named ``.git`` (it has
+    no main working tree); and a moved/deleted main checkout leaves ``cd``
+    dangling — all three fall through to None and stay scannable (#4683).
+    No git subprocess is used.
+    """
+    dot_git = directory / ".git"
+    try:
+        if not dot_git.is_file():
+            return None
+        content = dot_git.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return None
+    if not content.startswith("gitdir:"):
+        return None
+    gd = Path(content[len("gitdir:"):].strip())
+    if not gd.is_absolute():
+        try:
+            gd = (directory / gd).resolve()
+        except (OSError, RuntimeError):
+            return None
+    try:
+        cd_raw = (gd / "commondir").read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return None
+    if not cd_raw:
+        return None
+    cd = Path(cd_raw)
+    if not cd.is_absolute():
+        try:
+            cd = (gd / cd).resolve()
+        except (OSError, RuntimeError):
+            return None
+    if cd.name != ".git" or not cd.is_dir():
+        return None
+    return cd.parent
+
+
 def _git_global_excludes(vcs_root: Path) -> Path | None:
     """Resolve git's user-wide excludes file (``core.excludesFile``).
 
@@ -2205,6 +2250,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
                         # than vanishing silently (#2058).
+                        pruned_noise.append(str(child) + os.sep)
+                        continue
+                    # A linked worktree whose main checkout is also inside the
+                    # scan root is a second copy of the same repo — every file
+                    # counted twice (#4683). Neither the name-based rules (the
+                    # worktree's name is arbitrary) nor info/exclude (the scan
+                    # root need not be a repo) reach this sibling layout, but
+                    # its .git file + commondir back-pointer identify it.
+                    _wt_main = _linked_worktree_main_root(child)
+                    if _wt_main is not None and _resolves_under_root(_wt_main, root):
                         pruned_noise.append(str(child) + os.sep)
                         continue
                     # Directory-level pruning: ONE ignore evaluation excludes the

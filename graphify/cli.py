@@ -1583,9 +1583,18 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]"
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--graph path]", file=sys.stderr)
+            print(_query_usage, file=sys.stderr)
             sys.exit(1)
+        # A lone "--help"/"-h" with nothing else is almost certainly a user
+        # looking for usage, not a genuine one-word question - unlike a longer
+        # free-text question that happens to contain "-h" as a substring, which
+        # must still run as the literal query (that's why --help isn't
+        # intercepted generically for free-text commands; see __main__._run_cli).
+        if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
+            print(_query_usage)
+            return
         from graphify.serve import _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
@@ -1726,7 +1735,12 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
+        from graphify.affected import (
+            DEFAULT_AFFECTED_RELATIONS,
+            format_affected,
+            load_graph,
+            resolve_seed_outcome,
+        )
         query = sys.argv[2]
         graph_path = _default_graph_path()
         depth = 2
@@ -1781,6 +1795,20 @@ def dispatch_command(cmd: str) -> None:
         # --graph falls back to its own directory.
         from graphify.paths import GRAPHIFY_OUT_NAME
         graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+        # Resolve once so an unresolvable seed can set the documented exit code
+        # (3 = ambiguous name, 4 = no matching node), matching `explain`; a
+        # script could not branch on `affected` while it always exited 0 (#4792).
+        seed, rivals = resolve_seed_outcome(graph, query, graph_root)
+        if seed is None:
+            if rivals:
+                # Share `explain`'s refusal wording so the same ambiguous name
+                # reads identically in both commands.
+                from graphify.serve import _ambiguity_message
+
+                print(_ambiguity_message(graph, query, rivals), file=sys.stderr)
+                sys.exit(EXIT_AMBIGUOUS)
+            print(f"No unique node match for {query}", file=sys.stderr)
+            sys.exit(EXIT_NOT_FOUND)
         print(
             format_affected(
                 graph,
@@ -1788,6 +1816,7 @@ def dispatch_command(cmd: str) -> None:
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
                 root=graph_root,
+                seed=seed,
             )
         )
     elif cmd in ("god-nodes", "god_nodes"):
@@ -1956,7 +1985,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _is_ambiguity_refusal, _resolve_path_endpoint
+        from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -2045,12 +2074,14 @@ def dispatch_command(cmd: str) -> None:
         # returned an arbitrary route among equal-length paths that varied per
         # process. Build a sorted, materialized graph so neighbor order — and
         # thus the chosen path — is canonical for a given graph.json.
+        from graphify.serve import _weakest_shortest_path
         try:
             if undirected:
                 _und = _nx.Graph()
                 _und.add_nodes_from(sorted(G.nodes))
                 _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-                path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
+                path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
+                    _und, G, src_nid, tgt_nid)
             else:
                 # Directed by default (#2487). True direction is NOT raw arc
                 # order: legacy canonicalized files persist a flipped arc with
@@ -2075,7 +2106,8 @@ def dispatch_command(cmd: str) -> None:
                     for u, v, d in G.edges(data=True)
                     if d.get("relation") == "contains"
                 ))
-                path_nodes = _nx.shortest_path(_dg, src_nid, tgt_nid)
+                path_nodes, _n_routes, _routes_capped = _weakest_shortest_path(
+                    _dg, G, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
             if undirected:
                 print(f"No path found between '{source_label}' and '{target_label}'.")
@@ -2088,7 +2120,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
-        from graphify.build import edge_datas
+        hop_datas: list[list[dict]] = []
+        from graphify.build import edge_datas, edge_evidence
+        from graphify.serve import _path_confidence_line
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
             # Report the ACTUAL stored relation(s) of the traversed pair and
@@ -2107,10 +2141,11 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            hop_datas.append(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
-            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+            confs = sorted({_confidence_tag(e) for d in datas for e in edge_evidence(d) if e.get("confidence")})
             conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
@@ -2119,6 +2154,13 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        _summary = _path_confidence_line(hop_datas)
+        if _summary and _n_routes > 1:
+            # Several routes tie on length; report the weakest's confidence so it
+            # never overstates how sure the connection is (#4881).
+            _summary += f" (weakest of {'256+' if _routes_capped else _n_routes} equal-length routes)"
+        if _summary:
+            print(_summary)
         from graphify import querylog
         querylog.log_query(
             kind="path",
@@ -2129,10 +2171,18 @@ def dispatch_command(cmd: str) -> None:
         _touch_query_stamp(gp)
 
     elif cmd == "explain":
+        _explain_usage = 'Usage: graphify explain "<node>" [--all] [--graph path]'
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--all] [--graph path]', file=sys.stderr)
+            print(_explain_usage, file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
+        # A lone "--help"/"-h" prints usage, mirroring `query` (#4830). explain
+        # is also a free-text command exempt from the generic --help intercept
+        # (see __main__._run_cli), so a standalone help flag would otherwise run
+        # as a literal node query ("No node matching '--help' found").
+        if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
+            print(_explain_usage)
+            return
+        from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_single_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -2193,29 +2243,29 @@ def dispatch_command(cmd: str) -> None:
         except Exception:
             pass
         print(f"  Degree:    {G.degree(nid)}")
-        from graphify.build import edge_data
+        from graphify.build import edge_datas
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
         # Classify by the edge's TRUE direction, not the loaded arc order:
         # a link persisted in flipped endpoint order carries its truth in the
         # per-edge _src marker (#2309). Markerless edges fall back to the arc
         # tail (today's behavior).
         for nb in G.successors(nid):
-            _ed = edge_data(G, nid, nb)
-            connections.append(
-                ("out" if _ed.get("_src", nid) == nid else "in", nb, _ed)
-            )
+            for _ed in edge_datas(G, nid, nb):
+                connections.append(
+                    ("out" if _ed.get("_src", nid) == nid else "in", nb, _ed)
+                )
         for nb in G.predecessors(nid):
-            _ed = edge_data(G, nb, nid)
-            connections.append(
-                ("in" if _ed.get("_src", nb) == nb else "out", nb, _ed)
-            )
+            for _ed in edge_datas(G, nb, nid):
+                connections.append(
+                    ("in" if _ed.get("_src", nb) == nb else "out", nb, _ed)
+                )
         if connections:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
             shown = connections if show_all else connections[:20]
             for direction, nb, edata in shown:
                 rel = edata.get("relation", "")
-                conf = edata.get("confidence", "")
+                conf = _confidence_tag(edata)
                 arrow = "-->" if direction == "out" else "<--"
                 # Append the edge's location — the actual call/import/reference
                 # SITE (in the caller's file for an incoming call), not a def
@@ -4404,7 +4454,7 @@ def dispatch_command(cmd: str) -> None:
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
-                            "_py_fixture", "_py_return_type",
+                            "_py_fixture", "_py_return_type", "_go_fields",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4861,7 +4911,11 @@ def dispatch_command(cmd: str) -> None:
             # clustered path (whose DiGraph collapses both) and stays deterministic
             # across modes (#1317; node dedup also collapses shared Swift module
             # anchors emitted per importing file, #1327).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            from graphify.build import (
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+                has_parallel_links as _has_parallel_links,
+            )
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
@@ -4947,11 +5001,16 @@ def dispatch_command(cmd: str) -> None:
                     _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            merged["multigraph"] = _has_parallel_links(
+                merged["edges"], directed=bool(merged.get("directed", False))
+            )
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            from graphify.build import qualify_csharp_method_labels_in_nodes as _qualify_cs_methods
+            _qualify_cs_methods(merged["nodes"], merged["edges"])
             # Same endpoint rules as build_from_json (#2873): an import of an
             # external module gets a typed stub node, and any other edge without
             # two declared endpoints is dropped instead of shipping a phantom.

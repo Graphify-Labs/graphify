@@ -120,3 +120,73 @@ def test_extract_yaml_caps_bound_output(tmp_path):
     body = "root:\n" + "".join(f"  k{i}: {i}\n" for i in range(2000))
     result = extract_yaml(_write(tmp_path / "values.yaml", body))
     assert len(result["nodes"]) <= 502  # file node + root key + at most 500 pairs
+
+
+def _by_label(result):
+    return {n["label"]: n for n in result["nodes"]}
+
+
+def test_extract_yaml_keys_carry_their_own_line(tmp_path):
+    """Every key node and its contains edge point at the line the key is on,
+    not L1: the walk reads the composed node tree, which keeps marks."""
+    result = extract_yaml(_write(
+        tmp_path / "values.yaml",
+        "name: x\nimage:\n  repository: nginx\n\n  tag: '1.25'\nservice:\n  port: 80\n",
+    ))
+    lines = {label: n["source_location"] for label, n in _by_label(result).items()}
+    assert lines == {"values.yaml": "L1", "name": "L1", "image": "L2", "repository": "L3",
+                     "tag": "L5", "service": "L6", "port": "L7"}
+    edge_lines = {e["target"].rsplit("_", 1)[-1]: e["source_location"] for e in result["edges"]}
+    assert edge_lines["tag"] == "L5" and edge_lines["port"] == "L7"
+
+
+def test_multi_document_yaml_document_nodes_carry_their_line(tmp_path):
+    result = extract_yaml(_write(
+        tmp_path / "deploy.yaml",
+        "kind: Deployment\nmetadata:\n  name: web\n---\nkind: Service\nmetadata:\n  name: web\n",
+    ))
+    nodes = _by_label(result)
+    assert nodes["Deployment web"]["source_location"] == "L1"
+    assert nodes["Service web"]["source_location"] == "L5"
+
+
+def test_github_workflow_on_key_keeps_its_spelling(tmp_path):
+    """YAML 1.1 resolves a bare `on` to the boolean True, so the constructed key
+    of every GitHub Actions trigger block used to become a `True` node (id
+    `<stem>_true`) and its children `<stem>_true_push`. Keys keep the text as
+    written."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    result = extract_yaml(_write(
+        wf / "ci.yml",
+        "name: CI\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+    ))
+    nodes = _by_label(result)
+    assert "True" not in nodes
+    assert nodes["on"]["id"].endswith("_ci_on") and nodes["on"]["source_location"] == "L2"
+    assert nodes["push"]["id"].endswith("_ci_on_push")
+    assert not any(n["id"].endswith("_ci_true") for n in result["nodes"])
+
+
+def test_on_key_counts_as_a_config_key_outside_github_workflows(tmp_path):
+    """`on` is in the config-key probe, but its constructed key is True; a flat
+    trigger file outside .github/workflows was skipped as a data bundle."""
+    result = extract_yaml(_write(tmp_path / "pipeline-trigger.yml", "on: push\nretries: 3\n"))
+    assert "skipped" not in result
+    assert {"on", "retries"} <= set(_by_label(result))
+
+
+def test_merge_keys_are_expanded_like_the_constructed_mapping(tmp_path):
+    """`<<: *anchor` contributes the anchored keys (as safe_load does), an
+    explicit key overrides a merged one at the explicit line, and the `<<`
+    itself mints no node."""
+    result = extract_yaml(_write(
+        tmp_path / "docker-compose.yml",
+        "x-base: &base\n  image: app\n  restart: always\nservices:\n  web:\n"
+        "    <<: *base\n    restart: 'no'\n    ports: ['80:80']\n",
+    ))
+    web = {n["id"].rsplit("_web_", 1)[1]: n for n in result["nodes"] if "_web_" in n["id"]}
+    assert set(web) == {"image", "restart", "ports"}
+    assert web["restart"]["source_location"] == "L7"
+    assert web["image"]["source_location"] == "L2"  # merged from the anchor
+    assert not any("<<" in n["label"] for n in result["nodes"])

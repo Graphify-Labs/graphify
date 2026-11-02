@@ -59,6 +59,7 @@ from graphify.extractors.csharp import (
     _is_dotnet_source_file,
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
+    bare_csharp_method_labels_in_nodes,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
@@ -206,13 +207,27 @@ def _raise_recursion_limit() -> None:
         sys.setrecursionlimit(_RECURSION_LIMIT)
 
 
+def _redact_rationale_labels(result: dict) -> dict:
+    """Redact credential shapes from every rationale node label.
+
+    Rationale labels are free text copied out of comments and docstrings, so
+    this runs on every extractor's output (before it is cached) rather than
+    relying on each language extractor to call ``redact_secrets`` itself.
+    """
+    for node in result.get("nodes") or ():
+        label = node.get("label")
+        if node.get("file_type") == "rationale" and isinstance(label, str):
+            node["label"] = redact_secrets(label)
+    return result
+
+
 def _safe_extract(
     extractor: Callable, path: Path, *, scan_root: Path | None = None
 ) -> dict:
     try:
         if extractor is extract_python:
-            return extractor(path, root=scan_root)
-        return extractor(path)
+            return _redact_rationale_labels(extractor(path, root=scan_root))
+        return _redact_rationale_labels(extractor(path))
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
         return {"nodes": [], "edges": [], "error": "recursion_limit_exceeded"}
@@ -438,6 +453,23 @@ def _suppress_ambiguous_python_imports(
             raw_call["_ambiguous_python_import"] = True
 
 
+def _namespace_src_module_parts(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Module path of a file in a PEP 420 namespace package under a `src/` root.
+
+    `parts` is the file's path relative to the scan root. Returns the parts after
+    the nearest `src` directory when the module sits at least one directory below
+    it (`airflow/sql/hooks/sql.py`), else None. A loose `src/helpers.py` is left
+    alone: its bare name is as likely a third-party import. So is a namespace
+    named like a stdlib module, which a bare import means first (#4261)."""
+    dirs = parts[:-1]
+    if "src" not in dirs:
+        return None
+    after = parts[len(dirs) - dirs[::-1].index("src"):]
+    if len(after) < 2 or after[0] in _PYTHON_STDLIB_MODULE_NAMES:
+        return None
+    return after
+
+
 def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     """Repoint Python absolute-import edges to the real file node under a nested
     (e.g. ``src/``) package root (#2072).
@@ -477,8 +509,17 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
             levels += 1
             d = d.parent
         if levels == 0:
-            continue  # not inside a package (namespace pkg / loose module)
-        mod_parts = parts[-(levels + 1):]  # package dirs + the file itself
+            # No initializer above the file: a PEP 420 namespace package, or a
+            # loose module. Under a `src/` layout the import root is that `src/`,
+            # so `pkgsql/src/airflow/sql/hooks/sql.py` is `airflow.sql.hooks.sql`
+            # even though no directory carries an `__init__.py`. Without this a
+            # monorepo of namespace distributions dropped every cross-distribution
+            # import, and with it inherited `self.method()` calls.
+            mod_parts = _namespace_src_module_parts(parts)
+            if mod_parts is None:
+                continue  # loose module, not under a src/ root
+        else:
+            mod_parts = parts[-(levels + 1):]  # package dirs + the file itself
         if len(mod_parts) == len(parts):
             continue  # package root == scan root: file-node id already coincides
         file_node = _file_node_id(rel)
@@ -2213,9 +2254,8 @@ def extract_js(path: Path) -> dict:
             source = _read_source_bytes(path)
             working = _normalize_ts_export_type_star(source) or source
             normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
-            source_override = normalized if normalized is not None else (
-                working if working is not source else None
-            )
+            working = normalized if normalized is not None else working
+            source_override = working if working is not source else None
         except OSError:
             pass
     result = _extract_generic(path, config, source_override=source_override)
@@ -5006,6 +5046,13 @@ def _resolve_python_member_calls(
         return _key(stem or n.get("label", ""))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # A dispatch-table value is only pre-empted by an edge that already says the
+    # caller reaches the target. An `imports` edge from the file to the same symbol
+    # is expected and must not hide it (the generic resolver's call_like_pairs).
+    call_like_pairs = {
+        (e.get("source"), e.get("target")) for e in all_edges
+        if e.get("relation") in ("calls", "indirect_call")
+    }
     # A method hangs off its class (`method` edge), not its file (`contains`), so
     # the typed-receiver arm finds a method caller's file through its class.
     method_class: dict[str, str] = {}
@@ -5076,6 +5123,28 @@ def _resolve_python_member_calls(
             # Swift node labelled `Swift.Array`. Stubs and external modules
             # carry no file.
             return
+        if rc.get("indirect"):
+            # `module.func` listed in a dispatch table: referenced as a value, not
+            # invoked, so the same INFERRED `indirect_call` the bare-name path emits,
+            # and only to a real callable, never a class used as a value (#2137).
+            if (caller, target_nid) in call_like_pairs:
+                return
+            if not node_by_id.get(target_nid, {}).get("_callable") or node_by_id.get(target_nid, {}).get("_callable_class"):
+                return
+            call_like_pairs.add((caller, target_nid))
+            existing_pairs.add((caller, target_nid))
+            all_edges.append({
+                "source": caller,
+                "target": target_nid,
+                "relation": "indirect_call",
+                "context": rc.get("context", "collection"),
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": rc.get("source_file", ""),
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+            })
+            return
         if rc.get("_python_attr_read"):
             # An attribute read only runs a property getter, and only the one it
             # spells: _key() folds `_items` into `items`, so compare the name.
@@ -5091,6 +5160,8 @@ def _resolve_python_member_calls(
         if (caller, target_nid) in existing_pairs:
             return
         existing_pairs.add((caller, target_nid))
+        if not rc.get("_python_attr_read"):
+            call_like_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
         # definition (each arm applies a single-definition god-node guard).
@@ -5164,7 +5235,10 @@ def _resolve_python_member_calls(
         return None
 
     factory_receivers: list[dict] = []
-    for rc in all_raw_calls:
+    # Dispatch-table values (`indirect`) go last, so a direct call to the same target
+    # claims the pair as `calls` whichever comes first in the body. Both halves keep
+    # their source order.
+    for rc in [r for r in all_raw_calls if not r.get("indirect")] + [r for r in all_raw_calls if r.get("indirect")]:
         if rc.get("_ambiguous_python_import"):
             continue
         if not rc.get("is_member_call"):
@@ -5177,14 +5251,18 @@ def _resolve_python_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
-        if receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
+        # A dispatch-table `module.func` value takes the module arm only: its
+        # receiver is a bare name the extractor already checked is not a local.
+        if rc.get("indirect") and not (receiver and callee and caller and not receiver[:1].isupper()):
+            continue
+        if not rc.get("indirect") and receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
             target = _inherited_method(caller, callee, skip_own=receiver == "super")
             if target:
                 # Same rule as the in-file base walk (_self_call_target), across files.
                 _emit_call(caller, target, rc)
                 continue
         attr_type = rc.get("_python_self_attr_type")
-        if attr_type and callee and caller:
+        if attr_type and callee and caller and not rc.get("indirect"):
             # `self.X.m()` with X bound to one class (#2860): only a unique class
             # the caller's own file defines or imports, and only if it owns `m`.
             class_nids = class_def_nids.get(_key(attr_type), [])
@@ -5266,6 +5344,8 @@ def _resolve_python_member_calls(
             # (#2082), so an aliased import resolves the same as the bare name.
             rkey = _key(receiver)
             caller_file = _file_node(caller)
+            if caller_file is None and rc.get("indirect") and caller in imported_by_filenode and caller not in file_of_node:
+                caller_file = str(caller)  # a module-level dispatch table: the caller IS the file
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
@@ -6813,6 +6893,162 @@ def _kotlin_package_index(per_file: list[dict]) -> dict[str, list[dict]]:
     return pkg_results
 
 
+_JVM_NAME_SUFFIXES = frozenset({".java", ".kt", ".kts"})
+_JAVA_IMPORT_RE = re.compile(
+    r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)\s*;"
+)
+
+
+def _jvm_package_name(path: Path, result: dict) -> tuple[str, str] | None:
+    """Return ``(source_file, package)`` for a JVM file, or None.
+
+    Kotlin already stamps ``kotlin_package`` on the per-file result. Java has
+    no equivalent field, so read the one package declaration directly. The
+    declaration is a single line and does not need a second tree-sitter parse.
+    """
+    suffix = effective_suffix(path).lower()
+    if suffix in (".kt", ".kts"):
+        source_file = next(
+            (n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")),
+            str(path),
+        )
+        return str(source_file), str(result.get("kotlin_package") or "")
+    if suffix != ".java":
+        return None
+    source_file = next(
+        (n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")),
+        str(path),
+    )
+    try:
+        text = _read_source_text(path, warn=False)
+    except OSError:
+        text = ""
+    match = re.search(r"(?m)^\s*package\s+([\w.]+)\s*;", text)
+    return str(source_file), match.group(1) if match else ""
+
+
+def _jvm_imports_by_file(path: Path, result: dict) -> dict[str, str]:
+    """simple name -> written FQN, for imports in one Java/Kotlin file."""
+    imports: dict[str, str] = {}
+    suffix = effective_suffix(path).lower()
+    if suffix in (".kt", ".kts"):
+        for edge in result.get("edges", []):
+            if edge.get("relation") != "imports":
+                continue
+            md = edge.get("metadata") or {}
+            fqn = md.get("target_fqn")
+            if fqn:
+                imports[str(fqn).split(".")[-1]] = str(fqn)
+        return imports
+    if suffix != ".java":
+        return imports
+    try:
+        text = _read_source_text(path, warn=False)
+    except OSError:
+        return imports
+    for match in _JAVA_IMPORT_RE.finditer(text):
+        body = match.group(1).strip()
+        if body.endswith(".*") or "." not in body:
+            continue
+        simple = body.split(".")[-1]
+        if simple and simple[0].isupper():
+            imports[simple] = body
+    return imports
+
+
+def _resolve_jvm_references(
+    per_file: list[dict],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Java/Kotlin type references through one JVM-wide symbol index.
+
+    Java and Kotlin share package names and class names. The language-specific
+    resolvers each build an index from one extension, so a Kotlin import of a
+    Java class never sees the Java class, and a Java import of a Kotlin class
+    is parked as external. Build the package/name index once over both
+    languages and repoint only when the written FQN names exactly one sourced
+    type node.
+
+    This runs before the shared call-evidence pass: a Kotlin member call can
+    only bind to a Java method after the import edge reaches the Java class.
+    """
+    by_fqn: dict[str, list[str]] = {}
+    pkg_by_file: dict[str, str] = {}
+    imports_by_file: dict[str, dict[str, str]] = {}
+
+    for path, result in zip(paths, per_file):
+        package_entry = _jvm_package_name(path, result)
+        if package_entry is None:
+            continue
+        source_file, package = package_entry
+        pkg_by_file[source_file] = package
+        imports_by_file[source_file] = _jvm_imports_by_file(path, result)
+        for node in result.get("nodes", []):
+            node_source = str(node.get("source_file") or "")
+            if node_source != source_file:
+                continue
+            if not _is_type_like_definition(node):
+                continue
+            label = str(node.get("label", "")).strip()
+            if not label:
+                continue
+            fqn = f"{package}.{label}" if package else label
+            by_fqn.setdefault(fqn, []).append(str(node["id"]))
+
+    if not by_fqn:
+        return
+
+    node_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+    repoint = {"imports", "inherits", "extends", "implements", "references"}
+    for edge in all_edges:
+        if edge.get("relation") not in repoint:
+            continue
+        source_file = str(edge.get("source_file") or "")
+        if effective_suffix(source_file).lower() not in _JVM_NAME_SUFFIXES:
+            continue
+        target = str(edge.get("target") or "")
+        if not target:
+            continue
+        target_node = node_by_id.get(target) or {}
+        fqn = str((edge.get("metadata") or {}).get("target_fqn") or "")
+        simple = ""
+        if not fqn:
+            label = str(target_node.get("label") or "")
+            if target_node and not target_node.get("source_file") and "." in label:
+                fqn = label
+            elif label and not target_node.get("source_file"):
+                simple = label
+            else:
+                for name in imports_by_file.get(source_file, {}):
+                    if _make_id(name) == target:
+                        simple = name
+                        break
+            if not fqn and simple:
+                fqn = imports_by_file.get(source_file, {}).get(simple, "")
+                if not fqn:
+                    package = pkg_by_file.get(source_file, "")
+                    fqn = f"{package}.{simple}" if package else simple
+        if not fqn:
+            continue
+        candidates = by_fqn.get(fqn, [])
+        if len(candidates) != 1:
+            continue
+        candidate = candidates[0]
+        if candidate == target:
+            continue
+        # Keep the file-level import edge so `affected <File>` still reaches
+        # importers. A bare import target has no node yet; replace a resolved
+        # stub, but add the class edge when the target is only a local claim.
+        if edge.get("relation") == "imports" and not target_node:
+            resolved = dict(edge)
+            resolved["target"] = candidate
+            all_edges.append(resolved)
+        else:
+            edge["target"] = candidate
+
+
 def _resolve_kotlin_import_targets(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -7393,10 +7629,17 @@ def _resolve_go_member_calls(
     # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
+    # A struct's fields, by struct id, from the file node that declares it: a method in
+    # one file of the package and the struct in another is the common Go layout, and the
+    # caller's flat table holds only what its own file declares. An id two files declare
+    # has no single answer.
+    fields_by_type: dict[str, list[dict[str, str]]] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
         if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+        for struct_nid, fields in (n.get("_go_fields") or {}).items():
+            fields_by_type.setdefault(struct_nid, []).append(fields)
 
     method_index: dict[tuple[str, str], list[str]] = {}
     for e in all_edges:
@@ -7414,14 +7657,21 @@ def _resolve_go_member_calls(
         # flat table: two types in one file may both name their receiver `s`.
         type_name = rc.get("receiver_type") or type_table_by_file.get(
             rc.get("source_file", ""), {}).get(receiver)
+        if not type_name and rc.get("field_owner"):
+            owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
+            declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
+            if len(declared) == 1:
+                type_name = declared[0].get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
-            # says who is asking, so no suffix sniff is needed.
-            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
+            # says who is asking, so no suffix sniff is needed. A method value is not
+            # parked: `f(x.y)` may just as well pass a field, which is no call at all.
+            if not rc.get("indirect"):
+                _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
             continue
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
@@ -7432,11 +7682,14 @@ def _resolve_go_member_calls(
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
+        indirect = bool(rc.get("indirect"))
         all_edges.append({
             "source": caller,
             "target": target,
-            "relation": "calls",
-            "context": "call",
+            # A method value (`routing.Wrap(s.Handle)`) hands the method over to be
+            # called later, as an `indirect_call` does in the other languages (#1566).
+            "relation": "indirect_call" if indirect else "calls",
+            "context": rc.get("context", "argument") if indirect else "call",
             "confidence": "INFERRED",
             # The rubric's discrete INFERRED scale (references/extraction-spec.md):
             # a single-definition type-table hit is the high-confidence rung.
@@ -7634,7 +7887,7 @@ def _resolve_kotlin_member_calls(
         if not n.get("_callable_class"):
             continue
         sf = str(n.get("source_file") or "")
-        if not sf.endswith((".kt", ".kts")):
+        if _lang_family(sf) != "jvm":
             continue
         name = str(n.get("label", ""))
         if name:
@@ -9522,6 +9775,10 @@ def extract(
             fresh results are appended to the returned nodes/edges.
     """
     paths = [Path(p) for p in paths]
+    if resolution_context_nodes:
+        # Persisted C# method labels carry their owner (#4883); the resolvers
+        # match the bare `.Name()` form a fresh extraction produces.
+        resolution_context_nodes = bare_csharp_method_labels_in_nodes(resolution_context_nodes)
     anchor_root = Path(root) if root is not None else None
     _check_tree_sitter_version()
     _raise_recursion_limit()
@@ -10668,6 +10925,10 @@ def extract(
     # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
     # them from the indirect_call guard below to avoid false edges (#2137).
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
+
+    # JVM name resolution: Java and Kotlin share one package/type namespace.
+    # Run before the Kotlin-only resolver and before call evidence is built.
+    _resolve_jvm_references(per_file, paths, all_nodes, all_edges)
 
     # Kotlin import targets (#2526): rewrite each `imports` edge from the bare
     # last-segment id to the node its written FQN names, via the per-file
