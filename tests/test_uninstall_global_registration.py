@@ -230,3 +230,95 @@ def test_uninstall_resolves_the_file_install_wrote(project, tmp_path, monkeypatc
     assert _registered(md)
     assert f"(`{skill_ref}`)" in md.read_text(encoding="utf-8")
     assert install_mod._codebuddy_global_registration() == _codebuddy_md()
+
+
+# The global files belong to the user, and every `graphify uninstall` visits
+# them, also for users who never installed the skill there.
+
+HAND_WRITTEN = {
+    "notes only": "# graphify\nAlways run graphify update after edits.\n",
+    "notes, then another H1": "# graphify\nmy rule\n\n# Other\nkeep\n",
+    "a bullet naming graphify": "# graphify\n- **graphify** (`~/tools/graphify`) is my graph CLI\n",
+}
+
+
+@pytest.mark.parametrize("notes", sorted(HAND_WRITTEN))
+@pytest.mark.parametrize("which", ["CLAUDE.md", "CODEBUDDY.md"])
+def test_a_hand_written_graphify_section_in_a_global_file_survives(project, notes, which):
+    md = _claude_md() if which == "CLAUDE.md" else _codebuddy_md()
+    md.parent.mkdir(parents=True)
+    md.write_text(HAND_WRITTEN[notes], encoding="utf-8")
+    install(platform="codex")
+
+    uninstall_all(project)
+
+    assert md.read_text(encoding="utf-8") == HAND_WRITTEN[notes]
+
+
+def test_a_global_file_with_both_kinds_of_section_is_left_with_a_hint(project, capsys):
+    _claude_md().parent.mkdir(parents=True)
+    _claude_md().write_text("# notes\n", encoding="utf-8")
+    install(platform="claude")
+    mixed = _claude_md().read_text(encoding="utf-8") + "\n# graphify\nmy own notes\n"
+    _claude_md().write_text(mixed, encoding="utf-8")
+
+    uninstall_all(project)
+
+    assert _claude_md().read_text(encoding="utf-8") == mixed
+    err = capsys.readouterr().err
+    assert "did not write" in err and "by hand" in err, err
+
+
+# What earlier versions appended: an em dash until the project-scope rework,
+# a hyphen after it, both with a leading blank line and an older second line.
+OLDER_BLOCKS = {
+    "em dash": (
+        "\n# graphify\n"
+        "- **graphify** (`~/.claude/skills/graphify/SKILL.md`) "
+        "— any input to knowledge graph. Trigger: `/graphify`\n"
+        "When the user types `/graphify`, invoke the Skill tool "
+        "with `skill: \"graphify\"` before doing anything else.\n"
+    ),
+    "hyphen": (
+        "\n# graphify\n"
+        "- **graphify** (`~/.claude/skills/graphify/SKILL.md`) "
+        "- any input to knowledge graph. Trigger: `/graphify`\n"
+        "When the user types `/graphify`, invoke the Skill tool "
+        "with `skill: \"graphify\"` before doing anything else.\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("older", sorted(OLDER_BLOCKS))
+def test_a_block_an_older_version_wrote_is_removed(project, older):
+    _claude_md().parent.mkdir(parents=True)
+    _claude_md().write_text(USER_NOTES + OLDER_BLOCKS[older], encoding="utf-8")
+
+    uninstall_all(project)
+
+    assert _claude_md().read_text(encoding="utf-8") == USER_NOTES
+
+
+def test_a_bom_neither_hides_the_block_nor_is_lost(project):
+    bom = "﻿"
+    _claude_md().parent.mkdir(parents=True)
+    _claude_md().write_text(bom + install_mod._skill_registration(), encoding="utf-8")
+    uninstall_all(project)
+    assert not _claude_md().exists()
+
+    original = (bom + USER_NOTES).encode("utf-8")
+    _claude_md().write_bytes(original)
+    install(platform="claude")
+    uninstall_all(project)
+    assert _claude_md().read_bytes() == original
+
+
+def test_an_unrelated_non_utf8_global_file_is_left_alone_quietly(project, capsys):
+    raw = b"# notes\n\xff\xfe not utf-8\n"
+    _claude_md().parent.mkdir(parents=True)
+    _claude_md().write_bytes(raw)
+
+    uninstall_all(project)
+
+    assert _claude_md().read_bytes() == raw
+    assert "skipped" not in capsys.readouterr().err
