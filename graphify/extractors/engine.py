@@ -3114,8 +3114,8 @@ def _cpp_parameter_types(body_node, source: bytes, table: dict[str, str]) -> Non
 def _cpp_field_types(root, source: bytes, table: dict[str, str]) -> None:
     """Collect ``field -> ClassName`` from class/struct member declarations
     (#3215), so a member-field receiver (``Inner.IsOk()`` inside a method)
-    can be typed. Runs LAST: an existing local or parameter entry of the
-    same name is never overwritten, so a shadowing local keeps winning.
+    can be typed. A field name declared with two different types maps to ""
+    so the caller can drop it as ambiguous.
     """
     stack = [root]
     while stack:
@@ -3128,8 +3128,9 @@ def _cpp_field_types(root, source: bytes, table: dict[str, str]) -> None:
                 type_name = _read_text(type_node, source).split("::")[-1].strip()
                 d = n.child_by_field_name("declarator")
                 var = _cpp_declarator_name(d, source) if d is not None else None
-                if var and type_name and type_name[:1].isupper() and var not in table:
-                    table[var] = type_name
+                if var and type_name and type_name[:1].isupper():
+                    # Two classes with a same-named field of different types: "".
+                    table[var] = type_name if table.get(var, type_name) == type_name else ""
         stack.extend(n.children)
 
 
@@ -10102,13 +10103,15 @@ def _extract_generic(
                 # `Base* b`, `b->draw()` bound to the file's `Derived::draw`.
                 # Deferring sends it to _resolve_cpp_member_calls, which types x
                 # from the file's local/parameter/field table and bails when it
-                # can't. `this->m()` keeps its in-file binding.
+                # can't. An untyped receiver and `this->m()` keep the in-file
+                # binding they had.
                 _cpp_member_defer = (
                     config.ts_module == "tree_sitter_cpp"
                     and is_member_call
                     and not is_scoped_call
                     and member_receiver is not None
                     and member_receiver != "this"
+                    and member_receiver in type_table
                 )
                 if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
@@ -10688,14 +10691,27 @@ def _extract_generic(
     # (#1547). File-scoped (not per-body): a later body's `Foo f;` doesn't clobber
     # an earlier binding (`var not in table`), keeping resolution conservative.
     if config.ts_module == "tree_sitter_cpp":
+        # Each function's table first: a local shadows a parameter there. The
+        # file table is shared by every function, so a name typed differently in
+        # two places (`Request& r` here, `Response r` there) is ambiguous and
+        # dropped rather than letting whichever came first win (#3215).
+        conflicting: set[str] = set()
+
+        def _fold(table: dict[str, str]) -> None:
+            for var, type_name in table.items():
+                if not type_name or type_table.setdefault(var, type_name) != type_name:
+                    conflicting.add(var)
+
         for _caller_nid, body_node in function_bodies:
-            _cpp_local_var_types(body_node, source, type_table)
-        # Parameters second and class fields last (#3215): the table is
-        # first-write-wins, so a local shadows a parameter shadows a field —
-        # matching C++ name lookup for an unqualified receiver.
-        for _caller_nid, body_node in function_bodies:
-            _cpp_parameter_types(body_node, source, type_table)
-        _cpp_field_types(root, source, type_table)
+            fn_table: dict[str, str] = {}
+            _cpp_local_var_types(body_node, source, fn_table)
+            _cpp_parameter_types(body_node, source, fn_table)
+            _fold(fn_table)
+        field_table: dict[str, str] = {}
+        _cpp_field_types(root, source, field_table)
+        _fold(field_table)
+        for var in conflicting:
+            type_table.pop(var, None)
 
     # Swift: type local `let x = Type()` / `let x = Type.shared` bindings inside
     # method bodies so `x.method()` on a later line resolves — class-level
