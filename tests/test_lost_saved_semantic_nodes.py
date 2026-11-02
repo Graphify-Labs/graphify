@@ -140,3 +140,79 @@ def test_check_shrink_allows_ghost_dedup(tmp_path):
     _, existing = _saved_graph(tmp_path, sem)
     G = build_from_json({"nodes": [sem, _ast("user_user", "User", "src/models/user.ts")], "edges": []})
     assert _check_shrink(force=False, existing_data=existing, new_data=_node_data(G)) is True
+
+
+# --- label-only file twin: build_from_json Pass 2b (#3344) folds a document's
+# mention of a file into that file's AST node (#4389 cluster-only follow-up) ---
+
+
+def _mention(node_id: str, label: str, doc: str) -> dict:
+    return {"id": node_id, "label": label, "file_type": "code", "source_file": doc, "_origin": "semantic"}
+
+
+def _ast_file(node_id: str, sf: str) -> dict:
+    return {
+        "id": node_id,
+        "label": sf.rsplit("/", 1)[-1],
+        "file_type": "code",
+        "source_file": sf,
+        "source_location": "L1",
+        "_origin": "ast",
+    }
+
+
+def test_file_mention_folded_into_ast_file_node_is_not_lost():
+    saved = [_mention("readme_config", "src/config.php", "README.md")]
+    new = [_ast_file("src_config", "src/config.php")]
+    folded: dict[str, str] = {}
+    assert _lost_saved_semantic_nodes(saved, new, None, folded) == []
+    assert folded == {"readme_config": "src_config"}
+
+
+def test_file_mention_matching_two_ast_files_is_still_lost():
+    # Pass 2b leaves an ambiguous label unmerged, so its absence is a real loss.
+    saved = [_mention("readme_index", "index.ts", "README.md")]
+    new = [_ast_file("a_index", "a/index.ts"), _ast_file("b_index", "b/index.ts")]
+    lost = _lost_saved_semantic_nodes(saved, new)
+    assert [n["id"] for n in lost] == ["readme_index"]
+
+
+def _mixed_saved_graph(tmp_path: Path) -> Path:
+    # A saved graph that still holds the mention beside its AST file node,
+    # as reported on #4389 for graphifyy 0.9.95.
+    out = tmp_path / "graph.json"
+    out.write_text(json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            _ast_file("src_config", "src/config.php"),
+            _mention("readme_config", "src/config.php", "README.md"),
+            {"id": "readme", "label": "README.md", "file_type": "document",
+             "source_file": "README.md", "_origin": "semantic"},
+        ],
+        "links": [{"source": "readme", "target": "readme_config", "relation": "describes",
+                   "confidence": "EXTRACTED", "source_file": "README.md"}],
+    }), encoding="utf-8")
+    return out
+
+
+def test_to_json_writes_recluster_that_folds_file_mention(tmp_path):
+    out = _mixed_saved_graph(tmp_path)
+    G = build_from_json(json.loads(out.read_text(encoding="utf-8")))
+    assert sorted(G.nodes) == ["readme", "src_config"]
+    assert G.has_edge("readme", "src_config")  # the edge follows the fold
+    assert to_json(G, {}, str(out)) is True
+
+
+def test_to_json_new_twin_does_not_offset_another_loss(tmp_path, capsys):
+    # The twin is new in this run, so the fold is not a saved duplicate going
+    # away: losing src_other must still refuse the write.
+    out = tmp_path / "graph.json"
+    out.write_text(json.dumps({"nodes": [
+        _mention("readme_config", "src/config.php", "README.md"),
+        _ast_file("src_other", "src/other.php"),
+    ], "links": []}), encoding="utf-8")
+    G = build_from_json({"nodes": [_ast_file("src_config", "src/config.php")], "edges": []})
+    assert to_json(G, {}, str(out)) is False
+    assert "new graph has 1 nodes" in capsys.readouterr().err

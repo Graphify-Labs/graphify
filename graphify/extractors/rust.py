@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from graphify.ids import DeclIdRegistry
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -324,6 +325,7 @@ def extract_rust(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
     # Pre-scan the struct/enum/trait names declared in this file so a type used
     # above its declaration resolves exactly as a use below it already does,
@@ -395,13 +397,12 @@ def extract_rust(path: Path) -> dict:
     # outcome never depends on declaration order. Repeats of one name (`#[cfg]`
     # twins, an `impl` of a local type) are one member and still share a node.
     def file_item_nid(plain_nid: str, name: str) -> str:
+        nid = plain_nid
         names = {item_name for _is_type, item_name in items_by_id.get(plain_nid, ())}
-        if len(names) < 2 or name not in names:
-            return plain_nid
-        if declared_type_names.get(plain_nid) == {name}:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
+        if len(names) >= 2 and name in names and declared_type_names.get(plain_nid) != {name}:
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(plain_nid, salt)
+        return decl_registry.resolve(nid, name, "type", seen_ids)
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = file_item_nid(_make_id(stem, name), name)

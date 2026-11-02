@@ -420,3 +420,17 @@ def test_install_and_hook_commands_skip_it(monkeypatch, cmd):
     except (_Stop, SystemExit):
         pass
     assert calls == []
+
+
+def test_a_v1_plugin_in_the_global_config_dir_is_rewritten(tmp_path, monkeypatch, capsys):
+    """A global `graphify install --platform opencode` writes the plugin to
+    ~/.config/opencode/plugins (#3398), so the refresh looks there too."""
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(V1_PLUGIN, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    mainmod._refresh_v1_opencode_plugins()
+
+    assert plugin.read_text(encoding="utf-8") == _OPENCODE_PLUGIN_JS
+    assert "graphify: refreshed" in capsys.readouterr().err

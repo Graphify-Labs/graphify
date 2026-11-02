@@ -312,6 +312,25 @@ def test_extraction_warning_breakdown_by_cause(capsys):
     assert "3x missing required field 'relation'" in err
 
 
+def test_build_drops_edge_still_missing_relation(capsys):
+    """#4809: after aliases are folded, an edge with no relation must not
+    enter the graph because the relationship semantics cannot be reconstructed."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "document", "source_file": "a.md"},
+        {"id": "n2", "label": "B", "file_type": "document", "source_file": "b.md"},
+    ], "edges": [
+        # No relation, and no alias from which relation can be recovered.
+        {"source": "n1", "target": "n2", "confidence": "INFERRED", "source_file": "a.md"},
+    ], "input_tokens": 0, "output_tokens": 0}
+
+    G = build_from_json(ext)
+
+    assert not G.has_edge("n1", "n2")
+    err = capsys.readouterr().err
+    assert "missing required field 'relation'" in err
+    assert "dropped 1 schema-invalid edge(s)" in err
+
+
 def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
     """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
     source_file (Windows detect() emits them) must re-key to the canonical

@@ -139,6 +139,69 @@ def test_import_is_scoped_to_the_module_that_declares_it(tmp_path: Path):
     assert ("go()", "fmt()") not in calls
 
 
+def test_same_file_sibling_module_does_not_steal_a_bare_call(tmp_path: Path):
+    """Two modules in one file each define a same-named function. A bare call
+    inside one module must bind to its own def, never to the unrelated
+    sibling's -- the in-file resolver built a single flat name -> id table
+    that let whichever definition was walked last win, regardless of which
+    module the caller actually belonged to.
+
+    Both candidates share the identical label "process()", so a label-pair
+    assertion (like the rest of this file uses) cannot tell them apart and
+    would pass whichever one wins -- this checks the target node's id
+    directly instead, since that is the only thing that actually
+    distinguishes ModuleA's def from ModuleB's.
+    """
+    path = tmp_path / "lib" / "my_app" / "both.ex"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "defmodule MyApp.ModuleA do\n"
+        "  def process(x) do\n"
+        "    x\n"
+        "  end\n"
+        "\n"
+        "  def go(x) do\n"
+        "    process(x)\n"
+        "  end\n"
+        "end\n"
+        "\n"
+        "defmodule MyApp.ModuleB do\n"
+        "  def process(x) do\n"
+        "    x * 2\n"
+        "  end\n"
+        "end\n"
+    )
+    result = extract([path], cache_root=tmp_path / "graphify-out")
+    go_nid = next(n["id"] for n in result["nodes"] if n["label"] == "go()")
+    targets = [
+        e["target"] for e in result["edges"]
+        if e["source"] == go_nid and e["relation"] == "calls"
+    ]
+    assert len(targets) == 1, targets
+    assert "modulea" in targets[0].lower() and "moduleb" not in targets[0].lower(), (
+        f"go() bound to the wrong module's process(): {targets[0]!r}"
+    )
+
+
+def test_same_file_own_module_call_still_resolves(tmp_path: Path):
+    """Control: a bare call to a sibling function within the SAME module
+    still resolves, with no other same-named def anywhere in the file."""
+    calls = _cross_file_calls(tmp_path, {
+        "lib/my_app/solo.ex": (
+            "defmodule MyApp.Solo do\n"
+            "  def helper(x) do\n"
+            "    x\n"
+            "  end\n"
+            "\n"
+            "  def run(x) do\n"
+            "    helper(x)\n"
+            "  end\n"
+            "end\n"
+        ),
+    })
+    assert ("run()", "helper()") in calls
+
+
 def test_imported_call_survives_incremental_rebuild(tmp_path: Path):
     """On `graphify update` the unchanged helpers file arrives only as
     resolution-context nodes; its module must still count as in scope."""
