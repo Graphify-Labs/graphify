@@ -309,6 +309,137 @@ def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
         assert not lock_path.exists()
 
 
+# --- _rebuild_lock: msvcrt branch on a filesystem without byte-range locks (#4924) ---
+#
+# On the WSL share (\\wsl.localhost\<distro>\...) seen from Windows,
+# msvcrt.locking raises EINVAL on every call. The Windows branch used to treat
+# every OSError as "another rebuild holds it": the blocking `graphify update`
+# CLI spun in a `while True` forever, and the non-blocking git hooks queued
+# their change and returned with no lock holder left to drain it. These run the
+# msvcrt branch on any OS through a stand-in module, with fcntl hidden.
+
+
+def _use_fake_msvcrt(monkeypatch, *, errnos=(), always=None):
+    """Install a stand-in msvcrt whose locking() raises OSError(code) for each
+    code in ``errnos`` (then succeeds), or for every call when ``always`` is set.
+    Unlock calls always succeed. Returns the list of lock attempts made."""
+    import types
+
+    attempts = []
+    pending = list(errnos)
+
+    def locking(fd, mode, nbytes):
+        if mode == fake.LK_UNLCK:
+            return
+        attempts.append(mode)
+        code = always if always is not None else (pending.pop(0) if pending else None)
+        if code is not None:
+            raise OSError(code, os.strerror(code))
+
+    fake = types.SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # `import fcntl` -> ImportError
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    return attempts
+
+
+def _bounded_sleep(monkeypatch, limit=20):
+    """Replace watch's time.sleep so a retry loop that never ends fails the test
+    instead of hanging it. Returns the list of requested sleeps."""
+    import types
+    import graphify.watch as watch
+
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) > limit:
+            raise AssertionError("_rebuild_lock kept retrying a lock error that can never clear")
+
+    monkeypatch.setattr(watch, "time", types.SimpleNamespace(sleep=sleep))
+    return slept
+
+
+def test_rebuild_lock_blocking_does_not_spin_when_filesystem_cannot_lock(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    attempts = _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=True) as got:
+        assert got is True
+        # It created the file only to try the lock; that empty file is gone
+        # again before the rebuild runs, so no stale lock is left (GH-858).
+        assert not (out / ".rebuild.lock").exists()
+    assert slept == []
+    assert len(attempts) == 1
+    err = capsys.readouterr().err
+    assert "does not support byte-range locks" in err
+    assert str(out / ".rebuild.lock") in err
+    assert not (out / ".rebuild.lock").exists()
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_rebuild_lock_unsupported_filesystem_leaves_another_holders_lock_file_alone(
+    tmp_path, monkeypatch, capsys, blocking
+):
+    """The repo is on the WSL share and a WSL-side rebuild already holds a
+    flock on .rebuild.lock (its PID inside). The Windows caller that cannot lock
+    must not write its PID over the holder's or unlink the path on release:
+    unlinking lets the next WSL-side caller flock a fresh inode while the first
+    holder is still rebuilding (#4273)."""
+    import errno
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    lock_path = out / ".rebuild.lock"
+    lock_path.write_text("12345\n", encoding="utf-8")
+    inode_before = os.stat(lock_path).st_ino
+    _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=blocking) as got:
+        assert got is True
+        assert lock_path.read_text(encoding="utf-8") == "12345\n"
+    assert lock_path.read_text(encoding="utf-8") == "12345\n"
+    assert os.stat(lock_path).st_ino == inode_before
+    assert "does not support byte-range locks" in capsys.readouterr().err
+
+
+def test_rebuild_lock_non_blocking_proceeds_when_filesystem_cannot_lock(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=False) as got:
+        assert got is True, "an unsupported lock is not 'another rebuild is running'"
+    assert "does not support byte-range locks" in capsys.readouterr().err
+
+
+def test_rebuild_lock_blocking_still_waits_while_msvcrt_lock_is_contended(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    attempts = _use_fake_msvcrt(monkeypatch, errnos=(errno.EACCES, errno.EACCES))
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=True) as got:
+        assert got is True
+    assert len(attempts) == 3
+    assert slept == [0.05, 0.05]
+    assert "byte-range" not in capsys.readouterr().err
+
+
+def test_rebuild_lock_non_blocking_still_yields_false_while_msvcrt_lock_is_contended(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    _use_fake_msvcrt(monkeypatch, always=errno.EACCES)
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=False) as got:
+        assert got is False
+    assert slept == []
+    assert "byte-range" not in capsys.readouterr().err
+
+
 def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_path, monkeypatch):
     """#777: ``.graphify_root`` stores the user-supplied path (``.``), not the
     resolved absolute, so a committed ``graphify-out/.graphify_root`` is
@@ -5663,3 +5794,225 @@ def test_rebuild_code_sidecar_writes_are_atomic_and_labels_first(tmp_path, monke
     # Both sidecars must be parseable — a torn write would fail here.
     assert json.loads(sig_file.read_text(encoding="utf-8")) is not None
     assert json.loads(labels_file.read_text(encoding="utf-8")) is not None
+
+
+def test_full_yaml_rebuild_retains_rich_source_provenance_with_same_basename(tmp_path):
+    """#4896: AST-upgrading same-named YAML files must not lose reviewed
+    source-specific semantic data, while an evidence-free file twin may fold.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    for sub in ("a", "b"):
+        src = root / sub / "case-a.yaml"
+        src.parent.mkdir()
+        src.write_text(
+            "case_id: A\nmode: strict\nrequired_set:\n"
+            "  - lint\nresults:\n  lint:\n    status: PASS\n",
+            encoding="utf-8",
+        )
+
+    out = root / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(root))
+    saved = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "reviewed_yaml", "label": "case-a.yaml",
+             "source_file": "a/case-a.yaml", "file_type": "document",
+             "_origin": "semantic", "source_location": None,
+             "rationale": "Separately reviewed semantic finding"},
+            {"id": "plain_yaml", "label": "case-a.yaml",
+             "source_file": "b/case-a.yaml", "file_type": "code",
+             "_origin": "semantic", "source_location": None},
+        ],
+        "links": [], "hyperedges": [],
+    }
+    graph = out / "graph.json"
+    graph.write_text(json.dumps(saved), encoding="utf-8")
+    assert _rebuild_code(root, changed_paths=None, no_cluster=False,
+                         block_on_lock=True) is True
+
+    candidate = json.loads(graph.read_text(encoding="utf-8"))
+    nodes = {n["id"]: n for n in candidate["nodes"]}
+    assert nodes["reviewed_yaml"]["rationale"] == (
+        "Separately reviewed semantic finding"
+    )
+    assert nodes["reviewed_yaml"]["source_file"] == "a/case-a.yaml"
+    assert "plain_yaml" not in nodes  # accounted same-source AST fold
+    for path in ("a/case-a.yaml", "b/case-a.yaml"):
+        assert any(
+            n.get("_origin") == "ast" and n.get("source_file") == path
+            for n in candidate["nodes"]
+        ), f"expected freshly extracted AST for {path}"
+
+@pytest.mark.parametrize("incremental", [False, True])
+def test_full_rebuild_ast_id_collision_keeps_reviewed_yaml_node_and_edges(tmp_path, incremental):
+    """New YAML AST ID equal to a legacy semantic ID must keep BOTH tiers.
+    A subsequent rebuild must reuse the same deterministic AST alias.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    root = tmp_path / "watch"
+    root.mkdir()
+    target = root / "config" / "settings.yaml"
+    target.parent.mkdir()
+    target.write_text("tasks:\n  - id: build\n    enabled: true\n", encoding="utf-8")
+    assert _rebuild_code(root, changed_paths=None, block_on_lock=True, no_cluster=False)
+    output = root / "graphify-out" / "graph.json"
+    payload = json.loads(output.read_text())
+    ast = next(
+        n for n in payload["nodes"]
+        if n.get("_origin") == "ast" and n.get("label") == "settings.yaml"
+    )
+    protected_id = ast["id"]
+    ast.update({
+        "_origin": "semantic", "source_location": None,
+        "file_type": "document", "rationale": "Reviewed setting",
+        "author": "QA", "captured_at": "2026-11-01",
+    })
+    payload["nodes"].append({
+        "id": "reviewed_context", "label": "Reviewed context",
+        "_origin": "semantic", "file_type": "concept",
+        "source_file": "config/settings.yaml",
+    })
+    payload["links"].append({
+        "source": "reviewed_context", "target": protected_id,
+        "relation": "references", "source_file": "config/settings.yaml",
+        "_origin": "semantic",
+    })
+    output.write_text(json.dumps(payload))
+    assert _rebuild_code(
+        root, changed_paths=[target] if incremental else None,
+        block_on_lock=True, no_cluster=False
+    )
+    current = json.loads(output.read_text())
+    records = {n["id"]: n for n in current["nodes"]}
+    assert records[protected_id]["_origin"] == "semantic"
+    for field in ("rationale", "author", "captured_at"):
+        assert records[protected_id][field] == ast[field]
+    ast_aliases = [
+        n for n in records.values()
+        if n.get("_origin") == "ast" and n.get("label") == "settings.yaml"
+    ]
+    assert len(ast_aliases) == 1
+    alias = ast_aliases[0]["id"]
+    assert alias != protected_id and alias.startswith(protected_id + "__ast_")
+    assert any(
+        {e["source"], e["target"]} == {"reviewed_context", protected_id}
+        for e in current["links"]
+    )
+    assert any(
+        alias in (e["source"], e["target"])
+        for e in current["links"]
+    ), "fresh AST links must target the rekeyed AST file"
+    assert _rebuild_code(root, changed_paths=None, block_on_lock=True, no_cluster=False)
+    again = json.loads(output.read_text())
+    later = {n["id"]: n for n in again["nodes"]}
+    assert later[protected_id]["rationale"] == "Reviewed setting"
+    assert later[alias]["_origin"] == "ast"
+
+
+def test_metadata_shrink_guard_rejects_same_id_ast_overwrite():
+    """A node count increase never compensates for lost semantic rationale."""
+    from graphify.watch import _check_shrink
+    saved = {"nodes": [
+        {"id": "yaml_node", "_origin": "semantic",
+         "source_file": "config/settings.yaml", "rationale": "Reviewed"}
+    ]}
+    damaged = {"nodes": [
+        {"id": "yaml_node", "_origin": "ast",
+         "source_file": "config/settings.yaml", "source_location": "L1"},
+        {"id": "new_function", "_origin": "ast"}
+    ]}
+    assert _check_shrink(False, saved, damaged) is False
+    kept = {"nodes": [dict(saved["nodes"][0]), {"id": "new_function"}]}
+    assert _check_shrink(False, saved, kept) is True
+
+def test_sourceless_ast_collision_keeps_semantic_tier(tmp_path):
+    """A sourceless AST placeholder must not clobber a reviewed semantic ID."""
+    import json
+    from graphify.watch import _reconcile_existing_graph
+
+    doc = tmp_path / "notes.md"
+    doc.write_text("## Record\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(tmp_path))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [{"id": "memory", "label": "Memory",
+                   "_origin": "semantic", "file_type": "document",
+                   "source_file": "notes.md", "rationale": "Reviewed evidence"}],
+        "links": [], "hyperedges": [],
+    }))
+    fresh = {"nodes": [{
+        "id": "memory", "_origin": "ast", "label": "Memory",
+        "file_type": "code", "source_file": "", "source_location": "",
+    }], "edges": [], "hyperedges": []}
+    result, _ = _reconcile_existing_graph(
+        graph, fresh, out=out, project_root=tmp_path, watch_root=tmp_path,
+        code_files=[], extract_targets=[], full_rebuild=True,
+        deleted_paths=set(), deleted_source_identities=set(),
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    assert nodes["memory"]["rationale"] == "Reviewed evidence"
+    assert nodes["memory"]["_origin"] == "semantic"
+    assert len(nodes) == 2
+    assert next(i for i in nodes if i != "memory").startswith("memory__ast_")
+
+@pytest.mark.parametrize("full_rebuild", [False, True])
+def test_multiple_ast_records_colliding_with_reviewed_semantic_id(
+    tmp_path, full_rebuild,
+):
+    """Two distinct AST sources sharing an ID must not hijack semantic evidence.
+    They retain their existing AST-side coalescing and reuse one stable alias.
+    """
+    import json
+    from graphify.watch import _reconcile_existing_graph
+
+    (tmp_path / "notes.md").write_text("## Reviewed node\n")
+    a, b = tmp_path / "a.py", tmp_path / "b.py"
+    a.write_text("def one(): pass\n")
+    b.write_text("def two(): pass\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(tmp_path))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [{"id": "shared_registry", "label": "Registry",
+                   "_origin": "semantic", "file_type": "document",
+                   "source_file": "notes.md",
+                   "rationale": "Original reviewed registry"}],
+        "links": [], "hyperedges": [],
+    }))
+    records = [
+        {"id": "shared_registry", "_origin": "ast", "label": "Registry",
+         "file_type": "code", "source_file": str(path),
+         "source_location": "L1"} for path in (a, b)
+    ]
+    edges = [
+        {"source": "shared_registry", "target": "ast_target",
+         "source_file": str(a), "_origin": "ast"},
+    ]
+    result, _ = _reconcile_existing_graph(
+        graph, {"nodes": records, "edges": edges, "hyperedges": []},
+        out=out, project_root=tmp_path, watch_root=tmp_path,
+        code_files=[a, b], extract_targets=[a, b],
+        full_rebuild=full_rebuild, deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+    sem = next(
+        n for n in result["nodes"] if n.get("id") == "shared_registry"
+    )
+    assert sem["rationale"] == "Original reviewed registry"
+    aliases = [
+        n["id"] for n in result["nodes"]
+        if n.get("_origin") == "ast" and n.get("label") == "Registry"
+    ]
+    assert len(aliases) == 2 and aliases[0] == aliases[1]
+    assert aliases[0].startswith("shared_registry__ast_")
+    assert result["edges"][0]["source"] == aliases[0]
