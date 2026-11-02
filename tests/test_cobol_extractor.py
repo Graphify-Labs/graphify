@@ -181,3 +181,65 @@ def test_cobol_perform_thru_links_both_range_endpoints(tmp_path):
     calls = _edge_labels(result, "calls")
     assert ("MAIN-PARA", "A-PARA") in calls
     assert ("MAIN-PARA", "Z-PARA") in calls
+
+
+def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
+    """A contained (nested) program's own PROGRAM-ID switches the active
+    program with no record of what it switched from, so code physically back
+    in the enclosing program after the nested one's END PROGRAM kept
+    attributing to the nested program forever."""
+    source = tmp_path / "nested.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. PARENT.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       PARENT-PARA.\n"
+        "           CALL 'CHILD'.\n"
+        "           STOP RUN.\n"
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. CHILD.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       CHILD-PARA.\n"
+        "           DISPLAY 'CHILD'.\n"
+        "       END PROGRAM CHILD.\n"
+        "       PARENT-PARA-2.\n"
+        "           DISPLAY 'BACK IN PARENT'.\n"
+        "       END PROGRAM PARENT.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    contains = _edge_labels(result, "contains")
+    assert ("PARENT", "PARENT-PARA-2") in contains
+    assert ("CHILD", "PARENT-PARA-2") not in contains
+
+
+def test_cobol_sibling_programs_with_end_program_are_unaffected(tmp_path):
+    """A control for the fix above: two standalone (non-nested) programs each
+    closed with their own END PROGRAM must still resolve their own paragraphs
+    to themselves, not leak into one another."""
+    source = tmp_path / "siblings.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. ONE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       ONE-PARA.\n"
+        "           DISPLAY 'ONE'.\n"
+        "       END PROGRAM ONE.\n"
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. TWO.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       TWO-PARA.\n"
+        "           DISPLAY 'TWO'.\n"
+        "       END PROGRAM TWO.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    contains = _edge_labels(result, "contains")
+    assert ("ONE", "ONE-PARA") in contains
+    assert ("TWO", "TWO-PARA") in contains
+    assert ("ONE", "TWO-PARA") not in contains
+    assert ("TWO", "ONE-PARA") not in contains

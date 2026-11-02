@@ -312,6 +312,25 @@ def test_extraction_warning_breakdown_by_cause(capsys):
     assert "3x missing required field 'relation'" in err
 
 
+def test_build_drops_edge_still_missing_relation(capsys):
+    """#4809: after aliases are folded, an edge with no relation must not
+    enter the graph because the relationship semantics cannot be reconstructed."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "document", "source_file": "a.md"},
+        {"id": "n2", "label": "B", "file_type": "document", "source_file": "b.md"},
+    ], "edges": [
+        # No relation, and no alias from which relation can be recovered.
+        {"source": "n1", "target": "n2", "confidence": "INFERRED", "source_file": "a.md"},
+    ], "input_tokens": 0, "output_tokens": 0}
+
+    G = build_from_json(ext)
+
+    assert not G.has_edge("n1", "n2")
+    err = capsys.readouterr().err
+    assert "missing required field 'relation'" in err
+    assert "dropped 1 schema-invalid edge(s)" in err
+
+
 def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
     """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
     source_file (Windows detect() emits them) must re-key to the canonical
@@ -1597,6 +1616,46 @@ def test_doc_twin_merge_does_not_touch_code_symbols():
     }
     G = build_from_json(ext, directed=False)
     assert {"m_foo", "m_foo_doc"} <= set(G.nodes())
+
+
+def test_marked_cross_document_stubs_survive_issue_4738_collisions():
+    """The complete build keeps every marked reference stub and the definition.
+
+    This covers the three collision shapes reported in #4738, including a
+    stub whose ID also looks like an entity defined in its citing file.
+    """
+    logging = "specifications_20_architecture_operational_logging_document"
+    runtime = "functional_agent_runtime_doc"
+    license_schedule = "company_license_schedule_c"
+    stub = {"graphify_reference_stub": True}
+    extraction = {"nodes": [
+        {"id": logging, "label": "Logging", "file_type": "document",
+         "source_file": "specifications/20-architecture/delivery/change-policy.md",
+         "metadata": stub},
+        {"id": logging, "label": "Logging specification", "file_type": "document",
+         "source_file": ".github/instructions/rust.instructions.md",
+         "metadata": stub},
+        {"id": runtime, "label": "Agent runtime", "file_type": "document",
+         "source_file": "functional/agents/agent-operator.md", "metadata": stub},
+        {"id": runtime, "label": "Agent Runtime and Subagent Contract", "file_type": "document",
+         "source_file": "delivery/developer-interaction.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license-schedule-c.md"},
+    ], "edges": []}
+
+    graph = build([extraction])
+
+    assert graph.number_of_nodes() == 6
+    assert {data["source_file"] for _, data in graph.nodes(data=True)} == {
+        "specifications/20-architecture/delivery/change-policy.md",
+        ".github/instructions/rust.instructions.md",
+        "functional/agents/agent-operator.md",
+        "delivery/developer-interaction.md",
+        "company/license.md",
+        "company/license-schedule-c.md",
+    }
 
 
 def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
