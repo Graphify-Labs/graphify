@@ -381,14 +381,22 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
             _fold_edge_aliases(edge)
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     norm_to_id = {_normalize_id(nid): nid for nid in declared if isinstance(nid, str)}
+    node_by_id = {
+        n.get("id"): n for n in nodes
+        if isinstance(n, dict) and isinstance(n.get("id"), str)
+    }
     # Alias index (#4670): the same old-stem spellings build_from_json resolves
     # against, so an endpoint written in a pre-migration spelling still lands on
-    # the node it names. Only fills gaps ΓÇö never overrides a real node id.
-    for alias_key, canonical_id in _alias_index(
+    # the node it names. Only fills gaps — never overrides a real node id.
+    #
+    # Kept apart from norm_to_id, gated below, for the same reason
+    # build_from_json keeps it apart: the alias uniqueness check only
+    # protects against two same-stem files in one language, never a
+    # same-named node whose real identity is in another language (#4941).
+    alias_to_id = _alias_index(
         (n.get("id"), n) for n in nodes
         if isinstance(n, dict) and isinstance(n.get("id"), str)
-    ).items():
-        norm_to_id.setdefault(alias_key, canonical_id)
+    )
 
     # Re-point every endpoint that has a canonical form BEFORE stubbing, so an
     # import that names a real file is not frozen onto a stub minted for its
@@ -403,7 +411,17 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
             endpoint = e.get(field)
             if isinstance(endpoint, str) and endpoint in declared:
                 continue
-            canonical = norm_to_id.get(_normalize_id(endpoint)) if isinstance(endpoint, str) else None
+            if not isinstance(endpoint, str):
+                continue
+            norm = _normalize_id(endpoint)
+            canonical = norm_to_id.get(norm)
+            if canonical is None:
+                alias_target = alias_to_id.get(norm)
+                if alias_target is not None and _alias_lang_compatible(
+                    e.get("source_file"),
+                    (node_by_id.get(alias_target) or {}).get("source_file"),
+                ):
+                    canonical = alias_target
             if canonical is not None:
                 e[field] = canonical
 
@@ -1218,6 +1236,27 @@ def _alias_index(nodes: "Iterable[tuple[str, dict]]") -> dict[str, str]:
     }
 
 
+def _alias_lang_compatible(edge_source_file: object, alias_source_file: object) -> bool:
+    """True unless the edge's own file and the alias target's file are both in
+    a KNOWN, DIFFERENT language family (#4941).
+
+    The uniqueness check in :func:`_alias_index` only protects against
+    ambiguity between same-stem files, never against a same-named node whose
+    real identity is in another language entirely: a Dart `PunchType` enum
+    reference and an unrelated `PunchType.java` file both collapse to the
+    bare old-stem alias "punchtype", and since only the Java file ever
+    registers it, the alias commits unconditionally and binds the Dart
+    reference onto the Java file. Permissive when either side's family is
+    unknown (no source_file, or an extension outside the known map), so a
+    legitimate same-language or provenance-less alias still resolves exactly
+    as before.
+    """
+    from graphify.extract import _lang_family
+    edge_family = _lang_family(edge_source_file)
+    alias_family = _lang_family(alias_source_file)
+    return edge_family is None or alias_family is None or edge_family == alias_family
+
+
 def _semantic_id_remap(nodes: list, root: str | None) -> dict:
     """Re-derive non-AST node ids from ``source_file`` using the canonical
     full-path stem, so a cached/LLM fragment carrying a pre-migration short id
@@ -1790,10 +1829,27 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     #
     # The index itself lives in _alias_index so the raw (--no-cluster) write
     # path resolves endpoints identically (#4670).
-    for alias_key, canonical_id in _alias_index(
-        (nid, G.nodes[nid]) for nid in node_set
-    ).items():
-        norm_to_id.setdefault(alias_key, canonical_id)
+    #
+    # Kept apart from norm_to_id, not merged into it: the uniqueness check in
+    # _alias_index only protects against two same-stem files in the SAME
+    # language racing for one alias, never against a same-named node whose
+    # real identity is in another language (#4941). Gating the alias lookup
+    # itself, below, catches that case without touching the unconditional
+    # normalized-id and ghost-remap entries norm_to_id already carries.
+    alias_to_id = _alias_index((nid, G.nodes[nid]) for nid in node_set)
+
+    def _resolve_endpoint(raw_id: str, edge_source_file: object) -> str:
+        norm = _normalize_id(raw_id)
+        resolved = norm_to_id.get(norm)
+        if resolved is not None:
+            return resolved
+        alias_target = alias_to_id.get(norm)
+        if alias_target is not None and _alias_lang_compatible(
+            edge_source_file, G.nodes[alias_target].get("source_file")
+        ):
+            return alias_target
+        return raw_id
+
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -1829,9 +1885,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             continue
         # Remap mismatched IDs via normalization before dropping the edge.
         if src not in node_set:
-            src = norm_to_id.get(_normalize_id(src), src)
+            src = _resolve_endpoint(src, edge.get("source_file"))
         if tgt not in node_set:
-            tgt = norm_to_id.get(_normalize_id(tgt), tgt)
+            tgt = _resolve_endpoint(tgt, edge.get("source_file"))
         if src not in node_set or tgt not in node_set:
             # An import/re-export whose target is not a declared node points at
             # an external module (stdlib / third-party / another repo). Mint a
