@@ -96,3 +96,36 @@ def test_unsliced_file_is_still_checkpointed_before_an_interrupt(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         _run(tmp_path, [note, doc], endpoint)
     assert _uncached(tmp_path, [note, doc]) == ["guide.md"]
+
+
+def test_held_slices_are_cached_in_chunk_order_under_parallel_completion(tmp_path):
+    import json
+    import threading
+    doc = _big_doc(tmp_path)
+    first_may_return = threading.Event()
+    calls: list[int] = []
+    lock = threading.Lock()
+
+    def endpoint(files, **kwargs):
+        with lock:
+            calls.append(1)
+            n = len(calls)
+        text = llm.read_slice_text(files[0]) if isinstance(files[0], llm.FileSlice) else ""
+        if "# Early" in text:
+            first_may_return.wait(timeout=10)
+        else:
+            first_may_return.set()
+        return {"nodes": [{"id": f"s{100 - n}", "label": "early" if "# Early" in text else f"later{n}",
+                           "source_file": str(doc), "source_location": "L1"}],
+                "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+                "finish_reason": "stop", "model": "fixture"}
+
+    with patch.object(llm, "extract_files_direct", endpoint):
+        llm.extract_corpus_parallel(
+            [doc], backend="openai", root=tmp_path, cache_root=tmp_path / "out",
+            max_concurrency=4, token_budget=1, max_retry_depth=0,
+        )
+    entries = list((tmp_path / "out/graphify-out/cache/semantic").rglob("*.json"))
+    assert len(entries) == 1
+    labels = [n["label"] for n in json.loads(entries[0].read_text())["nodes"]]
+    assert labels[0] == "early"

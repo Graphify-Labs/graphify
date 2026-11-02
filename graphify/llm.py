@@ -2874,9 +2874,9 @@ def extract_corpus_parallel(
         for _unit in _chunk:
             if isinstance(_unit, FileSlice):
                 slices_left[unit_path(_unit)] = slices_left.get(unit_path(_unit), 0) + 1
-    held_results: dict[Path, list[dict]] = {}
+    held_results: dict[Path, list[tuple[int, dict]]] = {}
 
-    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
+    def _checkpoint_chunk(idx: int, result: dict, chunk: "list[Path | FileSlice]") -> None:
         sliced = [unit_path(u) for u in chunk if isinstance(u, FileSlice)]
         for parent in sliced:
             slices_left[parent] -= 1
@@ -2884,9 +2884,11 @@ def extract_corpus_parallel(
         if whole:
             _save_checkpoint(result, whole)
         for parent in dict.fromkeys(sliced):
-            held_results.setdefault(parent, []).append(result)
+            held_results.setdefault(parent, []).append((idx, result))
             if slices_left[parent] == 0:
-                held = held_results.pop(parent)
+                # Chunk order, not completion order, so the entry is the same
+                # whichever slice returned first (#1632).
+                held = [r for _, r in sorted(held_results.pop(parent), key=lambda p: p[0])]
                 combined: dict = {
                     bucket: [item for r in held for item in r.get(bucket, [])]
                     for bucket in ("nodes", "edges", "hyperedges")
@@ -2951,7 +2953,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
-            _checkpoint_chunk(result, chunk)
+            _checkpoint_chunk(idx, result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -2977,7 +2979,7 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
-                _checkpoint_chunk(result, chunks[idx])
+                _checkpoint_chunk(idx, result, chunks[idx])
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
