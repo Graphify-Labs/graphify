@@ -101,3 +101,37 @@ def test_dedup_reports_nothing_when_it_merged_nothing():
     remap: dict[str, str] = {}
     deduplicate_entities([ALPHA, BRAVO], [], communities={}, remap_out=remap)
     assert remap == {}
+
+
+# What build() carries to the writer.
+
+def test_build_carries_the_dedup_map_and_take_dedup_remap_pops_it():
+    from graphify.build import build, take_dedup_remap
+
+    G = build([{"nodes": [_node("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+                          _node("glossary_the_nudge_2", "The nudge", "GLOSSARY.md")],
+                "edges": [], "hyperedges": []}])
+    remap = G.graph["_dedup_remap"]
+    assert len(remap) == 1 and set(remap.values()) <= set(G.nodes)
+    assert take_dedup_remap(G) == remap
+    assert "_dedup_remap" not in G.graph
+    assert take_dedup_remap(G) == {}
+
+
+def test_build_leaves_no_map_when_nothing_merged():
+    from graphify.build import build
+
+    G = build([{"nodes": [ALPHA, BRAVO], "edges": [], "hyperedges": []}])
+    assert "_dedup_remap" not in G.graph
+
+
+def test_the_dedup_map_is_never_written_into_graph_json(tmp_path):
+    from graphify.build import build
+
+    G = build([{"nodes": [_node("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+                          _node("glossary_the_nudge_2", "The nudge", "GLOSSARY.md")],
+                "edges": [], "hyperedges": []}])
+    assert G.graph.get("_dedup_remap")
+    out = tmp_path / "graph.json"
+    assert to_json(G, cluster(G), str(out)) is True
+    assert "_dedup_remap" not in json.dumps(json.loads(out.read_text()))

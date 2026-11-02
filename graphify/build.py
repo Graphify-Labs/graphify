@@ -2149,6 +2149,7 @@ def build(
         combined["output_tokens"] += ext.get("output_tokens", 0)
     _root = str(Path(root).resolve()) if root else None
     _dedup_collapsed = 0
+    _dedup_remap: dict[str, str] = {}
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -2178,6 +2179,7 @@ def build(
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
             protected_ids=protected_ids,
+            remap_out=_dedup_remap,
         )
         _dedup_collapsed = _before_dedup - len(combined["nodes"])
     G = build_from_json(combined, directed=directed, root=_root, dedup=dedup)
@@ -2185,6 +2187,10 @@ def build(
     # Popped before to_json so it is not stored in graph.json.
     if _dedup_collapsed:
         G.graph["_dedup_collapsed"] = _dedup_collapsed
+    # Which ids dedup folded into which survivor, for the #479 write guard
+    # (#4940). Popped by to_json, so it is not stored in graph.json.
+    if _dedup_remap:
+        G.graph["_dedup_remap"] = _dedup_remap
     return G
 
 
@@ -2201,6 +2207,20 @@ def take_shrink_accounting(G) -> tuple[int, int]:
     collapsed = int(attrs.pop("_dedup_collapsed", 0) or 0)
     pruned = int(attrs.pop("_pruned_node_count", 0) or 0)
     return collapsed, pruned
+
+
+def take_dedup_remap(G) -> dict[str, str]:
+    """Read and remove the ``{merged-away id: survivor id}`` map (#4940).
+
+    ``build`` stashes it on ``G.graph`` when entity dedup merged nodes.
+    ``to_json`` calls this to excuse a saved id the merge folded into a twin,
+    and it also drops the key so it is never persisted into graph.json.
+    """
+    attrs = getattr(G, "graph", None)
+    if not isinstance(attrs, dict):
+        return {}
+    remap = attrs.pop("_dedup_remap", None)
+    return dict(remap) if isinstance(remap, dict) else {}
 
 
 def _norm_label(label: str | None) -> str:
