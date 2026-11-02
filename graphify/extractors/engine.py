@@ -5152,11 +5152,15 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
         line = node.start_point[0] + 1
         for alias_name in _cpp_alias_names(node, source):
             alias_nid = _make_id(stem, alias_name)
-            _alias_new = alias_nid not in seen_ids
+            # decl_node_fn may salt the id (#4854), so whether a node was minted
+            # is read off seen_ids after the call, not tested on the unsalted id.
+            known = len(seen_ids)
             if decl_node_fn is not None:
                 alias_nid = decl_node_fn(alias_nid, alias_name, "alias",
                                          alias_name, line)
-            if _alias_new:
+            else:
+                add_node_fn(alias_nid, alias_name, line)
+            if len(seen_ids) > known:
                 add_edge_fn(file_nid, alias_nid, "contains", line)
         return False
     if node.type == "enumerator" and parent_class_nid:
