@@ -201,6 +201,37 @@ _RUST_PRIMITIVE_TYPES: frozenset[str] = frozenset({
 })
 
 
+def _rust_macro_arg_calls(token_tree) -> list[tuple[str, int]]:
+    """Bare `f(...)` calls written inside a macro's arguments.
+
+    Tree-sitter keeps macro arguments as a flat token tree, so `println!("{}", f(x))`
+    has no call_expression: it is an `identifier` followed by a `(` token tree.
+    A name after `.` or `::` is a method or path call and is left out, as is a
+    name followed by `!` (a nested macro, which is its own macro_invocation).
+    """
+    found: list[tuple[str, int]] = []
+    stack = [token_tree]
+    while stack:
+        tree = stack.pop()
+        children = tree.children
+        for i, child in enumerate(children):
+            if child.type == "token_tree":
+                stack.append(child)
+                continue
+            if child.type != "identifier" or i + 1 >= len(children):
+                continue
+            nxt = children[i + 1]
+            if nxt.type != "token_tree" or not nxt.children or nxt.children[0].type != "(":
+                continue
+            if i > 0 and children[i - 1].type in (".", "::", "fn", "$"):
+                continue
+            name = child.text.decode("utf-8", errors="replace") if child.text else ""
+            if name:
+                found.append((name, child.start_point[0] + 1))
+    found.sort(key=lambda item: item[1])
+    return found
+
+
 def _rust_qualifier_type(path_node, source: bytes) -> str | None:
     """The type a `Type::f()` call is qualified by, or None for a module path.
 
@@ -895,10 +926,44 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-            # Fall through to the generic child recursion below rather than
-            # returning, preserving the prior traversal of the invocation's
-            # subtree (its arguments are a raw token tree, so this neither adds
-            # nor drops any nested edges relative to before).
+            # A call inside the arguments is only a token pattern, not a parsed
+            # call: bind it in-file as INFERRED, or hand it to the cross-file pass.
+            args = next((c for c in node.children if c.type == "token_tree"), None)
+            for callee_name, line in _rust_macro_arg_calls(args) if args is not None else ():
+                if (
+                    callee_name[:1].isupper()
+                    or callee_name in _LANGUAGE_BUILTIN_GLOBALS
+                    or callee_name in _RUST_BUILTIN_TYPES
+                    or callee_name.lower() in _RUST_TRAIT_METHOD_BLOCKLIST
+                ):
+                    continue
+                tgt_nid = label_to_nid.get(callee_name)
+                if tgt_nid in type_nids:
+                    continue
+                if tgt_nid:
+                    if tgt_nid != caller_nid and (caller_nid, tgt_nid) not in seen_call_pairs:
+                        seen_call_pairs.add((caller_nid, tgt_nid))
+                        edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "calls",
+                            "context": "macro_argument_call",
+                            "confidence": "INFERRED",
+                            "confidence_score": 0.85,
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": callee_name,
+                    "is_member_call": False,
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                })
+            # Fall through to the generic child recursion below; the token tree
+            # holds no call_expression, so nothing is counted twice.
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
