@@ -106,6 +106,50 @@ def test_score_nodes_ignores_trailing_punctuation():
     assert scored[0][1] == "n1"
 
 
+# --- _score_nodes: file_type weighting (#445) ---
+
+def test_score_nodes_code_symbol_outranks_verbose_image_caption():
+    # Both nodes match the query term only as a plain substring, so without
+    # file type weighting the raw scores tie and the existing shorter label
+    # tie break would hand it to the image's shorter caption. Weighting by
+    # file type (#445) must make the code node win outright instead.
+    G = nx.Graph()
+    G.add_node("fn", label="update_planes_processing_pipeline_v2", source_file="pipeline_core.py", file_type="code")
+    G.add_node("img", label="7 planes", source_file="golden_041.png", file_type="image")
+    scored = _score_nodes(G, ["planes"])
+    assert scored[0][1] == "fn"
+
+
+def test_score_nodes_document_and_paper_are_also_down_weighted():
+    G = nx.Graph()
+    G.add_node("fn", label="load_planes", source_file="loader.py", file_type="code")
+    G.add_node("doc", label="Design notes on handling planes", source_file="notes.md", file_type="document")
+    G.add_node("paper", label="Design notes on handling planes", source_file="notes.pdf", file_type="paper")
+    scored = dict((nid, s) for s, nid in _score_nodes(G, ["planes"]))
+    assert scored["fn"] > scored["doc"]
+    assert scored["fn"] > scored["paper"]
+
+
+def test_score_nodes_code_file_type_is_unaffected():
+    # file_type="code" must score exactly as it did before the weighting was
+    # added, since _FILE_TYPE_WEIGHT has no entry for it (defaults to 1.0).
+    G = _make_graph()
+    for _, data in G.nodes(data=True):
+        data["file_type"] = "code"
+    scored_with_type = _score_nodes(G, ["extract"])
+    G2 = _make_graph()
+    scored_without_type = _score_nodes(G2, ["extract"])
+    assert scored_with_type == scored_without_type
+
+
+def test_score_nodes_image_is_still_findable_when_nothing_else_matches():
+    # Down weighting must not hide a node that is the only match at all.
+    G = nx.Graph()
+    G.add_node("img", label="Territory render Hamilton 7 planes 8 ridges", source_file="golden_041.png", file_type="image")
+    scored = _score_nodes(G, ["territory", "render"])
+    assert scored and scored[0][1] == "img"
+
+
 def test_score_nodes_multiword_exact_label_outranks_superset():
     """A multi-word query equal to a whole label must resolve uniquely.
 
