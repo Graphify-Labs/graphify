@@ -438,29 +438,58 @@ def _project_scope_root(path: Path, project_dir: Path) -> Path:
     except ValueError:
         return path
     return project_dir / rel.parts[0] if rel.parts else path
+def _remove_skill_registration(target: Path, prefix: str) -> None:
+    """Remove the skill registration _register_always_on_block wrote into *target*.
+
+    Degrades instead of raising, as the install side does (#3474): a CLAUDE.md
+    that nix/home-manager links into a read-only store must not abort an
+    uninstall halfway, with later platforms not yet cleaned.
+    """
+    try:
+        if not target.exists():
+            return
+        content, newline = _read_keep_newline(target)
+        # Match the exact H1 `# graphify` registration heading, never a substring of a
+        # user's `## graphify`/`### graphify` (#2062). Section runs to the next H1.
+        # _SKILL_REGISTRATION_MARKER is the single source of truth for this heading,
+        # shared with _register_always_on_block so an insert and its removal always
+        # agree on what they're matching (#3668).
+        cleaned = _remove_marker_section(content, _SKILL_REGISTRATION_MARKER, boundary_prefix="# ")
+        if cleaned is None:
+            return
+        # A symlink stays: writing through it cleans the file it points to.
+        if cleaned or target.is_symlink():
+            # The file's own line ending is restored, so the rest of its content is
+            # never re-translated on write (#3668/#4360).
+            _write_keep_newline(target, cleaned + "\n", newline)
+            print(f"{prefix}graphify skill registration removed from {_shown_path(target)}")
+        else:
+            target.unlink()
+            print(f"{prefix}deleted {target}")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(
+            f"  hint: remove the `{_SKILL_REGISTRATION_MARKER}` block from {target} "
+            "manually to finish the uninstall",
+            file=sys.stderr,
+        )
 def _remove_claude_skill_registration(project_dir: Path) -> None:
     """Remove the project-scoped Claude skill registration file/section."""
-    claude_md = project_dir / ".claude" / "CLAUDE.md"
-    if not claude_md.exists():
-        return
-    content, newline = _read_keep_newline(claude_md)
-    # Match the exact H1 `# graphify` registration heading, never a substring of a
-    # user's `## graphify`/`### graphify` (#2062). Section runs to the next H1.
-    # _SKILL_REGISTRATION_MARKER is the single source of truth for this heading,
-    # shared with _register_always_on_block so an insert and its removal always
-    # agree on what they're matching (#3668).
-    cleaned = _remove_marker_section(content, _SKILL_REGISTRATION_MARKER, boundary_prefix="# ")
-    if cleaned is None:
-        return
-    # A symlink stays: writing through it cleans the file it points to.
-    if cleaned or claude_md.is_symlink():
-        # The file's own line ending is restored, so the rest of its content is
-        # never re-translated on write (#3668/#4360).
-        _write_keep_newline(claude_md, cleaned + "\n", newline)
-        print(f"  CLAUDE.md        ->  graphify skill registration removed from {_shown_path(claude_md)}")
-    else:
-        claude_md.unlink()
-        print(f"  CLAUDE.md        ->  deleted {claude_md}")
+    _remove_skill_registration(project_dir / ".claude" / "CLAUDE.md", "  CLAUDE.md        ->  ")
+def _claude_global_registration() -> "tuple[Path, str]":
+    """The CLAUDE.md a global (non-project) Claude install registers the skill in,
+    and the skill path that registration names: the same choice install() makes.
+
+    CLAUDE_CONFIG_DIR relocates both, as it does the skill copy (#527, #2694).
+    """
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config:
+        config_dir = Path(config)
+        return config_dir / "CLAUDE.md", str(config_dir / "skills" / "graphify" / "SKILL.md")
+    return Path.home() / ".claude" / "CLAUDE.md", "~/.claude/skills/graphify/SKILL.md"
+def _codebuddy_global_registration() -> Path:
+    """The CODEBUDDY.md `install --platform codebuddy` registers the skill in."""
+    return Path.home() / ".codebuddy" / "CODEBUDDY.md"
 def _print_project_git_add_hint(paths: list[Path]) -> None:
     unique: list[str] = []
     for path in paths:
@@ -2396,6 +2425,9 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         _remove_skill_file("claude", project=True, project_dir=project_dir)
     if remove_user_skill:
         _remove_skill_file("claude", project=False)
+        # Without the skill, the global registration names a file that no longer
+        # exists, and Claude Code reads it in every session.
+        _remove_skill_registration(_claude_global_registration()[0], "  CLAUDE.md        ->  ")
 
     md_targets = [
         project_dir / "CLAUDE.md",
@@ -2518,6 +2550,8 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         _remove_skill_file("codebuddy", project=True, project_dir=project_dir)
     if remove_user_skill:
         _remove_skill_file("codebuddy", project=False)
+        # Before the project-file checks below, which return early.
+        _remove_skill_registration(_codebuddy_global_registration(), "  CODEBUDDY.md     ->  ")
     target = project_dir / "CODEBUDDY.md"
 
     if not target.exists():
