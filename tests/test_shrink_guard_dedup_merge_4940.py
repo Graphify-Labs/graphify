@@ -135,3 +135,104 @@ def test_the_dedup_map_is_never_written_into_graph_json(tmp_path):
     out = tmp_path / "graph.json"
     assert to_json(G, cluster(G), str(out)) is True
     assert "_dedup_remap" not in json.dumps(json.loads(out.read_text()))
+
+
+# The bug: a merge dedup performed read as a loss.
+
+TWINS = [_node("claude_the_nudge", "The nudge", "CLAUDE.md"),
+         _node("claude_first_contact", "First contact", "CLAUDE.md"),
+         _node("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+         _node("glossary_first_contact", "First contact", "GLOSSARY.md")]
+GLOSSARY_ALONE = [_node("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+                  _node("glossary_first_contact", "First contact", "GLOSSARY.md")]
+
+
+def test_re_extracting_a_doc_alone_writes_when_dedup_folds_it_into_its_twins(tmp_path):
+    # The issue: GLOSSARY.md is re-extracted alone, dedup merges its concepts
+    # into the untouched CLAUDE.md twins, and the saved glossary_* ids vanish.
+    written, disk = _merge_and_write(tmp_path, TWINS, GLOSSARY_ALONE)
+    assert written is True
+    assert sorted(n["label"] for n in disk["nodes"]) == ["First contact", "The nudge"]
+
+
+def test_an_edge_to_the_merged_away_id_is_kept_and_rewired(tmp_path):
+    hub = _node("claude_hub", "Hub", "CLAUDE.md")
+    written, disk = _merge_and_write(
+        tmp_path, TWINS + [hub], GLOSSARY_ALONE,
+        saved_edges=[_edge("claude_hub", "glossary_the_nudge", "CLAUDE.md")],
+    )
+    ids = {n["id"] for n in disk["nodes"]}
+    links = disk.get("links", disk.get("edges", []))
+    assert written is True
+    assert [link for link in links if "claude_hub" in (link["source"], link["target"])]
+    assert all(link["source"] in ids and link["target"] in ids for link in links)
+
+
+def test_same_file_exact_duplicates_do_not_block_the_write(tmp_path):
+    saved = [_node("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+             _node("glossary_the_nudge_2", "The nudge", "GLOSSARY.md"),
+             _node("claude_x", "X thing", "CLAUDE.md")]
+    written, disk = _merge_and_write(tmp_path, saved, saved[:2])
+    assert written is True
+    assert "The nudge" in {n["label"] for n in disk["nodes"]}
+
+
+def test_two_saved_ids_folded_into_one_new_survivor_write(tmp_path):
+    # The node count drops by one although nothing was lost: both saved ids
+    # live on in a survivor that is new this run.
+    saved = [_node("glossary_the_nudge_c1", "The nudge", "GLOSSARY.md"),
+             _node("glossary_the_nudge_c2", "The nudge", "GLOSSARY.md"), ALPHA]
+    fresh = [_node("glossary_nudge", "The nudge", "GLOSSARY.md"), saved[0], saved[1]]
+    written, disk = _merge_and_write(tmp_path, saved, fresh)
+    assert written is True
+    assert sorted(n["label"] for n in disk["nodes"]) == ["Alpha concept", "The nudge"]
+
+
+def test_the_updated_graph_has_one_node_per_concept(tmp_path):
+    _, disk = _merge_and_write(tmp_path, TWINS, GLOSSARY_ALONE)
+    labels = [n["label"] for n in disk["nodes"]]
+    assert len(labels) == len(set(labels))
+
+
+def test_full_rebuild_that_merges_the_same_twins_writes(tmp_path):
+    from graphify.build import build
+
+    graph_path = tmp_path / "graph.json"
+    _seed(graph_path, TWINS)
+    G = build([{"nodes": [dict(n) for n in TWINS], "edges": [], "hyperedges": []}],
+              root=str(tmp_path))
+    assert G.number_of_nodes() < len(TWINS)
+    assert to_json(G, cluster(G), str(graph_path)) is True
+
+
+# The guard must not go blind to a real loss that sits beside a merge.
+
+def test_a_real_loss_next_to_a_merge_is_refused_and_only_it_is_named(tmp_path, capsys):
+    written, _ = _merge_and_write(
+        tmp_path, TWINS, GLOSSARY_ALONE,
+        tamper=lambda G: G.remove_node("claude_first_contact"),
+    )
+    named = capsys.readouterr().err.split("missing from the new graph:")[-1]
+    assert written is False
+    assert "claude_first_contact" in named
+    assert "glossary_the_nudge" not in named
+
+
+def test_a_survivor_that_is_itself_gone_excuses_nothing():
+    from graphify.build import _lost_saved_semantic_nodes
+
+    saved = [_node("loser", "The nudge", "GLOSSARY.md")]
+    assert _lost_saved_semantic_nodes(saved, [], set(), dedup_remap={"loser": "winner"}) == saved
+    kept = [_node("winner", "The nudge", "GLOSSARY.md")]
+    assert _lost_saved_semantic_nodes(saved, kept, set(), dedup_remap={"loser": "winner"}) == []
+
+
+def test_the_allowance_counts_only_merges_whose_survivor_is_present():
+    from graphify.build import _dedup_shrink_allowance
+
+    remap = {"a": "w", "b": "w", "c": "gone"}
+    # w is new this run: two saved ids became one node, so the graph may be one smaller.
+    assert _dedup_shrink_allowance({"a", "b", "c"}, {"w"}, remap) == 1
+    # w is itself a saved id: both losers are accounted for.
+    assert _dedup_shrink_allowance({"a", "b", "w"}, {"w"}, remap) == 2
+    assert _dedup_shrink_allowance({"a"}, set(), remap) == 0

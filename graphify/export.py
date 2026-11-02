@@ -304,8 +304,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
     from graphify.build import take_dedup_remap, take_shrink_accounting
-    # Not persisted: node_link_data would write G.graph into graph.json (#4940).
-    take_dedup_remap(G)
+    # The guard below reads it; it is removed here so node_link_data cannot
+    # write it into graph.json (#4940).
+    dedup_remap = take_dedup_remap(G)
     take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
@@ -353,13 +354,15 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     )
                     return False
             new_n = G.number_of_nodes()
-            from graphify.build import _lost_saved_semantic_nodes
+            from graphify.build import _dedup_shrink_allowance, _lost_saved_semantic_nodes
             new_node_list = [
                 {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
                 for node_id, attrs in G.nodes(data=True)
             ]
             folded: dict[str, str] = {}
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set(), folded)
+            missing = _lost_saved_semantic_nodes(
+                existing_nodes, new_node_list, set(), folded, dedup_remap=dedup_remap,
+            )
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)
@@ -374,6 +377,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             # A twin new to this run does not offset some other node's loss.
             existing_ids = {n.get("id") for n in existing_nodes if isinstance(n, dict)}
             merged = sum(twin in existing_ids for twin in folded.values())
+            # Ids entity dedup folded into a survivor are not lost either (#4940).
+            if dedup_remap:
+                merged += _dedup_shrink_allowance(
+                    existing_ids, set(G.nodes), dedup_remap,
+                )
             if new_n < existing_n - merged:
                 import sys as _sys
                 print(
