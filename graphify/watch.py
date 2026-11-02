@@ -1218,7 +1218,8 @@ def _reconcile_existing_graph(
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
-            if node["id"] not in new_ast_ids
+            if (node["id"] not in new_ast_ids
+                or (node.get("_origin") == "semantic" and node.get("source_file")))
             and not (
                 _is_ast_tier(node)
                 and (
@@ -1343,10 +1344,25 @@ def _reconcile_existing_graph(
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
             source_paths.rebase_preserved(item)
 
+        from graphify.dedup import _namespace_reference_stub_collisions
+        merged_hyperedges = result.get("hyperedges", []) + preserved_hyperedges
+        merged_nodes, merged_edges = _namespace_reference_stub_collisions(
+            result["nodes"] + preserved_nodes,
+            result["edges"] + preserved_edges,
+            merged_hyperedges,
+            project_root,
+            preserve_saved_semantics=True,
+        )
+        # Unattributed or same-source copies must not overwrite fresh AST facts.
+        merged_nodes = [
+            node for node in merged_nodes
+            if node["id"] not in new_ast_ids or _is_ast_tier(node)
+        ]
+
         return {
-            "nodes": result["nodes"] + preserved_nodes,
-            "edges": result["edges"] + preserved_edges,
-            "hyperedges": result.get("hyperedges", []) + preserved_hyperedges,
+            "nodes": merged_nodes,
+            "edges": merged_edges,
+            "hyperedges": merged_hyperedges,
             "input_tokens": 0,
             "output_tokens": 0,
         }, existing_graph_data

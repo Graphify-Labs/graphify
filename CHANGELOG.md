@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.101 (unreleased)
 
+- Fix: **watch** AST-only updates preserve cross-file semantic evidence whose node id collides with a code definition. Semantic nodes and their document-owned links use the existing citing-file namespace, keeping both the code definition and semantic provenance in `graph.json`, including with `--no-cluster`. Fresh AST facts remain authoritative for same-source ids; full-build deduplication is unchanged.
 - Fix: **python** a bare call inside a method (`do_thing()`) no longer wrongly self-binds to a same-named method on the class; it resolves to the imported or module-level function it actually names, and a bare call with no such target emits no edge (#4933, thanks @nothariharan).
 - Fix: **python** imports resolve across PEP 420 namespace packages split over multiple `src/` roots (no `__init__.py`), while a module ambiguously provided by two roots stays unresolved and loose/stdlib-named modules are left alone (#4929, thanks @nothariharan).
 - Fix: **go** a method value reached through a receiver field (`m.UseMiddleware(hs.handler.Middleware)`) is linked as an `indirect_call`, extending the method-value-as-argument handling to field chains rooted at the method's own receiver (#1566, #4931, thanks @nothariharan).
