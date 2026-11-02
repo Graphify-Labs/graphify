@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
+from graphify.rcfile import json_include_matches
 
 
 _CONFIG_JSON_NAMES = frozenset({
@@ -80,6 +81,11 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     # Top-level key probe. `$ref` is deliberately absent: a root-level `$ref` is
     # a schema construct and never a config signal (#2255).
     if root_keys & _CONFIG_JSON_KEYS:
+        return True
+    # User-declared opt-in (#4898). This is deliberately last: it can widen the
+    # classifier for project-specific configs, but it never overrides a known
+    # JSON Schema rejection above or the scanner's ignore/secret filters.
+    if json_include_matches(path):
         return True
     return False
 
