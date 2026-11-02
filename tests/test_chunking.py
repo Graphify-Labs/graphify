@@ -1004,3 +1004,42 @@ def test_pack_chunks_with_special_token_doc_does_not_crash(tmp_path):
     code = tmp_path / "code.py"; code.write_text("def f():\n    return 1\n")
     chunks = _pack_chunks_by_tokens([doc, code], token_budget=60_000)
     assert chunks  # produced at least one chunk, no exception
+
+
+def test_interrupted_multi_slice_checkpoint_is_partial_and_missed_on_reload(tmp_path):
+    """#4943: an oversized splittable file is dispatched as several FileSlice
+    chunks. If a later slice's chunk never returns (crash, kill,
+    KeyboardInterrupt), the checkpoint written by the completed slice must not
+    cache the parent file as complete — the entry is stamped ``partial``, so a
+    reload is a miss and the file re-dispatches next run instead of serving the
+    truncated content forever."""
+    from graphify.llm import extract_corpus_parallel, _extraction_system, _FILE_CHAR_CAP
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Head\n" + "filler " * 6000 + "\n# Tail\nTail assertion.\n")
+    assert len(doc.read_text()) > _FILE_CHAR_CAP  # the corpus really slices
+
+    calls = []
+
+    def interrupted_first_only(chunk, **kwargs):
+        calls.append(len(chunk))
+        if len(calls) > 1:
+            raise KeyboardInterrupt()
+        return {
+            "nodes": [{"id": "head", "source_file": "doc.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+            "finish_reason": "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=interrupted_first_only):
+        with pytest.raises(KeyboardInterrupt):
+            extract_corpus_parallel(
+                [doc], backend="kimi", root=tmp_path,
+                token_budget=1, max_concurrency=1, max_retry_depth=0,
+            )
+
+    assert len(calls) >= 2  # the file was sliced into at least two chunks
+    # The checkpoint of the completed slice must not read as a complete file.
+    assert load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system()) is None
