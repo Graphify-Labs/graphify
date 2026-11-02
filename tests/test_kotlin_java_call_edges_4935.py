@@ -183,3 +183,64 @@ def test_object_and_companion_init_blocks_produce_an_edge(tmp_path: Path) -> Non
     # The owner of a companion's init is not pinned: the extractor gives the
     # enclosing class or the file node depending on the layout.
     assert any(s.startswith("Widget:") and t == "Logger:.single()" for s, t in edges)
+
+
+# ---- inherited external methods ----------------------------------------------
+
+def test_an_external_base_does_not_bind_a_bare_call_to_an_unrelated_class(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Prefs.java": PREFS_JAVA,
+        "app/Screen.kt": "package app\nimport android.app.Activity\n"
+                         "class Screen : Activity() { fun title(): String = getString(1) }\n",
+    })
+    assert ("Screen:.title()", "Prefs:.getString()") not in edges
+
+
+def test_a_java_class_with_an_external_base_gets_the_same_guard(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Prefs.java": PREFS_JAVA,
+        "app/Screen.java": "package app;\nimport android.app.Activity;\n"
+                           "public class Screen extends Activity { public void t() { getString(1); } }\n",
+    })
+    assert ("Screen:.t()", "Prefs:.getString()") not in edges
+
+
+def test_an_in_repo_base_that_extends_an_external_class_still_taints_its_children(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Prefs.java": PREFS_JAVA,
+        "util/BaseScreen.kt": "package util\nimport android.app.Activity\n"
+                              "open class BaseScreen : Activity() { fun baseHelper() {} }\n",
+        "app/Screen.kt": "package app\nimport util.BaseScreen\n"
+                         "class Screen : BaseScreen() {\n"
+                         "    fun a() { baseHelper() }\n"
+                         "    fun b(): String = getString(1)\n}\n",
+    })
+    assert ("Screen:.a()", "BaseScreen:.baseHelper()") in edges      # in-repo member kept
+    assert ("Screen:.b()", "Prefs:.getString()") not in edges         # external one dropped
+
+
+def test_a_top_level_function_is_still_called_from_a_class_with_an_external_base(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Top.kt": "package util\nfun topHelper() {}\n",
+        "app/Screen.kt": "package app\nimport android.app.Activity\nimport util.topHelper\n"
+                         "class Screen : Activity() { fun t() = topHelper() }\n",
+    })
+    assert ("Screen:.t()", "Top:topHelper()") in edges
+
+
+def test_a_member_imported_by_name_survives_an_external_base_in_kotlin(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Settings.kt": SETTINGS_KT,
+        "app/Screen.kt": "package app\nimport android.app.Activity\nimport util.Settings.fetchValue\n"
+                         "class Screen : Activity() { fun t() = fetchValue(\"k\") }\n",
+    })
+    assert ("Screen:.t()", "Settings:.fetchValue()") in edges
+
+
+def test_a_member_imported_by_name_survives_an_external_base_in_java(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/JSettings.java": "package util;\npublic class JSettings { public static void helperJ() {} }\n",
+        "app/Screen.java": "package app;\nimport android.app.Activity;\nimport static util.JSettings.helperJ;\n"
+                           "public class Screen extends Activity { public void t() { helperJ(); } }\n",
+    })
+    assert ("Screen:.t()", "JSettings:.helperJ()") in edges
