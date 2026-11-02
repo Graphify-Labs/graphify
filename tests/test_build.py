@@ -1084,6 +1084,44 @@ def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
     assert G.has_edge("dev_poker_server", "dev_monitoring_utility")
 
 
+def test_build_from_json_unambiguous_old_stem_alias_still_needs_language_match(tmp_path):
+    """#4941: an unambiguous old-stem alias is not enough on its own — the
+    candidate must also be in the SAME language family as the edge naming it.
+
+    A Dart file at the corpus root has no directory prefix, so its old-stem
+    form is identical to its current id and never registers an alias; nest it
+    one directory deep (matching the real report) so it does. A bare `type`
+    reference inside it to a same-named `PunchType` enum, left dangling by the
+    extractor because the enum is declared in a DIFFERENT Dart file not shown
+    to the resolver here, must not ride the bare "punchtype" alias onto an
+    unrelated Java file of the same name just because that Java file is the
+    alias's only claimant — the alias is unambiguous, but the language is
+    wrong, and that must still block it from resolving."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "mobile_punch", "label": "punch.dart", "file_type": "code",
+             "source_file": "mobile/punch.dart"},
+            {
+                "id": "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+                "label": "PunchType.java", "file_type": "code",
+                "source_file": "backend/src/main/java/ec/smartlocalizador/attendance/PunchType.java",
+            },
+        ],
+        "edges": [
+            {"source": "mobile_punch", "target": "punchtype", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "mobile/punch.dart",
+             "context": "variable_type"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge(
+        "mobile_punch",
+        "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+    )
+
+
 def test_build_from_json_relative_source_file_unchanged(tmp_path):
     """Already-relative source_file paths must not be modified."""
     extraction = {
