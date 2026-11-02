@@ -631,6 +631,41 @@ def test_ghost_merge_wrong_source_file_resolved_by_label():
     assert G.has_edge("some_query_node", "apps_customer_app_index")
 
 
+def test_label_only_file_fold_preserves_distinct_semantic_evidence():
+    """#4896: two source documents can discuss the same file differently.
+
+    Their independent explanations must not disappear just because an AST file
+    with the same basename is present; ordinary evidence-free mentions still
+    fold as before.
+    """
+    ext = {
+        "nodes": [
+            {"id": "ast_file", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "ast",
+             "source_file": "src/validate_canonical_load.py", "source_location": "L1"},
+            {"id": "sem_a", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/a.md", "rationale": "EVIDENCE_ALPHA"},
+            {"id": "sem_b", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/b.yaml", "rationale": "EVIDENCE_BETA"},
+            {"id": "mention_only", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "README.md"},
+        ],
+        "edges": [
+            {"source": "sem_a", "target": "sem_b", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "memory/plan/archive/a.md"},
+        ],
+    }
+    graph = build_from_json(ext)
+    assert {"ast_file", "sem_a", "sem_b"} <= set(graph.nodes())
+    assert "mention_only" not in graph
+    assert graph.nodes["sem_a"]["rationale"] == "EVIDENCE_ALPHA"
+    assert graph.nodes["sem_b"]["rationale"] == "EVIDENCE_BETA"
+    assert graph.has_edge("sem_a", "sem_b")
+
+
 def test_ghost_merge_wrong_source_file_ambiguous_basename_left_alone():
     """#3344: the label-alone fallback must stay conservative — a phantom
     mentioning a bare basename that TWO different real files share (an
@@ -1082,6 +1117,44 @@ def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
     }
     G = build_from_json(extraction, root=root)
     assert G.has_edge("dev_poker_server", "dev_monitoring_utility")
+
+
+def test_build_from_json_unambiguous_old_stem_alias_still_needs_language_match(tmp_path):
+    """#4941: an unambiguous old-stem alias is not enough on its own — the
+    candidate must also be in the SAME language family as the edge naming it.
+
+    A Dart file at the corpus root has no directory prefix, so its old-stem
+    form is identical to its current id and never registers an alias; nest it
+    one directory deep (matching the real report) so it does. A bare `type`
+    reference inside it to a same-named `PunchType` enum, left dangling by the
+    extractor because the enum is declared in a DIFFERENT Dart file not shown
+    to the resolver here, must not ride the bare "punchtype" alias onto an
+    unrelated Java file of the same name just because that Java file is the
+    alias's only claimant — the alias is unambiguous, but the language is
+    wrong, and that must still block it from resolving."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "mobile_punch", "label": "punch.dart", "file_type": "code",
+             "source_file": "mobile/punch.dart"},
+            {
+                "id": "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+                "label": "PunchType.java", "file_type": "code",
+                "source_file": "backend/src/main/java/ec/smartlocalizador/attendance/PunchType.java",
+            },
+        ],
+        "edges": [
+            {"source": "mobile_punch", "target": "punchtype", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "mobile/punch.dart",
+             "context": "variable_type"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge(
+        "mobile_punch",
+        "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+    )
 
 
 def test_build_from_json_relative_source_file_unchanged(tmp_path):

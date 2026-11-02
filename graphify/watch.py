@@ -1,6 +1,7 @@
 # monitor a folder and auto-trigger --update when files change
 from __future__ import annotations
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -114,12 +115,15 @@ def _write_build_config(
     *,
     excludes: "list[str] | None",
     gitignore: bool | None = None,
+    code_only: bool | None = None,
 ) -> None:
     """Persist corpus-shaping options under ``out_dir``.
 
     Best effort and non clobbering: omitted options retain their existing values.
+    ``code_only`` records that the graph was built with ``extract --code-only``
+    so a later hook/update/watch rebuild keeps that scope (#4923).
     """
-    if not excludes and gitignore is None:
+    if not excludes and gitignore is None and code_only is None:
         return
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +138,8 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
+        if code_only is not None:
+            config["code_only"] = code_only
         path.write_text(json.dumps(config), encoding="utf-8")
     except OSError:
         pass
@@ -166,6 +172,23 @@ def _read_build_gitignore(out_dir: Path) -> bool:
     return True
 
 
+def _read_build_code_only(out_dir: Path) -> bool:
+    """Return whether the graph was built with ``--code-only`` (default False).
+
+    A rebuild has no CLI flag of its own, so this record is the only way it can
+    tell a deliberately code-only graph from a full one (#4923).
+    """
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and cfg.get("code_only") is True:
+                return True
+    except (OSError, json.JSONDecodeError):
+        pass
+    return False
+
+
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     """Concatenate path lists, preserving order and dropping duplicates.
 
@@ -187,6 +210,22 @@ def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     return out
 
 
+# msvcrt.locking reports a byte range held by another handle as EACCES
+# (EDEADLOCK is the LK_LOCK flavour). Any other errno means the lock call
+# itself is unsupported on this filesystem, so waiting for it is pointless.
+_WIN_LOCK_CONTENDED_ERRNOS = frozenset({errno.EACCES, errno.EDEADLK})
+
+
+def _win_try_lock(fh, msvcrt, offset: int) -> OSError | None:
+    """One non-blocking msvcrt lock attempt: None on success, else the error."""
+    try:
+        fh.seek(offset)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        return exc
+    return None
+
+
 @contextlib.contextmanager
 def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     """Per-repo advisory lock around a rebuild.
@@ -202,6 +241,11 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     waits for the lock to clear by polling for its absence unblocks promptly.
 
     Falls back to a no-op yield(True) on platforms without fcntl or msvcrt.
+    On Windows, a filesystem where msvcrt.locking is unsupported (e.g. the WSL
+    share \\wsl.localhost) also gets yield(True), with a warning on stderr,
+    instead of waiting forever for a lock that can never be taken (#4924). That
+    path leaves an existing ``.rebuild.lock`` untouched: it may belong to a
+    flock holder on the other side of the share.
     """
     try:
         import fcntl
@@ -221,6 +265,7 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     # "a+" creates the file if missing without truncating an existing holder's
     # PID payload — important because another process may have already written
     # its PID before we attempt the flock.
+    created_lock_file = not lock_path.exists()
     fh = open(lock_path, "a+", encoding="utf-8")
     acquired = False
     # On Windows, byte-range locks are mandatory. Locking byte offset 4096 allows
@@ -279,21 +324,39 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
                 yield False
                 return
         else:
-            if blocking:
-                while True:
-                    try:
-                        fh.seek(_win_lock_offset)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-                        break
-                    except OSError:
-                        time.sleep(0.05)
-            else:
-                try:
-                    fh.seek(_win_lock_offset)
-                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError:
+            while True:
+                lock_error = _win_try_lock(fh, msvcrt, _win_lock_offset)
+                if lock_error is None:
+                    break
+                if lock_error.errno not in _WIN_LOCK_CONTENDED_ERRNOS:
+                    # The filesystem cannot byte-range lock at all (EINVAL on
+                    # the WSL share \\wsl.localhost seen from Windows, #4924).
+                    # Retrying can never succeed, and treating it as "held"
+                    # made blocking callers spin forever and non-blocking ones
+                    # never rebuild. Proceed unlocked, like the no-locking-API
+                    # fallback above, without taking over the lock file: a
+                    # WSL-side flock holder may own it, and writing our PID
+                    # into it or unlinking it on release would let a second
+                    # WSL-side caller in on a fresh inode (#4273). Only undo
+                    # our own creation of an empty file, before the rebuild.
+                    print(
+                        f"[graphify watch] cannot lock {lock_path} "
+                        f"({lock_error.__class__.__name__}: {lock_error}); this "
+                        "filesystem does not support byte-range locks, so "
+                        "rebuilds of this graph are not serialized.",
+                        file=sys.stderr,
+                    )
+                    fh.close()
+                    if created_lock_file:
+                        with contextlib.suppress(OSError):
+                            if lock_path.stat().st_size == 0:
+                                lock_path.unlink()
+                    yield True
+                    return
+                if not blocking:
                     yield False
                     return
+                time.sleep(0.05)
         acquired = True
         # Replace any prior owner's PID with ours so external readers see a
         # single parseable line, not a digit-concatenation across rebuilds.
@@ -1073,8 +1136,10 @@ def _reconcile_existing_graph(
         # Deletion evicts edges regardless of tier; re-extraction only owns a
         # source's AST-tier edges (checked per-edge below, #1865).
         edge_evicted_source_identities = set(deleted_source_identities)
-        if not full_rebuild:
-            node_evicted_source_identities.update(rebuilt_source_identities)
+        # Re-extraction only owns AST-tier nodes. Adding rebuilt sources to
+        # provenance-blind node eviction would delete semantic nodes from the
+        # exact YAML file being incrementally rebuilt (#4896 follow-up).
+        # Node eviction below is reserved for actual deletion/ignore evidence.
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
@@ -1191,6 +1256,23 @@ def _reconcile_existing_graph(
                     node_evicted_source_identities.add(identity)
                     edge_evicted_source_identities.add(identity)
                     hyperedge_evicted_source_identities.add(identity)
+        # Edges and hyperedges may own a source with no corresponding node.
+        # Positive exclusion evidence applies to these records too (#4912).
+        seen_record_sources: set[str] = set()
+        for item in existing.get("links", existing.get("edges", [])) + existing.get("hyperedges", []):
+            source_file = item.get("source_file")
+            if source_file in seen_record_sources:
+                continue
+            if source_file:
+                seen_record_sources.add(source_file)
+            if (not source_file or _is_remote_source(source_file)
+                    or not source_paths.in_watch_root(source_file)):
+                continue
+            identity = source_paths.identity(source_file)
+            if identity and identity not in current_sources and Path(identity).exists() and _ignored_now(identity):
+                edge_evicted_source_identities.add(identity)
+                hyperedge_evicted_source_identities.add(identity)
+                newly_ignored_files.add(identity)
         if newly_ignored_files:
             print(
                 f"[graphify watch] pruned {newly_ignored_nodes} node(s) from "
@@ -1203,6 +1285,70 @@ def _reconcile_existing_graph(
                 f"from {len(excluded_alive_files)} file(s) that left the scan corpus "
                 "but still exist on disk and match no current ignore rule (filters "
                 "changed?). Add them to .graphifyignore if the exclusion is intentional."
+            )
+
+        # #4896 follow-up: an extractor upgrade can mint an AST node with
+        # exactly the ID of a saved independently evidenced semantic node.
+        # Pure ID-based replacement below would silently replace its rationale,
+        # author, and capture information, and _check_shrink would miss it
+        # because the ID still exists. Keep the existing semantic ID stable;
+        # move the new AST node to a stable source-qualified ID and retarget
+        # *fresh AST* edges/hyperedges, never the preserved semantic edges.
+        from graphify.build import _has_independent_semantic_evidence
+        from hashlib import sha256
+        old_nodes_by_id = {
+            n["id"]: n for n in existing.get("nodes", [])
+            if isinstance(n, dict) and isinstance(n.get("id"), str)
+        }
+        collisions = {}
+        for fresh in result["nodes"]:
+            nid = fresh.get("id")
+            old = old_nodes_by_id.get(nid)
+            if (
+                not isinstance(nid, str) or not old
+                or _is_ast_tier(old)
+                or not _has_independent_semantic_evidence(old)
+                or source_paths.is_evicted(old, node_evicted_source_identities)
+            ):
+                continue
+            if fresh.get("_origin") != "ast":
+                raise ValueError(
+                    f"Cannot safely reconcile same-ID semantic and non-AST node: {nid}"
+                )
+            # Different AST extractors may emit multiple source records with
+            # the same legacy AST ID. These already coalesce in build_from_json.
+            # Alias by the *original AST ID* (not a varying source) so every
+            # occurrence and its edges use the same stable successor across
+            # full/incremental rebuilds. This preserves existing AST collision
+            # behavior while keeping the independent semantic record separate.
+            salt = sha256(nid.encode("utf-8")).hexdigest()[:16]
+            alias = nid + "__ast_" + salt
+            former = old_nodes_by_id.get(alias)
+            if alias in new_ast_ids or (
+                former is not None and not _is_ast_tier(former)
+            ):
+                raise ValueError(f"AST ID collision cannot be safely rekeyed: {nid}")
+            if nid in collisions and collisions[nid] != alias:
+                raise ValueError(f"Ambiguous AST successor ID: {nid}")
+            collisions[nid] = alias
+            fresh["id"] = alias
+        if collisions:
+            for edge in result.get("edges", []):
+                for field in ("source", "target"):
+                    if edge.get(field) in collisions:
+                        edge[field] = collisions[edge[field]]
+            for hyperedge in result.get("hyperedges", []):
+                for field in ("nodes", "members", "node_ids"):
+                    vals = hyperedge.get(field)
+                    if isinstance(vals, list):
+                        hyperedge[field] = [
+                            collisions.get(value, value) if isinstance(value, str) else value
+                            for value in vals
+                        ]
+            new_ast_ids = {n["id"] for n in result["nodes"]}
+            print(
+                "[graphify watch] preserved "
+                f"{len(collisions)} independent semantic node(s) from AST ID collision"
             )
 
         # A full re-extraction owns the AST nodes of every source it actually
@@ -1218,7 +1364,8 @@ def _reconcile_existing_graph(
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
-            if node["id"] not in new_ast_ids
+            if (node["id"] not in new_ast_ids
+                or (node.get("_origin") == "semantic" and node.get("source_file")))
             and not (
                 _is_ast_tier(node)
                 and (
@@ -1227,8 +1374,7 @@ def _reconcile_existing_graph(
                         and (full_rebuild or not code_files)
                     )
                     or (
-                        full_rebuild
-                        and source_paths.is_evicted(node, rebuilt_source_identities)
+                        source_paths.is_evicted(node, rebuilt_source_identities)
                         and not source_paths.is_evicted(node, excluded_alive_files)
                     )
                 )
@@ -1343,10 +1489,25 @@ def _reconcile_existing_graph(
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
             source_paths.rebase_preserved(item)
 
+        from graphify.dedup import _namespace_reference_stub_collisions
+        merged_hyperedges = result.get("hyperedges", []) + preserved_hyperedges
+        merged_nodes, merged_edges = _namespace_reference_stub_collisions(
+            result["nodes"] + preserved_nodes,
+            result["edges"] + preserved_edges,
+            merged_hyperedges,
+            project_root,
+            preserve_saved_semantics=True,
+        )
+        # Unattributed or same-source copies must not overwrite fresh AST facts.
+        merged_nodes = [
+            node for node in merged_nodes
+            if node["id"] not in new_ast_ids or _is_ast_tier(node)
+        ]
+
         return {
-            "nodes": result["nodes"] + preserved_nodes,
-            "edges": result["edges"] + preserved_edges,
-            "hyperedges": result.get("hyperedges", []) + preserved_hyperedges,
+            "nodes": merged_nodes,
+            "edges": merged_edges,
+            "hyperedges": merged_hyperedges,
             "input_tokens": 0,
             "output_tokens": 0,
         }, existing_graph_data
@@ -1552,6 +1713,42 @@ def _check_shrink(
                 file=sys.stderr,
             )
         return False
+    # A node ID can remain present while its independent semantic metadata
+    # disappears (e.g. a newly supported YAML AST extractor mints the same ID).
+    # This is semantic data loss, not an ordinary node-count change. Fail closed.
+    from graphify.build import _has_independent_semantic_evidence, _is_ast_tier
+    new_by_id = {
+        node.get("id"): node for node in new_nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    provenance_fields = (
+        "rationale", "source_url", "author", "contributor", "captured_at", "metadata"
+    )
+    stripped = []
+    for old in existing_nodes:
+        if not isinstance(old, dict) or _is_ast_tier(old):
+            continue
+        if not _has_independent_semantic_evidence(old):
+            continue
+        fresh = new_by_id.get(old.get("id"))
+        if fresh is None:
+            continue  # Missing IDs are already checked above.
+        if any(
+            old.get(field) not in (None, "", [], {})
+            and fresh.get(field) in (None, "", [], {})
+            for field in provenance_fields
+        ):
+            stripped.append(old["id"])
+    if stripped:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        print(
+            "[graphify] WARNING: Refusing to overwrite — saved semantic "
+            "provenance field(s) stripped from "
+            f"{len(stripped)} node(s): {', '.join(str(x) for x in stripped[:10])}.",
+            file=sys.stderr,
+        )
+        return False
     if len(new_nodes) >= len(existing_nodes):
         return True
     if rebuilt_sources is not None:
@@ -1737,6 +1934,7 @@ def _current_build_state(
     gitignore: bool,
     excludes: list[str] | None,
     scan_digest: str,
+    code_only: bool = False,
 ) -> dict:
     """Everything besides file content that a rebuild's output depends on (#4740).
 
@@ -1763,6 +1961,7 @@ def _current_build_state(
         "no_cluster": bool(no_cluster),
         "gitignore": bool(gitignore),
         "excludes": sorted(excludes or []),
+        "code_only": bool(code_only),
         "rcfile": rc_digest,
         # Env knobs that change the written output rather than just the timing:
         # the viz cap removes graph.html outright, and the ambiguous-edge scale
@@ -2068,6 +2267,9 @@ def _rebuild_code(
         # (#1886).
         _persisted_excludes = _read_build_excludes(out)
         _gitignore_enabled = _read_build_gitignore(out)
+        # #4923: honour the scope the graph was built with. Without this a
+        # `--code-only` graph silently grows doc nodes on the next hook rebuild.
+        _code_only = _read_build_code_only(out)
         detected = detect(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
@@ -2107,6 +2309,7 @@ def _rebuild_code(
             gitignore=_gitignore_enabled,
             excludes=_persisted_excludes,
             scan_digest=_scan_digest(detected),
+            code_only=_code_only,
         )
 
         if changed_paths is None and not force:
@@ -2143,9 +2346,12 @@ def _rebuild_code(
         # zero nodes with no warning (#4750). Only formats with an extractor
         # qualify (.md/.mdx/.qmd today): PDFs and plain .txt still have none, so
         # the _get_extractor filter keeps them out exactly as before.
+        # A `--code-only` graph (#4923) opted out of documents entirely, so the
+        # quick-scan is skipped; doc nodes already in the graph are preserved
+        # untouched (they are not in code_files, so reconcile keeps them).
         ast_doc_files: list[Path] = []
-        for doc_file in [*detected['files'].get('document', []),
-                         *detected['files'].get('paper', [])]:
+        for doc_file in ([] if _code_only else [*detected['files'].get('document', []),
+                                                *detected['files'].get('paper', [])]):
             p = Path(doc_file)
             if _get_extractor(p) is not None:
                 code_files.append(p)
@@ -2351,7 +2557,7 @@ def _rebuild_code(
                     # label: callability protects indirect calls (#2438), and
                     # Rust impl identity connects alpha-renamed generic blocks.
                     for marker in (
-                        "_callable", "_callable_class", "_elixir_module",
+                        "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",

@@ -2864,7 +2864,39 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
+    # A file split into slices is complete only once every slice has returned
+    # (#4943). Checkpointing each slice as it lands stamped the parent's entry
+    # complete after its first slice, so an interrupted run served the head of
+    # the file as the whole file. Its results wait here until the last slice
+    # succeeds, then go out in one write; a slice that fails keeps it unsaved.
+    slices_left: dict[Path, int] = {}
+    for _chunk in chunks:
+        for _unit in _chunk:
+            if isinstance(_unit, FileSlice):
+                slices_left[unit_path(_unit)] = slices_left.get(unit_path(_unit), 0) + 1
+    held_results: dict[Path, list[tuple[int, dict]]] = {}
+
+    def _checkpoint_chunk(idx: int, result: dict, chunk: "list[Path | FileSlice]") -> None:
+        sliced = [unit_path(u) for u in chunk if isinstance(u, FileSlice)]
+        for parent in sliced:
+            slices_left[parent] -= 1
+        whole = [unit_path(u) for u in chunk if not isinstance(u, FileSlice)]
+        if whole:
+            _save_checkpoint(result, whole)
+        for parent in dict.fromkeys(sliced):
+            held_results.setdefault(parent, []).append((idx, result))
+            if slices_left[parent] == 0:
+                # Chunk order, not completion order, so the entry is the same
+                # whichever slice returned first (#1632).
+                held = [r for _, r in sorted(held_results.pop(parent), key=lambda p: p[0])]
+                combined: dict = {
+                    bucket: [item for r in held for item in r.get(bucket, [])]
+                    for bucket in ("nodes", "edges", "hyperedges")
+                }
+                combined["_partial_files"] = _merged_partial_files(*held)
+                _save_checkpoint(combined, [parent])
+
+    def _save_checkpoint(result: dict, allowed: "list[Path]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
         # the very end of the run (in __main__), so a run interrupted partway
@@ -2884,7 +2916,6 @@ def extract_corpus_parallel(
             # old `.rel` attribute does not exist on FileSlice, so every sliced
             # chunk leaked the FileSlice object into the allowlist and the write
             # raised TypeError, silently defeating the checkpoint.)
-            allowed = [unit_path(item) for item in chunk]
             # Deep-mode results checkpoint into their own namespace
             # (cache/semantic-deep/) so a deep run never overwrites standard
             # entries — and a later standard run never serves deep ones (#1894).
@@ -2922,7 +2953,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
-            _checkpoint_chunk(result, chunk)
+            _checkpoint_chunk(idx, result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -2948,11 +2979,23 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
-                _checkpoint_chunk(result, chunks[idx])
+                _checkpoint_chunk(idx, result, chunks[idx])
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
+
+    # A failed slice leaves its parent with nodes from the other slices, so the
+    # parent looks covered and the caller's final save would write it complete
+    # (#4943). Name it partial so that save stamps it and the next run retries.
+    failed_parents = {
+        unit_path(u) for chunk in chunks for u in chunk
+        if isinstance(u, FileSlice) and unit_path(u) in failed_files
+    }
+    if failed_parents:
+        merged["_partial_files"] = sorted(
+            set(merged.get("_partial_files", []) or []) | {str(p) for p in failed_parents}
+        )
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
