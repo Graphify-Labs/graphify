@@ -182,3 +182,17 @@ def test_an_alias_and_a_type_differing_only_in_case_stay_two_nodes(tmp_path: Pat
     result = _extract(tmp_path, {"Box.swift": "typealias string = [Character]\nstruct String {}\n"})
     assert len(_sourced(result, "string")) == 1
     assert len(_sourced(result, "String")) == 1
+
+
+def test_a_type_reference_lands_on_the_alias_not_a_func_differing_in_case(tmp_path: Path):
+    """`typealias Session` and `func session()` are two declarations (#4904), and
+    `var s: Session` names the alias: the declaration spelled exactly like it."""
+    result = _extract(tmp_path, {
+        "Box.swift": "typealias Session = Int\nfunc session() {}\nstruct Holder { var s: Session }\n",
+    })
+    [alias] = _sourced(result, "Session")
+    nodes = {n["id"]: n for n in result["nodes"]}
+    targets = {e["target"] for e in result["edges"]
+               if e["relation"] == "references" and nodes[e["source"]]["label"] == "Holder"}
+    assert alias["id"] in targets
+    assert not any(nodes[t]["label"] == "session()" for t in targets)
