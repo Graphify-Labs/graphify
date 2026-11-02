@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## 0.9.101 (unreleased)
+## 0.9.101 (2026-11-02)
 
 - Fix: **watch** AST-only updates preserve cross-file semantic evidence whose node id collides with a code definition. Semantic nodes and their document-owned links use the existing citing-file namespace, keeping both the code definition and semantic provenance in `graph.json`, including with `--no-cluster`. Fresh AST facts remain authoritative for same-source ids; full-build deduplication is unchanged.
 - Fix: **python** a bare call inside a method (`do_thing()`) no longer wrongly self-binds to a same-named method on the class; it resolves to the imported or module-level function it actually names, and a bare call with no such target emits no edge (#4933, thanks @nothariharan).
