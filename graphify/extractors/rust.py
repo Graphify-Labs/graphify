@@ -201,6 +201,17 @@ _RUST_PRIMITIVE_TYPES: frozenset[str] = frozenset({
 })
 
 
+# Macros whose arguments are ordinary Rust expressions. A DSL macro (`table!`,
+# `quote!`, `html!`, nom combinators) also writes `name(...)` but means
+# something else by it, so only these are scanned for calls.
+_RUST_EXPRESSION_MACROS = frozenset({
+    "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq",
+    "debug_assert_ne", "dbg", "eprint", "eprintln", "format", "format_args",
+    "panic", "print", "println", "todo", "unimplemented", "unreachable", "vec",
+    "write", "writeln", "debug", "error", "info", "trace", "warn",
+})
+
+
 def _rust_macro_arg_calls(token_tree) -> list[tuple[str, int]]:
     """Bare `f(...)` calls written inside a macro's arguments.
 
@@ -223,7 +234,7 @@ def _rust_macro_arg_calls(token_tree) -> list[tuple[str, int]]:
             nxt = children[i + 1]
             if nxt.type != "token_tree" or not nxt.children or nxt.children[0].type != "(":
                 continue
-            if i > 0 and children[i - 1].type in (".", "::", "fn", "$"):
+            if i > 0 and children[i - 1].type in (".", "::", "fn", "$", "#"):
                 continue
             name = child.text.decode("utf-8", errors="replace") if child.text else ""
             if name:
@@ -893,6 +904,7 @@ def extract_rust(path: Path) -> dict:
 
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
+    macro_arg_edges: list[dict] = []
 
     def walk_calls(
         node,
@@ -929,6 +941,11 @@ def extract_rust(path: Path) -> dict:
             # A call inside the arguments is only a token pattern, not a parsed
             # call: bind it in-file as INFERRED, or hand it to the cross-file pass.
             args = next((c for c in node.children if c.type == "token_tree"), None)
+            invoked = macro_node.child_by_field_name("name") if (
+                macro_node is not None and macro_node.type == "scoped_identifier") else macro_node
+            if args is None or invoked is None or (
+                    _read_text(invoked, source) not in _RUST_EXPRESSION_MACROS):
+                args = None
             for callee_name, line in _rust_macro_arg_calls(args) if args is not None else ():
                 if (
                     callee_name[:1].isupper()
@@ -941,9 +958,8 @@ def extract_rust(path: Path) -> dict:
                 if tgt_nid in type_nids:
                     continue
                 if tgt_nid:
-                    if tgt_nid != caller_nid and (caller_nid, tgt_nid) not in seen_call_pairs:
-                        seen_call_pairs.add((caller_nid, tgt_nid))
-                        edges.append({
+                    if tgt_nid != caller_nid:
+                        macro_arg_edges.append({
                             "source": caller_nid,
                             "target": tgt_nid,
                             "relation": "calls",
@@ -1082,6 +1098,13 @@ def extract_rust(path: Path) -> dict:
 
     for caller_nid, body_node, impl_type, impl_key in function_bodies:
         walk_calls(body_node, caller_nid, impl_type, impl_key)
+    # Added last: a parsed call to the same target in the same function keeps
+    # its EXTRACTED edge instead of being deduped behind the token-pattern one.
+    for edge in macro_arg_edges:
+        pair = (edge["source"], edge["target"])
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            edges.append(edge)
 
     for node in nodes:
         if not node["source_file"] and node["label"] in use_roots:
