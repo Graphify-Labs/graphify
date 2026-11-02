@@ -76,3 +76,28 @@ def test_a_re_extracted_node_dropped_after_the_merge_is_still_refused(tmp_path):
     )
     assert written is False
     assert "glossary_b" in {n["id"] for n in disk["nodes"]}
+
+
+# What dedup reports.
+
+def test_dedup_reports_each_id_it_merged_away():
+    from graphify.dedup import deduplicate_entities
+
+    nodes = [_node("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+             _node("glossary_the_nudge_2", "The nudge", "GLOSSARY.md"),
+             _node("claude_a", "Alpha concept", "CLAUDE.md")]
+    remap: dict[str, str] = {}
+    kept, _ = deduplicate_entities(nodes, [], communities={}, remap_out=remap)
+    survivors = {n["id"] for n in kept}
+    assert len(remap) == 1
+    (loser, winner), = remap.items()
+    assert loser in {"glossary_the_nudge", "glossary_the_nudge_2"}
+    assert winner in survivors and loser not in survivors
+
+
+def test_dedup_reports_nothing_when_it_merged_nothing():
+    from graphify.dedup import deduplicate_entities
+
+    remap: dict[str, str] = {}
+    deduplicate_entities([ALPHA, BRAVO], [], communities={}, remap_out=remap)
+    assert remap == {}
