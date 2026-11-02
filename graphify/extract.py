@@ -7996,10 +7996,13 @@ def _resolve_kotlin_member_calls(
         if len(type_nids) != 1:
             continue
         wanted = f".{callee}"
-        candidates = [
+        # Overloads share one node id (the id has no parameter types), so the
+        # type holds one ``method`` edge per declaration to the same target.
+        # Count distinct ids, or an overloaded method reads as ambiguous (#4935).
+        candidates = list(dict.fromkeys(
             m for m in methods_by_type.get(type_nids[0], [])
             if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
-        ]
+        ))
         if len(candidates) != 1:
             continue
         tgt = candidates[0]
