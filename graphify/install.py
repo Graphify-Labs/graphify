@@ -438,8 +438,38 @@ def _project_scope_root(path: Path, project_dir: Path) -> Path:
     except ValueError:
         return path
     return project_dir / rel.parts[0] if rel.parts else path
-def _remove_skill_registration(target: Path, prefix: str) -> None:
+def _is_graphify_skill_registration(section: "list[str]") -> bool:
+    """Whether a `# graphify` section is the registration graphify writes.
+
+    Every version of the registration has had the bullet naming the graphify
+    skill and the `/graphify` trigger, which a hand-written section has no
+    reason to repeat.
+    """
+    return any(
+        line.strip().startswith("- **graphify** (`") and "Trigger: `/graphify`" in line
+        for line in section
+    )
+def _skill_registration_sections(content: str) -> "list[list[str]]":
+    """The body of each exact `# graphify` section, bounded as
+    _remove_marker_section bounds it: up to the next H1."""
+    lines = content.split("\n")
+    sections = []
+    for start, line in enumerate(lines):
+        if line.strip() == _SKILL_REGISTRATION_MARKER:
+            end = next(
+                (j for j in range(start + 1, len(lines)) if lines[j].startswith("# ")),
+                len(lines),
+            )
+            sections.append(lines[start + 1:end])
+    return sections
+def _remove_skill_registration(target: Path, prefix: str, *, only_graphify_written: bool = False) -> None:
     """Remove the skill registration _register_always_on_block wrote into *target*.
+
+    *only_graphify_written* is for the user's global CLAUDE.md / CODEBUDDY.md,
+    which every `graphify uninstall` visits, also for users who never installed
+    the skill there. Only a `# graphify` section carrying graphify's
+    registration bullet goes; a hand-written `# graphify` section stays, and a
+    file holding both is left as is, with a hint, rather than guessed at.
 
     Degrades instead of raising, as the install side does (#3474): a CLAUDE.md
     that nix/home-manager links into a read-only store must not abort an
@@ -448,7 +478,30 @@ def _remove_skill_registration(target: Path, prefix: str) -> None:
     try:
         if not target.exists():
             return
+        # A file without the heading is never decoded or rewritten, so an
+        # unrelated non-UTF-8 file draws no warning.
+        if _SKILL_REGISTRATION_MARKER.encode("utf-8") not in target.read_bytes():
+            return
         content, newline = _read_keep_newline(target)
+        # A BOM would hide a heading on the first line; it is written back as found.
+        bom = "﻿" if content.startswith("﻿") else ""
+        content = content[len(bom):]
+        if only_graphify_written:
+            written = [_is_graphify_skill_registration(s) for s in _skill_registration_sections(content)]
+            if not any(written):
+                return
+            if not all(written):
+                print(
+                    f"{prefix}left as is: {_shown_path(target)} also has a "
+                    f"`{_SKILL_REGISTRATION_MARKER}` section graphify did not write",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  hint: remove graphify's own `{_SKILL_REGISTRATION_MARKER}` block "
+                    "(the one naming the graphify skill) by hand",
+                    file=sys.stderr,
+                )
+                return
         # Match the exact H1 `# graphify` registration heading, never a substring of a
         # user's `## graphify`/`### graphify` (#2062). Section runs to the next H1.
         # _SKILL_REGISTRATION_MARKER is the single source of truth for this heading,
@@ -461,7 +514,7 @@ def _remove_skill_registration(target: Path, prefix: str) -> None:
         if cleaned or target.is_symlink():
             # The file's own line ending is restored, so the rest of its content is
             # never re-translated on write (#3668/#4360).
-            _write_keep_newline(target, cleaned + "\n", newline)
+            _write_keep_newline(target, bom + cleaned + "\n", newline)
             print(f"{prefix}graphify skill registration removed from {_shown_path(target)}")
         else:
             target.unlink()
@@ -2427,7 +2480,9 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         _remove_skill_file("claude", project=False)
         # Without the skill, the global registration names a file that no longer
         # exists, and Claude Code reads it in every session.
-        _remove_skill_registration(_claude_global_registration()[0], "  CLAUDE.md        ->  ")
+        _remove_skill_registration(
+            _claude_global_registration()[0], "  CLAUDE.md        ->  ", only_graphify_written=True
+        )
 
     md_targets = [
         project_dir / "CLAUDE.md",
@@ -2551,7 +2606,9 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
     if remove_user_skill:
         _remove_skill_file("codebuddy", project=False)
         # Before the project-file checks below, which return early.
-        _remove_skill_registration(_codebuddy_global_registration(), "  CODEBUDDY.md     ->  ")
+        _remove_skill_registration(
+            _codebuddy_global_registration(), "  CODEBUDDY.md     ->  ", only_graphify_written=True
+        )
     target = project_dir / "CODEBUDDY.md"
 
     if not target.exists():
