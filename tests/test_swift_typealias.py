@@ -120,15 +120,32 @@ typealias Other = Core.Entry
     assert len(_sourced(result, "Other")) == 1
 
 
-# tree-sitter-swift misparses an `#if` inside a type body; error recovery then
-# lifts members to the top level, or wraps the type's header in a bogus alias.
+# Shapes tree-sitter-swift misparses: error recovery then lifts a type's members
+# to the top level, or wraps the type's header in a bogus alias. Which shapes
+# misparse depends on the grammar version: 0.7.2 trips on an `#if` inside a
+# type body, 0.7.4 parses that but trips on a freestanding `#warning`/macro
+# expansion there.
 MISPARSED = {
     "lifted-member": "class DS {\n    #if os(iOS)\n    typealias Titles = (Int) -> [String]?\n"
                      "    #endif\n    func titles() -> Int { 1 }\n}\n",
     "wrapped-header": "class DS<S: P>:\n    NSObject,\n    Q\n{\n    typealias Item = S.Item\n\n"
                       "    #if os(iOS)\n    typealias Titles = (Int) -> [String]?\n    #endif\n\n"
                       "    func titles(for _: Int) -> [String]? { nil }\n}\n",
+    "warning-directive": "class DS {\n    #warning(\"todo\")\n    typealias Titles = (Int) -> [String]?\n"
+                         "    func titles() -> Int { 1 }\n}\n",
+    "macro-expansion": "struct DS {\n    #externalMacro(module: \"M\", type: \"T\")\n"
+                       "    typealias Titles = (Int) -> [String]?\n    func titles() -> Int { 1 }\n}\n",
 }
+
+
+def test_some_misparse_fixture_still_misparses():
+    """The misparse tests below check nothing once the grammar parses every
+    fixture cleanly; if this fails, add a shape the installed grammar trips on."""
+    import tree_sitter
+    import tree_sitter_swift
+
+    parser = tree_sitter.Parser(tree_sitter.Language(tree_sitter_swift.language()))
+    assert any(parser.parse(src.encode()).root_node.has_error for src in MISPARSED.values())
 
 
 @pytest.mark.parametrize("case", sorted(MISPARSED))
@@ -138,11 +155,12 @@ def test_a_member_alias_in_a_misparsed_type_is_not_a_node(tmp_path: Path, case: 
     assert not _sourced(result, "Item")
 
 
-def test_a_file_scope_alias_after_a_misparsed_type_is_still_a_node(tmp_path: Path):
-    src = MISPARSED["lifted-member"] + "typealias Top = Int\n"
+@pytest.mark.parametrize("case", sorted(MISPARSED))
+def test_a_file_scope_alias_after_a_misparsed_type_is_still_a_node(tmp_path: Path, case: str):
+    src = MISPARSED[case] + "typealias Top = Int\n"
     result = _extract(tmp_path, {"a.swift": src})
     nodes = _sourced(result, "Top")
-    assert len(nodes) == 1 and nodes[0]["source_location"] == "L7"
+    assert len(nodes) == 1 and nodes[0]["source_location"] == f"L{src.count(chr(10))}"
 
 
 def test_an_alias_named_after_the_file_extension_keeps_its_own_node(tmp_path: Path):
