@@ -5191,8 +5191,15 @@ def dispatch_command(cmd: str) -> None:
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
         from graphify.build import take_shrink_accounting as _take_shrink_accounting
-        _dedup_collapsed, _pruned_nodes = _take_shrink_accounting(G)
+        _dedup_collapsed, _pruned_nodes, _dedup_node_remap = _take_shrink_accounting(G)
         _force_write = cli_allow_partial or not _extraction_incomplete
+        if not _force_write and _dedup_node_remap:
+            # to_json's own #479 check (below, via to_json's internal
+            # take_shrink_accounting call) still needs this remap to tell a
+            # saved node folded into a same-label survivor this run from one
+            # genuinely lost (#4940) — put it back since the pop above already
+            # removed it from G.graph.
+            G.graph["_dedup_node_remap"] = _dedup_node_remap
         _dedup_shrink_counts: tuple[int, int] | None = None
         if (
             not _extraction_incomplete

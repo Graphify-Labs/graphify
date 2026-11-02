@@ -304,7 +304,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
     from graphify.build import take_shrink_accounting
-    take_shrink_accounting(G)
+    _, _, _dedup_node_remap = take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -357,7 +357,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 for node_id, attrs in G.nodes(data=True)
             ]
             folded: dict[str, str] = {}
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set(), folded)
+            missing = _lost_saved_semantic_nodes(
+                existing_nodes, new_node_list, set(), folded, _dedup_node_remap,
+            )
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)

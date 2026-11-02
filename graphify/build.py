@@ -71,6 +71,7 @@ def _lost_saved_semantic_nodes(
     new_nodes: list,
     deleted_sources: set[str] | None = None,
     folded: dict[str, str] | None = None,
+    dedup_remap: dict[str, str] | None = None,
 ) -> list[dict]:
     """Saved semantic nodes whose ids are absent from the new graph.
 
@@ -85,6 +86,14 @@ def _lost_saved_semantic_nodes(
     ``folded`` (when given) maps each saved node id that build_from_json merged
     into an AST twin to that twin's id, so a caller comparing node counts can
     discount it.
+
+    ``dedup_remap`` (when given) is the exact-duplicate dedup pass's own
+    merged-id -> survivor-id map (#4940): a saved node re-extracted alongside a
+    same-label, same-file near-duplicate under a different id this run is
+    folded into that survivor there, not here, so its saved id is genuinely
+    absent from ``new_nodes`` even though the concept itself survived. Checked
+    before the AST-twin/file-twin folds below and recorded into ``folded`` too,
+    so a caller's own node-count math stays consistent either way.
     """
     deleted = {
         norm
@@ -144,6 +153,14 @@ def _lost_saved_semantic_nodes(
         if node_id in new_ids:
             continue
         if isinstance(node_id, str) and _renamed_present(node_id):
+            continue
+        if (
+            dedup_remap and isinstance(node_id, str)
+            and (survivor := dedup_remap.get(node_id)) is not None
+            and survivor in new_ids
+        ):
+            if folded is not None:
+                folded[node_id] = survivor
             continue
         sf_val = node.get("source_file")
         source = _norm_source_file(sf_val) if isinstance(sf_val, str) else None
@@ -2149,6 +2166,7 @@ def build(
         combined["output_tokens"] += ext.get("output_tokens", 0)
     _root = str(Path(root).resolve()) if root else None
     _dedup_collapsed = 0
+    _dedup_node_remap: dict[str, str] = {}
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -2178,6 +2196,7 @@ def build(
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
             protected_ids=protected_ids,
+            node_remap=_dedup_node_remap,
         )
         _dedup_collapsed = _before_dedup - len(combined["nodes"])
     G = build_from_json(combined, directed=directed, root=_root, dedup=dedup)
@@ -2185,11 +2204,18 @@ def build(
     # Popped before to_json so it is not stored in graph.json.
     if _dedup_collapsed:
         G.graph["_dedup_collapsed"] = _dedup_collapsed
+    # The specific ids this run's dedup folded into a survivor (#4940), so
+    # to_json's shrink guard can tell a saved node that merged into a
+    # same-label, same-file survivor under a different id from one genuinely
+    # lost, rather than refusing a healthy write because an exact-duplicate
+    # merge changed which id a concept lives under.
+    if _dedup_node_remap:
+        G.graph["_dedup_node_remap"] = _dedup_node_remap
     return G
 
 
-def take_shrink_accounting(G) -> tuple[int, int]:
-    """Read and remove the #3774 counters.
+def take_shrink_accounting(G) -> tuple[int, int, dict[str, str]]:
+    """Read and remove the #3774 counters and the #4940 dedup remap.
 
     ``build`` / ``build_merge`` stash these on ``G.graph`` for the extract
     CLI. ``to_json`` also removes them so any other writer cannot persist
@@ -2197,10 +2223,12 @@ def take_shrink_accounting(G) -> tuple[int, int]:
     """
     attrs = getattr(G, "graph", None)
     if not isinstance(attrs, dict):
-        return 0, 0
+        return 0, 0, {}
     collapsed = int(attrs.pop("_dedup_collapsed", 0) or 0)
     pruned = int(attrs.pop("_pruned_node_count", 0) or 0)
-    return collapsed, pruned
+    node_remap = attrs.pop("_dedup_node_remap", None)
+    node_remap = node_remap if isinstance(node_remap, dict) else {}
+    return collapsed, pruned, node_remap
 
 
 def _norm_label(label: str | None) -> str:

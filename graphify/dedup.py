@@ -1099,6 +1099,7 @@ def deduplicate_entities(
     root: str | Path | None = None,
     hyperedges: "list[dict] | None" = None,
     protected_ids: "set[str] | None" = None,
+    node_remap: "dict[str, str] | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -1112,6 +1113,11 @@ def deduplicate_entities(
         hyperedges: when given, member ids are rewired to survivors IN PLACE,
             the same way edge endpoints are. Optional and mutating rather than
             returned so existing two-tuple callers are unaffected (#2805).
+        node_remap: when given, filled IN PLACE with every merged id's survivor
+            id, the same way hyperedges is. A caller comparing a saved graph's
+            node ids against a fresh merge's result needs this to tell a node
+            genuinely lost from one this pass folded into a same-label,
+            same-file survivor under a different id (#4940).
 
     Returns:
         (deduped_nodes, deduped_edges) with edges rewired to survivors
@@ -1535,6 +1541,8 @@ def deduplicate_entities(
                 remap[member] = winner_id
 
     # ── apply remap ───────────────────────────────────────────────────────────
+    if node_remap is not None:
+        node_remap.update(remap)
     if not remap:
         return unique_nodes, edges
 
