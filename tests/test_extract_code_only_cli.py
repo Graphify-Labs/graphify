@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 PYTHON = sys.executable
 _KEY_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
@@ -47,6 +48,69 @@ def test_code_only_succeeds_without_key(tmp_path):
     g = json.loads(graph.read_text())
     labels = [n.get("label") for n in g["nodes"]]
     assert any(str(l).startswith("hello") for l in labels), "code was indexed"
+
+
+def test_clustered_extract_adopts_only_explicit_flat_settings(tmp_path):
+    repo = _mixed_repo(tmp_path)
+    out = repo / "graphify-out"
+    out.mkdir()
+    config = out / ".graphify_build.json"
+    config.write_text(json.dumps({
+        "excludes": ["vendor"], "gitignore": False, "future": {"keep": 1},
+        "schema_version": 2, "clustering": {"exclude_hubs_percentile": 90},
+    }))
+    first = _run(repo, "--code-only", "--resolution", "2.5")
+    assert first.returncode == 0, first.stderr
+    assert json.loads(config.read_text()) == {
+        "excludes": ["vendor"], "gitignore": False, "future": {"keep": 1},
+        "schema_version": 2, "clustering": {"exclude_hubs_percentile": 90},
+        "cluster_resolution": 2.5,
+    }
+    second = _run(repo, "--code-only")
+    assert second.returncode == 0, second.stderr
+    assert json.loads(config.read_text())["cluster_resolution"] == 2.5
+    assert "cluster_exclude_hubs_percentile" not in json.loads(config.read_text())
+    third = _run(repo, "--code-only", "--exclude-hubs", "90")
+    assert third.returncode == 0, third.stderr
+    assert json.loads(config.read_text())["cluster_exclude_hubs_percentile"] == 90
+
+
+def test_extract_custom_output_settings_do_not_leak_to_default(tmp_path):
+    repo = _mixed_repo(tmp_path)
+    custom = tmp_path / "custom"
+    first = _run_relative_out(
+        repo, "--code-only", "--out", str(custom), "--resolution=2.5",
+        "--exclude-hubs=90",
+    )
+    assert first.returncode == 0, first.stderr
+    custom_config = custom / "graphify-out" / ".graphify_build.json"
+    assert json.loads(custom_config.read_text()) == {
+        "cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90,
+    }
+    assert not (repo / "graphify-out").exists()
+    default = _run_relative_out(repo, "--code-only")
+    assert default.returncode == 0, default.stderr
+    assert not (repo / "graphify-out" / ".graphify_build.json").exists()
+
+
+def test_no_cluster_does_not_adopt_clustering_flags(tmp_path):
+    repo = _mixed_repo(tmp_path)
+    result = _run(repo, "--code-only", "--no-cluster", "--resolution", "2.5")
+    assert result.returncode == 0, result.stderr
+    assert "not adopted" in result.stderr
+    assert not (repo / "graphify-out" / ".graphify_build.json").exists()
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--resolution", "nan"), ("--resolution", "-inf"), ("--resolution", "0"),
+    ("--exclude-hubs", "inf"), ("--exclude-hubs", "-1"),
+    ("--exclude-hubs", "101"),
+])
+def test_extract_invalid_clustering_flags_exit_before_outputs(tmp_path, flag, value):
+    repo = _mixed_repo(tmp_path)
+    result = _run(repo, "--code-only", flag, value)
+    assert result.returncode == 2
+    assert not (repo / "graphify-out").exists()
 
 
 def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
