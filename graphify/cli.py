@@ -26,8 +26,8 @@ _SEARCH_NUDGE = json.dumps({
             'graphify: this project has a knowledge graph at graphify-out/graph.json. '
             '`graphify query "<question>"` returns the files and relations that '
             'matter for a question, usually in far fewer tokens than grepping raw '
-            'files. Grep works best once the graph or an earlier read has pointed '
-            'to the exact file and lines.'
+            'files. Finding where something lives is what the graph answers; grep '
+            'finds exact text in files the graph has already named.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -1092,6 +1092,9 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     quoted spans, split on shell operators, and match the executable at each
     command position (wrappers like sudo/xargs/env skipped; `git grep` and
     `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    `sed` and `awk` count too when they open a file themselves: run on files, they
+    are a grep or a read of the codebase by another name. Reading a pipe, editing
+    in place, or naming no file (a program alone reads stdin) does not count.
     """
     text = cmd_str
     # Drop heredoc bodies: from the line after `<<WORD` through the line that
@@ -1109,13 +1112,24 @@ def _bash_invokes_search(cmd_str: str) -> bool:
             break
         text = text[: nl_idx + 1] + text[t.end():]
         m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
-    # Drop quoted spans (backslash escapes inside double quotes are irrelevant
-    # here - anything quoted is an argument, never the executable).
-    text = re.sub(r"'[^']*'", " ", text)
-    text = re.sub(r'"[^"]*"', " ", text)
-    # Split into command segments at shell operators / substitution boundaries.
-    for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
-        tokens = segment.split()
+    # Replace quoted spans with one placeholder word (backslash escapes inside
+    # double quotes are irrelevant here - anything quoted is an argument, never
+    # the executable, but a quoted sed/awk program is still an operand).
+    text = re.sub(r"'[^']*'", "Q", text)
+    text = re.sub(r'"[^"]*"', "Q", text)
+    # Split into command segments at shell operators / substitution boundaries,
+    # keeping each operator so a segment knows whether it reads a pipe. A pipe
+    # carries over the empty segments of `|&` and of a pipeline continued on
+    # the next line.
+    parts = re.split(r"(\|\|?|[;&\n]|\$\(|`|\(|\)|\{|\})", text)
+    piped = False
+    for index in range(0, len(parts), 2):
+        if index > 0 and parts[index - 1] in ("|", "||"):
+            piped = parts[index - 1] == "|"
+        tokens = parts[index].split()
+        if not tokens:
+            continue
+        segment_piped, piped = piped, False
         i = 0
         while i < len(tokens):
             tok = tokens[i]
@@ -1136,6 +1150,18 @@ def _bash_invokes_search(cmd_str: str) -> bool:
                 t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
             ):
                 return True
+            if name in ("sed", "awk") and not segment_piped:
+                rest = tokens[i + 1:]
+                in_place = any(
+                    t2.startswith("--in-place")
+                    or (t2.startswith("-i") if name == "awk" else
+                        t2.startswith("-") and not t2.startswith("--") and "i" in t2)
+                    for t2 in rest
+                )
+                # The program and at least one file; `x=1` is an awk assignment.
+                operands = [t2 for t2 in rest if not t2.startswith("-") and "=" not in t2]
+                if not in_place and len(operands) >= 2:
+                    return True
             break  # first real token decides this segment
     return False
 
@@ -3979,6 +4005,7 @@ def dispatch_command(cmd: str) -> None:
             graphify_out,
             excludes=cli_excludes or None,
             gitignore=False if no_gitignore else None,
+            code_only=True if code_only else None,
         )
 
         stages = _StageTimer(cli_timing)
@@ -4336,6 +4363,12 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
 
+        # #4923: a flagless extract that is really ingesting docs (it got past
+        # the key check above) is an explicit scope change back to a full graph.
+        # An aborted run or a corpus with no docs leaves the recorded scope alone.
+        if not code_only and semantic_files:
+            _write_build_cfg(graphify_out, excludes=None, code_only=False)
+
         # Track whether this run's extraction was incomplete (a whole extractor
         # pass crashed, or some semantic chunks failed). A partial result must not
         # be force-written over a good complete graph — the final write falls back
@@ -4428,7 +4461,7 @@ def dispatch_command(cmd: str) -> None:
                         # Keep bounded resolver identity for unchanged nodes;
                         # these markers cannot be reconstructed from labels.
                         for _marker in (
-                            "_callable", "_callable_class", "_elixir_module",
+                            "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",

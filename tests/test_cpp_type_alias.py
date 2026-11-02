@@ -172,3 +172,23 @@ def test_aliases_inside_include_guards_and_conditionals_are_nodes(tmp_path: Path
 def test_a_member_alias_inside_a_conditional_is_still_a_member(tmp_path: Path):
     result = _extract(tmp_path, {"config.hpp": _GUARDED})
     assert [n for n in result["nodes"] if n["label"] == "debug_type"] == []
+
+
+@pytest.mark.parametrize("decl", ["using Session = int;", "typedef int Session;"])
+def test_a_type_reference_lands_on_the_alias_not_a_function_differing_in_case(
+        tmp_path: Path, decl: str):
+    """`Session` and `session()` in one file are two declarations since #4904,
+    and `Session s;` names the alias, not the function."""
+    result = _extract(tmp_path, {"box.cpp": f"{decl}\nvoid session() {{}}\nstruct Holder {{ Session s; }};\n"})
+    refs = _pairs(result, "references")
+    assert ("Holder", "Session") in refs
+    assert ("Holder", "session()") not in refs
+
+
+def test_an_alias_named_after_the_file_extension_is_contained_by_its_file(tmp_path: Path):
+    """`using cpp = int;` in `a.cpp` spells the file's own id, so the registry
+    salts the alias's id (#4854); the file must still contain it."""
+    result = _extract(tmp_path, {"a.cpp": "using cpp = int;\nstruct Box { cpp v; };\n"})
+    assert len([n for n in result["nodes"] if n["label"] == "cpp" and n.get("source_file")]) == 1
+    assert ("a.cpp", "cpp") in _pairs(result, "contains")
+    assert ("Box", "cpp") in _pairs(result, "references")

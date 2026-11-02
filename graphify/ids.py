@@ -143,11 +143,20 @@ class DeclIdRegistry:
         self._owners[candidate] = key
         self._assigned[key] = candidate
         self._salted.add(candidate)
+        self._spelled[candidate] = name
         self._by_name.setdefault((kind, normalize_id(name)), set()).add(candidate)
         return candidate
 
     def lookup(self, name: str, kinds=("type", "fn", "var", "ns", "alias")) -> str | None:
         norm = normalize_id(name)
+        # A declaration spelled exactly like the reference wins over one that
+        # only normalizes alike: once #4904 keeps `Session` and `session()`
+        # apart, `Session s;` names the declaration spelled `Session`, whatever
+        # its kind. Without an exact spelling the kind order decides, as before.
+        exact = {i for kind in kinds for i in self._by_name.get((kind, norm), ())
+                 if self._spelled.get(i) == name}
+        if len(exact) == 1:
+            return next(iter(exact))
         for kind in kinds:
             ids = self._by_name.get((kind, norm))
             if ids:
