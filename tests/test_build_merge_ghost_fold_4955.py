@@ -111,3 +111,47 @@ def test_method_ghost_is_not_an_unexplained_drop(tmp_path):
     G = _merge(tmp_path, [_n("c_run", ".run()", "src/c.py", "L3"),
                           _n("run", "run", "src/c.py")])
     assert set(G.nodes) == {"c_run"}
+
+
+# --- the surrounding paths the fix must also hold ---
+
+def test_edge_into_the_ghost_is_repointed_to_the_survivor(tmp_path):
+    G = _merge(
+        tmp_path,
+        [_n("src_client", "client.py", "src/client.py", "L1"),
+         _n("client_py", "client.py", "src/client.py"),
+         _n("other", "Other", "src/o.py", "L1")],
+        links=[{"source": "other", "target": "client_py",
+                "relation": "references", "confidence": "INFERRED"}],
+    )
+    assert G.has_edge("other", "src_client")
+
+
+def test_incremental_update_folds_new_ast_node_into_saved_semantic_twin(tmp_path):
+    # An ordinary `update`: the file is re-extracted and a saved semantic twin
+    # of it exists. This raised before, not only for an empty chunk.
+    G = _merge(
+        tmp_path,
+        [_n("client_py", "client.py", "src/client.py")],
+        chunk_nodes=[_n("src_client", "client.py", "src/client.py", "L1", _origin="ast")],
+    )
+    assert set(G.nodes) == {"src_client"}
+
+
+def test_merge_then_write_round_trips_each_fold(tmp_path):
+    # build_merge(dedup=False) followed by to_json is the persist path.
+    cases = {
+        "1145": [_n("src_client", "client.py", "src/client.py", "L1"),
+                 _n("client_py", "client.py", "src/client.py")],
+        "3344": [_n("src_client", "client.py", "src/client.py", "L1"),
+                 _n("plan_client", "src/client.py", "docs/plan.md")],
+        "3705": [_n("c_run", ".run()", "src/c.py", "L3"),
+                 _n("run", "run", "src/c.py")],
+    }
+    for name, disk in cases.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        path = _save(sub, disk)
+        G = build_merge([dict(EMPTY)], graph_path=str(path), dedup=False)
+        assert to_json(G, {}, str(path)) is True, name
+        assert len(json.loads(path.read_text())["nodes"]) == 1, name
