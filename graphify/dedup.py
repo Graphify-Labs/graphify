@@ -1099,6 +1099,7 @@ def deduplicate_entities(
     root: str | Path | None = None,
     hyperedges: "list[dict] | None" = None,
     protected_ids: "set[str] | None" = None,
+    remap_out: "dict[str, str] | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -1106,6 +1107,9 @@ def deduplicate_entities(
         nodes: list of node dicts with at minimum {"id": str, "label": str}
         edges: list of edge dicts with {"source": str, "target": str, ...}
         communities: mapping of node_id -> community_id (from cluster())
+        remap_out: if given, filled with ``{merged-away id: surviving id}`` for
+            every node this call dropped. Lets a caller tell a node that was
+            folded into a twin from one that was lost (#4940).
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
         root: scan root; ID-collision ranking judges source paths relative to
             it so path form and checkout location cannot flip the survivor (#2532)
@@ -1538,6 +1542,8 @@ def deduplicate_entities(
     if not remap:
         return unique_nodes, edges
 
+    if remap_out is not None:
+        remap_out.update(remap)
     total = len(remap)
     msg = f"[graphify] Deduplicated {total} node(s)"
     # Both counters are reported when non-zero. Previous form nested the fuzzy
