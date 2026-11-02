@@ -51,7 +51,7 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # installs the Claude Code skill (add --detect to auto-detect all installed assistants)
 ```
 
 Then, in your AI assistant:
@@ -199,7 +199,7 @@ pipx install graphifyy      # alternative
 pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-Then run `graphify install` once. It detects which assistant you run and registers the skill, so there is no per-assistant setup. Open your AI assistant and type `/graphify .`
+Then run `graphify install` once. The bare command installs the Claude Code skill (on Windows, the PowerShell variant). To detect every installed assistant and install graphify for each, run `graphify install --detect` — it prompts `[Y/n]` per detected assistant (in a non-interactive terminal it only lists what it found). Open your AI assistant and type `/graphify .`
 
 To install the assistant skill into the current repository instead of your user
 profile, add `--project`:
@@ -216,6 +216,12 @@ print a `git add` hint for files that can be committed.
 Per-platform commands that support project-scoped installs accept the same flag,
 for example `graphify claude install --project` or `graphify codex install --project`.
 
+For an interactive setup across every assistant you have installed, run
+`graphify install --detect` (add `--project` for project scope). It finds your
+assistants by their config directories, asks `[Y/n]` for each, and prints a
+summary; in a non-interactive shell it only lists what it found without
+installing anything.
+
 > [!TIP]
 > Hitting `command not found`, a `pip`-on-Mac/Windows issue, PowerShell quoting, `uvx` usage, git-hook PATH quirks, or strict mode? See **[Installation](https://docs.graphify.com/installation)** and **[Troubleshooting](https://docs.graphify.com/troubleshooting)**.
 
@@ -225,7 +231,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Platform | Install command |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
+| Claude Code (Windows) | `graphify install` (defaults to Windows on this OS) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -299,7 +305,7 @@ Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native P
 
 Run this once in your project after building a graph:
 
-Run `graphify <platform> install` once in your project, for example `graphify claude install` or `graphify codex install` (or `graphify install --platform <name>`).
+Run `graphify <platform> install` once in your project, for example `graphify claude install` or `graphify codex install` (or `graphify install --platform <name>`). To detect and wire every installed assistant at once, use `graphify install --detect` (global) or `graphify install --detect --project` (project scope).
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
