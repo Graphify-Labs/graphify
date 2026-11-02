@@ -973,9 +973,9 @@ def _is_reference_stub(node: dict) -> bool:
 
 def _namespace_reference_stub_collisions(
     nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
-    root: Path | None,
+    root: Path | None, *, preserve_saved_semantics: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    """Keep marked cross-document reference stubs distinct (#4738).
+    """Keep semantic references distinct from another file's defining node.
 
     Semantic extraction marks a node it emitted solely for a referenced entity
     with ``metadata.graphify_reference_stub``. Preserve every marked node under
@@ -986,6 +986,10 @@ def _namespace_reference_stub_collisions(
     The marker distinguishes reference stubs from two independent documents
     that happen to share an ID. Path specificity cannot make that distinction:
     it regresses genuine nested-path definitions.
+
+    With preserve_saved_semantics, AST-only updates retain saved semantic
+    evidence even when it predates the reference-stub marker. A scan root is
+    required to distinguish source files; full builds keep their definer rules.
     """
     def key(source_file: object) -> str:
         return _rank_path(source_file, root) if isinstance(source_file, str) else ""
@@ -1001,7 +1005,21 @@ def _namespace_reference_stub_collisions(
     for nid, members in by_id.items():
         if len({key(node.get("source_file")) for node in members}) < 2:
             continue
-        stubs = [node for node in members if _is_reference_stub(node)]
+        ast_sources = {
+            key(node.get("source_file")) for node in members
+            if node.get("_origin") == "ast"
+        }
+        stubs = [
+            node for node in members
+            if _is_reference_stub(node) or (
+                preserve_saved_semantics
+                and root is not None
+                and node.get("_origin") == "semantic"
+                and key(node.get("source_file"))
+                and ast_sources
+                and key(node.get("source_file")) not in ast_sources
+            )
+        ]
         if not stubs:
             continue
         source_keys = {key(node.get("source_file")) for node in stubs}
@@ -1017,7 +1035,18 @@ def _namespace_reference_stub_collisions(
         if len(set(candidates.values())) != len(candidates):
             continue
         if any(candidate in taken for candidate in candidates.values()):
-            continue
+            if not preserve_saved_semantics:
+                continue
+            reserved = taken | set(candidates.values())
+            for source_key in sorted(candidates):
+                base = candidates[source_key]
+                candidate = base
+                suffix = 2
+                while candidate in taken or (candidate != base and candidate in reserved):
+                    candidate = f"{base}__{suffix}"
+                    suffix += 1
+                candidates[source_key] = candidate
+                reserved.add(candidate)
         renames.update(((nid, source_key), candidate)
                        for source_key, candidate in candidates.items())
         taken.update(candidates.values())
@@ -1033,6 +1062,8 @@ def _namespace_reference_stub_collisions(
     for collection in (edges, hyperedges or []):
         for item in collection:
             if not isinstance(item, dict):
+                continue
+            if preserve_saved_semantics and item.get("_origin") == "ast":
                 continue
             source_key = key(item.get("source_file"))
             for endpoint in ("source", "target"):
@@ -1099,6 +1130,7 @@ def deduplicate_entities(
     root: str | Path | None = None,
     hyperedges: "list[dict] | None" = None,
     protected_ids: "set[str] | None" = None,
+    remap_out: "dict[str, str] | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -1106,6 +1138,9 @@ def deduplicate_entities(
         nodes: list of node dicts with at minimum {"id": str, "label": str}
         edges: list of edge dicts with {"source": str, "target": str, ...}
         communities: mapping of node_id -> community_id (from cluster())
+        remap_out: if given, filled with ``{merged-away id: surviving id}`` for
+            every node this call dropped. Lets a caller tell a node that was
+            folded into a twin from one that was lost (#4940).
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
         root: scan root; ID-collision ranking judges source paths relative to
             it so path form and checkout location cannot flip the survivor (#2532)
@@ -1538,6 +1573,8 @@ def deduplicate_entities(
     if not remap:
         return unique_nodes, edges
 
+    if remap_out is not None:
+        remap_out.update(remap)
     total = len(remap)
     msg = f"[graphify] Deduplicated {total} node(s)"
     # Both counters are reported when non-zero. Previous form nested the fuzzy
