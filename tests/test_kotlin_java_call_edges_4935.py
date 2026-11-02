@@ -102,3 +102,23 @@ def test_inherited_in_repo_members_still_resolve(tmp_path: Path) -> None:
     })
     assert ("KChild:.t()", "RepoBase:.baseHelper()") in edges
     assert ("JChild:.t()", "JavaBase:.baseJava()") in edges
+
+
+# ---- overloads ---------------------------------------------------------------
+
+def test_kotlin_call_to_an_overloaded_java_method_resolves(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Logger.java": LOGGER_JAVA,
+        "app/Caller.kt": "package app\nimport util.Logger\n"
+                         "class Caller { fun go() { Logger.overloaded(\"a\") } }\n",
+    })
+    assert ("Caller:.go()", "Logger:.overloaded()") in edges
+
+
+def test_kotlin_call_to_an_overloaded_kotlin_object_method_resolves(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Settings.kt": SETTINGS_KT,
+        "app/Caller.kt": "package app\nimport util.Settings\n"
+                         "class Caller { fun go() { Settings.get(\"a\") } }\n",
+    })
+    assert ("Caller:.go()", "Settings:.get()") in edges
