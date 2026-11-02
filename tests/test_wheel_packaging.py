@@ -7,6 +7,7 @@ This builds the wheel once and asserts every committed skill artifact ships in i
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -54,16 +55,33 @@ def _expected_artifacts() -> list[Path]:
 
 @pytest.fixture(scope="module")
 def wheel_namelist(tmp_path_factory) -> set[str]:
+    """Build the wheel from a private copy of the repo tree (#4603).
+
+    `python -m build` writes its working files into `<repo>/build/` even
+    though the wheel itself lands under `--outdir`. Building straight from
+    `REPO` means two wheel test runs on one checkout (two CI shards, a
+    developer running the suite twice) share that one `build/` directory and
+    delete each other's files mid build. Building from a throwaway copy
+    keeps `build/` private to this run.
+    """
     if not _has_build():
         pytest.skip("`python -m build` unavailable (dev extra not installed)")
     out = tmp_path_factory.mktemp("wheel")
+    repo_copy = tmp_path_factory.mktemp("repo_copy") / "repo"
+    shutil.copytree(
+        REPO, repo_copy,
+        ignore=shutil.ignore_patterns(".git", "build", "dist", "*.egg-info", "__pycache__", ".venv"),
+    )
     proc = subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--no-isolation",
-         "--outdir", str(out), str(REPO)],
+         "--outdir", str(out), str(repo_copy)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        pytest.skip(f"wheel build failed in this env:\n{proc.stderr[-800:]}")
+        # `python -m build` is present (the skip above only fires when it is
+        # not), so a failure here is a real packaging break, not an
+        # environment gap: fail loud rather than skip every dependent test.
+        pytest.fail(f"wheel build failed although `python -m build` is available:\n{proc.stderr[-800:]}")
     wheels = list(out.glob("graphifyy-*.whl"))
     assert wheels, "no wheel produced"
     with zipfile.ZipFile(max(wheels, key=lambda p: p.stat().st_mtime)) as z:

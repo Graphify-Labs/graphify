@@ -46,6 +46,13 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 from graphify.paths import write_text_atomic as _write_text_atomic
 
+# Test seam for #4603: tests that exercise a fake bundle point this at a
+# private directory instead of moving the real packaged skills/ dir aside,
+# so a killed test process can never leave the installed package half
+# swapped. Production code always leaves this unset and resolves the real
+# packaged directory.
+_SKILLS_ROOT_OVERRIDE: Path | None = None
+
 
 def _skill_lock_path(skill_dir: Path) -> Path:
     """The lock file for ``skill_dir``, kept out of the skill directory.
@@ -286,7 +293,8 @@ def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
         bundle = _PLATFORM_CONFIG[platform_name].get("skill_refs")
     if not bundle:
         return None
-    bundle_dir = Path(__file__).parent / "skills" / bundle
+    skills_root = _SKILLS_ROOT_OVERRIDE if _SKILLS_ROOT_OVERRIDE is not None else Path(__file__).parent / "skills"
+    bundle_dir = skills_root / bundle
     if not bundle_dir.is_dir():
         return None
     return bundle_dir / "references"
