@@ -80,3 +80,34 @@ def test_ghost_fold_map_is_not_written_to_graph_json(tmp_path):
     G = build_merge([dict(EMPTY)], graph_path=str(path), dedup=True)
     assert to_json(G, {}, str(path)) is True
     assert "_dedup_remap" not in json.loads(path.read_text()).get("graph", {})
+
+
+# --- build_merge(dedup=False): intentional folds are not unexplained drops ---
+
+def test_same_file_same_label_twin_is_not_an_unexplained_drop(tmp_path):
+    # #1145, the issue's first case
+    G = _merge(tmp_path, [_n("src_client", "client.py", "src/client.py", "L1"),
+                          _n("client_py", "client.py", "src/client.py")])
+    assert set(G.nodes) == {"src_client"}
+
+
+def test_document_naming_a_file_is_not_an_unexplained_drop(tmp_path):
+    # #3344, the issue's second case
+    G = _merge(tmp_path, [_n("src_client", "client.py", "src/client.py", "L1"),
+                          _n("plan_client", "src/client.py", "docs/plan.md")])
+    assert set(G.nodes) == {"src_client"}
+
+
+def test_directory_qualified_file_label_folds(tmp_path):
+    G = _merge(tmp_path, [
+        _n("app_index", "index.ts", "apps/customer-app/index.ts", "L1"),
+        _n("memo_idx", "customer-app/index.ts", "docs/memo.md"),
+    ])
+    assert set(G.nodes) == {"app_index"}
+
+
+def test_method_ghost_is_not_an_unexplained_drop(tmp_path):
+    # #3705: the branch of Pass 2 that has no dedup check of its own
+    G = _merge(tmp_path, [_n("c_run", ".run()", "src/c.py", "L3"),
+                          _n("run", "run", "src/c.py")])
+    assert set(G.nodes) == {"c_run"}

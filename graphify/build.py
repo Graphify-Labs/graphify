@@ -3151,11 +3151,19 @@ def build_merge(
     # guard (#1951), and refusing it here would reintroduce the #1116
     # false-refuse for legitimate edits that remove symbols from a file.
     if had_graph and not dedup:
+        # Ghost folds build_from_json made on purpose (#1145, #3344, #3705).
+        # Read, not popped: to_json reads the same map and strips it.
+        _folds = G.graph.get("_dedup_remap") or {}
+
         def _in_new_graph(n: dict) -> bool:
             nid = n.get("id")
             if nid is None or not _hashable(nid):
                 return True  # untrackable identity — never count as lost
             if nid in G:
+                return True
+            # A fold into a survivor still in the graph is one node, not a
+            # loss; a survivor that is gone excuses nothing (#4955).
+            if _folds.get(nid) in G:
                 return True
             # Doc-twin heal (#1799): build_from_json merges a markdown
             # quick-scan's bare doc node into its semantic `<id>_doc` twin for
