@@ -74,8 +74,13 @@ def _part_c_python(fragment: Path) -> str:
     return m.group(1).replace('\\"', '"')
 
 
-@pytest.mark.parametrize("fragment", ["core.md", "aider.md", "devin.md"])
+@pytest.mark.parametrize("fragment", ["aider.md", "devin.md"])
 def test_part_c_stamps_the_semantic_side(fragment, tmp_path):
+    """The hand-maintained aider/devin monoliths still carry an inline Part C.
+
+    The split hosts no longer do — their Part C is `graphify pipeline
+    merge-extraction`, covered by the pipeline test below.
+    """
     code = _part_c_python(FRAGMENTS / fragment)
     # The three runbooks read their intermediates from different places.
     ast_path = re.search(r"Path\('([^']*\.graphify_ast\.json)'\)", code).group(1)
@@ -101,6 +106,40 @@ def test_part_c_stamps_the_semantic_side(fragment, tmp_path):
     assert by_id["src_app_main"]["_origin"] == "ast"
     assert by_id["docs_guide_deploy"]["_origin"] == "semantic"
     assert all(e["_origin"] == "semantic" for e in merged["edges"] if e["source_file"] == "docs/guide.md")
+    assert not _is_ast_tier(by_id["docs_guide_deploy"])
+
+
+def test_pipeline_merge_extraction_stamps_the_semantic_side(tmp_path, monkeypatch):
+    """Part C is now `graphify pipeline merge-extraction` (#197).
+
+    The step must stamp the semantic side exactly as the inline block it
+    replaced did (#2843), or the next `graphify update` deletes the document
+    layer. Exercises `step_merge_extraction` directly, which is what the
+    subcommand dispatches to.
+    """
+    from graphify.pipeline import _out_dir, step_merge_extraction
+
+    monkeypatch.chdir(tmp_path)
+    out_dir = _out_dir(tmp_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ast = {"nodes": [{"id": "src_app_main", "label": "main", "file_type": "code",
+                      "source_file": "src/app.py", "source_location": "L1",
+                      "_origin": "ast"}],
+           "edges": []}
+    sem = {"nodes": [_line_located_doc_node()],
+           "edges": [{"source": "docs_guide_deploy", "target": "src_app_main",
+                      "relation": "references", "source_file": "docs/guide.md",
+                      "source_location": "L12", "confidence": "EXTRACTED"}],
+           "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    (out_dir / ".graphify_ast.json").write_text(json.dumps(ast), encoding="utf-8")
+    (out_dir / ".graphify_semantic.json").write_text(json.dumps(sem), encoding="utf-8")
+
+    merged = step_merge_extraction(out=tmp_path)
+    by_id = {n["id"]: n for n in merged["nodes"]}
+    assert by_id["src_app_main"]["_origin"] == "ast"  # never overwritten
+    assert by_id["docs_guide_deploy"]["_origin"] == "semantic"
+    assert all(e["_origin"] == "semantic" for e in merged["edges"])
     assert not _is_ast_tier(by_id["docs_guide_deploy"])
 
 

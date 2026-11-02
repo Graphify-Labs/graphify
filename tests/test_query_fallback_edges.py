@@ -1,73 +1,45 @@
-"""Regression tests for relationships in the generated query fallback."""
+"""Relationships in the query traversal the skill now uses.
+
+The split-host query flow used to carry an inline NetworkX fallback
+(``references/query/default.md``); #197 replaced it with ``graphify query``,
+whose traversal lives in :mod:`graphify.serve` (``_query_graph_text`` ->
+``_bfs``/``_dfs`` -> ``_complete_induced_edges`` -> ``_subgraph_to_text``).
+These tests pin the relationship guarantees on that code path: a traversal
+records a discovery tree, so ``_complete_induced_edges`` re-adds the edges
+among visited nodes (seed-to-seed, cycles, cross-links), the undirected
+renderer does not double an edge, and depth/budget limits still hold.
+"""
 from __future__ import annotations
 
-import io
-import json
-from contextlib import redirect_stdout
 from pathlib import Path
 
 import networkx as nx
 import pytest
-from networkx.readwrite import json_graph
 
+from graphify.serve import _bfs, _dfs, _subgraph_to_text
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUERY_FRAGMENT = REPO_ROOT / "tools/skillgen/fragments/references/query/default.md"
-FALLBACK_OPEN = '$(cat graphify-out/.graphify_python) -c "\n'
-FALLBACK_LOCATOR = (
-    FALLBACK_OPEN
-    + "import sys, json\nfrom networkx.readwrite import json_graph\n"
-)
-FALLBACK_END = '\n"\n```'
 
 
-def _fallback_script() -> str:
+def test_split_host_query_fragment_has_no_inline_fallback():
+    """The split hosts call ``graphify query``; the inline fallback is gone."""
     fragment = QUERY_FRAGMENT.read_text(encoding="utf-8")
-    start = fragment.index(FALLBACK_LOCATOR) + len(FALLBACK_OPEN)
-    end = fragment.index(FALLBACK_END, start)
-    return fragment[start:end]
+    assert "graphify query" in fragment
+    assert "graphify pipeline vocab" in fragment
+    assert "$(cat graphify-out/.graphify_python)" not in fragment
+    assert "networkx.readwrite import json_graph" not in fragment
 
 
-def _run_fallback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    graph: nx.Graph,
-    *,
-    question: str,
-    mode: str,
-    token_budget: int = 2000,
-) -> str:
-    try:
-        data = json_graph.node_link_data(graph, edges="links")
-    except TypeError:  # NetworkX before the ``edges`` keyword.
-        data = json_graph.node_link_data(graph)
-    output_dir = tmp_path / "graphify-out"
-    output_dir.mkdir()
-    (output_dir / "graph.json").write_text(json.dumps(data), encoding="utf-8")
-
-    script = _fallback_script()
-    # The payload is embedded in a double-quoted shell argument. Unescape the
-    # quotes that the shell would remove before compiling its Python body.
-    script = script.replace(chr(92) + '"', '"')
-    script = script.replace("question = 'QUESTION'", f"question = {question!r}")
-    script = script.replace("mode = 'MODE'  # 'bfs' or 'dfs'", f"mode = {mode!r}")
-    script = script.replace(
-        "token_budget = BUDGET  # default 2000",
-        f"token_budget = {token_budget}",
-    )
-    assert "'QUESTION'" not in script
-    assert "'MODE'" not in script
-    assert "BUDGET" not in script
-
-    monkeypatch.chdir(tmp_path)
-    output = io.StringIO()
-    with redirect_stdout(output):
-        exec(compile(script, str(QUERY_FRAGMENT), "exec"), {"__name__": "__main__"})
-    return output.getvalue()
+def _render(graph: nx.Graph, starts: list[str], *, mode: str, depth: int = 3,
+            token_budget: int = 2000) -> str:
+    traversal = _dfs if mode == "dfs" else _bfs
+    nodes, edges = traversal(graph, starts, depth)
+    return _subgraph_to_text(graph, nodes, edges, token_budget, seeds=starts)
 
 
 @pytest.mark.parametrize("mode", ["bfs", "dfs"])
-def test_fallback_keeps_edges_between_seed_nodes(tmp_path, monkeypatch, mode):
+def test_traversal_keeps_edges_between_seed_nodes(mode):
     """Traversal visits all seeds, but must still render edges among them."""
     graph = nx.DiGraph()
     graph.add_node("a", label="Alpha")
@@ -77,17 +49,15 @@ def test_fallback_keeps_edges_between_seed_nodes(tmp_path, monkeypatch, mode):
     graph.add_edge("b", "c", relation="imports", confidence="INFERRED")
     graph.add_edge("a", "c", relation="uses", confidence="AMBIGUOUS")
 
-    output = _run_fallback(
-        tmp_path, monkeypatch, graph, question="alpha beta gamma", mode=mode
-    )
+    output = _render(graph, ["a", "b", "c"], mode=mode)
 
-    assert "  EDGE Alpha --calls [EXTRACTED]--> Beta" in output
-    assert "  EDGE Beta --imports [INFERRED]--> Gamma" in output
-    assert "  EDGE Alpha --uses [AMBIGUOUS]--> Gamma" in output
+    assert "EDGE Alpha --calls [EXTRACTED]--> Beta" in output
+    assert "EDGE Beta --imports [INFERRED]--> Gamma" in output
+    assert "EDGE Alpha --uses [AMBIGUOUS]--> Gamma" in output
 
 
 @pytest.mark.parametrize("mode", ["bfs", "dfs"])
-def test_fallback_keeps_cycle_and_cross_links(tmp_path, monkeypatch, mode):
+def test_traversal_keeps_cycle_and_cross_links(mode):
     graph = nx.DiGraph()
     for node, label in [
         ("a", "Alpha"),
@@ -102,16 +72,14 @@ def test_fallback_keeps_cycle_and_cross_links(tmp_path, monkeypatch, mode):
     graph.add_edge("b", "d", relation="bd", confidence="EXTRACTED")
     graph.add_edge("c", "d", relation="cd", confidence="AMBIGUOUS")
 
-    output = _run_fallback(
-        tmp_path, monkeypatch, graph, question="alpha", mode=mode
-    )
+    output = _render(graph, ["a"], mode=mode)
 
-    assert output.count("  EDGE ") == 5
-    assert "  EDGE Gamma --ca [INFERRED]--> Alpha" in output
-    assert "  EDGE Gamma --cd [AMBIGUOUS]--> Delta" in output
+    assert output.count("EDGE ") == 5
+    assert "EDGE Gamma --ca [INFERRED]--> Alpha" in output
+    assert "EDGE Gamma --cd [AMBIGUOUS]--> Delta" in output
 
 
-def test_fallback_avoids_duplicate_edges_in_undirected_graph(tmp_path, monkeypatch):
+def test_traversal_avoids_duplicate_edges_in_undirected_graph():
     graph = nx.Graph()
     for node, label in [("a", "Alpha"), ("b", "Beta"), ("c", "Gamma")]:
         graph.add_node(node, label=label)
@@ -119,14 +87,24 @@ def test_fallback_avoids_duplicate_edges_in_undirected_graph(tmp_path, monkeypat
     graph.add_edge("b", "c", relation="bc", confidence="EXTRACTED")
     graph.add_edge("c", "a", relation="ca", confidence="EXTRACTED")
 
-    output = _run_fallback(
-        tmp_path, monkeypatch, graph, question="alpha beta gamma", mode="bfs"
-    )
+    output = _render(graph, ["a", "b", "c"], mode="bfs")
 
-    assert output.count("  EDGE ") == 3
+    assert output.count("EDGE ") == 3
 
 
-def test_fallback_keeps_parallel_relationship_attributes(tmp_path, monkeypatch):
+def test_undirected_traversal_dedups_an_edge_by_unordered_pair():
+    """``_complete_induced_edges`` keys undirected completions by frozenset, so a
+    triangle yields three distinct edges, not six ordered duplicates."""
+    graph = nx.Graph()
+    for node in "abc":
+        graph.add_node(node, label=node.upper())
+    graph.add_edges_from([("a", "b"), ("b", "c"), ("c", "a")])
+    _nodes, edges = _bfs(graph, ["a", "b", "c"], 3)
+    assert len(edges) == len({frozenset(e) for e in edges}) == 3
+
+
+def test_traversal_keeps_parallel_relationship_attributes():
+    """Every parallel relation survives, not just the first (3ab2cbab)."""
     graph = nx.MultiDiGraph()
     graph.add_node("a", label="Alpha")
     graph.add_node("b", label="Beta")
@@ -134,27 +112,20 @@ def test_fallback_keeps_parallel_relationship_attributes(tmp_path, monkeypatch):
     graph.add_edge("a", "b", relation="imports", confidence="INFERRED")
     graph.add_edge("b", "a", relation="references", confidence="AMBIGUOUS")
 
-    output = _run_fallback(
-        tmp_path, monkeypatch, graph, question="alpha beta", mode="bfs"
-    )
+    output = _render(graph, ["a", "b"], mode="bfs")
 
-    assert output.count("  EDGE ") == 3
-    assert "  EDGE Alpha --calls [EXTRACTED]--> Beta" in output
-    assert "  EDGE Alpha --imports [INFERRED]--> Beta" in output
-    assert "  EDGE Beta --references [AMBIGUOUS]--> Alpha" in output
+    assert output.count("EDGE ") == 3
+    assert "EDGE Alpha --calls [EXTRACTED]--> Beta" in output
+    assert "EDGE Alpha --imports [INFERRED]--> Beta" in output
+    assert "EDGE Beta --references [AMBIGUOUS]--> Alpha" in output
 
 
 @pytest.mark.parametrize(
-    ("mode", "last_included", "first_excluded", "edge_count"),
-    [("bfs", 3, 4, 3), ("dfs", 6, 7, 6)],
+    ("mode", "depth", "last_included", "first_excluded", "edge_count"),
+    [("bfs", 3, 3, 4, 3), ("dfs", 6, 6, 7, 6)],
 )
-def test_fallback_does_not_include_edges_beyond_depth(
-    tmp_path,
-    monkeypatch,
-    mode,
-    last_included,
-    first_excluded,
-    edge_count,
+def test_traversal_does_not_include_edges_beyond_depth(
+    mode, depth, last_included, first_excluded, edge_count
 ):
     graph = nx.DiGraph()
     graph.add_node("n0", label="Alpha")
@@ -168,32 +139,23 @@ def test_fallback_does_not_include_edges_beyond_depth(
             confidence="EXTRACTED",
         )
 
-    output = _run_fallback(
-        tmp_path, monkeypatch, graph, question="alpha", mode=mode
-    )
+    output = _render(graph, ["n0"], mode=mode, depth=depth)
 
     assert f"NODE Node {last_included}" in output
     assert f"NODE Node {first_excluded}" not in output
-    assert output.count("  EDGE ") == edge_count
+    assert output.count("EDGE ") == edge_count
     assert (
-        f"  EDGE Node {last_included} --next [EXTRACTED]--> "
+        f"EDGE Node {last_included} --next [EXTRACTED]--> "
         f"Node {first_excluded}"
     ) not in output
 
 
-def test_fallback_output_budget_still_truncates(tmp_path, monkeypatch):
+def test_renderer_reports_when_output_exceeds_budget():
     graph = nx.Graph()
     graph.add_node("a", label="Alpha")
     graph.add_node("b", label="Beta")
     graph.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
 
-    output = _run_fallback(
-        tmp_path,
-        monkeypatch,
-        graph,
-        question="alpha beta",
-        mode="bfs",
-        token_budget=1,
-    )
+    output = _render(graph, ["a", "b"], mode="bfs", token_budget=1)
 
-    assert "truncated at ~1 token budget" in output
+    assert "budget" in output

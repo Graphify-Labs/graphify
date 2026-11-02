@@ -1,15 +1,15 @@
 """Regression coverage for the generated code-only incremental update workflow.
 
 The Codex runbook skips semantic extraction for code-only updates, but its shared
-incremental merge still consumes ``.graphify_extract.json``. Exercise the actual
-rendered workflow with a clean intermediate directory so this contract cannot
-drift again.
+incremental merge still consumes ``.graphify_extract.json``. With #197 the runbook
+delivers this as ``graphify pipeline`` subcommands (no inline ``-c``), so the test
+drives those subcommands against a clean intermediate directory; the contract
+cannot drift again.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,28 +26,18 @@ def _artifact(artifact_path: str) -> str:
     return next(artifact.content for artifact in artifacts if artifact.path == artifact_path)
 
 
-def _python_blocks(section: str) -> list[str]:
-    sources = []
-    for block in re.findall(r"```bash\n(.*?)```", section, re.S):
-        match = re.search(r' -c "\n(.*)\n"\s*$', block, re.S)
-        if match:
-            sources.append(match.group(1).replace('\\"', '"'))
-    return sources
-
-
 def _section(body: str, start: str, end: str) -> str:
     return body.split(start, 1)[1].split(end, 1)[0]
 
 
-def _run_code(script: str, *, cwd: Path, root: Path) -> subprocess.CompletedProcess[str]:
-    script = script.replace("INPUT_PATH", root.as_posix()).replace("IS_DIRECTED", "False")
+def _run_cli(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "GRAPHIFY_OUT": "graphify-out",
         "PYTHONPATH": str(REPO_ROOT),
     }
     return subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-m", "graphify", "pipeline", *args],
         cwd=cwd,
         env=env,
         check=True,
@@ -69,28 +59,15 @@ def test_codex_code_only_update_materializes_and_merges_fresh_ast(tmp_path: Path
     assert "empty" in code_only_route.lower()
     assert "Part C" in code_only_route
     assert "skip semantic cache checks/writes and subagents" in code_only_route.lower()
-    assert "if new_total == 0 and not deleted:" in update
+    assert "graphify pipeline detect-incremental" in update
     assert "run the full Steps 3A–3C pipeline as normal" in mixed_route
 
-    ast_blocks = _python_blocks(_section(
-        core,
-        "#### Part A - Structural extraction for code files",
-        "#### Part B - Semantic extraction",
-    ))
-    empty_semantic_blocks = _python_blocks(_section(core, "**Fast path:**", "**MANDATORY"))
-    part_c_blocks = _python_blocks(_section(
-        core,
-        "#### Part C - Merge AST + semantic into final extraction",
-        "### Step 4 - Build graph",
-    ))
-    merge_blocks = [
-        source for source in _python_blocks(update)
-        if "from graphify.build import build_merge" in source
-    ]
-    assert len(ast_blocks) == 1
-    assert len(empty_semantic_blocks) == 1
-    assert len(part_c_blocks) == 1
-    assert len(merge_blocks) == 1
+    # The shipped workflow is the pipeline subcommands (#197), not inline -c blocks.
+    assert "graphify pipeline extract-ast" in core
+    assert "graphify pipeline empty-semantic" in core
+    assert "graphify pipeline merge-extraction" in core
+    assert "graphify pipeline update-merge" in update
+    assert "$(cat graphify-out/.graphify_python)" not in core
 
     root = tmp_path
     changed = root / "changed.py"
@@ -181,11 +158,11 @@ assert saved == 1
         "files": {"code": [str(changed), str(added)], "document": [str(notes)]},
     }), encoding="utf-8")
 
-    _run_code(ast_blocks[0], cwd=tmp_path, root=root)
-    _run_code(empty_semantic_blocks[0], cwd=tmp_path, root=root)
+    _run_cli(["extract-ast", str(root)], cwd=tmp_path)
+    _run_cli(["empty-semantic"], cwd=tmp_path)
     semantic = json.loads(semantic_path.read_text(encoding="utf-8"))
     assert semantic["nodes"] == []
-    _run_code(part_c_blocks[0], cwd=tmp_path, root=root)
+    _run_cli(["merge-extraction"], cwd=tmp_path)
 
     extraction = json.loads(extraction_path.read_text(encoding="utf-8"))
     extraction_ids = {node["id"] for node in extraction["nodes"]}
@@ -193,7 +170,7 @@ assert saved == 1
     assert any("added_symbol" in node_id for node_id in extraction_ids)
     assert "stale_semantic" not in extraction_ids
 
-    _run_code(merge_blocks[0], cwd=tmp_path, root=root)
+    _run_cli(["update-merge", str(root)], cwd=tmp_path)
     cache_after = {
         path.relative_to(semantic_cache).as_posix(): path.read_bytes()
         for path in semantic_cache.rglob("*") if path.is_file()

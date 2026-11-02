@@ -42,4 +42,8 @@ GRAPHIFY_ROOT_EOF
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
+Every pipeline step from here on is a plain `graphify` command, so no later block
+needs the saved interpreter: the graphify console script already runs under the
+interpreter that has graphify. The `.graphify_python` file above is kept only for
+the pre-commit hook, which reads it on a later run. The scan root recorded here is
+what `graphify update` (with no argument) and that hook read back.

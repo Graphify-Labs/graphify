@@ -6,11 +6,16 @@ Two guards:
    ``community_labels`` kwarg is passed, so any Step-5 flow that curates labels
    but omits the kwarg ships a graph.json without community names.
 
-2. A template lint over the generated ``graphify/skill*.md`` bodies (and the
-   fragments they render from): the Step-5 / post-labels code block — the one
-   that builds the curated ``labels = LABELS_DICT`` dict — must re-export
-   ``graphify-out/graph.json`` with ``community_labels=labels``. This locks the
-   #2490 fix so a future template edit cannot silently drop the kwarg again.
+2. A lint over the generated ``graphify/skill*.md`` bodies (and the fragment they
+   render from) plus the pipeline step they call: Step 5 must invoke
+   ``graphify pipeline label``, and that step (``graphify.pipeline.step_label``)
+   must re-export ``graphify-out/graph.json`` with ``community_labels``. Together
+   these lock the #2490 fix end to end — a future edit cannot drop the kwarg or
+   the step without failing here.
+
+Before #197 the label flow was an inline ``python -c`` block carrying
+``labels = LABELS_DICT``; it is now the ``label`` subcommand, so the lint follows
+the flow to where it lives.
 """
 from __future__ import annotations
 
@@ -63,69 +68,97 @@ def test_to_json_without_labels_kwarg_writes_no_community_name():
 
 # --- template lint -----------------------------------------------------------
 
-def _code_blocks(markdown: str) -> list[str]:
-    """Fenced code blocks of a markdown body, fence lines excluded."""
-    blocks: list[str] = []
-    current: list[str] | None = None
-    for line in markdown.splitlines():
-        if line.lstrip().startswith("```"):
-            if current is None:
-                current = []
-            else:
-                blocks.append("\n".join(current))
-                current = None
-            continue
-        if current is not None:
-            current.append(line)
-    return blocks
+#: Web-UI / CLI hosts rendered from core.md. The aider and devin monoliths are
+#: hand-authored per-platform skills with their own inline-Python pipelines; they
+#: are tracked separately and not converted to the pipeline subcommands yet (#197).
+_MONOLITH_SKILLS = {"skill-aider.md", "skill-devin.md"}
 
 
 def _skill_bodies() -> list[Path]:
-    paths = sorted(REPO_ROOT.glob("graphify/skill*.md"))
+    paths = sorted(
+        p for p in REPO_ROOT.glob("graphify/skill*.md")
+        if p.name not in _MONOLITH_SKILLS
+    )
     assert paths, "no generated graphify/skill*.md found"
     return paths
 
 
-@pytest.mark.parametrize("path", _skill_bodies(), ids=lambda p: p.name)
-def test_skill_step5_reexports_graph_json_with_curated_labels(path: Path):
-    """Every post-labels (LABELS_DICT) block re-exports graph.json with the kwarg.
+#: The Step-5 subcommand the skill hands its curated labels to.
+_LABEL_STEP = "graphify pipeline label"
 
-    The Step-5 block is the only place the curated labels dict exists, so it is
-    the block that must call ``to_json(..., community_labels=labels)``. Any
-    ``to_json(...graphify-out/graph.json...)`` call in that block without the
-    kwarg would ship graph.json nodes with no ``community_name`` (#2490).
+#: The one call that must carry the curated labels into graph.json. Checked in
+#: graphify/pipeline.py where the step body now lives. The call may wrap across
+#: lines, so assert both halves rather than one literal.
+_REEXPORT_TARGET = 'to_json(G, communities, str(out_dir / "graph.json")'
+_REEXPORT_LABELS = "community_labels=int_labels"
+
+
+@pytest.mark.parametrize("path", _skill_bodies(), ids=lambda p: p.name)
+def test_skill_step5_invokes_the_label_subcommand(path: Path):
+    """Every generated skill routes Step 5 through `graphify pipeline label`.
+
+    That subcommand is the only place the curated labels reach ``to_json`` with
+    the ``community_labels`` kwarg, so a body that curates labels some other way
+    would ship graph.json nodes with no ``community_name`` (#2490).
     """
     text = path.read_text(encoding="utf-8")
-    post_labels_blocks = [
-        b for b in _code_blocks(text) if "labels = LABELS_DICT" in b
-    ]
-    assert post_labels_blocks, f"{path.name}: no Step-5 (LABELS_DICT) code block found"
-    for block in post_labels_blocks:
-        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
-            f"{path.name}: the post-labels Step-5 block must re-export "
-            f"graphify-out/graph.json with community_labels=labels (#2490)"
-        )
-        # No label-less graph.json export may coexist in the post-labels block.
-        for line in block.splitlines():
-            if "to_json(" in line and "graphify-out/graph.json" in line:
-                assert "community_labels=labels" in line, (
-                    f"{path.name}: post-labels to_json call is missing "
-                    f"community_labels=labels: {line.strip()!r}"
-                )
+    assert _LABEL_STEP in text, (
+        f"{path.name}: Step 5 must call `{_LABEL_STEP}` so curated labels reach "
+        f"graph.json's community_name (#2490)"
+    )
+
+
+def test_step_label_reexports_graph_json_with_curated_labels():
+    """`step_label` must pass community_labels to to_json — the #2490 guard.
+
+    This is the call the old Step-5 inline block made. It moved into
+    ``graphify/pipeline.py`` with #197; pin it there so the kwarg cannot be
+    dropped silently.
+    """
+    pipeline_src = (REPO_ROOT / "graphify" / "pipeline.py").read_text(encoding="utf-8")
+    assert _REEXPORT_TARGET in pipeline_src, (
+        "graphify/pipeline.py: the label step must re-export graphify-out/graph.json (#2490)"
+    )
+    assert _REEXPORT_LABELS in pipeline_src, (
+        "graphify/pipeline.py: that re-export must pass community_labels so nodes "
+        "carry community_name (#2490)"
+    )
+    # And the labels must actually come from the caller's curated dict.
+    assert "labels: dict[int | str, str]" in pipeline_src
+    assert "int_labels = {int(k): v for k, v in labels.items()}" in pipeline_src
 
 
 @pytest.mark.parametrize(
-    "fragment", sorted(FRAGMENTS_DIR.glob("*.md")), ids=lambda p: p.name
+    "fragment",
+    sorted(p for p in FRAGMENTS_DIR.glob("*.md") if p.name not in ("aider.md", "devin.md")),
+    ids=lambda p: p.name,
 )
 def test_core_fragments_step5_reexport_with_curated_labels(fragment: Path):
     """Same lint at the source of truth: the core fragments skillgen renders from."""
     text = fragment.read_text(encoding="utf-8")
-    post_labels_blocks = [
-        b for b in _code_blocks(text) if "labels = LABELS_DICT" in b
-    ]
-    assert post_labels_blocks, f"{fragment.name}: no Step-5 (LABELS_DICT) code block found"
-    for block in post_labels_blocks:
-        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
-            f"{fragment.name}: the post-labels Step-5 block must re-export "
-            f"graphify-out/graph.json with community_labels=labels (#2490)"
-        )
+    assert _LABEL_STEP in text, (
+        f"{fragment.name}: the core fragment must route Step 5 through "
+        f"`{_LABEL_STEP}` (#2490, #197)"
+    )
+    assert "LABELS_DICT" not in text, (
+        f"{fragment.name}: the old LABELS_DICT code-substitution placeholder must be "
+        f"gone; labels are passed as --labels JSON to `{_LABEL_STEP}` (#197)"
+    )
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    sorted(p for p in FRAGMENTS_DIR.glob("*.md") if p.name in ("aider.md", "devin.md")),
+    ids=lambda p: p.name,
+)
+def test_monolith_fragments_still_reexport_curated_labels(fragment: Path):
+    """The unconverted aider/devin monoliths keep their own #2490 re-export.
+
+    They still carry the inline Step-5 block, so this checks the original shape
+    still holds until they are migrated to `graphify pipeline label` (#197).
+    """
+    text = fragment.read_text(encoding="utf-8")
+    assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in text, (
+        f"{fragment.name}: the monolith Step-5 block must still re-export graph.json "
+        f"with community_labels=labels (#2490)"
+    )
