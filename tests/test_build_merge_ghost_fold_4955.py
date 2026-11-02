@@ -59,3 +59,24 @@ def test_ambiguous_file_label_is_not_folded(tmp_path):
 def test_prune_sources_still_removes(tmp_path):
     disk = [_n("a", "A", "a.py", "L1"), _n("b", "B", "b.py", "L2")]
     assert set(_merge(tmp_path, disk, prune_sources=["b.py"]).nodes) == {"a"}
+
+
+# --- to_json: a ghost fold is not a lost saved node ---
+
+def test_to_json_accepts_a_method_ghost_fold(tmp_path):
+    # #3705: Pass 2's method branch folds `run` into `.run()`. to_json's own
+    # shrink guard used to read the saved `run` as a lost semantic node.
+    path = _save(tmp_path, [_n("c_run", ".run()", "src/c.py", "L3"),
+                            _n("run", "run", "src/c.py")])
+    G = build_merge([dict(EMPTY)], graph_path=str(path), dedup=True)
+    assert set(G.nodes) == {"c_run"}
+    assert to_json(G, {}, str(path)) is True
+    assert [n["id"] for n in json.loads(path.read_text())["nodes"]] == ["c_run"]
+
+
+def test_ghost_fold_map_is_not_written_to_graph_json(tmp_path):
+    path = _save(tmp_path, [_n("src_client", "client.py", "src/client.py", "L1"),
+                            _n("client_py", "client.py", "src/client.py")])
+    G = build_merge([dict(EMPTY)], graph_path=str(path), dedup=True)
+    assert to_json(G, {}, str(path)) is True
+    assert "_dedup_remap" not in json.loads(path.read_text()).get("graph", {})

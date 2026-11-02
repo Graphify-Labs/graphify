@@ -1877,6 +1877,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for ghost_id in _ghost_remap:
         G.remove_node(ghost_id)
         node_set.discard(ghost_id)
+    if _ghost_remap:
+        # These folds are intentional (#1145, #3344, #3705), so the write
+        # guards must not read them as lost nodes. Report them on the same
+        # {merged-away id: survivor id} channel entity dedup uses (#4940).
+        G.graph.setdefault("_dedup_remap", {}).update(_ghost_remap)
 
     # Normalized ID map: lets edges survive when the LLM generates IDs with
     # slightly different casing or punctuation than the AST extractor.
@@ -2335,7 +2340,7 @@ def build(
     # Which ids dedup folded into which survivor, for the #479 write guard
     # (#4940). Popped by to_json, so it is not stored in graph.json.
     if _dedup_remap:
-        G.graph["_dedup_remap"] = _dedup_remap
+        G.graph.setdefault("_dedup_remap", {}).update(_dedup_remap)
     return G
 
 
