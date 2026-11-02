@@ -10982,6 +10982,7 @@ def extract(
     # nid -> raw source_file string, for the ambiguous-name tie-breakers below
     # (test/non-test classification + path proximity). Kept separate from the
     # file-node-id map because tie-breaking compares the actual file paths.
+    _rust_nid_to_label: "dict[str, str] | None" = None
     nid_to_source_file: dict[str, str] = {}
     for n in resolution_nodes:
         sf = n.get("source_file")
@@ -11099,10 +11100,16 @@ def extract(
         # EXTRACTED because the module is named explicitly in source — same
         # reasoning as the qualified-class-method passes (#1446/#1533).
         if rc.get("is_scoped_call"):
+            if _rust_nid_to_label is None:
+                _rust_nid_to_label = {
+                    str(n.get("id")): str(n.get("label", "")) for n in resolution_nodes
+                }
             _survivors = rust_scoped_call_survivors(
                 str(rc.get("scope_qualifier", "")).strip(),
                 global_label_to_nids.get(callee, []),
                 nid_to_source_file,
+                caller_file=str(rc.get("source_file", "")),
+                nid_to_label=_rust_nid_to_label,
             )
             if len(_survivors) != 1:
                 continue

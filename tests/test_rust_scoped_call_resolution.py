@@ -160,3 +160,65 @@ def test_bare_name_calls_keep_their_existing_resolution(tmp_path: Path) -> None:
            "pub fn helper() {}\n")
     calls = _calls(sorted(tmp_path.rglob("*.rs")), tmp_path)
     assert any(s == "run" and t == "helper" for s, t, _ in calls), calls
+
+
+def _scoped_calls(tmp_path, files: dict[str, str]) -> set[tuple[str, str]]:
+    paths = []
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        paths.append(path)
+    result = extract(paths, root=tmp_path, cache_root=tmp_path / "cache")
+    node = {n["id"]: n for n in result["nodes"]}
+
+    def where(nid: str) -> str:
+        n = node.get(nid, {})
+        sf = Path(n.get("source_file", ""))
+        rel = (sf.relative_to(tmp_path) if sf.is_absolute() else sf).as_posix()
+        return f'{rel}:{n.get("label")}'
+
+    return {
+        (where(e["source"]), where(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "calls" and e["target"] in node and e["source"] in node
+    }
+
+
+def test_crate_path_does_not_cross_into_another_workspace_crate(tmp_path):
+    calls = _scoped_calls(tmp_path, {
+        "crate_a/Cargo.toml": "[package]\nname = \"a\"\n",
+        "crate_a/src/main.rs": "mod util;\nfn run() { crate::util::f(); }\n",
+        "crate_a/src/util.rs": "pub fn g() {}\n",
+        "crate_b/Cargo.toml": "[package]\nname = \"b\"\n",
+        "crate_b/src/util.rs": "pub fn f() {}\n",
+    })
+    assert not any(tgt.startswith("crate_b/") for _, tgt in calls)
+
+
+def test_module_path_never_names_an_impl_method(tmp_path):
+    calls = _scoped_calls(tmp_path, {
+        "Cargo.toml": "[package]\nname = \"s\"\n",
+        "src/store.rs": "pub struct Db;\nimpl Db { pub fn open(&self) {} }\n",
+        "src/main.rs": "mod store;\nfn run() { store::open(); }\n",
+    })
+    assert not any(src.endswith("run()") for src, _ in calls)
+
+
+def test_underscore_module_resolves(tmp_path):
+    calls = _scoped_calls(tmp_path, {
+        "Cargo.toml": "[package]\nname = \"u\"\n",
+        "src/_internal.rs": "pub fn helper() {}\n",
+        "src/main.rs": "mod _internal;\nfn run() { crate::_internal::helper(); }\n",
+    })
+    assert ("src/main.rs:run()", "src/_internal.rs:helper()") in calls
+
+
+def test_path_call_does_not_bind_to_a_same_named_local_function(tmp_path):
+    calls = _scoped_calls(tmp_path, {
+        "Cargo.toml": "[package]\nname = \"p\"\n",
+        "src/a.rs": "fn helper() {}\nfn run() { crate::b::helper(); }\n",
+        "src/b.rs": "pub fn helper() {}\n",
+    })
+    assert ("src/a.rs:run()", "src/b.rs:helper()") in calls
+    assert ("src/a.rs:run()", "src/a.rs:helper()") not in calls

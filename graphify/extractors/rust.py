@@ -286,6 +286,17 @@ def extract_rust(path: Path) -> dict:
     # are resolved through their own registry rather than the function/type
     # label_to_nid to avoid cross-binding.
     macro_nids_by_name: dict[str, str] = {}
+    # `mod m { .. }` blocks declared in this file, so a `m::f()` call can bind
+    # in-file; `mod m;` declares a module that lives in another file.
+    inline_mods: set[str] = set()
+    _mod_stack = [root]
+    while _mod_stack:
+        _n = _mod_stack.pop()
+        if _n.type == "mod_item" and _n.child_by_field_name("body") is not None:
+            _name = _n.child_by_field_name("name")
+            if _name is not None:
+                inline_mods.add(_read_text(_name, source))
+        _mod_stack.extend(_n.children)
 
     # (bare impl type, method name) -> the method nodes this file's `impl` blocks
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
@@ -938,6 +949,16 @@ def extract_rust(path: Path) -> dict:
                         tgt_nid = named if named in type_nids else None
                 elif is_member_call:
                     tgt_nid = method_label_to_nid.get(callee_name)
+                elif is_scoped_call:
+                    # `m::f()` names module m. It is in this file only for
+                    # `self::f()` or an inline `mod m { .. }` declared here; any
+                    # other module lives in another file, so the bare-name match
+                    # would bind `crate::b::helper()` to this file's own helper.
+                    path_node = func_node.child_by_field_name("path") if func_node else None
+                    qual = _read_text(path_node, source) if path_node is not None else ""
+                    head = qual.split("::")[-1].strip()
+                    tgt_nid = label_to_nid.get(callee_name) if (
+                        qual == "self" or head in inline_mods) else None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
