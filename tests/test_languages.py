@@ -1,6 +1,8 @@
 """Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
 from __future__ import annotations
 from pathlib import Path
+import shutil
+
 import pytest
 from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
@@ -2815,6 +2817,21 @@ def test_fortran_capital_F_blank_lines_do_not_shift_location(tmp_path):
     locs = {n["label"]: n["source_location"] for n in r["nodes"]}
     assert locs.get("zebrafunc()") == "L6"
 
+
+@pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_fortran") is None or not shutil.which("cpp"),
+    reason="tree-sitter-fortran or cpp not available",
+)
+def test_fortran_capital_F_line_directive_keeps_scanned_source_identity(tmp_path):
+    """A logical #line filename changes the location, never the scanned source file."""
+    src = tmp_path / "actual.F90"
+    src.write_text('#line 40 "other.F90"\nsubroutine relocated()\nend subroutine\n')
+
+    r = extract_fortran(src)
+    node = next(n for n in r["nodes"] if n["label"] == "relocated()")
+
+    assert node["source_location"] == "L40"
+    assert node["source_file"] == str(src)
 
 
 # ── PowerShell ───────────────────────────────────────────────────────────────

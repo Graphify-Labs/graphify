@@ -28,25 +28,29 @@ def _strip_include_directives(source: bytes) -> bytes:
     )
 
 
-def _decode_marker_path(raw: bytes) -> str:
-    """Decode a cpp linemarker filename, undoing cpp's `\\` and `"` escaping."""
-    return raw.decode("utf-8", "replace").replace('\\"', '"').replace("\\\\", "\\")
+def _strip_linemarkers(out: bytes) -> tuple[bytes, list[int]]:
+    """Remove cpp linemarkers and map each output line to its logical source line.
 
-
-def _strip_linemarkers(out: bytes, input_name: str = "<stdin>") -> tuple[bytes, list[int]]:
-    """Remove cpp linemarkers and map each output line to its input line."""
+    cpp emits internal ``<built-in>`` and ``<command-line>`` markers before it
+    returns to stdin. Once stdin has been entered, all later output is derived
+    from the sanitized input: includes are stripped before cpp runs. A source
+    ``#line`` directive may deliberately change its logical filename, so retain
+    its line number without treating that name as a filesystem path or source
+    identity.
+    """
     content: list[bytes] = []
     line_map: list[int] = []
     cur = 1
-    in_input = False
+    in_source = False
     for raw in out.split(b"\n"):
         marker = _LINEMARKER.match(raw)
         if marker is not None:
             cur = int(marker.group(1))
-            in_input = _decode_marker_path(marker.group(2)) == input_name
+            if marker.group(2) == b"<stdin>":
+                in_source = True
             continue
         content.append(raw)
-        line_map.append(cur if in_input else 0)
+        line_map.append(cur if in_source else 0)
         cur += 1
     return b"\n".join(content), line_map
 

@@ -63,10 +63,10 @@ def _read_secret_from(source_file: Path) -> bool:
 
 
 @pytest.mark.skipif(shutil.which("cpp") is None, reason="cpp not available")
-def test_real_cpp_stdin_linemarkers_populate_original_line_map(tmp_path):
+def test_real_cpp_stdin_linemarkers_map_filename_switches(tmp_path):
     src = tmp_path / "mapped.F90"
     src.write_text(
-        "#line 40\n"
+        '#line 40 "other.F90"\n'
         "subroutine later()\n"
         "end subroutine later\n"
     )
