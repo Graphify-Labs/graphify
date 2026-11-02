@@ -314,3 +314,21 @@ def test_evidence_free_same_source_file_mention_still_folds():
     assert _lost_saved_semantic_nodes(saved, [
         {"id": n, **dict(g.nodes[n])} for n in g.nodes
     ]) == []
+
+
+def test_metadata_only_mention_is_not_independent_evidence():
+    """#4896: `metadata` and `captured_at` ride along on ordinary INFERRED
+    mention ghosts, so they must not count as independent provenance. A ghost
+    carrying only those still folds into its AST file-self twin instead of
+    surviving as a duplicate."""
+    meta_only = {**_mention("meta_ghost", "config.yaml", "config/config.yaml"),
+                 "metadata": {"confidence": "INFERRED"}, "captured_at": "2026-11-02"}
+    saved = [meta_only]
+    ast = _ast_file("config_ast", "config/config.yaml")
+    g = build_from_json({"nodes": [ast, *saved], "edges": []})
+    assert "config_ast" in g and "meta_ghost" not in g
+    folded: dict[str, str] = {}
+    assert _lost_saved_semantic_nodes(saved, [
+        {"id": n, **dict(g.nodes[n])} for n in g.nodes
+    ], folded=folded) == []
+    assert folded == {"meta_ghost": "config_ast"}

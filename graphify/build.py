@@ -902,11 +902,15 @@ def _has_independent_semantic_evidence(node: dict) -> bool:
     but such a fold discards the semantic record's independent explanation
     and attribution. Keep these records distinct unless the same-source
     (source_file, label) twin rule already matched them.
+
+    Only genuine provenance counts. `metadata` and `captured_at` are attached
+    to ordinary INFERRED mention ghosts by extract.py, so treating them as
+    evidence would stop those ghosts folding and let duplicates proliferate
+    on real graphs (#4896).
     """
     return any(
         node.get(field) not in (None, "", [], {})
-        for field in ("rationale", "source_url", "author", "contributor",
-                      "captured_at", "metadata")
+        for field in ("rationale", "source_url", "author", "contributor")
     )
 
 
