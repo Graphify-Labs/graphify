@@ -122,6 +122,7 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_HEADER,
     _drop_opencode_config_entry,
     _opencode_config_names_plugin,
+    _opencode_dir,
     _opencode_plugin_is_v1_only,
     _PLATFORM_CONFIG,
     _skill_lock,
@@ -429,12 +430,21 @@ def _refresh_v1_opencode_plugins() -> None:
     if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
         return
     try:
-        directories = dict.fromkeys(d.resolve() for d in (Path.cwd(), Path.home()))
+        # The cwd and home .opencode dirs are where installs before #3398 wrote,
+        # ~/.config/opencode is the global install's dir since.
+        directories = dict.fromkeys(
+            d.resolve()
+            for d in (
+                _opencode_dir(project=True, project_dir=Path.cwd()),
+                _opencode_dir(project=True, project_dir=Path.home()),
+                _opencode_dir(project=False),
+            )
+        )
     except (OSError, RuntimeError):
         return
     loadable: "bool | None" = None  # asked once, and only when an old plugin is found
     for directory in directories:
-        plugin_file = directory / _OPENCODE_PLUGIN_PATH
+        plugin_file = directory / _OPENCODE_PLUGIN_PATH.relative_to(".opencode")
 
         def pending() -> "bool | None":
             """True for an old plugin, False for a stale entry only, None for neither."""
@@ -486,7 +496,7 @@ def _refresh_v1_opencode_plugins() -> None:
         elif dropped:
             print(
                 f"graphify: removed the stale graphify entry from "
-                f"{directory / _OPENCODE_CONFIG_PATH}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                f"{directory / _OPENCODE_CONFIG_PATH.name}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
                 file=sys.stderr,
             )
 
@@ -861,7 +871,11 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        # Derive the list from the same source as `graphify install` usage
+        # (_print_install_usage) so the two can never drift apart, rather than
+        # hand-maintaining it (amp, copilot, antigravity-windows had been missed, #4655).
+        _platform_values = "|".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
+        print(f"  install [--platform P]  copy skill to platform config dir ({_platform_values})")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -905,13 +919,13 @@ def _run_cli() -> None:
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
-        print("    --model=<name>          model to use for community naming")
+        print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
         print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
-        print("    --batch-size=N          communities per labeling LLM call (default 100)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100, sized for ~16k context; use 40 for 8k)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
         print("    --missing-only         keep existing labels and only name missing/placeholder communities")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
-        print("    --model=<name>          model to use for community naming")
+        print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
         print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
         print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
@@ -965,6 +979,8 @@ def _run_cli() -> None:
         print("                            and OPENAI_MODEL to the model name your server serves")
         print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
+        print("                            GRAPHIFY_CLAUDE_PROMPT_CACHE=0 disables Claude system-prompt caching")
+        print("                            (default: enabled; set 1 to explicitly enable)")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --force                 full re-scan and re-dispatch: skip the incremental")
@@ -991,7 +1007,7 @@ def _run_cli() -> None:
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
-        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]")
+        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N, default 5000] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
         print("                          [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]")
@@ -1032,6 +1048,8 @@ def _run_cli() -> None:
         )
         print("  aider install           write graphify section to AGENTS.md (Aider)")
         print("  aider uninstall         remove graphify section from AGENTS.md")
+        print("  amp install             copy graphify skill + write AGENTS.md section (Amp)")
+        print("  amp uninstall           remove graphify skill + AGENTS.md section (Amp)")
         print(
             "  copilot install         copy graphify skill to ~/.copilot/skills (GitHub Copilot CLI)"
         )

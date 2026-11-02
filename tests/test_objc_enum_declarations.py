@@ -6,7 +6,7 @@ definitions were dropped entirely — the type and all of its enumerators were
 invisible. Every other language with enums emits a type node plus a `case_of`
 edge per member (Java #1719, C++ #3939, Swift); ObjC now matches.
 
-NS_ENUM and NS_OPTIONS typedefs use the same graph representation.
+NS_ENUM, NS_OPTIONS and NS_CLOSED_ENUM typedefs use the same graph representation.
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def test_objc_anonymous_and_bodyless_enums_mint_no_phantom(tmp_path):
 
 
 @pytest.mark.parametrize("suffix", [".h", ".m", ".mm"])
-@pytest.mark.parametrize("macro", ["NS_ENUM", "NS_OPTIONS"])
+@pytest.mark.parametrize("macro", ["NS_ENUM", "NS_OPTIONS", "NS_CLOSED_ENUM"])
 def test_objc_macro_enum_types_and_members_survive_cache(tmp_path, suffix, macro):
     source = tmp_path / ("Window" + suffix)
     source.write_text(
@@ -164,7 +164,6 @@ def test_objc_macro_enum_preserves_original_utf8_member_lines(tmp_path, newline)
         "typedef OTHER_ENUM(NSInteger, Broken) { Bad };",
         "typedef MY_NS_ENUM(NSInteger, Broken) { Bad };",
         "typedef CF_ENUM(NSInteger, Broken) { Bad };",
-        "typedef NS_CLOSED_ENUM(NSInteger, Broken) { Bad };",
         "NS_ENUM(NSInteger, Broken) { Bad };",
         "typedef NS_ENUM(NSInteger, ) { Bad };",
         "typedef NS_ENUM(NSInteger, Broken, Extra) { Bad };",
@@ -234,7 +233,7 @@ def test_objc_macro_enum_unsupported_parts_do_not_emit_partial_enums(tmp_path, d
     assert _edge_labels(result, "case_of") == {("Good", "Kept")}
 
 
-@pytest.mark.parametrize("macro", ["NS_ENUM", "NS_OPTIONS"])
+@pytest.mark.parametrize("macro", ["NS_ENUM", "NS_OPTIONS", "NS_CLOSED_ENUM"])
 def test_objc_macro_enum_preserves_members_with_attributes(tmp_path, macro):
     source = tmp_path / "Attributes.h"
     source.write_text(
