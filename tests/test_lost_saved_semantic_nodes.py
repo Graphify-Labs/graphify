@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from graphify.build import _lost_saved_semantic_nodes, build_from_json
+from graphify.build import _lost_saved_semantic_nodes, build, build_from_json
 from graphify.export import to_json
 from graphify.watch import _check_shrink
 
@@ -106,6 +106,38 @@ def test_malformed_non_string_source_file_does_not_crash():
     assert [n["id"] for n in lost] == ["s1"]
 
 
+def test_dedup_remap_target_present_is_not_lost():
+    """#4940: a saved node that an exact-duplicate dedup pass folded into a
+    different survivor id this run is not lost — the concept survived under
+    the survivor's id, which dedup_remap names."""
+    saved = [_sem("glossary_the_nudge", "The Nudge", "GLOSSARY.md")]
+    new = [_sem("glossary_nudge", "The Nudge", "GLOSSARY.md")]
+    assert _lost_saved_semantic_nodes(
+        saved, new, dedup_remap={"glossary_the_nudge": "glossary_nudge"},
+    ) == []
+
+
+def test_dedup_remap_target_absent_is_still_lost():
+    """Control: a dedup_remap entry only excuses the saved id when its
+    survivor is actually present in the new graph — a stale or wrong remap
+    must not silently waive a genuine loss."""
+    saved = [_sem("glossary_the_nudge", "The Nudge", "GLOSSARY.md")]
+    lost = _lost_saved_semantic_nodes(
+        saved, [], dedup_remap={"glossary_the_nudge": "glossary_nudge"},
+    )
+    assert [n["id"] for n in lost] == ["glossary_the_nudge"]
+
+
+def test_no_dedup_remap_given_is_unaffected():
+    """Control: omitting dedup_remap (the existing call shape) behaves exactly
+    as before — a same-label, same-file replacement under a different id is
+    still reported lost, same as test_non_ast_replacement_is_not_excused."""
+    saved = [_sem("glossary_the_nudge", "The Nudge", "GLOSSARY.md")]
+    new = [_sem("glossary_nudge", "The Nudge", "GLOSSARY.md")]
+    lost = _lost_saved_semantic_nodes(saved, new)
+    assert [n["id"] for n in lost] == ["glossary_the_nudge"]
+
+
 # --- end-to-end: the write paths that call the guard (#4389) ---
 
 
@@ -133,6 +165,42 @@ def test_to_json_still_refuses_genuine_loss(tmp_path, capsys):
     G = build_from_json({"nodes": [_ast("user_account", "Account", "src/models/user.ts")], "edges": []})
     assert to_json(G, {}, str(out)) is False
     assert "src_models_user_ts_user" in capsys.readouterr().err
+
+
+def _concept(node_id: str, label: str, sf: str) -> dict:
+    # Label-based exact-duplicate dedup skips file_type "code" entirely
+    # (#1205 — code identity is the id, never the label); a semantic doc
+    # concept is where this merge pass actually runs.
+    return {
+        "id": node_id, "label": label, "file_type": "concept",
+        "source_file": sf, "_origin": "semantic",
+    }
+
+
+def test_to_json_writes_after_exact_duplicate_dedup(tmp_path):
+    """#4940: GLOSSARY.md re-extracted alone re-emits "The Nudge" under a
+    second, shorter id (e.g. a chunking-boundary change). Same label, same
+    file, so build()'s exact-duplicate dedup pass collapses the two, and the
+    shorter new id wins over the longer SAVED one — the saved id is the one
+    folded away, not genuinely lost. to_json must still write."""
+    first_contact = _concept("glossary_first_contact", "First Contact", "GLOSSARY.md")
+    the_nudge = _concept("glossary_the_nudge", "The Nudge", "GLOSSARY.md")
+    out = tmp_path / "graph.json"
+    assert to_json(
+        build_from_json({"nodes": [first_contact, the_nudge], "edges": []}),
+        {}, str(out), force=True,
+    )
+    extraction = {
+        "nodes": [
+            first_contact,
+            _concept("glossary_nudge", "The Nudge", "GLOSSARY.md"),
+            the_nudge,
+        ],
+        "edges": [],
+    }
+    G = build([extraction], root=tmp_path)
+    assert sorted(G.nodes) == ["glossary_first_contact", "glossary_nudge"]
+    assert to_json(G, {}, str(out)) is True
 
 
 def test_check_shrink_allows_ghost_dedup(tmp_path):
