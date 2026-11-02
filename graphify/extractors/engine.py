@@ -10097,7 +10097,20 @@ def _extract_generic(
                     and not self_receiver
                     and not _js_factory_sibling_call
                 )
-                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                # C++: `x.m()` / `x->m()` names a method of x's type, so the bare
+                # name must not pick whichever `m` this file declares: through
+                # `Base* b`, `b->draw()` bound to the file's `Derived::draw`.
+                # Deferring sends it to _resolve_cpp_member_calls, which types x
+                # from the file's local/parameter/field table and bails when it
+                # can't. `this->m()` keeps its in-file binding.
+                _cpp_member_defer = (
+                    config.ts_module == "tree_sitter_cpp"
+                    and is_member_call
+                    and not is_scoped_call
+                    and member_receiver is not None
+                    and member_receiver != "this"
+                )
+                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
