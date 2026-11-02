@@ -2888,6 +2888,26 @@ def extract_corpus_parallel(
             # Deep-mode results checkpoint into their own namespace
             # (cache/semantic-deep/) so a deep run never overwrites standard
             # entries — and a later standard run never serves deep ones (#1894).
+            # A truncated/partial chunk must not be checkpointed as
+            # authoritative, nor may a checkpoint that covers only some of a
+            # sliced file's slices (#4943). An oversized splittable file is
+            # dispatched as several FileSlice chunks; if the run is interrupted
+            # before every slice's chunk returns (crash, kill, KeyboardInterrupt),
+            # the slices that did finish describe an incomplete parent file, and
+            # a clean-stamped entry would let the next run serve the truncated
+            # content forever. Stamp every sliced file whose slice set is not
+            # fully inside this chunk as partial; the final full save of a
+            # completed run overwrites the stamp with a clean entry.
+            _partial_files: set = set(_partial_source_files(result) or [])
+            _covered: dict = {}
+            _slice_totals: dict = {}
+            for item in chunk:
+                if isinstance(item, FileSlice):
+                    _covered.setdefault(item.path, set()).add(item.index)
+                    _slice_totals[item.path] = item.total
+            for _sliced_path, _indexes in _covered.items():
+                if len(_indexes) < _slice_totals[_sliced_path]:
+                    _partial_files.add(_sliced_path)
             _scs(
                 result.get("nodes", []),
                 result.get("edges", []),
@@ -2901,10 +2921,7 @@ def extract_corpus_parallel(
                 # that changes _EXTRACTION_SYSTEM re-extracts instead of replaying
                 # this vintage forever (#1939).
                 prompt=_extraction_system(deep=deep_mode),
-                # A truncated/partial chunk must not be checkpointed as
-                # authoritative: pass the partial file set so its entry is
-                # stamped ``partial: True`` and re-dispatched next run.
-                partial_source_files=_partial_source_files(result) or None,
+                partial_source_files=_partial_files or None,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
