@@ -71,6 +71,7 @@ def _lost_saved_semantic_nodes(
     new_nodes: list,
     deleted_sources: set[str] | None = None,
     folded: dict[str, str] | None = None,
+    dedup_remap: dict[str, str] | None = None,
 ) -> list[dict]:
     """Saved semantic nodes whose ids are absent from the new graph.
 
@@ -85,6 +86,11 @@ def _lost_saved_semantic_nodes(
     ``folded`` (when given) maps each saved node id that build_from_json merged
     into an AST twin to that twin's id, so a caller comparing node counts can
     discount it.
+
+    ``dedup_remap`` is the ``{merged-away id: survivor id}`` map entity dedup
+    produced this run (#4940). A saved id it folded into a survivor that is in
+    the new graph is one node, not a lost one. A survivor that is itself gone
+    excuses nothing: the content went with it.
     """
     deleted = {
         norm
@@ -145,6 +151,10 @@ def _lost_saved_semantic_nodes(
             continue
         if isinstance(node_id, str) and _renamed_present(node_id):
             continue
+        if dedup_remap:
+            survivor = dedup_remap.get(node_id)
+            if isinstance(survivor, str) and _renamed_present(survivor):
+                continue
         sf_val = node.get("source_file")
         source = _norm_source_file(sf_val) if isinstance(sf_val, str) else None
         lbl = str(node.get("label", "")).strip()
@@ -166,6 +176,24 @@ def _lost_saved_semantic_nodes(
             continue
         lost.append(node)
     return lost
+
+
+def _dedup_shrink_allowance(saved_ids: set, new_ids: set, dedup_remap: dict[str, str]) -> int:
+    """How many fewer nodes the graph may have because dedup merged saved ids (#4940).
+
+    Merging N saved ids into one survivor removes N - 1 nodes when the survivor
+    is new this run, and N when it is itself a saved id (that one stays in the
+    count of the old graph). Only merges whose survivor is in the new graph
+    count: a missing survivor is a loss, not a merge.
+    """
+    losers_by_survivor: dict[str, int] = {}
+    for loser, survivor in dedup_remap.items():
+        if loser in saved_ids and survivor in new_ids:
+            losers_by_survivor[survivor] = losers_by_survivor.get(survivor, 0) + 1
+    return sum(
+        count if survivor in saved_ids else count - 1
+        for survivor, count in losers_by_survivor.items()
+    )
 
 
 # Relations that say only "these two symbols appear together", with no claim about
