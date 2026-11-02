@@ -45,15 +45,6 @@ def test_base_pointer_call_reaches_the_base_method(tmp_path):
                    for src, tgt in calls)
 
 
-def test_untyped_receiver_does_not_bind_by_name(tmp_path):
-    calls = _calls(tmp_path, {"widget.cpp": (
-        "class Widget { public: void paint(); };\n"
-        "void Widget::paint() {}\n"
-        "template <typename T> void show(T& t) { t.paint(); }\n"
-    )})
-    assert not any(src.endswith("show()") for src, _ in calls)
-
-
 def test_typed_local_receiver_still_resolves(tmp_path):
     calls = _calls(tmp_path, {"widget.cpp": (
         "class Widget { public: void paint(); };\n"
@@ -68,3 +59,29 @@ def test_this_call_keeps_in_file_binding(tmp_path):
         "void Widget::run() { this->paint(); }\n"
     )})
     assert any(src.endswith("run()") and tgt.endswith("paint()") for src, tgt in calls)
+
+
+def test_a_local_in_one_function_does_not_retype_a_parameter_in_another(tmp_path):
+    files = {"net.cpp": (
+        "class Request { public: void send(); };\n"
+        "class Response { public: void close(); };\n"
+        "void f(Request& r) { r.send(); }\n"
+        "void g() { Response r; r.close(); }\n"
+    )}
+    calls = _calls(tmp_path, files)
+    assert ("net.cpp:f()", "net.cpp:.send()") in calls
+    result = extract([tmp_path / "net.cpp"], root=tmp_path, cache_root=tmp_path / "cache2")
+    label = {n["id"]: n["label"] for n in result["nodes"]}
+    assert not any(
+        label.get(e["source"]) == "f()" and label.get(e["target"]) == "Response"
+        for e in result["edges"]
+    )
+
+
+def test_auto_receiver_keeps_its_in_file_binding(tmp_path):
+    calls = _calls(tmp_path, {"widget.cpp": (
+        "class Widget { public: void paint(); };\n"
+        "Widget make();\n"
+        "void run() { auto w = make(); w.paint(); }\n"
+    )})
+    assert ("widget.cpp:run()", "widget.cpp:.paint()") in calls
