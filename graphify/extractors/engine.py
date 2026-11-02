@@ -7913,6 +7913,15 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_kotlin"
+                and t == "anonymous_initializer"):
+            # `init { ... }` has no node of its own, so its calls had no source
+            # to attach to (#4935). Hand the block to walk_calls the way #2565
+            # does a property initializer, with the same owner: the enclosing
+            # class, or the file node for a nested one.
+            initializer_nodes.append((parent_class_nid or file_nid, node))
+            return
+
+        if (config.ts_module == "tree_sitter_kotlin"
                 and t == "property_declaration"):
             # Field-type references stay class-gated: top-level properties keep
             # their pre-#2565 (no-references) behavior unchanged.

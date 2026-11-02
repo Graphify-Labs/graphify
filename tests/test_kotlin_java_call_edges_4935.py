@@ -122,3 +122,64 @@ def test_kotlin_call_to_an_overloaded_kotlin_object_method_resolves(tmp_path: Pa
                          "class Caller { fun go() { Settings.get(\"a\") } }\n",
     })
     assert ("Caller:.go()", "Settings:.get()") in edges
+
+
+# ---- init blocks -------------------------------------------------------------
+
+def test_an_init_block_call_attaches_to_its_class(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Logger.java": LOGGER_JAVA,
+        "app/Boot.kt": "package app\nimport util.Logger\n"
+                       "class Boot { init { Logger.single(\"a\") } }\n",
+    })
+    assert ("Boot:Boot", "Logger:.single()") in edges
+
+
+def test_an_init_block_call_to_an_overloaded_method_resolves(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Logger.java": LOGGER_JAVA,
+        "app/Boot.kt": "package app\nimport util.Logger\n"
+                       "class Boot { init { Logger.overloaded(\"a\") } }\n",
+    })
+    assert ("Boot:Boot", "Logger:.overloaded()") in edges
+
+
+def test_a_class_with_a_property_and_an_init_block_gets_both_edges(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Logger.java": LOGGER_JAVA,
+        "app/Both.kt": "package app\nimport util.Logger\n"
+                       "class Both {\n    val x = Logger.single(\"a\")\n"
+                       "    init { Logger.overloaded(\"b\") }\n}\n",
+    })
+    assert ("Both:Both", "Logger:.single()") in edges
+    assert ("Both:Both", "Logger:.overloaded()") in edges
+
+
+def test_an_init_block_is_attributed_like_a_property_initializer_in_a_nested_class(tmp_path: Path) -> None:
+    # Same shape, once with a property and once with `init`: both must pick the
+    # same kind of owner, or the two ways to run code at construction would
+    # disagree about who made the call.
+    edges = _calls(tmp_path, {
+        "util/Logger.java": LOGGER_JAVA,
+        "app/ByProp.kt": "package app\nimport util.Logger\n"
+                         "class ByProp {\n    class Inner { val x = Logger.single(\"a\") }\n}\n",
+        "app/ByInit.kt": "package app\nimport util.Logger\n"
+                         "class ByInit {\n    class Inner { init { Logger.single(\"a\") } }\n}\n",
+    })
+    prop_owner = {s.split(":", 1)[1] for s, t in edges if s.startswith("ByProp:") and t == "Logger:.single()"}
+    init_owner = {s.split(":", 1)[1] for s, t in edges if s.startswith("ByInit:") and t == "Logger:.single()"}
+    assert prop_owner and prop_owner == init_owner
+
+
+def test_object_and_companion_init_blocks_produce_an_edge(tmp_path: Path) -> None:
+    edges = _calls(tmp_path, {
+        "util/Logger.java": LOGGER_JAVA,
+        "app/Registry.kt": "package app\nimport util.Logger\n"
+                           "object Registry { init { Logger.single(\"a\") } }\n",
+        "app/Widget.kt": "package app\nimport util.Logger\n"
+                         "class Widget { companion object { init { Logger.single(\"b\") } } }\n",
+    })
+    assert ("Registry:Registry", "Logger:.single()") in edges
+    # The owner of a companion's init is not pinned: the extractor gives the
+    # enclosing class or the file node depending on the layout.
+    assert any(s.startswith("Widget:") and t == "Logger:.single()" for s, t in edges)
