@@ -10661,14 +10661,15 @@ def extract(
                         ext["nid"] = sym_remap[en]
             _remap_objc_field_tables(per_file, sym_remap)
         if edge_alias_candidates:
-            def _edge_key(edge: dict) -> str:
+            def _edge_key(edge: dict) -> bytes:
                 # target_file is a transient stamp (#1814/#1983); exclude it
                 # from twin identity or an alias edge (stamped) never matches
                 # the canonical twin the shared resolver emits (unstamped).
-                return json.dumps(
+                # A digest, since one key per edge in the corpus is kept at once.
+                return hashlib.blake2b(json.dumps(
                     {k: v for k, v in edge.items() if k != "target_file"},
                     sort_keys=True, separators=(",", ":"), default=str,
-                )
+                ).encode(), digest_size=16).digest()
             edge_key_counts = Counter(_edge_key(edge) for edge in all_edges)
             owned_node_ids = {node.get("id") for node in all_nodes}
             deduped_edges: list[dict] = []
@@ -10696,6 +10697,7 @@ def extract(
                         continue
                 deduped_edges.append(edge)
             all_edges[:] = deduped_edges
+            del edge_key_counts, owned_node_ids, deduped_edges, edge_alias_candidates
 
     # Repoint symbol-level alias edges that resolve THROUGH a barrel (#1983
     # follow-up). The candidates rewrite above learns old→canonical forms only
@@ -11570,6 +11572,8 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+    # Every call is resolved. Half of the corpus's rows are these.
+    del all_raw_calls, per_file
 
     # A Rust `use` group keeps one edge per binding; its v8 edge only served the calls above.
     all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
