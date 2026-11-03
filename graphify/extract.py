@@ -9633,7 +9633,18 @@ _SNIFF_BYTES = 256 * 1024
 _OBJC_HEADER_MARKERS = (b"@interface", b"@protocol", b"@implementation", b"@import", b"#import")
 
 
-def _is_objc_header(path: Path) -> bool:
+def _sniff_head(path: Path, head: bytes | None = None) -> bytes:
+    """First _SNIFF_BYTES of ``path``, or ``head`` when the caller already read it."""
+    if head is not None:
+        return head
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(_SNIFF_BYTES)
+    except OSError:
+        return b""
+
+
+def _is_objc_header(path: Path, head: bytes | None = None) -> bool:
     """Whether a `.h` file is Objective-C rather than C/C++ (#1475).
 
     `.h` is shared by C, C++, and ObjC; the suffix map routes it to extract_c,
@@ -9641,12 +9652,8 @@ def _is_objc_header(path: Path) -> bool:
     edges). Sniffing for an ObjC-only directive reroutes genuine ObjC headers to
     extract_objc while leaving every C/C++ header on its existing extractor.
     """
-    try:
-        with open(path, "rb") as fh:
-            head = fh.read(_SNIFF_BYTES)
-    except OSError:
-        return False
-    return any(marker in head for marker in _OBJC_HEADER_MARKERS)
+    data = _sniff_head(path, head)
+    return any(marker in data for marker in _OBJC_HEADER_MARKERS)
 
 
 # C++-only signals. None of these are valid in a plain C header, so finding one
@@ -9679,7 +9686,7 @@ def _is_objc_source(path: Path) -> bool:
     return _is_objc_header(path)
 
 
-def _is_cpp_header(path: Path) -> bool:
+def _is_cpp_header(path: Path, head: bytes | None = None) -> bool:
     """Whether a `.h` file is C++ rather than plain C (#1547).
 
     Mirrors `_is_objc_header`: sniffs for a C++-only token. Used only to reroute
@@ -9687,12 +9694,8 @@ def _is_cpp_header(path: Path) -> bool:
     priority). Conservative by construction — a plain C header matches nothing
     here and keeps its existing extract_c routing.
     """
-    try:
-        with open(path, "rb") as fh:
-            head = fh.read(_SNIFF_BYTES)
-    except OSError:
-        return False
-    return any(marker in head for marker in _CPP_HEADER_MARKERS)
+    data = _sniff_head(path, head)
+    return any(marker in data for marker in _CPP_HEADER_MARKERS)
 
 
 def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
@@ -9734,11 +9737,12 @@ def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
             # Every .h dialect resolves to a non-None extractor, so a caller that
             # only asks "is it None" does not need to read the file (#4978).
             return _DISPATCH.get(".h")
-        if _is_objc_header(path):
+        head = _sniff_head(path)
+        if _is_objc_header(path, head):
             return extract_objc
         # A C++ class header routed to extract_c loses the class entirely (the C
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
-        if _is_cpp_header(path):
+        if _is_cpp_header(path, head):
             return extract_cpp
     # `.m` is Objective-C OR MATLAB. extract_objc unconditionally would force-parse
     # MATLAB through the ObjC grammar into garbage (#1702). Route to extract_objc

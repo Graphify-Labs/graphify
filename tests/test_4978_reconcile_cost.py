@@ -263,6 +263,7 @@ class Probe:
     def install(self, monkeypatch, variant: str) -> None:
         real_get = ex._get_extractor
         real_read_bytes = Path.read_bytes
+        real_open = open
         probe = self
         cache: dict[str, object] = {}
 
@@ -298,6 +299,32 @@ class Probe:
                 probe.reconcile_bytes[probe._active] += len(data)
             return data
 
+        class CountingFile:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def __getattr__(self, name):
+                return getattr(self._fh, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self._fh.__exit__(*exc)
+
+            def read(self, *args, **kwargs):
+                data = self._fh.read(*args, **kwargs)
+                if probe._active is not None:
+                    probe.reconcile_reads[probe._active] += 1
+                    probe.reconcile_bytes[probe._active] += len(data)
+                return data
+
+        def counting_open(file, mode="r", *args, **kwargs):
+            fh = real_open(file, mode, *args, **kwargs)
+            if "b" in mode and probe._active is not None:
+                return CountingFile(fh)
+            return fh
+
         if variant.startswith("capped"):
 
             def capped(path, markers):
@@ -311,12 +338,13 @@ class Probe:
                     probe.reconcile_bytes[probe._active] += len(head)
                 return any(m in head for m in markers)
 
-            monkeypatch.setattr(ex, "_is_objc_header", lambda p: capped(p, ex._OBJC_HEADER_MARKERS))
+            monkeypatch.setattr(ex, "_is_objc_header", lambda p, head=None: capped(p, ex._OBJC_HEADER_MARKERS))
             monkeypatch.setattr(ex, "_is_objc_source", lambda p: capped(p, ex._OBJC_HEADER_MARKERS))
-            monkeypatch.setattr(ex, "_is_cpp_header", lambda p: capped(p, ex._CPP_HEADER_MARKERS))
+            monkeypatch.setattr(ex, "_is_cpp_header", lambda p, head=None: capped(p, ex._CPP_HEADER_MARKERS))
 
         monkeypatch.setattr(ex, "_get_extractor", get)
         monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+        monkeypatch.setattr("builtins.open", counting_open)
 
 
 def _run(corpus: Path, monkeypatch, variant: str) -> tuple[Probe, list[str]]:
@@ -390,8 +418,8 @@ def test_objc_m_resolves_once_and_reads_at_most_one_head(built_corpus, monkeypat
 
     assert _for(probe.reconcile_calls, "objc.m") == 1
     assert _for(probe.reconcile_real, "objc.m") == 1
-    assert _for(probe.reconcile_reads, "objc.m") <= 1
-    assert _for(probe.reconcile_bytes, "objc.m") <= CAP
+    assert _for(probe.reconcile_reads, "objc.m") == 1
+    assert _for(probe.reconcile_bytes, "objc.m") <= ex._SNIFF_BYTES
 
 
 @pytest.mark.parametrize("variant", ["cache", "capped", "capped_cache"])
