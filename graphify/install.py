@@ -488,9 +488,9 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     content search through its dedicated Grep tool, not Bash (#1986) — a
     Bash-only matcher never fired on the agent's primary search path.
 
-    When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
-    first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
-    var can force it on or off at runtime without a reinstall.
+    When ``strict`` is set, both hooks carry ``--strict`` so Read and dedicated
+    Grep share one block per session; Bash and Glob remain advisory. The
+    ``GRAPHIFY_HOOK_STRICT`` env var can force it on or off without a reinstall.
 
     Each entry carries a ``timeout`` (#3314): unset, Claude Code defaults a
     command hook to 600s, so a single wedged guard (a stuck filesystem, a
@@ -504,9 +504,10 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     if " " in exe and not exe.startswith('"'):
         exe = f'"{exe}"'
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
+    search_cmd = f"{exe} hook-guard search" + (" --strict" if strict else "")
     return [
         {"matcher": "Bash|Grep",
-         "hooks": [{"type": "command", "command": f"{exe} hook-guard search", "timeout": 10}]},
+         "hooks": [{"type": "command", "command": search_cmd, "timeout": 10}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd, "timeout": 10}]},
     ]
@@ -1028,8 +1029,9 @@ def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
     print(f"Platforms: {platforms}")
-    print("  --strict  block the first raw file read per session until one "
-          "`graphify query` runs (Claude Code project hook only; needs --project)")
+    print("  --strict  block the first raw Read or dedicated Grep per session "
+          "unless recently oriented with `graphify query` "
+          "(Claude Code project hooks only; needs --project; Bash/Glob stay advisory)")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -2236,8 +2238,9 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     print("Claude Code will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
     if strict:
-        print("Strict mode: the first raw file read per session is blocked until")
-        print("one `graphify query` runs (toggle with GRAPHIFY_HOOK_STRICT=0).")
+        print("Strict mode: Read and dedicated Grep share one block per session")
+        print("unless recently oriented with `graphify query`; Bash/Glob stay advisory.")
+        print("Toggle with GRAPHIFY_HOOK_STRICT=0.")
 def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json.
 

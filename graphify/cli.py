@@ -72,6 +72,18 @@ _READ_DENY = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+_SEARCH_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a knowledge graph. Run '
+            '`graphify query "<your question>"` (or `graphify explain` / '
+            '`graphify path`) FIRST to orient yourself, then re-issue this Grep — '
+            'it will be allowed. This block fires at most once per session.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 _HOOK_SOURCE_EXTS = (
     '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.ejs', '.go',
     '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
@@ -969,7 +981,7 @@ def _touch_query_stamp(graph_path: "Path") -> None:
 
 def _query_stamp_fresh() -> bool:
     """True if a query/explain/path ran within GRAPHIFY_HOOK_STRICT_TTL (default
-    1800s) — recent orientation, so strict mode does not block this read."""
+    1800s) — recent orientation, so strict mode does not block raw Read/Grep."""
     from graphify.paths import out_path
     try:
         ttl = float(os.environ.get("GRAPHIFY_HOOK_STRICT_TTL", "1800"))
@@ -1176,14 +1188,12 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     Fails open everywhere: any error, or a non-matching tool call, prints nothing
     and the caller exits 0, so a legitimate tool call is never blocked by a bug.
 
-    In strict mode (opt-in, Claude Code Read only) the FIRST raw read of indexed,
-    in-project, fresh code per session is DENIED with a redirect to `graphify query`
-    (permissionDecision), then downgrades to the soft nudge — it fires at most once
-    per session and can never strand the agent. Search (Bash) and Glob stay
-    nudge-only: a compound shell command has no single parseable target and blocking
-    file listing would strand navigation. #1840: reads of out-of-project files are
-    ignored, and a graph that is stale for the target file softens to a non-mandatory
-    nudge instead of blocking or demanding.
+    In strict mode (opt-in), the FIRST raw Read of indexed, fresh code or dedicated
+    Grep in the project is DENIED with a redirect to `graphify query`, then
+    downgrades to the soft nudge. The two tools share one block per session.
+    Bash and Glob stay nudge-only: a compound shell command has no single
+    parseable target and blocking file listing would strand navigation.
+    Out-of-project and graph-output targets are ignored; stale graphs never block.
     """
     from graphify.paths import out_path
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
@@ -1213,16 +1223,37 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # Two input shapes reach this guard (matcher "Bash|Grep", #1986):
             # the Bash tool carries `command`, while Claude Code's dedicated
             # Grep tool carries `pattern` (plus optional path/glob) and no
-            # command — a Grep call IS a content search by definition, so it
-            # nudges whenever a graph exists. For Bash, decide on the
-            # command's EXECUTED tokens (#3121): the old whole-string
-            # substring scan fired on quoted prose ('add flag support'
-            # contains "ag ") and on heredoc bodies that merely mention
-            # grep. Nudge-only, even in strict mode — see the docstring.
-            is_grep_tool = not cmd_str and bool(t.get("pattern"))
+            # command. Grep is scoped below to the project's source targets.
+            # Bash searches remain advisory: compound shell commands have no
+            # single reliable target.
+            pattern = t.get("pattern")
+            is_grep_tool = not cmd_str and isinstance(pattern, str) and bool(pattern) \
+                and d.get("tool_name") in (None, "Grep")
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
-                    and _nudge_allowed(d):
+            if not (is_grep_tool or is_bash_search) or not out_path("graph.json").is_file():
+                return
+            if is_grep_tool:
+                path = t.get("path", ".")
+                if not isinstance(path, str):
+                    return
+                root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+                target = Path(path.replace("\\", "/"))
+                if _is_cwd_relative(path):
+                    target = root / target
+                target = target.resolve()
+                if not target.is_relative_to(root):
+                    return
+                for output in (out_path(), root / "graphify-out"):
+                    if _is_cwd_relative(str(output)):
+                        output = root / output
+                    if target.is_relative_to(output.resolve()):
+                        return
+                if _hook_strict_enabled(strict) and not out_path("needs_update").exists() \
+                        and not _query_stamp_fresh() \
+                        and _mark_session_denied(str(d.get("session_id") or "")):
+                    sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
+                    return
+            if _nudge_allowed(d):
                 sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), terms=_search_hint_terms(t)))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -2977,9 +3008,9 @@ def dispatch_command(cmd: str) -> None:
         # Shell-agnostic Claude/Codebuddy PreToolUse guard (#522). Replaces the old
         # inline-bash hooks that failed on Windows. Prints an additionalContext nudge
         # toward graphify when a fresh in-project graph exists; always exits 0. In
-        # strict mode (opt-in, `hook-guard read --strict`) it blocks the first raw
-        # read per session via the JSON permissionDecision payload — never via exit
-        # code — and downgrades to the nudge thereafter.
+        # strict mode (opt-in, `hook-guard <read|search> --strict`) it blocks the
+        # first raw Read or dedicated Grep per session via the JSON permissionDecision
+        # payload — never via exit code — and downgrades to the nudge thereafter.
         _run_hook_guard(
             sys.argv[2] if len(sys.argv) > 2 else "",
             strict="--strict" in sys.argv[3:],

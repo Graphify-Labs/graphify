@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **hooks** strict mode now includes dedicated Grep alongside Read, sharing the existing once-per-session denial and recent-query bypass. Installed search hooks carry `--strict`; Bash searches and Glob remain advisory. Directory searches need no indexed-file match. External and graph-output Grep targets are silent in both modes, matching Read; `needs_update` bypasses the Grep denial.
+
 ## 0.9.101 (2026-11-02)
 
 - Fix: **watch** AST-only updates preserve cross-file semantic evidence whose node id collides with a code definition. Semantic nodes and their document-owned links use the existing citing-file namespace, keeping both the code definition and semantic provenance in `graph.json`, including with `--no-cluster`. Fresh AST facts remain authoritative for same-source ids; full-build deduplication is unchanged.
