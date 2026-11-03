@@ -9626,6 +9626,10 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
 # dropped and the header is isolated. `#import` is an ObjC-only directive (illegal
 # in C and C++), so this won't hijack genuine C/C++ headers, and extract_objc
 # resolves quoted imports via _resolve_c_include_path.
+# Bytes the header sniffers inspect. read_bytes()[:N] loads the whole file first,
+# which is a full-file read and allocation per call (#4978).
+_SNIFF_BYTES = 256 * 1024
+
 _OBJC_HEADER_MARKERS = (b"@interface", b"@protocol", b"@implementation", b"@import", b"#import")
 
 
@@ -9638,7 +9642,8 @@ def _is_objc_header(path: Path) -> bool:
     extract_objc while leaving every C/C++ header on its existing extractor.
     """
     try:
-        head = path.read_bytes()[:256 * 1024]
+        with open(path, "rb") as fh:
+            head = fh.read(_SNIFF_BYTES)
     except OSError:
         return False
     return any(marker in head for marker in _OBJC_HEADER_MARKERS)
@@ -9683,7 +9688,8 @@ def _is_cpp_header(path: Path) -> bool:
     here and keeps its existing extract_c routing.
     """
     try:
-        head = path.read_bytes()[:256 * 1024]
+        with open(path, "rb") as fh:
+            head = fh.read(_SNIFF_BYTES)
     except OSError:
         return False
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
