@@ -1268,6 +1268,7 @@ def _apply_symbol_resolution_facts(
     root: Path,
     facts: _SymbolResolutionFacts,
     resolution_context_nodes: list[dict] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -1690,6 +1691,55 @@ def _apply_symbol_resolution_facts(
             import_fact.file_path,
         )
 
+    if raw_calls and any(
+        fact.imported_name == "default"
+        and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
+        for fact in facts.imports
+    ):
+        default_imports = {
+            (_resolve_cached(fact.file_path), fact.local_name): _resolve_cached(fact.target_path)
+            for fact in facts.imports
+            if fact.imported_name == "default"
+            and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
+        }
+        member_nodes: dict[tuple[Path, str, str], set[str]] = {}
+        fresh_paths = {_resolve_cached(path) for path in paths}
+        for node in nodes + [
+            node for node in resolution_context_nodes or []
+            if _js_source_path(str(node.get("source_file", "")), root) not in fresh_paths
+        ]:
+            if not node.get("_callable"):
+                continue
+            source_path = _js_source_path(str(node.get("source_file", "")), root)
+            if source_path is None:
+                continue
+            key = (source_path, str(node.get("label", "")), str(node.get("source_location", "")))
+            member_nodes.setdefault(key, set()).add(str(node["id"]))
+        default_members: dict[Path, dict[str, tuple[str, str]]] = {}
+        for call in raw_calls:
+            if (not call.get("is_member_call") or call.get("_js_receiver_shadowed")
+                    or call.get("_js_construct") or call.get("ts_this_field")):
+                continue
+            source_path = _js_source_path(str(call.get("source_file", "")), root)
+            if source_path is None:
+                continue
+            target_path = default_imports.get((source_path, str(call.get("receiver") or "")))
+            if target_path is None:
+                continue
+            if target_path not in default_members:
+                default_members[target_path] = _js_default_object_members(target_path)
+            member = default_members[target_path].get(str(call.get("callee") or ""))
+            if member is None:
+                continue
+            targets = member_nodes.get((target_path, *member), set())
+            if len(targets) != 1:
+                continue
+            add_edge(
+                call["caller_nid"], next(iter(targets)), "calls", "call",
+                int(str(call["source_location"]).removeprefix("L")),
+                Path(call["source_file"]), target_file=str(target_path),
+            )
+
     # The structural extractor names the imported symbol on the immediate barrel,
     # which defines nothing, so its edge dangles and build mints an external stub
     # beside the edge the loop above added to the defining symbol (#4486). Drop
@@ -1911,6 +1961,14 @@ def _js_module_specifier(node, source: bytes) -> str | None:
             if child.type == "string":
                 source_node = child
                 break
+            # TS `import x = require("./m")`: the module string sits inside
+            # import_require_clause, not as a direct child of import_statement
+            # (same dig as `_import_js` in extract.py).
+            if child.type == "import_require_clause":
+                source_node = next(
+                    (sub for sub in child.children if sub.type == "string"), None
+                )
+                break
     if source_node is None:
         return None
     raw = _read_text(source_node, source).strip()
@@ -2020,7 +2078,8 @@ def _js_default_export_name(node, source: bytes) -> str | None:
     `export default abstract class Foo {}` (name on the `declaration` field) and
     `export default Foo` (an identifier on the `value` field). Anonymous defaults
     (`export default class {}`, `export default {...}`) have no resolvable symbol
-    and return None.
+    and return None; the members of an anonymous default object are resolved
+    separately by :func:`_js_default_object_members`.
     """
     if not any(child.type == "default" for child in node.children):
         return None
@@ -2032,6 +2091,47 @@ def _js_default_export_name(node, source: bytes) -> str | None:
     if value is not None and value.type == "identifier":
         return _read_text(value, source)
     return None
+
+def _js_default_object_members(path: Path) -> dict[str, tuple[str, str]]:
+    """Static methods of a direct default-exported object that resolve to an
+    existing node. Only members we can bind to a real node are returned."""
+    parsed = _parse_js_tree(path)
+    if parsed is None:
+        return {}
+    source, root_node = parsed
+    for node in root_node.named_children:
+        if node.type != "export_statement" or not any(
+            child.type == "default" for child in node.children
+        ):
+            continue
+        value = node.child_by_field_name("value")
+        if value is None or value.type != "object":
+            continue
+        members: dict[str, tuple[str, str]] = {}
+        seen: set[str] = set()
+        for prop in value.named_children:
+            if prop.type == "comment":
+                continue
+            key = prop.child_by_field_name("name") or prop.child_by_field_name("key")
+            # A spread or computed key can override any method, so do not add an
+            # edge on the strength of a same-named node alone.
+            if key is None or key.type not in ("property_identifier", "string"):
+                return {}
+            raw_name = _read_text(key, source)
+            if "\\" in raw_name:
+                return {}
+            name = raw_name[1:-1] if key.type == "string" else raw_name
+            if name in seen:
+                members.pop(name, None)
+                continue
+            seen.add(name)
+            if prop.type == "method_definition" and not any(
+                child.type in ("get", "set") for child in prop.children
+            ):
+                members[name] = (f"{raw_name}()", f"L{prop.start_point[0] + 1}")
+        return members
+    return {}
+
 
 def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
@@ -2266,12 +2366,174 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                     _SymbolUseFact(path, class_nid, name, "references", ctx, m_line)
                 )
 
+def _js_require_call_and_specifier(value_node, source: bytes):
+    """Return ``(call_node, raw_specifier)`` for a literal ``require('...')``
+    (or ``require('...').x``), else ``None``.
+
+    Name-checks the callee the same way ``_require_imports_js`` / ``_js_value_is_require``
+    do, so a ``factory()`` call is never treated as an import (#4634).
+    """
+    if value_node is None:
+        return None
+    node = value_node
+    if node.type == "member_expression":
+        node = node.child_by_field_name("object")
+        if node is None:
+            return None
+    if node.type != "call_expression":
+        return None
+    fn = node.child_by_field_name("function")
+    if fn is None or fn.type != "identifier" or _read_text(fn, source) != "require":
+        return None
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    raw = None
+    for arg in args.children:
+        if arg.type == "string":
+            raw = _read_text(arg, source).strip("'\"` ")
+            break
+    if not raw:
+        return None
+    return node, raw
+
+
+def _js_cjs_require_bindings(declarator, source: bytes) -> list[tuple[str, str]]:
+    """``(local_name, imported_name)`` for a whole-module ``require`` declarator.
+
+    Only ``const/let/var X = require('./m')`` (not ``require('./m').y`` or
+    ``const { X } = require('./m')``). Those other forms already get structural
+    ``imports`` edges from ``_require_imports_js``; minting SymbolImportFacts for
+    them would also resolve call-uses through the symbol pass and regress the
+    EXTRACTED ``confidence_score`` path for destructured requires (#4688 / #4634).
+    Whole-module bindings are recorded as default imports, matching ESM
+    ``import X from './m'``.
+    """
+    value = declarator.child_by_field_name("value")
+    if value is None or value.type != "call_expression":
+        return []
+    req = _js_require_call_and_specifier(value, source)
+    if req is None:
+        return []
+    name_node = declarator.child_by_field_name("name")
+    if name_node is None or name_node.type != "identifier":
+        return []
+    local = _read_text(name_node, source)
+    if not local:
+        return []
+    return [(local, "default")]
+
+
+def _js_cjs_default_export_local(right, source: bytes) -> str | None:
+    """Local name of a ``module.exports = <expr>`` RHS, if resolvable.
+
+    Walks through chained assignments (``module.exports = exports = Foo``) to the
+    final RHS — an intermediate ``exports = …`` left is not the exported binding.
+    """
+    node = right
+    while node is not None and node.type == "assignment_expression":
+        node = node.child_by_field_name("right")
+    if node is None:
+        return None
+    if node.type == "identifier":
+        return _read_text(node, source) or None
+    if node.type in (
+        "class", "class_declaration", "function", "function_declaration",
+        "generator_function", "generator_function_declaration",
+    ):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return _read_text(name_node, source) or None
+    return None
+
+
+def _js_cjs_export_facts(node, source: bytes, path: Path) -> list[_SymbolExportFact]:
+    """Export facts for CommonJS ``module.exports`` / ``exports.X`` assignments.
+
+    Whole-module ``module.exports = Name`` is recorded as a default export so a
+    ``const X = require('./m')`` import resolves through the same alias path as
+    ESM ``import X from './m'`` (#4688). Named property assignments
+    (``exports.Foo = …`` / ``module.exports.Foo = …``) become named exports.
+
+    Bare ``exports = Name`` is intentionally ignored: in CommonJS that only
+    rebinds the local ``exports`` binding and does not change what ``require()``
+    returns (unlike ``module.exports = Name``).
+    """
+    if node.type != "expression_statement":
+        return []
+    assign = next((c for c in node.children if c.type == "assignment_expression"), None)
+    if assign is None:
+        return []
+    left = assign.child_by_field_name("left")
+    right = assign.child_by_field_name("right")
+    if left is None or right is None:
+        return []
+    line = node.start_point[0] + 1
+    left_str = _read_text(left, source)
+    out: list[_SymbolExportFact] = []
+    if left_str == "module.exports":
+        local = _js_cjs_default_export_local(right, source)
+        if local:
+            out.append(
+                _SymbolExportFact(path, "default", line, local_name=local)
+            )
+            # Also expose the binding under its own name so a same-named
+            # ``require`` without a default walk still finds it, and so
+            # ``module.exports = Generator`` remains visible as ``Generator``.
+            if local != "default":
+                out.append(
+                    _SymbolExportFact(path, local, line, local_name=local)
+                )
+        elif right.type == "object":
+            for prop in right.children:
+                if prop.type == "shorthand_property_identifier":
+                    name = _read_text(prop, source)
+                    if name:
+                        out.append(
+                            _SymbolExportFact(path, name, line, local_name=name)
+                        )
+                elif prop.type == "pair":
+                    key = prop.child_by_field_name("key")
+                    val = prop.child_by_field_name("value")
+                    if key is None:
+                        continue
+                    exported = _read_text(key, source)
+                    local_name = None
+                    if val is not None and val.type == "identifier":
+                        local_name = _read_text(val, source) or None
+                    if exported:
+                        out.append(
+                            _SymbolExportFact(
+                                path, exported, line, local_name=local_name or exported
+                            )
+                        )
+        return out
+    if left.type != "member_expression":
+        return []
+    # exports.Foo = ...  /  module.exports.Foo = ...
+    obj = left.child_by_field_name("object")
+    prop = left.child_by_field_name("property")
+    if obj is None or prop is None:
+        return []
+    exported = _read_text(prop, source)
+    if not exported:
+        return []
+    obj_str = _read_text(obj, source)
+    if obj_str not in ("exports", "module.exports"):
+        return []
+    local = _js_cjs_default_export_local(right, source) or exported
+    out.append(_SymbolExportFact(path, exported, line, local_name=local))
+    return out
+
+
 # Node types the whole-tree passes of _collect_js_symbol_resolution_facts
 # filter on.
 _JS_FACT_NODE_TYPES = frozenset({
     "export_statement",
     "import_statement",
     "lexical_declaration",
+    "variable_declaration",
+    "expression_statement",
     "class_declaration",
     "abstract_class_declaration",
     "interface_declaration",
@@ -2286,10 +2548,11 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
     if not js_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object, list]] = {}
-
+    # One parse per file, dropped before the next: holding every file's source and syntax tree
+    # across the passes held the whole corpus (1.9 GB on Next.js). Class-member uses still follow
+    # all call uses, so every fact list keeps its order.
+    member_facts = _SymbolResolutionFacts()
     for path in js_paths:
-        resolved_path = _resolve_cached(path)
         parsed = _parse_js_tree(path)
         if parsed is None:
             continue
@@ -2298,7 +2561,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             node for node in _walk_js_tree(root_node)
             if node.type in _JS_FACT_NODE_TYPES
         ]
-        trees[resolved_path] = (source, root_node, indexed)
 
         for node in indexed:
             if node.type == "export_statement":
@@ -2306,6 +2568,44 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     facts.declarations.append(
                         _SymbolDeclarationFact(path, name, node.start_point[0] + 1)
                     )
+
+            if node.type == "expression_statement":
+                facts.exports.extend(_js_cjs_export_facts(node, source, path))
+                continue
+
+            if node.type in ("lexical_declaration", "variable_declaration"):
+                # CommonJS `const/let/var X = require('./m')` is an import alias,
+                # not a local declaration. Without a SymbolImportFact here,
+                # `class A extends X` has nothing to resolve through after #4634
+                # stopped minting a shadow binding node (#4688).
+                for child in node.children:
+                    if child.type != "variable_declarator":
+                        continue
+                    bindings = _js_cjs_require_bindings(child, source)
+                    if not bindings:
+                        continue
+                    req = _js_require_call_and_specifier(
+                        child.child_by_field_name("value"), source
+                    )
+                    if req is None:
+                        continue
+                    _call, raw_module = req
+                    target_path = _resolve_js_module_path(raw_module, path.parent)
+                    if target_path is None:
+                        continue
+                    target_path = _resolve_cached(target_path)
+                    line = node.start_point[0] + 1
+                    for local_name, imported_name in bindings:
+                        facts.imports.append(
+                            _SymbolImportFact(
+                                path,
+                                local_name,
+                                target_path,
+                                imported_name,
+                                line,
+                            )
+                        )
+                continue
 
             if node.type != "import_statement":
                 continue
@@ -2337,19 +2637,33 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         node.start_point[0] + 1,
                     )
                 )
+            # TS `import X = require("./m")` — same default-import shape as
+            # `const X = require("./m")` (#4688).
+            for child in node.children:
+                if child.type != "import_require_clause":
+                    continue
+                local_node = next(
+                    (c for c in child.children if c.type == "identifier"), None
+                )
+                if local_node is None:
+                    continue
+                local_name = _read_text(local_node, source)
+                if local_name:
+                    facts.imports.append(
+                        _SymbolImportFact(
+                            path,
+                            local_name,
+                            target_path,
+                            "default",
+                            node.start_point[0] + 1,
+                        )
+                    )
 
         for node in indexed:
             for alias, target in _js_lexical_aliases(node, source):
                 facts.aliases.append(
                     _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
                 )
-
-    for path in js_paths:
-        resolved_path = _resolve_cached(path)
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, _root_node, indexed = parsed
 
         for node in indexed:
             if node.type != "export_statement":
@@ -2440,12 +2754,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-    for path in js_paths:
-        resolved_path = _resolve_cached(path)
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node, _indexed = parsed
         for source_id, body in _js_top_level_function_bodies(path, root_node, source):
             for node in _walk_js_tree(body):
                 imported_name = _js_call_identifier(node, source)
@@ -2462,12 +2770,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-    for path in js_paths:
-        resolved_path = _resolve_cached(path)
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, _root_node, indexed = parsed
         stem = _file_stem(path)
         for node in indexed:
             if node.type not in (
@@ -2483,7 +2785,8 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             if not class_name:
                 continue
             class_nid = _make_id(stem, class_name)
-            _ts_walk_class_members(node, source, path, class_nid, facts)
+            _ts_walk_class_members(node, source, path, class_nid, member_facts)
+    facts.uses.extend(member_facts.uses)
 
 @functools.lru_cache(maxsize=2048)
 def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
@@ -2862,13 +3165,12 @@ def _collect_python_symbol_resolution_facts(
     if not py_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    # One parse per file, dropped before the next (the same reason as the JS facts above).
     for path in py_paths:
         parsed = _parse_python_tree(path)
         if parsed is None:
             continue
         source, root_node = parsed
-        trees[_resolve_cached(path)] = parsed
 
         for node in _walk_python_tree(root_node):
             if node.type != "import_from_statement":
@@ -2935,11 +3237,6 @@ def _collect_python_symbol_resolution_facts(
                         )
                     )
 
-    for path in py_paths:
-        parsed = trees.get(_resolve_cached(path))
-        if parsed is None:
-            continue
-        source, root_node = parsed
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
@@ -2963,6 +3260,7 @@ def _augment_symbol_resolution_edges(
     root: Path,
     ambiguous_python_modules: set[str] | None = None,
     resolution_context_nodes: list[dict] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
@@ -2974,7 +3272,10 @@ def _augment_symbol_resolution_edges(
         _apply_symbol_resolution_facts(
             paths, nodes, edges, root, facts,
             resolution_context_nodes=resolution_context_nodes,
+            raw_calls=raw_calls,
         )
+    elif raw_calls:
+        _apply_symbol_resolution_facts(paths, nodes, edges, root, facts, raw_calls=raw_calls)
     else:
         _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
@@ -3045,6 +3346,13 @@ def _resolve_cross_file_imports(
     node_by_id = {node["id"]: node for node in all_nodes if node.get("id")} if all_nodes else {}
     repointed_from: set[str] = set()
     TYPE_REPOINT_RELATIONS = frozenset({"references", "inherits", "implements", "extends"})
+    # The #3252 repoint below only ever touches an edge whose source_file belongs
+    # to the importing file. Index the edges by source_file once, when the first
+    # file needs it, instead of scanning all of them per file (files x edges,
+    # #4980). Each entry keeps the edge's position in all_edges, so a file's
+    # edges are visited in the same order as before.
+    edges_by_source: dict[object, list[tuple[int, dict]]] = {}
+    edges_indexed = False
 
     for file_result, path in zip(per_file, paths):
         str_path = str(path)
@@ -3222,9 +3530,15 @@ def _resolve_cross_file_imports(
         # Repoint AST type-reference and inheritance edges from sourceless stubs
         # to the exact imported target definition (#3252).
         if all_edges and import_targets:
-            for edge in all_edges:
-                if edge.get("source_file") not in file_srcs:
-                    continue
+            if not edges_indexed:
+                for position, edge in enumerate(all_edges):
+                    edges_by_source.setdefault(edge.get("source_file"), []).append((position, edge))
+                edges_indexed = True
+            file_edges = sorted(
+                (entry for src in file_srcs for entry in edges_by_source.get(src, ())),
+                key=lambda entry: entry[0],
+            )
+            for _, edge in file_edges:
                 if edge.get("relation") not in TYPE_REPOINT_RELATIONS:
                     continue
                 tgt = edge.get("target")
@@ -3523,9 +3837,9 @@ def _resolve_cross_file_java_imports(
     language = Language(tsjava.language())
     parser = Parser(language)
 
-    # Pre-pass: declared package per source_file string (and parsed trees for
-    # pass 2, so each file is only parsed once).
-    parsed: dict[str, tuple[bytes, object]] = {}
+    # Pre-pass: declared package per source_file string and each file's imports,
+    # so pass 2 needs no syntax tree: holding every tree held the whole corpus.
+    imports_by_path: dict[str, list[tuple[str, str, int]]] = {}
     pkg_by_src: dict[str, str] = {}
     for path, file_result in zip(paths, per_file):
         try:
@@ -3533,7 +3847,7 @@ def _resolve_cross_file_java_imports(
             tree = parser.parse(source)
         except Exception:
             continue
-        parsed[str(path)] = (source, tree)
+        imports_by_path[str(path)] = _java_import_rows(tree.root_node, source)
         pkg = ""
         for child in tree.root_node.children:
             if child.type == "package_declaration":
@@ -3580,53 +3894,54 @@ def _resolve_cross_file_java_imports(
     seen_pairs: set[tuple[str, str]] = set()
     for path in paths:
         file_nid = _make_id(str(path))
-        entry = parsed.get(str(path))
-        if entry is None:
-            continue
-        source, tree = entry
-
-        def walk(n) -> None:
-            if n.type == "import_declaration":
-                raw = _read_text(n, source).strip()
-                body = raw[len("import"):].strip().rstrip(";").strip()
-                if body.startswith("static "):
-                    body = body[len("static "):].strip()
-                if body.endswith(".*"):
-                    return
-                parts = body.split(".")
-                if not parts:
-                    return
-                last = parts[-1]
-                imp_pkg = ".".join(parts[:-1])
-                if last and last[0].islower() and len(parts) >= 2:
-                    last = parts[-2]
-                    imp_pkg = ".".join(parts[:-2])
-                at_line = n.start_point[0] + 1
-                for tgt_nid, tgt_pkg in name_to_ids.get(last, []):
-                    if tgt_nid == file_nid:
-                        continue
-                    if not _pkg_matches(imp_pkg, tgt_pkg):
-                        continue
-                    key = (file_nid, tgt_nid)
-                    if key in seen_pairs:
-                        continue
-                    seen_pairs.add(key)
-                    new_edges.append({
-                        "source": file_nid,
-                        "target": tgt_nid,
-                        "relation": "imports",
-                        "confidence": "EXTRACTED",
-                        "confidence_score": 1.0,
-                        "source_file": str(path),
-                        "source_location": f"L{at_line}",
-                        "weight": 1.0,
-                    })
-            for child in n.children:
-                walk(child)
-
-        walk(tree.root_node)
+        for last, imp_pkg, at_line in imports_by_path.get(str(path), ()):
+            for tgt_nid, tgt_pkg in name_to_ids.get(last, []):
+                if tgt_nid == file_nid:
+                    continue
+                if not _pkg_matches(imp_pkg, tgt_pkg):
+                    continue
+                key = (file_nid, tgt_nid)
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                new_edges.append({
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "source_file": str(path),
+                    "source_location": f"L{at_line}",
+                    "weight": 1.0,
+                })
 
     return new_edges
+
+
+def _java_import_rows(root_node, source: bytes) -> list[tuple[str, str, int]]:
+    """Each non-wildcard import in a Java tree as (name, package, line), in source order."""
+    rows: list[tuple[str, str, int]] = []
+
+    def walk(n) -> None:
+        if n.type == "import_declaration":
+            raw = _read_text(n, source).strip()
+            body = raw[len("import"):].strip().rstrip(";").strip()
+            if body.startswith("static "):
+                body = body[len("static "):].strip()
+            if body.endswith(".*"):
+                return
+            parts = body.split(".")
+            last = parts[-1]
+            imp_pkg = ".".join(parts[:-1])
+            if last and last[0].islower() and len(parts) >= 2:
+                last = parts[-2]
+                imp_pkg = ".".join(parts[:-2])
+            rows.append((last, imp_pkg, n.start_point[0] + 1))
+        for child in n.children:
+            walk(child)
+
+    walk(root_node)
+    return rows
 
 
 def _go_import_path_for_file(

@@ -1877,6 +1877,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for ghost_id in _ghost_remap:
         G.remove_node(ghost_id)
         node_set.discard(ghost_id)
+    if _ghost_remap:
+        # These folds are intentional (#1145, #3344, #3705), so the write
+        # guards must not read them as lost nodes. Report them on the same
+        # {merged-away id: survivor id} channel entity dedup uses (#4940).
+        G.graph.setdefault("_dedup_remap", {}).update(_ghost_remap)
 
     # Normalized ID map: lets edges survive when the LLM generates IDs with
     # slightly different casing or punctuation than the AST extractor.
@@ -2335,7 +2340,7 @@ def build(
     # Which ids dedup folded into which survivor, for the #479 write guard
     # (#4940). Popped by to_json, so it is not stored in graph.json.
     if _dedup_remap:
-        G.graph["_dedup_remap"] = _dedup_remap
+        G.graph.setdefault("_dedup_remap", {}).update(_dedup_remap)
     return G
 
 
@@ -3146,11 +3151,19 @@ def build_merge(
     # guard (#1951), and refusing it here would reintroduce the #1116
     # false-refuse for legitimate edits that remove symbols from a file.
     if had_graph and not dedup:
+        # Ghost folds build_from_json made on purpose (#1145, #3344, #3705).
+        # Read, not popped: to_json reads the same map and strips it.
+        _folds = G.graph.get("_dedup_remap") or {}
+
         def _in_new_graph(n: dict) -> bool:
             nid = n.get("id")
             if nid is None or not _hashable(nid):
                 return True  # untrackable identity — never count as lost
             if nid in G:
+                return True
+            # A fold into a survivor still in the graph is one node, not a
+            # loss; a survivor that is gone excuses nothing (#4955).
+            if _folds.get(nid) in G:
                 return True
             # Doc-twin heal (#1799): build_from_json merges a markdown
             # quick-scan's bare doc node into its semantic `<id>_doc` twin for
