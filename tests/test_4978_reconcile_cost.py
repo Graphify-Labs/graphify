@@ -90,61 +90,45 @@ def test_h7_m_is_the_only_suffix_where_the_sniff_decides_none_ness(tmp_path):
     assert ex._get_extractor(paths["objcpp.mm"]) is not None
 
 
-def _cheap_ast_owned(path: Path) -> bool:
-    """Same None-ness as _get_extractor, minus the .h sniff."""
-    if path.name.lower().endswith(".blade.php"):
-        return True
-    if ex.is_mcp_config_path(path):
-        return True
-    if ex.is_package_manifest_path(path):
-        return True
-    remapped = ex.effective_suffix(path)
-    if remapped != path.suffix:
-        got = ex._DISPATCH.get(remapped) or ex._DISPATCH.get(remapped.lower())
-        return got is not None
-    suffix = path.suffix
-    if suffix not in ex._DISPATCH and suffix.lower() in ex._DISPATCH:
-        suffix = suffix.lower()
-    if suffix == ".m":
-        return ex._is_objc_source(path)
-    if not suffix:
-        from graphify.detect import _shebang_interpreter
-
-        return ex._SHEBANG_DISPATCH.get(_shebang_interpreter(path)) is not None
-    return ex._DISPATCH.get(suffix) is not None
-
-
-def test_h7_cheap_predicate_matches_get_extractor_everywhere(tmp_path):
+def test_sniff_headers_flag_never_changes_none_ness(tmp_path):
     paths = _write_fixtures(tmp_path / "f")
     for name, path in paths.items():
         real = ex._get_extractor(path) is not None
-        assert _cheap_ast_owned(path) == real, f"{name}: cheap != real"
+        cheap = ex._get_extractor(path, sniff_headers=False) is not None
+        assert cheap == real, f"{name}: sniff_headers=False != default"
 
 
-def test_h7_cheap_predicate_follows_a_graphifyrc_remap(tmp_path, monkeypatch):
+def test_sniff_headers_flag_follows_a_graphifyrc_remap(tmp_path, monkeypatch):
     paths = _write_fixtures(tmp_path / "f")
     monkeypatch.setattr(ex, "effective_suffix", lambda p: ".unmapped")
     for name in ("plain.h", "cpp.h"):
-        assert _cheap_ast_owned(paths[name]) is False
+        assert ex._get_extractor(paths[name], sniff_headers=False) is None
         assert (ex._get_extractor(paths[name]) is None) is True
 
 
-def test_h7_cheap_predicate_reads_nothing_for_h(tmp_path, monkeypatch):
+def test_sniff_headers_false_reads_nothing_for_h(tmp_path, monkeypatch):
     paths = _write_fixtures(tmp_path / "f")
-    reads = Counter()
+    reads = 0
+    opens = 0
     real_read_bytes = Path.read_bytes
+    real_open = open
 
-    def counting(self):
-        reads[str(self)] += 1
+    def counting_read_bytes(self):
+        nonlocal reads
+        reads += 1
         return real_read_bytes(self)
 
-    monkeypatch.setattr(Path, "read_bytes", counting)
+    def counting_open(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        return real_open(*args, **kwargs)
 
-    _cheap_ast_owned(paths["plain.h"])
-    assert reads[str(paths["plain.h"])] == 0
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr("builtins.open", counting_open)
 
-    ex._get_extractor(paths["plain.h"])
-    assert reads[str(paths["plain.h"])] == 2, "two sniffs per call, one read each"
+    assert ex._get_extractor(paths["plain.h"], sniff_headers=False) is not None
+    assert reads == 0
+    assert opens == 0
 
 
 # ---------------------------------------------------------------------------
@@ -282,18 +266,15 @@ class Probe:
         probe = self
         cache: dict[str, object] = {}
 
-        def get(path):
+        def get(path, **kwargs):
             p = Path(path)
             key = str(p)
             reconcile = _caller_is_reconcile()
             probe.calls[key] += 1
             if not reconcile:
-                return real_get(p)
+                return real_get(p, **kwargs)
 
             probe.reconcile_calls[key] += 1
-
-            if variant.startswith("cheap"):
-                return True if _cheap_ast_owned(p) else None
 
             cache_key = str(p.resolve())
             if "cache" in variant and cache_key in cache:
@@ -302,7 +283,7 @@ class Probe:
             probe.reconcile_real[key] += 1
             probe._active = key
             try:
-                value = real_get(p)
+                value = real_get(p, **kwargs)
             finally:
                 probe._active = None
 
@@ -358,53 +339,62 @@ def built_corpus(tmp_path, capsys):
 
 
 EXPECT = {
-    # variant: (real asks for the header, reads per ask, bytes per read is capped)
-    "base": ("nodes", 2, False),
-    "cache": (1, 2, False),
-    "capped": ("nodes", 2, True),
-    "capped_cache": (1, 2, True),
-    "cheap": (0, 0, False),
-    "cheap_cache": (0, 0, False),
+    # variant: (extractor resolutions for the header, bytes read for it)
+    "base": (1, 0),
+    "cache": (1, 0),
+    "capped": (1, 0),
+    "capped_cache": (1, 0),
 }
 
 
-def test_cost_baseline_asks_once_per_node(built_corpus, monkeypatch, capsys):
+def test_cost_baseline_resolves_once_per_file(built_corpus, monkeypatch, capsys):
     corpus, snap = built_corpus
     _restore(corpus, snap)
     header_nodes = _header_nodes(corpus)
-    size = (corpus / "big.h").stat().st_size
     assert header_nodes >= HEADER_FUNCS
 
     probe, _ = _run(corpus, monkeypatch, "base")
     capsys.readouterr()
 
-    assert _for(probe.reconcile_calls, "big.h") == header_nodes, "one ask per node"
-    assert _for(probe.reconcile_real, "big.h") == header_nodes
-    assert _for(probe.reconcile_reads, "big.h") == 2 * header_nodes, "two sniffs"
-    assert _for(probe.reconcile_bytes, "big.h") == 2 * header_nodes * size, "whole file each"
+    assert _for(probe.reconcile_calls, "big.h") == 1, "one resolution per file"
+    assert _for(probe.reconcile_real, "big.h") == 1
+    assert _for(probe.reconcile_reads, "big.h") == 0, "the flag reads nothing"
+    assert _for(probe.reconcile_bytes, "big.h") == 0
 
 
 @pytest.mark.parametrize("variant", list(EXPECT))
 def test_cost_variants(built_corpus, monkeypatch, capsys, variant):
     corpus, snap = built_corpus
     _restore(corpus, snap)
-    header_nodes = _header_nodes(corpus)
-    size = (corpus / "big.h").stat().st_size
 
     probe, _ = _run(corpus, monkeypatch, variant)
     capsys.readouterr()
 
-    real_expected, reads_per_ask, capped = EXPECT[variant]
-    real_expected = header_nodes if real_expected == "nodes" else real_expected
+    real_expected, bytes_expected = EXPECT[variant]
 
-    assert _for(probe.reconcile_calls, "big.h") == header_nodes, "the loop still visits every node"
+    assert _for(probe.reconcile_calls, "big.h") == real_expected, "one resolution per file"
     assert _for(probe.reconcile_real, "big.h") == real_expected
-    assert _for(probe.reconcile_reads, "big.h") == reads_per_ask * real_expected
-    per_read = min(size, CAP) if capped else size
-    assert _for(probe.reconcile_bytes, "big.h") == per_read * reads_per_ask * real_expected
+    assert _for(probe.reconcile_reads, "big.h") == bytes_expected
+    assert _for(probe.reconcile_bytes, "big.h") == bytes_expected
 
 
-@pytest.mark.parametrize("variant", ["cache", "capped", "capped_cache", "cheap", "cheap_cache"])
+def test_objc_m_resolves_once_and_reads_at_most_one_head(built_corpus, monkeypatch, capsys):
+    corpus, snap = built_corpus
+    _restore(corpus, snap)
+    (corpus / "objc.m").write_text("@implementation App\n+ (void)load { }\n@end\n")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    capsys.readouterr()
+
+    probe, _ = _run(corpus, monkeypatch, "base")
+    capsys.readouterr()
+
+    assert _for(probe.reconcile_calls, "objc.m") == 1
+    assert _for(probe.reconcile_real, "objc.m") == 1
+    assert _for(probe.reconcile_reads, "objc.m") <= 1
+    assert _for(probe.reconcile_bytes, "objc.m") <= CAP
+
+
+@pytest.mark.parametrize("variant", ["cache", "capped", "capped_cache"])
 def test_meaning_is_unchanged(built_corpus, monkeypatch, capsys, variant):
     """The differential net: every variant must keep and evict the same nodes."""
     corpus, snap = built_corpus

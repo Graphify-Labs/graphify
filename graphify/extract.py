@@ -9689,8 +9689,15 @@ def _is_cpp_header(path: Path) -> bool:
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
-def _get_extractor(path: Path) -> Any | None:
-    """Return the correct extractor function for a file, or None if unsupported."""
+def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
+    """Return the correct extractor function for a file, or None if unsupported.
+
+    ``sniff_headers=False`` answers the weaker question "does any extractor own
+    this file" without reading it, for callers that only test for None (the #4978
+    reconcile loop). It is NOT interchangeable with the default: a C++ header
+    asked this way resolves to extract_c, which loses the class. Never use it to
+    pick a grammar for an actual parse.
+    """
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -9717,6 +9724,10 @@ def _get_extractor(path: Path) -> Any | None:
     if suffix not in _DISPATCH and suffix.lower() in _DISPATCH:
         suffix = suffix.lower()
     if suffix == ".h":
+        if not sniff_headers:
+            # Every .h dialect resolves to a non-None extractor, so a caller that
+            # only asks "is it None" does not need to read the file (#4978).
+            return _DISPATCH.get(".h")
         if _is_objc_header(path):
             return extract_objc
         # A C++ class header routed to extract_c loses the class entirely (the C
