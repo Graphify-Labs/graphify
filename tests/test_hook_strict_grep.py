@@ -78,6 +78,15 @@ def test_soft_grep_suppresses_irrelevant_path_nudges(tmp_path, monkeypatch, targ
     assert "knowledge graph at" in _invoke("search", _grep("src"), tmp_path, monkeypatch, strict=False)
 
 
+def test_grep_on_one_unindexed_file_keeps_the_deny(tmp_path, monkeypatch):
+    _fixture(tmp_path)  # manifest indexes src/mod.py only
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    out = _invoke("search", _grep("pyproject.toml"), tmp_path, monkeypatch, strict=True)
+    assert not _is_deny(out) and "knowledge graph at" in out
+    # The session's one deny is still available for an indexed target.
+    assert _is_deny(_invoke("search", _grep("src/mod.py"), tmp_path, monkeypatch, strict=True))
+
+
 def test_grep_custom_output_bypasses(tmp_path, monkeypatch):
     from graphify import paths
     _fixture(tmp_path)
