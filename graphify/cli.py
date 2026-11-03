@@ -1318,13 +1318,15 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 gmtime = os.stat(str(out_path("graph.json"))).st_mtime
             except OSError:
                 return
-            # #1840 (b): stale-for-target -> soften, never block. The target file
-            # changed after the last build, or watch flagged the tree.
+            # #1840 (b): stale-for-target -> soften, never block. A checkout
+            # can refresh mtimes without changing the extracted content.
             stale = False
             fp = str(t.get("file_path") or "")
             if fp:
                 try:
                     stale = os.stat(fp).st_mtime > gmtime
+                    if stale and _target_matches_manifest(fp, root):
+                        stale = False
                 except OSError:
                     stale = False
             try:
@@ -1376,6 +1378,40 @@ def _is_cwd_relative(value: str) -> bool:
     """
     pure = PureWindowsPath(value) if os.name == "nt" else PurePosixPath(value)
     return not pure.root and not pure.drive
+
+
+def _target_matches_manifest(file_path: str, root: "Path") -> bool:
+    """Confirm a newer-mtime target still matches its saved extraction hashes."""
+    from graphify.detect import _md5_file, _nfc
+    from graphify.paths import out_path
+    try:
+        # Bound the read itself, including when the manifest grows during I/O.
+        with out_path("manifest.json").open("rb") as f:
+            raw = f.read(2_000_001)
+        if len(raw) > 2_000_000:
+            return False
+        manifest = json.loads(raw)
+        if not isinstance(manifest, dict):
+            return False
+        p = Path(os.path.abspath(file_path))
+        rel = _nfc(p.relative_to(root).as_posix())
+        # Exact identities only: a basename/suffix match is not extraction proof.
+        entry = manifest.get(rel, manifest.get(_nfc(str(p))))
+        if not isinstance(entry, dict):
+            return False
+        if "hash" in entry and "ast_hash" not in entry:
+            hashes = [entry["hash"]]  # legacy save_manifest schema
+        else:
+            hashes = [entry.get("ast_hash", ""), entry.get("semantic_hash", "")]
+        if not all(isinstance(h, str) for h in hashes):
+            return False
+        hashes = [h for h in hashes if h]
+        # Empty tiers are unextracted; every populated tier must be current.
+        if not hashes or len(set(hashes)) != 1:
+            return False
+        return hashes[0] == _md5_file(p)
+    except Exception:
+        return False
 
 
 def _target_is_indexed(file_path: str, root: "Path") -> bool:

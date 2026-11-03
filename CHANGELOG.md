@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **hooks** unchanged source content with a newer checkout timestamp no longer receives false stale guidance. The read guard checks exact-path extraction-manifest hashes before softening strict mode; real edits, uncertain metadata, and an update-pending marker remain conservative.
+
 ## 0.9.101 (2026-11-02)
 
 - Fix: **watch** AST-only updates preserve cross-file semantic evidence whose node id collides with a code definition. Semantic nodes and their document-owned links use the existing citing-file namespace, keeping both the code definition and semantic provenance in `graph.json`, including with `--no-cluster`. Fresh AST facts remain authoritative for same-source ids; full-build deduplication is unchanged.
