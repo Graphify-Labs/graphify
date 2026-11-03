@@ -6,6 +6,15 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
+Start by deleting any partial list a previous run left behind. Step 9 is the only place that cleans it up, and this flow stops before Step 9, so without this line a stale list outlives the run that wrote it and a later full build reads it as its own (#4814). B3.5 writes the file again later in this run, so after this line it can only ever describe this run.
+
+The same rule applies to `.graphify_extract_run.json`, the snapshot of this run's extraction that the merge block below writes (#4811). A re-run of that block, or the Step 9 an agent may run after an update, reads it; like the partial list it outlives the run, so a previous run's copy must never be mistaken for this one.
+
+```bash
+rm -f graphify-out/.graphify_partial.txt
+rm -f graphify-out/.graphify_extract_run.json
+```
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
@@ -112,6 +121,23 @@ deleted = list(incremental.get('deleted_files', []))
 # now that replace — not the dedup pass — reconciles changed files).
 prune = list(deleted) or None
 
+# Snapshot THIS RUN's extraction and partial set before build_merge below, because
+# the write near the end of this block replaces .graphify_extract.json with the whole
+# merged graph (old graph.json nodes included). Anything that then asks what this
+# run produced - a re-run of this block after a later step fails, or the Step 9 an
+# agent runs after an update (#837) - would read every old node as fresh output and
+# stamp a changed doc whose chunk failed (#4811). The partial set travels with the
+# payload so a reader does not need .graphify_partial.txt to still exist: this block
+# deletes that file below (#4807/#4814). Write only when absent, so a re-run keeps the
+# FIRST snapshot instead of snapshotting the merged graph over it; the run-start rm
+# above guarantees any file found here was written by this run.
+_snapf = Path('graphify-out/.graphify_extract_run.json')
+if not _snapf.exists():
+    _pfp = Path('graphify-out/.graphify_partial.txt')
+    _pset = [line.strip() for line in _pfp.read_text(encoding=\"utf-8\").splitlines() if line.strip()] if _pfp.exists() else []
+    _snapf.write_text(json.dumps({'extraction': new_extraction, 'partial': _pset}), encoding=\"utf-8\")
+_snap = json.loads(_snapf.read_text(encoding=\"utf-8\"))
+
 # Use build_merge() — reads graph.json directly without NetworkX round-trip
 # so edge direction (calls, implements, imports) is always preserved (#801).
 # Pass root= so prune_sources (absolute paths from detect_incremental) are
@@ -155,13 +181,19 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # cached files instead of missing every one after a move (#1417).
 #
 # Only stamp semantic files (docs/papers/images) that ACTUALLY produced output
-# THIS run (new_extraction is this run's fresh extraction, read above before the
-# merge overwrote the file): a changed doc whose chunk failed must stay unstamped
+# THIS run (the snapshot holds this run's extraction, taken above before the merge
+# overwrote the working file): a changed doc whose chunk failed must stay unstamped
 # so the next --update re-queues it, otherwise it is marked done and its content
 # is lost forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
-_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'))
+# An --update stops before Step 9, so this merge is the run's ONLY manifest save.
+# A file B3.5 just flagged as partly read did produce output, so the stamp filter
+# alone would keep it - but its node set covers only the head of the file, and
+# stamping it means detect_incremental treats it as done forever (#4807). The
+# snapshot carries the set B3.5 wrote for this run, so the exclusion still holds
+# after the list is deleted below, and a re-run or Step 9 can honour it (#4811).
+_manifest_files = _stamped_manifest_files(incremental['files'], _snap['extraction'], Path('INPUT_PATH'), partial_source_files=set(_snap['partial']))
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
 _sem_types = ('document', 'paper', 'image')
@@ -172,6 +204,9 @@ _cleared = _dispatched - _stamped
 # are dropped rather than masquerading as deletions; untouched rows preserved (#1908).
 _scan = {f for fl in incremental['files'].values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+# This run was the list's only consumer; its contents now live in the snapshot, and
+# an --update has no Step 9 to clean up after it. Drop the file (#4814).
+Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
 print('[graphify update] Manifest saved.')
 "
 ```
