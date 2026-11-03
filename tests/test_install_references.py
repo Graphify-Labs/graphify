@@ -606,6 +606,6 @@ import pytest as _pytest_posix
 
 @_pytest_posix.fixture(autouse=True)
 def _posix_skill_layout(monkeypatch):
-    """gemini and hermes install to different directories on Windows; these tests
+    """hermes installs to a different directory on Windows; these tests
     assert the POSIX layout, so pin it."""
     monkeypatch.setattr("platform.system", lambda: "Linux")

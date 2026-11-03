@@ -55,6 +55,15 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+Terraform/HCL per-file AST results record the scope used to mint their node IDs.
+After a cache hit, extraction consumes that scope to rewrite node IDs and edge
+endpoints relative to the current scan root, including when the cache was copied
+from another checkout. Module-source topology is still resolved against the
+current permitted corpus. The scope marker is internal and is not exported in
+the graph. AST cache schema 33 retires entries without this marker; the semantic
+cache is unchanged. Existing graphs with stale absolute Terraform IDs need a full
+code rebuild: `graphify extract . --code-only --force`.
+
 Every extractor returns:
 
 ```json
@@ -69,6 +78,25 @@ Every extractor returns:
 ```
 
 `validate.py` enforces this schema before `build()` consumes it.
+
+
+## Semantic provenance during file-node folding
+
+`build_from_json()` normally folds an evidence-free semantic mention of a
+filename into its unique AST file-self node (Pass 2b, #3344); references to
+that mention are rewired to the AST node. A cross-source semantic record that
+contains its own `rationale`, source URL, author/contributor, capture time,
+or metadata is **not** a disposable mention: a label-only fold would discard
+its explanation or attribution. Such records remain separate even when their
+label matches a unique AST file node. This is intentionally conservative:
+a richly annotated mention may remain distinct until an explicit
+provenance-preserving merge is available. The saved-semantic-node shrink guard
+uses the same rule and still rejects any unexplained loss. Same-source AST/semantic twins that are evidence-free keep their
+existing exact-path merge rule (#4389/#4391), but an independently evidenced
+semantic YAML/document record is retained across a later AST extractor
+upgrade. If AST disambiguation path-qualifies a file-node label, the shrink
+guard accounts for a plain same-source fold using the exact source identity
+instead of accepting a mere basename collision.
 
 ## Edge direction in graph.json
 
@@ -147,3 +175,18 @@ When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
 underscore separators cannot collide with an ordinary normalized binding ID. Local
 call resolution stops if malformed scope metadata cycles.
+
+### Same-ID AST / semantic provenance during extractor upgrades (#4896)
+
+A newly supported AST extractor can mint an ID that is already owned by an
+independently evidenced semantic node in a saved graph, even when the two nodes
+refer to the same file. Watch reconciliation retains the saved semantic ID and
+its rationale/attribution, assigns the fresh AST record a deterministic
+ID-derived AST suffix, and rewrites only fresh AST edge/hyperedge
+references. This applies to full and incremental re-extractions; incrementally
+rebuilt sources are not positive evidence of semantic deletion. The shrink
+guard refuses same-ID losses of semantic provenance even when the total node
+count grows, preventing the ordinary missing-ID guard from being bypassed.
+If multiple new AST records already share that ID, all use one deterministic
+AST successor ID: this retains their preexisting AST coalescing behavior while
+ensuring they cannot overwrite independent semantic provenance.

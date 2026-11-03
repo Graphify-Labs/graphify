@@ -1,6 +1,5 @@
 # generate GRAPH_REPORT.md - the human-readable audit trail
 from __future__ import annotations
-import re
 from datetime import date
 from pathlib import Path
 import networkx as nx
@@ -31,10 +30,26 @@ def _portable_root_label(root: str) -> str:
 
 
 def _safe_community_name(label: str) -> str:
-    """Mirrors export.safe_name so community hub filenames and report wikilinks always agree."""
-    cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
-    cleaned = re.sub(r"\.(md|mdx|markdown)$", "", cleaned, flags=re.IGNORECASE)
-    return cleaned or "unnamed"
+    """The community hub wikilink target, computed the same way the actual
+    `_COMMUNITY_*.md` filename is (`export._obsidian_safe_stem`).
+
+    This used to be a separate, partial reimplementation here, and it had
+    drifted from the real one: it never stripped a `.qmd` suffix (so a
+    community whose hub label happens to be a source file like
+    `report.qmd` kept the extension in the wikilink while the export
+    dropped it from the filename), never fell back to `unnamed` for a
+    punctuation only label, never added the `dot-` prefix for a label
+    starting with `.`, never capped an overlong label the same way, and
+    folded only `\\r`/`\\n` rather than every C0 control character to a
+    space. Any one of those left the wikilink pointing at a file the
+    `--obsidian` export never actually wrote. Delegating here keeps the two
+    from ever drifting apart again; the one case this cannot match exactly
+    is the MAX_PATH-aware length budget export computes from the real
+    output directory, which `generate()` has no path to recover (a longer
+    standing, separately tracked limitation, not something this changes).
+    """
+    from graphify.export import _obsidian_safe_stem
+    return _obsidian_safe_stem(label)
 
 
 def load_learning_for_report(graph_path) -> dict | None:

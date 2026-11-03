@@ -71,6 +71,26 @@ def test_finalize_raw_graph_endpoints_matches_build_from_json():
     ]
 
 
+def test_finalize_raw_graph_endpoints_drops_edge_still_missing_relation(capsys):
+    """#4809: raw graph writes must enforce the same relation invariant as the builder."""
+    from graphify.build import finalize_raw_graph_endpoints
+
+    data = {
+        "nodes": [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}],
+        "edges": [
+            {"source": "n1", "target": "n2"},
+            {"source": "n1", "target": "n3", "relationship": "mentions"},
+        ],
+    }
+
+    finalize_raw_graph_endpoints(data)
+
+    assert data["edges"] == [{"source": "n1", "target": "n3", "relation": "mentions"}]
+    err = capsys.readouterr().err
+    assert "dropped 1 schema-invalid edge(s)" in err
+    assert "missing required field 'relation'" in err
+
+
 def test_finalize_raw_graph_endpoints_resolves_an_old_stem_alias():
     """An import that names a real file by its bare basename lands on that file.
 
@@ -134,6 +154,44 @@ def test_finalize_raw_graph_endpoints_keeps_an_ambiguous_alias_unresolved():
     # `tool` is claimed by two files, so it stays unresolved and becomes a stub.
     assert [(e["source"], e["target"]) for e in data["edges"]] == [("holder", "tool")]
     assert "tool" in [n["id"] for n in data["nodes"]]
+
+
+def test_finalize_raw_graph_endpoints_rejects_a_cross_language_alias():
+    """#4941: an alias claimed by exactly one file is still the wrong answer
+    when that file is in a different language than the edge naming it.
+
+    A Dart file's bare `PunchType` reference, left dangling because the real
+    enum lives in a Dart file not shown to the resolver here, must not ride
+    the old-stem "punchtype" alias onto an unrelated Java file of the same
+    name just because the Java file is the alias's only claimant.
+    """
+    from graphify.build import finalize_raw_graph_endpoints
+
+    data = {
+        "nodes": [
+            {
+                "id": "mobile_punch", "label": "punch.dart", "file_type": "code",
+                "source_file": "mobile/punch.dart",
+            },
+            {
+                "id": "backend_attendance_punchtype", "label": "PunchType.java",
+                "file_type": "code",
+                "source_file": "backend/attendance/PunchType.java",
+            },
+        ],
+        "edges": [
+            {"source": "mobile_punch", "target": "punchtype", "relation": "references",
+             "source_file": "mobile/punch.dart", "context": "variable_type"},
+        ],
+    }
+    finalize_raw_graph_endpoints(data)
+    # The alias is unambiguous but cross-language, so it must not resolve: the
+    # dangling "references" edge is dropped (not import-family, so nothing
+    # stubs it), and it must never have been re-pointed at the Java file.
+    assert data["edges"] == []
+    assert [n["id"] for n in data["nodes"]] == [
+        "mobile_punch", "backend_attendance_punchtype",
+    ]
 
 
 def test_extract_no_cluster_resolves_a_framework_import_like_the_clustered_path(

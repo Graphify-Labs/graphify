@@ -230,7 +230,10 @@ def extract_r(path: Path) -> dict:
             key_node = argument.child_by_field_name("name")
             value = argument_value(argument)
             key = _read_text(key_node, source) if key_node is not None else ""
-            if key == "inherit" and value is not None:
+            # R6Class spells its superclass argument `inherit`; setClass and
+            # setRefClass both spell the same thing `contains` instead, so a
+            # `contains = "Base"` S4/R5 class silently lost its inheritance edge.
+            if key in {"inherit", "contains"} and value is not None:
                 base_name = string_or_identifier(value).split("$")[-1]
                 if base_name:
                     base_id = classes.get(base_name, _make_id("r", "class", base_name))
