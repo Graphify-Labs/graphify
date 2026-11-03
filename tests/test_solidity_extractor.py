@@ -227,6 +227,133 @@ def test_solidity_enum_values_emit_case_of_not_contains(tmp_path):
     assert ("Point", "x") not in case_of
 
 
+def _calls_to(result: dict, kind: str) -> set[tuple[str, str, str]]:
+    """(caller, target, target file name) for `calls` edges into an event/error."""
+    nodes = {node["id"]: node for node in result["nodes"]}
+    return {
+        (nodes[e["source"]]["label"], nodes[e["target"]]["label"],
+         Path(nodes[e["target"]].get("source_file", "")).name)
+        for e in result["edges"]
+        if e["relation"] == "calls" and e["source"] in nodes and e["target"] in nodes
+        and nodes[e["target"]].get("metadata", {}).get("kind") == kind
+    }
+
+
+@_needs_solidity
+def test_solidity_emit_revert_and_require_call_events_and_errors_of_the_same_contract(tmp_path):
+    # tree-sitter-solidity parses `emit` / `revert` as statements, not
+    # call_expressions, so neither linked to the declaration (OpenZeppelin:
+    # 0 of 522 compiler-resolved uses), and an error's `error_parameter`s were
+    # not counted, so `require(c, Err(x))` never matched it either.
+    source = tmp_path / "Vault.sol"
+    source.write_text(
+        "pragma solidity ^0.8.20;\n"
+        "contract Vault {\n"
+        "    event Withdrawn(address who, uint256 amount);\n"
+        "    error NotOwner(address caller);\n"
+        "    error Paused();\n"
+        "    address owner;\n"
+        "    function withdraw(uint256 amount) external {\n"
+        "        if (msg.sender != owner) revert NotOwner(msg.sender);\n"
+        "        emit Withdrawn(msg.sender, amount);\n"
+        "    }\n"
+        "    function check(bool on) external view {\n"
+        "        require(!on, Paused());\n"
+        "        revert();\n"
+        '        revert("plain");\n'
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert _calls_to(result, "error") == {
+        ("withdraw()", "NotOwner", "Vault.sol"),
+        ("check()", "Paused", "Vault.sol"),
+    }
+    assert _calls_to(result, "event") == {("withdraw()", "Withdrawn", "Vault.sol")}
+
+
+@_needs_solidity
+def test_solidity_emit_and_revert_bind_events_and_errors_of_a_base_contract(tmp_path):
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "interface IVault { event Deposited(address who, uint256 amount); }\n"
+        "contract Base is IVault { error ZeroAmount(); error TooLarge(uint256 max); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {Base} from "./Base.sol";\n'
+        "contract Vault is Base {\n"
+        "    function deposit() external payable {\n"
+        "        if (msg.value == 0) revert ZeroAmount();\n"
+        "        require(msg.value < 10, TooLarge(10));\n"
+        "        emit Deposited(msg.sender, msg.value);\n"
+        "        revert ZeroAmount(1);\n"  # wrong arity: no such error
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _calls_to(result, "error") == {
+        ("deposit()", "ZeroAmount", "Base.sol"),
+        ("deposit()", "TooLarge", "Base.sol"),
+    }
+    assert _calls_to(result, "event") == {("deposit()", "Deposited", "Base.sol")}
+
+
+@_needs_solidity
+def test_solidity_qualified_revert_and_emit_bind_through_the_imported_type(tmp_path):
+    (tmp_path / "Errors.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Errors { error InsufficientBalance(uint256 have, uint256 want); }\n"
+        "interface Events { event Moved(uint256 amount); }\n",
+        encoding="utf-8",
+    )
+    # Same library name in a file Vault.sol does not import: never a candidate.
+    (tmp_path / "Other.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Errors { error InsufficientBalance(uint256 have, uint256 want); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {Errors, Events} from "./Errors.sol";\n'
+        "contract Vault {\n"
+        "    function withdraw(uint256 have, uint256 amount) external {\n"
+        "        if (have < amount) revert Errors.InsufficientBalance(have, amount);\n"
+        "        emit Events.Moved(amount);\n"
+        "        revert Missing.InsufficientBalance(have, amount);\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # Two imported files both declare `Errors`: ambiguous, so fail closed.
+    (tmp_path / "Dup.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Errors { error InsufficientBalance(uint256 have, uint256 want); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Ambiguous.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import "./Errors.sol";\n'
+        'import "./Dup.sol";\n'
+        "contract Ambiguous {\n"
+        "    function f() external { revert Errors.InsufficientBalance(1, 2); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _calls_to(result, "error") == {("withdraw()", "InsufficientBalance", "Errors.sol")}
+    assert _calls_to(result, "event") == {("withdraw()", "Moved", "Errors.sol")}
+
+
 @_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)

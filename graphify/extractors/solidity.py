@@ -54,7 +54,9 @@ def _inherited_call(
 ) -> dict[str, Any]:
     """A call or modifier the contract itself does not declare, for
     :func:`resolve_solidity_inherited_calls`. ``kind`` is ``inherited`` (bare
-    ``f()`` / ``this.f()``), ``super`` (``super.f()``) or ``modifier``."""
+    ``f()`` / ``this.f()``, ``emit E()``, ``revert Err()``), ``super``
+    (``super.f()``), ``modifier`` or ``qualified`` (``revert Errors.Err()``,
+    with a ``qualifier``)."""
     return {
         "caller_nid": caller_id,
         "callee": callee,
@@ -175,6 +177,11 @@ def resolve_solidity_inherited_calls(
                 )
             elif member.get("kind") == "modifier":
                 modifiers.setdefault(source, {}).setdefault(name, []).append(target)
+        elif relation == "contains" and meta(target).get("kind") in {"event", "error"}:
+            # An event/error is a call target too (`emit E()`, `revert Err()`).
+            functions.setdefault(source, {}).setdefault(
+                str(node_by_id.get(target, {}).get("label", "")), []
+            ).append((target, meta(target).get("arity")))
         elif relation == "inherits" and meta(target).get("kind") in type_kinds:
             bases.setdefault(source, []).append(target)
 
@@ -191,6 +198,27 @@ def resolve_solidity_inherited_calls(
                 return found[0] if len(found) == 1 else None
         return None
 
+    # `Errors.Err` names a type the caller's file declares or imports directly,
+    # the scope resolve_solidity_type_references binds base names in.
+    types_by_file: dict[tuple[str, str], list[str]] = {}
+    file_by_id: dict[Any, str] = {}
+    imported: dict[str, set[str]] = {}
+    if any(rc["solidity_call"] == "qualified" for rc in calls):
+        for node in all_nodes:
+            node_file = node.get("source_file")
+            if not node_file:
+                continue
+            if node.get("label") == Path(str(node_file)).name:
+                file_by_id[node.get("id")] = str(node_file)
+            elif meta(node.get("id")).get("kind") in type_kinds:
+                types_by_file.setdefault((str(node_file), str(node.get("label", ""))), []).append(node["id"])
+        for edge in all_edges:
+            if edge.get("relation") == "imports_from":
+                importer = file_by_id.get(edge.get("source"))
+                imported_file = file_by_id.get(edge.get("target"))
+                if importer and imported_file:
+                    imported.setdefault(importer, set()).add(imported_file)
+
     linear_cache: dict[str, list[str]] = {}
     for rc in calls:
         caller = rc.get("caller_nid")
@@ -198,11 +226,22 @@ def resolve_solidity_inherited_calls(
         name = rc.get("callee")
         if not contract or not name:
             continue
-        if contract not in linear_cache:
-            linear_cache[contract] = _c3_linearization(contract, bases)
         kind = rc["solidity_call"]
-        # The extractor already looked in the caller's own contract.
-        target = find(linear_cache[contract][1:], name, rc.get("arity"), kind)
+        if kind == "qualified":
+            caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
+            qualifier = str(rc.get("qualifier", ""))
+            scope = types_by_file.get((caller_file, qualifier), []) + [
+                type_id
+                for imported_file in sorted(imported.get(caller_file, set()))
+                for type_id in types_by_file.get((imported_file, qualifier), [])
+            ]
+            # Fail closed when the name is not visible or is ambiguous.
+            target = find(scope, name, rc.get("arity"), kind) if len(scope) == 1 else None
+        else:
+            if contract not in linear_cache:
+                linear_cache[contract] = _c3_linearization(contract, bases)
+            # The extractor already looked in the caller's own contract.
+            target = find(linear_cache[contract][1:], name, rc.get("arity"), kind)
         if target is None:
             continue
         relation = "uses" if kind == "modifier" else "calls"
@@ -526,9 +565,18 @@ def extract_solidity(path: Path) -> dict:
                 if member_name_node is None:
                     continue
                 name = _read_text(member_name_node, source)
-                member_id = add_member(member, name, name, simple_kinds[kind])
-                arity = sum(child.type in {"event_parameter", "parameter"} for child in member.named_children)
-                reference_targets[(name, arity)] = member_id
+                arity = sum(
+                    child.type in {"event_parameter", "error_parameter", "parameter"}
+                    for child in member.named_children
+                )
+                if kind == "state_variable_declaration":
+                    reference_targets[(name, arity)] = add_member(member, name, name, "state_variable")
+                else:
+                    # `emit E(..)`, `revert Err(..)` and `require(c, Err(..))`
+                    # call the event/error, like Python's `raise Err()`: bind
+                    # it as a call target by (name, arity).
+                    member_id = add_member(member, name, name, simple_kinds[kind], arity=arity)
+                    functions.setdefault((name, arity), []).append(member_id)
                 continue
 
             if kind not in {
@@ -647,6 +695,40 @@ def extract_solidity(path: Path) -> dict:
                                     "source_file": source_file,
                                     "source_location": f"L{node.start_point[0] + 1}",
                                 })
+                elif node.type in {"emit_statement", "revert_statement"}:
+                    # `emit E(..)` / `revert Err(..)` are statements, not
+                    # call_expressions; `revert()` / `revert("msg")` name none.
+                    emitted = node.child_by_field_name(
+                        "name" if node.type == "emit_statement" else "error"
+                    )
+                    if emitted is not None and emitted.type == "expression" and emitted.named_children:
+                        emitted = emitted.named_children[0]
+                    args = node if node.type == "emit_statement" else next(
+                        (child for child in node.named_children if child.type == "revert_arguments"), None,
+                    )
+                    arity = sum(child.type == "call_argument" for child in args.named_children) if args else 0
+                    if emitted is not None and emitted.type == "identifier":
+                        callee = _read_text(emitted, source)
+                        candidates = functions.get((callee, arity), [])
+                        if len(candidates) == 1:
+                            add_edge(caller_id, candidates[0], "calls", node)
+                        elif not candidates:
+                            # Declared in a base contract (an interface's event,
+                            # a base's error): bound through the linearization.
+                            raw_calls.append(_inherited_call(
+                                caller_id, callee, arity, "inherited", source_file, node,
+                            ))
+                    elif emitted is not None and emitted.type == "member_expression":
+                        qualifier = emitted.child_by_field_name("object")
+                        prop = emitted.child_by_field_name("property")
+                        if qualifier is not None and prop is not None and qualifier.type == "identifier":
+                            # `revert Errors.Err(..)`: declared in a library or
+                            # contract the file declares or imports.
+                            qualified = _inherited_call(
+                                caller_id, _read_text(prop, source), arity, "qualified", source_file, node,
+                            )
+                            qualified["qualifier"] = _read_text(qualifier, source)
+                            raw_calls.append(qualified)
                 stack.extend(reversed(node.named_children))
 
     # Free (file-level) functions live at source-unit scope, outside any
