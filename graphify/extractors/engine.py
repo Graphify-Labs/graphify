@@ -2832,7 +2832,9 @@ def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
     return frozenset(names)
 
 def _js_receiver_shadowed(node, name: str | None, source: bytes, bindings_by_scope: dict) -> bool:
-    """接收者必须沿调用点的全部词法祖先查找绑定，独立追踪的内层函数也不能丢失外层遮蔽。"""
+    """Resolve the receiver binding along the full lexical ancestor chain from
+    the call site, so a separately-tracked inner function still sees the outer
+    shadowing of the imported name."""
     if not name:
         return False
     scope = node.parent

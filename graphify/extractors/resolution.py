@@ -2064,7 +2064,15 @@ def _js_default_import_name(node, source: bytes) -> str | None:
     return None
 
 def _js_default_export_name(node, source: bytes) -> str | None:
-    """返回默认导出的本地绑定名；匿名对象的成员由 _js_default_object_members 单独解析。"""
+    """Local name of a default export, or None for anonymous defaults.
+
+    Handles `export default class Foo {}`, `export default function foo() {}`,
+    `export default abstract class Foo {}` (name on the `declaration` field) and
+    `export default Foo` (an identifier on the `value` field). Anonymous defaults
+    (`export default class {}`, `export default {...}`) have no resolvable symbol
+    and return None; the members of an anonymous default object are resolved
+    separately by :func:`_js_default_object_members`.
+    """
     if not any(child.type == "default" for child in node.children):
         return None
     declaration = node.child_by_field_name("declaration")
@@ -2077,7 +2085,8 @@ def _js_default_export_name(node, source: bytes) -> str | None:
     return None
 
 def _js_default_object_members(path: Path) -> dict[str, tuple[str, str]]:
-    """仅返回直接默认对象中可定位到已有节点的静态方法。"""
+    """Static methods of a direct default-exported object that resolve to an
+    existing node. Only members we can bind to a real node are returned."""
     parsed = _parse_js_tree(path)
     if parsed is None:
         return {}
@@ -2096,7 +2105,8 @@ def _js_default_object_members(path: Path) -> dict[str, tuple[str, str]]:
             if prop.type == "comment":
                 continue
             key = prop.child_by_field_name("name") or prop.child_by_field_name("key")
-            # spread 和计算键可能覆盖任意方法，不能仅凭同名节点补边。
+            # A spread or computed key can override any method, so do not add an
+            # edge on the strength of a same-named node alone.
             if key is None or key.type not in ("property_identifier", "string"):
                 return {}
             raw_name = _read_text(key, source)
