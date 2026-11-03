@@ -1222,6 +1222,19 @@ def _reconcile_existing_graph(
                 )
                 _ignored_cache[identity] = ignored
             return ignored
+
+        # #4978: is this source AST-owned? A per-file question, so answer it once
+        # per file. It is keyed by identity, not source_file, because one file can
+        # appear as both "big.h" and an absolute path in the same graph.
+        _ast_owned_cache: dict[str, bool] = {}
+
+        def _ast_owned(source: str) -> bool:
+            owned = _ast_owned_cache.get(source)
+            if owned is None:
+                owned = _get_extractor(Path(source), sniff_headers=False) is not None
+                _ast_owned_cache[source] = owned
+            return owned
+
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
             if not source_file or _is_remote_source(source_file):
@@ -1229,7 +1242,7 @@ def _reconcile_existing_graph(
             identity = source_paths.identity(source_file)
             if not source_paths.in_watch_root(source_file):
                 continue
-            if _get_extractor(Path(source_file)) is None:
+            if not _ast_owned(identity or source_file):
                 # Non-AST source (semantic doc/paper/image — .txt/.pdf/.png/...):
                 # never present in current_sources (built from AST-extractable
                 # code_files), so corpus absence is meaningless. Deletion
