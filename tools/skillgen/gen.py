@@ -1089,6 +1089,36 @@ def _is_update_manifest_save_fix_line(line: str) -> bool:
     return line.strip() == "from graphify.detect import save_manifest"
 
 
+def _is_update_manifest_reorder_line(line: str) -> bool:
+    """Whether a line is part of moving the monolith --update manifest save
+    after the Step 4 graph write (#4812 follow-up).
+
+    The save previously ran inside the merge block, before ``graph.json`` was
+    written, so a failure in Steps 4-8 left the manifest ahead of the
+    persisted graph. The save now runs in its own block between Step 4 and
+    Step 5, recomputing the stamped files from the persisted incremental
+    result and extraction. The first group below is the shell of the added
+    block (it matches any single copy of those lines, as in the #4447
+    fast-path predicate); the rest are the block's lead-in prose, ordering
+    comment, second read of this run's extraction, and print.
+    """
+    s = line.strip()
+    return (
+        s in (
+            "```",
+            "```bash",
+            "import json",
+            "from pathlib import Path",
+            '"',
+            '$(cat graphify-out/.graphify_python) -c "',
+        )
+        or s.startswith("Only after Step 4 has written")
+        or (s.startswith("#") and "#4812" in s)
+        or "'[graphify update] Manifest saved.'" in s
+        or s.startswith("new_extraction = json.loads")
+    )
+
+
 def _is_sensitive_reporting_fix_line(line: str) -> bool:
     """The #2106 change to how a non-empty ``skipped_sensitive`` is reported: the
     skill now lists the skipped file names instead of only a count, so a
@@ -1396,6 +1426,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_manifest_root_fix_line,
     _is_manifest_stamp_fix_line,
     _is_update_manifest_save_fix_line,
+    _is_update_manifest_reorder_line,
     _is_sensitive_reporting_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,

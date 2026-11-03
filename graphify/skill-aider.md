@@ -876,7 +876,6 @@ Then:
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from graphify.build import build_from_json
-from graphify.detect import save_manifest
 from graphify.export import to_json
 from networkx.readwrite import json_graph
 import networkx as nx
@@ -893,8 +892,22 @@ G_new = build_from_json(new_extraction, directed=IS_DIRECTED)
 # Merge: new nodes/edges into existing graph
 G_existing.update(G_new)
 print(f'Merged: {G_existing.number_of_nodes()} nodes, {G_existing.number_of_edges()} edges')
+" 
+```
 
+Then run Steps 4–8 on the merged graph as normal.
+
+Only after Step 4 has written `graphify-out/graph.json`, save the manifest with the block below — run it between Step 4 and Step 5. If Step 4 refused or errored, stop and do not save the manifest: the old manifest must stay in place so the next `--update` re-queues this run.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from graphify.detect import save_manifest
+from pathlib import Path
+
+# Save the manifest only after Step 4 wrote graph.json (#4812): recompute from the persisted incremental result and this run's extraction, since the merge block's locals are unavailable here.
 from graphify.cli import _stamped_manifest_files
+new_extraction = json.loads(Path('.graphify_extract.json').read_text())
 _corpus = json.loads(Path('.graphify_incremental.json').read_text())
 _manifest_files = _stamped_manifest_files(_corpus['files'], new_extraction, Path('INPUT_PATH'))
 _sem_types = ('document', 'paper', 'image')
@@ -903,10 +916,9 @@ _stamped = {f for fl in _manifest_files.values() for f in fl}
 _cleared = _dispatched - _stamped
 _scan = {f for fl in _corpus['files'].values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+print('[graphify update] Manifest saved.')
 " 
 ```
-
-Then run Steps 4–8 on the merged graph as normal.
 
 After Step 4, show the graph diff:
 

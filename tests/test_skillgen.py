@@ -726,17 +726,41 @@ def _update_merge_body(core: str) -> str:
     return "\n".join(gen._unescape_bash_dq(x) for x in lines[start + 1 : end])
 
 
+def _update_manifest_body(core: str) -> str:
+    """The --update manifest-save payload from a rendered monolith.
+
+    The save runs in its own block after Step 4 wrote ``graph.json``, so it
+    cannot be reached with ``_step_body`` (see ``_update_merge_body`` for why
+    the fence is extracted by marker instead). Extract by the
+    ``[graphify update] Manifest saved.`` print, unescaping exactly as
+    ``_python_step_bodies`` does.
+    """
+    assert core.count("[graphify update] Manifest saved.") == 1
+    lines = core.split("\n")
+    marker = next(i for i, ln in enumerate(lines) if "[graphify update] Manifest saved." in ln)
+    start = next(
+        i for i in range(marker, -1, -1) if lines[i] == gen._PY_INVOKE_POSIX
+    )
+    end = next(i for i in range(marker, len(lines)) if lines[i].strip() == '"')
+    return "\n".join(gen._unescape_bash_dq(x) for x in lines[start + 1 : end])
+
+
 @pytest.mark.parametrize("host", ["aider", "devin"])
-def test_monolith_update_merge_saves_manifest(tmp_path, monkeypatch, host):
-    """#4812: the monolith --update merge block must advance the manifest.
+def test_monolith_update_saves_manifest_after_step4(tmp_path, monkeypatch, host):
+    """#4812 follow-up: the manifest is saved only after Step 4 wrote the graph.
 
     The Aider/Devin runbooks detected and merged incremental changes but
-    never saved the manifest in the --update flow (only Step 9 did), so the
-    next --update diffed against the previous full-build baseline and
-    re-queued files that were already handled. Execute the rendered merge
-    block against real detector state, deletion-only, and require the
-    manifest to drop the deleted file while keeping every unchanged row
-    identical — the same invariant the split-host runbook carries.
+    first saved the manifest inside the merge block, before ``graph.json``
+    was written, so a failure in Steps 4-8 left the manifest ahead of the
+    persisted graph. Execute the rendered merge block, require the manifest
+    to be untouched, then simulate Step 4's durable graph write, run the
+    manifest-save block, and require the manifest to drop the deleted file
+    while keeping every unchanged row identical — the same invariant the
+    split-host runbook carries.
+
+    Each host sees only its own sidecar paths (Aider: working directory,
+    Devin: ``graphify-out/``), so a fragment reading the other host's
+    location fails here instead of being masked by a file written to both.
     """
     import json as _json
 
@@ -755,7 +779,9 @@ def test_monolith_update_merge_saves_manifest(tmp_path, monkeypatch, host):
     assert incremental["new_total"] == 0
     assert len(incremental["deleted_files"]) == 1
     # The merge block reads the existing graph and this run's extraction;
-    # each host addresses the extraction file from its own detect block.
+    # each host addresses both sidecars from its own detect block, so write
+    # them only where that host reads them.
+    prefix = tmp_path if host == "aider" else out
     (out / "graph.json").write_text(
         _json.dumps(
             {"directed": True, "multigraph": False, "graph": {},
@@ -764,18 +790,28 @@ def test_monolith_update_merge_saves_manifest(tmp_path, monkeypatch, host):
         encoding="utf-8",
     )
     extraction = _json.dumps({"nodes": [], "edges": []})
-    (tmp_path / ".graphify_extract.json").write_text(extraction, encoding="utf-8")
-    (out / ".graphify_extract.json").write_text(extraction, encoding="utf-8")
-    incremental_json = _json.dumps(incremental)
-    (tmp_path / ".graphify_incremental.json").write_text(
-        incremental_json, encoding="utf-8"
-    )
-    (out / ".graphify_incremental.json").write_text(
-        incremental_json, encoding="utf-8"
+    (prefix / ".graphify_extract.json").write_text(extraction, encoding="utf-8")
+    (prefix / ".graphify_incremental.json").write_text(
+        _json.dumps(incremental), encoding="utf-8"
     )
     core, _ = _platform_artifacts(host)
-    body = _substituted(_update_merge_body(core), tmp_path)
-    exec(compile(body, f"{host}-update-merge", "exec"), {"IS_DIRECTED": True})
+    merge_body = _substituted(_update_merge_body(core), tmp_path)
+    exec(compile(merge_body, f"{host}-update-merge", "exec"), {"IS_DIRECTED": True})
+    # The merge alone must not advance the manifest: the deleted file is
+    # still stamped and every row is byte-identical to the baseline.
+    untouched = load_manifest(root=tmp_path)
+    assert untouched == before
+    # Simulate Step 4's durable write of the merged graph, then run the
+    # manifest-save block that follows it in the runbook.
+    (out / "graph.json").write_text(
+        _json.dumps(
+            {"directed": True, "multigraph": False, "graph": {},
+             "nodes": [{"id": "seed"}], "links": []}
+        ),
+        encoding="utf-8",
+    )
+    save_body = _substituted(_update_manifest_body(core), tmp_path)
+    exec(compile(save_body, f"{host}-update-manifest-save", "exec"), {})
     after = load_manifest(root=tmp_path)
     assert str(docs[0]) not in after
     for p in docs[1:]:
@@ -784,6 +820,8 @@ def test_monolith_update_merge_saves_manifest(tmp_path, monkeypatch, host):
     # drop them before re-diffing so only the docs are judged.
     (tmp_path / ".graphify_extract.json").unlink(missing_ok=True)
     (tmp_path / ".graphify_incremental.json").unlink(missing_ok=True)
+    (out / ".graphify_extract.json").unlink(missing_ok=True)
+    (out / ".graphify_incremental.json").unlink(missing_ok=True)
     (tmp_path / "extraction-spec.md").unlink(missing_ok=True)
     following = detect_incremental(tmp_path)
     assert following["new_total"] == 0
