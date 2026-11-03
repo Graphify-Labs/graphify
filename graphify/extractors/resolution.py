@@ -3045,6 +3045,13 @@ def _resolve_cross_file_imports(
     node_by_id = {node["id"]: node for node in all_nodes if node.get("id")} if all_nodes else {}
     repointed_from: set[str] = set()
     TYPE_REPOINT_RELATIONS = frozenset({"references", "inherits", "implements", "extends"})
+    # The #3252 repoint below only ever touches an edge whose source_file belongs
+    # to the importing file. Index the edges by source_file once, when the first
+    # file needs it, instead of scanning all of them per file (files x edges,
+    # #4980). Each entry keeps the edge's position in all_edges, so a file's
+    # edges are visited in the same order as before.
+    edges_by_source: dict[object, list[tuple[int, dict]]] = {}
+    edges_indexed = False
 
     for file_result, path in zip(per_file, paths):
         str_path = str(path)
@@ -3222,9 +3229,15 @@ def _resolve_cross_file_imports(
         # Repoint AST type-reference and inheritance edges from sourceless stubs
         # to the exact imported target definition (#3252).
         if all_edges and import_targets:
-            for edge in all_edges:
-                if edge.get("source_file") not in file_srcs:
-                    continue
+            if not edges_indexed:
+                for position, edge in enumerate(all_edges):
+                    edges_by_source.setdefault(edge.get("source_file"), []).append((position, edge))
+                edges_indexed = True
+            file_edges = sorted(
+                (entry for src in file_srcs for entry in edges_by_source.get(src, ())),
+                key=lambda entry: entry[0],
+            )
+            for _, edge in file_edges:
                 if edge.get("relation") not in TYPE_REPOINT_RELATIONS:
                     continue
                 tgt = edge.get("target")
