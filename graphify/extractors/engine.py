@@ -16,6 +16,10 @@ from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 def _csharp_namespace_id(dotted_name: str) -> str:
@@ -2431,8 +2435,8 @@ def _python_module_bound_names(root, source: bytes) -> set[str]:
     return bound
 
 
-def _python_receiver_shadow_checker(root, source: bytes):
-    """Conservative lexical guard for a plain external module receiver.
+def _python_receiver_shadow_checker(root, source: bytes, *, module_bindings=None):
+    """Conservative lexical guard for a module or proved module-instance receiver.
 
     A module-root plain import is the only eligible binding. Other bindings in
     any enclosing scope make the receiver unsafe, regardless of statement order.
@@ -2500,6 +2504,14 @@ def _python_receiver_shadow_checker(root, source: bytes):
         if scope.type in {"function_definition", "lambda"}:
             bound.update(_python_param_names(scope.child_by_field_name("parameters"), source))
 
+        def bind_names(node, names) -> None:
+            # A module-instance query supplies the exact declaration/assignment
+            # nodes it has proved. Every other binding still shadows the name.
+            bound.update(name for name in names if not (
+                scope.type == "module" and module_bindings is not None
+                and node.id in module_bindings.get(name, ())
+            ))
+
         def walk(node) -> None:
             nonlocal unsafe
             for child in node.named_children:
@@ -2509,7 +2521,7 @@ def _python_receiver_shadow_checker(root, source: bytes):
                     if name is None:
                         unsafe = True
                     else:
-                        bound.add(_read_text(name, source))
+                        bind_names(child, [_read_text(name, source)])
                     continue
                 if kind == "lambda":
                     continue
@@ -2524,11 +2536,13 @@ def _python_receiver_shadow_checker(root, source: bytes):
                         for name in names:
                             plain_imports[name] = plain_imports.get(name, 0) + 1
                     else:
-                        bound.update(names)
+                        bind_names(child, names)
                     continue
                 if kind in {"assignment", "augmented_assignment", "for_statement", "for_in_clause"}:
-                    if not target_names(child.child_by_field_name("left"), bound):
+                    assigned_names: set[str] = set()
+                    if not target_names(child.child_by_field_name("left"), assigned_names):
                         unsafe = True
+                    bind_names(child, assigned_names)
                 elif kind == "type_alias_statement":
                     left = child.child_by_field_name("left")
                     name = _read_text(left, source).split("[", 1)[0].strip() if left is not None else ""
@@ -2573,12 +2587,63 @@ def _python_receiver_shadow_checker(root, source: bytes):
                     return True
                 if node.type == "module":
                     found_module = True
-                    if plain_imports.get(receiver) != 1:
+                    if module_bindings is not None:
+                        if receiver not in module_bindings or plain_imports.get(receiver):
+                            return True
+                    elif plain_imports.get(receiver) != 1:
                         return True
             node = node.parent
         return not found_module
 
     return is_shadowed
+
+
+def _python_module_instance_types(root, source: bytes):
+    """Direct module constructor bindings, guarded by the existing lexical scan.
+
+    A constructor must be declared or imported once before the assignment. The
+    corpus resolver still has to prove it names a unique visible class. Imports
+    under aliases retain the original class name. Conditional bindings, dynamic
+    namespace mutation and any other rebindings deliberately stay unresolved.
+    """
+    declarations: dict[str, list[tuple[str, Node]]] = {}
+    assignments = []
+    for statement in root.named_children:
+        if statement.type == "class_definition":
+            name = _read_text(statement.child_by_field_name("name"), source)
+            declarations.setdefault(name, []).append((name, statement))
+        elif statement.type == "import_from_statement":
+            for item in statement.children_by_field_name("name"):
+                if item.type == "aliased_import":
+                    name = _read_text(item.child_by_field_name("name"), source)
+                    local = _read_text(item.child_by_field_name("alias"), source)
+                else:
+                    name = local = _read_text(item, source)
+                if name.isidentifier() and local.isidentifier():
+                    declarations.setdefault(local, []).append((name, statement))
+        elif statement.type == "expression_statement":
+            assignments.extend(c for c in statement.named_children if c.type == "assignment")
+
+    instances = {}
+    for assignment in assignments:
+        left = assignment.child_by_field_name("left")
+        right = assignment.child_by_field_name("right")
+        if left is None or left.type != "identifier" or right is None or right.type != "call":
+            continue
+        function = right.child_by_field_name("function")
+        if function is None or function.type != "identifier":
+            continue
+        receiver, constructor = _read_text(left, source), _read_text(function, source)
+        origins = declarations.get(constructor, [])
+        if len(origins) != 1 or origins[0][1].start_byte >= assignment.start_byte:
+            continue
+        class_name, declaration = origins[0]
+        allowed = {constructor: {declaration.id}}
+        allowed.setdefault(receiver, set()).add(assignment.id)
+        shadowed = _python_receiver_shadow_checker(root, source, module_bindings=allowed)
+        if not shadowed(assignment, constructor) and not shadowed(assignment, receiver):
+            instances[receiver] = (class_name, shadowed)
+    return instances
 
 _PYTHON_PROPERTY_DECORATORS = frozenset({"property", "cached_property", "functools.cached_property"})
 
@@ -6344,6 +6409,10 @@ def _extract_generic(
     python_receiver_shadowed = (
         _python_receiver_shadow_checker(root, source)
         if config.ts_module == "tree_sitter_python" else None
+    )
+    python_module_instances = (
+        _python_module_instance_types(root, source)
+        if config.ts_module == "tree_sitter_python" else {}
     )
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -10339,6 +10408,11 @@ def _extract_generic(
                                 # A fixture parameter: typed by the resolver from the
                                 # fixture pytest would pick for it.
                                 rc_entry["_python_fixture_param"] = True
+                            elif member_receiver in python_module_instances:
+                                class_name, shadowed = python_module_instances[member_receiver]
+                                if not shadowed(node, member_receiver):
+                                    rc_entry["receiver_type"] = class_name
+                                    rc_entry["_python_module_instance"] = True
                         if config.ts_module == "tree_sitter_python":
                             rc_entry["_python_call_site"] = [node.start_byte, node.end_byte]
                         # `super(Cls, obj).m()` starts the MRO after Cls, not after the

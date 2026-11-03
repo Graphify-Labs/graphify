@@ -162,6 +162,15 @@ ambiguous return references emit no inferred call. Resulting call edges remain
 as resolver context. Changes to a producer's return annotation require a full
 rebuild to recompute unchanged callers' inferred relationships.
 
+Python direct module-level constructor assignments (`g = Service()`) retain the
+class for member-call resolution inside functions, including an imported alias
+or a lowercase class rebound to its instance. The constructor must be declared
+or imported before the assignment and resolve to a unique visible class by exact
+spelling. Local shadowing, other module bindings, conditional assignments and
+dynamic namespace mutation leave these calls unresolved. Qualified constructors
+and decorated classes are not inferred by this pass. Edges remain `INFERRED`;
+AST cache schema 37 retires Python entries without the instance marker.
+
 C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
 assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
