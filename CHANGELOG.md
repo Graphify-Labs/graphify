@@ -2,6 +2,20 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.102 (2026-11-03)
+
+- Fix: **go** a same-file member call resolves through the receiver's type instead of a declaration-order-dependent same-named method; a bare package-function call no longer binds to a same-named method, and a package-level `var` fallback only applies to a genuinely unbound receiver (#4962, #4966, thanks @xiongjianxu).
+- Fix: **go** a member call on a receiver typed from another package (`pkg.T`, the usual shape of a dependency injected across packages) binds only to the `T` declared at the path the file imports `pkg` from, so two packages that both declare `T` are disambiguated by import evidence; an out-of-corpus qualifier stays unresolved (#3368, #4853, thanks @nothariharan).
+- Feat: **go** an interface method call additively dispatches to the interface's implicit implementers (method-set superset match, unexported methods scoped to the same directory, capped at 10 implementers and skipped past that), surfacing the concrete methods a call can reach while keeping the edge to the interface (#4934, thanks @nothariharan).
+- Fix: **kotlin** a call to an overloaded method resolves (Java gives every overload one node id, which the resolver mis-counted as ambiguous), calls inside an `init {}` block are attributed to the class, and a bare call no longer binds to a class the caller cannot reach through its type chain (#4935, #4956, thanks @Deepjyoti-Sarmah).
+- Fix: **python** a module-level singleton (`g = Service()` then `g.method()`) resolves its member calls through the instance's type, gated by an exact-spelling and lexical-shadow guard so rebinding, local shadowing or an ambiguous constructor leaves it unresolved (#4970, #4972, thanks @Shubham-Padkonde).
+- Fix: **js** a call through a default-exported object's method (`import m from './x'; m.foo()`) resolves to the static method, bound only on a single unambiguous target and suppressed by local shadowing, getters, spread or computed keys (#4963, #4967, thanks @xiongjianxu).
+- Fix: **solidity** an `import "../x/Y.sol"` resolves the `..` to the real file instead of a dangling id that kept the importer's own folder (#4984, #4985, thanks @rohit-jsfreaky).
+- Fix: **build** the write guard no longer counts an intentional ghost fold (a #1145 same-file twin, #3344 doc-names-a-file, or #3705 method ghost folded into its surviving twin) as a dropped node on the `build_merge` path; a genuine drop whose survivor is also gone is still refused (#4955, #4957, thanks @Deepjyoti-Sarmah).
+- Fix: **extract** paths skipped by ignore rules are reported in the extract summary (bounded, sorted, root-relative, with a VCS-aware hint), surfacing the already-collected ignore list without changing the graph (#4965, #4969, thanks @xiongjianxu).
+- Perf: **resolution** the #3252 cross-file repoint indexes edges by source file instead of scanning every corpus edge per importing file, cutting resolution time on large graphs with no change to the resulting edges (#4980, #4981, thanks @jinsoo).
+- **AST cache schema bumped to 37** for the Go (#4966, #4853, #4934), Kotlin (#4956), Python (#4972) and Solidity (#4985) extractor fixes; warm caches re-run the affected extractions.
+
 ## 0.9.101 (2026-11-02)
 
 - Fix: **watch** AST-only updates preserve cross-file semantic evidence whose node id collides with a code definition. Semantic nodes and their document-owned links use the existing citing-file namespace, keeping both the code definition and semantic provenance in `graph.json`, including with `--no-cluster`. Fresh AST facts remain authoritative for same-source ids; full-build deduplication is unchanged.
