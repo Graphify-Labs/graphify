@@ -7,6 +7,7 @@ import json
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
+    _inclusive_end_line,
     _make_id,
     _read_source_bytes,
     _read_text,
@@ -4148,7 +4149,7 @@ def _scan_js_nested_function_declarations(
             if func_name and normalize_id(func_name):
                 line = child.start_point[0] + 1
                 nested_nid = _make_id(parent_nid, func_name)
-                add_node(nested_nid, f"{func_name}()", line)
+                add_node(nested_nid, f"{func_name}()", line, ast_node=child)
                 add_edge(parent_nid, nested_nid, "contains", line)
                 # Record the nesting so a call resolves to the nearest `inner`
                 # in scope, not to whichever same-named function the file-wide
@@ -4233,7 +4234,7 @@ def _scan_python_nested_function_declarations(
             if func_name and normalize_id(func_name):
                 line = target.start_point[0] + 1
                 nested_nid = _make_id(parent_nid, func_name)
-                add_node(nested_nid, f"{func_name}()", line)
+                add_node(nested_nid, f"{func_name}()", line, ast_node=target)
                 add_edge(parent_nid, nested_nid, "contains", line)
                 if callable_def_nids is not None:
                     callable_def_nids.add(nested_nid)
@@ -4379,7 +4380,7 @@ def _js_scan_member_assignments(
             object_name = tgt[1]
             owner_nid = _make_id(this_owner_nid, object_name)
             owner_line = object_bindings[object_name].start_point[0] + 1
-            add_node_fn(owner_nid, object_name, owner_line)
+            add_node_fn(owner_nid, object_name, owner_line, ast_node=object_bindings[object_name])
             if owner_nid not in contained_owners:
                 contained_owners.add(owner_nid)
                 add_edge_fn(this_owner_nid, owner_nid, "contains", owner_line)
@@ -4389,10 +4390,10 @@ def _js_scan_member_assignments(
         m_line = stmt.start_point[0] + 1
         m_nid = _make_id(owner_nid, m_name)
         if as_method:
-            add_node_fn(m_nid, f".{m_name}()", m_line)
+            add_node_fn(m_nid, f".{m_name}()", m_line, ast_node=stmt)
             add_edge_fn(owner_nid, m_nid, "method", m_line)
         else:
-            add_node_fn(m_nid, f"{m_name}()", m_line)
+            add_node_fn(m_nid, f"{m_name}()", m_line, ast_node=stmt)
             add_edge_fn(owner_nid, m_nid, "contains", m_line)
         m_body = val.child_by_field_name("body")
         if m_body:
@@ -4479,10 +4480,10 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    lexical_nids_by_scope: dict | None = None,
                    decl_node_fn=None, decl_lookup_fn=None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
-    def _decl(nid, name, kind, label, line):
+    def _decl(nid, name, kind, label, line, ast_node):
         if decl_node_fn is not None:
-            return decl_node_fn(nid, name, kind, label, line)
-        add_node_fn(nid, label, line)
+            return decl_node_fn(nid, name, kind, label, line, ast_node=ast_node)
+        add_node_fn(nid, label, line, ast_node=ast_node)
         return nid
 
     def _lookup(name):
@@ -4554,13 +4555,13 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         handled = False
                         if kind == "exports":
                             nid = _decl(_make_id(stem, member_name), member_name,
-                                        "fn", f"{member_name}()", line)
+                                        "fn", f"{member_name}()", line, node)
                             add_edge_fn(file_nid, nid, "contains", line)
                             handled = True
                         elif kind == "prototype":
                             owner_nid = _lookup(owner_name) or _make_id(stem, owner_name)
                             nid = _make_id(owner_nid, member_name)
-                            add_node_fn(nid, f".{member_name}()", line)
+                            add_node_fn(nid, f".{member_name}()", line, ast_node=node)
                             add_edge_fn(owner_nid, nid, "method", line)
                             handled = True
                         elif kind == "object":
@@ -4576,7 +4577,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                 if _owner_new:
                                     add_node_fn(owner_nid, owner_name, line)
                                     add_edge_fn(file_nid, owner_nid, "contains", line)
-                                add_node_fn(nid, f".{member_name}()", line)
+                                add_node_fn(nid, f".{member_name}()", line, ast_node=node)
                                 add_edge_fn(owner_nid, nid, "method", line)
                                 handled = True
                         if handled:
@@ -4601,7 +4602,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             _js_topmost_closures(inner, closures)
                             if closures:
                                 nid = _decl(_make_id(stem, member_name), member_name,
-                                            "fn", f"{member_name}()", line)
+                                            "fn", f"{member_name}()", line, node)
                                 add_edge_fn(file_nid, nid, "contains", line)
                                 if callable_def_nids is not None:
                                     callable_def_nids.add(nid)  # exported HOF is callable
@@ -4628,7 +4629,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                 line = node.start_point[0] + 1
                 nid = _js_member_nid(parent_class_nid, node, field_name, source,
                                      js_member_groups if js_member_groups is not None else {})
-                add_node_fn(nid, f".{field_name}()", line)
+                add_node_fn(nid, f".{field_name}()", line, ast_node=node)
                 add_edge_fn(parent_class_nid, nid, "method", line)
                 if callable_def_nids is not None:
                     callable_def_nids.add(nid)  # arrow class-field is callable
@@ -4683,7 +4684,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             if not normalize_id(func_name):
                                 continue
                             func_nid = _decl(_make_id(stem, func_name), func_name,
-                                             "fn", f"{func_name}()", line)
+                                             "fn", f"{func_name}()", line, child)
                             add_edge_fn(file_nid, func_nid, "contains", line)
                             if callable_def_nids is not None:
                                 callable_def_nids.add(func_nid)  # `const f = () =>` is callable
@@ -4789,14 +4790,14 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                 if not export_name or not normalize_id(export_name):
                                     continue
                                 prop_nid = _decl(_make_id(stem, export_name),
-                                                 export_name, "var", export_name, line)
+                                                 export_name, "var", export_name, line, child)
                                 add_edge_fn(file_nid, prop_nid, "contains", line)
                             const_found = True
                         elif name_node:
                             const_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
                             const_nid = _decl(_make_id(stem, const_name), const_name,
-                                              "var", const_name, line)
+                                              "var", const_name, line, child)
                             add_edge_fn(file_nid, const_nid, "contains", line)
                             const_found = True
                             # #2552: `const handler = wrapper(async (req) => …)`
@@ -4860,8 +4861,8 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
     """
     def _decl(nid, name, kind, label, line):
         if decl_node_fn is not None:
-            return decl_node_fn(nid, name, kind, label, line)
-        add_node_fn(nid, label, line)
+            return decl_node_fn(nid, name, kind, label, line, ast_node=node)
+        add_node_fn(nid, label, line, ast_node=node)
         return nid
 
     if (parent_class_nid
@@ -4896,7 +4897,7 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             # Value, value }` puts two legal members on one id. The first
             # declaration keeps the node rather than a second edge on it.
             if member_nid not in seen_ids:
-                add_node_fn(member_nid, member_name, line)
+                add_node_fn(member_nid, member_name, line, ast_node=node)
                 add_edge_fn(parent_class_nid, member_nid, "case_of", line)
         if node.type == "enum_assignment":
             # Claiming the member must not swallow its initializer. An enum value
@@ -4985,7 +4986,7 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
             _make_id(parent_class_nid, member_name), member_name, member_groups or {}
         )
         if member_nid not in seen_ids:
-            add_node_fn(member_nid, member_name, line)
+            add_node_fn(member_nid, member_name, line, ast_node=node)
             add_edge_fn(parent_class_nid, member_nid, "case_of", line)
         return True
     if node.type == "namespace_declaration":
@@ -4998,7 +4999,10 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
             ns_label = ".".join(namespace_stack)
             ns_nid = _csharp_namespace_id(ns_label)
             line = node.start_point[0] + 1
-            add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
+            add_node_fn(
+                ns_nid, ns_label, line, node_type="namespace",
+                metadata={"kind": "csharp_namespace"}, ast_node=node,
+            )
             add_edge_fn(file_nid, ns_nid, "contains", line)
         body = node.child_by_field_name("body")
         if body:
@@ -5021,7 +5025,10 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
             ns_label = ".".join(namespace_stack)
             ns_nid = _csharp_namespace_id(ns_label)
             line = node.start_point[0] + 1
-            add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
+            add_node_fn(
+                ns_nid, ns_label, line, node_type="namespace",
+                metadata={"kind": "csharp_namespace"}, ast_node=node,
+            )
             add_edge_fn(file_nid, ns_nid, "contains", line)
         return True
     if parent_class_nid and node.type.startswith("preproc_"):
@@ -5044,7 +5051,7 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
             if child.type == "simple_identifier":
                 case_name = _read_text(child, source)
                 case_nid = _make_id(parent_class_nid, case_name)
-                add_node_fn(case_nid, case_name, line)
+                add_node_fn(case_nid, case_name, line, ast_node=node)
                 add_edge_fn(parent_class_nid, case_nid, "case_of", line)
         # Associated-value types nest as `enum_type_parameters -> user_type ->
         # type_identifier` (a sibling of the case-name simple_identifier). The
@@ -5147,7 +5154,7 @@ def _scala_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
             # members that differ only in case would collide on one id; the
             # first declaration keeps the node rather than a second edge on it.
             if case_nid not in seen_ids:
-                add_node_fn(case_nid, case_name, line)
+                add_node_fn(case_nid, case_name, line, ast_node=case)
                 add_edge_fn(parent_class_nid, case_nid, "case_of", line)
         return True
     if node.type == "extension_definition":
@@ -5261,9 +5268,9 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
             known = len(seen_ids)
             if decl_node_fn is not None:
                 alias_nid = decl_node_fn(alias_nid, alias_name, "alias",
-                                         alias_name, line)
+                                         alias_name, line, ast_node=node)
             else:
-                add_node_fn(alias_nid, alias_name, line)
+                add_node_fn(alias_nid, alias_name, line, ast_node=node)
             if len(seen_ids) > known:
                 add_edge_fn(file_nid, alias_nid, "contains", line)
         return False
@@ -5280,7 +5287,7 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
             line = node.start_point[0] + 1
             member_nid = _make_id(parent_class_nid, member_name)
             if member_nid not in seen_ids:
-                add_node_fn(member_nid, member_name, line)
+                add_node_fn(member_nid, member_name, line, ast_node=node)
                 add_edge_fn(parent_class_nid, member_nid, "case_of", line)
         return True
     return False
@@ -5310,7 +5317,7 @@ def _php_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
             line = node.start_point[0] + 1
             case_nid = _make_id(parent_class_nid, case_name)
             if case_nid not in seen_ids:
-                add_node_fn(case_nid, case_name, line)
+                add_node_fn(case_nid, case_name, line, ast_node=node)
                 add_edge_fn(parent_class_nid, case_nid, "case_of", line)
         return True
     return False
@@ -5328,7 +5335,7 @@ def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
         const_name = _read_text(name_node, source)
         line = node.start_point[0] + 1
         const_nid = _make_id(parent_class_nid, const_name)
-        add_node_fn(const_nid, const_name, line)
+        add_node_fn(const_nid, const_name, line, ast_node=node)
         add_edge_fn(parent_class_nid, const_nid, "case_of", line)
         # Anonymous-body constants (`MONDAY { void greet(){} }`): descend so the
         # body's methods aren't dropped; const_nid attaches them to the constant.
@@ -5356,7 +5363,7 @@ def _kotlin_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         const_name = _read_text(name_node, source)
         line = node.start_point[0] + 1
         const_nid = _make_id(parent_class_nid, const_name)
-        add_node_fn(const_nid, const_name, line)
+        add_node_fn(const_nid, const_name, line, ast_node=node)
         add_edge_fn(parent_class_nid, const_nid, "case_of", line)
         for child in node.children:
             if child.type == "class_body":
@@ -6463,11 +6470,13 @@ def _extract_generic(
         python_underscore_groups = _python_pre_scan_underscore_collisions(root, source, stem)
 
     def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
-                 metadata: dict | None = None) -> None:
+                 metadata: dict | None = None, ast_node=None) -> None:
         if nid in seen_ids:
             return
         seen_ids.add(nid)
         merged = dict(metadata or {})
+        if ast_node is not None:
+            merged["end_line"] = _inclusive_end_line(ast_node)
         if namespace_stack:
             merged.setdefault("namespace", ".".join(namespace_stack))
         if scope_stack and node_type != "namespace":
@@ -6773,7 +6782,7 @@ def _extract_generic(
                     metadata = dict(metadata or {})
                     metadata["python_opaque_bases"] = True
             class_nid = decl_node(class_nid, class_name, "type", class_name, line,
-                                  metadata=metadata)
+                                  metadata=metadata, ast_node=node)
             if config.ts_module == "tree_sitter_ruby" and metadata:
                 # Reopened declarations collapse onto the same file-local id;
                 # merge fail-closed markers that add_node intentionally skips.
@@ -7688,7 +7697,7 @@ def _extract_generic(
                         property_name, csharp_member_groups,
                     )
                     if property_nid not in seen_ids:
-                        add_node(property_nid, property_name, property_line)
+                        add_node(property_nid, property_name, property_line, ast_node=node)
                         add_edge(parent_class_nid, property_nid, "defines",
                                  property_line, context="field")
             type_node = node.child_by_field_name("type")
@@ -7924,7 +7933,7 @@ def _extract_generic(
                            if c.type in ("computed_property", "willset_didset_block")]
             if comp_bodies and prop_name:
                 prop_nid = _make_id(parent_class_nid, prop_name)
-                add_node(prop_nid, f".{prop_name}", line)
+                add_node(prop_nid, f".{prop_name}", line, ast_node=node)
                 add_edge(parent_class_nid, prop_nid, "method", line)
                 for body_block in comp_bodies:
                     function_bodies.append((prop_nid, body_block))
@@ -8061,12 +8070,19 @@ def _extract_generic(
                     or (decl.type in ("pointer_declarator", "reference_declarator")
                         and any(c.type == "function_declarator" for c in decl.children))
                 )
+                declaration_end = decl
+                sibling = decl.next_sibling
+                # Initializers and pure-virtual specifiers are siblings of the declarator.
+                while sibling is not None and sibling.type not in (",", ";"):
+                    if sibling.is_named:
+                        declaration_end = sibling
+                    sibling = sibling.next_sibling
                 if decl_is_method:
-                    add_node(member_nid, f".{name}()", line)
+                    add_node(member_nid, f".{name}()", line, ast_node=declaration_end)
                     add_edge(parent_class_nid, member_nid, "method", line)
                     callable_def_nids.add(member_nid)
                 else:
-                    add_node(member_nid, name, line)
+                    add_node(member_nid, name, line, ast_node=declaration_end)
                     add_edge(parent_class_nid, member_nid, "defines", line, context="field")
             return
 
@@ -8214,6 +8230,7 @@ def _extract_generic(
                     f".{func_name}()",
                     line,
                     metadata=method_metadata,
+                    ast_node=node,
                 )
                 if (config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration"
                         and csharp_sig not in group and nodes and nodes[-1]["id"] == func_nid):
@@ -8230,7 +8247,7 @@ def _extract_generic(
                         func_nid, sanitized_name, python_underscore_groups
                     )
                 func_nid = decl_node(func_nid, sanitized_name, "fn",
-                                     f"{func_name}()", line)
+                                     f"{func_name}()", line, ast_node=node)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
             if config.ts_module == "tree_sitter_cpp" and "::" in func_name:
@@ -8898,7 +8915,7 @@ def _extract_generic(
                 alias_nid = _underscore_salted_nid(
                     _make_id(stem, alias_name), alias_name, python_underscore_groups
                 )
-                add_node(alias_nid, alias_name, alias_line)
+                add_node(alias_nid, alias_name, alias_line, ast_node=node)
                 add_edge(file_nid, alias_nid, "contains", alias_line)
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the

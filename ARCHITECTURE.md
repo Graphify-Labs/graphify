@@ -79,6 +79,20 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+Source-backed AST declarations may include `metadata.end_line`, the 1-based,
+inclusive end of the declaration at `source_file` / `source_location`.
+`source_location` remains a start-only `L42` string. Tree-sitter's exclusive
+end point at column zero maps to the preceding line. The shared engine's type,
+function and declaration hooks, plus Go and Objective-C declarations, supply
+these ranges. File nodes, reference stubs, synthetic owners and Objective-C
+macro enums reconstructed from isolated fragments omit the field.
+
+A merged header declaration retains its own range; `metadata.definition_end_line`
+corresponds to the separate `definition_file` / `definition_location` site.
+Objective-C declarations and implementations in one file follow the same rule.
+Duplicate records only backfill ranges when the corresponding file and start
+location match. Build, JSON export and global graphs preserve this metadata.
+AST cache schema 38 invalidates results that predate declaration ranges.
 
 ## Semantic provenance during file-node folding
 

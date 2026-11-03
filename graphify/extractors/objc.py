@@ -1,7 +1,13 @@
 """objc — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
+from graphify.extractors.base import (
+    _file_stem,
+    _inclusive_end_line,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+)
 from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference_edge
 from graphify.extractors.resolution import _resolve_c_include_path
 from graphify.security import sanitize_metadata
@@ -124,14 +130,27 @@ def extract_objc(path: Path) -> dict:
     # same (class, field) tombstones the entry (None) — drop, don't guess.
     objc_field_types: dict[str, dict[str, str | None]] = {}
 
-    def add_node(nid: str, label: str, line: int, markers: tuple[str, ...] = ()) -> None:
+    def add_node(nid: str, label: str, line: int, markers: tuple[str, ...] = (),
+                 *, ast_node=None) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            node = {"id": nid, "label": label, "file_type": "code",
+            node: dict = {"id": nid, "label": label, "file_type": "code",
                     "source_file": str_path, "source_location": f"L{line}"}
+            if ast_node is not None:
+                node["metadata"] = {"end_line": _inclusive_end_line(ast_node)}
             for marker in markers:
                 node[marker] = True
             nodes.append(node)
+        elif ast_node is not None and ast_node.type in (
+            "class_implementation", "method_definition",
+        ):
+            record = next(n for n in nodes if n["id"] == nid)
+            if not record.get("definition_file"):
+                record["definition_file"] = str_path
+                record["definition_location"] = f"L{line}"
+                record.setdefault("metadata", {})["definition_end_line"] = (
+                    _inclusive_end_line(ast_node)
+                )
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -242,7 +261,8 @@ def extract_objc(path: Path) -> dict:
                         _record_field_type(cls_nid, *entry)
 
     def _emit_enum(enum_spec, name: str, line: int,
-                   mapped_members: list[tuple[str, int]] | None = None) -> None:
+                   mapped_members: list[tuple[str, int]] | None = None,
+                   *, declaration=None) -> None:
         """Emit a C-style enum type node plus a node + `case_of` edge per
         enumerator, mirroring how every other language with enums models them
         (Java #1719, C++ #3939, Swift). Objective-C is an object-oriented
@@ -250,8 +270,9 @@ def extract_objc(path: Path) -> dict:
         `enum`/`typedef enum` definitions were dropped entirely.
         """
         enum_nid = _make_id(stem, name)
-        add_node(enum_nid, name, line)
+        add_node(enum_nid, name, line, ast_node=declaration or enum_spec)
         add_edge(file_nid, enum_nid, "contains", line)
+        member_asts = {}
         if mapped_members is None:
             body = next((c for c in enum_spec.children if c.type == "enumerator_list"), None)
             if body is None:
@@ -263,9 +284,10 @@ def extract_objc(path: Path) -> dict:
                 mname = next((_read(c) for c in member.children if c.type == "identifier"), None)
                 if mname:
                     mapped_members.append((mname, member.start_point[0] + 1))
+                    member_asts.setdefault(mname, member)
         for mname, m_line in mapped_members:
             member_nid = _make_id(enum_nid, mname)
-            add_node(member_nid, mname, m_line)
+            add_node(member_nid, mname, m_line, ast_node=member_asts.get(mname))
             add_edge(enum_nid, member_nid, "case_of", m_line)
 
     def _macro_enum_members() -> list[tuple[str, int, list[tuple[str, int]]]]:
@@ -494,7 +516,7 @@ def extract_objc(path: Path) -> dict:
             # produced fine when the members lived in `Foo.h` (#1556).
             cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             cls_nid = _make_id(cls_stem, name)
-            add_node(cls_nid, name, line, _CALLABLE_CLASS)
+            add_node(cls_nid, name, line, _CALLABLE_CLASS, ast_node=node)
             add_edge(file_nid, cls_nid, "contains", line)
             # superclass is second identifier after ':'
             colon_seen = False
@@ -558,9 +580,8 @@ def extract_objc(path: Path) -> dict:
                 return
             impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             impl_nid = _make_id(impl_stem, name)
-            if impl_nid not in seen_ids:
-                add_node(impl_nid, name, line, _CALLABLE_CLASS)
-                add_edge(file_nid, impl_nid, "contains", line)
+            add_node(impl_nid, name, line, _CALLABLE_CLASS, ast_node=node)
+            add_edge(file_nid, impl_nid, "contains", line)
             for child in node.children:
                 if child.type == "instance_variables":
                     _collect_instance_variables(child, impl_nid)
@@ -579,7 +600,7 @@ def extract_objc(path: Path) -> dict:
                 proto_nid = _make_id(stem, name)
                 # A protocol is a type declaration like any other interface, and
                 # the engine marks a Java/C# interface the same way.
-                add_node(proto_nid, f"<{name}>", line, _CALLABLE_CLASS)
+                add_node(proto_nid, f"<{name}>", line, _CALLABLE_CLASS, ast_node=node)
                 add_edge(file_nid, proto_nid, "contains", line)
                 # Adopted protocols: `@protocol Derived <Base, Other>`. These
                 # nest under a protocol_reference_list node (distinct from the
@@ -614,7 +635,7 @@ def extract_objc(path: Path) -> dict:
             method_name = "".join(parts) if parts else None
             if method_name:
                 method_nid = _make_id(container, method_name)
-                add_node(method_nid, f"{prefix}{method_name}", line, _CALLABLE)
+                add_node(method_nid, f"{prefix}{method_name}", line, _CALLABLE, ast_node=node)
                 add_edge(container, method_nid, "method", line)
                 if t == "method_definition":
                     method_bodies.append((method_nid, node, container))
@@ -640,7 +661,7 @@ def extract_objc(path: Path) -> dict:
                         None,
                     )
                 if alias:
-                    _emit_enum(enum_spec, alias, line)
+                    _emit_enum(enum_spec, alias, line, declaration=node)
                     return
             # Not an enum typedef: fall through to the generic recursion.
 

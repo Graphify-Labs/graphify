@@ -80,6 +80,12 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
 })
 
 
+def _inclusive_end_line(node) -> int:
+    # tree-sitter ends are exclusive; column zero belongs to the preceding line.
+    row, column = node.end_point
+    return max(node.start_point[0] + 1, row + (column > 0))
+
+
 def _make_id(*parts: str) -> str:
     return make_id(*parts)
 

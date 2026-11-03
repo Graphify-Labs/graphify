@@ -8,6 +8,7 @@ from graphify.ids import DeclIdRegistry
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
+    _inclusive_end_line,
     _make_id,
     _read_source_bytes,
     _read_text,
@@ -321,16 +322,25 @@ def extract_go(path: Path) -> dict:
     # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    node_by_id: dict[str, dict] = {}
+
+    def add_node(nid: str, label: str, line: int, *, ast_node=None) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({
+            record = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
                 "source_location": f"L{line}",
-            })
+            }
+            nodes.append(record)
+            node_by_id[nid] = record
+        record = node_by_id.get(nid)
+        if ast_node is not None and record is not None and "metadata" not in record:
+            # A receiver owner may precede its real type declaration in this file.
+            record["source_location"] = f"L{line}"
+            record["metadata"] = {"end_line": _inclusive_end_line(ast_node)}
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -566,7 +576,7 @@ def extract_go(path: Path) -> dict:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 func_nid = symbol_nid(_make_id(stem, func_name), func_name)
-                add_node(func_nid, f"{func_name}()", line)
+                add_node(func_nid, f"{func_name}()", line, ast_node=node)
                 callable_nids.add(func_nid)
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
@@ -604,11 +614,11 @@ def extract_go(path: Path) -> dict:
                 add_node(parent_nid, receiver_type, line)
                 callable_class_nids.add(parent_nid)
                 method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
-                add_node(method_nid, f".{method_name}()", line)
+                add_node(method_nid, f".{method_name}()", line, ast_node=node)
                 add_edge(parent_nid, method_nid, "method", line)
             else:
                 method_nid = symbol_nid(_make_id(stem, method_name), method_name)
-                add_node(method_nid, f"{method_name}()", line)
+                add_node(method_nid, f"{method_name}()", line, ast_node=node)
                 add_edge(file_nid, method_nid, "contains", line)
             callable_nids.add(method_nid)
 
@@ -632,7 +642,7 @@ def extract_go(path: Path) -> dict:
                 type_name = _read_text(name_node, source)
                 line = child.start_point[0] + 1
                 type_nid = type_symbol_nid(type_name)
-                add_node(type_nid, type_name, line)
+                add_node(type_nid, type_name, line, ast_node=child)
                 callable_class_nids.add(type_nid)
                 add_edge(file_nid, type_nid, "contains", line)
                 if child.type == "type_alias":
@@ -700,7 +710,7 @@ def extract_go(path: Path) -> dict:
                             m_name = _read_text(m_name_node, source)
                             m_line = elem.start_point[0] + 1
                             m_nid = symbol_nid(_make_id(type_nid, m_name), m_name)
-                            add_node(m_nid, f".{m_name}()", m_line)
+                            add_node(m_nid, f".{m_name}()", m_line, ast_node=elem)
                             add_edge(type_nid, m_nid, "method", m_line)
                             emit_go_method_refs(elem, m_nid, m_line, type_params)
                             continue

@@ -3397,6 +3397,13 @@ def _merge_decl_def_classes(
                 keeper["definition_file"] = definition["source_file"]
             if definition.get("source_location"):
                 keeper["definition_location"] = definition["source_location"]
+            metadata = dict(keeper.get("metadata") or {})
+            metadata.pop("definition_end_line", None)
+            end_line = (definition.get("metadata") or {}).get("end_line")
+            if end_line is not None:
+                metadata["definition_end_line"] = end_line
+            if metadata:
+                keeper["metadata"] = metadata
 
         for node in group:
             if node is not keeper:
