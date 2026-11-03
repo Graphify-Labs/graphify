@@ -2239,6 +2239,87 @@ def extract_python(path: Path, *, root: Path | None = None) -> dict:
     return result
 
 
+_TS_TYPED_TAG_RE = re.compile(
+    rb"(?P<tag>[A-Za-z_$][A-Za-z0-9_$]*)"
+    rb"(?P<types><\s*\{[^{}]*\}\s*\[\s*\]\s*>)(?=\s*`)"
+)
+_TS_QUALIFIED_IMPORT_TYPE_RE = re.compile(
+    rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)\s*\."
+    rb"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?=\s*<)"
+)
+
+
+def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False) -> bytes | None:
+    """Repair two parser gaps without changing runtime expressions or byte offsets.
+
+    A typed tagged template with an object-array type and an import-qualified
+    generic type annotation are valid TypeScript, but this grammar can lose
+    later declarations. Mask only confirmed type syntax in a temporary parse;
+    the original source and line/byte positions remain untouched.
+    """
+    tags = list(_TS_TYPED_TAG_RE.finditer(source))
+    imports = list(_TS_QUALIFIED_IMPORT_TYPE_RE.finditer(source))
+    if not tags and not imports:
+        return None
+    try:
+        import tree_sitter_typescript as ts_typescript
+        from tree_sitter import Language, Parser
+        factory = ts_typescript.language_tsx if tsx else ts_typescript.language_typescript
+        parser = Parser(Language(factory()))
+        original = parser.parse(source).root_node
+    except Exception:
+        return None
+    if not original.has_error:
+        return None
+
+    # A missing token at the tagged template's backtick distinguishes the
+    # grammar failure from a correctly parsed expression elsewhere in the file.
+    missing = []
+    stack = [original]
+    while stack:
+        node = stack.pop()
+        if node.is_missing:
+            missing.append(node.start_byte)
+        stack.extend(node.children)
+
+    candidates = []
+    for match in tags:
+        start, end = match.span('types')
+        backtick = source.find(b'`', end)
+        if (backtick >= 0 and any(end <= pos <= backtick for pos in missing)
+                and _ts_import_is_code(original, match.start('tag'))):
+            candidates.append((start, end, match.start('tag'), 'tag'))
+    for match in imports:
+        if _ts_import_is_code(original, match.start()):
+            candidates.append((match.start(), match.start('name'), match.start('name'), 'annotation'))
+    if not candidates:
+        return None
+
+    masked = bytearray(source)
+    for start, end, _, _ in candidates:
+        masked[start:end] = re.sub(rb'[^\r\n]', b' ', source[start:end])
+    recovered = parser.parse(bytes(masked)).root_node
+    accepted = []
+    for start, end, anchor, kind in candidates:
+        node = recovered.descendant_for_byte_range(anchor, anchor + 1)
+        while node is not None:
+            if kind == 'annotation' and node.type == 'type_annotation':
+                accepted.append((start, end))
+                break
+            if kind == 'tag' and node.type == 'call_expression':
+                arguments = node.child_by_field_name('arguments')
+                if arguments is not None and arguments.type == 'template_string':
+                    accepted.append((start, end))
+                break
+            node = node.parent
+    if not accepted:
+        return None
+    result = bytearray(source)
+    for start, end in accepted:
+        result[start:end] = masked[start:end]
+    return bytes(result)
+
+
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     suffix = effective_suffix(path).lower()
@@ -2250,11 +2331,22 @@ def extract_js(path: Path) -> dict:
     else:
         config = _JS_CONFIG
     source_override = None
+    type_only_import_offsets: set[int] = set()
     if is_ts:
         try:
             source = _read_source_bytes(path)
             working = _normalize_ts_export_type_star(source) or source
             normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
+            working = normalized if normalized is not None else working
+            before_annotations = working
+            normalized = _normalize_ts_tag_and_import_annotations(
+                before_annotations, tsx=suffix == ".tsx"
+            )
+            if normalized is not None:
+                type_only_import_offsets = {
+                    match.start() for match in _TS_QUALIFIED_IMPORT_TYPE_RE.finditer(before_annotations)
+                    if normalized[match.start():match.start() + 6] != b'import'
+                }
             working = normalized if normalized is not None else working
             source_override = working if working is not source else None
         except OSError:
@@ -2262,11 +2354,13 @@ def extract_js(path: Path) -> dict:
     result = _extract_generic(path, config, source_override=source_override)
     if "error" not in result:
         _extract_js_rationale(path, result)
-        _rescue_js_dynamic_imports(path, result)
+        _rescue_js_dynamic_imports(path, result, type_only_import_offsets=type_only_import_offsets)
     return result
 
 
-def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
+def _rescue_js_dynamic_imports(
+    path: Path, result: dict, *, type_only_import_offsets: set[int] | None = None
+) -> None:
     """Recover ``import('…')`` edges the AST pass does not emit for plain JS/TS.
 
     tree-sitter models ``await import('x')`` as a ``call_expression``, not an
@@ -2296,6 +2390,12 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
         src = _read_source_text(path, warn=False)
         if not _re.search(r"(?<!\w)import\s*\(", src):  # cheap bail — most files have none
             return
+        encoded = src.encode('utf-8') if type_only_import_offsets else b''
+        type_only_positions = {
+            len(encoded[:offset].decode('utf-8', errors='replace'))
+            for offset in (type_only_import_offsets or ())
+            if encoded[offset:offset + 6] == b'import'
+        }
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
@@ -2339,6 +2439,10 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
             r"""(?<!\w)import\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
             src,
         ):
+            # A repaired TypeScript import-type is not an executable import().
+            # Regex offsets are characters, while tree-sitter offsets are bytes.
+            if m.start() in type_only_positions:
+                continue
             raw = m.group(1) or m.group(2) or m.group(3)
             if not raw:
                 continue
