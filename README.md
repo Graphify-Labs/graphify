@@ -385,6 +385,12 @@ See the [full command reference](#full-command-reference) below.
 
 graphify honors `.gitignore` and supports `--exclude` patterns and a project `.graphifyignore`. Details: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+`graphify extract` reports paths skipped by ignore rules, with up to three sorted examples relative to
+the scan root. Each pruned directory counts once; its contents are not enumerated. Default noise
+directories such as `node_modules` are excluded from this summary. If source is missing, review the
+ignore rules. `--no-gitignore` bypasses VCS ignore rules only; `.graphifyignore` and `--exclude`
+remain effective.
+
 
 ## Project configuration
 
