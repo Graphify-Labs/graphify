@@ -117,6 +117,11 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 | `INFERRED` | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
 | `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md |
 
+Go member calls, including same-file calls, resolve through declared receiver types and
+carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRACTED`;
+unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
+retires Go entries created before these receiver-binding rules.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.

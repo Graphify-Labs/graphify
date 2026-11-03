@@ -162,16 +162,14 @@ def test_two_packages_declaring_the_same_type_resolve_to_neither(tmp_path):
     assert _greet_edge(calls) is None, calls
 
 
-def test_a_same_file_method_call_keeps_its_extracted_edge(tmp_path):
-    # In-file resolution still happens by bare label before this pass, so the edge must
-    # stay EXTRACTED and must not be doubled.
+def test_a_same_file_method_call_resolves_once_through_its_receiver(tmp_path):
     calls, _ = _calls(tmp_path, {
         "svc/app.go": "package svc\n\ntype App struct{}\n\nfunc (a *App) Greet() {}\n\n"
                       "func Run(a *App) { a.Greet() }\n",
     })
     edges = [e for (src, tgt), e in calls.items() if src == "Run()" and tgt == ".Greet()"]
     assert len(edges) == 1, calls
-    assert edges[0]["confidence"] == "EXTRACTED"
+    assert edges[0]["confidence"] == "INFERRED"
 
 
 def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):

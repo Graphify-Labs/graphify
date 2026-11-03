@@ -7676,12 +7676,9 @@ def _resolve_go_member_calls(
 ) -> None:
     """Resolve Go member calls (``g.Greet()``) through the receiver's declared type.
 
-    The shared cross-file pass skips member calls, so a method call on a receiver whose
-    type is declared in another file resolved to nothing. The per-file ``go_type_table``
-    names the declared type of every struct field, parameter (the method receiver
-    included), ``var x T`` and ``x := T{}`` binding; this pass looks the receiver up
-    there, takes the single declaration of that type, and emits the ``calls`` edge to its
-    method. Always INFERRED: the type comes from a declaration, never from the call site.
+    Local bindings carry their receiver type; only unbound names may fall back to
+    package variables. Fields resolve through their owning struct. Always INFERRED:
+    the method target comes from the receiver's declared type.
 
     Names are matched case-sensitively, unlike the sibling resolvers. Go exports by
     capitalisation, so `Run` and `run` on one type are two different methods with two
@@ -7699,11 +7696,11 @@ def _resolve_go_member_calls(
     ]
     if not raw:
         return
-    type_table_by_file: dict[str, dict[str, str]] = {}
+    package_vars_by_file: dict[str, dict[str, str | None]] = {}
     for result in per_file:
         tt = result.get("go_type_table")
         if tt and tt.get("path"):
-            type_table_by_file[tt["path"]] = tt.get("table", {})
+            package_vars_by_file[tt["path"]] = tt.get("package_vars", {})
 
     def _key(label: object) -> str:
         return str(label or "").strip().removeprefix(".").removesuffix("()")
@@ -7715,10 +7712,8 @@ def _resolve_go_member_calls(
     # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
-    # A struct's fields, by struct id, from the file node that declares it: a method in
-    # one file of the package and the struct in another is the common Go layout, and the
-    # caller's flat table holds only what its own file declares. An id two files declare
-    # has no single answer.
+    # Owner fields may be declared in a sibling file. Duplicate owner declarations
+    # provide no unique field type.
     fields_by_type: dict[str, list[dict[str, str]]] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
@@ -7737,17 +7732,18 @@ def _resolve_go_member_calls(
                 (e.get("source"), _key(tnode.get("label", ""))), []).append(e["target"])
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
-    for rc in raw:
+    # One edge survives per pair, so direct calls must take priority over method values.
+    for rc in sorted(raw, key=lambda call: bool(call.get("indirect"))):
         receiver, callee, caller = rc["member_receiver"], rc["callee"], rc["caller_nid"]
-        # The enclosing method's own receiver is typed by its declaration, which beats the
-        # flat table: two types in one file may both name their receiver `s`.
-        type_name = rc.get("receiver_type") or type_table_by_file.get(
-            rc.get("source_file", ""), {}).get(receiver)
-        if not type_name and rc.get("field_owner"):
+        type_name = rc.get("receiver_type")
+        if rc.get("field_owner"):
+            type_name = None
             owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
             declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
             if len(declared) == 1:
                 type_name = declared[0].get(receiver)
+        elif not type_name and not rc.get("receiver_bound"):
+            type_name = package_vars_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
@@ -11194,6 +11190,10 @@ def extract(
     _member_nids = {
         e.get("target") for e in all_edges if e.get("relation") in ("case_of", "defines")
     }
+    _method_nids = {
+        e.get("target") for e in all_edges + list(resolution_context_edges or [])
+        if e.get("relation") == "method"
+    }
     # Top-level Elixir module names per file, for scoping unqualified Elixir
     # calls below. Read from `resolution_nodes` so an unchanged file's modules
     # stay visible on an incremental rebuild (`_elixir_module` is carried by the
@@ -11303,6 +11303,8 @@ def extract(
         candidates = global_label_to_nids.get(callee, [])
         if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
+        if rc.get("language") == "go":
+            candidates = [candidate for candidate in candidates if candidate not in _method_nids]
         if not candidates:
             continue
         if rc.get("lang") == "csharp" and not rc.get("csharp_new") and len(candidates) > 1:
