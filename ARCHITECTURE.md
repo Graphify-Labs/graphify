@@ -79,6 +79,11 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+JS/TS calls through default imports of directly default-exported object literals reuse existing static method nodes.
+Members match the imported module path, exact label and source line. Lexically shadowed receivers, constructor calls,
+spread, computed keys, accessors, duplicate keys and dynamic aliases are not inferred. These files bypass the per-file
+AST cache, so resolving these cross-file calls does not require an AST cache schema bump.
+
 
 ## Semantic provenance during file-node folding
 

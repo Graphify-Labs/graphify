@@ -2831,6 +2831,44 @@ def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
                     _js_collect_pattern_idents(name, source, names)
     return frozenset(names)
 
+def _js_receiver_shadowed(node, name: str | None, source: bytes, bindings_by_scope: dict) -> bool:
+    """接收者必须沿调用点的全部词法祖先查找绑定，独立追踪的内层函数也不能丢失外层遮蔽。"""
+    if not name:
+        return False
+    scope = node.parent
+    while scope is not None:
+        bindings = bindings_by_scope.get(scope)
+        if bindings is None:
+            bound: set[str] = set()
+            if scope.type in _JS_SCOPE_BOUNDARY:
+                bound.update(_js_local_bound_names(scope, source))
+                if scope.type not in ("method_definition", "arrow_function"):
+                    own_name = scope.child_by_field_name("name")
+                    if own_name is not None:
+                        bound.add(_read_text(own_name, source))
+            if scope.type in ("program", "statement_block", "for_statement"):
+                bound.update(_js_direct_lexical_names(scope, source))
+                for child in scope.named_children:
+                    if child.type in (
+                        "function_declaration", "generator_function_declaration",
+                        "class_declaration", "abstract_class_declaration",
+                    ):
+                        declared_name = child.child_by_field_name("name")
+                        if declared_name is not None:
+                            bound.add(_read_text(declared_name, source))
+            if scope.type in ("catch_clause", "for_in_statement"):
+                field = "parameter" if scope.type == "catch_clause" else "left"
+                pattern = scope.child_by_field_name(field)
+                if pattern is not None:
+                    _js_collect_pattern_idents(pattern, source, bound)
+            bindings = frozenset(bound)
+            bindings_by_scope[scope] = bindings
+        if name in bindings:
+            return True
+        scope = scope.parent
+    return False
+
+
 def _js_module_bound_names(root, source: bytes) -> set[str]:
     """Module-scope names rebound to NON-function data (`const X = {...}`, `let y = 5`).
 
@@ -6385,6 +6423,7 @@ def _extract_generic(
     # walk_calls as extra_locals, so each closure sees only its own
     # params/locals instead of a shared union that over-suppresses siblings.
     closure_locals_by_body: dict[int, set[str]] = {}
+    js_receiver_bindings: dict = {}
     # PHP only: ordinal counter for anonymous closures, keyed by scope id
     # (parent_class_nid or stem). Stable across line-only edits (#3409).
     php_closure_counts: dict[str, int] = {}
@@ -10304,6 +10343,13 @@ def _extract_generic(
                             "source_location": f"L{node.start_point[0] + 1}",
                             "receiver": swift_receiver or member_receiver,
                         }
+                        if config.ts_module in (
+                            "tree_sitter_javascript", "tree_sitter_typescript",
+                        ) and is_member_call:
+                            rc_entry["_js_receiver_shadowed"] = _js_receiver_shadowed(
+                                node, member_receiver, source, js_receiver_bindings,
+                            )
+                            rc_entry["_js_construct"] = node.type == "new_expression"
                         if python_receiver_shadowed is not None and is_member_call:
                             rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
                                 node, member_receiver or ""
