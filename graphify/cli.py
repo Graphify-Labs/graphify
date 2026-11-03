@@ -1248,7 +1248,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         output = root / output
                     if target.is_relative_to(output.resolve()):
                         return
-                if _hook_strict_enabled(strict) and not out_path("needs_update").exists() \
+                # A single-file target needs the same index evidence as Read; a
+                # directory is the code the graph covers, so it needs none.
+                indexed = not target.is_file() or _target_is_indexed(str(target), root)
+                if indexed and _hook_strict_enabled(strict) and not out_path("needs_update").exists() \
                         and not _query_stamp_fresh() \
                         and _mark_session_denied(str(d.get("session_id") or "")):
                     sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
