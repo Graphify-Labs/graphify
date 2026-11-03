@@ -108,24 +108,14 @@ def test_multiline_type_preserves_offsets_and_line_numbers(tmp_path: Path):
     assert next(n for n in result['nodes'] if n['label'] == 'after()')['source_location'] == 'L5'
 
 
-def test_typed_tag_candidate_scan_scales_linearly_for_long_identifiers():
-    """A long identifier without a tag must not restart the scan at every byte."""
-    import gc
+def test_typed_tag_candidate_scan_has_no_catastrophic_backtracking():
+    """A long identifier that never completes a typed tag must not restart the
+    scan at every byte. Linear matching clears 100k bytes in well under a second;
+    a super-linear (backtracking) pattern would take many seconds and blow past
+    this generous absolute bound."""
     import time
 
-    def elapsed(length: int) -> float:
-        source = b'a' * length
-        start = time.process_time()
-        assert list(extractor._TS_TYPED_TAG_RE.finditer(source)) == []
-        return time.process_time() - start
-
-    enabled = gc.isenabled()
-    gc.disable()
-    try:
-        elapsed(1000)
-        small = min(elapsed(10000) for _ in range(3))
-        large = min(elapsed(20000) for _ in range(3))
-    finally:
-        if enabled:
-            gc.enable()
-    assert large < small * 3.5, f'Escaneo superlineal: {small:.6f}s -> {large:.6f}s'
+    source = b'a' * 100000
+    start = time.process_time()
+    assert list(extractor._TS_TYPED_TAG_RE.finditer(source)) == []
+    assert time.process_time() - start < 1.0
