@@ -38,7 +38,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 34  # A bare call inside a Python method no longer self-binds to a same-named method, so it resolves to the imported/module function instead (#4933); a Go method value reached through a receiver field is linked as an indirect_call (#4931); and a Go package-level `var` initialiser references the types it names (#4932), so cached Python and Go extractions re-run; prior (33): A Scala `extension (x: T)` method is scoped to its receiver type T (#2044, #4856); and a Terraform node carries its original scope so ids stay portable when the cached project is moved to a new directory (#4858, #4861), so cached Scala and Terraform extractions re-run; prior (32): A type and a function whose names differ only in case get separate node ids (#4904, #4908); and a PHP `Scope::MEMBER` access in a class-level initializer (const value, property/parameter default) emits a references_constant edge (#4648, #4895); R `setClass`/`setRefClass` `contains=` superclasses get inherits edges (#4902); an Elixir bare call resolves to the caller's own module first (#4900); a Dart mixin `on A, B` clause resolves every constraint (#4899); and a Fortran derived-type `extends` emits an inherits edge (#4897), so cached extractions for those languages re-run (#4904); Go credits a call in a package-level `var` initialiser (and its closures) to the file node (#4867); a Go method value passed as an argument is linked as an `indirect_call` (#4868); a Go receiver's field whose struct is declared in a sibling file of the same package is typed so its member calls resolve (#4866); and a Python dispatch table's `module.func` values resolve to the referenced functions as `indirect_call`s (#4773), so cached Go and Python extractions re-run; prior (30): File and per-declaration ids are kept distinct so a top-level declaration sharing the file's name is not dropped (#4854); a SystemVerilog `function new(...)` constructor gets its own node, `method` edge and parameter refs (#4848); a Go `var x = T{}`/`var x = &T{}` types `x` as `T` for receiver resolution like `x := T{}` (#4843); a PowerShell `using module`/`using assembly` name drops its file extension (#4847); a Solidity free-function `using {a, b} for T` set emits `uses` edges (#4846); a CommonLisp forward-referenced superclass binds to its local node instead of a sourceless stub (#4845); and Pascal `inherited`/`inline` form component blocks are recognised so later `object` blocks keep their parent (#4844), so cached extractions across those languages re-run; prior (29): OCaml `and`-chained module/class bindings are all walked (only the first was, so later bindings were silently dropped, #4822), and a SystemVerilog class `task` method is modeled like a `function` one with its own node and parameter refs while its task-locals no longer leak as class fields (#4774), so cached OCaml and Verilog/SystemVerilog extractions re-run; prior (28): Markdown ATX headings parse per CommonMark (closing `#` runs dropped, 0-3 space indent, hash-only lines mint no node, #4790) and fenced code blocks are tracked by CommonMark rules so headings inside fences stop leaking (#4787); YAML keys carry their written spelling and real line and `on`/`off`/`yes`/`no` keys no longer fold to booleans (#4784); rationale labels redact more credential shapes before caching (#4647); Razor `@implements` interface edges are extracted (#4820); aliased Terraform providers get their own node and `provider =` refs resolve (#4819); COBOL paragraphs after a nested `END PROGRAM` reattach to the enclosing program (#4824); Blade `wire:click` binds the bare method name (#4823); a Pascal record is a type with its own methods (#4825); VB.NET operator declarations are extracted as members with their bodies walked (#4821); and a Fortran call resolves to the subroutine it names (#4795), so cached Markdown/YAML/rationale/Razor/Terraform/COBOL/Blade/Pascal/VB.NET/Fortran extractions re-run; prior (27): VB.NET external namespace/type stubs now carry a `source_file` sentinel (#4725); Python member calls resolve through injected fields and method-result types (#4726); a Rust `use` is scoped to the crate it names (#4699), so cached VB.NET/Python/Rust extractions re-run; prior (26): Zig no longer crosses a call between a method and a same-named free function (#4755), and a Dart unnamed `extension on T` is detected (#4741), so cached Zig and Dart extractions re-run; prior (25): Python/Go/C++/Rust explicit type aliases (and Rust `union` items) are extracted as type nodes so references resolve instead of minting sourceless stubs (#4578/#4579/#4580/#4581); each C# method overload gets its own node bound by arity (#4584); a package.json dependency's manifest entry links to its ref node (#4569), so cached extractions re-run; prior (24): Objective-C `NS_CLOSED_ENUM` declarations are extracted as enums like `NS_ENUM` (#4705), and a `CREATE TABLE` whose column default the SQL grammar rejects (MySQL `DEFAULT current_timestamp()`) is recovered from its ERROR node (#4613), so cached ObjC and SQL extractions re-run; prior (23): `.yaml`/`.yml` files are structurally extracted (keys as nodes, config-vs-data gated) and reclassified from document to code (#2214), so cached YAML re-extracts; prior (22): SQL labels drop T-SQL brackets and routine bodies emit `reads_from`/`writes_to` (#4635), and a `GO` batch separator ends a statement (#4651), so cached `.sql` extractions re-run; prior (21): a CommonJS `const X = require('./m')` binding no longer mints a module-scope node that shadows the class the required file exports, so `new X()` resolves to the required declaration (#4621); prior (20): Obsidian `[[wikilink]]` targets that start with the scan root's own folder names now resolve to the real page (#4559), so cached markdown extractions re-run; prior (19): Dart `typedef` declarations are extracted as aliases (not variables of type `typedef`); C++ Metal/CUDA GPU qualifiers no longer mint sourceless god nodes (#4550); a `.h` header containing `extern "C"` routes to the C++ extractor; prior (18): Kotlin `typealias` (#4553), C# `delegate` (#4552), and Swift `macro` declarations (#4551) are now extracted so references stop minting sourceless stubs; Rust `use` rooted at a `mod` declared in the same scope carries `_rust_use_name` (#4564); prior (17): Python pytest-fixture markers (`_py_fixture`/`_python_fixture_param`, #4332) and module-level class-id collision salting (#2810); TS `this.field` typed from any method incl. static (#4473); Solidity callables carry `metadata.arity` + inherited-call/`super`/modifier raw calls (#4379); Go type-decl and Rust file-item case-distinct node ids (#4444); prior (16): Rust `use` edges carry the imported name as written (`_rust_use_name`, #4439); (15): Go generic receiver types normalized (`Box[T]` -> `Box`) so methods attach to the type node; prior (14): C# receiver resolution for nameless/`new X()`/`foreach` receivers (defer + receiver-chain markers) and `_`/case-distinct node ids (underscore-salted); prior (13): Kotlin/Scala/C++/Swift generic & template type params no longer mint sourceless stubs; Objective-C NS_ENUM/NS_OPTIONS extraction and `_callable`/`_callable_class` markers; Go and PHP receiver-typed member calls park cross-repo (`go_type_table`/`php_type_table`, receiver fields); prior (12): Java inherited-supertype (`receiver_unbound`) and chained/new/cast receiver typing (`java_receiver_chain`, `_java_ret`); C/C++ quoted cross-directory include provenance (`include_kind`); JS external imports anchored to the package, not the path leaf; prior (11): Python property-accessor decorators / `Self`, Swift `Self`, Go generic type params, Python forward type-hint file node, PowerShell dot-source, C# verbatim-interpolated string recovery; (10): C# partial types carry `type_path`; (9): Python property-read raw calls and `_py_property` nodes; (8): Rust `use`-group per-binding edges; (7): Python opaque-base/super(args) markers + nested-class enclosing ids.
+_AST_CACHE_SCHEMA = 36  # C++ extraction changes: a type-alias reference (`using Foo = Bar;` then `Foo x;`) binds by exact spelling so it no longer loses to a same-normalized function, and a salted alias keeps its own `contains` edge (#4951); a member call `x.m()` binds by the receiver's type, now typed from parameters and class fields and not just locals, with untyped receivers kept bound in-file (#3215, #4946); an out-of-line/split-header definition attaches to the unique owner whose class file is in its include set via a `_cpp_qualified` identity marker, instead of file-containing or cross-binding to an unrelated same-named function (#4916, #4920); and a local callable value (a lambda or `std::function` local) is kept out of global call resolution by byte-range binding lifetimes so it no longer mints a spurious INFERRED call to a same-named global (#4917, #4921), so cached C++ extractions re-run; prior (35): A Rust module-qualified call like `crate::b::helper()` resolves to the function it names via qualifier-verified cross-file resolution, kept inside the caller's crate and out of local names (#2135, #4944); a Rust call written inside an expression macro's arguments (`println!`, `vec!`, ...) is linked, with a parsed call winning the dedupe (#4945); and cache keys keep their written case (file I/O through os_long_path, cache identity via normpath not normcase, and the digest salt no longer lowercased) so README.md and readme.md stop sharing one digest on a case-sensitive filesystem, which also changes the salt digest for any relative path carrying an uppercase char (#4925, #4937), so cached Rust extractions and any uppercase-path cache entries re-run; prior (34): A bare call inside a Python method no longer self-binds to a same-named method, so it resolves to the imported/module function instead (#4933); a Go method value reached through a receiver field is linked as an indirect_call (#4931); and a Go package-level `var` initialiser references the types it names (#4932), so cached Python and Go extractions re-run; prior (33): A Scala `extension (x: T)` method is scoped to its receiver type T (#2044, #4856); and a Terraform node carries its original scope so ids stay portable when the cached project is moved to a new directory (#4858, #4861), so cached Scala and Terraform extractions re-run; prior (32): A type and a function whose names differ only in case get separate node ids (#4904, #4908); and a PHP `Scope::MEMBER` access in a class-level initializer (const value, property/parameter default) emits a references_constant edge (#4648, #4895); R `setClass`/`setRefClass` `contains=` superclasses get inherits edges (#4902); an Elixir bare call resolves to the caller's own module first (#4900); a Dart mixin `on A, B` clause resolves every constraint (#4899); and a Fortran derived-type `extends` emits an inherits edge (#4897), so cached extractions for those languages re-run (#4904); Go credits a call in a package-level `var` initialiser (and its closures) to the file node (#4867); a Go method value passed as an argument is linked as an `indirect_call` (#4868); a Go receiver's field whose struct is declared in a sibling file of the same package is typed so its member calls resolve (#4866); and a Python dispatch table's `module.func` values resolve to the referenced functions as `indirect_call`s (#4773), so cached Go and Python extractions re-run; prior (30): File and per-declaration ids are kept distinct so a top-level declaration sharing the file's name is not dropped (#4854); a SystemVerilog `function new(...)` constructor gets its own node, `method` edge and parameter refs (#4848); a Go `var x = T{}`/`var x = &T{}` types `x` as `T` for receiver resolution like `x := T{}` (#4843); a PowerShell `using module`/`using assembly` name drops its file extension (#4847); a Solidity free-function `using {a, b} for T` set emits `uses` edges (#4846); a CommonLisp forward-referenced superclass binds to its local node instead of a sourceless stub (#4845); and Pascal `inherited`/`inline` form component blocks are recognised so later `object` blocks keep their parent (#4844), so cached extractions across those languages re-run; prior (29): OCaml `and`-chained module/class bindings are all walked (only the first was, so later bindings were silently dropped, #4822), and a SystemVerilog class `task` method is modeled like a `function` one with its own node and parameter refs while its task-locals no longer leak as class fields (#4774), so cached OCaml and Verilog/SystemVerilog extractions re-run; prior (28): Markdown ATX headings parse per CommonMark (closing `#` runs dropped, 0-3 space indent, hash-only lines mint no node, #4790) and fenced code blocks are tracked by CommonMark rules so headings inside fences stop leaking (#4787); YAML keys carry their written spelling and real line and `on`/`off`/`yes`/`no` keys no longer fold to booleans (#4784); rationale labels redact more credential shapes before caching (#4647); Razor `@implements` interface edges are extracted (#4820); aliased Terraform providers get their own node and `provider =` refs resolve (#4819); COBOL paragraphs after a nested `END PROGRAM` reattach to the enclosing program (#4824); Blade `wire:click` binds the bare method name (#4823); a Pascal record is a type with its own methods (#4825); VB.NET operator declarations are extracted as members with their bodies walked (#4821); and a Fortran call resolves to the subroutine it names (#4795), so cached Markdown/YAML/rationale/Razor/Terraform/COBOL/Blade/Pascal/VB.NET/Fortran extractions re-run; prior (27): VB.NET external namespace/type stubs now carry a `source_file` sentinel (#4725); Python member calls resolve through injected fields and method-result types (#4726); a Rust `use` is scoped to the crate it names (#4699), so cached VB.NET/Python/Rust extractions re-run; prior (26): Zig no longer crosses a call between a method and a same-named free function (#4755), and a Dart unnamed `extension on T` is detected (#4741), so cached Zig and Dart extractions re-run; prior (25): Python/Go/C++/Rust explicit type aliases (and Rust `union` items) are extracted as type nodes so references resolve instead of minting sourceless stubs (#4578/#4579/#4580/#4581); each C# method overload gets its own node bound by arity (#4584); a package.json dependency's manifest entry links to its ref node (#4569), so cached extractions re-run; prior (24): Objective-C `NS_CLOSED_ENUM` declarations are extracted as enums like `NS_ENUM` (#4705), and a `CREATE TABLE` whose column default the SQL grammar rejects (MySQL `DEFAULT current_timestamp()`) is recovered from its ERROR node (#4613), so cached ObjC and SQL extractions re-run; prior (23): `.yaml`/`.yml` files are structurally extracted (keys as nodes, config-vs-data gated) and reclassified from document to code (#2214), so cached YAML re-extracts; prior (22): SQL labels drop T-SQL brackets and routine bodies emit `reads_from`/`writes_to` (#4635), and a `GO` batch separator ends a statement (#4651), so cached `.sql` extractions re-run; prior (21): a CommonJS `const X = require('./m')` binding no longer mints a module-scope node that shadows the class the required file exports, so `new X()` resolves to the required declaration (#4621); prior (20): Obsidian `[[wikilink]]` targets that start with the scan root's own folder names now resolve to the real page (#4559), so cached markdown extractions re-run; prior (19): Dart `typedef` declarations are extracted as aliases (not variables of type `typedef`); C++ Metal/CUDA GPU qualifiers no longer mint sourceless god nodes (#4550); a `.h` header containing `extern "C"` routes to the C++ extractor; prior (18): Kotlin `typealias` (#4553), C# `delegate` (#4552), and Swift `macro` declarations (#4551) are now extracted so references stop minting sourceless stubs; Rust `use` rooted at a `mod` declared in the same scope carries `_rust_use_name` (#4564); prior (17): Python pytest-fixture markers (`_py_fixture`/`_python_fixture_param`, #4332) and module-level class-id collision salting (#2810); TS `this.field` typed from any method incl. static (#4473); Solidity callables carry `metadata.arity` + inherited-call/`super`/modifier raw calls (#4379); Go type-decl and Rust file-item case-distinct node ids (#4444); prior (16): Rust `use` edges carry the imported name as written (`_rust_use_name`, #4439); (15): Go generic receiver types normalized (`Box[T]` -> `Box`) so methods attach to the type node; prior (14): C# receiver resolution for nameless/`new X()`/`foreach` receivers (defer + receiver-chain markers) and `_`/case-distinct node ids (underscore-salted); prior (13): Kotlin/Scala/C++/Swift generic & template type params no longer mint sourceless stubs; Objective-C NS_ENUM/NS_OPTIONS extraction and `_callable`/`_callable_class` markers; Go and PHP receiver-typed member calls park cross-repo (`go_type_table`/`php_type_table`, receiver fields); prior (12): Java inherited-supertype (`receiver_unbound`) and chained/new/cast receiver typing (`java_receiver_chain`, `_java_ret`); C/C++ quoted cross-directory include provenance (`include_kind`); JS external imports anchored to the package, not the path leaf; prior (11): Python property-accessor decorators / `Self`, Swift `Self`, Go generic type params, Python forward type-hint file node, PowerShell dot-source, C# verbatim-interpolated string recovery; (10): C# partial types carry `type_path`; (9): Python property-read raw calls and `_py_property` nodes; (8): Rust `use`-group per-binding edges; (7): Python opaque-base/super(args) markers + nested-class enclosing ids.
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is
@@ -499,14 +499,20 @@ def _flush_stat_index() -> None:
 
 
 def _normalize_path(path: Path) -> Path:
-    """Normalize path for consistent cache keys across Windows path spellings."""
+    """Normalize a path for cache identity without folding case.
+
+    Windows spellings can differ in separators and in the optional
+    extended-length prefix. Case is not equivalent on every volume a Windows
+    process can reach, so the key keeps the caller's case. Use
+    paths.os_long_path() for the path handed to the filesystem.
+    """
     import sys
     if sys.platform != "win32":
         return path
     s = str(path)
     if s.startswith("\\\\?\\"):
         s = s[4:]  # strip extended-length prefix \\?\
-    return Path(os.path.normcase(s))
+    return Path(os.path.normpath(s))
 
 
 def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
@@ -525,20 +531,26 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
 
     For Markdown files (.md), only the body below the YAML frontmatter is hashed,
     so metadata-only changes (e.g. reviewed, status, tags) do not invalidate the cache.
+
+    The path handed to the filesystem comes from os_long_path(); the cache key
+    preserves case because case sensitivity belongs to the volume, not the
+    platform (#4925).
     """
     global _stat_index_dirty
-    p = _normalize_path(Path(path))
-    root = _normalize_path(Path(root))
-    if not p.is_file():
-        raise IsADirectoryError(f"file_hash requires a file, got: {p}")
+    raw_path = Path(path)
+    raw_root = Path(root)
+    src = Path(_os_long_path(raw_path))
+    root_src = Path(_os_long_path(raw_root))
+    if not src.is_file():
+        raise IsADirectoryError(f"file_hash requires a file, got: {src}")
 
     # The stat index is a cache artifact, so it must follow the cache location
     # (cache_root), not the key-anchor root — otherwise it leaves a stray
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
-    _ensure_stat_index(root, cache_root=cache_root)
-    resolved = p.resolve()
-    abs_key = str(resolved)
+    _ensure_stat_index(root_src, cache_root=cache_root)
+    resolved = src.resolve()
+    abs_key = str(_normalize_path(resolved))
     # The salt is the path component that enters the digest (relative to root, or
     # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
     # the same file hashed under two different roots yields two different digests
@@ -546,17 +558,17 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # path served whichever was computed first — making file_hash order-dependent
     # and poisoning the persisted stat-index across runs (#1989). Store one digest
     # per salt so alternating roots don't force re-reads.
-    resolved_root = root.resolve()
+    resolved_root = root_src.resolve()
     try:
         resolved_rel = resolved.relative_to(resolved_root)
     except ValueError:
         # Preserve the existing fallback for a target outside the corpus. An
         # in-root symlink to such a target is excluded by collect_files(), but
         # direct cache callers still rely on the resolved external identity.
-        salt = resolved.as_posix().lower()
+        salt = resolved.as_posix()
     else:
-        walked = Path(os.path.abspath(p))
-        walked_root = Path(os.path.abspath(root))
+        walked = Path(os.path.abspath(raw_path))
+        walked_root = Path(os.path.abspath(raw_root))
         try:
             walked_rel = walked.relative_to(walked_root)
         except ValueError:
@@ -574,11 +586,11 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
                     continue
             if walked_rel is None:
                 walked_rel = resolved_rel
-        salt = walked_rel.as_posix().lower()
+        salt = walked_rel.as_posix()
 
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = src.stat()
         if _stat_sig_fresh(_stat_index.get(abs_key), st):
             hashes = _stat_index[abs_key].get("hashes")
             if isinstance(hashes, dict):
@@ -593,8 +605,8 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # Captured BEFORE the read so the stamp can never post-date content that
     # changed while we were reading it (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    raw = p.read_bytes()
-    content = _body_content(raw) if p.suffix.lower() == ".md" else raw
+    raw = src.read_bytes()
+    content = _body_content(raw) if src.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
     h.update(content)
     h.update(b"\x00")
@@ -628,13 +640,15 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     correct, just not accelerated.
     """
     global _stat_index_dirty
-    p = _normalize_path(Path(path))
-    root = _normalize_path(Path(root))
-    _ensure_stat_index(root, cache_root=cache_root)
-    abs_key = str(p.resolve())
+    raw_path = Path(path)
+    raw_root = Path(root)
+    src = Path(_os_long_path(raw_path))
+    root_src = Path(_os_long_path(raw_root))
+    _ensure_stat_index(root_src, cache_root=cache_root)
+    abs_key = str(_normalize_path(src.resolve()))
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = src.stat()
         entry = _stat_index.get(abs_key)
         if _stat_sig_fresh(entry, st) and "word_count" in entry:
             return entry["word_count"]
@@ -644,7 +658,7 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     # Captured BEFORE compute() reads the file, for the same reason file_hash
     # stamps before its read (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    wc = compute(Path(path))
+    wc = compute(raw_path)
 
     if st is not None:
         _stat_entry_for(abs_key, st, observed_at_ns)["word_count"] = wc

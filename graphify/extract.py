@@ -183,7 +183,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _workspace_globs,
 )
 
-from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
+from graphify.symbol_resolution import resolve_bash_source_edges, rust_scoped_call_survivors  # noqa: E402
 
 from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pick_overload, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 
@@ -5641,6 +5641,75 @@ def _resolve_typescript_member_calls(
         })
 
 
+def _attach_cpp_out_of_line_methods(
+    nodes: list[dict], edges: list[dict], raw_calls: list[dict], *,
+    context_nodes: list[dict] | None = None, context_edges: list[dict] | None = None,
+) -> None:
+    """Attach qualified definitions only to a unique explicitly included owner."""
+    by_id = {n["id"]: n for n in context_nodes or []}
+    by_id.update({n["id"]: n for n in nodes})
+    basenames = {str(n["source_file"]): "" for n in by_id.values() if n.get("source_file")}
+    basenames = {sf: Path(sf).name for sf in basenames}
+    file_ids = {str(n["source_file"]): n["id"] for n in by_id.values()
+                if n.get("source_file") and n.get("label") == basenames[str(n["source_file"])]}
+    imports: dict[str, set[str]] = {}
+    class_files: dict[str, str] = {}
+    members: dict[str, set[str]] = {}
+    already_owned = set()
+    for edge in edges + (context_edges or []):
+        source, target = edge.get("source"), edge.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        if edge.get("relation") == "imports":
+            imports.setdefault(source, set()).add(target)
+        elif edge.get("relation") == "contains" and by_id.get(target, {}).get("_callable_class"):
+            class_files[target] = source
+        elif edge.get("relation") in {"method", "defines"}:
+            label = str(by_id.get(target, {}).get("label", ""))
+            if label.startswith(".") and label.endswith("()"):
+                members.setdefault(source, set()).add(label[1:-2])
+                already_owned.add(target)
+    by_name: dict[str, list[str]] = {}
+    for owner in members:
+        identity = by_id.get(owner, {}).get("_cpp_qualified")
+        if isinstance(identity, str) and identity:
+            by_name.setdefault(identity, []).append(owner)
+    visible_members: dict[str, set[str]] = {}
+    for node in nodes:
+        label = str(node.get("label", ""))
+        sf = str(node.get("source_file", ""))
+        if (node["id"] in already_owned or not label.endswith("()") or "::" not in label
+                or Path(sf).suffix.lower() not in {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cu"}):
+            continue
+        qualified = node.get("_cpp_qualified")
+        if not isinstance(qualified, str) or "::" not in qualified:
+            continue
+        scope, method = qualified.rsplit("::", 1)
+        own_file = file_ids.get(sf)
+        if own_file is None:
+            continue
+        visible = imports.get(own_file, set()) | {own_file}
+        candidates = [owner for owner in by_name.get(scope, ())
+                      if method in members[owner] and class_files.get(owner) in visible]
+        if not candidates:
+            continue
+        visible_members[node["id"]] = set().union(*(members[c] for c in candidates))
+        if len(candidates) == 1:
+            edges.append({"source": candidates[0], "target": node["id"], "relation": "method",
+                          "confidence": "EXTRACTED", "source_file": sf,
+                          "source_location": node.get("source_location"), "weight": 1.0})
+    for call in raw_calls:
+        caller = call.get("caller_nid")
+        if not isinstance(caller, str):
+            continue
+        if (call.get("lang") == "cpp" and not call.get("is_member_call")
+                and call.get("callee") in visible_members.get(caller, set())):
+            # Keep the global bare-name pass out, including an ambiguous owner.
+            # The receiver resolver can bind only after the ownership edge exists.
+            call["is_member_call"] = True
+            call["receiver"] = "this"
+
+
 def _resolve_cpp_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -5755,20 +5824,34 @@ def _resolve_cpp_member_calls(
             # Foo::bar(): the type is named explicitly in source.
             qualified_fallback_label = f"{receiver}::{callee}()"
             type_defs = type_def_nids.get(_key(receiver), [])
-            if not type_defs:
-                # Declared nowhere here, which in a multi-repo setup usually means
-                # "in a repo this build does not contain" (#3152). `Foo::bar()` is
-                # also the shape of a namespace-qualified free function, so the
-                # merge side's guards do the deciding: it acts only when exactly
-                # one other repo declares a `Foo` owning exactly one `bar`.
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, receiver, "cpp", rc,
-                )
-                continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
-            type_qualified = True
+            if len(type_defs) == 1:
+                type_nid = type_defs[0]
+                type_qualified = True
+            else:
+                # A capitalized receiver is very often a VARIABLE - the
+                # parameter `T` in `ParamRef(const Thing& T)`, the field
+                # `Inner` - not a type name (#3215). When no unique type of
+                # that name exists, fall back to the file's var->type table
+                # exactly like the lowercase arm before giving up.
+                type_name = type_table_by_file.get(src_file, {}).get(receiver)
+                if not type_name:
+                    if not type_defs:
+                        # Declared nowhere here (and not a locally-typed
+                        # variable either), which in a multi-repo setup usually
+                        # means "in a repo this build does not contain" (#3152).
+                        # `Foo::bar()` is also the shape of a namespace-qualified
+                        # free function, so the merge side's guards do the
+                        # deciding: it acts only when exactly one other repo
+                        # declares a `Foo` owning exactly one `bar`.
+                        _park_unresolved_member_call(
+                            node_by_id.get(caller), callee, receiver, "cpp", rc,
+                        )
+                    continue  # ambiguous types, no local variable -> bail
+                type_defs = type_def_nids.get(_key(type_name), [])
+                if len(type_defs) != 1:  # ambiguous or absent -> bail
+                    continue
+                type_nid = type_defs[0]
+                type_qualified = False
         else:
             # f.bar() / f->bar(): type the receiver via the file's local table.
             type_name = type_table_by_file.get(src_file, {}).get(receiver)
@@ -10982,6 +11065,7 @@ def extract(
     # nid -> raw source_file string, for the ambiguous-name tie-breakers below
     # (test/non-test classification + path proximity). Kept separate from the
     # file-node-id map because tie-breaking compares the actual file paths.
+    _rust_nid_to_label: "dict[str, str] | None" = None
     nid_to_source_file: dict[str, str] = {}
     for n in resolution_nodes:
         sf = n.get("source_file")
@@ -11023,6 +11107,11 @@ def extract(
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
     # Enum members (`case_of`) and fields/properties (`defines`) are never what a
+    _attach_cpp_out_of_line_methods(
+        all_nodes, all_edges, all_raw_calls,
+        context_nodes=resolution_context_nodes, context_edges=resolution_context_edges,
+    )
+
     # C# `new X()` constructs. Same exclusion the C# type-definition index uses
     # (#3815); without it a `new List<T>()` binds to an enum member named `List`.
     _member_nids = {
@@ -11085,6 +11174,49 @@ def extract(
         # rather than folded into _LANGUAGE_BUILTIN_GLOBALS because `new`,
         # `close` and `delete` are ordinary method names elsewhere (#2296).
         if rc.get("language") == "go" and callee in _GO_PREDECLARED_FUNCS:
+            continue
+        # Rust module-qualified call (`module::function()`), enqueued by
+        # extractors/rust.py with its qualifier path. Historically these were
+        # dropped at extraction because BARE last-segment lookup across crate
+        # boundaries produced spurious INFERRED edges (#908) — which made the
+        # dominant idiomatic intra-crate call form invisible (a real caller of
+        # `scan_substrate::accumulate_observations` showed 0 dependents while
+        # grep found it). Resolve strictly by the qualifier instead — the
+        # candidate's file path must match it (see rust_scoped_call_survivors);
+        # require exactly one survivor or skip, and never fall through to the
+        # bare-name tie-breakers below, so the #908 guard is preserved.
+        # EXTRACTED because the module is named explicitly in source — same
+        # reasoning as the qualified-class-method passes (#1446/#1533).
+        if rc.get("is_scoped_call"):
+            if _rust_nid_to_label is None:
+                _rust_nid_to_label = {
+                    str(n.get("id")): str(n.get("label", "")) for n in resolution_nodes
+                }
+            _survivors = rust_scoped_call_survivors(
+                str(rc.get("scope_qualifier", "")).strip(),
+                global_label_to_nids.get(callee, []),
+                nid_to_source_file,
+                caller_file=str(rc.get("source_file", "")),
+                nid_to_label=_rust_nid_to_label,
+            )
+            if len(_survivors) != 1:
+                continue
+            _tgt = _survivors[0]
+            _caller = rc["caller_nid"]
+            if _tgt == _caller or (_caller, _tgt) in existing_pairs:
+                continue
+            existing_pairs.add((_caller, _tgt))
+            all_edges.append({
+                "source": _caller,
+                "target": _tgt,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": rc.get("source_file", ""),
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+            })
             continue
         # Exact-case match first (case is semantic). Fold only when the CALLING
         # file's language is case-insensitive, and only against the folded index of
