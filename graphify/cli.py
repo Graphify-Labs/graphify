@@ -1682,7 +1682,8 @@ def dispatch_command(cmd: str) -> None:
             import json as _json
             import networkx as _nx
 
-            _raw = _json.loads(gp.read_text(encoding="utf-8"))
+            from graphify.paths import consumed_graph_rows, read_graph_json
+            _raw = read_graph_json(gp)
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
             # `query` deliberately keeps the graph undirected (unlike `path` /
@@ -1696,24 +1697,16 @@ def dispatch_command(cmd: str) -> None:
             # Keep in-file markers when present (#2309): unconditionally
             # overwriting them with source/target would clobber the true
             # direction of a link persisted in flipped endpoint order.
-            _raw = dict(
-                _raw,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in _raw.get("links", [])
-                ],
-            )
-            try:
-                G = json_graph.node_link_graph(_raw, edges="links")
-            except TypeError:
-                G = json_graph.node_link_graph(_raw)
             try:
                 from graphify.build import graph_has_legacy_ids as _legacy
-                if _legacy(_raw.get("nodes", [])):
+                _legacy_ids = _legacy(_raw.get("nodes", []))
+            except Exception:
+                _legacy_ids = False
+            _rows = consumed_graph_rows(dict(_raw, links=_raw.get("links", [])))
+            del _raw
+            G = json_graph.node_link_graph(_rows, edges="links")
+            try:
+                if _legacy_ids:
                     print(
                         "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
                         "rebuild with `graphify extract --force` to get path-qualified IDs "
@@ -2048,7 +2041,8 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file not found: {gp}", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
+        from graphify.paths import consumed, read_graph_json
+        _raw = read_graph_json(gp)
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
         # Force directed so the renderer can recover stored caller→callee
@@ -2058,10 +2052,8 @@ def dispatch_command(cmd: str) -> None:
         # printed relation could be one the traversed pair doesn't actually
         # carry (#2074). Local to this read; serve's shared graph is untouched.
         _raw = {**_raw, "directed": True, "multigraph": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+        _raw = dict(_raw, nodes=consumed(_raw["nodes"]), links=consumed(_raw["links"]))
+        G = json_graph.node_link_graph(_raw, edges="links")
         src_nid, src_scored, src_err = _resolve_path_endpoint(G, source_label)
         tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, target_label)
         for _label, _nid, _err in (
@@ -2223,15 +2215,14 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file not found: {gp}", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
+        from graphify.paths import consumed, read_graph_json
+        _raw = read_graph_json(gp)
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
         # Force directed so the renderer can recover stored caller→callee direction.
         _raw = {**_raw, "directed": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+        _raw = dict(_raw, nodes=consumed(_raw["nodes"]), links=consumed(_raw["links"]))
+        G = json_graph.node_link_graph(_raw, edges="links")
         nid, refusal = _resolve_single_node(G, label)
         if nid is None:
             print(refusal)

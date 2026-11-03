@@ -571,6 +571,35 @@ def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def read_graph_json(path) -> dict:
+    """A graph file's data with one copy of each string its rows repeat."""
+    shared: dict[str, str] = {}
+
+    def share(row: dict) -> dict:
+        for field, value in row.items():
+            if type(value) is str:
+                row[field] = shared.setdefault(value, value)
+        return row
+
+    return json.loads(Path(path).read_text(encoding="utf-8"), object_hook=share)
+
+
+def consumed(rows: list):
+    """Each row in order, let go as it is taken, so a graph built from them never holds both."""
+    rows.reverse()
+    while rows:
+        yield rows.pop()
+
+
+def consumed_graph_rows(data: dict) -> dict:
+    """``data`` for networkx to build a graph from once, stamped as ``restore_arc_direction`` stamps it."""
+    for link in data["links"]:
+        if isinstance(link, dict):
+            link["_src"] = link.get("_src", link.get("source"))
+            link["_tgt"] = link.get("_tgt", link.get("target"))
+    return dict(data, nodes=consumed(data["nodes"]), links=consumed(data["links"]))
+
+
 def restore_arc_direction(data: dict) -> dict:
     """Stamp each link's stored direction as ``_src``/``_tgt`` before loading.
 
@@ -606,16 +635,14 @@ def load_node_link_graph(path_or_data):
     """
     from networkx.readwrite import json_graph
     data = path_or_data
-    if not isinstance(data, dict):
+    owned = not isinstance(data, dict)
+    if owned:
         p = Path(data)
         from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
         check_graph_file_size_cap(p)
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = read_graph_json(p)
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     if isinstance(data, dict):
-        data = restore_arc_direction(data)
-    try:
-        return json_graph.node_link_graph(data, edges="links")
-    except TypeError:  # networkx too old for the edges kwarg; default is "links"
-        return json_graph.node_link_graph(data)
+        data = consumed_graph_rows(data) if owned and isinstance(data.get("links"), list) else restore_arc_direction(data)
+    return json_graph.node_link_graph(data, edges="links")
