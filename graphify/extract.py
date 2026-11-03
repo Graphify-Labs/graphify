@@ -5310,7 +5310,7 @@ def _resolve_python_member_calls(
                         _emit_call(caller, _method_of(cls, callee), rc, inferred=True)
             continue
         receiver_type = rc.get("receiver_type")
-        if receiver_type and not receiver[:1].isupper():
+        if receiver_type and (not receiver[:1].isupper() or rc.get("_python_module_instance")):
             # Typed-receiver arm: `request.read()` where the extractor typed the
             # local or parameter `request` from an annotation (`request: Request`)
             # or a constructor binding (`client = Client(...)`, `with Client() as
@@ -5320,6 +5320,9 @@ def _resolve_python_member_calls(
             # otherwise emit nothing. The method must be the class's own. A typed
             # local is never an imported module, so the module arm is skipped.
             class_nids = class_def_nids.get(_key(receiver_type), [])
+            if rc.get("_python_module_instance"):
+                class_nids = [nid for nid in class_nids
+                              if node_by_id[nid].get("label") == receiver_type]
             caller_file = _file_node(caller)
             if len(class_nids) == 1 and caller_file is not None:
                 cls = class_nids[0]
