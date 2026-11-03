@@ -421,6 +421,31 @@ def test_objc_m_resolves_once_and_reads_at_most_one_head(built_corpus, monkeypat
     assert _for(probe.reconcile_bytes, "objc.m") == ex._SNIFF_BYTES, "one head, capped"
 
 
+def test_memo_does_not_survive_a_rebuild(built_corpus, monkeypatch, capsys):
+    """The memo is local to one reconcile call, so watch re-reads after an edit.
+
+    A module-level cache would return a stale answer for a header edited between
+    two rebuilds in the same process, which is exactly what watch does.
+    """
+    corpus, snap = built_corpus
+    _restore(corpus, snap)
+    monkeypatch.chdir(corpus)
+    (corpus / "gone.c").unlink()
+
+    probe = Probe()
+    probe.install(monkeypatch)
+
+    counts = []
+    for i in range(3):
+        (corpus / "app.py").write_text(f"def one():\n    pass\n\ndef r{i}():\n    pass\n")
+        before = _for(probe.reconcile_calls, "big.h")
+        assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+        capsys.readouterr()
+        counts.append(_for(probe.reconcile_calls, "big.h") - before)
+
+    assert counts == [1, 1, 1], "every rebuild resolves the header again"
+
+
 def test_h8_stored_origin_can_answer_without_the_filesystem(built_corpus, monkeypatch, capsys):
     """Probe: the graph already stores the bit reconcile recomputes from disk."""
     corpus, snap = built_corpus
