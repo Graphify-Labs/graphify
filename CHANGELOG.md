@@ -2,6 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.103 (2026-11-03)
+
+- Fix: **hooks** a file whose mtime is newer than `graph.json` but whose content is unchanged no longer weakens the strict read gate; the hook checks the file's extraction hash against the build manifest before declaring it stale, so a checkout that writes `graph.json` first does not force a re-read (#4974, thanks @andrebrait).
+- Fix: **hooks** a dedicated Grep call is held to the same once-per-session orientation gate as Read in strict mode; a directory Grep needs no index match, a single-file Grep is denied only when the graph indexes it, and external or graph-output targets stay silent without consuming the deny (#4973, thanks @andrebrait).
+- Fix: **hooks** a search whose every literal target is outside the project (a Bash `grep`/`rg` on a `/tmp` or sibling path) emits no project hint, so the graph nudge only fires for in-project searches (#4961, #4979, thanks @Shubham-Padkonde).
+- Perf: **load** `graph.json` rows are released as the graph is built (and repeated strings interned) so a load no longer holds both the parsed rows and the finished graph at peak, with identical output (#4960, thanks @ajbmachon).
+- Perf: **resolve** symbol resolution holds one parsed file at a time instead of retaining every parsed file across the JS and Python passes, collapsing them into a single per-file loop with unchanged edges (#4958, thanks @ajbmachon).
+- Perf: **extract** edge-dedup keys and per-file rows are released once consumed, cutting peak retention during extraction with identical output (#4959, thanks @ajbmachon).
+- Fix: **typescript** a typed tagged template (`` sql<{...}[]>`...` ``) and an import-qualified generic annotation (`import("mod").T<X>`) no longer leave the file half-parsed; the recovery runs only on files that already fail to parse, so a type-only `import("mod").T` stops minting a bogus module node and a false `dynamic_import` edge (#4976, thanks @briascoi).
+
 ## 0.9.102 (2026-11-03)
 
 - Fix: **go** a same-file member call resolves through the receiver's type instead of a declaration-order-dependent same-named method; a bare package-function call no longer binds to a same-named method, and a package-level `var` fallback only applies to a genuinely unbound receiver (#4962, #4966, thanks @xiongjianxu).
