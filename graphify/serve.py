@@ -13,6 +13,7 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
+from graphify.paths import consumed, read_graph_json
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json
@@ -52,7 +53,7 @@ def _read_graph(graph_path: str) -> nx.Graph:
         raise FileNotFoundError(f"Graph file not found: {resolved}")
     check_graph_file_size_cap(resolved)
     safe = resolved
-    data = json.loads(safe.read_text(encoding="utf-8"))
+    data = read_graph_json(safe)
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     # Stash the on-disk logical flag before the load-time override below:
@@ -78,10 +79,9 @@ def _read_graph(graph_path: str) -> nx.Graph:
             )
     except Exception:
         pass
-    try:
-        G = json_graph.node_link_graph(data, edges="links")
-    except TypeError:
-        G = json_graph.node_link_graph(data)
+    G = json_graph.node_link_graph(
+        dict(data, nodes=consumed(data["nodes"]), links=consumed(data["links"])), edges="links",
+    )
     G.graph["_logical_directed"] = _logical_directed
     # node_link_graph drops top-level keys other than data["graph"], so the
     # build commit export.to_json writes there is stashed by hand (#3354).
