@@ -14,24 +14,24 @@ Each stage lives in its own module and they communicate through plain Python dic
 
 Signatures below are the real ones - `tests/test_architecture_doc.py` imports every symbol named here, so this table cannot drift from the code.
 
-| Module | Entry point(s) | Input → Output |
-|--------|----------------|----------------|
-| `detect.py` | `detect(root)` | directory → scan summary dict: `files` grouped by category, plus `total_files`, `total_words`, `warning`, `scan_root`, … |
-| `extract.py` | `extract(paths, *, root=None, ...)`, `collect_files(target)` | **list** of file paths → `{nodes, edges}` dict. `collect_files` expands a directory into that list, and lives here, not in `detect.py` |
-| `build.py` | `build(extractions)`, `build_from_json(extraction)` | extraction dict(s) → `nx.Graph` |
-| `cluster.py` | `cluster(G)` | graph → `{community_id: [node_id, ...]}` (the graph is not mutated) |
-| `analyze.py` | `god_nodes(G)`, `surprising_connections(G)`, `suggest_questions(G, communities, community_labels)`, `find_import_cycles(G)`, `graph_diff(G_old, G_new)` | graph → one list/dict per analysis. There is no single `analyze()` entry point |
-| `report.py` | `generate(G, communities, cohesion_scores, community_labels, ...)` | graph + analysis → GRAPH_REPORT.md string |
-| `export.py` | `to_json`, `to_html`, `to_obsidian`, `to_svg`, `to_graphml`, `to_canvas`, `to_cypher` | graph → graph.json, graph.html, Obsidian vault, graph.svg, … one function per format |
-| `wiki.py` | `to_wiki(G, communities, output_dir, ...)` | graph → one markdown article per community + `index.md` |
-| `callflow_html.py` | `write_callflow_html(...)` | graphify-out files → Mermaid architecture/call-flow HTML |
-| `ingest.py` | `ingest(url, target_dir, ...)` | URL → file saved to corpus dir |
-| `cache.py` | `check_semantic_cache(files, root)`, `save_semantic_cache(nodes, edges, ...)` | files → cached nodes / edges / hyperedges + the list of files still needing extraction |
-| `security.py` | `validate_url`, `safe_fetch`, `validate_graph_path`, `sanitize_label` | URL / path / label → validated value, or raises |
-| `validate.py` | `validate_extraction(data)`, `assert_valid(data)` | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises) |
-| `serve.py` | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)` | graph file path → MCP stdio server / HTTP server |
-| `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
-| `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
+| Module             | Entry point(s)                                                                                                                                          | Input → Output                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `detect.py`        | `detect(root)`                                                                                                                                          | directory → scan summary dict: `files` grouped by category, plus `total_files`, `total_words`, `warning`, `scan_root`, …               |
+| `extract.py`       | `extract(paths, *, root=None, ...)`, `collect_files(target)`                                                                                            | **list** of file paths → `{nodes, edges}` dict. `collect_files` expands a directory into that list, and lives here, not in `detect.py` |
+| `build.py`         | `build(extractions)`, `build_from_json(extraction)`                                                                                                     | extraction dict(s) → `nx.Graph`                                                                                                        |
+| `cluster.py`       | `cluster(G)`                                                                                                                                            | graph → `{community_id: [node_id, ...]}` (the graph is not mutated)                                                                    |
+| `analyze.py`       | `god_nodes(G)`, `surprising_connections(G)`, `suggest_questions(G, communities, community_labels)`, `find_import_cycles(G)`, `graph_diff(G_old, G_new)` | graph → one list/dict per analysis. There is no single `analyze()` entry point                                                         |
+| `report.py`        | `generate(G, communities, cohesion_scores, community_labels, ...)`                                                                                      | graph + analysis → GRAPH_REPORT.md string                                                                                              |
+| `export.py`        | `to_json`, `to_html`, `to_obsidian`, `to_svg`, `to_graphml`, `to_canvas`, `to_cypher`                                                                   | graph → graph.json, graph.html, Obsidian vault, graph.svg, … one function per format                                                   |
+| `wiki.py`          | `to_wiki(G, communities, output_dir, ...)`                                                                                                              | graph → one markdown article per community + `index.md`                                                                                |
+| `callflow_html.py` | `write_callflow_html(...)`                                                                                                                              | graphify-out files → Mermaid architecture/call-flow HTML                                                                               |
+| `ingest.py`        | `ingest(url, target_dir, ...)`                                                                                                                          | URL → file saved to corpus dir                                                                                                         |
+| `cache.py`         | `check_semantic_cache(files, root)`, `save_semantic_cache(nodes, edges, ...)`                                                                           | files → cached nodes / edges / hyperedges + the list of files still needing extraction                                                 |
+| `security.py`      | `validate_url`, `safe_fetch`, `validate_graph_path`, `sanitize_label`                                                                                   | URL / path / label → validated value, or raises                                                                                        |
+| `validate.py`      | `validate_extraction(data)`, `assert_valid(data)`                                                                                                       | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises)                         |
+| `serve.py`         | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)`                                                                                       | graph file path → MCP stdio server / HTTP server                                                                                       |
+| `watch.py`         | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)`                                                                                           | directory → rebuild on change; `check_update` reports whether a re-extraction is pending                                               |
+| `benchmark.py`     | `run_benchmark(graph_path)`                                                                                                                             | graph file → corpus vs subgraph token comparison                                                                                       |
 
 Detection counts words from text and converted documents. Supported raster images,
 audio and video stay in the discovered corpus, but their raw bytes are never decoded
@@ -51,24 +51,61 @@ paths = [Path("src/lib/content.ts"), Path("src/pages/index.astro")]
 result = extract(paths, root=Path(".").resolve())   # pass root explicitly
 ```
 
-Always pass `root`. Node ids and `source_file` values are derived relative to it; when it is omitted, `extract()` infers one from the paths you passed, which is the common parent of *that list* rather than your project root. A single-file call therefore anchors to that file's own directory, and ids can end up carrying path segments from the machine they were extracted on.
+Always pass `root`. Node ids and `source_file` values are derived relative to it; when it is omitted, `extract()` infers one from the paths you passed, which is the common parent of _that list_ rather than your project root. A single-file call therefore anchors to that file's own directory, and ids can end up carrying path segments from the machine they were extracted on.
 
 ## Extraction output schema
+
+Terraform/HCL per-file AST results record the scope used to mint their node IDs.
+After a cache hit, extraction consumes that scope to rewrite node IDs and edge
+endpoints relative to the current scan root, including when the cache was copied
+from another checkout. Module-source topology is still resolved against the
+current permitted corpus. The scope marker is internal and is not exported in
+the graph. AST cache schema 33 retires entries without this marker; the semantic
+cache is unchanged. Existing graphs with stale absolute Terraform IDs need a full
+code rebuild: `graphify extract . --code-only --force`.
 
 Every extractor returns:
 
 ```json
 {
   "nodes": [
-    {"id": "unique_string", "label": "human name", "source_file": "path", "source_location": "L42"}
+    {
+      "id": "unique_string",
+      "label": "human name",
+      "source_file": "path",
+      "source_location": "L42"
+    }
   ],
   "edges": [
-    {"source": "id_a", "target": "id_b", "relation": "calls|imports|uses|...", "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}
+    {
+      "source": "id_a",
+      "target": "id_b",
+      "relation": "calls|imports|uses|...",
+      "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"
+    }
   ]
 }
 ```
 
 `validate.py` enforces this schema before `build()` consumes it.
+
+## Semantic provenance during file-node folding
+
+`build_from_json()` normally folds an evidence-free semantic mention of a
+filename into its unique AST file-self node (Pass 2b, #3344); references to
+that mention are rewired to the AST node. A cross-source semantic record that
+contains its own `rationale`, source URL, author/contributor, capture time,
+or metadata is **not** a disposable mention: a label-only fold would discard
+its explanation or attribution. Such records remain separate even when their
+label matches a unique AST file node. This is intentionally conservative:
+a richly annotated mention may remain distinct until an explicit
+provenance-preserving merge is available. The saved-semantic-node shrink guard
+uses the same rule and still rejects any unexplained loss. Same-source AST/semantic twins that are evidence-free keep their
+existing exact-path merge rule (#4389/#4391), but an independently evidenced
+semantic YAML/document record is retained across a later AST extractor
+upgrade. If AST disambiguation path-qualifies a file-node label, the shrink
+guard accounts for a plain same-source fold using the exact source identity
+instead of accepting a mere basename collision.
 
 ## Edge direction in graph.json
 
@@ -78,11 +115,11 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 
 ## Confidence labels
 
-| Label | Meaning |
-|-------|---------|
-| `EXTRACTED` | Relationship is explicitly stated in the source (e.g., an import statement, a direct call) |
-| `INFERRED` | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
-| `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md |
+| Label       | Meaning                                                                                         |
+| ----------- | ----------------------------------------------------------------------------------------------- |
+| `EXTRACTED` | Relationship is explicitly stated in the source (e.g., an import statement, a direct call)      |
+| `INFERRED`  | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
+| `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md                          |
 
 ## Adding a new language extractor
 
@@ -135,7 +172,7 @@ as resolver context. Changes to a producer's return annotation require a full
 rebuild to recompute unchanged callers' inferred relationships.
 
 C# partial types merge across files by their path inside the namespace,
-enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
+enclosing types first and each with its arity (``Outer`1.Inner``), within one
 assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
 `Foo<T>` stay separate types. AST cache schema 9 retires cached C# results that
 lack this path. The merge runs after colliding ids are salted apart by path, so
@@ -162,3 +199,18 @@ class-based components in `app/View/Components`, `<livewire:…>`, `@component`,
 incremental rebuild, any changed, added or deleted Blade file (or ignore-file
 change) re-extracts every view, mostly from the AST cache, so an unchanged view
 follows its target being added or deleted.
+
+### Same-ID AST / semantic provenance during extractor upgrades (#4896)
+
+A newly supported AST extractor can mint an ID that is already owned by an
+independently evidenced semantic node in a saved graph, even when the two nodes
+refer to the same file. Watch reconciliation retains the saved semantic ID and
+its rationale/attribution, assigns the fresh AST record a deterministic
+ID-derived AST suffix, and rewrites only fresh AST edge/hyperedge
+references. This applies to full and incremental re-extractions; incrementally
+rebuilt sources are not positive evidence of semantic deletion. The shrink
+guard refuses same-ID losses of semantic provenance even when the total node
+count grows, preventing the ordinary missing-ID guard from being bypassed.
+If multiple new AST records already share that ID, all use one deterministic
+AST successor ID: this retains their preexisting AST coalescing behavior while
+ensuring they cannot overwrite independent semantic provenance.

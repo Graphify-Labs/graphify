@@ -166,6 +166,41 @@ def test_r_namespaced_setrefclass_is_recognised(tmp_path):
 
 
 @_needs_r
+def test_r_setrefclass_contains_inheritance_is_recognised(tmp_path):
+    """setRefClass (and setClass) spell their superclass argument `contains`,
+    not R6Class's `inherit`; only `inherit` was recognised, so a Reference
+    Class that inherits via `contains = "Base"` silently lost its edge."""
+    source = tmp_path / "refclasses.R"
+    source.write_text(
+        'Base <- setRefClass("Base", fields = list(x = "numeric"))\n'
+        'Derived <- setRefClass("Derived", contains = "Base", '
+        "methods = list(run = function() x))\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Base", "Derived", "run()"} <= labels
+    assert ("Derived", "Base") in _edge_labels(result, "inherits")
+
+
+@_needs_r
+def test_r6class_inherit_still_recognised(tmp_path):
+    """Control: R6Class's own `inherit` keyword must keep working alongside
+    the new `contains` handling for setClass/setRefClass."""
+    source = tmp_path / "r6.R"
+    source.write_text(
+        'Base <- R6Class("Base", public = list(x = 1))\n'
+        'Derived <- R6Class("Derived", inherit = Base, '
+        "public = list(run = function() self$x))\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Base", "Derived", "run()"} <= labels
+    assert ("Derived", "Base") in _edge_labels(result, "inherits")
+
+
+@_needs_r
 def test_r6_self_and_private_method_calls_resolve(tmp_path):
     """R6 methods reach their siblings through `self$` / `private$`, never as a
     bare name. Those intra-class calls were dropped because walk_calls only

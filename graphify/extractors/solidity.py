@@ -442,15 +442,25 @@ def extract_solidity(path: Path) -> dict:
         for member in body.named_children:
             kind = member.type
             if kind == "using_directive":
-                alias = next(
-                    (
-                        _read_text(child, source)
-                        for child in member.named_children
-                        if child.type in {"type_alias", "identifier", "user_defined_type"}
-                    ),
-                    "",
-                )
-                if alias:
+                # `using Lib for T;` names the library directly as a child.
+                # `using {f1, f2} for T;` (free functions bound as members,
+                # legal since 0.8.13) wraps each one in its own `using_alias`
+                # child instead, so the direct-child scan below saw nothing
+                # and silently dropped the whole directive.
+                alias_nodes = [
+                    child for child in member.named_children
+                    if child.type in {"type_alias", "identifier", "user_defined_type"}
+                ]
+                for child in member.named_children:
+                    if child.type == "using_alias":
+                        alias_nodes.extend(
+                            grandchild for grandchild in child.named_children
+                            if grandchild.type in {"type_alias", "identifier", "user_defined_type"}
+                        )
+                for alias_node in alias_nodes:
+                    alias = _read_text(alias_node, source)
+                    if not alias:
+                        continue
                     name = alias.split(".")[-1]
                     add_edge(
                         type_id,

@@ -75,18 +75,25 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     backup_dir = out / today
     graph_src = out / "graph.json"
 
-    # Skip re-copying if today's backup already has identical graph.json content.
-    # If content differs (graph changed since the last backup today), overwrite
-    # the backup in place — one folder per day, always the latest pre-overwrite state.
-    if backup_dir.exists() and (backup_dir / "graph.json").exists():
-        src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
-        bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
-        if src_hash == bak_hash:
-            return backup_dir  # identical content, nothing to do
-
     try:
+        # Skip re-copying if today's backup already holds every artifact with an
+        # identical graph.json. graph.json alone is not proof of completeness: a
+        # snapshot missing a sidecar (an earlier copy attempt failed part-way)
+        # must fall through and retry the copy instead of reporting itself
+        # complete forever (#3769). If content differs, overwrite the backup in
+        # place — one folder per day, always the latest pre-overwrite state.
+        if backup_dir.exists() and (backup_dir / "graph.json").exists():
+            src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
+            bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
+            if src_hash == bak_hash and all(
+                (backup_dir / name).exists()
+                for name in _BACKUP_ARTIFACTS
+                if (out / name).exists()
+            ):
+                return backup_dir  # identical content, nothing to do
         backup_dir.mkdir(parents=True, exist_ok=True)
         copied = 0
+        failed: list[str] = []
         for name in _BACKUP_ARTIFACTS:
             src = out / name
             if src.exists():
@@ -94,12 +101,21 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
                     shutil.copy2(src, backup_dir / name)
                     copied += 1
                 except Exception:
-                    pass
+                    failed.append(name)
+        if failed:
+            # A partial snapshot reported as a successful backup lets a stale
+            # graph.json survive the next overwrite unnoticed (#3769). Best-effort
+            # is unchanged: warn, report no backup, do not block the write.
+            print(
+                f"[graphify] warning: backup incomplete - could not copy "
+                f"{', '.join(failed)} -> {backup_dir.name}/ - continuing with overwrite",
+                file=sys.stderr,
+            )
+            return None
         if copied:
             print(f"[graphify] backed up {reason} graph ({copied} files) -> {backup_dir.name}/")
         return backup_dir
     except Exception as exc:
-        import sys
         print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
         return None
 
@@ -287,7 +303,10 @@ def existing_graph_node_count(path: "str | Path"):
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
-    from graphify.build import take_shrink_accounting
+    from graphify.build import take_dedup_remap, take_shrink_accounting
+    # The guard below reads it; it is removed here so node_link_data cannot
+    # write it into graph.json (#4940).
+    dedup_remap = take_dedup_remap(G)
     take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
@@ -335,13 +354,15 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     )
                     return False
             new_n = G.number_of_nodes()
-            from graphify.build import _lost_saved_semantic_nodes
+            from graphify.build import _dedup_shrink_allowance, _lost_saved_semantic_nodes
             new_node_list = [
                 {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
                 for node_id, attrs in G.nodes(data=True)
             ]
             folded: dict[str, str] = {}
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set(), folded)
+            missing = _lost_saved_semantic_nodes(
+                existing_nodes, new_node_list, set(), folded, dedup_remap=dedup_remap,
+            )
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)
@@ -356,6 +377,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             # A twin new to this run does not offset some other node's loss.
             existing_ids = {n.get("id") for n in existing_nodes if isinstance(n, dict)}
             merged = sum(twin in existing_ids for twin in folded.values())
+            # Ids entity dedup folded into a survivor are not lost either (#4940).
+            if dedup_remap:
+                merged += _dedup_shrink_allowance(
+                    existing_ids, set(G.nodes), dedup_remap,
+                )
             if new_n < existing_n - merged:
                 import sys as _sys
                 print(
@@ -564,7 +590,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
             (data.get("file_type", "unknown") or "unknown").capitalize(),
             "Entity",
         )
-        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
+        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}'}}) SET n.label = '{label}';")
     lines.append("")
     for u, v, data in G.edges(data=True):
         u, v = data.get("_src", u), data.get("_tgt", v)

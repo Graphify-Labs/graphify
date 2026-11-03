@@ -552,7 +552,7 @@ solely for such a cross-document reference. Never add this marker to a node
 defined by the enclosing source. Never invent, shorten or rewrite a path, and
 never omit source_file.
 
-Node ID format: lowercase, only [a-z0-9_], no dots or slashes.
+Node ID format: lowercase, word characters only (`[^\\W]` after casefolding, i.e. `[a-z0-9_]` for ASCII input but non-ASCII letters and digits are kept as-is), no dots or slashes.
 Format: {stem}_{entity} where stem = full repo-relative path with the extension dropped, every segment joined with _ (e.g. src/auth/session.py -> src_auth_session); entity = symbol name (both normalised). Top-level files use just the filename stem (setup.py -> setup).
 
 Edge direction rule — source is always the ACTOR, target is the ACTED-UPON:
@@ -1665,6 +1665,18 @@ def _call_openai_compat(
     return result
 
 
+def _claude_prompt_cache_enabled() -> bool:
+    """Keep prompt caching on by default; allow incompatible endpoints to opt out."""
+    raw = os.environ.get("GRAPHIFY_CLAUDE_PROMPT_CACHE", "").strip().lower()
+    if raw in ("", "1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(
+        "GRAPHIFY_CLAUDE_PROMPT_CACHE must be 1/true/yes/on or 0/false/no/off"
+    )
+
+
 def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Anthropic Claude directly (not via OpenAI compat layer)."""
     try:
@@ -1672,6 +1684,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
+    cache_enabled = _claude_prompt_cache_enabled()
     client = anthropic.Anthropic(
         api_key=api_key,
         base_url=BACKENDS["claude"]["base_url"],
@@ -1681,13 +1694,26 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=_extraction_system(deep=deep_mode),
+        # The system prompt is identical on every per-file call, so mark it
+        # cacheable: later calls bill it as a cache read, not full input (#4835).
+        system=[{
+            "type": "text",
+            "text": _extraction_system(deep=deep_mode),
+            "cache_control": {"type": "ephemeral"},
+        }] if cache_enabled else _extraction_system(deep=deep_mode),
         messages=[{"role": "user", "content": _anthropic_content(user_message, images or [])}],
     )
     raw_content = _anthropic_response_text(resp.content)
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = (resp.usage.input_tokens or 0) if resp.usage else 0
-    result["output_tokens"] = (resp.usage.output_tokens or 0) if resp.usage else 0
+    # Anthropic reports the cached system prompt in its own cache_* fields, not
+    # in input_tokens; add them back so cost.json still counts the whole prompt.
+    usage = resp.usage
+    result["input_tokens"] = (
+        (usage.input_tokens or 0)
+        + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    ) if usage else 0
+    result["output_tokens"] = (usage.output_tokens or 0) if usage else 0
     result["model"] = model
     # Normalise Anthropic's `stop_reason` to the OpenAI-compat `finish_reason`
     # vocabulary so the adaptive-retry layer doesn't have to know which
@@ -2838,7 +2864,39 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
+    # A file split into slices is complete only once every slice has returned
+    # (#4943). Checkpointing each slice as it lands stamped the parent's entry
+    # complete after its first slice, so an interrupted run served the head of
+    # the file as the whole file. Its results wait here until the last slice
+    # succeeds, then go out in one write; a slice that fails keeps it unsaved.
+    slices_left: dict[Path, int] = {}
+    for _chunk in chunks:
+        for _unit in _chunk:
+            if isinstance(_unit, FileSlice):
+                slices_left[unit_path(_unit)] = slices_left.get(unit_path(_unit), 0) + 1
+    held_results: dict[Path, list[tuple[int, dict]]] = {}
+
+    def _checkpoint_chunk(idx: int, result: dict, chunk: "list[Path | FileSlice]") -> None:
+        sliced = [unit_path(u) for u in chunk if isinstance(u, FileSlice)]
+        for parent in sliced:
+            slices_left[parent] -= 1
+        whole = [unit_path(u) for u in chunk if not isinstance(u, FileSlice)]
+        if whole:
+            _save_checkpoint(result, whole)
+        for parent in dict.fromkeys(sliced):
+            held_results.setdefault(parent, []).append((idx, result))
+            if slices_left[parent] == 0:
+                # Chunk order, not completion order, so the entry is the same
+                # whichever slice returned first (#1632).
+                held = [r for _, r in sorted(held_results.pop(parent), key=lambda p: p[0])]
+                combined: dict = {
+                    bucket: [item for r in held for item in r.get(bucket, [])]
+                    for bucket in ("nodes", "edges", "hyperedges")
+                }
+                combined["_partial_files"] = _merged_partial_files(*held)
+                _save_checkpoint(combined, [parent])
+
+    def _save_checkpoint(result: dict, allowed: "list[Path]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
         # the very end of the run (in __main__), so a run interrupted partway
@@ -2858,7 +2916,6 @@ def extract_corpus_parallel(
             # old `.rel` attribute does not exist on FileSlice, so every sliced
             # chunk leaked the FileSlice object into the allowlist and the write
             # raised TypeError, silently defeating the checkpoint.)
-            allowed = [unit_path(item) for item in chunk]
             # Deep-mode results checkpoint into their own namespace
             # (cache/semantic-deep/) so a deep run never overwrites standard
             # entries — and a later standard run never serves deep ones (#1894).
@@ -2896,7 +2953,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
-            _checkpoint_chunk(result, chunk)
+            _checkpoint_chunk(idx, result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -2922,11 +2979,23 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
-                _checkpoint_chunk(result, chunks[idx])
+                _checkpoint_chunk(idx, result, chunks[idx])
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
+
+    # A failed slice leaves its parent with nodes from the other slices, so the
+    # parent looks covered and the caller's final save would write it complete
+    # (#4943). Name it partial so that save stamps it and the next run retries.
+    failed_parents = {
+        unit_path(u) for chunk in chunks for u in chunk
+        if isinstance(u, FileSlice) and unit_path(u) in failed_files
+    }
+    if failed_parents:
+        merged["_partial_files"] = sorted(
+            set(merged.get("_partial_files", []) or []) | {str(p) for p in failed_parents}
+        )
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
