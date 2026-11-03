@@ -170,7 +170,7 @@ from graphify.cli import _stamped_manifest_files
 # list as Step 9 does after a full build, so it stays unstamped and is retried (#2225, #4807).
 # Leave the list on disk: Step 9 reads it too if it runs after the update.
 _pf = Path('graphify-out/.graphify_partial.txt')
-_partial = {l.strip() for l in _pf.read_text(encoding=\"utf-8\").splitlines() if l.strip()} if _pf.exists() else set()
+_partial = {l.strip() for l in _pf.read_text(encoding='utf-8').splitlines() if l.strip()} if _pf.exists() else set()
 _manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'), partial_source_files=_partial)
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
