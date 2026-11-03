@@ -1,6 +1,7 @@
 """Structural extraction for Solidity source files."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -363,7 +364,8 @@ def extract_solidity(path: Path) -> dict:
         relative = _unquote(_read_text(source_node, source))
         if not relative or relative.startswith(("http:", "https:")):
             continue
-        target = path.parent / relative
+        # `../utils/Errors.sol` must name the real file, not `proxy/utils/Errors.sol`.
+        target = Path(os.path.normpath(path.parent / relative))
         add_edge(
             file_id,
             _make_id(str(target)),
