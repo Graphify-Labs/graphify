@@ -4221,6 +4221,28 @@ def dispatch_command(cmd: str) -> None:
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
+        _ignored = sorted(detection.get("ignored", []))
+        if _ignored:
+            # 目录记录代表剪枝边界，不能为统计或展示而下钻。
+            _examples = []
+            for _entry in _ignored[:3]:
+                _rel = Path(os.path.relpath(_entry, target)).as_posix()
+                if _entry.endswith(os.sep):
+                    _rel += "/"
+                _examples.append(repr(_rel))
+            _more = f" (+{len(_ignored) - 3} more)" if len(_ignored) > 3 else ""
+            print(
+                f"[graphify extract] {len(_ignored)} path(s) ignored by ignore rules "
+                f"(pruned directories count once): {', '.join(_examples)}{_more}"
+            )
+            _vcs_hint = (
+                "--no-gitignore bypasses VCS ignore rules only"
+                if _effective_gitignore else "VCS ignore rules disabled"
+            )
+            print(
+                f"[graphify extract] Review ignore rules if source is missing; {_vcs_hint}; "
+                ".graphifyignore and --exclude still apply."
+            )
         # Surface files that were seen but not classified (extensionless non-shebang
         # project files like Dockerfile/Makefile, or unsupported extensions), so they
         # are no longer invisible in graphify's own output (#1692).
