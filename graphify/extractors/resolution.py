@@ -2378,10 +2378,11 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
     if not js_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object, list]] = {}
-
+    # One parse per file, dropped before the next: holding every file's source and syntax tree
+    # across the passes held the whole corpus (1.9 GB on Next.js). Class-member uses still follow
+    # all call uses, so every fact list keeps its order.
+    member_facts = _SymbolResolutionFacts()
     for path in js_paths:
-        resolved_path = _resolve_cached(path)
         parsed = _parse_js_tree(path)
         if parsed is None:
             continue
@@ -2390,7 +2391,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             node for node in _walk_js_tree(root_node)
             if node.type in _JS_FACT_NODE_TYPES
         ]
-        trees[resolved_path] = (source, root_node, indexed)
 
         for node in indexed:
             if node.type == "export_statement":
@@ -2435,13 +2435,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 facts.aliases.append(
                     _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
                 )
-
-    for path in js_paths:
-        resolved_path = _resolve_cached(path)
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, _root_node, indexed = parsed
 
         for node in indexed:
             if node.type != "export_statement":
@@ -2532,12 +2525,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-    for path in js_paths:
-        resolved_path = _resolve_cached(path)
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node, _indexed = parsed
         for source_id, body in _js_top_level_function_bodies(path, root_node, source):
             for node in _walk_js_tree(body):
                 imported_name = _js_call_identifier(node, source)
@@ -2554,12 +2541,6 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-    for path in js_paths:
-        resolved_path = _resolve_cached(path)
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, _root_node, indexed = parsed
         stem = _file_stem(path)
         for node in indexed:
             if node.type not in (
@@ -2575,7 +2556,8 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             if not class_name:
                 continue
             class_nid = _make_id(stem, class_name)
-            _ts_walk_class_members(node, source, path, class_nid, facts)
+            _ts_walk_class_members(node, source, path, class_nid, member_facts)
+    facts.uses.extend(member_facts.uses)
 
 @functools.lru_cache(maxsize=2048)
 def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
@@ -2954,13 +2936,12 @@ def _collect_python_symbol_resolution_facts(
     if not py_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    # One parse per file, dropped before the next (the same reason as the JS facts above).
     for path in py_paths:
         parsed = _parse_python_tree(path)
         if parsed is None:
             continue
         source, root_node = parsed
-        trees[_resolve_cached(path)] = parsed
 
         for node in _walk_python_tree(root_node):
             if node.type != "import_from_statement":
@@ -3027,11 +3008,6 @@ def _collect_python_symbol_resolution_facts(
                         )
                     )
 
-    for path in py_paths:
-        parsed = trees.get(_resolve_cached(path))
-        if parsed is None:
-            continue
-        source, root_node = parsed
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
@@ -3632,9 +3608,9 @@ def _resolve_cross_file_java_imports(
     language = Language(tsjava.language())
     parser = Parser(language)
 
-    # Pre-pass: declared package per source_file string (and parsed trees for
-    # pass 2, so each file is only parsed once).
-    parsed: dict[str, tuple[bytes, object]] = {}
+    # Pre-pass: declared package per source_file string and each file's imports,
+    # so pass 2 needs no syntax tree: holding every tree held the whole corpus.
+    imports_by_path: dict[str, list[tuple[str, str, int]]] = {}
     pkg_by_src: dict[str, str] = {}
     for path, file_result in zip(paths, per_file):
         try:
@@ -3642,7 +3618,7 @@ def _resolve_cross_file_java_imports(
             tree = parser.parse(source)
         except Exception:
             continue
-        parsed[str(path)] = (source, tree)
+        imports_by_path[str(path)] = _java_import_rows(tree.root_node, source)
         pkg = ""
         for child in tree.root_node.children:
             if child.type == "package_declaration":
@@ -3689,53 +3665,54 @@ def _resolve_cross_file_java_imports(
     seen_pairs: set[tuple[str, str]] = set()
     for path in paths:
         file_nid = _make_id(str(path))
-        entry = parsed.get(str(path))
-        if entry is None:
-            continue
-        source, tree = entry
-
-        def walk(n) -> None:
-            if n.type == "import_declaration":
-                raw = _read_text(n, source).strip()
-                body = raw[len("import"):].strip().rstrip(";").strip()
-                if body.startswith("static "):
-                    body = body[len("static "):].strip()
-                if body.endswith(".*"):
-                    return
-                parts = body.split(".")
-                if not parts:
-                    return
-                last = parts[-1]
-                imp_pkg = ".".join(parts[:-1])
-                if last and last[0].islower() and len(parts) >= 2:
-                    last = parts[-2]
-                    imp_pkg = ".".join(parts[:-2])
-                at_line = n.start_point[0] + 1
-                for tgt_nid, tgt_pkg in name_to_ids.get(last, []):
-                    if tgt_nid == file_nid:
-                        continue
-                    if not _pkg_matches(imp_pkg, tgt_pkg):
-                        continue
-                    key = (file_nid, tgt_nid)
-                    if key in seen_pairs:
-                        continue
-                    seen_pairs.add(key)
-                    new_edges.append({
-                        "source": file_nid,
-                        "target": tgt_nid,
-                        "relation": "imports",
-                        "confidence": "EXTRACTED",
-                        "confidence_score": 1.0,
-                        "source_file": str(path),
-                        "source_location": f"L{at_line}",
-                        "weight": 1.0,
-                    })
-            for child in n.children:
-                walk(child)
-
-        walk(tree.root_node)
+        for last, imp_pkg, at_line in imports_by_path.get(str(path), ()):
+            for tgt_nid, tgt_pkg in name_to_ids.get(last, []):
+                if tgt_nid == file_nid:
+                    continue
+                if not _pkg_matches(imp_pkg, tgt_pkg):
+                    continue
+                key = (file_nid, tgt_nid)
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                new_edges.append({
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "source_file": str(path),
+                    "source_location": f"L{at_line}",
+                    "weight": 1.0,
+                })
 
     return new_edges
+
+
+def _java_import_rows(root_node, source: bytes) -> list[tuple[str, str, int]]:
+    """Each non-wildcard import in a Java tree as (name, package, line), in source order."""
+    rows: list[tuple[str, str, int]] = []
+
+    def walk(n) -> None:
+        if n.type == "import_declaration":
+            raw = _read_text(n, source).strip()
+            body = raw[len("import"):].strip().rstrip(";").strip()
+            if body.startswith("static "):
+                body = body[len("static "):].strip()
+            if body.endswith(".*"):
+                return
+            parts = body.split(".")
+            last = parts[-1]
+            imp_pkg = ".".join(parts[:-1])
+            if last and last[0].islower() and len(parts) >= 2:
+                last = parts[-2]
+                imp_pkg = ".".join(parts[:-2])
+            rows.append((last, imp_pkg, n.start_point[0] + 1))
+        for child in n.children:
+            walk(child)
+
+    walk(root_node)
+    return rows
 
 
 def _go_import_path_for_file(
