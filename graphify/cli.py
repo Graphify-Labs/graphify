@@ -1178,6 +1178,71 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     return False
 
 
+def _search_is_outside_project(tool_input: dict) -> bool:
+    """Skip only searches whose literal targets are all outside the project.
+
+    Structured Grep paths and simple grep/rg commands are supported. Shell
+    composition, expansion, wrappers and unknown options remain advisory as
+    before; this is deliberately not a shell interpreter or an access gate.
+    """
+    command = str(tool_input.get("command") or "")
+    if command:
+        import shlex
+        if any(c in command for c in "$`;&|<>\n\\"):
+            return False
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return False
+        if not tokens or tokens[0].rsplit("/", 1)[-1] not in {
+            "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep",
+        }:
+            return False
+        positional = []
+        explicit_pattern = False
+        options = True
+        args = iter(tokens[1:])
+        for arg in args:
+            if options and arg == "--":
+                options = False
+            elif options and arg in ("-e", "--regexp", "-f", "--file"):
+                if next(args, None) is None:
+                    return False
+                explicit_pattern = True
+            elif options and arg.startswith(("--regexp=", "--file=")):
+                explicit_pattern = True
+            elif options and arg in _HINT_VALUE_FLAGS:
+                if next(args, None) is None:
+                    return False
+            elif options and arg.startswith("--"):
+                if arg.split("=", 1)[0] in _HINT_VALUE_FLAGS and "=" in arg:
+                    continue
+                if arg not in {"--ignore-case", "--line-number", "--recursive",
+                               "--fixed-strings", "--word-regexp", "--invert-match"}:
+                    return False
+            elif options and arg.startswith("-"):
+                if not re.fullmatch(r"-[nriIvVwxlLchHqsoEFGPRUa]+", arg):
+                    return False
+            else:
+                positional.append(arg)
+        paths = positional if explicit_pattern else positional[1:]
+    else:
+        paths = [str(tool_input.get("path") or "")]
+    if not paths or any(not p or p == "-" or re.search(r"[$`*?\[\]{}~]", p) for p in paths):
+        return False
+    # Bash on Windows may use /c/... or /mnt/c/... paths that pathlib does
+    # not map to the shell's drive. Keep the hint when that mapping is unknown.
+    if command and os.name == "nt" and any(p.startswith("/") for p in paths):
+        return False
+    try:
+        root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+        # Relative search targets resolve against the tool's working directory,
+        # which can be below CLAUDE_PROJECT_DIR. Resolve symlinks and '..' too.
+        return all(not Path(p).resolve().is_relative_to(root) for p in paths)
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
@@ -1225,7 +1290,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # Grep tool carries `pattern` (plus optional path/glob) and no
             # command. Grep is scoped below to the project's source targets.
             # Bash searches remain advisory: compound shell commands have no
-            # single reliable target.
+            # single reliable target, but a search whose every literal target is
+            # outside the project emits no project hint (#4961).
             pattern = t.get("pattern")
             is_grep_tool = not cmd_str and isinstance(pattern, str) and bool(pattern) \
                 and d.get("tool_name") in (None, "Grep")
@@ -1256,7 +1322,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         and _mark_session_denied(str(d.get("session_id") or "")):
                     sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
                     return
-            if _nudge_allowed(d):
+            if not _search_is_outside_project(t) and _nudge_allowed(d):
                 sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), terms=_search_hint_terms(t)))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]

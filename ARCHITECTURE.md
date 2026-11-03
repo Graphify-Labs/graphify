@@ -130,6 +130,14 @@ retires Go entries created before these receiver-binding rules.
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
 
+## Search hook scope
+
+The search hook omits project hints when a structured Grep path or every literal
+target of a simple grep/rg command resolves outside the project. Mixed targets,
+implicit paths, shell composition/expansion, wrappers, unknown options and
+unmapped Windows shell drive paths retain the advisory hint. It does not execute
+shell input or change search permissions.
+
 ## Security
 
 All external input passes through `graphify/security.py` before use:
