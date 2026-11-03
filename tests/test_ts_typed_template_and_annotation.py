@@ -56,6 +56,26 @@ export async function load() { return import("./runtime"); }
     assert any('runtime' in str(target) for target in dynamic)
 
 
+@pytest.mark.parametrize('newline', ['\n', '\r\n', '\r'])
+@pytest.mark.parametrize('bom', [False, True])
+def test_type_import_offsets_survive_newlines_and_bom(tmp_path: Path, newline: str, bom: bool):
+    path = tmp_path / 'input.ts'
+    source = '''const titulo = "más";
+export function create() {
+  const handler = (c: import("hono").Context<Env>) => respond(c);
+  return handler;
+}
+export async function load() { return import("./runtime"); }
+'''.replace('\n', newline).encode('utf-8')
+    path.write_bytes((b'\xef\xbb\xbf' if bom else b'') + source)
+    (tmp_path / 'runtime.ts').write_text('export const value = 1;')
+    result = extract_js(path)
+    labels = {n['id']: n['label'] for n in result['nodes']}
+    dynamic = [labels.get(e['target'], e['target']) for e in result['edges'] if e['relation'] == 'dynamic_import']
+    assert 'hono' not in dynamic
+    assert any('runtime' in str(target) for target in dynamic)
+
+
 def test_preserves_comments_strings_and_template_text():
     source = (b'// sql<{id:string}[]>`not code`\n'
               b'const s = "sql<{id:string}[]>`literal`";\n'
@@ -86,3 +106,26 @@ def test_multiline_type_preserves_offsets_and_line_numbers(tmp_path: Path):
     result = extract_js(path)
     assert 'parse_errors' not in result
     assert next(n for n in result['nodes'] if n['label'] == 'after()')['source_location'] == 'L5'
+
+
+def test_typed_tag_candidate_scan_scales_linearly_for_long_identifiers():
+    """A long identifier without a tag must not restart the scan at every byte."""
+    import gc
+    import time
+
+    def elapsed(length: int) -> float:
+        source = b'a' * length
+        start = time.process_time()
+        assert list(extractor._TS_TYPED_TAG_RE.finditer(source)) == []
+        return time.process_time() - start
+
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        elapsed(1000)
+        small = min(elapsed(10000) for _ in range(3))
+        large = min(elapsed(20000) for _ in range(3))
+    finally:
+        if enabled:
+            gc.enable()
+    assert large < small * 3.5, f'Escaneo superlineal: {small:.6f}s -> {large:.6f}s'

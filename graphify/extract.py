@@ -2240,7 +2240,7 @@ def extract_python(path: Path, *, root: Path | None = None) -> dict:
 
 
 _TS_TYPED_TAG_RE = re.compile(
-    rb"(?P<tag>[A-Za-z_$][A-Za-z0-9_$]*)"
+    rb"(?<![A-Za-z0-9_$])(?P<tag>[A-Za-z_$][A-Za-z0-9_$]*)"
     rb"(?P<types><\s*\{[^{}]*\}\s*\[\s*\]\s*>)(?=\s*`)"
 )
 _TS_QUALIFIED_IMPORT_TYPE_RE = re.compile(
@@ -2390,12 +2390,20 @@ def _rescue_js_dynamic_imports(
         src = _read_source_text(path, warn=False)
         if not _re.search(r"(?<!\w)import\s*\(", src):  # cheap bail — most files have none
             return
-        encoded = src.encode('utf-8') if type_only_import_offsets else b''
-        type_only_positions = {
-            len(encoded[:offset].decode('utf-8', errors='replace'))
-            for offset in (type_only_import_offsets or ())
-            if encoded[offset:offset + 6] == b'import'
-        }
+        type_only_positions: set[int] = set()
+        if type_only_import_offsets:
+            # The AST uses UTF-8 bytes with original line endings, whereas the
+            # rescue pass reads text with universal-newline translation. Map
+            # offsets in one pass so CRLF, BOM and non-ASCII text stay aligned.
+            raw_source = _read_source_bytes(path, warn=False)
+            cursor = position = 0
+            for offset in sorted(type_only_import_offsets):
+                if offset < cursor or raw_source[offset:offset + 6] != b'import':
+                    continue
+                segment = raw_source[cursor:offset].decode('utf-8')
+                position += len(segment.replace('\r\n', '\n').replace('\r', '\n'))
+                type_only_positions.add(position)
+                cursor = offset
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
