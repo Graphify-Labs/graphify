@@ -137,13 +137,14 @@ def test_require_new_still_lands_on_required_class(tmp_path: Path):
     }
 
 
-def test_external_require_new_matches_esm_no_calls_edge(tmp_path: Path):
-    """Unresolved package requires stay without a calls/inherits target.
-
-    #4634 removed the local binding node on purpose. ESM `import X from 'pkg'`
-    already emits no calls/inherits edge for the same unresolved external — only
-    an `imports_from` to a `ref_…` package id. CJS matches that: no edge rather
-    than restoring a shadow binding (#4688).
+def test_external_require_binds_locally_unlike_external_esm(tmp_path: Path):
+    """An unresolved external require and an unresolved external ESM import differ,
+    and #4688 does not change that. A CJS `const Plugin = require('some-plugin')`
+    binding is a real local name, so `new Plugin()` and `extends Plugin` resolve to
+    its node; an ESM `import Plugin from 'some-plugin'` default mints no local node
+    and so emits no calls/inherits edge. This CJS/ESM asymmetry for external
+    packages predates #4688 (which only resolves intra-project `./` requires); pin
+    it so a future change to external-require handling is deliberate.
     """
     cjs = _write(
         tmp_path / "cjs.js",
@@ -157,11 +158,14 @@ def test_external_require_new_matches_esm_no_calls_edge(tmp_path: Path):
         "function cfg() { return new Plugin(); }\n"
         "class A extends Plugin {}\n",
     )
-    for path in (cjs, esm):
-        result = extract([path], cache_root=tmp_path / f"_cache_{path.stem}", root=tmp_path)
-        assert _calls_targets(result, "cfg()") == [], path.name
-        assert _inherits_targets(result, "A") == [], path.name
-        assert _make_id(path.stem, "Plugin") not in {n["id"] for n in result["nodes"]}
+    cjs_result = extract([cjs], cache_root=tmp_path / "_cache_cjs", root=tmp_path)
+    assert _calls_targets(cjs_result, "cfg()") == [("Plugin", "cjs.js")]
+    assert _inherits_targets(cjs_result, "A") == [("Plugin", "cjs.js")]
+
+    esm_result = extract([esm], cache_root=tmp_path / "_cache_esm", root=tmp_path)
+    assert _calls_targets(esm_result, "cfg()") == []
+    assert _inherits_targets(esm_result, "A") == []
+    assert _make_id("esm", "Plugin") not in {n["id"] for n in esm_result["nodes"]}
 
 
 def test_bare_exports_assignment_is_not_a_default_export(tmp_path: Path):
