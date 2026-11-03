@@ -4223,7 +4223,8 @@ def dispatch_command(cmd: str) -> None:
             )
         _ignored = sorted(detection.get("ignored", []))
         if _ignored:
-            # 目录记录代表剪枝边界，不能为统计或展示而下钻。
+            # A directory entry marks a pruned boundary; do not descend into it
+            # to count or display its contents.
             _examples = []
             for _entry in _ignored[:3]:
                 _rel = Path(os.path.relpath(_entry, target)).as_posix()
