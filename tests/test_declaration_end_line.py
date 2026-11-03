@@ -141,6 +141,33 @@ def test_objc_declaration_and_definition_ranges_survive_pipeline(tmp_path, monke
 
 
 @pytest.mark.parametrize("reverse", [False, True])
+def test_objc_extension_definition_ranges_survive_header_merge(tmp_path, reverse):
+    header = tmp_path / "Box.h"
+    impl = tmp_path / "Box.m"
+    header.write_text("@interface Box\n- (void)run;\n@end\n", encoding="utf-8")
+    impl.write_text(
+        '#import "Box.h"\n@interface Box ()\n- (void)run;\n@end\n'
+        "@implementation Box\n- (void)run {\n return;\n}\n@end\n",
+        encoding="utf-8",
+    )
+    paths = [header, impl] if reverse else [impl, header]
+    result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    for label, source_start, source_end, definition_start, definition_end in [
+        ("Box", 1, 3, 5, 9), ("-run", 2, 2, 6, 8),
+    ]:
+        node = _node(result, label)
+        assert node["source_file"] == "Box.h"
+        assert node["source_location"] == f"L{source_start}"
+        assert node["metadata"]["end_line"] == source_end
+        assert node["definition_file"] == "Box.m"
+        assert node["definition_location"] == f"L{definition_start}"
+        assert node["metadata"]["definition_end_line"] == definition_end
+    before = copy.deepcopy(result)
+    _merge_decl_def_classes(result["nodes"], result["edges"])
+    assert result == before
+
+
+@pytest.mark.parametrize("reverse", [False, True])
 def test_duplicate_merge_fills_range_only_for_matching_location(reverse):
     from graphify.dedup import _merge_missing_attributes
 
@@ -223,6 +250,36 @@ def test_build_duplicate_preserves_range_with_existing_metadata(reverse):
     graph = build([{"nodes": nodes, "edges": []}])
     assert graph.nodes["run"]["metadata"]["end_line"] == 4
     assert complete["metadata"] == {"end_line": 4}
+
+
+@pytest.mark.parametrize("header_has_definition", [False, True])
+@pytest.mark.parametrize("known_end", [False, True])
+def test_definition_merge_uses_explicit_implementation_site(header_has_definition, known_end):
+    header = {
+        "id": "box", "label": "Box", "file_type": "code", "source_file": "Box.h",
+        "source_location": "L1", "metadata": {"end_line": 3},
+    }
+    if header_has_definition:
+        header.update(definition_file="Box.m", definition_location="L8")
+        header["metadata"]["definition_end_line"] = 12
+    impl = {
+        **header, "source_file": "Box.m", "source_location": "L2",
+        "definition_file": "Box.m", "definition_location": "L5", "metadata": {"end_line": 4},
+    }
+    if known_end:
+        impl["metadata"]["definition_end_line"] = 9
+    nodes = [header, impl]
+    _merge_decl_def_classes(nodes, [])
+    assert nodes == [header]
+    assert header["source_file"] == "Box.h"
+    assert header["source_location"] == "L1"
+    assert header["metadata"]["end_line"] == 3
+    assert header["definition_file"] == "Box.m"
+    assert header["definition_location"] == "L5"
+    assert header["metadata"].get("definition_end_line") == (9 if known_end else None)
+    before = copy.deepcopy(header)
+    _merge_decl_def_classes(nodes, [])
+    assert header == before
 
 
 @pytest.mark.parametrize("reverse", [False, True])
