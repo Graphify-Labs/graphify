@@ -709,6 +709,87 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
 
 
+def _update_merge_body(core: str) -> str:
+    """The --update merge payload from a rendered monolith.
+
+    ``_step_body`` cannot see this fence: Aider's copy closes with ``" ``
+    (trailing space), which its exact-match delimiter never terminates, so
+    the body is discarded at the next invoke line. Extract by marker
+    instead, unescaping exactly as ``_python_step_bodies`` does.
+    """
+    lines = core.split("\n")
+    marker = next(i for i, ln in enumerate(lines) if "G_existing.update(G_new)" in ln)
+    start = next(
+        i for i in range(marker, -1, -1) if lines[i] == gen._PY_INVOKE_POSIX
+    )
+    end = next(i for i in range(marker, len(lines)) if lines[i].strip() == '"')
+    return "\n".join(gen._unescape_bash_dq(x) for x in lines[start + 1 : end])
+
+
+@pytest.mark.parametrize("host", ["aider", "devin"])
+def test_monolith_update_merge_saves_manifest(tmp_path, monkeypatch, host):
+    """#4812: the monolith --update merge block must advance the manifest.
+
+    The Aider/Devin runbooks detected and merged incremental changes but
+    never saved the manifest in the --update flow (only Step 9 did), so the
+    next --update diffed against the previous full-build baseline and
+    re-queued files that were already handled. Execute the rendered merge
+    block against real detector state, deletion-only, and require the
+    manifest to drop the deleted file while keeping every unchanged row
+    identical — the same invariant the split-host runbook carries.
+    """
+    import json as _json
+
+    from graphify.detect import detect_incremental, load_manifest, save_manifest
+
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    docs = [tmp_path / f"doc{i}.md" for i in range(5)]
+    for p in docs:
+        p.write_text("# A real document\nUnchanged semantic content.\n", encoding="utf-8")
+    save_manifest({"document": [str(p) for p in docs]}, root=tmp_path)
+    before = load_manifest(root=tmp_path)
+    docs[0].unlink()
+    incremental = detect_incremental(tmp_path)
+    assert incremental["new_total"] == 0
+    assert len(incremental["deleted_files"]) == 1
+    # The merge block reads the existing graph and this run's extraction;
+    # each host addresses the extraction file from its own detect block.
+    (out / "graph.json").write_text(
+        _json.dumps(
+            {"directed": True, "multigraph": False, "graph": {},
+             "nodes": [{"id": "seed"}], "links": []}
+        ),
+        encoding="utf-8",
+    )
+    extraction = _json.dumps({"nodes": [], "edges": []})
+    (tmp_path / ".graphify_extract.json").write_text(extraction, encoding="utf-8")
+    (out / ".graphify_extract.json").write_text(extraction, encoding="utf-8")
+    incremental_json = _json.dumps(incremental)
+    (tmp_path / ".graphify_incremental.json").write_text(
+        incremental_json, encoding="utf-8"
+    )
+    (out / ".graphify_incremental.json").write_text(
+        incremental_json, encoding="utf-8"
+    )
+    core, _ = _platform_artifacts(host)
+    body = _substituted(_update_merge_body(core), tmp_path)
+    exec(compile(body, f"{host}-update-merge", "exec"), {"IS_DIRECTED": True})
+    after = load_manifest(root=tmp_path)
+    assert str(docs[0]) not in after
+    for p in docs[1:]:
+        assert after[str(p)] == before[str(p)]
+    # The harness files below are not part of the corpus the runbook sees;
+    # drop them before re-diffing so only the docs are judged.
+    (tmp_path / ".graphify_extract.json").unlink(missing_ok=True)
+    (tmp_path / ".graphify_incremental.json").unlink(missing_ok=True)
+    (tmp_path / "extraction-spec.md").unlink(missing_ok=True)
+    following = detect_incremental(tmp_path)
+    assert following["new_total"] == 0
+    assert following["deleted_files"] == []
+
+
 def test_devin_keeps_its_multi_field_frontmatter():
     """devin renders inline, so its 4+-field frontmatter is preserved verbatim."""
     platforms = gen.load_platforms()
