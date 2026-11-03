@@ -5,16 +5,14 @@ Two questions are kept apart on purpose:
   cost     how often the question is asked, and how many bytes a miss reads
   meaning  whether any keep/evict decision changes
 
-A variant that is cheap and wrong fails the differential test. A variant that is
-correct and slow fails the cost test. Neither column alone picks the fix.
+A fix that is cheap and wrong fails the counting test. A fix that is correct and slow
+fails the cost test. The frozen node set catches a fix that changes a keep or evict
+decision, which is the failure mode that matters here.
 
-Variants under test
-  base          today's code
-  cache         H1  memoize the real answer per resolved path
-  capped        H4  sniff the first 256 KiB instead of the whole file
-  capped_cache  H1 + H4
-  cheap         H7  ask "is this source AST-owned" instead of "which extractor"
-  cheap_cache   H1 + H7
+The hypotheses the fix implements, named as they were argued on the issue:
+  H7  ask "is this source AST-owned" instead of "which extractor"
+  H1  resolve that answer once per file, keyed by identity
+  H4  sniff the first 256 KiB instead of the whole file
 """
 
 from __future__ import annotations
@@ -162,6 +160,51 @@ def test_h4_capped_read_preserves_sniff_answers(tmp_path):
         assert ex._is_cpp_header(p) == capped(p, ex._CPP_HEADER_MARKERS), p.name
 
 
+@pytest.mark.parametrize("name", ["huge_cpp.h", "huge_objc.m"])
+def test_production_sniffer_reads_only_the_cap(tmp_path, monkeypatch, name):
+    """The shipped sniffer must read _SNIFF_BYTES, not the whole file.
+
+    Without this, reverting to read_bytes()[:CAP] would keep every other test
+    green while reintroducing a full-file read and allocation per call (#4978).
+    """
+    p = tmp_path / name
+    body = b"class Late { };\n" if name.endswith(".h") else b"@implementation App\n"
+    p.write_bytes(body + b"/* pad */\n" * 130000)
+    assert p.stat().st_size > ex._SNIFF_BYTES
+
+    sizes = []
+    real_open = open
+
+    class CountingFile:
+        def __init__(self, fh):
+            self._fh = fh
+
+        def __getattr__(self, attr):
+            return getattr(self._fh, attr)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._fh.__exit__(*exc)
+
+        def read(self, *args, **kwargs):
+            data = self._fh.read(*args, **kwargs)
+            sizes.append(len(data))
+            return data
+
+    def counting_open(file, mode="r", *args, **kwargs):
+        fh = real_open(file, mode, *args, **kwargs)
+        if "b" in str(mode):
+            return CountingFile(fh)
+        return fh
+
+    monkeypatch.setattr("builtins.open", counting_open)
+    ex._get_extractor(p)
+
+    assert sizes == [ex._SNIFF_BYTES], f"{p.stat().st_size} byte file, reads {sizes}"
+
+
 # ---------------------------------------------------------------------------
 # H2: a path-keyed global cache is wrong in a long-lived watcher
 # ---------------------------------------------------------------------------
@@ -193,7 +236,7 @@ def test_sniff_silently_fails_when_the_cwd_is_outside_the_project(tmp_path, monk
 
 
 # ---------------------------------------------------------------------------
-# pipeline: real _rebuild_code, instrumented per variant
+# pipeline: real _rebuild_code, instrumented at the reconcile call site
 # ---------------------------------------------------------------------------
 HEADER_FUNCS = 60
 
@@ -203,7 +246,10 @@ def _make_corpus(root: Path) -> Path:
     corpus.mkdir(parents=True)
     (corpus / "app.py").write_text("def one():\n    pass\n\ndef two():\n    pass\n")
     lines = ["#ifndef BIG_H\n#define BIG_H\n"]
-    lines += [f"static inline int hf{i}(int a) {{ return a + {i}; }}\n" for i in range(HEADER_FUNCS)]
+    lines += [
+        f"static inline int hf{i}(int a) {{ return a + {i}; }}\n"
+        for i in range(HEADER_FUNCS)
+    ]
     lines.append("#endif\n")
     (corpus / "big.h").write_text("".join(lines))
     (corpus / "gone.c").write_text("int gone(void) { return 0; }\n")
@@ -260,12 +306,11 @@ class Probe:
         self.reconcile_bytes: Counter[str] = Counter()
         self._active: str | None = None
 
-    def install(self, monkeypatch, variant: str) -> None:
+    def install(self, monkeypatch) -> None:
         real_get = ex._get_extractor
         real_read_bytes = Path.read_bytes
         real_open = open
         probe = self
-        cache: dict[str, object] = {}
 
         def get(path, **kwargs):
             p = Path(path)
@@ -276,21 +321,12 @@ class Probe:
                 return real_get(p, **kwargs)
 
             probe.reconcile_calls[key] += 1
-
-            cache_key = str(p.resolve())
-            if "cache" in variant and cache_key in cache:
-                return cache[cache_key]
-
             probe.reconcile_real[key] += 1
             probe._active = key
             try:
-                value = real_get(p, **kwargs)
+                return real_get(p, **kwargs)
             finally:
                 probe._active = None
-
-            if "cache" in variant:
-                cache[cache_key] = value
-            return value
 
         def counting_read_bytes(self):
             data = real_read_bytes(self)
@@ -325,35 +361,18 @@ class Probe:
                 return CountingFile(fh)
             return fh
 
-        if variant.startswith("capped"):
-
-            def capped(path, markers):
-                try:
-                    with open(path, "rb") as fh:
-                        head = fh.read(CAP)
-                except OSError:
-                    return False
-                if probe._active is not None:
-                    probe.reconcile_reads[probe._active] += 1
-                    probe.reconcile_bytes[probe._active] += len(head)
-                return any(m in head for m in markers)
-
-            monkeypatch.setattr(ex, "_is_objc_header", lambda p, head=None: capped(p, ex._OBJC_HEADER_MARKERS))
-            monkeypatch.setattr(ex, "_is_objc_source", lambda p: capped(p, ex._OBJC_HEADER_MARKERS))
-            monkeypatch.setattr(ex, "_is_cpp_header", lambda p, head=None: capped(p, ex._CPP_HEADER_MARKERS))
-
         monkeypatch.setattr(ex, "_get_extractor", get)
         monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
         monkeypatch.setattr("builtins.open", counting_open)
 
 
-def _run(corpus: Path, monkeypatch, variant: str) -> tuple[Probe, list[str]]:
+def _run(corpus: Path, monkeypatch) -> tuple[Probe, list[str]]:
     # reconcile resolves graph source_file strings against the CWD, so rebuild
     # from the project root the way the CLI does
     monkeypatch.chdir(corpus)
     _apply_standard_change(corpus)
     probe = Probe()
-    probe.install(monkeypatch, variant)
+    probe.install(monkeypatch)
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     return probe, _node_ids(corpus)
 
@@ -366,77 +385,40 @@ def built_corpus(tmp_path, capsys):
     return corpus, _snapshot(corpus)
 
 
-EXPECT = {
-    # variant: (extractor resolutions for the header, bytes read for it)
-    "base": (1, 0),
-    "cache": (1, 0),
-    "capped": (1, 0),
-    "capped_cache": (1, 0),
-}
-
-
-def test_cost_baseline_resolves_once_per_file(built_corpus, monkeypatch, capsys):
+def test_cost_reconcile_resolves_each_source_once(built_corpus, monkeypatch, capsys):
+    """The #4978 invariant: a per-file answer is computed once per file."""
     corpus, snap = built_corpus
     _restore(corpus, snap)
     header_nodes = _header_nodes(corpus)
     assert header_nodes >= HEADER_FUNCS
 
-    probe, _ = _run(corpus, monkeypatch, "base")
+    probe, _ = _run(corpus, monkeypatch)
     capsys.readouterr()
 
-    assert _for(probe.reconcile_calls, "big.h") == 1, "one resolution per file"
+    assert _for(probe.reconcile_calls, "big.h") == 1, "one resolution per file, not per node"
     assert _for(probe.reconcile_real, "big.h") == 1
     assert _for(probe.reconcile_reads, "big.h") == 0, "the flag reads nothing"
     assert _for(probe.reconcile_bytes, "big.h") == 0
 
 
-@pytest.mark.parametrize("variant", list(EXPECT))
-def test_cost_variants(built_corpus, monkeypatch, capsys, variant):
-    corpus, snap = built_corpus
-    _restore(corpus, snap)
-
-    probe, _ = _run(corpus, monkeypatch, variant)
-    capsys.readouterr()
-
-    real_expected, bytes_expected = EXPECT[variant]
-
-    assert _for(probe.reconcile_calls, "big.h") == real_expected, "one resolution per file"
-    assert _for(probe.reconcile_real, "big.h") == real_expected
-    assert _for(probe.reconcile_reads, "big.h") == bytes_expected
-    assert _for(probe.reconcile_bytes, "big.h") == bytes_expected
-
-
 def test_objc_m_resolves_once_and_reads_at_most_one_head(built_corpus, monkeypatch, capsys):
     corpus, snap = built_corpus
     _restore(corpus, snap)
-    (corpus / "objc.m").write_text("@implementation App\n+ (void)load { }\n@end\n")
+    # marker first, then padding past the cap: verifies the owned branch and the
+    # read size in one file, which a 15 byte fixture cannot do
+    (corpus / "objc.m").write_text(
+        "@implementation App\n+ (void)load { }\n@end\n" + "/* pad */\n" * 40000
+    )
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     capsys.readouterr()
 
-    probe, _ = _run(corpus, monkeypatch, "base")
+    probe, _ = _run(corpus, monkeypatch)
     capsys.readouterr()
 
     assert _for(probe.reconcile_calls, "objc.m") == 1
     assert _for(probe.reconcile_real, "objc.m") == 1
     assert _for(probe.reconcile_reads, "objc.m") == 1
-    assert _for(probe.reconcile_bytes, "objc.m") <= ex._SNIFF_BYTES
-
-
-@pytest.mark.parametrize("variant", ["cache", "capped", "capped_cache"])
-def test_meaning_is_unchanged(built_corpus, monkeypatch, capsys, variant):
-    """The differential net: every variant must keep and evict the same nodes."""
-    corpus, snap = built_corpus
-
-    _restore(corpus, snap)
-    _, baseline = _run(corpus, monkeypatch, "base")
-    capsys.readouterr()
-    monkeypatch.undo()
-
-    _restore(corpus, snap)
-    _, changed = _run(corpus, monkeypatch, variant)
-    capsys.readouterr()
-
-    assert changed == baseline
+    assert _for(probe.reconcile_bytes, "objc.m") == ex._SNIFF_BYTES, "one head, capped"
 
 
 def test_h8_stored_origin_can_answer_without_the_filesystem(built_corpus, monkeypatch, capsys):
@@ -488,7 +470,7 @@ def test_golden_node_set(built_corpus, monkeypatch, capsys):
 
     corpus, snap = built_corpus
     _restore(corpus, snap)
-    _, ids = _run(corpus, monkeypatch, "base")
+    _, ids = _run(corpus, monkeypatch)
     capsys.readouterr()
 
     if os.environ.get("GRAPHIFY_4978_WRITE_GOLDEN"):
