@@ -1268,6 +1268,7 @@ def _apply_symbol_resolution_facts(
     root: Path,
     facts: _SymbolResolutionFacts,
     resolution_context_nodes: list[dict] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -1690,6 +1691,55 @@ def _apply_symbol_resolution_facts(
             import_fact.file_path,
         )
 
+    if raw_calls and any(
+        fact.imported_name == "default"
+        and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
+        for fact in facts.imports
+    ):
+        default_imports = {
+            (_resolve_cached(fact.file_path), fact.local_name): _resolve_cached(fact.target_path)
+            for fact in facts.imports
+            if fact.imported_name == "default"
+            and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
+        }
+        member_nodes: dict[tuple[Path, str, str], set[str]] = {}
+        fresh_paths = {_resolve_cached(path) for path in paths}
+        for node in nodes + [
+            node for node in resolution_context_nodes or []
+            if _js_source_path(str(node.get("source_file", "")), root) not in fresh_paths
+        ]:
+            if not node.get("_callable"):
+                continue
+            source_path = _js_source_path(str(node.get("source_file", "")), root)
+            if source_path is None:
+                continue
+            key = (source_path, str(node.get("label", "")), str(node.get("source_location", "")))
+            member_nodes.setdefault(key, set()).add(str(node["id"]))
+        default_members: dict[Path, dict[str, tuple[str, str]]] = {}
+        for call in raw_calls:
+            if (not call.get("is_member_call") or call.get("_js_receiver_shadowed")
+                    or call.get("_js_construct") or call.get("ts_this_field")):
+                continue
+            source_path = _js_source_path(str(call.get("source_file", "")), root)
+            if source_path is None:
+                continue
+            target_path = default_imports.get((source_path, str(call.get("receiver") or "")))
+            if target_path is None:
+                continue
+            if target_path not in default_members:
+                default_members[target_path] = _js_default_object_members(target_path)
+            member = default_members[target_path].get(str(call.get("callee") or ""))
+            if member is None:
+                continue
+            targets = member_nodes.get((target_path, *member), set())
+            if len(targets) != 1:
+                continue
+            add_edge(
+                call["caller_nid"], next(iter(targets)), "calls", "call",
+                int(str(call["source_location"]).removeprefix("L")),
+                Path(call["source_file"]), target_file=str(target_path),
+            )
+
     # The structural extractor names the imported symbol on the immediate barrel,
     # which defines nothing, so its edge dangles and build mints an external stub
     # beside the edge the loop above added to the defining symbol (#4486). Drop
@@ -2014,14 +2064,7 @@ def _js_default_import_name(node, source: bytes) -> str | None:
     return None
 
 def _js_default_export_name(node, source: bytes) -> str | None:
-    """Local name of a default export, or None for anonymous defaults.
-
-    Handles `export default class Foo {}`, `export default function foo() {}`,
-    `export default abstract class Foo {}` (name on the `declaration` field) and
-    `export default Foo` (an identifier on the `value` field). Anonymous defaults
-    (`export default class {}`, `export default {...}`) have no resolvable symbol
-    and return None.
-    """
+    """返回默认导出的本地绑定名；匿名对象的成员由 _js_default_object_members 单独解析。"""
     if not any(child.type == "default" for child in node.children):
         return None
     declaration = node.child_by_field_name("declaration")
@@ -2032,6 +2075,45 @@ def _js_default_export_name(node, source: bytes) -> str | None:
     if value is not None and value.type == "identifier":
         return _read_text(value, source)
     return None
+
+def _js_default_object_members(path: Path) -> dict[str, tuple[str, str]]:
+    """仅返回直接默认对象中可定位到已有节点的静态方法。"""
+    parsed = _parse_js_tree(path)
+    if parsed is None:
+        return {}
+    source, root_node = parsed
+    for node in root_node.named_children:
+        if node.type != "export_statement" or not any(
+            child.type == "default" for child in node.children
+        ):
+            continue
+        value = node.child_by_field_name("value")
+        if value is None or value.type != "object":
+            continue
+        members: dict[str, tuple[str, str]] = {}
+        seen: set[str] = set()
+        for prop in value.named_children:
+            if prop.type == "comment":
+                continue
+            key = prop.child_by_field_name("name") or prop.child_by_field_name("key")
+            # spread 和计算键可能覆盖任意方法，不能仅凭同名节点补边。
+            if key is None or key.type not in ("property_identifier", "string"):
+                return {}
+            raw_name = _read_text(key, source)
+            if "\\" in raw_name:
+                return {}
+            name = raw_name[1:-1] if key.type == "string" else raw_name
+            if name in seen:
+                members.pop(name, None)
+                continue
+            seen.add(name)
+            if prop.type == "method_definition" and not any(
+                child.type in ("get", "set") for child in prop.children
+            ):
+                members[name] = (f"{raw_name}()", f"L{prop.start_point[0] + 1}")
+        return members
+    return {}
+
 
 def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
@@ -2963,6 +3045,7 @@ def _augment_symbol_resolution_edges(
     root: Path,
     ambiguous_python_modules: set[str] | None = None,
     resolution_context_nodes: list[dict] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
@@ -2974,7 +3057,10 @@ def _augment_symbol_resolution_edges(
         _apply_symbol_resolution_facts(
             paths, nodes, edges, root, facts,
             resolution_context_nodes=resolution_context_nodes,
+            raw_calls=raw_calls,
         )
+    elif raw_calls:
+        _apply_symbol_resolution_facts(paths, nodes, edges, root, facts, raw_calls=raw_calls)
     else:
         _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
