@@ -3699,13 +3699,286 @@ def _normalize_csharp_verbatim_interpolation(source: bytes) -> bytes | None:
     return out
 
 
+# Maps every byte but CR and LF to a space: blanking keeps lines and columns.
+_CSHARP_BLANK_TABLE = bytes(b if b in (0x0A, 0x0D) else 0x20 for b in range(256))
+
+
+def _csharp_token_end(source: bytes, i: int) -> int:
+    """End (exclusive) of the comment, char or string literal opening at ``i``.
+
+    Returns ``i`` when no such token opens there. A line-bounded token (a ``//``
+    comment, a char literal, a regular string) stops *before* its newline, so
+    the caller still sees the next line start. Holes of interpolated strings
+    are walked as code, so a quote inside ``{...}`` does not end the string.
+    """
+    n = len(source)
+    if source.startswith(b"//", i):
+        nl = source.find(b"\n", i)
+        return n if nl == -1 else nl
+    if source.startswith(b"/*", i):
+        end = source.find(b"*/", i + 2)
+        return n if end == -1 else end + 2
+    if source[i:i + 1] == b"'":
+        j = i + 1
+        while j < n and source[j:j + 1] not in (b"'", b"\n"):
+            j += 2 if source[j:j + 1] == b"\\" else 1
+        return j + 1 if source[j:j + 1] == b"'" else min(j, n)
+    quote, run, interpolated, verbatim = _csharp_string_opener(source, i)
+    if run == 0:
+        return i
+    if run >= 3:
+        end = source.find(b'"' * run, quote + run)
+        return n if end == -1 else end + run
+    if run == 2:
+        return quote + 2
+    j = quote + 1
+    while j < n:
+        ch = source[j:j + 1]
+        if verbatim and source.startswith(b'""', j):
+            j += 2
+        elif ch == b"\\" and not verbatim:
+            j += 2
+        elif ch == b'"':
+            return j + 1
+        elif ch == b"\n" and not verbatim:
+            return j
+        elif interpolated and source.startswith(b"{{", j):
+            j += 2
+        elif interpolated and ch == b"{":
+            depth = 1
+            j += 1
+            while j < n and depth:
+                end = _csharp_token_end(source, j)
+                if end > j:
+                    j = end
+                    continue
+                c = source[j:j + 1]
+                depth += (c == b"{") - (c == b"}")
+                j += 1
+        else:
+            j += 1
+    return n
+
+
+def _csharp_branch_balanced(text: bytearray, start: int, end: int) -> bool:
+    """True when ``{}`` and ``()`` in ``text[start:end]`` each net to zero.
+
+    Comments, char and string literals are skipped.
+    """
+    src = bytes(text[start:end])
+    brace = paren = 0
+    j = 0
+    while j < len(src):
+        tok = _csharp_token_end(src, j)
+        if tok > j:
+            j = tok
+            continue
+        ch = src[j:j + 1]
+        brace += (ch == b"{") - (ch == b"}")
+        paren += (ch == b"(") - (ch == b")")
+        j += 1
+    return brace == 0 and paren == 0
+
+
+_CSHARP_NOT_A_TYPE = frozenset({
+    b"return", b"new", b"await", b"throw", b"if", b"while", b"for", b"foreach",
+    b"switch", b"case", b"using", b"lock", b"catch", b"when", b"is", b"as",
+    b"in", b"out", b"ref", b"else", b"yield", b"nameof", b"typeof", b"sizeof",
+    b"default", b"var", b"goto", b"fixed", b"checked", b"unchecked", b"and", b"or", b"not",
+})
+
+
+_CSHARP_MEMBER_DECL_RE = re.compile(
+    rb"([A-Za-z_][A-Za-z0-9_]*|[>\]?*])\s+([A-Za-z_][A-Za-z0-9_]*)"
+    rb"\s*(?:<[^<>(){};]*>)?\s*(\(|\{|=>)"
+)
+
+
+def _csharp_branch_member_sigs(text: bytearray, start: int, end: int) -> set[tuple[bytes, int]]:
+    """(name, arity) of the members a branch declares at its own brace depth.
+
+    A heuristic, not a parse: a declaration is an identifier preceded by a
+    type-like token (an identifier that is not a statement keyword, or ``>``,
+    ``]``, ``?``, ``*``) and followed by ``(`` (arity = top-level commas + 1, 0
+    for ``()``) or by ``{``/``=>`` (a property or type, arity -1). Both branches
+    of a group sit at the same place in the file, so a shared (name, arity)
+    means the same member of the same type is declared twice.
+    """
+    src = bytes(text[start:end])
+    # Mask comments and literals so they never look like code.
+    masked = bytearray(src)
+    j = 0
+    while j < len(src):
+        tok = _csharp_token_end(src, j)
+        if tok > j:
+            masked[j:tok] = src[j:tok].translate(_CSHARP_BLANK_TABLE)
+            j = tok
+        else:
+            j += 1
+    code = bytes(masked)
+    depth_at = []
+    d = 0
+    for ch in code:
+        depth_at.append(d)
+        if ch == 0x7B:
+            d += 1
+        elif ch == 0x7D:
+            d -= 1
+    sigs: set[tuple[bytes, int]] = set()
+    for m in _CSHARP_MEMBER_DECL_RE.finditer(code):
+        if depth_at[m.start(2)] != 0 or m.group(1) in _CSHARP_NOT_A_TYPE:
+            continue
+        name = m.group(2)
+        if m.group(3) != b"(":
+            sigs.add((name, -1))
+            continue
+        k = m.end(3)
+        level, angle, commas, empty = 1, 0, 0, True
+        while k < len(code) and level:
+            c = code[k:k + 1]
+            if c in (b"(", b"[", b"{"):
+                level += 1
+            elif c in (b")", b"]", b"}"):
+                level -= 1
+            elif c == b"<":
+                angle += 1
+            elif c == b">":
+                angle = max(0, angle - 1)
+            elif c == b"," and level == 1 and angle == 0:
+                commas += 1
+            if level and not c.isspace():
+                empty = False
+            k += 1
+        sigs.add((name, 0 if empty else commas + 1))
+    return sigs
+
+
+def _blank_csharp_preprocessor(source: bytes) -> bytes | None:
+    """Blank C# preprocessor directives and the ``#if`` branches that derail parsing, or None.
+
+    tree-sitter-c-sharp parses the raw text, directives and all branches
+    together. Its error recovery around a directive can close the enclosing
+    class early, so every later member loses its type owner, its field typing
+    and its calls.
+
+    Every directive line (``#if``/``#elif``/``#else``/``#endif``, and also
+    ``#region``, ``#pragma``, ``#nullable``, ``#define`` ...) is blanked. The
+    first branch of each ``#if`` group is always kept. A later ``#elif`` /
+    ``#else`` branch is kept too, so members that exist only there (an
+    older-framework fallback) stay in the graph (#2631), unless keeping it
+    would derail the parse:
+
+    * its ``{}`` or ``()`` do not net to zero on their own (``class A : B {``
+      ``#else`` ``class A {``), or
+    * it declares a member (name + arity) that a kept branch of the same group
+      already declares (``void Write(Span<char> s)`` ``#else``
+      ``void Write(string s)`` sharing one body).
+
+    Nested groups are decided first, so an outer branch is judged on what is
+    left of it. No symbols are evaluated. Measured against the compiler on
+    Newtonsoft.Json, Dapper and AutoMapper.
+
+    The rewrite is **byte-length preserving**: removed bytes become spaces and
+    every ``\\n``/``\\r`` is kept, so every remaining byte keeps its line and
+    column and source locations stay accurate (the #2876 contract).
+
+    A ``#`` line inside a comment or a multi-line string is not a directive;
+    comments and string literals are skipped while looking for line starts.
+    Returns None when the file has no directive.
+    """
+    n = len(source)
+    # (line_start, line_end, keyword) for every directive line.
+    directives: list[tuple[int, int, bytes]] = []
+    i = 0
+    while i < n:
+        # i is at a line start here.
+        p = i
+        while p < n and source[p:p + 1] in (b" ", b"\t", b"\v", b"\f"):
+            p += 1
+        if source[p:p + 1] == b"#":
+            nl = source.find(b"\n", p)
+            end = n if nl == -1 else nl
+            k = p + 1
+            while k < end and source[k:k + 1] in (b" ", b"\t"):
+                k += 1
+            w = k
+            while w < end and source[w:w + 1].isalpha():
+                w += 1
+            directives.append((i, end, source[k:w]))
+            i = end + 1
+            continue
+        # Walk the line as code; a comment or string may run past its end.
+        j = p
+        while j < n:
+            ch = source[j:j + 1]
+            if ch == b"\n":
+                break
+            end = _csharp_token_end(source, j)
+            if end > j:
+                j = end
+            elif ch in (b"$", b"@"):
+                # Resume past the whole `$`/`@` run (see _csharp_string_opener).
+                j = max(j + 1, _csharp_string_opener(source, j)[0])
+            else:
+                j += 1
+        i = j + 1
+    if not directives:
+        return None
+
+    out = bytearray(source)
+
+    def blank(start: int, end: int) -> None:
+        out[start:end] = source[start:end].translate(_CSHARP_BLANK_TABLE)
+
+    def keep(branch: int, bodies: list[tuple[int, int]], kept: list[int]) -> bool:
+        if branch == 0:
+            return True
+        start, end = bodies[branch]
+        if not _csharp_branch_balanced(out, start, end):
+            return False
+        sigs = _csharp_branch_member_sigs(out, start, end)
+        return not any(sigs & _csharp_branch_member_sigs(out, *bodies[k]) for k in kept)
+
+    # Each open #if group: the (directive start, directive end) of its #if and
+    # of every #elif/#else seen so far.
+    stack: list[list[tuple[int, int]]] = []
+
+    def close(heads: list[tuple[int, int]], endif_start: int) -> None:
+        bodies = [(heads[k][1], heads[k + 1][0] if k + 1 < len(heads) else endif_start)
+                  for k in range(len(heads))]
+        kept: list[int] = []
+        for k in range(len(bodies)):
+            if keep(k, bodies, kept):
+                kept.append(k)
+            else:
+                blank(*bodies[k])
+
+    for start, end, word in directives:
+        blank(start, end)
+        if word == b"if":
+            stack.append([(start, end)])
+        elif word in (b"elif", b"else") and stack:
+            stack[-1].append((start, end))
+        elif word == b"endif" and stack:
+            close(stack.pop(), start)
+    # An unterminated #if runs to the end of the file.
+    while stack:
+        close(stack.pop(), n)
+    return bytes(out)
+
+
 def extract_csharp(path: Path) -> dict:
     """Extract C# type declarations, methods, namespaces, and usings from a .cs file."""
     source_override = None
     try:
-        source_override = _normalize_csharp_verbatim_interpolation(path.read_bytes())
+        source = path.read_bytes()
     except OSError:
-        pass
+        source = None
+    if source is not None:
+        source_override = _blank_csharp_preprocessor(source)
+        source_override = _normalize_csharp_verbatim_interpolation(
+            source_override or source
+        ) or source_override
     return _extract_generic(path, _CSHARP_CONFIG, source_override=source_override)
 
 
