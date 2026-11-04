@@ -55,6 +55,20 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+# Claude Code SessionStart (matcher "compact") output: compaction dropped the
+# earlier nudges from the model's context, so restate the one fact they carried.
+# SessionStart accepts hookSpecificOutput.additionalContext.
+_COMPACT_CONTEXT = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": (
+            'graphify: this project has a knowledge graph at graphify-out/graph.json. '
+            '`graphify query "<question>"`, `graphify explain "<concept>"` and '
+            '`graphify path "<A>" "<B>"` show which files and lines matter, usually '
+            'in far fewer tokens than reading or grepping raw files.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 # Strict-mode block (opt-in). Claude Code PreToolUse honors
 # hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
 # to the model. Fires at most once per session (see _mark_session_denied) so it can
@@ -1030,7 +1044,10 @@ def _nudge_allowed(payload: dict) -> bool:
       disables the cap), counted in a marker next to the strict-mode ones.
 
     Calls without a session id cannot be counted: only the stamp applies.
-    Fail-open: on a marker error, only the stamp applies.
+    Fail-open: on a marker error, only the stamp applies. Compaction keeps the
+    session id but drops the earlier nudges from the model's context, so
+    ``hook-guard compact`` (Claude Code SessionStart, source "compact") deletes
+    the session's counters, see _reset_hook_session.
     """
     from graphify.paths import out_path, write_text_atomic
     import hashlib
@@ -1078,6 +1095,33 @@ def _gc_hook_session_markers(d: "Path") -> None:
                 pass
     except OSError:
         pass
+
+
+def _reset_hook_session(session_id: str) -> None:
+    """Give a compacted Claude Code session its hook budget back.
+
+    After compaction the session id stays the same, but the model no longer
+    sees the nudges it was given, and _nudge_allowed has already spent the cap.
+    Deletes the session's nudge counter, the counter of every subagent of it
+    (``<key>-<16 hex>``, the per-agent key _nudge_allowed builds) and the
+    strict-mode deny marker, so the next qualifying call nudges again and strict
+    mode can redirect once more. Other sessions' markers are untouched. Errors
+    propagate: the caller fails open.
+    """
+    from graphify.paths import out_path
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or ""))[:64]
+    if not key:
+        return
+    d = out_path("cache", "hook_sessions")
+    if not d.is_dir():
+        return
+    own = re.compile(re.escape(key) + r"(?:-[0-9a-f]{16})?\.nudges|" + re.escape(key) + r"\.denied")
+    for entry in os.scandir(d):
+        if own.fullmatch(entry.name):
+            try:
+                os.unlink(entry.path)
+            except FileNotFoundError:
+                pass
 
 
 def _mark_session_denied(session_id: str) -> bool:
@@ -1301,6 +1345,20 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     except Exception:
         return
     if not isinstance(d, dict):
+        return
+    # Claude Code SessionStart with matcher "compact": reset this session's
+    # nudge budget and restate the graph. Other sources (startup, resume,
+    # clear, fork) keep their counters.
+    if kind == "compact":
+        try:
+            if d.get("hook_event_name", "SessionStart") != "SessionStart" \
+                    or d.get("source") != "compact":
+                return
+            _reset_hook_session(str(d.get("session_id") or ""))
+            if out_path("graph.json").is_file():
+                sys.stdout.write(_nudge_for_out(_COMPACT_CONTEXT))
+        except Exception:
+            pass
         return
     t = d.get("tool_input", d)
     if not isinstance(t, dict):
@@ -3168,6 +3226,8 @@ def dispatch_command(cmd: str) -> None:
         # strict mode (opt-in, `hook-guard <read|search> --strict`) it blocks the
         # first raw Read or dedicated Grep per session via the JSON permissionDecision
         # payload — never via exit code — and downgrades to the nudge thereafter.
+        # `hook-guard compact` is the SessionStart (matcher "compact") hook that
+        # resets the session's nudge budget after a context compaction.
         _run_hook_guard(
             sys.argv[2] if len(sys.argv) > 2 else "",
             strict="--strict" in sys.argv[3:],
