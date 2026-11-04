@@ -1113,23 +1113,17 @@ _COMMAND_WRAPPERS = frozenset({
 _HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
-def _bash_invokes_search(cmd_str: str) -> bool:
-    """Whether a Bash command actually RUNS a search tool (#3121).
+def _bash_commands(cmd_str: str):
+    """Yield ``(name, args, piped)`` for each command a Bash string executes.
 
-    The old test was a plain substring scan over the whole command string,
-    including quoted arguments and heredoc bodies - so `git commit -m "add
-    flag support"` fired ("flag " contains "ag "), prose containing "find "
-    fired, and a design doc written via heredoc fired if its body mentioned
-    grep. Every false positive injects a nudge where graphify has nothing to
-    contribute and trains the agent to skim the line.
-
-    Decide on the command's executed tokens instead: drop heredoc bodies and
-    quoted spans, split on shell operators, and match the executable at each
-    command position (wrappers like sudo/xargs/env skipped; `git grep` and
-    `VAR=x grep ...` still count; a search-tool name inside prose does not).
-    `sed` and `awk` count too when they open a file themselves: run on files, they
-    are a grep or a read of the codebase by another name. Reading a pipe, editing
-    in place, or naming no file (a program alone reads stdin) does not count.
+    The command parsing behind _bash_invokes_search (#3121): heredoc bodies are
+    dropped, quoted spans become one placeholder word ``Q``, and the string is
+    split at shell operators and substitution boundaries. In each segment the
+    executable is the first token after ``VAR=value`` prefixes and wrappers
+    (sudo/xargs/env and their flags). ``name`` is its basename, lowercased, with
+    any ``.exe`` removed; ``args`` are the tokens after it; ``piped`` says the
+    segment reads a pipe. A word in prose, a quoted argument or a heredoc body is
+    never yielded as a command.
     """
     text = cmd_str
     # Drop heredoc bodies: from the line after `<<WORD` through the line that
@@ -1179,26 +1173,140 @@ def _bash_invokes_search(cmd_str: str) -> bool:
                 while i < len(tokens) and tokens[i].startswith("-"):
                     i += 1
                 continue
-            if name in _SEARCH_COMMANDS:
-                return True
-            if name == "git" and any(
-                t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
-            ):
-                return True
-            if name in ("sed", "awk") and not segment_piped:
-                rest = tokens[i + 1:]
-                in_place = any(
-                    t2.startswith("--in-place")
-                    or (t2.startswith("-i") if name == "awk" else
-                        t2.startswith("-") and not t2.startswith("--") and "i" in t2)
-                    for t2 in rest
-                )
-                # The program and at least one file; `x=1` is an awk assignment.
-                operands = [t2 for t2 in rest if not t2.startswith("-") and "=" not in t2]
-                if not in_place and len(operands) >= 2:
-                    return True
+            yield name, tokens[i + 1:], segment_piped
             break  # first real token decides this segment
+
+
+def _bash_invokes_search(cmd_str: str) -> bool:
+    """Whether a Bash command actually RUNS a search tool (#3121).
+
+    The old test was a plain substring scan over the whole command string,
+    including quoted arguments and heredoc bodies - so `git commit -m "add
+    flag support"` fired ("flag " contains "ag "), prose containing "find "
+    fired, and a design doc written via heredoc fired if its body mentioned
+    grep. Every false positive injects a nudge where graphify has nothing to
+    contribute and trains the agent to skim the line.
+
+    Decide on the command's executed tokens instead: drop heredoc bodies and
+    quoted spans, split on shell operators, and match the executable at each
+    command position (wrappers like sudo/xargs/env skipped; `git grep` and
+    `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    `sed` and `awk` count too when they open a file themselves: run on files, they
+    are a grep or a read of the codebase by another name. Reading a pipe, editing
+    in place, or naming no file (a program alone reads stdin) does not count.
+    """
+    for name, args, piped in _bash_commands(cmd_str):
+        if name in _SEARCH_COMMANDS:
+            return True
+        if name == "git" and any(
+            t2 == "grep" for t2 in args[:3] if not t2.startswith("-")
+        ):
+            return True
+        if name in ("sed", "awk") and not piped:
+            # The program and at least one file; `x=1` is an awk assignment.
+            operands = [t2 for t2 in args if not t2.startswith("-") and "=" not in t2]
+            if not _sed_awk_in_place(name, args) and len(operands) >= 2:
+                return True
     return False
+
+
+def _sed_awk_in_place(name: str, args: "list[str]") -> bool:
+    """Whether sed/awk edits its files in place (`-i`, `--in-place`, `-Ei`)."""
+    return any(
+        t2.startswith("--in-place")
+        or (t2.startswith("-i") if name == "awk" else
+            t2.startswith("-") and not t2.startswith("--") and "i" in t2)
+        for t2 in args
+    )
+
+
+# Bash commands that print a file for the agent to read. `sed` counts only with
+# -n/--quiet/--silent (it prints the lines asked for); without it, a sed run on
+# a file stays a search (see _bash_invokes_search).
+_BASH_READERS = frozenset({"cat", "head", "tail", "sed", "nl", "less", "more", "bat"})
+# Docs are graphed and nudge on the Read tool, but `cat README.md` in a shell is
+# orientation, not a walk through the code, so Bash reads nudge on code only.
+_BASH_READ_SKIP_EXTS = (".md", ".rst", ".txt", ".mdx")
+
+
+def _bash_read_target(cmd_str: str, cwd: str = "") -> "str | None":
+    """The in-project source file a Bash command prints, as an absolute path.
+
+    The Read tool gets the read nudge; `cat src/app.py`, `sed -n 1,80p
+    src/app.py`, `head -50 src/app.py` and the like read the same code through
+    Bash and got nothing (#3121's parser only looked for searches). Uses
+    _bash_commands, so only executed commands count, never a reader named in
+    prose, quotes or a heredoc body.
+
+    A file counts when a reader names it as an operand (or `< file`), it exists,
+    its extension is a graphed code extension, it resolves inside the project
+    (CLAUDE_PROJECT_DIR or cwd) and outside the graph output (#1840, #4961).
+    Relative paths resolve against the Bash tool's ``cwd`` from the hook payload
+    when it is inside the project. Writes are not reads: a stdout redirect
+    (`cat > x.py`, `sed -n 1p a.py > b.py`) or `sed -i` disqualifies the
+    command, and a reader with no file operand (`echo x | cat`) reads stdin.
+    Paths with shell expansion are skipped. None when nothing qualifies.
+    """
+    from graphify.paths import out_path
+    try:
+        root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+        base = root
+        if cwd and not _is_cwd_relative(cwd):
+            c = Path(cwd).resolve()
+            if c.is_relative_to(root):
+                base = c
+        outs = []
+        for o in (out_path(), Path("graphify-out")):
+            outs.append((root / o if _is_cwd_relative(str(o)) else o).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for name, args, _piped in _bash_commands(cmd_str):
+        if name not in _BASH_READERS:
+            continue
+        if name == "sed" and (_sed_awk_in_place(name, args) or not any(
+                a in ("--quiet", "--silent") or (a.startswith("-") and not a.startswith("--") and "n" in a)
+                for a in args)):
+            continue
+        files: "list[str]" = []
+        it = iter(args)
+        for tok in it:
+            if ">" in tok:
+                if tok.split(">", 1)[0] in ("", "1", "&"):
+                    files = []
+                    break  # stdout goes to a file: a write, not a read
+                if tok.endswith(">"):
+                    next(it, None)  # `2> err.log`
+                continue
+            if tok.startswith("<<"):
+                if tok in ("<<", "<<-", "<<<"):
+                    next(it, None)
+                continue
+            if tok == "<":
+                tok = next(it, "")
+            elif tok.startswith("<"):
+                tok = tok[1:]
+            elif name == "sed" and tok in ("-e", "-f", "--expression", "--file"):
+                next(it, None)  # the program, not a file
+                continue
+            elif tok.startswith("-"):
+                continue
+            files.append(tok)
+        for f in files:
+            if not f or re.search(r"[$`~*?\[\]{}]", f):
+                continue
+            seg = f.lower().replace("\\", "/").rsplit("/", 1)[-1]
+            ext = "." + seg.rsplit(".", 1)[-1]
+            if "." not in seg or ext not in _HOOK_SOURCE_EXTS or ext in _BASH_READ_SKIP_EXTS:
+                continue
+            try:
+                p = Path(f.replace("\\", "/"))
+                p = (base / p if _is_cwd_relative(str(p)) else p).resolve()
+                if p.is_file() and p.is_relative_to(root) \
+                        and not any(p.is_relative_to(o) for o in outs):
+                    return str(p)
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
 
 
 def _search_is_outside_project(tool_input: dict) -> bool:
@@ -1280,7 +1388,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     Grep in the project is DENIED with a redirect to `graphify query`, then
     downgrades to the soft nudge. The two tools share one block per session.
     Bash and Glob stay nudge-only: a compound shell command has no single
-    parseable target and blocking file listing would strand navigation.
+    parseable target and blocking file listing would strand navigation. A Bash
+    command that prints an in-project code file (cat/head/tail/sed -n/nl/less/
+    more/bat, see _bash_read_target) gets the Read nudge for that file, through
+    the same budget, and is never denied.
     Out-of-project and graph-output targets are ignored; stale graphs never block.
     """
     from graphify.paths import out_path
@@ -1306,6 +1417,14 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     if not isinstance(t, dict):
         return
     try:
+        # A Bash file read is a Read by another name: route it through the read
+        # guard below with the file as its target. A reader wins over a search
+        # in the same command, since the read nudge names the file's symbols.
+        bash_read = False
+        if kind == "search" and d.get("tool_name") in (None, "Bash"):
+            target = _bash_read_target(str(t.get("command", "") or ""), str(d.get("cwd") or ""))
+            if target:
+                kind, t, bash_read = "read", {"file_path": target}, True
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
             # Two input shapes reach this guard (matcher "Bash|Grep", #1986):
@@ -1462,9 +1581,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     sys.stdout.write(_nudge_for_out(_READ_NUDGE_STALE))
                 return
             # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed.
+            # oriented, and the file is demonstrably indexed. Bash stays advisory.
             tool_name = d.get("tool_name")
-            if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
+            if not bash_read and _hook_strict_enabled(strict) and tool_name in (None, "Read") \
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
