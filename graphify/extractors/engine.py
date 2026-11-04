@@ -3062,6 +3062,19 @@ def _find_body(node, config: LanguageConfig):
             return child
     return None
 
+
+def _js_import_is_type_only(node) -> bool:
+    """Recognize unambiguous TypeScript type contexts around an import call."""
+    while node is not None:
+        if node.type in {"type_annotation", "type_alias_declaration", "type_query",
+                         "interface_declaration", "constraint", "default_type"}:
+            return True
+        if node.type in {"statement_block", "program"}:
+            break
+        node = node.parent
+    return False
+
+
 def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edges: list,
                        seen_dyn_pairs: set) -> bool:
     """Detect dynamic import() calls in JS/TS and emit imports_from edges.
@@ -3085,6 +3098,8 @@ def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edge
             return False
     if _read_text(func_node, source) != "import":
         return False
+    if _js_import_is_type_only(node):
+        return True
 
     # Extract the module path from the arguments
     args = node.child_by_field_name("arguments")

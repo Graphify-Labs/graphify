@@ -40,6 +40,7 @@ from graphify.rcfile import (
     get_language_overrides,
     set_language_overrides,
 )
+from graphify.extractors.engine import _js_import_is_type_only
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -2337,16 +2338,21 @@ def extract_js(path: Path) -> dict:
             source = _read_source_bytes(path)
             working = _normalize_ts_export_type_star(source) or source
             normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
+            if normalized is not None:
+                type_only_import_offsets.update(
+                    match.start() for match in _TS_IMPORT_CALL_RE.finditer(working)
+                    if normalized[match.start():match.start() + 6] != b'import'
+                )
             working = normalized if normalized is not None else working
             before_annotations = working
             normalized = _normalize_ts_tag_and_import_annotations(
                 before_annotations, tsx=suffix == ".tsx"
             )
             if normalized is not None:
-                type_only_import_offsets = {
+                type_only_import_offsets.update(
                     match.start() for match in _TS_QUALIFIED_IMPORT_TYPE_RE.finditer(before_annotations)
                     if normalized[match.start():match.start() + 6] != b'import'
-                }
+                )
             working = normalized if normalized is not None else working
             source_override = working if working is not source else None
         except OSError:
@@ -2391,6 +2397,21 @@ def _rescue_js_dynamic_imports(
         if not _re.search(r"(?<!\w)import\s*\(", src):  # cheap bail — most files have none
             return
         type_only_positions: set[int] = set()
+        if effective_suffix(path).lower() in (".ts", ".tsx", ".mts", ".cts"):
+            from tree_sitter import Language, Parser
+            import tree_sitter_typescript as ts_typescript
+
+            raw_source = _read_source_bytes(path, warn=False)
+            factory = (ts_typescript.language_tsx if effective_suffix(path).lower() == ".tsx"
+                       else ts_typescript.language_typescript)
+            root = Parser(Language(factory())).parse(raw_source).root_node
+            type_only_import_offsets = set(type_only_import_offsets or ())
+            type_only_import_offsets.update(
+                match.start() for match in _TS_IMPORT_CALL_RE.finditer(raw_source)
+                if _js_import_is_type_only(
+                    root.descendant_for_byte_range(match.start(), match.start() + 1)
+                )
+            )
         if type_only_import_offsets:
             # The AST uses UTF-8 bytes with original line endings, whereas the
             # rescue pass reads text with universal-newline translation. Map
@@ -2447,7 +2468,7 @@ def _rescue_js_dynamic_imports(
             r"""(?<!\w)import\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
             src,
         ):
-            # A repaired TypeScript import-type is not an executable import().
+            # TypeScript import types are not executable import() calls.
             # Regex offsets are characters, while tree-sitter offsets are bytes.
             if m.start() in type_only_positions:
                 continue

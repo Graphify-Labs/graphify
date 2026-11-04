@@ -55,6 +55,10 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+TypeScript `import()` types do not emit runtime import edges or external-module
+stubs. Runtime `import()` calls remain dependencies; AST cache schema 38 retires
+cached extractions that confused the two.
+
 Terraform/HCL per-file AST results record the scope used to mint their node IDs.
 After a cache hit, extraction consumes that scope to rewrite node IDs and edge
 endpoints relative to the current scan root, including when the cache was copied
