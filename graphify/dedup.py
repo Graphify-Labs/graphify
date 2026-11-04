@@ -651,6 +651,24 @@ def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
         # `source_location: None`, and that is exactly the attribute #2091 loses.
         if merged.get(key) is None:
             merged[key] = value
+    metadata = merged.get("metadata")
+    duplicate_metadata = duplicate.get("metadata")
+    if isinstance(metadata, dict) and isinstance(duplicate_metadata, dict):
+        metadata = dict(metadata)
+        for key, fields in (
+            ("end_line", ("source_file", "source_location")),
+            ("definition_end_line", ("definition_file", "definition_location")),
+        ):
+            if (survivor.get("metadata") or {}).get(key) is not None:
+                continue
+            metadata.pop(key, None)
+            if all(
+                duplicate.get(field) and merged.get(field) == duplicate[field]
+                for field in fields
+            ):
+                if duplicate_metadata.get(key) is not None:
+                    metadata[key] = duplicate_metadata[key]
+        merged["metadata"] = metadata
     return merged
 
 
