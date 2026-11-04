@@ -872,9 +872,18 @@ def _detect_run(tmp_path, home, stub_bin, env_extra=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
     env.pop("UV_TOOL_DIR", None)
+    # The emitted detector prefers an active virtualenv. A contributor running
+    # `uv run pytest` has VIRTUAL_ENV pointing at the project .venv, which masks
+    # the uv-tool layout this machine fixture constructs (repo rule: tests must
+    # not depend on the contributor's ambient environment).
+    for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "CONDA_PREFIX"):
+        env.pop(key, None)
     if env_extra:
         env.update(env_extra)
-    env["PATH"] = str(stub_bin) + os.pathsep + env["PATH"]
+    # Keep the ambient PATH out too: `uv run pytest` puts the project .venv
+    # ahead of the system directories, so the detector would adopt it before
+    # reaching the uv-tool env this fixture is about.
+    env["PATH"] = str(stub_bin) + os.pathsep + os.defpath
     return subprocess.run(
         ["sh", script.name], capture_output=True, text=True,
         cwd=str(tmp_path), env=env,
