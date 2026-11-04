@@ -237,6 +237,14 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "pi":
+        # Pi reads project skills from ./.pi/skills; ~/.pi/agent/skills is the
+        # user-scope path only. Writing the $HOME shape into a project left the
+        # skill where Pi never looks, with no error (#5011).
+        if project:
+            return (project_dir or Path(".")) / ".pi" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / _PLATFORM_CONFIG["pi"]["skill_dst"]
+
     if platform_name == "agents":
         # The generic Agent-Skills target: project ./.agents/skills, global the
         # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
