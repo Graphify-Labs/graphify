@@ -753,6 +753,189 @@ def test_default_import_call_resolves_to_default_exported_function(tmp_path: Pat
     )
 
 
+@pytest.mark.parametrize("suffix", [".ts", ".js"])
+@pytest.mark.parametrize("binding", ["native", "renamed"])
+def test_default_object_member_call_resolves(tmp_path: Path, suffix: str, binding: str):
+    target = _write(tmp_path / f"native{suffix}", "export default { toast() {} };\n")
+    importer = _write(
+        tmp_path / f"app{suffix}",
+        f"import {binding} from './native';\n"
+        f"export function run() {{ {binding}.toast(); }}\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_symbol_to_symbol_edge(
+        result, f"app{suffix}", "run", f"native{suffix}", "toast", "calls"
+    )
+    methods = [node for node in result["nodes"] if node.get("label") == "toast()"]
+    assert len(methods) == 1
+    assert methods[0]["source_file"] == f"native{suffix}"
+    assert not any(node.get("label") == "default" for node in result["nodes"])
+
+
+def test_default_object_member_calls_stay_in_imported_module(tmp_path: Path):
+    left = _write(tmp_path / "left/native.ts", "export default { toast() {} };\n")
+    right = _write(tmp_path / "right/native.ts", "export default { toast() {} };\n")
+    importer = _write(
+        tmp_path / "app.ts",
+        "import left from './left/native';\n"
+        "import right from './right/native';\n"
+        "function useLeft() { left.toast(); }\n"
+        "function useRight() { right.toast(); }\n",
+    )
+
+    for paths in ([left, right, importer], [importer, right, left]):
+        result = _extract_for(paths, tmp_path)
+        for caller, target in (("useLeft", "left/native.ts"), ("useRight", "right/native.ts")):
+            assert _has_symbol_to_symbol_edge(result, "app.ts", caller, target, "toast", "calls")
+            other = "right/native.ts" if target == "left/native.ts" else "left/native.ts"
+            assert _has_no_symbol_to_symbol_edge(result, "app.ts", caller, other, "toast", "calls")
+
+
+@pytest.mark.parametrize(
+    "exported",
+    [
+        "export default { toast() {} };",
+        "const key = 'toast'; export default { [key]() {} };",
+        "export default { ['toast']() {} };",
+        "const extra = {}; export default { toast() {}, ...extra };",
+        "const extra = {}; export default { ...extra, toast() {} };",
+        "export default { toast() {}, toast: 1 };",
+        "export default { get toast() { return () => {}; } };",
+        "export default { nested: { toast() {} } };",
+    ],
+)
+def test_default_object_unknown_or_uncertain_member_has_no_call(tmp_path: Path, exported: str):
+    target = _write(tmp_path / "native.ts", exported + "\n")
+    importer = _write(
+        tmp_path / "app.ts",
+        "import native from './native';\n"
+        "function run() { native.missing(); native.toast(); }\n",
+    )
+    unrelated = _write(tmp_path / "other.ts", "export function missing() {}\n")
+
+    result = _extract_for([target, importer, unrelated], tmp_path)
+    calls = [edge for edge in result["edges"] if edge["relation"] == "calls"]
+
+    if exported == "export default { toast() {} };":
+        assert _has_symbol_to_symbol_edge(result, "app.ts", "run", "native.ts", "toast", "calls")
+        assert len(calls) == 1
+    else:
+        assert calls == []
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import * as native from './native'; function run() { native.toast(); }",
+        "import { native } from './native'; function run() { native.toast(); }",
+        "import native from './native'; const alias = native; function run() { alias.toast(); }",
+        "import native from './native'; function run(native: any) { native.toast(); }",
+        "import native from './native'; function run() { const native = {}; native.toast(); }",
+        "import native from './native'; function run() { native['toast'](); }",
+    ],
+)
+def test_default_object_member_requires_direct_default_binding(tmp_path: Path, statement: str):
+    target = _write(tmp_path / "native.ts", "export default { toast() {} };\n")
+    importer = _write(tmp_path / "app.ts", statement + "\n")
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert not [edge for edge in result["edges"] if edge["relation"] == "calls"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "function run(native: any) { function inner() { native.toast(); } inner(); }",
+        "function run() { const native = {}; function inner() { native.toast(); } inner(); }",
+        "function run() { function native() {} native.toast(); }",
+        "function run() { class native {} native.toast(); }",
+        "function run() { const inner = function native() { native.toast(); }; inner(); }",
+        "function run() { new native.toast(); }",
+    ],
+)
+@pytest.mark.parametrize("incremental", [False, True])
+def test_default_object_member_requires_unshadowed_method_call(
+    tmp_path: Path, body: str, incremental: bool,
+):
+    target = _write(tmp_path / "native.ts", "export default { toast() {} };\n")
+    importer = _write(tmp_path / "app.ts", "import native from './native';\n" + body + "\n")
+
+    if incremental:
+        baseline = extract([target], root=tmp_path, cache_root=tmp_path, parallel=False)
+        result = extract(
+            [importer], root=tmp_path, cache_root=tmp_path, parallel=False,
+            resolution_context_nodes=baseline["nodes"],
+        )
+    else:
+        result = _extract_for([target, importer], tmp_path)
+
+    target_id = _make_id(_file_stem(Path("native.ts")), "toast")
+    assert not [
+        edge for edge in result["edges"]
+        if edge["relation"] == "calls" and edge["target"] == target_id
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "function run() { function inner() { native.toast(); } inner(); }",
+        "function run() { { const native = {}; } function inner() { native.toast(); } inner(); }",
+        "function run() { { class native {} } native.toast(); }",
+    ],
+)
+def test_default_object_member_keeps_calls_outside_shadow_scope(tmp_path: Path, body: str):
+    target = _write(tmp_path / "native.ts", "export default { toast() {} };\n")
+    importer = _write(tmp_path / "app.ts", "import native from './native';\n" + body + "\n")
+
+    result = _extract_for([target, importer], tmp_path)
+
+    target_id = _make_id(_file_stem(Path("native.ts")), "toast")
+    assert len([
+        edge for edge in result["edges"]
+        if edge["relation"] == "calls" and edge["target"] == target_id
+    ]) == 1
+
+
+@pytest.mark.parametrize("method", ["toast", "'toast'", '"toast"'])
+def test_default_object_member_call_from_class(tmp_path: Path, method: str):
+    target = _write(tmp_path / "native.ts", f"export default {{ {method}() {{}} }};\n")
+    importer = _write(
+        tmp_path / "app.ts",
+        "import renamed from './native';\n"
+        "class App { run() { renamed.toast(); } }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    calls = [edge for edge in result["edges"] if edge["relation"] == "calls"]
+    assert len(calls) == 1
+    nodes = {node["id"]: node for node in result["nodes"]}
+    assert nodes[calls[0]["source"]]["label"] == ".run()"
+    assert nodes[calls[0]["target"]]["source_file"] == "native.ts"
+    assert nodes[calls[0]["target"]]["label"] == f"{method}()"
+    assert calls[0]["confidence"] == "EXTRACTED"
+
+
+def test_default_object_changed_caller_resolves_with_context(tmp_path: Path):
+    target = _write(tmp_path / "native.ts", "export default { toast() {} };\n")
+    baseline = extract([target], root=tmp_path, cache_root=tmp_path, parallel=False)
+    importer = _write(
+        tmp_path / "app.ts",
+        "import native from './native';\nfunction run() { native.toast(); }\n",
+    )
+
+    result = extract(
+        [importer], root=tmp_path, cache_root=tmp_path, parallel=False,
+        resolution_context_nodes=baseline["nodes"],
+    )
+
+    assert _has_symbol_to_symbol_edge(result, "app.ts", "run", "native.ts", "toast", "calls")
+
+
 def test_pnpm_workspace_package_import_resolves_package_entry(tmp_path: Path):
     _write(
         tmp_path / "pnpm-workspace.yaml",

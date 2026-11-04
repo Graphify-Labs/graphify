@@ -79,6 +79,14 @@ def test_exclusive_end_point(end_point, expected):
     assert _inclusive_end_line(ast_node) == expected
 
 
+def test_go_interface_marker_preserves_range(tmp_path):
+    path = tmp_path / "sample.go"
+    path.write_text("package p\ntype Runner interface {\n Run()\n}\n", encoding="utf-8")
+    node = _node(_extract_file(path), "Runner")
+    assert node["source_location"] == "L2"
+    assert node["metadata"] == {"end_line": 4, "language": "go", "kind": "interface"}
+
+
 def test_go_receiver_owner_has_no_range_and_real_type_wins(tmp_path):
     path = tmp_path / "sample.go"
     path.write_text(

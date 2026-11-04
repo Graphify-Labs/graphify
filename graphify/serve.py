@@ -13,9 +13,10 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
+from graphify.paths import consumed, read_graph_json
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
-from graphify.paths import default_graph_json as _default_graph_json
+from graphify.paths import default_graph_json as _default_graph_json, _is_test_path
 
 try:
     with warnings.catch_warnings():
@@ -52,7 +53,7 @@ def _read_graph(graph_path: str) -> nx.Graph:
         raise FileNotFoundError(f"Graph file not found: {resolved}")
     check_graph_file_size_cap(resolved)
     safe = resolved
-    data = json.loads(safe.read_text(encoding="utf-8"))
+    data = read_graph_json(safe)
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     # Stash the on-disk logical flag before the load-time override below:
@@ -78,10 +79,9 @@ def _read_graph(graph_path: str) -> nx.Graph:
             )
     except Exception:
         pass
-    try:
-        G = json_graph.node_link_graph(data, edges="links")
-    except TypeError:
-        G = json_graph.node_link_graph(data)
+    G = json_graph.node_link_graph(
+        dict(data, nodes=consumed(data["nodes"]), links=consumed(data["links"])), edges="links",
+    )
     G.graph["_logical_directed"] = _logical_directed
     # node_link_graph drops top-level keys other than data["graph"], so the
     # build commit export.to_json writes there is stashed by hand (#3354).
@@ -566,6 +566,43 @@ class _QueryScores(NamedTuple):
     term_order: tuple[str, ...] = ()
 
 
+# Query seeding prefers source code over tests and docs. A test named after a bug
+# repeats the question's words in its own name (``UsernameValidatorsTests``), so it
+# wins the exact-label tier and takes the seed slots the source it tests should
+# get. Only `query` applies this weight; `path`, `explain` and `_score_nodes`
+# callers score exactly as before.
+_QUERY_DEMOTE_WEIGHT = 0.3
+_QUERY_TEST_WORDS = frozenset({"test", "tests", "testing", "testcase", "unittest"})
+_QUERY_DOC_WORDS = frozenset({"doc", "docs", "documentation", "readme"})
+_QUERY_DOC_SUFFIXES = (".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".json")
+_QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
+
+
+def _query_path_weight(terms: list[str]):
+    """Score multiplier per node for `query`: tests, docs, config files and nodes
+    without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
+    asks about tests (or docs); everything else counts 1.0."""
+    words = {tok for t in terms for tok in _search_tokens(t)}
+    keep_tests = bool(words & _QUERY_TEST_WORDS)
+    keep_docs = bool(words & _QUERY_DOC_WORDS)
+
+    def weight(data: dict) -> float:
+        path = str(data.get("source_file") or "").replace("\\", "/")
+        parts = path.lower().split("/")
+        if not keep_tests and (_is_test_path(path) or "testing" in parts[:-1] or parts[-1] == "conftest.py"):
+            return _QUERY_DEMOTE_WEIGHT
+        if not keep_docs and (
+            not path
+            or data.get("file_type") in ("document", "paper")
+            or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
+            or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
+        ):
+            return _QUERY_DEMOTE_WEIGHT
+        return 1.0
+
+    return weight
+
+
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     """Combined query scorer returning the existing ranked `(score, node_id)` list.
 
@@ -578,7 +615,7 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 
 
 def _score_query(
-    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool
+    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool, path_weight=None
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -654,6 +691,10 @@ def _score_query(
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
         # this preserves the single-query-time perf where nid_lower was lazy.
         nid_lower = nid.lower() if (joined or collect_per_term_seeds) else ""
+        # `query` passes a per-node multiplier (tests/docs below source); it scales
+        # the combined score and the per-term singleton alike, so the per-term
+        # seed guarantee still holds but prefers a source node for each term.
+        weight = path_weight(data) if path_weight is not None else 1.0
         score = 0.0
         # Full-query tier: a multi-word query that equals (or prefixes) the whole
         # label must dominate the per-token bag-of-words sums below, so `path`/
@@ -738,6 +779,7 @@ def _score_query(
                 else:
                     singleton = 0.0
                 singleton += tier_value + substr_value + source_value + rationale_value + attr_value
+                singleton *= weight
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -749,6 +791,7 @@ def _score_query(
                         best_by_term[t] = (key, nid)
         if tiered:
             score += tiered * (matched / n_terms) ** 2
+        score *= weight
         if score > 0:
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
@@ -1122,11 +1165,14 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None, scores: dict[str, float] | None = None) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+
+    scores: `query`'s node scores. When given, the answer is file-first: seeds
+    and then the other nodes are grouped by file, best-scoring file first.
     """
     char_budget = token_budget * 3
     lines = []
@@ -1158,10 +1204,35 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
-    ordered = seed_hits + sorted(
-        nodes - seed_set,
-        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
-    )
+    if scores:
+        # File-first (query only): rank files by their best-scoring node in the
+        # answer, then list the seeds, and after them the other nodes, file by
+        # file (best file first), by score, then by hop and degree as before.
+        # Nodes the question did not match keep the old order after every
+        # matched file.
+        file_best: dict[str, float] = {}
+        for n in nodes:
+            sc = scores.get(n, 0.0)
+            if sc > 0:
+                f = str(G.nodes[n].get("source_file") or "")
+                if sc > file_best.get(f, 0.0):
+                    file_best[f] = sc
+        file_rank = {f: i for i, (f, _) in enumerate(sorted(file_best.items(), key=lambda kv: (-kv[1], kv[0])))}
+        unranked = len(file_rank)
+
+        def _order(n: str):
+            f = str(G.nodes[n].get("source_file") or "")
+            sc = scores.get(n, 0.0)
+            fr = file_rank.get(f, unranked) if sc > 0 else unranked
+            return (fr, -sc, dist.get(n, 1 << 30), -G.degree(n), str(n))
+
+        seed_hits = sorted(seed_hits, key=_order)
+        ordered = seed_hits + sorted(nodes - seed_set, key=_order)
+    else:
+        ordered = seed_hits + sorted(
+            nodes - seed_set,
+            key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+        )
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -1472,7 +1543,7 @@ def _query_graph_text(
     # — one combined + one per query token — re-walking the whole graph each
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    qs = _score_query(G, terms, collect_per_term_seeds=True, path_weight=_query_path_weight(terms))
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -1490,7 +1561,8 @@ def _query_graph_text(
     if not start_nodes:
         return _QUERY_NO_MATCH
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
-                         context_filters=context_filters, graph_path=graph_path)
+                         context_filters=context_filters, graph_path=graph_path,
+                         scores={nid: sc for sc, nid in qs.ranked})
 
 
 def _render_query(
@@ -1505,6 +1577,7 @@ def _render_query(
     graph_path: str | None,
     given: bool = False,
     unresolved: list[str] | None = None,
+    scores: dict[str, float] | None = None,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
@@ -1533,7 +1606,7 @@ def _render_query(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes, scores=scores)
 
 
 def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:

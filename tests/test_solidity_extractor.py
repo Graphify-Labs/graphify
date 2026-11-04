@@ -137,6 +137,35 @@ def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
 
 
 @_needs_solidity
+def test_solidity_parent_dir_import_targets_the_real_file(tmp_path):
+    utils = tmp_path / "contracts" / "utils"
+    proxy = tmp_path / "contracts" / "proxy"
+    utils.mkdir(parents=True)
+    proxy.mkdir(parents=True)
+    errors = utils / "Errors.sol"
+    errors.write_text("library Errors { error FailedCall(); }\n", encoding="utf-8")
+    clones = proxy / "Clones.sol"
+    clones.write_text(
+        'import {Errors} from "../utils/Errors.sol";\n'
+        "library Clones { function clone() internal {} }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([clones, errors], cache_root=tmp_path, root=tmp_path)
+
+    file_ids = {
+        node["id"]: node["source_file"]
+        for node in result["nodes"]
+        if node.get("source_file") and node["label"] == Path(node["source_file"]).name
+    }
+    imports = [edge for edge in result["edges"] if edge["relation"] == "imports_from"]
+    assert len(imports) == 1
+    # `../utils/Errors.sol` from contracts/proxy/ is contracts/utils/Errors.sol,
+    # not a dangling contracts/proxy/utils/errors.sol stub.
+    assert Path(file_ids.get(imports[0]["target"], "")).as_posix().endswith("contracts/utils/Errors.sol")
+
+
+@_needs_solidity
 def test_solidity_using_free_function_set_emits_uses_edges(tmp_path):
     """`using {f1, f2} for T;` (free functions bound as members, legal since
     0.8.13) wraps each name in its own `using_alias` child instead of putting
