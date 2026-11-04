@@ -1038,7 +1038,8 @@ def is_resolution_input(path: "Path | str") -> bool:
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
 # Platforms whose project-scope skills dir is one level below the hidden dir
-# (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
+# (install.py: kilo -> .config/kilo/skills; pi wrote .pi/agent/skills before
+# #5011 and projects installed then still carry it).
 _NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
 
 # Single files `graphify install` writes whole into a project (#4057): the
