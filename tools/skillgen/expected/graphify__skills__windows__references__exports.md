@@ -8,7 +8,7 @@ Load this when the user passed one of the export flags (`--wiki`, `--neo4j`, `--
 
 Run this before Step 9 (cleanup) so `.graphify_labels.json` is still available.
 
-```bash
+```powershell
 graphify export wiki
 ```
 
@@ -16,7 +16,7 @@ graphify export wiki
 
 **If `--neo4j`** - generate a Cypher file for manual import:
 
-```bash
+```powershell
 graphify export neo4j
 ```
 
@@ -24,7 +24,7 @@ graphify export neo4j
 
 Pass the exact URI from the original `/graphify` command as one argument. When constructing a shell command, quote the URI for the shell that will execute the command (use `shlex.quote` for POSIX shells), or use a structured argument interface. Keep the URI as data; never interpolate it unquoted or evaluate it as shell code. Never replace a supplied URI with localhost. If the user explicitly requested a push but supplied no URI, use the documented local default. Do not print the URI or credentials in status output or generated artifacts.
 
-```bash
+```powershell
 graphify export neo4j --push 'bolt://remote-host:7687' --user neo4j
 ```
 
@@ -34,7 +34,7 @@ Default URI is `bolt://localhost:7687`, default user is `neo4j`. Prefer the `NEO
 
 **If `--falkordb`** - generate a Cypher file. The statements are OpenCypher, but FalkorDB's `GRAPH.QUERY` runs one statement at a time (no bulk script import like Neo4j's `cypher-shell`), so prefer `--falkordb-push` to load a graph. Use this only when you want the portable `cypher.txt` artifact:
 
-```bash
+```powershell
 graphify export falkordb
 ```
 
@@ -42,7 +42,7 @@ graphify export falkordb
 
 Pass the exact URI from the original `/graphify` command as one argument. When constructing a shell command, quote the URI for the shell that will execute the command (use `shlex.quote` for POSIX shells), or use a structured argument interface. Keep the URI as data; never interpolate it unquoted or evaluate it as shell code. Never replace a supplied URI with localhost. If the user explicitly requested a push but supplied no URI, use the documented local default. Do not print the URI or credentials in status output or generated artifacts. Credentials are optional; ask only if the instance requires authentication, and use `FALKORDB_PASSWORD` for a password rather than printing it.
 
-```bash
+```powershell
 graphify export falkordb --push 'falkordb://remote-host:6379'
 ```
 
@@ -50,20 +50,20 @@ Default URI is `falkordb://localhost:6379` (the scheme is informational - `redis
 
 ### Step 7b - SVG export (only if --svg flag)
 
-```bash
+```powershell
 graphify export svg
 ```
 
 ### Step 7c - GraphML export (only if --graphml flag)
 
-```bash
+```powershell
 graphify export graphml
 ```
 
 ### Step 7d - MCP server (only if --mcp flag)
 
-```bash
-$(cat graphify-out/.graphify_python) -m graphify.serve graphify-out/graph.json
+```powershell
+& (Get-Content graphify-out\.graphify_python) -m graphify.serve graphify-out/graph.json
 ```
 
 This starts a stdio MCP server that exposes tools: `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`. Add to Claude Desktop or any MCP-compatible agent orchestrator so other agents can query the graph live.
@@ -84,7 +84,7 @@ To configure in Claude Desktop, add to `claude_desktop_config.json`. Claude Desk
 
 If `total_words` from `graphify-out/.graphify_detect.json` is greater than 5,000, run:
 
-```bash
+```powershell
 graphify benchmark
 ```
 
