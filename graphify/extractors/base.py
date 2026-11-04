@@ -79,6 +79,46 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "View", "Color", "Font",
 })
 
+# Python's own builtin namespace, deliberately kept separate from
+# ``_LANGUAGE_BUILTIN_GLOBALS``. That set is consulted at extraction time for a
+# bare call, where dropping the raw call is correct for a true builtin but also
+# throws away the evidence needed to resolve a legitimate imported class that
+# merely shares a builtin's name (#4989). This set is only consulted after a
+# cross-file candidate has been found, and only to require a direct import
+# binding before accepting it: in Python a bare name resolves to the builtin
+# unless the module binds it itself, so `raise NotImplementedError` in a file
+# that never imports anything must not link to a package class named
+# ``NotImplementedError``. Fixed rather than derived from ``dir(builtins)`` so
+# extraction stays deterministic across interpreter versions.
+_PYTHON_BUILTIN_NAMES: frozenset[str] = frozenset({
+    "ArithmeticError", "AssertionError", "AttributeError", "BaseException",
+    "BaseExceptionGroup", "BlockingIOError", "BrokenPipeError", "BufferError",
+    "BytesWarning", "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
+    "ConnectionRefusedError", "ConnectionResetError", "DeprecationWarning", "EOFError",
+    "Ellipsis", "EncodingWarning", "EnvironmentError", "Exception", "ExceptionGroup",
+    "False", "FileExistsError", "FileNotFoundError", "FloatingPointError",
+    "FutureWarning", "GeneratorExit", "IOError", "ImportError", "ImportWarning",
+    "IndentationError", "IndexError", "InterruptedError", "IsADirectoryError",
+    "KeyError", "KeyboardInterrupt", "LookupError", "MemoryError",
+    "ModuleNotFoundError", "NameError", "None", "NotADirectoryError", "NotImplemented",
+    "NotImplementedError", "OSError", "OverflowError", "PendingDeprecationWarning",
+    "PermissionError", "ProcessLookupError", "RecursionError", "ReferenceError",
+    "ResourceWarning", "RuntimeError", "RuntimeWarning", "StopAsyncIteration",
+    "StopIteration", "SyntaxError", "SyntaxWarning", "SystemError", "SystemExit",
+    "TabError", "TimeoutError", "True", "TypeError", "UnboundLocalError",
+    "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError", "UnicodeTranslateError",
+    "UnicodeWarning", "UserWarning", "ValueError", "Warning", "ZeroDivisionError",
+    "abs", "aiter", "all", "anext", "any", "ascii", "bin", "bool", "breakpoint",
+    "bytearray", "bytes", "callable", "chr", "classmethod", "compile", "complex",
+    "copyright", "credits", "delattr", "dict", "dir", "divmod", "enumerate", "eval",
+    "exec", "exit", "filter", "float", "format", "frozenset", "getattr", "globals",
+    "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance", "issubclass",
+    "iter", "len", "license", "list", "locals", "map", "max", "memoryview", "min",
+    "next", "object", "oct", "open", "ord", "pow", "print", "property", "quit", "range",
+    "repr", "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod",
+    "str", "sum", "super", "tuple", "type", "vars", "zip",
+})
+
 
 def _make_id(*parts: str) -> str:
     return make_id(*parts)
