@@ -30,6 +30,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **build** the write guard no longer counts an intentional ghost fold (a #1145 same-file twin, #3344 doc-names-a-file, or #3705 method ghost folded into its surviving twin) as a dropped node on the `build_merge` path; a genuine drop whose survivor is also gone is still refused (#4955, #4957, thanks @Deepjyoti-Sarmah).
 - Fix: **extract** paths skipped by ignore rules are reported in the extract summary (bounded, sorted, root-relative, with a VCS-aware hint), surfacing the already-collected ignore list without changing the graph (#4965, #4969, thanks @xiongjianxu).
 - Perf: **resolution** the #3252 cross-file repoint indexes edges by source file instead of scanning every corpus edge per importing file, cutting resolution time on large graphs with no change to the resulting edges (#4980, #4981, thanks @jinsoo).
+- Fix: **python** a bare builtin name (`NotImplementedError`, `TimeoutError`, `ConnectionError`, …) no longer links to a package class of the same name when the calling module never imports it; the edge is kept (and stays EXTRACTED) only when the caller imports that exact symbol, so a module-level import of some other name from the same file can no longer certify it (#4989).
 - **AST cache schema bumped to 37** for the Go (#4966, #4853, #4934), Kotlin (#4956), Python (#4972) and Solidity (#4985) extractor fixes; warm caches re-run the affected extractions.
 
 ## 0.9.101 (2026-11-02)
