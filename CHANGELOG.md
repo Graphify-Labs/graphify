@@ -2,6 +2,21 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.103 (2026-11-04)
+
+- Fix: **solidity** a library call (`Lib.f()`, including an aliased import) and an `emit`/`revert`/`require` naming a declared event or error now link to the member they name instead of producing no edge; resolution is gated to a single visible type whose unique name/arity member matches, so a builtin `require` or an ambiguous qualifier is left unresolved (#5001, #5005, thanks @rohit-jsfreaky).
+- Fix: **csharp** preprocessor directives and `#if` branches that derail tree-sitter are blanked before parsing (byte-length preserving, so line and column numbers do not move), so a directive no longer closes the enclosing class early and orphans later members or drops their calls; the first `#if` branch and distinct framework-fallback branches are kept (#5003, thanks @rohit-jsfreaky).
+- Fix: **python** a bare builtin-named call (`raise NotImplementedError(...)`, `list(...)`) no longer binds to a same-named class in another module unless that caller imported the symbol; an imported homonym still resolves (#4989, #4999, thanks @Deepjyoti-Sarmah).
+- Fix: **typescript** a type-position `import('mod')` expression (a parameter/alias/`typeof`/generic-constraint annotation) no longer emits a spurious `dynamic_import` runtime edge; a real runtime `import('mod')` in the same file still does (#4992, #4998, thanks @mathewgeejo).
+- Fix: **resolution** a call inside a top-level `def _main()` is attributed to `_main`, not the public `main` it collides with after id normalization; the fix matches only the underscore-collision salt, so a class member's type reference is not misattributed to a sibling method (#4994, #4997, thanks @sunhouy).
+- Fix: **yaml** a `<<` merge sequence gives the earlier anchor precedence for a duplicated key, matching the YAML merge spec and PyYAML, so the winning key carries its correct source line (#4995, thanks @PratikDhanave).
+- Fix: **markdown** a dotted mention whose method name is a language builtin (`Repository.open`) is no longer dropped; only a bare builtin name is skipped, and no spurious mention is minted (#4990, thanks @PratikDhanave).
+- Fix: **hooks** a Bash file read (`cat`, `head`, `tail`, `sed -n`, `nl`) of an in-project code file gets the same graph read-nudge a Read tool does (nudge-only, never a strict deny); writes, stdin, heredocs, docs and globs stay silent (#5010, thanks @rohit-jsfreaky).
+- Fix: **hooks** the once-per-session nudge budget is restored after a Claude Code compaction (a `SessionStart` with `source=compact`), so orientation can re-fire once the earlier nudges have left the model's context (#5008, thanks @rohit-jsfreaky).
+- Fix: **hooks** the toplevel-anchor logic keeps working when `CDPATH` is exported; an exported `CDPATH` was corrupting the relative `.git` capture and silently skipping the post-commit/checkout rebuild (#4977, #4988, thanks @HhH666-ux).
+- Perf: **update** the watch reconcile pass resolves AST ownership once per file instead of re-reading each header once per node, with identical graph output (#4978, #4986, thanks @Deepjyoti-Sarmah).
+- **AST cache schema bumped to 38** for the C# (#5003), Solidity (#5001, #5005) and YAML (#4995) extractor fixes; warm caches re-run the affected extractions.
+
 ## 0.9.102 (2026-11-03)
 
 - Perf: **update** `graphify update` re-extracts only the files whose content changed since the last build (derived from the manifest inside the lock), instead of re-running the whole pipeline over the corpus for a single edit; the resulting graph is identical to a full rebuild, including cross-file edges from unchanged files into a changed one, and deletions (#4740, #4800, #4801, thanks @Deepjyoti-Sarmah).
