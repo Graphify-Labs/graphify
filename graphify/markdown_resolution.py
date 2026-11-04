@@ -207,7 +207,11 @@ def resolve_markdown_mentions(
                 return None, "EXTRACTED", 1.0
             return _resolve_chain(by_file[source_file], names), "EXTRACTED", 1.0
         callee = names[-1]
-        if callee in _LANGUAGE_BUILTIN_GLOBALS:
+        # Only skip a *bare* builtin-named mention (no qualifier). A dotted
+        # mention like `Repository.open` carries qualifier evidence that proves
+        # the reference, so it must not be discarded just because `open` is a
+        # language builtin.
+        if len(names) == 1 and callee in _LANGUAGE_BUILTIN_GLOBALS:
             return None, "INFERRED", 0.95
         qualifiers = set(names[:-1])
         candidates = [

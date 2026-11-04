@@ -382,3 +382,29 @@ def test_owner_evidence_survives_an_edge_that_already_exists():
 
     assert ("doc_notes", "handler_handlerresult_successwithwarnings") in {
         (e["source"], e["target"]) for e in edges if e.get("relation") == "references"}
+
+
+def test_dotted_mention_resolves_when_method_name_is_a_builtin(tmp_path):
+    # A dotted mention whose method name collides with a language builtin
+    # (open/get/list/...) must still resolve via its qualifier evidence; only a
+    # *bare* builtin-named mention should be skipped.
+    r = _extract(tmp_path, {
+        "src/repo.py": (
+            "class Repository:\n"
+            "    def open(self):\n"
+            "        return 1\n"
+            "    def connect(self):\n"
+            "        return 2\n"
+        ),
+        "docs/notes.md": "# Notes\n\nSee `Repository.open` and `Repository.connect`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    repo_open = next(
+        n for n in r["nodes"] if n["label"] == ".open()" and "repo" in n["id"])
+    repo_connect = next(
+        n for n in r["nodes"] if n["label"] == ".connect()" and "repo" in n["id"])
+    # The builtin-named `.open()` must resolve just like `.connect()`.
+    assert repo_open["id"] in cited
+    assert repo_connect["id"] in cited
