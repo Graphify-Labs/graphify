@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,8 @@ from tree_sitter import Node
 
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
+
+_IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 
 _TYPE_DECLARATIONS = {
     "contract_declaration": "contract",
@@ -30,7 +33,8 @@ def _callee_text(callee: Node, source: bytes) -> str:
     tree-sitter-solidity parses ``a || super.f(x)`` as a call of the member
     ``(a || super).f``: the binary expression is swallowed into the member's
     object. Read the right-most operand as the receiver instead, so the call
-    is seen as ``super.f`` (and ``a && b.c(x)`` as ``b.c``).
+    is seen as ``super.f`` (and ``a && b.c(x)`` as ``b.c``). A prefix operator
+    is swallowed the same way: ``!Lib.f(x)`` parses as ``(!Lib).f``.
     """
     inner = callee.named_children[0] if callee.type == "expression" and callee.named_children else callee
     if inner.type == "member_expression":
@@ -40,7 +44,11 @@ def _callee_text(callee: Node, source: bytes) -> str:
             base = obj
             while True:
                 unwrapped = base.named_children[0] if base.type == "expression" and base.named_children else base
-                right = unwrapped.child_by_field_name("right") if unwrapped.type == "binary_expression" else None
+                right = (
+                    unwrapped.child_by_field_name("right") if unwrapped.type == "binary_expression"
+                    else unwrapped.child_by_field_name("argument") if unwrapped.type == "unary_expression"
+                    else None
+                )
                 if right is None:
                     break
                 base = right
@@ -55,8 +63,8 @@ def _inherited_call(
     """A call or modifier the contract itself does not declare, for
     :func:`resolve_solidity_inherited_calls`. ``kind`` is ``inherited`` (bare
     ``f()`` / ``this.f()``, ``emit E()``, ``revert Err()``), ``super``
-    (``super.f()``), ``modifier`` or ``qualified`` (``revert Errors.Err()``,
-    with a ``qualifier``)."""
+    (``super.f()``), ``modifier`` or ``qualified`` (``Lib.f()``,
+    ``revert Errors.Err()``, with a ``qualifier``)."""
     return {
         "caller_nid": caller_id,
         "callee": callee,
@@ -136,6 +144,11 @@ def resolve_solidity_inherited_calls(
     wins (``super.f()`` starts after the caller's own contract, as the plain
     lookup does once the extractor found nothing there); several same-arity
     overloads in that contract are ambiguous and get no edge.
+
+    A qualified call (``Lib.f()``, ``Base.f()``, ``revert Errors.Err()``) binds
+    to the member of the one library/contract/interface of that name the
+    caller's file declares or imports directly; no edge when the name or the
+    (name, arity) is ambiguous.
     """
     calls = [
         rc
@@ -222,12 +235,14 @@ def resolve_solidity_inherited_calls(
     linear_cache: dict[str, list[str]] = {}
     for rc in calls:
         caller = rc.get("caller_nid")
-        contract = owner.get(caller)
         name = rc.get("callee")
-        if not contract or not name:
+        if not caller or not name:
             continue
         kind = rc["solidity_call"]
+        contract = owner.get(caller)
         if kind == "qualified":
+            # `Lib.f()` names its type, so it needs no owning contract (a free
+            # function calls libraries too).
             caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
             qualifier = str(rc.get("qualifier", ""))
             scope = types_by_file.get((caller_file, qualifier), []) + [
@@ -237,12 +252,14 @@ def resolve_solidity_inherited_calls(
             ]
             # Fail closed when the name is not visible or is ambiguous.
             target = find(scope, name, rc.get("arity"), kind) if len(scope) == 1 else None
+        elif not contract:
+            continue
         else:
             if contract not in linear_cache:
                 linear_cache[contract] = _c3_linearization(contract, bases)
             # The extractor already looked in the caller's own contract.
             target = find(linear_cache[contract][1:], name, rc.get("arity"), kind)
-        if target is None:
+        if target is None or target == caller:
             continue
         relation = "uses" if kind == "modifier" else "calls"
         if (caller, target, relation) in existing:
@@ -394,9 +411,42 @@ def extract_solidity(path: Path) -> dict:
         add_node(nid, name, node, kind="external_type", source_backed=False)
         return nid
 
+    def qualified_call(caller_id: str, qualifier: str, member: str, arity: int, node: Node) -> None:
+        """Park ``Qualifier.member(..)`` for resolve_solidity_inherited_calls,
+        which binds it through a type the file declares or imports."""
+        call = _inherited_call(caller_id, member, arity, "qualified", source_file, node)
+        call["qualifier"] = import_aliases.get(qualifier, qualifier)
+        raw_calls.append(call)
+
+    def split_qualified(written: str) -> tuple[str, str] | None:
+        """``("Lib", "f")`` for ``Lib.f``; ``None`` for ``a.b.f``, ``x[i].f``,
+        ``f().g``, ``super.f`` or ``this.f``."""
+        qualifier, _, member = written.partition(".")
+        if (
+            qualifier in {"super", "this"}
+            or not _IDENTIFIER.fullmatch(qualifier)
+            or not _IDENTIFIER.fullmatch(member)
+        ):
+            return None
+        return qualifier, member
+
+    # `import {A as B} from "./A.sol";` makes `B.f()` call `A.f`.
+    import_aliases: dict[str, str] = {}
     for declaration in root.named_children:
         if declaration.type != "import_directive":
             continue
+        imported_name: str | None = None
+        for index, child in enumerate(declaration.children):
+            field = declaration.field_name_for_child(index)
+            if field == "import_name":
+                imported_name = _read_text(child, source)
+            elif field == "alias" and imported_name is not None:
+                # A namespace alias (`import "./x.sol" as X;`) has no
+                # import_name before it and is not a type.
+                import_aliases[_read_text(child, source)] = imported_name
+                imported_name = None
+            elif child.type == ",":
+                imported_name = None
         source_node = declaration.child_by_field_name("source")
         if source_node is None:
             continue
@@ -686,6 +736,11 @@ def extract_solidity(path: Path) -> dict:
                                 raw_calls.append(_inherited_call(
                                     caller_id, callee, arity, "super", source_file, node,
                                 ))
+                            elif callee and (qualified := split_qualified(written)):
+                                # `Lib.f(..)` / `Base.f(..)` / `Errors.Err(..)`.
+                                # A value receiver (`token.transfer()`) names no
+                                # type, so the resolver binds nothing for it.
+                                qualified_call(caller_id, *qualified, arity, node)
                             elif callee and "." in written:
                                 raw_calls.append({
                                     "caller_nid": caller_id,
@@ -724,11 +779,9 @@ def extract_solidity(path: Path) -> dict:
                         if qualifier is not None and prop is not None and qualifier.type == "identifier":
                             # `revert Errors.Err(..)`: declared in a library or
                             # contract the file declares or imports.
-                            qualified = _inherited_call(
-                                caller_id, _read_text(prop, source), arity, "qualified", source_file, node,
+                            qualified_call(
+                                caller_id, _read_text(qualifier, source), _read_text(prop, source), arity, node,
                             )
-                            qualified["qualifier"] = _read_text(qualifier, source)
-                            raw_calls.append(qualified)
                 stack.extend(reversed(node.named_children))
 
     # Free (file-level) functions live at source-unit scope, outside any
@@ -768,9 +821,10 @@ def extract_solidity(path: Path) -> dict:
             free_bodies.append((body, func_id))
 
     # Resolve calls made from free-function bodies. Only an unambiguous
-    # same-file free function is linked directly; a member call (Lib.f()) is
-    # left for cross-file resolution. Contract methods stay out of scope so we
-    # never guess a relationship across a scope we cannot see (fail-closed).
+    # same-file free function is linked directly; a qualified call (Lib.f())
+    # is left for resolve_solidity_inherited_calls. Contract methods stay out
+    # of scope so we never guess a relationship across a scope we cannot see
+    # (fail-closed).
     for function_body, caller_id in free_bodies:
         stack = [function_body]
         while stack:
@@ -785,6 +839,8 @@ def extract_solidity(path: Path) -> dict:
                         candidates = free_functions.get((callee, arity), [])
                         if len(candidates) == 1:
                             add_edge(caller_id, candidates[0], "calls", node)
+                    elif callee and (qualified := split_qualified(written)):
+                        qualified_call(caller_id, *qualified, arity, node)
                     elif callee:
                         raw_calls.append({
                             "caller_nid": caller_id,

@@ -354,6 +354,196 @@ def test_solidity_qualified_revert_and_emit_bind_through_the_imported_type(tmp_p
     assert _calls_to(result, "event") == {("withdraw()", "Moved", "Errors.sol")}
 
 
+def _function_calls(result: dict) -> set[tuple[str, str, str]]:
+    """(caller, target, target file name) for `calls` edges into a function."""
+    return _calls_to(result, "function")
+
+
+_MATH_LIB = (
+    "pragma solidity ^0.8.20;\n"
+    "library MathLib {\n"
+    "    function max(uint256 a, uint256 b) internal pure returns (uint256) { return a > b ? a : b; }\n"
+    "    function clamp(uint256 x, uint256 hi) internal pure returns (uint256) {\n"
+    "        return MathLib.max(x, hi) == x ? hi : x;\n"
+    "    }\n"
+    "}\n"
+)
+
+
+@_needs_solidity
+def test_solidity_library_call_binds_through_a_named_import(tmp_path):
+    # Every `Lib.f()` was parked as a bare member call, which the shared
+    # cross-file pass drops, so no library call got an edge (OpenZeppelin:
+    # 0 of 208 compiler-resolved library calls).
+    (tmp_path / "MathLib.sol").write_text(_MATH_LIB, encoding="utf-8")
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {MathLib} from "./MathLib.sol";\n'
+        "contract Vault {\n"
+        "    uint256 public cap;\n"
+        "    function setCap(uint256 newCap) external { cap = MathLib.max(newCap, 1); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert ("setCap()", "max()", "MathLib.sol") in _function_calls(result)
+
+
+@_needs_solidity
+def test_solidity_library_call_binds_through_a_whole_file_import(tmp_path):
+    (tmp_path / "TimeLib.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library TimeLib { function now48() internal view returns (uint48) { return uint48(block.timestamp); } }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import "./TimeLib.sol";\n'
+        "contract Vault {\n"
+        "    uint48 public updatedAt;\n"
+        "    function touch() external { updatedAt = TimeLib.now48(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _function_calls(result) == {("touch()", "now48()", "TimeLib.sol")}
+
+
+@_needs_solidity
+def test_solidity_qualified_call_inside_the_library_itself(tmp_path):
+    source = tmp_path / "MathLib.sol"
+    source.write_text(_MATH_LIB, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert _function_calls(result) == {("clamp()", "max()", "MathLib.sol")}
+
+
+@_needs_solidity
+def test_solidity_library_call_binds_through_an_import_alias(tmp_path):
+    (tmp_path / "MathLib.sol").write_text(_MATH_LIB, encoding="utf-8")
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {MathLib as M} from "./MathLib.sol";\n'
+        "contract Vault {\n"
+        "    function top(uint256 a) external pure returns (uint256) { return M.max(a, 1); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert ("top()", "max()", "MathLib.sol") in _function_calls(result)
+
+
+@_needs_solidity
+def test_solidity_negated_library_call_binds(tmp_path):
+    # tree-sitter-solidity parses `!Lib.f(x)` as a call of the member
+    # `(!Lib).f`, so the receiver read as `!MathLib` named no type.
+    (tmp_path / "MathLib.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library MathLib { function isZero(uint256 a) internal pure returns (bool) { return a == 0; } }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {MathLib} from "./MathLib.sol";\n'
+        "contract Vault {\n"
+        "    function check(uint256 a) external pure { if (!MathLib.isZero(a)) revert(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _function_calls(result) == {("check()", "isZero()", "MathLib.sol")}
+
+
+@_needs_solidity
+def test_solidity_library_call_from_a_free_function(tmp_path):
+    (tmp_path / "MathLib.sol").write_text(_MATH_LIB, encoding="utf-8")
+    (tmp_path / "Utils.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {MathLib} from "./MathLib.sol";\n'
+        "function atLeastOne(uint256 a) pure returns (uint256) { return MathLib.max(a, 1); }\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert ("atLeastOne()", "max()", "MathLib.sol") in _function_calls(result)
+
+
+@_needs_solidity
+def test_solidity_require_with_a_qualified_error_binds_the_library_error(tmp_path):
+    (tmp_path / "Errors.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Errors { error TooSmall(uint256 got); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vault.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {Errors} from "./Errors.sol";\n'
+        "contract Vault {\n"
+        "    function deposit(uint256 v) external pure { require(v > 1, Errors.TooSmall(v)); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _calls_to(result, "error") == {("deposit()", "TooSmall", "Errors.sol")}
+
+
+@_needs_solidity
+def test_solidity_library_call_fails_closed_when_ambiguous_or_not_a_type(tmp_path):
+    (tmp_path / "A.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Dup { function f() internal pure {} }\n"
+        "library Over {\n"
+        "    function g(uint256 a) internal pure {}\n"
+        "    function g(int256 a) internal pure {}\n"
+        "    function h(uint256 a) internal pure {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "B.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Dup { function f() internal pure {} }\n",
+        encoding="utf-8",
+    )
+    # Declares `Hidden`, but Caller.sol does not import it.
+    (tmp_path / "C.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "library Hidden { function k() internal pure {} }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Caller.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import "./A.sol";\n'
+        'import "./B.sol";\n'
+        "contract Caller {\n"
+        "    function run(uint256 x) external {\n"
+        "        Dup.f();\n"  # two imported files declare Dup
+        "        Over.g(x);\n"  # two overloads of the same arity
+        "        Over.h(x, x);\n"  # no h with two parameters
+        "        Hidden.k();\n"  # not imported
+        "        x.h(x);\n"  # a value receiver, not a type
+        "    }\n"
+        "    function ok(uint256 x) external { Over.h(x); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _function_calls(result) == {("ok()", "h()", "A.sol")}
+
+
 @_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
