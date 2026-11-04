@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from graphify.hooks import (
     install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
-    _REWRITE_HOOK_MARKER,
+    _REWRITE_HOOK_MARKER, _WORKTREE_GUARD, _TOPLEVEL_ANCHOR,
 )
 
 
@@ -2195,3 +2195,25 @@ def test_watch_rebuild_timeout_runs_off_the_main_thread():
     assert not t.is_alive(), "_rebuild_timeout blocked the worker thread"
     assert errors == [], f"_rebuild_timeout raised off the main thread: {errors!r}"
     assert ran == [True], "_rebuild_timeout never ran its body off the main thread"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires a POSIX shell")
+def test_worktree_guard_survives_exported_cdpath(tmp_path):
+    """An exported CDPATH must not corrupt the absolute git-dir capture (#4977).
+
+    ``cd`` prints the resolved directory to stdout when it resolves through
+    CDPATH, so the unguarded capture became two lines and the toplevel anchor
+    below it exited silently — every generated hook skipped its rebuild.
+    """
+    repo = _make_git_repo(tmp_path)
+    script = textwrap.dedent(f"""\
+        CDPATH=".:$HOME"
+        {_WORKTREE_GUARD}
+        {_TOPLEVEL_ANCHOR}
+        printf 'TOP=%s\\n' "$_GFY_TOP"
+    """)
+    result = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "TOP=" in result.stdout, f"anchor exited before printing: {result.stdout!r} {result.stderr!r}"
+    top = result.stdout.strip().split("TOP=", 1)[1]
+    assert os.path.basename(top.rstrip("/\\")) == repo.name
