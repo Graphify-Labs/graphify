@@ -90,3 +90,26 @@ def test_underscore_sibling_without_collision_is_unchanged(tmp_path):
     calls = _call_edges(result, labels)
     assert ("_helper()", "beta()", "L4") in calls
     assert not any(source == "main()" for source, _, _ in calls)
+
+
+def test_class_field_reference_stays_on_the_class_not_a_method(tmp_path):
+    """The #4994 collision fix must not steal a class member's edge. A class whose
+    method is followed by a type-annotated field shares the member-id prefix
+    (`classid_methodname`) with the class, but that is a child node, not an
+    underscore-collision salt - so the field's type reference must stay on the
+    class, not move to the preceding method."""
+    result = _extract(tmp_path, {
+        "widget.ts": "export class Baz {}\n",
+        "foo.ts": (
+            "import { Baz } from './widget';\n"
+            "export class Foo {\n"
+            "  render(): number { return 1; }\n"
+            "  item: Baz = new Baz();\n"
+            "}\n"
+        ),
+    })
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    refs = {(labels.get(e["source"]), labels.get(e["target"]))
+            for e in result["edges"] if e.get("relation") == "references"}
+    assert ("Foo", "Baz") in refs
+    assert not any(src and src.endswith("render()") and tgt == "Baz" for src, tgt in refs)

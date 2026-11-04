@@ -1888,7 +1888,12 @@ def _apply_symbol_resolution_facts(
         candidates = [n for n in nodes if n.get("id") == source_id or (
             isinstance(n.get("id"), str)
             and n["id"].startswith(source_id + "_")
-            and n["id"][len(source_id) + 1:].isalnum()
+            # Only an underscore-collision salt (`_underscore_salted_nid`, a
+            # 6-char sha1 hex) is a sibling spelling of the same def. A plain
+            # alphanumeric suffix is a child node id (`classid_methodname`), so
+            # matching it would wrongly steal a class member's edge (e.g. a
+            # type-annotated field's reference) onto a preceding method.
+            and re.fullmatch(r"[0-9a-f]{6}", n["id"][len(source_id) + 1:]) is not None
             and _js_source_path(str(n.get("source_file") or ""), root) == file_path
         )]
         if len(candidates) < 2:
