@@ -91,6 +91,11 @@ def test_code_span_mentions_are_classified():
     pinned = ("src/widget.py", ["Widget", "render"])
     assert _code_span_mention("src/widget.py::Widget::render") == pinned
     assert _code_span_mention("src/widget.py::Widget::render()") == pinned
+    # Other languages' docs qualify with `\` (PHP namespaces) or `::`
+    # (Type::member in PHP, Rust, C++); both carry qualifiers like the dotted form.
+    assert _code_span_mention("App\\Services\\Mailer") == (None, ["App", "Services", "Mailer"])
+    assert _code_span_mention("Mailer::send()") == (None, ["Mailer", "send"])
+    assert _code_span_mention("std::vector") == (None, ["std", "vector"])
     # Files, commands, expressions and prose are not symbol mentions.
     for span in ("setup.py", "README.md", "notes.txt", "git revert", "x = 1", "a-b",
                  "--flag", "", "src/widget.py"):
