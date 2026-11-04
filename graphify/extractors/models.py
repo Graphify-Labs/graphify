@@ -8,8 +8,7 @@ from dataclasses import dataclass, field
 
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 
-_JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".ejs"}
-
+_JS_CACHE_BYPASS_SUFFIXES = {".js", ".gs", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".ejs"}
 @dataclass
 class LanguageConfig:
     ts_module: str                                   # e.g. "tree_sitter_python"
