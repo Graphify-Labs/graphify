@@ -42,6 +42,7 @@ from graphify.rcfile import (
 )
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
+    _PYTHON_BUILTIN_NAMES,
     _file_stem,
     _make_id,
     _read_source_bytes,
@@ -11695,6 +11696,20 @@ def extract(
                         if tgt is None:
                             continue
                     has_import_evidence = False
+        # #4989: Python bare names resolve through the caller module's own
+        # bindings. A builtin-named callee is only a project symbol when the
+        # caller's file imports that exact symbol. Module-import evidence (the
+        # caller imported some other name from the file defining a same-named
+        # class) must NOT count: it used to promote `raise NotImplementedError`
+        # to EXTRACTED against a package class the file never bound (#2945 is
+        # the same distinction for confidence, this is the binding condition).
+        # Without a direct import the name is the builtin, so prefer no edge.
+        if (
+            effective_suffix(str(rc.get("source_file", ""))) == ".py"
+            and callee in _PYTHON_BUILTIN_NAMES
+            and tgt not in imported_symbols
+        ):
+            continue
         # A source-less candidate is an unresolved external stub, not a
         # project-defined callable. It can remain a target of type/reference
         # edges, but a name-only call must not turn it into a cross-file calls
