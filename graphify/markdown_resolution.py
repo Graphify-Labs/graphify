@@ -207,13 +207,33 @@ def resolve_markdown_mentions(
                 return None, "EXTRACTED", 1.0
             return _resolve_chain(by_file[source_file], names), "EXTRACTED", 1.0
         callee = names[-1]
-        if callee in _LANGUAGE_BUILTIN_GLOBALS:
+        # Only skip a *bare* builtin-named mention (no qualifier). A dotted
+        # mention like `Repository.open` carries qualifier evidence that proves
+        # the reference, so it must not be discarded just because `open` is a
+        # language builtin.
+        if len(names) == 1 and callee in _LANGUAGE_BUILTIN_GLOBALS:
             return None, "INFERRED", 0.95
         qualifiers = set(names[:-1])
+        ns_chain = bool(rc.get("ns_qualified"))
+        by_name = by_label.get(callee, [])
         candidates = [
-            c for c in by_label.get(callee, [])
+            c for c in by_name
             if qualifiers <= _evidence(c, nodes_by_id, parents)
         ]
+        if not candidates and ns_chain:
+            # A PSR-4 namespace root (`App\`) maps to the scan directory and has
+            # no path segment, so when no candidate accounts for the whole chain,
+            # the leading qualifiers a candidate cannot account for are dropped
+            # (#4610). Only then: a qualifier that does match a candidate keeps
+            # discriminating (`Mailer::send()` still picks the right `send`).
+            def _dropped(c: str) -> bool:
+                evidence = _evidence(c, nodes_by_id, parents)
+                wanted = list(names[:-1])
+                while wanted and wanted[0] not in evidence:
+                    wanted.pop(0)
+                return set(wanted) <= evidence
+
+            candidates = [c for c in by_name if _dropped(c)]
         return (candidates[0] if len(candidates) == 1 else None), "INFERRED", 0.95
 
     def _method_owner(node_id: str) -> str | None:

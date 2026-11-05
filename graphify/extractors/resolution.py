@@ -1868,6 +1868,48 @@ def _apply_symbol_resolution_facts(
     # survives, and the file id is exactly what the #2231 remap
     # canonicalizes — or drop it when no file node id is available.
     owned = {str(n.get("id")) for n in nodes}
+
+    def _collision_aware(source_id: str, file_path: Path, line: int) -> str:
+        """The declaration node a top-level ``def``'s call actually belongs to.
+
+        ``make_id`` strips the underscore edges off each part, so ``_main`` and
+        ``main`` mint one plain id. The engine salts the colliding pair apart
+        (#3302) and leaves only the unique public spelling — ``main()`` — on the
+        plain id, while a ``def`` collected by name here can only carry the plain
+        id. So every call inside ``_main`` was being credited to ``main`` (#4994).
+
+        The declarations sharing that plain id sit on distinct lines, so the one
+        enclosing the call line is the caller. Anything the line cannot settle
+        (no candidates, or several) keeps ``source_id`` unchanged, which is what
+        this pass did before.
+        """
+        if not any(other.startswith(source_id + "_") for other in owned):
+            return source_id
+        candidates = [n for n in nodes if n.get("id") == source_id or (
+            isinstance(n.get("id"), str)
+            and n["id"].startswith(source_id + "_")
+            # Only an underscore-collision salt (`_underscore_salted_nid`, a
+            # 6-char sha1 hex) is a sibling spelling of the same def. A plain
+            # alphanumeric suffix is a child node id (`classid_methodname`), so
+            # matching it would wrongly steal a class member's edge (e.g. a
+            # type-annotated field's reference) onto a preceding method.
+            and re.fullmatch(r"[0-9a-f]{6}", n["id"][len(source_id) + 1:]) is not None
+            and _js_source_path(str(n.get("source_file") or ""), root) == file_path
+        )]
+        if len(candidates) < 2:
+            return source_id
+
+        def _start(node: dict) -> int:
+            try:
+                return int(str(node.get("source_location") or "").removeprefix("L"))
+            except ValueError:
+                return 0
+
+        enclosing = [n for n in candidates if _start(n) <= line]
+        if not enclosing:
+            return source_id
+        return str(max(enclosing, key=_start)["id"])
+
     for use_fact in facts.uses:
         file_path = _resolve_cached(use_fact.file_path)
         target_id = None
@@ -1885,7 +1927,7 @@ def _apply_symbol_resolution_facts(
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
-        source_id = use_fact.source_id
+        source_id = _collision_aware(use_fact.source_id, file_path, use_fact.line)
         # Structural walking can omit named-function-local declarations while
         # materializing callback-local ones. Only actual node ownership decides
         # whether a type relationship has a represented source declaration.
@@ -3135,6 +3177,12 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    """``(plain caller id, body)`` for every top-level ``def`` in the module.
+
+    Deliberately the *unsalted* id: ``_apply_symbol_resolution_facts`` resolves
+    the caller against the final graph, where the underscore-collision spread
+    (#3302) is baked into the ids.
+    """
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
     for node in root_node.children:

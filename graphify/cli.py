@@ -55,6 +55,20 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+# Claude Code SessionStart (matcher "compact") output: compaction dropped the
+# earlier nudges from the model's context, so restate the one fact they carried.
+# SessionStart accepts hookSpecificOutput.additionalContext.
+_COMPACT_CONTEXT = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": (
+            'graphify: this project has a knowledge graph at graphify-out/graph.json. '
+            '`graphify query "<question>"`, `graphify explain "<concept>"` and '
+            '`graphify path "<A>" "<B>"` show which files and lines matter, usually '
+            'in far fewer tokens than reading or grepping raw files.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 # Strict-mode block (opt-in). Claude Code PreToolUse honors
 # hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
 # to the model. Fires at most once per session (see _mark_session_denied) so it can
@@ -1030,7 +1044,10 @@ def _nudge_allowed(payload: dict) -> bool:
       disables the cap), counted in a marker next to the strict-mode ones.
 
     Calls without a session id cannot be counted: only the stamp applies.
-    Fail-open: on a marker error, only the stamp applies.
+    Fail-open: on a marker error, only the stamp applies. Compaction keeps the
+    session id but drops the earlier nudges from the model's context, so
+    ``hook-guard compact`` (Claude Code SessionStart, source "compact") deletes
+    the session's counters, see _reset_hook_session.
     """
     from graphify.paths import out_path, write_text_atomic
     import hashlib
@@ -1080,6 +1097,33 @@ def _gc_hook_session_markers(d: "Path") -> None:
         pass
 
 
+def _reset_hook_session(session_id: str) -> None:
+    """Give a compacted Claude Code session its hook budget back.
+
+    After compaction the session id stays the same, but the model no longer
+    sees the nudges it was given, and _nudge_allowed has already spent the cap.
+    Deletes the session's nudge counter, the counter of every subagent of it
+    (``<key>-<16 hex>``, the per-agent key _nudge_allowed builds) and the
+    strict-mode deny marker, so the next qualifying call nudges again and strict
+    mode can redirect once more. Other sessions' markers are untouched. Errors
+    propagate: the caller fails open.
+    """
+    from graphify.paths import out_path
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or ""))[:64]
+    if not key:
+        return
+    d = out_path("cache", "hook_sessions")
+    if not d.is_dir():
+        return
+    own = re.compile(re.escape(key) + r"(?:-[0-9a-f]{16})?\.nudges|" + re.escape(key) + r"\.denied")
+    for entry in os.scandir(d):
+        if own.fullmatch(entry.name):
+            try:
+                os.unlink(entry.path)
+            except FileNotFoundError:
+                pass
+
+
 def _mark_session_denied(session_id: str) -> bool:
     """Atomically claim a one-time strict block for this session. Returns True only
     on the FIRST call for a given session id (O_EXCL create wins once); every later
@@ -1113,23 +1157,17 @@ _COMMAND_WRAPPERS = frozenset({
 _HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
-def _bash_invokes_search(cmd_str: str) -> bool:
-    """Whether a Bash command actually RUNS a search tool (#3121).
+def _bash_commands(cmd_str: str):
+    """Yield ``(name, args, piped)`` for each command a Bash string executes.
 
-    The old test was a plain substring scan over the whole command string,
-    including quoted arguments and heredoc bodies - so `git commit -m "add
-    flag support"` fired ("flag " contains "ag "), prose containing "find "
-    fired, and a design doc written via heredoc fired if its body mentioned
-    grep. Every false positive injects a nudge where graphify has nothing to
-    contribute and trains the agent to skim the line.
-
-    Decide on the command's executed tokens instead: drop heredoc bodies and
-    quoted spans, split on shell operators, and match the executable at each
-    command position (wrappers like sudo/xargs/env skipped; `git grep` and
-    `VAR=x grep ...` still count; a search-tool name inside prose does not).
-    `sed` and `awk` count too when they open a file themselves: run on files, they
-    are a grep or a read of the codebase by another name. Reading a pipe, editing
-    in place, or naming no file (a program alone reads stdin) does not count.
+    The command parsing behind _bash_invokes_search (#3121): heredoc bodies are
+    dropped, quoted spans become one placeholder word ``Q``, and the string is
+    split at shell operators and substitution boundaries. In each segment the
+    executable is the first token after ``VAR=value`` prefixes and wrappers
+    (sudo/xargs/env and their flags). ``name`` is its basename, lowercased, with
+    any ``.exe`` removed; ``args`` are the tokens after it; ``piped`` says the
+    segment reads a pipe. A word in prose, a quoted argument or a heredoc body is
+    never yielded as a command.
     """
     text = cmd_str
     # Drop heredoc bodies: from the line after `<<WORD` through the line that
@@ -1179,26 +1217,140 @@ def _bash_invokes_search(cmd_str: str) -> bool:
                 while i < len(tokens) and tokens[i].startswith("-"):
                     i += 1
                 continue
-            if name in _SEARCH_COMMANDS:
-                return True
-            if name == "git" and any(
-                t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
-            ):
-                return True
-            if name in ("sed", "awk") and not segment_piped:
-                rest = tokens[i + 1:]
-                in_place = any(
-                    t2.startswith("--in-place")
-                    or (t2.startswith("-i") if name == "awk" else
-                        t2.startswith("-") and not t2.startswith("--") and "i" in t2)
-                    for t2 in rest
-                )
-                # The program and at least one file; `x=1` is an awk assignment.
-                operands = [t2 for t2 in rest if not t2.startswith("-") and "=" not in t2]
-                if not in_place and len(operands) >= 2:
-                    return True
+            yield name, tokens[i + 1:], segment_piped
             break  # first real token decides this segment
+
+
+def _bash_invokes_search(cmd_str: str) -> bool:
+    """Whether a Bash command actually RUNS a search tool (#3121).
+
+    The old test was a plain substring scan over the whole command string,
+    including quoted arguments and heredoc bodies - so `git commit -m "add
+    flag support"` fired ("flag " contains "ag "), prose containing "find "
+    fired, and a design doc written via heredoc fired if its body mentioned
+    grep. Every false positive injects a nudge where graphify has nothing to
+    contribute and trains the agent to skim the line.
+
+    Decide on the command's executed tokens instead: drop heredoc bodies and
+    quoted spans, split on shell operators, and match the executable at each
+    command position (wrappers like sudo/xargs/env skipped; `git grep` and
+    `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    `sed` and `awk` count too when they open a file themselves: run on files, they
+    are a grep or a read of the codebase by another name. Reading a pipe, editing
+    in place, or naming no file (a program alone reads stdin) does not count.
+    """
+    for name, args, piped in _bash_commands(cmd_str):
+        if name in _SEARCH_COMMANDS:
+            return True
+        if name == "git" and any(
+            t2 == "grep" for t2 in args[:3] if not t2.startswith("-")
+        ):
+            return True
+        if name in ("sed", "awk") and not piped:
+            # The program and at least one file; `x=1` is an awk assignment.
+            operands = [t2 for t2 in args if not t2.startswith("-") and "=" not in t2]
+            if not _sed_awk_in_place(name, args) and len(operands) >= 2:
+                return True
     return False
+
+
+def _sed_awk_in_place(name: str, args: "list[str]") -> bool:
+    """Whether sed/awk edits its files in place (`-i`, `--in-place`, `-Ei`)."""
+    return any(
+        t2.startswith("--in-place")
+        or (t2.startswith("-i") if name == "awk" else
+            t2.startswith("-") and not t2.startswith("--") and "i" in t2)
+        for t2 in args
+    )
+
+
+# Bash commands that print a file for the agent to read. `sed` counts only with
+# -n/--quiet/--silent (it prints the lines asked for); without it, a sed run on
+# a file stays a search (see _bash_invokes_search).
+_BASH_READERS = frozenset({"cat", "head", "tail", "sed", "nl", "less", "more", "bat"})
+# Docs are graphed and nudge on the Read tool, but `cat README.md` in a shell is
+# orientation, not a walk through the code, so Bash reads nudge on code only.
+_BASH_READ_SKIP_EXTS = (".md", ".rst", ".txt", ".mdx")
+
+
+def _bash_read_target(cmd_str: str, cwd: str = "") -> "str | None":
+    """The in-project source file a Bash command prints, as an absolute path.
+
+    The Read tool gets the read nudge; `cat src/app.py`, `sed -n 1,80p
+    src/app.py`, `head -50 src/app.py` and the like read the same code through
+    Bash and got nothing (#3121's parser only looked for searches). Uses
+    _bash_commands, so only executed commands count, never a reader named in
+    prose, quotes or a heredoc body.
+
+    A file counts when a reader names it as an operand (or `< file`), it exists,
+    its extension is a graphed code extension, it resolves inside the project
+    (CLAUDE_PROJECT_DIR or cwd) and outside the graph output (#1840, #4961).
+    Relative paths resolve against the Bash tool's ``cwd`` from the hook payload
+    when it is inside the project. Writes are not reads: a stdout redirect
+    (`cat > x.py`, `sed -n 1p a.py > b.py`) or `sed -i` disqualifies the
+    command, and a reader with no file operand (`echo x | cat`) reads stdin.
+    Paths with shell expansion are skipped. None when nothing qualifies.
+    """
+    from graphify.paths import out_path
+    try:
+        root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+        base = root
+        if cwd and not _is_cwd_relative(cwd):
+            c = Path(cwd).resolve()
+            if c.is_relative_to(root):
+                base = c
+        outs = []
+        for o in (out_path(), Path("graphify-out")):
+            outs.append((root / o if _is_cwd_relative(str(o)) else o).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for name, args, _piped in _bash_commands(cmd_str):
+        if name not in _BASH_READERS:
+            continue
+        if name == "sed" and (_sed_awk_in_place(name, args) or not any(
+                a in ("--quiet", "--silent") or (a.startswith("-") and not a.startswith("--") and "n" in a)
+                for a in args)):
+            continue
+        files: "list[str]" = []
+        it = iter(args)
+        for tok in it:
+            if ">" in tok:
+                if tok.split(">", 1)[0] in ("", "1", "&"):
+                    files = []
+                    break  # stdout goes to a file: a write, not a read
+                if tok.endswith(">"):
+                    next(it, None)  # `2> err.log`
+                continue
+            if tok.startswith("<<"):
+                if tok in ("<<", "<<-", "<<<"):
+                    next(it, None)
+                continue
+            if tok == "<":
+                tok = next(it, "")
+            elif tok.startswith("<"):
+                tok = tok[1:]
+            elif name == "sed" and tok in ("-e", "-f", "--expression", "--file"):
+                next(it, None)  # the program, not a file
+                continue
+            elif tok.startswith("-"):
+                continue
+            files.append(tok)
+        for f in files:
+            if not f or re.search(r"[$`~*?\[\]{}]", f):
+                continue
+            seg = f.lower().replace("\\", "/").rsplit("/", 1)[-1]
+            ext = "." + seg.rsplit(".", 1)[-1]
+            if "." not in seg or ext not in _HOOK_SOURCE_EXTS or ext in _BASH_READ_SKIP_EXTS:
+                continue
+            try:
+                p = Path(f.replace("\\", "/"))
+                p = (base / p if _is_cwd_relative(str(p)) else p).resolve()
+                if p.is_file() and p.is_relative_to(root) \
+                        and not any(p.is_relative_to(o) for o in outs):
+                    return str(p)
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
 
 
 def _search_is_outside_project(tool_input: dict) -> bool:
@@ -1280,7 +1432,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     Grep in the project is DENIED with a redirect to `graphify query`, then
     downgrades to the soft nudge. The two tools share one block per session.
     Bash and Glob stay nudge-only: a compound shell command has no single
-    parseable target and blocking file listing would strand navigation.
+    parseable target and blocking file listing would strand navigation. A Bash
+    command that prints an in-project code file (cat/head/tail/sed -n/nl/less/
+    more/bat, see _bash_read_target) gets the Read nudge for that file, through
+    the same budget, and is never denied.
     Out-of-project and graph-output targets are ignored; stale graphs never block.
     """
     from graphify.paths import out_path
@@ -1302,10 +1457,32 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         return
     if not isinstance(d, dict):
         return
+    # Claude Code SessionStart with matcher "compact": reset this session's
+    # nudge budget and restate the graph. Other sources (startup, resume,
+    # clear, fork) keep their counters.
+    if kind == "compact":
+        try:
+            if d.get("hook_event_name", "SessionStart") != "SessionStart" \
+                    or d.get("source") != "compact":
+                return
+            _reset_hook_session(str(d.get("session_id") or ""))
+            if out_path("graph.json").is_file():
+                sys.stdout.write(_nudge_for_out(_COMPACT_CONTEXT))
+        except Exception:
+            pass
+        return
     t = d.get("tool_input", d)
     if not isinstance(t, dict):
         return
     try:
+        # A Bash file read is a Read by another name: route it through the read
+        # guard below with the file as its target. A reader wins over a search
+        # in the same command, since the read nudge names the file's symbols.
+        bash_read = False
+        if kind == "search" and d.get("tool_name") in (None, "Bash"):
+            target = _bash_read_target(str(t.get("command", "") or ""), str(d.get("cwd") or ""))
+            if target:
+                kind, t, bash_read = "read", {"file_path": target}, True
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
             # Two input shapes reach this guard (matcher "Bash|Grep", #1986):
@@ -1462,9 +1639,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     sys.stdout.write(_nudge_for_out(_READ_NUDGE_STALE))
                 return
             # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed.
+            # oriented, and the file is demonstrably indexed. Bash stays advisory.
             tool_name = d.get("tool_name")
-            if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
+            if not bash_read and _hook_strict_enabled(strict) and tool_name in (None, "Read") \
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
@@ -3168,6 +3345,8 @@ def dispatch_command(cmd: str) -> None:
         # strict mode (opt-in, `hook-guard <read|search> --strict`) it blocks the
         # first raw Read or dedicated Grep per session via the JSON permissionDecision
         # payload — never via exit code — and downgrades to the nudge thereafter.
+        # `hook-guard compact` is the SessionStart (matcher "compact") hook that
+        # resets the session's nudge budget after a context compaction.
         _run_hook_guard(
             sys.argv[2] if len(sys.argv) > 2 else "",
             strict="--strict" in sys.argv[3:],
@@ -4443,6 +4622,12 @@ def dispatch_command(cmd: str) -> None:
                 f"[graphify extract] {len(_unclassified)} file(s) not classified "
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
+        # #2942: a plain count reads as routine noise even when it is most of
+        # the corpus; say plainly that the graph is missing a structurally
+        # significant part of the codebase when that is actually the case.
+        _unclassified_warning = detection.get("unclassified_warning") if isinstance(detection, dict) else None
+        if _unclassified_warning:
+            print(f"[graphify extract] warning: {_unclassified_warning}")
         # Name the files dropped by the sensitive-file filter so a wrongly-flagged
         # source/doc is visible, not just a count (#2106). Operational skips
         # (symlink/office/Workspace) carry a " [reason]" suffix; exclude those here
