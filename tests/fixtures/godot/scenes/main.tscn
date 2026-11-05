@@ -1,0 +1,17 @@
+[gd_scene load_steps=4 format=3 uid="uid://bmain"]
+
+[ext_resource type="Script" uid="uid://bplayer" path="res://actors/player.gd" id="1_player"]
+[ext_resource type="PackedScene" path="res://scenes/bullet.tscn" id="2_bullet"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="3_icon"]
+
+[node name="Main" type="Node2D"]
+
+[node name="Player" type="CharacterBody2D" parent="." groups=["actors"]]
+script = ExtResource("1_player")
+
+[node name="Bullet" parent="Player" instance=ExtResource("2_bullet")]
+
+[node name="Button" type="Button" parent="."]
+
+[connection signal="pressed" from="Button" to="Player" method="_on_jumped"]
+[connection signal="pressed" from="Button" to="." method="_on_missing"]
