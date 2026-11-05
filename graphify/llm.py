@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -359,8 +360,8 @@ def _resolve_max_tokens(default: int) -> int:
 
 def _openai_max_tokens_kwarg(backend: str, max_tokens: int) -> dict[str, int]:
     """Map the output cap to the OpenAI-compatible field accepted by the backend."""
-    # DeepSeek documents max_tokens and ignores max_completion_tokens.
-    key = "max_tokens" if backend == "deepseek" else "max_completion_tokens"
+    # DeepSeek and Ollama document/require max_tokens and ignore max_completion_tokens (#3982).
+    key = "max_tokens" if backend in ("deepseek", "ollama") else "max_completion_tokens"
     return {key: max_tokens}
 
 
@@ -1501,7 +1502,7 @@ def _call_ollama_native(
 
     extra = kwargs.get("extra_body", {})
     options = dict(extra.get("options", {}))
-    options["num_predict"] = kwargs["max_completion_tokens"]
+    options["num_predict"] = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
     if "temperature" in kwargs:
         options["temperature"] = kwargs["temperature"]
     if "seed" in kwargs:
@@ -2795,11 +2796,15 @@ def extract_corpus_parallel(
         - `max_retry_depth=0` disables retries of BOTH kinds: no bisection
           and no same-chunk hollow retry, so a chunk costs exactly one call.
 
-    `on_chunk_done(idx, total, chunk_result)` fires once per chunk as it
+    `on_chunk_done(idx, total, chunk_result, allowed=...)` fires once per chunk as it
     completes (in completion order, not submission order). `idx` is the
     chunk's submission index so callers can correlate progress. The
-    callback fires once per top-level chunk; recursive splits are merged
-    transparently before the callback is invoked.
+    `allowed` argument provides the list of `Path` objects in the chunk
+    (matching the allowlist used for incremental caching), so callers saving or
+    scoping results do not accidentally clobber or drop files (#3982). Callbacks
+    accepting only 3 arguments `(idx, total, chunk_result)` are supported for
+    backwards compatibility. The callback fires once per top-level chunk;
+    recursive splits are merged transparently before the callback is invoked.
 
     Returns merged dict with nodes, edges, hyperedges, input_tokens,
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
@@ -2851,6 +2856,48 @@ def extract_corpus_parallel(
                 deep_mode=deep_mode,
             )
             result["elapsed_seconds"] = round(time.time() - t0, 2)
+            # Edge source_file backfill & single-file chunk attribution (#3982):
+            # Local/weak LLMs often omit source_file on edges, or invent paths.
+            # 1. In a single-file chunk, any item missing source_file belongs to that file.
+            # 2. In multi-file chunks, backfill edge source_file from its source/target node.
+            # 3. If edges remain without source_file, warn with count.
+            if result:
+                lone_file = str(unit_path(chunk[0])) if len(chunk) == 1 else None
+                nodes = result.get("nodes", [])
+                edges = result.get("edges", [])
+                hyperedges = result.get("hyperedges", [])
+
+                if lone_file:
+                    for n in nodes:
+                        if not n.get("source_file"):
+                            n["source_file"] = lone_file
+                    for h in hyperedges:
+                        if not h.get("source_file"):
+                            h["source_file"] = lone_file
+
+                node_src_map = {
+                    n["id"]: n["source_file"]
+                    for n in nodes
+                    if n.get("id") and n.get("source_file")
+                }
+                missing_edges = 0
+                for e in edges:
+                    if not e.get("source_file"):
+                        if lone_file:
+                            e["source_file"] = lone_file
+                        else:
+                            src_node_file = node_src_map.get(e.get("source")) or node_src_map.get(e.get("target"))
+                            if src_node_file:
+                                e["source_file"] = src_node_file
+                            else:
+                                missing_edges += 1
+                if missing_edges:
+                    warnings.warn(
+                        f"[graphify] {missing_edges} edge(s) in chunk {idx + 1} had no source_file "
+                        "and could not be attributed from node endpoints",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
             return idx, result, None
         except Exception as exc:  # noqa: BLE001 — caller-facing surface, log + continue
             return idx, None, exc
@@ -2940,6 +2987,23 @@ def extract_corpus_parallel(
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
 
+    def _notify_chunk_done(idx: int, total: int, result: dict, chunk: "list[Path | FileSlice]") -> None:
+        if callable(on_chunk_done):
+            allowed = [unit_path(item) for item in chunk]
+            import inspect
+            try:
+                sig = inspect.signature(on_chunk_done)
+                accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                if "allowed" in sig.parameters or accepts_kwargs:
+                    on_chunk_done(idx, total, result, allowed=allowed)
+                else:
+                    on_chunk_done(idx, total, result)
+            except (ValueError, TypeError):
+                try:
+                    on_chunk_done(idx, total, result, allowed=allowed)
+                except TypeError:
+                    on_chunk_done(idx, total, result)
+
     workers = max(1, min(max_concurrency, total))
     if workers == 1:
         # Avoid thread pool overhead for single-worker runs (and keep
@@ -2954,8 +3018,7 @@ def extract_corpus_parallel(
             assert result is not None
             _merge_into(merged, result)
             _checkpoint_chunk(idx, result, chunk)
-            if callable(on_chunk_done):
-                on_chunk_done(idx, total, result)
+            _notify_chunk_done(idx, total, result, chunk)
     else:
         # Merge in deterministic submission order, NOT completion order. Merging
         # as chunks finish makes the node/edge ordering in the returned corpus
@@ -2980,8 +3043,7 @@ def extract_corpus_parallel(
                 assert result is not None
                 results_by_idx[idx] = result
                 _checkpoint_chunk(idx, result, chunks[idx])
-                if callable(on_chunk_done):
-                    on_chunk_done(idx, total, result)
+                _notify_chunk_done(idx, total, result, chunks[idx])
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
 

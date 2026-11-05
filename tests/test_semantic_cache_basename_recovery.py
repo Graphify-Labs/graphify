@@ -89,3 +89,20 @@ def test_unscoped_call_with_no_allowlist_is_unaffected(tmp_path):
     cached = load_cached(real, root=tmp_path, kind="semantic")
     assert cached is not None
     assert {n["id"] for n in cached["nodes"]} == {"n1"}
+
+
+def test_case_insensitive_basename_recovery(tmp_path):
+    # #3982: on case-preserving or cross-platform runs, the model can emit
+    # "Lost_Dir/WEIRD_NAMED_FILE.PY" or "weird_named_file.PY".
+    real = tmp_path / "sub" / "weird_named_file.py"
+    real.parent.mkdir(parents=True)
+    real.write_text("def f(): pass\n")
+
+    nodes = [{"id": "n1", "label": "f", "source_file": "lost_dir/WEIRD_NAMED_FILE.py"}]
+    saved = save_semantic_cache(nodes, [], root=tmp_path, allowed_source_files=[real])
+    assert saved == 1
+
+    cached = load_cached(real, root=tmp_path, kind="semantic")
+    assert cached is not None
+    assert {n["id"] for n in cached["nodes"]} == {"n1"}
+
