@@ -214,6 +214,13 @@ def build_tree(
         raise ValueError("--max-children must be nonnegative")
     directory_ids: set[int] = set()
     nodes: List[Dict[str, Any]] = list(graph.get("nodes", []))
+    for n in nodes:
+        if not n.get("source_file"):
+            for alias in ("src", "file", "path", "filepath"):
+                val = n.get(alias)
+                if isinstance(val, str) and val.strip():
+                    n["source_file"] = val.strip()
+                    break
     file_nodes = [n for n in nodes if n.get("source_file")]
     if not file_nodes:
         return {"name": "(empty graph)", "total_count": 0, "children": []}
