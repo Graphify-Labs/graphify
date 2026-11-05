@@ -71,7 +71,8 @@ def _read_graph(graph_path: str) -> nx.Graph:
         data = {**data, "multigraph": True}
     try:
         from graphify.build import graph_has_legacy_ids as _legacy
-        if _legacy(data.get("nodes", [])):
+        from graphify.build import legacy_id_source_prefix as _legacy_prefix
+        if _legacy(data.get("nodes", []), source_prefix=_legacy_prefix(safe)):
             print(
                 "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
                 "rebuild with `graphify extract --force` for path-qualified IDs.",
