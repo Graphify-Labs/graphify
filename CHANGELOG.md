@@ -6,6 +6,28 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 - Fix: **explain** neighbour ranking prefers EXTRACTED edges and lower-degree nodes, so a growing graph's hubs no longer crowd the default top-20 list (#3143).
 
+## 0.9.103 (2026-11-05)
+
+- Fix: **markdown** a code span written as a backslash namespace (`\Foo\Bar`) or a type-qualified member (`Type::member`) is recognised as a symbol mention and resolves to the real node when one exists, instead of being silently dropped; an absent chain mints nothing (#4610, #4695, thanks @viwe-monai).
+- Fix: **detect** `extract` warns loudly when a large share of the corpus has no supported extractor (a 20-file floor and a 20% threshold), instead of only printing a bare unclassified count; a normal mixed project stays silent (#2942, #4646, thanks @ayushcodes10).
+- Fix: **thread-safety** the ambient scan root is held in a `ContextVar` instead of a module global, so concurrent library/async callers extracting different roots no longer clobber each other's root; the single-threaded CLI is unchanged (#4602, #4694, thanks @WyattAu).
+- Feat: **tree** `graphify export tree` caps how many children a directory lists (`--max-children`, default 200) while `total_count` still reports the full count, so a directory with thousands of entries no longer renders them all (#4766, #4768, thanks @oleksii-tumanov).
+- Fix: **install** the Pi project skill is written to `.pi/skills`, where Pi reads it, instead of a `.pi/agent/skills` path it never looks at; uninstall is symmetric (#5011, #5012, thanks @Vivek1898).
+- Internal: stage fake install bundles in a temp package root and fail loudly (not skip) on a wheel-build error, and serialise both wheel builders under a shared lock so concurrent runs on one checkout do not collide (#4603, #4664, thanks @wanjinhao1); characterize `_is_stale` across changed/unchanged/vanished sources (#4996, thanks @PratikDhanave); isolate the ambient venv/PATH in the `_detect_run` hook test (#4991, thanks @HhH666-ux).
+
+- Fix: **solidity** a library call (`Lib.f()`, including an aliased import) and an `emit`/`revert`/`require` naming a declared event or error now link to the member they name instead of producing no edge; resolution is gated to a single visible type whose unique name/arity member matches, so a builtin `require` or an ambiguous qualifier is left unresolved (#5001, #5005, thanks @rohit-jsfreaky).
+- Fix: **csharp** preprocessor directives and `#if` branches that derail tree-sitter are blanked before parsing (byte-length preserving, so line and column numbers do not move), so a directive no longer closes the enclosing class early and orphans later members or drops their calls; the first `#if` branch and distinct framework-fallback branches are kept (#5003, thanks @rohit-jsfreaky).
+- Fix: **python** a bare builtin-named call (`raise NotImplementedError(...)`, `list(...)`) no longer binds to a same-named class in another module unless that caller imported the symbol; an imported homonym still resolves (#4989, #4999, thanks @Deepjyoti-Sarmah).
+- Fix: **typescript** a type-position `import('mod')` expression (a parameter/alias/`typeof`/generic-constraint annotation) no longer emits a spurious `dynamic_import` runtime edge; a real runtime `import('mod')` in the same file still does (#4992, #4998, thanks @mathewgeejo).
+- Fix: **resolution** a call inside a top-level `def _main()` is attributed to `_main`, not the public `main` it collides with after id normalization; the fix matches only the underscore-collision salt, so a class member's type reference is not misattributed to a sibling method (#4994, #4997, thanks @sunhouy).
+- Fix: **yaml** a `<<` merge sequence gives the earlier anchor precedence for a duplicated key, matching the YAML merge spec and PyYAML, so the winning key carries its correct source line (#4995, thanks @PratikDhanave).
+- Fix: **markdown** a dotted mention whose method name is a language builtin (`Repository.open`) is no longer dropped; only a bare builtin name is skipped, and no spurious mention is minted (#4990, thanks @PratikDhanave).
+- Fix: **hooks** a Bash file read (`cat`, `head`, `tail`, `sed -n`, `nl`) of an in-project code file gets the same graph read-nudge a Read tool does (nudge-only, never a strict deny); writes, stdin, heredocs, docs and globs stay silent (#5010, thanks @rohit-jsfreaky).
+- Fix: **hooks** the once-per-session nudge budget is restored after a Claude Code compaction (a `SessionStart` with `source=compact`), so orientation can re-fire once the earlier nudges have left the model's context (#5008, thanks @rohit-jsfreaky).
+- Fix: **hooks** the toplevel-anchor logic keeps working when `CDPATH` is exported; an exported `CDPATH` was corrupting the relative `.git` capture and silently skipping the post-commit/checkout rebuild (#4977, #4988, thanks @HhH666-ux).
+- Perf: **update** the watch reconcile pass resolves AST ownership once per file instead of re-reading each header once per node, with identical graph output (#4978, #4986, thanks @Deepjyoti-Sarmah).
+- **AST cache schema bumped to 39** for the C# (#5003), Solidity (#5001, #5005), YAML (#4995) and Markdown (#4695) extractor fixes; warm caches re-run the affected extractions.
+
 ## 0.9.102 (2026-11-03)
 
 - Perf: **update** `graphify update` re-extracts only the files whose content changed since the last build (derived from the manifest inside the lock), instead of re-running the whole pipeline over the corpus for a single edit; the resulting graph is identical to a full rebuild, including cross-file edges from unchanged files into a changed one, and deletions (#4740, #4800, #4801, thanks @Deepjyoti-Sarmah).
@@ -34,6 +56,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **build** the write guard no longer counts an intentional ghost fold (a #1145 same-file twin, #3344 doc-names-a-file, or #3705 method ghost folded into its surviving twin) as a dropped node on the `build_merge` path; a genuine drop whose survivor is also gone is still refused (#4955, #4957, thanks @Deepjyoti-Sarmah).
 - Fix: **extract** paths skipped by ignore rules are reported in the extract summary (bounded, sorted, root-relative, with a VCS-aware hint), surfacing the already-collected ignore list without changing the graph (#4965, #4969, thanks @xiongjianxu).
 - Perf: **resolution** the #3252 cross-file repoint indexes edges by source file instead of scanning every corpus edge per importing file, cutting resolution time on large graphs with no change to the resulting edges (#4980, #4981, thanks @jinsoo).
+- Fix: **python** a bare builtin name (`NotImplementedError`, `TimeoutError`, `ConnectionError`, …) no longer links to a package class of the same name when the calling module never imports it; the edge is kept (and stays EXTRACTED) only when the caller imports that exact symbol, so a module-level import of some other name from the same file can no longer certify it (#4989).
 - **AST cache schema bumped to 37** for the Go (#4966, #4853, #4934), Kotlin (#4956), Python (#4972) and Solidity (#4985) extractor fixes; warm caches re-run the affected extractions.
 
 ## 0.9.101 (2026-11-02)

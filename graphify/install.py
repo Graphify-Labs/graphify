@@ -237,6 +237,14 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "pi":
+        # Pi reads project skills from ./.pi/skills; ~/.pi/agent/skills is the
+        # user-scope path only. Writing the $HOME shape into a project left the
+        # skill where Pi never looks, with no error (#5011).
+        if project:
+            return (project_dir or Path(".")) / ".pi" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / _PLATFORM_CONFIG["pi"]["skill_dst"]
+
     if platform_name == "agents":
         # The generic Agent-Skills target: project ./.agents/skills, global the
         # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
@@ -592,6 +600,23 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
          "hooks": [{"type": "command", "command": search_cmd, "timeout": 10}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd, "timeout": 10}]},
+    ]
+def _claude_sessionstart_hooks(project: bool = False) -> "list[dict]":
+    """graphify's Claude Code SessionStart hook: matcher "compact" only.
+
+    Claude Code fires SessionStart with source "compact" after an auto or manual
+    compaction, keeping the session id. The model has lost the earlier nudges by
+    then, but their per-session budget is spent, so `hook-guard compact` resets
+    it (and the strict-mode deny marker) and restates the graph in one line.
+    Same command form and timeout as _claude_pretooluse_hooks; the command
+    carries "hook-guard", so the install/uninstall filters recognise it.
+    """
+    exe = _resolve_graphify_exe(project=project)
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return [
+        {"matcher": "compact",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard compact", "timeout": 10}]},
     ]
 # Tokens that only ever appear in a command graphify itself writes: its
 # `hook-guard <search|read|gemini>` and `hook-check` subcommands. Legacy
@@ -2341,11 +2366,18 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
+    session_start = hooks.setdefault("SessionStart", [])
+    if not isinstance(session_start, list):
+        _refuse_to_modify(settings_path)
+
     hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
+    hooks["SessionStart"] = _strip_graphify_hooks(session_start)
+    hooks["SessionStart"].extend(_claude_sessionstart_hooks(project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
     print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
+    print("  .claude/settings.json  ->  SessionStart hook registered (compact: resets the nudge budget)")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the graphify PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -2357,22 +2389,31 @@ def _uninstall_claude_hook(project_dir: Path) -> None:
     for name in ("settings.json", "settings.local.json"):
         _strip_graphify_hook(claude_dir / name)
 def _strip_graphify_hook(settings_path: Path) -> None:
-    """Drop graphify PreToolUse hooks from a single Claude settings file, if present."""
+    """Drop graphify PreToolUse and SessionStart hooks from a single Claude
+    settings file, if present."""
     if not settings_path.exists():
         return
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return
-    pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    if not isinstance(pre_tool, list):
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
         return
-    filtered = _strip_graphify_hooks(pre_tool)
-    if filtered == pre_tool:
+    removed = []
+    for event in ("PreToolUse", "SessionStart"):
+        groups = hooks.get(event, [])
+        if not isinstance(groups, list):
+            continue
+        filtered = _strip_graphify_hooks(groups)
+        if filtered != groups:
+            hooks[event] = filtered
+            removed.append(event)
+    if not removed:
         return
-    settings["hooks"]["PreToolUse"] = filtered
     _write_settings_with_backup(settings_path, settings)
-    print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
+    for event in removed:
+        print(f"  .claude/{settings_path.name}  ->  {event} hook removed")
 
 
 def _unsafe_purge_reason(out: Path, project_dir: Path) -> str | None:

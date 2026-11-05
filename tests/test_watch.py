@@ -201,6 +201,22 @@ def test_rebuild_code_reports_unclassified_files(tmp_path, capsys):
     assert "Util.lean" in out
 
 
+def test_rebuild_code_warns_loudly_when_most_of_the_corpus_is_unclassified(tmp_path, capsys):
+    """#2942: a bare count reads as routine even when it is most of the
+    corpus. The update/watch rebuild path must carry detect()'s louder
+    warning through to its own console output, same as `graphify extract`."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for i in range(30):
+        (corpus / f"doc{i}.xml").write_text("<root/>\n", encoding="utf-8")
+    for i in range(10):
+        (corpus / f"code{i}.py").write_text(f"def f{i}(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = capsys.readouterr().out
+    assert "warning: 30 of 40 files seen (75%)" in out
+
+
 # --- watch() import error without watchdog ---
 
 def test_check_update_no_flag_returns_true(tmp_path):
