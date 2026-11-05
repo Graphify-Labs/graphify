@@ -30,7 +30,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from html import escape
 
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, write_text_atomic
 
 
 # ──────────────────────────────────────────────
@@ -1991,14 +1991,14 @@ def write_callflow_html(
 </html>""")
 
     # Write output
-    output = "\n".join(html)
+    rendered_html = "\n".join(html)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(output, encoding="utf-8")
+    write_text_atomic(output_path, rendered_html)
 
     # Summary
-    mermaid_count = output.count('<div class="mermaid">')
-    table_count = output.count('<table class="call-table">')
-    section_count = output.count('<h2 id=')
+    mermaid_count = rendered_html.count('<div class="mermaid">')
+    table_count = rendered_html.count('<table class="call-table">')
+    section_count = rendered_html.count('<h2 id=')
 
     if verbose:
         print(f"Call-flow HTML written: {output_path}")

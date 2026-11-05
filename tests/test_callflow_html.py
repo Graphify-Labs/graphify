@@ -1,7 +1,10 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from graphify.callflow_html import derive_sections_from_communities, write_callflow_html
 
@@ -345,3 +348,103 @@ def test_call_table_rows_without_whole_graph_params_unchanged(tmp_path):
     # semantics other call sites may rely on).
     export_node = [n for n in nodes if n["id"] == "export"]
     assert "External entry" in generate_call_table_rows(export_node, section_edges, "en")
+
+
+def test_write_callflow_html_preserves_existing_on_staging_write_failure(tmp_path, monkeypatch):
+    """#4562: When staging the new callflow HTML fails during writing to the temporary file,
+    the existing HTML report must remain byte-for-byte unchanged and temporary files cleaned up."""
+    out = _make_graphify_out(tmp_path)
+    report_path = out / "callflow.html"
+    original_bytes = b"<!-- PREVIOUS CALLFLOW HTML -->\n<body>Old Content</body>\n"
+    report_path.write_bytes(original_bytes)
+
+    real_fdopen = os.fdopen
+
+    def faulty_fdopen(fd, *args, **kwargs):
+        raw = real_fdopen(fd, *args, **kwargs)
+
+        class FaultyWriter:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                raw.close()
+
+            def write(self, data):
+                raise OSError("simulated staging write failure")
+
+        return FaultyWriter()
+
+    monkeypatch.setattr("graphify.paths.os.fdopen", faulty_fdopen)
+
+    with pytest.raises(OSError, match="simulated staging write failure"):
+        write_callflow_html(
+            tmp_path,
+            output="graphify-out/callflow.html",
+            max_sections=4,
+        )
+
+    assert report_path.read_bytes() == original_bytes, "previous report was modified on write failure"
+    assert not any(p.name.startswith(".gfy-") or p.name.endswith(".tmp") for p in out.iterdir()), (
+        f"abandoned temporary file leaked in {out}: {[p.name for p in out.iterdir()]}"
+    )
+
+
+def test_write_callflow_html_preserves_existing_on_staging_close_failure(tmp_path, monkeypatch):
+    """#4562: When staging the new callflow HTML fails during flush/close of the temporary file,
+    the existing HTML report must remain byte-for-byte unchanged and temporary files cleaned up."""
+    out = _make_graphify_out(tmp_path)
+    report_path = out / "callflow.html"
+    original_bytes = b"<!-- PREVIOUS CALLFLOW HTML -->\n<body>Old Content</body>\n"
+    report_path.write_bytes(original_bytes)
+
+    real_fdopen = os.fdopen
+
+    def faulty_close_fdopen(fd, *args, **kwargs):
+        raw = real_fdopen(fd, *args, **kwargs)
+
+        class FaultyCloser:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                raw.close()
+                raise OSError("simulated staging close failure")
+
+            def write(self, data):
+                return raw.write(data)
+
+        return FaultyCloser()
+
+    monkeypatch.setattr("graphify.paths.os.fdopen", faulty_close_fdopen)
+
+    with pytest.raises(OSError, match="simulated staging close failure"):
+        write_callflow_html(
+            tmp_path,
+            output="graphify-out/callflow.html",
+            max_sections=4,
+        )
+
+    assert report_path.read_bytes() == original_bytes, "previous report was modified on close failure"
+    assert not any(p.name.startswith(".gfy-") or p.name.endswith(".tmp") for p in out.iterdir()), (
+        f"abandoned temporary file leaked in {out}: {[p.name for p in out.iterdir()]}"
+    )
+
+
+def test_write_callflow_html_replaces_existing_report_successfully(tmp_path):
+    """#4562: Replacing an existing callflow HTML report completes atomically and updates content."""
+    out = _make_graphify_out(tmp_path)
+    report_path = out / "callflow.html"
+    report_path.write_text("old version", encoding="utf-8")
+
+    html_path = write_callflow_html(
+        tmp_path,
+        output="graphify-out/callflow.html",
+        max_sections=4,
+    )
+
+    assert html_path == report_path
+    new_content = html_path.read_text(encoding="utf-8")
+    assert "mermaid" in new_content
+    assert "old version" not in new_content
+    assert not any(p.name.startswith(".gfy-") or p.name.endswith(".tmp") for p in out.iterdir())
