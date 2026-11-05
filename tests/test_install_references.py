@@ -415,6 +415,12 @@ def _build_wheel_names(repo_root):
     import tempfile
     import zipfile
 
+    # Share the serialisation that test_wheel_packaging uses: both builders run
+    # `python -m build --no-isolation`, which writes the checkout's shared
+    # `build/` dir, so two concurrent pytest runs on one checkout must not build
+    # at the same time (#4603).
+    from test_wheel_packaging import _wheel_build_lock
+
     try:
         import build  # noqa: F401
     except ImportError:
@@ -423,7 +429,7 @@ def _build_wheel_names(repo_root):
             "installed; it is a declared dev dependency (run `uv sync --all-extras`)"
         )
 
-    with tempfile.TemporaryDirectory() as outdir:
+    with tempfile.TemporaryDirectory() as outdir, _wheel_build_lock():
         result = subprocess.run(
             [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", outdir, str(repo_root)],
             capture_output=True,
