@@ -15,7 +15,11 @@ _GLOBAL_MANIFEST = _GLOBAL_DIR / "global-manifest.json"
 def _load_manifest() -> dict:
     if _GLOBAL_MANIFEST.exists():
         try:
-            return json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
+            manifest = json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
+            repos = manifest.get("repos") if isinstance(manifest, dict) else None
+            if not isinstance(repos, dict) or any(not isinstance(info, dict) for info in repos.values()):
+                raise ValueError("expected a manifest object with a repos map of repository objects")
+            return manifest
         except Exception as exc:
             # Don't silently wipe the user's manifest on a parse error: that
             # deletes every tracked repo. Back the bad file up and surface the
