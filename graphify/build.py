@@ -683,7 +683,7 @@ def _fold_node_aliases(node: dict) -> None:
     if not node.get("label") and isinstance(node.get("name"), str) and node["name"]:
         node["label"] = node.pop("name")
     if not node.get("source_file"):
-        for alias in ("file", "path", "filepath"):
+        for alias in ("file", "path", "filepath", "src"):
             val = node.get(alias)
             if isinstance(val, str) and val.strip():
                 node["source_file"] = node.pop(alias)
