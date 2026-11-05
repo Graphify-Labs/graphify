@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **explain** neighbour ranking prefers EXTRACTED edges and lower-degree nodes, so a growing graph's hubs no longer crowd the default top-20 list (#3143).
+
 ## 0.9.103 (2026-11-05)
 
 - Fix: **markdown** a code span written as a backslash namespace (`\Foo\Bar`) or a type-qualified member (`Type::member`) is recognised as a symbol mention and resolves to the real node when one exists, instead of being silently dropped; an absent chain mints nothing (#4610, #4695, thanks @viwe-monai).
