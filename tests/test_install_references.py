@@ -410,16 +410,12 @@ def _build_wheel_names(repo_root):
     declared dev dependency, so an environment that runs this test is expected to
     have it. A silent skip is how a packaging regression slips through CI.
     """
+    import contextlib
+    import hashlib
     import subprocess
     import sys
     import tempfile
     import zipfile
-
-    # Share the serialisation that test_wheel_packaging uses: both builders run
-    # `python -m build --no-isolation`, which writes the checkout's shared
-    # `build/` dir, so two concurrent pytest runs on one checkout must not build
-    # at the same time (#4603).
-    from test_wheel_packaging import _wheel_build_lock
 
     try:
         import build  # noqa: F401
@@ -428,6 +424,26 @@ def _build_wheel_names(repo_root):
             "the 'build' module is required for the wheel-content test but is not "
             "installed; it is a declared dev dependency (run `uv sync --all-extras`)"
         )
+
+    # Serialise with the other `python -m build --no-isolation` builder
+    # (test_wheel_packaging): both write the checkout's shared `build/` dir, so
+    # two concurrent pytest runs on one checkout must not build at once (#4603).
+    # Keyed by repo path in the temp dir; fcntl is released by the OS on kill.
+    @contextlib.contextmanager
+    def _wheel_build_lock():
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        key = hashlib.sha256(str(repo_root).encode()).hexdigest()[:16]
+        lock_path = Path(tempfile.gettempdir()) / f"graphify-wheel-build-{key}.lock"
+        with open(lock_path, "a+") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     with tempfile.TemporaryDirectory() as outdir, _wheel_build_lock():
         result = subprocess.run(

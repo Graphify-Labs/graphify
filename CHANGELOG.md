@@ -2,7 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## 0.9.103 (2026-11-04)
+## 0.9.103 (2026-11-05)
+
+- Fix: **markdown** a code span written as a backslash namespace (`\Foo\Bar`) or a type-qualified member (`Type::member`) is recognised as a symbol mention and resolves to the real node when one exists, instead of being silently dropped; an absent chain mints nothing (#4610, #4695, thanks @viwe-monai).
+- Fix: **detect** `extract` warns loudly when a large share of the corpus has no supported extractor (a 20-file floor and a 20% threshold), instead of only printing a bare unclassified count; a normal mixed project stays silent (#2942, #4646, thanks @ayushcodes10).
+- Fix: **thread-safety** the ambient scan root is held in a `ContextVar` instead of a module global, so concurrent library/async callers extracting different roots no longer clobber each other's root; the single-threaded CLI is unchanged (#4602, #4694, thanks @WyattAu).
+- Feat: **tree** `graphify export tree` caps how many children a directory lists (`--max-children`, default 200) while `total_count` still reports the full count, so a directory with thousands of entries no longer renders them all (#4766, #4768, thanks @oleksii-tumanov).
+- Fix: **install** the Pi project skill is written to `.pi/skills`, where Pi reads it, instead of a `.pi/agent/skills` path it never looks at; uninstall is symmetric (#5011, #5012, thanks @Vivek1898).
+- Internal: stage fake install bundles in a temp package root and fail loudly (not skip) on a wheel-build error, and serialise both wheel builders under a shared lock so concurrent runs on one checkout do not collide (#4603, #4664, thanks @wanjinhao1); characterize `_is_stale` across changed/unchanged/vanished sources (#4996, thanks @PratikDhanave); isolate the ambient venv/PATH in the `_detect_run` hook test (#4991, thanks @HhH666-ux).
 
 - Fix: **solidity** a library call (`Lib.f()`, including an aliased import) and an `emit`/`revert`/`require` naming a declared event or error now link to the member they name instead of producing no edge; resolution is gated to a single visible type whose unique name/arity member matches, so a builtin `require` or an ambiguous qualifier is left unresolved (#5001, #5005, thanks @rohit-jsfreaky).
 - Fix: **csharp** preprocessor directives and `#if` branches that derail tree-sitter are blanked before parsing (byte-length preserving, so line and column numbers do not move), so a directive no longer closes the enclosing class early and orphans later members or drops their calls; the first `#if` branch and distinct framework-fallback branches are kept (#5003, thanks @rohit-jsfreaky).
@@ -15,7 +22,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **hooks** the once-per-session nudge budget is restored after a Claude Code compaction (a `SessionStart` with `source=compact`), so orientation can re-fire once the earlier nudges have left the model's context (#5008, thanks @rohit-jsfreaky).
 - Fix: **hooks** the toplevel-anchor logic keeps working when `CDPATH` is exported; an exported `CDPATH` was corrupting the relative `.git` capture and silently skipping the post-commit/checkout rebuild (#4977, #4988, thanks @HhH666-ux).
 - Perf: **update** the watch reconcile pass resolves AST ownership once per file instead of re-reading each header once per node, with identical graph output (#4978, #4986, thanks @Deepjyoti-Sarmah).
-- **AST cache schema bumped to 38** for the C# (#5003), Solidity (#5001, #5005) and YAML (#4995) extractor fixes; warm caches re-run the affected extractions.
+- **AST cache schema bumped to 39** for the C# (#5003), Solidity (#5001, #5005), YAML (#4995) and Markdown (#4695) extractor fixes; warm caches re-run the affected extractions.
 
 ## 0.9.102 (2026-11-03)
 
