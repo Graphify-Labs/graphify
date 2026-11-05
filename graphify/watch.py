@@ -2430,13 +2430,14 @@ def _rebuild_code(
         # records the ast_hash of every file the last build extracted, so the
         # change set can be read off it instead of re-extracting the whole
         # corpus. `detected` was computed above for the full path anyway, so this
-        # costs one manifest read, not a second scan.
+        # costs one manifest read, not a second scan. A manifest cannot
+        # restore unchanged nodes when the graph it describes is missing.
         #
         # A manifest that is missing, unreadable or empty leaves changed_paths
         # None — the full path. "No rows" means the baseline is unknown, and the
         # only safe reading of unknown is "do the work"; `detect_incremental`
         # makes the same call for `graphify extract` (#1925).
-        if incremental and changed_paths is None and not force:
+        if incremental and changed_paths is None and not force and (out / "graph.json").is_file():
             manifest = load_manifest(str(out / "manifest.json"), root=watch_root)
             if manifest:
                 _changed_buckets, _unchanged_buckets = classify_manifest_files(
