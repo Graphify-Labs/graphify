@@ -2336,6 +2336,7 @@ def _rebuild_code(
             classify_manifest_deletions,
             classify_manifest_files,
             detect,
+            is_resolution_input,
             load_manifest,
         )
         from graphify.build import build_from_json, _is_ast_tier, _norm_source_file as _nsf
@@ -2419,12 +2420,13 @@ def _rebuild_code(
         if incremental and changed_paths is None and not force:
             manifest = load_manifest(str(out / "manifest.json"), root=watch_root)
             if manifest:
+                resolution_inputs = detected.get("resolution_inputs") or []
                 _changed_buckets, _unchanged_buckets = classify_manifest_files(
-                    detected["files"], manifest, kind="ast"
+                    {**detected["files"], "resolution_inputs": resolution_inputs},
+                    manifest,
+                    kind="ast",
                 )
-                derived = [
-                    Path(f) for bucket in _changed_buckets.values() for f in bucket
-                ]
+                modified = [f for bucket in _changed_buckets.values() for f in bucket]
                 # Rows that left the corpus belong in the change set too. A row
                 # whose file is gone from disk must reach the deleted branch
                 # below, or its nodes survive and the shrink guard refuses the
@@ -2432,24 +2434,33 @@ def _rebuild_code(
                 # A row that is still alive but out of scan is an ignore-rule
                 # change, which the corpus sweep handles on positive evidence
                 # alone (#2495), so it stays out of the change set.
-                _deleted_rows, _excluded_rows = classify_manifest_deletions(
+                deleted_rows, excluded_rows = classify_manifest_deletions(
                     manifest,
-                    (f for bucket in detected["files"].values() for f in bucket),
+                    [
+                        *resolution_inputs,
+                        *(f for bucket in detected["files"].values() for f in bucket),
+                    ],
                     root=watch_root,
                 )
-                derived.extend(Path(f) for f in _deleted_rows)
-                changed_paths = derived
-                _scanned = sum(len(v) for v in detected["files"].values())
-                if derived:
+                if any(is_resolution_input(f) for f in (*modified, *deleted_rows, *excluded_rows)):
+                    # An unchanged importer may resolve differently when its
+                    # config or workspace layout changes. Re-resolve the corpus.
                     print(
-                        f"[graphify watch] Incremental: re-extracting {len(derived)} "
-                        f"of {_scanned} scanned files that changed since the last build."
+                        "[graphify watch] JS/TS resolution inputs changed; rebuilding the full code graph."
                     )
                 else:
-                    print(
-                        f"[graphify watch] Incremental: none of the {_scanned} scanned "
-                        "files differ from the last build."
-                    )
+                    changed_paths = [Path(f) for f in (*modified, *deleted_rows)]
+                    scanned = sum(len(v) for v in detected["files"].values())
+                    if changed_paths:
+                        print(
+                            f"[graphify watch] Incremental: re-extracting {len(changed_paths)} "
+                            f"of {scanned} scanned files that changed since the last build."
+                        )
+                    else:
+                        print(
+                            f"[graphify watch] Incremental: none of the {scanned} scanned "
+                            "files differ from the last build."
+                        )
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
