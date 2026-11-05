@@ -182,10 +182,16 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
 _MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
 
 
-# The in-flight scan root now lives on extractors.base (correct import
-# direction: extract.py -> extractors/, never back), so a rename can no longer
-# silently disable link resolution the way the old getattr(graphify.extract, …,
-# None) could (#3666).
+# The in-flight scan root is managed via extractors.base 
+# \(correct import direction: extract.py → extractors/, never back\),
+# so a rename can no longer silently disable link resolution 
+# the way the old getattr(graphify.extract, …, None) could \(#3666\).
+# 
+# Previously, markdown.py had a function-local `import graphify.extract` 
+# + `getattr(..., None)` that created a package→parent dependency. 
+# The fix moves the ambient scan root to extractors.base with 
+# `set_active_scan_root()` / `active_scan_root()`, so extractors 
+# read it in the correct import direction.
 from graphify.extractors.base import active_scan_root as _active_scan_root
 
 
