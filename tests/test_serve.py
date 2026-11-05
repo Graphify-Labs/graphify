@@ -1022,6 +1022,24 @@ def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeyp
     assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
 
 
+def test_pick_seeds_preserves_per_term_guarantee_for_distinct_node_with_shared_label():
+    """A candidate that covers an uncovered query term must be kept even if it
+    shares a normalized label with an already-seeded node (#5027)."""
+    G = nx.DiGraph()
+    G.add_node("hooks_pre", label="PreToolUse", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("hooks_run", label=".run", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("alpha_pre", label="PreToolUse", source_file="plugins/core-alpha/lib/alpha/pre_tool_use.rb")
+    G.add_edge("hooks_pre", "hooks_run", relation="contains", confidence="EXTRACTED")
+
+    terms = ["core", "alpha", "PreToolUse", "hook", "handler"]
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term, term_order=qs.term_order)
+
+    assert "alpha_pre" in seeds, f"expected alpha_pre to be preserved as seed for term 'alpha': {seeds}"
+    assert "hooks_pre" in seeds
+    assert "hooks_run" in seeds
+
+
 def test_score_nodes_scores_identical_labels_equally():
     """Guard against a per-label multiplicity penalty leaking into _score_nodes
     (shared by shortest_path / explain endpoint resolution): two nodes with the
