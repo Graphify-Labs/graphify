@@ -2053,7 +2053,10 @@ def dispatch_command(cmd: str) -> None:
             # direction of a link persisted in flipped endpoint order.
             try:
                 from graphify.build import graph_has_legacy_ids as _legacy
-                _legacy_ids = _legacy(_raw.get("nodes", []))
+                from graphify.build import legacy_id_source_prefix as _legacy_prefix
+                _legacy_ids = _legacy(
+                    _raw.get("nodes", []), source_prefix=_legacy_prefix(gp)
+                )
             except Exception:
                 _legacy_ids = False
             _rows = consumed_graph_rows(dict(_raw, links=_raw.get("links", [])))
