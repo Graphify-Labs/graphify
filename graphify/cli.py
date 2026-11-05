@@ -1873,9 +1873,35 @@ def dispatch_command(cmd: str) -> None:
                 elif a.startswith("--env-key="):
                     env_key = a.split("=", 1)[1]; i += 1
                 elif a == "--pricing-input" and i + 1 < len(args):
-                    pricing_input = float(args[i + 1]); i += 2
+                    try:
+                        pricing_input = float(args[i + 1])
+                    except ValueError:
+                        print(f"Error: invalid float for --pricing-input: '{args[i + 1]}'", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif a.startswith("--pricing-input="):
+                    val = a.split("=", 1)[1]
+                    try:
+                        pricing_input = float(val)
+                    except ValueError:
+                        print(f"Error: invalid float for --pricing-input: '{val}'", file=sys.stderr)
+                        sys.exit(1)
+                    i += 1
                 elif a == "--pricing-output" and i + 1 < len(args):
-                    pricing_output = float(args[i + 1]); i += 2
+                    try:
+                        pricing_output = float(args[i + 1])
+                    except ValueError:
+                        print(f"Error: invalid float for --pricing-output: '{args[i + 1]}'", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif a.startswith("--pricing-output="):
+                    val = a.split("=", 1)[1]
+                    try:
+                        pricing_output = float(val)
+                    except ValueError:
+                        print(f"Error: invalid float for --pricing-output: '{val}'", file=sys.stderr)
+                        sys.exit(1)
+                    i += 1
                 else:
                     i += 1
             if not base_url or not default_model or not env_key:
