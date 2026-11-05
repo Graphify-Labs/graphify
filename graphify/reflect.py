@@ -860,7 +860,8 @@ def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
     for nid, entry in nodes.items():
         if not isinstance(entry, dict):
             continue
-        if not isinstance(entry.get("source_file", ""), str):
+        source = entry.get("source_file")
+        if source is not None and not isinstance(source, str):
             continue
         merged = dict(entry)
         try:
