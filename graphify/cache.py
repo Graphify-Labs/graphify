@@ -510,7 +510,9 @@ def _normalize_path(path: Path) -> Path:
     if sys.platform != "win32":
         return path
     s = str(path)
-    if s.startswith("\\\\?\\"):
+    if s.startswith("\\\\?\\UNC\\"):
+        s = "\\\\" + s[8:]  # \\?\UNC\server\share -> \\server\share
+    elif s.startswith("\\\\?\\"):
         s = s[4:]  # strip extended-length prefix \\?\
     return Path(os.path.normpath(s))
 
@@ -548,9 +550,14 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # (cache_root), not the key-anchor root — otherwise it leaves a stray
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
-    _ensure_stat_index(root_src, cache_root=cache_root)
-    resolved = src.resolve()
-    abs_key = str(_normalize_path(resolved))
+    #
+    # The index root, key and salt use the normalized spelling. The \\?\ form
+    # from os_long_path() is for I/O only: as the root it made load_cached()'s
+    # plain cache_root look like a second root (#3989), and no key was relative
+    # to it, so every key was written absolute (#2199).
+    _ensure_stat_index(_normalize_path(raw_root), cache_root=cache_root)
+    resolved = _normalize_path(src.resolve())
+    abs_key = str(resolved)
     # The salt is the path component that enters the digest (relative to root, or
     # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
     # the same file hashed under two different roots yields two different digests
@@ -558,7 +565,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # path served whichever was computed first — making file_hash order-dependent
     # and poisoning the persisted stat-index across runs (#1989). Store one digest
     # per salt so alternating roots don't force re-reads.
-    resolved_root = root_src.resolve()
+    resolved_root = _normalize_path(root_src.resolve())
     try:
         resolved_rel = resolved.relative_to(resolved_root)
     except ValueError:
@@ -579,7 +586,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
             walked_rel = None
             for parent in walked.parents:
                 try:
-                    if parent.resolve() == resolved_root:
+                    if _normalize_path(parent.resolve()) == resolved_root:
                         walked_rel = walked.relative_to(parent)
                         break
                 except OSError:
@@ -643,8 +650,7 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     raw_path = Path(path)
     raw_root = Path(root)
     src = Path(_os_long_path(raw_path))
-    root_src = Path(_os_long_path(raw_root))
-    _ensure_stat_index(root_src, cache_root=cache_root)
+    _ensure_stat_index(_normalize_path(raw_root), cache_root=cache_root)
     abs_key = str(_normalize_path(src.resolve()))
     st: "os.stat_result | None" = None
     try:
