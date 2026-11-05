@@ -122,6 +122,13 @@ carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRA
 unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
 retires Go entries created before these receiver-binding rules.
 
+Query context filters (`graphify query --context` / MCP `context_filter`) match an
+edge's `context` attribute, and also its `relation` when the graph has no matching
+`context` (the usual LLM-extracted shape). A filter inferred from ordinary words
+in the question (`modules`, `template`, `return`, …) is discarded when it would
+leave the seed nodes with no remaining edges, and the header records that
+discard. An explicit `--context` is never discarded.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.

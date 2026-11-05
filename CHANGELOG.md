@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **query** a heuristic `--context` inferred from ordinary wording (`modules`, `template`, `return`, …) is discarded when it matches no edges, or leaves the seed nodes with no remaining edges, instead of collapsing the traversal to the seeds and reading as a confident empty answer. `--context call` also keeps `calls` edges on graphs that never set a `context` attribute (#2529).
+
 ## 0.9.103 (2026-11-05)
 
 - Fix: **markdown** a code span written as a backslash namespace (`\Foo\Bar`) or a type-qualified member (`Type::member`) is recognised as a symbol mention and resolves to the real node when one exists, instead of being silently dropped; an absent chain mints nothing (#4610, #4695, thanks @viwe-monai).
