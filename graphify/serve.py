@@ -919,14 +919,19 @@ def _pick_seeds(
         # legacy sorted-term order.
         ordered_terms = [t for t in (term_order or ()) if t in best_seed_by_term]
         ordered_terms += sorted(t for t in best_seed_by_term if t not in set(ordered_terms))
+        covered_terms = {t for t, nid in best_seed_by_term.items() if nid in seeds}
         for term in ordered_terms:
             best_nid = best_seed_by_term[term]
             # Honor the same per-label cap so the per-term guarantee can't
-            # reintroduce a second copy of an already-seeded generic label.
+            # reintroduce a second copy of an already-seeded generic label (#1766),
+            # but preserve the guarantee when a candidate covers an uncovered term (#5027).
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
+            if best_nid not in seeds and (key not in seen_labels or term not in covered_terms):
                 seen_labels.add(key)
                 seeds.append(best_nid)
+                covered_terms.update(
+                    t for t, nid in best_seed_by_term.items() if nid == best_nid
+                )
     return seeds
 
 
