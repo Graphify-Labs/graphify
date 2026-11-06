@@ -234,6 +234,16 @@ def resolve_solidity_inherited_calls(
     to the member of the one library/contract/interface of that name the
     caller's file declares or imports directly; no edge when the name or the
     (name, arity) is ambiguous.
+
+    A call attached by a ``using`` directive (``using SafeCast for uint256;
+    x.toUint48()``, ``using EnumerableSet for EnumerableSet.AddressSet;
+    _set.add(a)``) binds to the library or free function it attaches: the
+    directives of the caller's contract and file, and the ``global`` ones of
+    the receiver's type, whose target is ``*`` or the receiver's declared
+    type, offering a function of that name with one more parameter than the
+    call passes (the receiver) and the receiver's type as its first. Only a
+    single such function is linked; no edge when the receiver's type is
+    unknown, a directive's library is ambiguous, or two functions fit.
     """
     calls = [
         rc
@@ -255,6 +265,7 @@ def resolve_solidity_inherited_calls(
     functions: dict[str, dict[str, list[tuple[str, Any]]]] = {}
     modifiers: dict[str, dict[str, list[str]]] = {}
     bases: dict[str, list[str]] = {}
+    using: dict[str, list[dict]] = {}
     state_variables: dict[str, dict[str, str]] = {}
     existing: set[tuple[Any, Any, Any]] = set()
     for edge in all_edges:
@@ -265,6 +276,8 @@ def resolve_solidity_inherited_calls(
         source_meta = meta(source)
         if source_meta.get("language") != "solidity" or source_meta.get("kind") not in type_kinds:
             continue
+        if isinstance(source_meta.get("using"), list):
+            using[source] = source_meta["using"]
         if relation == "method":
             member = meta(target)
             name = str(node_by_id.get(target, {}).get("label", ""))
@@ -304,6 +317,11 @@ def resolve_solidity_inherited_calls(
     types_by_file: dict[tuple[str, str], list[str]] = {}
     file_by_id: dict[Any, str] = {}
     imported: dict[str, set[str]] = {}
+    # `using` directives at file level, and the `global` ones by type.
+    file_using: dict[str, list[dict]] = {}
+    global_using: list[tuple[dict, str]] = []
+    # Free functions by (file, name), for `using {f} for T`.
+    free_functions: dict[tuple[str, str], list[str]] = {}
     if any(rc["solidity_call"] in {"qualified", "member"} for rc in calls):
         for node in all_nodes:
             node_file = node.get("source_file")
@@ -311,6 +329,10 @@ def resolve_solidity_inherited_calls(
                 continue
             if node.get("label") == Path(str(node_file)).name:
                 file_by_id[node.get("id")] = str(node_file)
+                directives = meta(node.get("id")).get("using")
+                if isinstance(directives, list):
+                    file_using[str(node_file)] = directives
+                    global_using.extend((d, str(node_file)) for d in directives if d.get("global"))
             elif meta(node.get("id")).get("kind") in type_kinds:
                 types_by_file.setdefault((str(node_file), str(node.get("label", ""))), []).append(node["id"])
         for edge in all_edges:
@@ -319,6 +341,15 @@ def resolve_solidity_inherited_calls(
                 imported_file = file_by_id.get(edge.get("target"))
                 if importer and imported_file:
                     imported.setdefault(importer, set()).add(imported_file)
+            elif (
+                edge.get("relation") == "contains"
+                and edge.get("source") in file_by_id
+                and meta(edge.get("target")).get("kind") == "function"
+            ):
+                name = str(node_by_id.get(edge.get("target"), {}).get("label", ""))
+                free_functions.setdefault(
+                    (file_by_id[edge["source"]], name[:-2] if name.endswith("()") else name), [],
+                ).append(str(edge["target"]))
 
     reachable_cache: dict[str, list[str]] = {}
 
@@ -396,6 +427,71 @@ def resolve_solidity_inherited_calls(
                 readings.append((str(returned), str(node_by_id[function].get("source_file", ""))))
         return readings
 
+    def visible_free_functions(scope_file: str, name: str) -> list[str]:
+        direct = free_functions.get((scope_file, name), []) + [
+            nid
+            for imported_file in sorted(imported.get(scope_file, set()))
+            for nid in free_functions.get((imported_file, name), [])
+        ]
+        return direct or [
+            nid for reached in reachable(scope_file) for nid in free_functions.get((reached, name), [])
+        ]
+
+    def attached_functions(directive: dict, scope_file: str, name: str) -> list[str] | None:
+        """The functions named ``name`` that ``directive`` attaches, read in
+        ``scope_file``; ``None`` when its library is ambiguous."""
+        if "library" in directive:
+            libraries = visible_types(scope_file, str(directive["library"]), transitive=True)
+            if not libraries:
+                return []  # a library outside the corpus
+            if len(libraries) != 1 or meta(libraries[0]).get("kind") != "library":
+                return None
+            return [nid for nid, _arity in functions.get(libraries[0], {}).get(name, [])]
+        attached: list[str] = []
+        for bound in directive.get("functions", []):
+            qualifier, _, function = str(bound).rpartition(".")
+            if function != name:
+                continue
+            if not qualifier:
+                attached.extend(visible_free_functions(scope_file, function))
+                continue
+            libraries = visible_types(scope_file, qualifier, transitive=True)
+            if len(libraries) > 1:
+                return None
+            if libraries:
+                attached.extend(nid for nid, _arity in functions.get(libraries[0], {}).get(function, []))
+        return attached
+
+    def using_member(rc: dict, name: str) -> str | None:
+        """``recv.name()`` bound to the one function a ``using`` directive in
+        scope attaches to the receiver's type, if there is exactly one."""
+        caller = str(rc.get("caller_nid"))
+        caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
+        contract = owner.get(caller)
+        scoped = [(d, caller_file) for d in using.get(contract or "", [])] + [
+            (d, caller_file) for d in file_using.get(caller_file, []) if not d.get("global")
+        ]
+        arity = rc.get("arity")
+        if not isinstance(arity, int):
+            return None
+        for type_name, _scope_file in receiver_types(rc):
+            directives = scoped + [(d, f) for d, f in global_using if d.get("for") == type_name]
+            found: set[str] = set()
+            for directive, scope_file in directives:
+                if directive.get("for") not in {"*", type_name}:
+                    continue
+                attached = attached_functions(directive, scope_file, name)
+                if attached is None:
+                    return None
+                found.update(
+                    nid for nid in attached
+                    if meta(nid).get("arity") == arity + 1
+                    and meta(nid).get("first_param_type") == type_name
+                )
+            if found:
+                return next(iter(found)) if len(found) == 1 else None
+        return None
+
     for rc in calls:
         caller = rc.get("caller_nid")
         name = rc.get("callee")
@@ -404,15 +500,20 @@ def resolve_solidity_inherited_calls(
         kind = rc["solidity_call"]
         contract = owner.get(caller)
         if kind == "member":
-            # `recv.f()` on a typed receiver: not bound here.
-            continue
-        if kind == "qualified":
+            target = using_member(rc, name)
+        elif kind == "qualified":
             # `Lib.f()` names its type, so it needs no owning contract (a free
             # function calls libraries too).
             caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
             scope = visible_types(caller_file, str(rc.get("qualifier", "")))
-            # Fail closed when the name is not visible or is ambiguous.
-            target = find(scope, name, rc.get("arity"), kind) if len(scope) == 1 else None
+            # Fail closed when the name is not visible or is ambiguous. A
+            # name that is no type may be a base contract's state variable
+            # (`_checkpoints.push()`).
+            target = (
+                find(scope, name, rc.get("arity"), kind) if len(scope) == 1
+                else using_member(rc, name) if not scope
+                else None
+            )
         elif not contract:
             continue
         else:
@@ -700,6 +801,52 @@ def extract_solidity(path: Path) -> dict:
             return f"{owner_name}.{head}{rest}"
         return import_aliases.get(head, head) + rest
 
+    def using_directives(scope: Node, context: TypeContext) -> list[dict[str, Any]]:
+        """The ``using A for T;`` / ``using A for *;`` / ``using {f, L.g} for
+        T [global];`` directives directly in ``scope`` (a contract body or the
+        file), for the resolver: ``{"for": T or "*", "library": A}`` or
+        ``{"for": T, "functions": [..]}``, plus ``"global": True``. ``T`` is
+        qualified like a receiver type so the two compare equal. An operator
+        binding (`using {eq as ==} for T`) attaches no member and is skipped."""
+        directives: list[dict[str, Any]] = []
+        for directive in scope.named_children:
+            if directive.type != "using_directive":
+                continue
+            target = directive.child_by_field_name("source")
+            if target is None:
+                continue
+            item: dict[str, Any] = {
+                "for": "*" if target.type == "any_source_type"
+                else qualify(_normalize_type(_read_text(target, source)), context),
+            }
+            library = next((child for child in directive.named_children if child.type == "type_alias"), None)
+            if library is not None:
+                item["library"] = qualify(_normalize_type(_read_text(library, source)), file_context)
+            else:
+                functions = [
+                    _normalize_type(_read_text(bound, source))
+                    for alias in directive.named_children
+                    if alias.type == "using_alias" and not any(child.type == "as" for child in alias.children)
+                    for bound in alias.named_children
+                    if bound.type == "user_defined_type"
+                ]
+                if not functions:
+                    continue
+                item["functions"] = [qualify(function, file_context) for function in functions]
+            if any(child.type == "global" for child in directive.children):
+                item["global"] = True
+            directives.append(item)
+        return directives
+
+    def first_parameter_type(callable_node: Node, context: TypeContext) -> dict[str, Any]:
+        """``{"first_param_type": T}`` for a library or free function, the
+        type a ``using`` directive attaches it to (``x.f()`` passes ``x``)."""
+        first = next((child for child in callable_node.named_children if child.type == "parameter"), None)
+        type_node = first.child_by_field_name("type") if first is not None else None
+        if type_node is None:
+            return {}
+        return {"first_param_type": qualify(_normalize_type(_read_text(type_node, source)), context)}
+
     def declared_types(callable_node: Node, context: TypeContext, inherited: VariableTypes) -> VariableTypes:
         """Parameter, return and local variable types visible in a function
         or modifier, over ``inherited`` (the contract's state variables). A
@@ -811,6 +958,12 @@ def extract_solidity(path: Path) -> dict:
                 return written, context
         return None
 
+    file_using = using_directives(root, file_context)
+    if file_using:
+        # File-level directives apply to every contract and free function of
+        # the file; a `global` one to every use of its type.
+        nodes[0]["metadata"]["using"] = file_using
+
     for declaration in root.named_children:
         type_kind = _TYPE_DECLARATIONS.get(declaration.type)
         if type_kind is None:
@@ -820,12 +973,15 @@ def extract_solidity(path: Path) -> dict:
         if name_node is None or body is None:
             continue
         type_name = _read_text(name_node, source)
+        contract_using = using_directives(body, contract_contexts[declaration.id])
         type_id = add_node(
             _make_id(stem, type_kind, type_name),
             type_name,
             declaration,
             kind=type_kind,
             callable_node=type_kind == "contract",
+            # Read by the resolver to bind `x.f()` through `using A for T`.
+            extra={"using": contract_using} if contract_using else None,
         )
         add_edge(file_id, type_id, "contains", declaration)
 
@@ -1029,6 +1185,8 @@ def extract_solidity(path: Path) -> dict:
                 for parameter in returns.named_children
                 if parameter.type == "parameter"
             ]
+            if type_kind == "library" and callable_kind == "function":
+                returned.update(first_parameter_type(member, type_context))
             if len(return_types) == 1 and return_types[0] is not None:
                 # Read by the resolver for a receiver that is this function's
                 # result (`token().clock()`).
@@ -1196,6 +1354,8 @@ def extract_solidity(path: Path) -> dict:
             declaration,
             kind="function",
             callable_node=True,
+            arity=arity,
+            extra=first_parameter_type(declaration, file_context),
         )
         add_edge(file_id, func_id, "contains", declaration)
         free_functions.setdefault((name, arity), []).append(func_id)

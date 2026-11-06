@@ -544,6 +544,204 @@ def test_solidity_library_call_fails_closed_when_ambiguous_or_not_a_type(tmp_pat
     assert _function_calls(result) == {("ok()", "h()", "A.sol")}
 
 
+_SAFE_CAST = (
+    "pragma solidity ^0.8.20;\n"
+    "library SafeCast {\n"
+    "    function toUint48(uint256 value) internal pure returns (uint48) { return uint48(value); }\n"
+    "    function toUint48(int256 value) internal pure returns (uint48) { return uint48(uint256(value)); }\n"
+    "}\n"
+)
+_SETS = (
+    "pragma solidity ^0.8.20;\n"
+    "library EnumerableSet {\n"
+    "    struct AddressSet { address[] values; }\n"
+    "    struct UintSet { uint256[] values; }\n"
+    "    function add(AddressSet storage set, address value) internal returns (bool) { return true; }\n"
+    "    function add(UintSet storage set, uint256 value) internal returns (bool) { return true; }\n"
+    "}\n"
+)
+
+
+def _using_corpus(tmp_path: Path, files: dict[str, str]) -> dict:
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+
+@_needs_solidity
+def test_solidity_using_for_binds_a_library_call_on_a_typed_value(tmp_path):
+    # `x.toUint48()` calls `SafeCast.toUint48(x)`, but it was parked as a
+    # qualified call on a type named `x`, so no `using` call got an edge
+    # (OpenZeppelin: 0 of 228 compiler-resolved calls). The overload is the
+    # one whose first parameter takes the receiver's type.
+    result = _using_corpus(tmp_path, {
+        "SafeCast.sol": _SAFE_CAST,
+        "Vault.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {SafeCast} from "./SafeCast.sol";\n'
+            "contract Vault {\n"
+            "    using SafeCast for uint256;\n"
+            "    uint48 public at;\n"
+            "    function touch(uint x) external { at = x.toUint48(); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {("touch()", "toUint48()", "SafeCast.sol")}
+    toUint48 = [n for n in result["nodes"] if n["label"] == "toUint48()"]
+    target = next(e["target"] for e in result["edges"] if e["relation"] == "calls")
+    assert next(n for n in toUint48 if n["id"] == target)["metadata"]["first_param_type"] == "uint256"
+
+
+@_needs_solidity
+def test_solidity_using_for_binds_on_a_library_struct_through_a_mapping_and_a_base(tmp_path):
+    # `using EnumerableSet for EnumerableSet.AddressSet; _set.add(a)`: the
+    # struct is `AddressSet` inside the library and `EnumerableSet.AddressSet`
+    # outside it; the receiver may be a mapping element or a base contract's
+    # state variable.
+    result = _using_corpus(tmp_path, {
+        "EnumerableSet.sol": _SETS,
+        "Base.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {EnumerableSet} from "./EnumerableSet.sol";\n'
+            "abstract contract Base { EnumerableSet.AddressSet internal _inherited; }\n"
+        ),
+        "Roles.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {EnumerableSet} from "./EnumerableSet.sol";\n'
+            'import {Base} from "./Base.sol";\n'
+            "contract Roles is Base {\n"
+            "    using EnumerableSet for EnumerableSet.AddressSet;\n"
+            "    EnumerableSet.AddressSet private _set;\n"
+            "    mapping(bytes32 => EnumerableSet.AddressSet) private _members;\n"
+            "    function direct(address a) external { _set.add(a); }\n"
+            "    function element(bytes32 r, address a) external { _members[r].add(a); }\n"
+            "    function inherited(address a) external { _inherited.add(a); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {
+        ("direct()", "add()", "EnumerableSet.sol"),
+        ("element()", "add()", "EnumerableSet.sol"),
+        ("inherited()", "add()", "EnumerableSet.sol"),
+    }
+    lines = {
+        next(n for n in result["nodes"] if n["id"] == e["target"])["source_location"]
+        for e in result["edges"] if e["relation"] == "calls"
+    }
+    assert lines == {"L5"}  # add(AddressSet, ..), not add(UintSet, ..)
+
+
+@_needs_solidity
+def test_solidity_using_for_star_and_file_level_directives_bind(tmp_path):
+    # `using A for *` attaches every function whose first parameter takes the
+    # receiver; a file-level directive applies to every contract and free
+    # function of the file. A value type declared in a library reads as
+    # `Time.Delay` on both sides.
+    result = _using_corpus(tmp_path, {
+        "SafeCast.sol": _SAFE_CAST,
+        "Time.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "library Time {\n"
+            "    type Delay is uint112;\n"
+            "    function get(Delay self) internal pure returns (uint32) { return 0; }\n"
+            "}\n"
+        ),
+        "Vault.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {SafeCast} from "./SafeCast.sol";\n'
+            'import {Time} from "./Time.sol";\n'
+            "using SafeCast for uint256;\n"
+            "function free(uint256 x) pure returns (uint48) { return x.toUint48(); }\n"
+            "contract Vault {\n"
+            "    using Time for *;\n"
+            "    Time.Delay private _delay;\n"
+            "    function cast(uint256 x) external pure returns (uint48) { return x.toUint48(); }\n"
+            "    function delay() external view returns (uint32) { return _delay.get(); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {
+        ("free()", "toUint48()", "SafeCast.sol"),
+        ("cast()", "toUint48()", "SafeCast.sol"),
+        ("delay()", "get()", "Time.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_using_function_set_and_global_directive_bind(tmp_path):
+    # `using {add} for Price global;` on the type's declaration applies in
+    # every file that uses Price; `using {L.twice, half} for uint256;`
+    # attaches a library function and a free function.
+    result = _using_corpus(tmp_path, {
+        "Price.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "type Price is uint128;\n"
+            "using {add, eq as ==} for Price global;\n"
+            "function add(Price a, Price b) pure returns (Price) { return a; }\n"
+            "function eq(Price a, Price b) pure returns (bool) { return true; }\n"
+        ),
+        "Math.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "library L { function twice(uint256 x) internal pure returns (uint256) { return 2 * x; } }\n"
+            "function half(uint256 x) pure returns (uint256) { return x / 2; }\n"
+        ),
+        "Shop.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {Price} from "./Price.sol";\n'
+            'import {L, half} from "./Math.sol";\n'
+            "contract Shop {\n"
+            "    using {L.twice, half} for uint256;\n"
+            "    function total(Price a, Price b) external pure returns (Price) { return a.add(b); }\n"
+            "    function scale(uint256 x) external pure returns (uint256) { return x.twice().half() + x.half(); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {
+        ("total()", "add()", "Price.sol"),
+        ("scale()", "twice()", "Math.sol"),
+        ("scale()", "half()", "Math.sol"),  # x.half(); x.twice().half() is chained, untyped
+    }
+
+
+@_needs_solidity
+def test_solidity_using_for_fails_closed_when_unknown_ambiguous_or_out_of_scope(tmp_path):
+    result = _using_corpus(tmp_path, {
+        "SafeCast.sol": _SAFE_CAST,
+        "Dup.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "library Dup { function toUint48(uint256 value) internal pure returns (uint48) { return 0; } }\n"
+        ),
+        "Vault.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {SafeCast} from "./SafeCast.sol";\n'
+            'import {Dup} from "./Dup.sol";\n'
+            "contract Other {\n"
+            "    using SafeCast for uint256;\n"  # not inherited by Vault (0.7+)
+            "}\n"
+            "contract Vault is Other {\n"
+            "    using SafeCast for int256;\n"
+            "    function run(uint256 x, int256 i, uint64 small) external {\n"
+            "        x.toUint48();\n"  # only Other attaches SafeCast to uint256
+            "        small.toUint48();\n"  # uint64 is no uint256: no exact match
+            "        unknown.toUint48();\n"  # no declared type
+            "    }\n"
+            "    function ok(int256 i) external pure returns (uint48) { return i.toUint48(); }\n"
+            "}\n"
+            "contract Both {\n"
+            "    using SafeCast for uint256;\n"
+            "    using Dup for uint256;\n"
+            "    function two(uint256 x) external pure { x.toUint48(); }\n"  # two libraries fit
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {("ok()", "toUint48()", "SafeCast.sol")}
+
+
 @_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
