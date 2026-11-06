@@ -207,7 +207,8 @@ def ingest_scip_index(source: str | os.PathLike[str] | bytes) -> ScipIngestResul
             if os.path.getsize(source) > _max_graph_file_bytes():
                 return {"nodes": [], "edges": [], "error": "scip index too large to ingest"}
             with open(source, "rb") as handle:
-                data = handle.read()
+                # Read one byte past the cap: a pipe or device reports no size, so getsize alone cannot bound it.
+                data = handle.read(_max_graph_file_bytes() + 1)
         except OSError as exc:
             return {"nodes": [], "edges": [], "error": f"scip_ingest read error: {exc}"}
     if len(data) > _max_graph_file_bytes():

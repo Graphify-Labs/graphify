@@ -115,6 +115,7 @@ _REL_SYMBOL, _REL_IS_REFERENCE, _REL_IS_IMPLEMENTATION = 1, 2, 3
 _REL_IS_TYPE_DEFINITION, _REL_IS_DEFINITION = 4, 5
 
 _VARINT, _I64, _LEN, _I32 = 0, 1, 2, 5
+_MAX_VARINT_BYTES = 10  # a 64-bit value; protobuf never writes a longer varint
 
 # A field's value off the wire: an int for varints, a memoryview for length-delimited fields (strings, messages,
 # packed ints), None for the fixed-width ones, which SCIP does not use.
@@ -386,6 +387,8 @@ def _varint(buf: memoryview, i: int) -> tuple[int, int]:
     while True:
         if i >= len(buf):
             raise ScipDecodeError("the data ends inside a varint")
+        if shift >= 7 * _MAX_VARINT_BYTES:
+            raise ScipDecodeError(f"a varint longer than {_MAX_VARINT_BYTES} bytes")
         byte = buf[i]
         i += 1
         value |= (byte & 0x7F) << shift

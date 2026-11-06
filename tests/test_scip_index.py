@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -158,6 +160,7 @@ def test_decode_skips_unknown_and_fixed_width_fields() -> None:
         _varint(2 << 3 | 2) + _varint(10) + b"abc",  # a length that runs past the data
         _varint(2 << 3 | 3),  # wire type 3 (deprecated groups) is not SCIP
         _int(2, 5),  # a document written as a number, not a message
+        _varint(2 << 3) + b"\xff" * 10 + b"\x01",  # a varint longer than protobuf's 10 bytes
         _document("a.py", _len(2, _len(3, b"x"))),  # symbol_roles written as bytes, not a number
     ],
 )
@@ -292,3 +295,23 @@ def test_real_scip_python_index() -> None:
         if e["relation"] == "scip_impl"
     }
     assert implements == {("Square#", "Shape#"), ("Square#area().", "Shape#area().")}
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO")
+def test_ingest_index_reads_no_more_than_the_cap_from_a_sizeless_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FIFO reports size 0, so only the bounded read stops it from being read to the end."""
+    fifo = tmp_path / "index.scip"
+    os.mkfifo(fifo)
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "100")
+
+    def write() -> None:
+        with open(fifo, "wb") as handle:
+            handle.write(b"\x00" * 10_000)
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    result = ingest_scip_index(fifo)
+    writer.join()
+    assert result == {"nodes": [], "edges": [], "error": "scip index too large to ingest"}
