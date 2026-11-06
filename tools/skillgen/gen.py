@@ -158,6 +158,10 @@ _SHARED_REFERENCES = {
 _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
+    # Compact prompt for hosts whose subagents write their own chunk file
+    # (the dispatch passes CHUNK_PATH). Codex keeps "compact": its workers
+    # return JSON inline and the orchestrator writes the files.
+    "compact-disk": "references/shared/extraction-spec-compact-disk.md",
 }
 # Single unified query reference + stub: superior vocab-expansion (Step 0) plus
 # CLI traversal plus inline NetworkX fallback, shipped to every platform. The
