@@ -253,6 +253,20 @@ network.once('stabilizationIterationsDone', () => {{
   network.setOptions({{ physics: {{ enabled: false }} }});
 }});
 
+// Dragging a node turns physics back on: nodes pushed too close repel each
+// other and edges pull a node dragged too far back toward its neighbours.
+// Physics turns off again once the layout settles after the drag ends.
+let draggingNode = false;
+network.on('dragStart', params => {{
+  if (!params.nodes.length) return;
+  draggingNode = true;
+  network.setOptions({{ physics: {{ enabled: true }} }});
+}});
+network.on('dragEnd', () => {{ draggingNode = false; }});
+network.on('stabilized', () => {{
+  if (!draggingNode) network.setOptions({{ physics: {{ enabled: false }} }});
+}});
+
 function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
   if (!n) return;
@@ -517,7 +531,8 @@ def to_html(
     """Generate an interactive vis.js HTML visualization of the graph.
 
     Features: node size by degree, click-to-inspect panel, search box,
-    community filter, physics clustering by community, confidence-styled edges.
+    community filter, physics clustering by community, physics while dragging
+    a node, confidence-styled edges.
     Raises ValueError if graph exceeds MAX_NODES_FOR_VIZ.
 
     If member_counts is provided (aggregated community view), node sizes are
