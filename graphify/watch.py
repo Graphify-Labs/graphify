@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextlib
 import errno
+import inspect
 import json
 import logging
 import os
@@ -3442,6 +3443,42 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     return has_code or has_deletion
 
 
+def _watch_event_filter():
+    """Watchdog events that mean a file actually changed, not just was read.
+
+    Passing this as ``event_filter`` keeps ``IN_OPEN`` and
+    ``IN_CLOSE_NOWRITE`` out of the inotify mask. The recursive watch-setup
+    walk then produces no events of its own, so it cannot overflow the kernel
+    queue and trigger watchdog's rebuild loop (#5033).
+    """
+    from watchdog import events as we
+
+    return [
+        we.FileCreatedEvent,
+        we.FileModifiedEvent,
+        we.FileDeletedEvent,
+        we.FileMovedEvent,
+        we.FileClosedEvent,
+        we.DirCreatedEvent,
+        we.DirDeletedEvent,
+        we.DirMovedEvent,
+    ]
+
+
+def _observer_accepts_event_filter(observer) -> bool:
+    """True when this watchdog's ``schedule()`` declares ``event_filter``.
+
+    ``event_filter`` was added in watchdog 4.0. Graphify does not pin a minimum
+    watchdog version, so detect support instead of raising TypeError on older
+    installs. Introspection failures are treated as unsupported; the caller
+    warns on that path so a future signature change is visible.
+    """
+    try:
+        return "event_filter" in inspect.signature(observer.schedule).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 _READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
 
 
@@ -3597,7 +3634,23 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     handler = Handler()
     # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
     observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
+    # Ask the kernel only for events the handler treats as changes. Without
+    # this filter the recursive setup walk floods the inotify queue with
+    # IN_OPEN/IN_CLOSE_NOWRITE, overflows it around 4,000 directories, and
+    # watchdog 7 then re-walks the tree forever (#5033).
+    if _observer_accepts_event_filter(observer):
+        observer.schedule(
+            handler,
+            str(watch_root_for_ignore),
+            recursive=True,
+            event_filter=_watch_event_filter(),
+        )
+    else:
+        logger.warning(
+            "watchdog does not declare event_filter; read-only inotify events "
+            "may overflow the queue and lose changes (#5033)"
+        )
+        observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
