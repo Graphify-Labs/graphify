@@ -1588,3 +1588,26 @@ def test_inherited_resolver_requires_edge_target_to_match_metadata() -> None:
     resolve_ruby_member_calls([{"raw_calls": [raw_call]}], nodes, edges)
 
     assert edge["confidence"] == "INFERRED"
+
+
+def test_include_in_singleton_class_emits_mixes_in(tmp_path: Path) -> None:
+    # `class << self; include M; end` injects M's instance methods as the class's
+    # own singleton (class) methods — the very relationship `extend M` expresses
+    # in the class body. The body-only mixin scan walked the singleton block's
+    # `include` right past, so this canonical class-method idiom emitted no edge.
+    _write(tmp_path, "concern.rb", "module Announceable\n  def announce; end\nend\n")
+    _write(tmp_path, "broadcaster.rb",
+           "class Broadcaster\n  class << self\n    include Announceable\n  end\nend\n")
+    g = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    assert ("Broadcaster", "Announceable") in _mixes_in(g)
+
+
+def test_include_in_other_object_singleton_class_emits_no_mixin(tmp_path: Path) -> None:
+    # `class << obj` opens *another object's* singleton class, not the enclosing
+    # class's — an include there does not mix the module into that class, so no
+    # edge (only `class << self` is a class-level mixin).
+    _write(tmp_path, "m.rb", "module M\n  def m; end\nend\n")
+    _write(tmp_path, "c.rb",
+           "class C\n  obj = Object.new\n  class << obj\n    include M\n  end\nend\n")
+    mix = _mixes_in(extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False))
+    assert ("C", "M") not in mix
