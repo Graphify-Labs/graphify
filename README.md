@@ -438,6 +438,8 @@ Commit or share the graph so your whole team queries the same context, and revie
 
 Beyond your AI assistant, query `graph.json` straight from the CLI with `graphify query`, `graphify path`, and `graphify explain`. A name that matches several nodes is refused with the candidates listed rather than guessed. Scripts can read the outcome from the exit code: `0` an answer, `3` an ambiguous name, `4` no matching node. See **[Ask better graph questions](https://docs.graphify.com/guides/querying)** and the **[query reference](https://docs.graphify.com/reference/query)**.
 
+`graphify affected <file|symbol>` lists what depends on something through code links. In a git repository, `graphify update` also writes `graphify-out/cochange.json` (files that keep changing in the same commits), and `affected` prints a short **Changed together in git history (not code links)** section (at most 10 files, with confidence and commit count) before the code links: docs, configs, tests and other files no import reaches. Pairs below 0.2 confidence are hidden, and so is any file `graphify update` would not scan (`.graphifyignore`, `--exclude`, vendored or sensitive files). `--no-cochange` hides the section, `--json` lists the same items in the same order, each tagged `graph` or `cochange`, and `GRAPHIFY_NO_COCHANGE=1` skips writing the file. Without git the step is skipped with one note; in a shallow clone it uses the history there is and suggests `git fetch --unshallow`.
+
 ---
 
 ## Environment variables
