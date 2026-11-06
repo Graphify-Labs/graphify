@@ -234,6 +234,15 @@ def resolve_solidity_inherited_calls(
     to the member of the one library/contract/interface of that name the
     caller's file declares or imports directly; no edge when the name or the
     (name, arity) is ambiguous.
+
+    A call on a receiver of a contract or interface type (``IERC20 token;
+    token.transfer()``, ``IERC20(a).transfer()``, ``Ownable(x).owner()``,
+    ``token().clock()``) binds by name and arity through that type's
+    linearization, as the compiler looks it up: an interface method links to
+    the interface's own declaration, never to a guessed implementer. No edge
+    when the receiver's type is unknown, is not exactly one visible
+    contract/interface, when the name/arity is ambiguous, or when a public
+    state variable of that name (its getter) comes first.
     """
     calls = [
         rc
@@ -288,12 +297,17 @@ def resolve_solidity_inherited_calls(
 
     def find(linear: list[str], name: str, arity: Any, kind: str) -> str | None:
         for type_id in linear:
+            if kind == "member" and name in state_variables.get(type_id, {}):
+                # `x.name()` reads a public state variable's getter.
+                return None
             if kind == "modifier":
                 found = modifiers.get(type_id, {}).get(name, [])
             else:
                 found = [
                     nid for nid, declared in functions.get(type_id, {}).get(name, [])
-                    if arity is None or declared is None or declared == arity
+                    if (arity is None or declared is None or declared == arity)
+                    # A value's members are its functions, not its events/errors.
+                    and (kind != "member" or meta(nid).get("kind") == "function")
                 ]
             if found:
                 return found[0] if len(found) == 1 else None
@@ -396,6 +410,22 @@ def resolve_solidity_inherited_calls(
                 readings.append((str(returned), str(node_by_id[function].get("source_file", ""))))
         return readings
 
+    def typed_member(rc: dict, name: str) -> str | None:
+        """``recv.name()`` bound through the receiver's contract/interface
+        type, the first reading of it that names a visible type."""
+        for type_name, scope_file in receiver_types(rc):
+            scope = visible_types(scope_file, type_name, transitive=True)
+            if not scope:
+                # Not a type here (`uint256`, or `g(x)` was a call, not a
+                # conversion): try the next reading.
+                continue
+            # Fail closed when the type is ambiguous or a library (a value
+            # never has a library type).
+            if len(scope) != 1 or meta(scope[0]).get("kind") not in {"contract", "interface"}:
+                return None
+            return find(linearization(scope[0]), name, rc.get("arity"), "member")
+        return None
+
     for rc in calls:
         caller = rc.get("caller_nid")
         name = rc.get("callee")
@@ -404,15 +434,20 @@ def resolve_solidity_inherited_calls(
         kind = rc["solidity_call"]
         contract = owner.get(caller)
         if kind == "member":
-            # `recv.f()` on a typed receiver: not bound here.
-            continue
-        if kind == "qualified":
+            target = typed_member(rc, name)
+        elif kind == "qualified":
             # `Lib.f()` names its type, so it needs no owning contract (a free
             # function calls libraries too).
             caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
             scope = visible_types(caller_file, str(rc.get("qualifier", "")))
-            # Fail closed when the name is not visible or is ambiguous.
-            target = find(scope, name, rc.get("arity"), kind) if len(scope) == 1 else None
+            # Fail closed when the name is not visible or is ambiguous. A
+            # name that is no type may be a base contract's state variable
+            # (`hevm.prank()`).
+            target = (
+                find(scope, name, rc.get("arity"), kind) if len(scope) == 1
+                else typed_member(rc, name) if not scope
+                else None
+            )
         elif not contract:
             continue
         else:
