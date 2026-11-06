@@ -1,0 +1,21 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .kiro/skills/graphify/SKILL.md
+        source: graphify/skill-kiro.md
+        reference_bundle: kiro
+  project:
+    install_mode: direct
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: project
+        path: .kiro/skills/graphify/SKILL.md
+        source: graphify/skill-kiro.md
+        reference_bundle: kiro
+      - root: project
+        path: .kiro/steering/graphify.md
+        source: graphify/always_on/kiro-steering.md

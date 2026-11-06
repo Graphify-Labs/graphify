@@ -1,0 +1,16 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .kimi/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        reference_bundle: claude
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .kimi/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        reference_bundle: claude

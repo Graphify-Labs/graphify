@@ -1,0 +1,40 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    install_mode: direct
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .gemini/config/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        payload_mode: frontmatter-body
+        required_text:
+          - "name: graphify-manager"
+          - "description: Rebuild the code graph or perform manual CLI queries when MCP server is offline."
+        reference_bundle: claude
+      - root: user_cwd
+        path: .agents/rules/graphify.md
+        source: graphify/always_on/antigravity-rules.md
+      - kind: text
+        root: user_cwd
+        path: .agents/workflows/graphify.md
+        required_text: ["name: graphify", "Workflow: graphify"]
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .agents/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        payload_mode: frontmatter-body
+        required_text:
+          - "name: graphify-manager"
+          - "description: Rebuild the code graph or perform manual CLI queries when MCP server is offline."
+        reference_bundle: claude
+      - root: project
+        path: .agents/rules/graphify.md
+        source: graphify/always_on/antigravity-rules.md
+      - kind: text
+        root: project
+        path: .agents/workflows/graphify.md
+        required_text: ["name: graphify", "Workflow: graphify"]
