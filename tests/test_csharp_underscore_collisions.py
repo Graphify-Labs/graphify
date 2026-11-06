@@ -284,3 +284,20 @@ def test_base_call_reaches_the_underscore_method(tmp_path):
     sub, base = sorted(_ids(r, "._Action()"), key=lambda nid: "subwidget" not in nid)
     assert (sub, base) in _edges(r, "calls")
     assert (sub, _one(r, ".Action()")) not in _edges(r, "calls")
+
+
+def test_constructor_never_takes_the_id_of_a_member_spelled_like_its_type(tmp_path):
+    # `Foo()` (the constructor) and `foo()` normalize to one id. The method
+    # had it before constructors were nodes and keeps it, wherever the
+    # constructor is declared; the constructor gets a salted id.
+    for body in (
+        "public class Foo { public Foo() { Bar(); } public void foo() { } public void Bar() { } }\n",
+        "public class Foo { public void foo() { } public Foo() { Bar(); } public void Bar() { } }\n",
+    ):
+        r = _extract(tmp_path, {"Foo.cs": body})
+        method = _one(r, "Foo") + "_foo"
+        assert _one(r, ".foo()") == method
+        ctor = _one(r, ".Foo()")
+        assert ctor != method
+        assert (ctor, _one(r, ".Bar()")) in _edges(r, "calls")
+        assert (method, _one(r, ".Bar()")) not in _edges(r, "calls")
