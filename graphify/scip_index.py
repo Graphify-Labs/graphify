@@ -7,9 +7,10 @@ format directly and returns the same JSON-shaped dict that ``scip print --json``
 prints, so callers can treat both the same way.
 
 Entry point:
-  decode_scip_index(data: bytes) -> dict[str, Any]
+  decode_scip_index(data: bytes) -> ScipIndex
 
-Returned shape (field names as in scip.proto; absent fields are left out):
+Returned shape (the ``Scip*`` TypedDicts below; field names as in scip.proto;
+absent optional fields are left out):
   metadata:         { project_root, tool_info: { name, version } }
   documents[]:      { relative_path, language, occurrences[], symbols[] }
   occurrences[]:    { range: [start_line, start_char, (end_line,) end_char],
@@ -28,19 +29,77 @@ winning when an occurrence has both. ``kind`` is the enum name ("Method",
 indexes still decode.
 
 Malformed input raises ``ScipDecodeError`` (a ``ValueError``): a truncated
-varint, a length running past its message, or an unknown wire type. Nothing is
-guessed from a damaged index.
+varint, a length running past its message, an unknown wire type, or a field
+holding a number where scip.proto has a string or a message (and the reverse).
+Nothing is guessed from a damaged index.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from typing import Any
+from typing import TypeAlias, TypedDict
 
 
 class ScipDecodeError(ValueError):
     """The bytes are not a well-formed SCIP protobuf index."""
+
+
+class ScipToolInfo(TypedDict, total=False):
+    name: str
+    version: str
+
+
+class ScipMetadata(TypedDict, total=False):
+    project_root: str
+    tool_info: ScipToolInfo
+
+
+class ScipOccurrence(TypedDict):
+    range: list[int]
+    symbol: str
+    symbol_roles: int
+
+
+class ScipRelationship(TypedDict):
+    symbol: str
+    is_reference: bool
+    is_implementation: bool
+    is_type_definition: bool
+    is_definition: bool
+
+
+class _ScipSymbolFields(TypedDict):
+    symbol: str
+    kind: str
+    documentation: list[str]
+    relationships: list[ScipRelationship]
+
+
+class ScipSymbol(_ScipSymbolFields, total=False):
+    """A SymbolInformation; ``display_name`` and ``enclosing_symbol`` only when the indexer wrote them."""
+
+    display_name: str
+    enclosing_symbol: str
+
+
+class _ScipDocumentFields(TypedDict):
+    relative_path: str
+    occurrences: list[ScipOccurrence]
+    symbols: list[ScipSymbol]
+
+
+class ScipDocument(_ScipDocumentFields, total=False):
+    language: str
+
+
+class _ScipIndexFields(TypedDict):
+    documents: list[ScipDocument]
+
+
+class ScipIndex(_ScipIndexFields, total=False):
+    metadata: ScipMetadata
+    external_symbols: list[ScipSymbol]
 
 
 # Field numbers from scip.proto (sourcegraph/scip v0.10).
@@ -52,15 +111,14 @@ _OCC_RANGE, _OCC_SYMBOL, _OCC_ROLES = 1, 2, 3
 _OCC_SINGLE_LINE_RANGE, _OCC_MULTI_LINE_RANGE = 8, 9
 _SYM_SYMBOL, _SYM_DOCUMENTATION, _SYM_RELATIONSHIPS = 1, 3, 4
 _SYM_KIND, _SYM_DISPLAY_NAME, _SYM_ENCLOSING = 5, 6, 8
-_REL_SYMBOL = 1
-_REL_FLAGS = {
-    2: "is_reference",
-    3: "is_implementation",
-    4: "is_type_definition",
-    5: "is_definition",
-}
+_REL_SYMBOL, _REL_IS_REFERENCE, _REL_IS_IMPLEMENTATION = 1, 2, 3
+_REL_IS_TYPE_DEFINITION, _REL_IS_DEFINITION = 4, 5
 
 _VARINT, _I64, _LEN, _I32 = 0, 1, 2, 5
+
+# A field's value off the wire: an int for varints, a memoryview for length-delimited fields (strings, messages,
+# packed ints), None for the fixed-width ones, which SCIP does not use.
+_FieldValue: TypeAlias = int | memoryview | None
 
 # SymbolInformation.Kind, by number (scip.proto v0.10; 83 is unused there).
 _KINDS = {
@@ -182,68 +240,72 @@ def _unquote(name: str) -> str:
     return name
 
 
-def decode_scip_index(data: bytes) -> dict[str, Any]:
+def decode_scip_index(data: bytes) -> ScipIndex:
     """Decode a SCIP protobuf index into the JSON shape ``scip print --json`` uses."""
-    out: dict[str, Any] = {"documents": []}
-    external: list[dict[str, Any]] = []
+    index: ScipIndex = {"documents": []}
+    external: list[ScipSymbol] = []
     for number, _, value in _fields(memoryview(data)):
         if number == _INDEX_METADATA:
-            out["metadata"] = _metadata(value)
+            index["metadata"] = _metadata(_message(value))
         elif number == _INDEX_DOCUMENTS:
-            out["documents"].append(_document(value))
+            index["documents"].append(_document(_message(value)))
         elif number == _INDEX_EXTERNAL_SYMBOLS:
-            external.append(_symbol(value))
+            external.append(_symbol(_message(value)))
     if external:
-        out["external_symbols"] = external
-    return out
+        index["external_symbols"] = external
+    return index
 
 
-def _metadata(buf: memoryview) -> dict[str, Any]:
-    meta: dict[str, Any] = {}
+def _metadata(buf: memoryview) -> ScipMetadata:
+    meta: ScipMetadata = {}
     for number, _, value in _fields(buf):
         if number == _METADATA_PROJECT_ROOT:
             meta["project_root"] = _text(value)
         elif number == _METADATA_TOOL_INFO:
-            tool = {}
-            for n, _, v in _fields(value):
-                if n == _TOOL_NAME:
-                    tool["name"] = _text(v)
-                elif n == _TOOL_VERSION:
-                    tool["version"] = _text(v)
-            meta["tool_info"] = tool
+            meta["tool_info"] = _tool_info(_message(value))
     return meta
 
 
-def _document(buf: memoryview) -> dict[str, Any]:
-    doc: dict[str, Any] = {"relative_path": "", "occurrences": [], "symbols": []}
+def _tool_info(buf: memoryview) -> ScipToolInfo:
+    tool: ScipToolInfo = {}
+    for number, _, value in _fields(buf):
+        if number == _TOOL_NAME:
+            tool["name"] = _text(value)
+        elif number == _TOOL_VERSION:
+            tool["version"] = _text(value)
+    return tool
+
+
+def _document(buf: memoryview) -> ScipDocument:
+    doc: ScipDocument = {"relative_path": "", "occurrences": [], "symbols": []}
     for number, _, value in _fields(buf):
         if number == _DOC_RELATIVE_PATH:
             doc["relative_path"] = _text(value)
         elif number == _DOC_LANGUAGE:
             doc["language"] = _text(value)
         elif number == _DOC_OCCURRENCES:
-            doc["occurrences"].append(_occurrence(value))
+            doc["occurrences"].append(_occurrence(_message(value)))
         elif number == _DOC_SYMBOLS:
-            doc["symbols"].append(_symbol(value))
+            doc["symbols"].append(_symbol(_message(value)))
     return doc
 
 
-def _occurrence(buf: memoryview) -> dict[str, Any]:
-    occ: dict[str, Any] = {"range": [], "symbol": "", "symbol_roles": 0}
+def _occurrence(buf: memoryview) -> ScipOccurrence:
+    occ: ScipOccurrence = {"range": [], "symbol": "", "symbol_roles": 0}
     typed: list[int] | None = None
     for number, wire, value in _fields(buf):
         if number == _OCC_RANGE:
-            occ["range"] = occ["range"] + _ints(
-                wire, value
-            )  # unpacked writers send one field per int
+            occ["range"] += _ints(wire, value)  # unpacked writers send one field per int
         elif number == _OCC_SINGLE_LINE_RANGE:
-            typed = _typed_range(value, 3)  # line, start_character, end_character
+            # line, start_character, end_character
+            typed = _typed_range(_message(value), 3)
         elif number == _OCC_MULTI_LINE_RANGE:
-            typed = _typed_range(value, 4)  # start_line, start_character, end_line, end_character
+            # start_line, start_character, end_line, end_character
+            typed = _typed_range(_message(value), 4)
         elif number == _OCC_SYMBOL:
             occ["symbol"] = _text(value)
         elif number == _OCC_ROLES:
-            occ["symbol_roles"] = value
+            occ["symbol_roles"] = _int(value)
     if typed is not None:
         occ["range"] = typed
     return occ
@@ -254,12 +316,12 @@ def _typed_range(buf: memoryview, size: int) -> list[int]:
     values = [0] * size
     for number, _, value in _fields(buf):
         if 1 <= number <= size:
-            values[number - 1] = value
+            values[number - 1] = _int(value)
     return values
 
 
-def _symbol(buf: memoryview) -> dict[str, Any]:
-    sym: dict[str, Any] = {
+def _symbol(buf: memoryview) -> ScipSymbol:
+    sym: ScipSymbol = {
         "symbol": "",
         "kind": _KINDS[0],
         "documentation": [],
@@ -271,9 +333,9 @@ def _symbol(buf: memoryview) -> dict[str, Any]:
         elif number == _SYM_DOCUMENTATION:
             sym["documentation"].append(_text(value))
         elif number == _SYM_RELATIONSHIPS:
-            sym["relationships"].append(_relationship(value))
+            sym["relationships"].append(_relationship(_message(value)))
         elif number == _SYM_KIND:
-            sym["kind"] = _KINDS.get(value, _KINDS[0])
+            sym["kind"] = _KINDS.get(_int(value), _KINDS[0])
         elif number == _SYM_DISPLAY_NAME:
             sym["display_name"] = _text(value)
         elif number == _SYM_ENCLOSING:
@@ -281,23 +343,30 @@ def _symbol(buf: memoryview) -> dict[str, Any]:
     return sym
 
 
-def _relationship(buf: memoryview) -> dict[str, Any]:
-    rel: dict[str, Any] = {"symbol": "", **{flag: False for flag in _REL_FLAGS.values()}}
+def _relationship(buf: memoryview) -> ScipRelationship:
+    symbol = ""
+    flags: dict[int, bool] = {}
     for number, _, value in _fields(buf):
         if number == _REL_SYMBOL:
-            rel["symbol"] = _text(value)
-        elif number in _REL_FLAGS:
-            rel[_REL_FLAGS[number]] = bool(value)
-    return rel
+            symbol = _text(value)
+        elif _REL_IS_REFERENCE <= number <= _REL_IS_DEFINITION:
+            flags[number] = bool(_int(value))
+    return {
+        "symbol": symbol,
+        "is_reference": flags.get(_REL_IS_REFERENCE, False),
+        "is_implementation": flags.get(_REL_IS_IMPLEMENTATION, False),
+        "is_type_definition": flags.get(_REL_IS_TYPE_DEFINITION, False),
+        "is_definition": flags.get(_REL_IS_DEFINITION, False),
+    }
 
 
-def _fields(buf: memoryview) -> Iterator[tuple[int, int, Any]]:
-    """Yield (field number, wire type, value) for each field of one message: an int for varints, a memoryview for
-    length-delimited fields, None for the fixed-width ones (which SCIP does not use)."""
+def _fields(buf: memoryview) -> Iterator[tuple[int, int, _FieldValue]]:
+    """Yield (field number, wire type, value) for each field of one message."""
     i, end = 0, len(buf)
     while i < end:
         key, i = _varint(buf, i)
         number, wire = key >> 3, key & 7
+        value: _FieldValue
         if wire == _VARINT:
             value, i = _varint(buf, i)
         elif wire == _LEN:
@@ -325,16 +394,28 @@ def _varint(buf: memoryview, i: int) -> tuple[int, int]:
         shift += 7
 
 
-def _ints(wire: int, value: Any) -> list[int]:
+def _ints(wire: int, value: _FieldValue) -> list[int]:
     """A repeated int32: packed (one length-delimited run) or written one varint at a time."""
     if wire == _VARINT:
-        return [value]
-    out, i = [], 0
-    while i < len(value):
-        n, i = _varint(value, i)
+        return [_int(value)]
+    packed, out, i = _message(value), [], 0
+    while i < len(packed):
+        n, i = _varint(packed, i)
         out.append(n)
     return out
 
 
-def _text(value: memoryview) -> str:
-    return bytes(value).decode("utf-8", errors="replace")
+def _int(value: _FieldValue) -> int:
+    if not isinstance(value, int):
+        raise ScipDecodeError("a number field holds a string or a message")
+    return value
+
+
+def _message(value: _FieldValue) -> memoryview:
+    if not isinstance(value, memoryview):
+        raise ScipDecodeError("a string or message field holds a number")
+    return value
+
+
+def _text(value: _FieldValue) -> str:
+    return bytes(_message(value)).decode("utf-8", errors="replace")

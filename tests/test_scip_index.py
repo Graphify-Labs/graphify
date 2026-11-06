@@ -67,7 +67,7 @@ def test_decode_metadata_documents_and_packed_ranges() -> None:
         "pkg/shapes.py", _occurrence(BASE, _packed(1, [3, 6, 11]), roles=1), language="python"
     )
     decoded = decode_scip_index(meta + doc)
-    assert decoded["metadata"] == {
+    assert decoded.get("metadata") == {
         "tool_info": {"name": "scip-python", "version": "0.6.8"},
         "project_root": "file:///repo",
     }
@@ -133,7 +133,7 @@ def test_decode_external_symbols_and_unknown_kinds() -> None:
         3, _len(1, b"scip-python python requests 2.31 `requests`/Session#") + _int(5, 9999)
     )
     decoded = decode_scip_index(external)
-    assert decoded["external_symbols"][0]["kind"] == "UnspecifiedKind"
+    assert [s["kind"] for s in decoded.get("external_symbols", [])] == ["UnspecifiedKind"]
     assert decoded["documents"] == []
 
 
@@ -157,6 +157,8 @@ def test_decode_skips_unknown_and_fixed_width_fields() -> None:
         bytes([0x80]),  # a varint that never ends
         _varint(2 << 3 | 2) + _varint(10) + b"abc",  # a length that runs past the data
         _varint(2 << 3 | 3),  # wire type 3 (deprecated groups) is not SCIP
+        _int(2, 5),  # a document written as a number, not a message
+        _document("a.py", _len(2, _len(3, b"x"))),  # symbol_roles written as bytes, not a number
     ],
 )
 def test_decode_malformed_raises(data: bytes) -> None:
@@ -235,8 +237,8 @@ def test_ingest_index_from_a_path_and_from_bytes_agree(tmp_path: Path) -> None:
 def test_ingest_index_errors_are_returned_not_raised(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert "read error" in ingest_scip_index(tmp_path / "missing.scip")["error"]
-    assert "decode error" in ingest_scip_index(bytes([0x80]))["error"]
+    assert "read error" in ingest_scip_index(tmp_path / "missing.scip").get("error", "")
+    assert "decode error" in ingest_scip_index(bytes([0x80])).get("error", "")
     monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "10")
     path = tmp_path / "big.scip"
     path.write_bytes(_shapes_index())
@@ -256,9 +258,20 @@ def test_ingest_index_is_deterministic() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _scip_symbol(node: dict[str, object]) -> str:
+    metadata = node["metadata"]
+    assert isinstance(metadata, dict)
+    symbol = metadata["scip_symbol"]
+    assert isinstance(symbol, str)
+    return symbol
+
+
 def test_real_scip_python_index() -> None:
     decoded = decode_scip_index((FIXTURES / "shapes.scip").read_bytes())
-    assert decoded["metadata"]["tool_info"] == {"name": "scip-python", "version": "0.6.8"}
+    assert decoded.get("metadata", {}).get("tool_info") == {
+        "name": "scip-python",
+        "version": "0.6.8",
+    }
     assert [d["relative_path"] for d in decoded["documents"]] == ["shapes.py"]
 
     result = ingest_scip_index(FIXTURES / "shapes.scip")
@@ -272,7 +285,7 @@ def test_real_scip_python_index() -> None:
         line = next(i for i, text in enumerate(source, 1) if text.startswith(needle))
         assert (label, f"L{line}") in located
 
-    by_id = {n["id"]: n["metadata"]["scip_symbol"].split("/")[-1] for n in result["nodes"]}
+    by_id = {n["id"]: _scip_symbol(n).split("/")[-1] for n in result["nodes"]}
     implements = {
         (by_id[e["source"]], by_id[e["target"]])
         for e in result["edges"]

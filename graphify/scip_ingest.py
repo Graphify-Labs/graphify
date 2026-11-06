@@ -29,7 +29,7 @@ live on the document, not on each symbol). We consume the simplified
 shape that LLM-generated SCIP-style JSON commonly produces.
 
 Real SCIP indexes:
-  ingest_scip_index(source: str | PathLike | bytes) -> dict[str, Any]
+  ingest_scip_index(source: str | PathLike | bytes) -> ScipIngestResult
 
   Reads an ``index.scip`` written by a SCIP indexer (scip-python,
   scip-typescript, rust-analyzer, ...), decodes it with
@@ -43,10 +43,44 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import Any
+from typing import Any, TypedDict
 
-from graphify.scip_index import ScipDecodeError, decode_scip_index, symbol_display_name
+from graphify.scip_index import (
+    ScipDecodeError,
+    ScipIndex,
+    ScipOccurrence,
+    ScipSymbol,
+    decode_scip_index,
+    symbol_display_name,
+)
 from graphify.security import _max_graph_file_bytes, sanitize_metadata
+
+
+class _ScipIngestFields(TypedDict):
+    nodes: list[dict[str, object]]
+    edges: list[dict[str, object]]
+
+
+class ScipIngestResult(_ScipIngestFields, total=False):
+    """What ``ingest_scip_index`` returns; ``error`` only when the index could not be read."""
+
+    error: str
+
+
+class _IngestSymbol(ScipSymbol):
+    """A SCIP symbol with its document's occurrences of it, as ``ingest_scip_json`` reads them."""
+
+    occurrences: list[ScipOccurrence]
+
+
+class _IngestDocument(TypedDict):
+    relative_path: str
+    language: str
+    symbols: list[_IngestSymbol]
+
+
+class _IngestShape(TypedDict):
+    documents: list[_IngestDocument]
 
 
 def ingest_scip_json(
@@ -139,7 +173,7 @@ def ingest_scip_json(
     return {"nodes": nodes, "edges": edges}
 
 
-def ingest_scip_index(source: str | os.PathLike[str] | bytes) -> dict[str, Any]:
+def ingest_scip_index(source: str | os.PathLike[str] | bytes) -> ScipIngestResult:
     """Convert a real SCIP index (``index.scip``) into Graphify nodes and edges.
 
     ``source`` is the path of an index file or its bytes. The index is decoded
@@ -182,36 +216,49 @@ def ingest_scip_index(source: str | os.PathLike[str] | bytes) -> dict[str, Any]:
         index = decode_scip_index(data)
     except ScipDecodeError as exc:
         return {"nodes": [], "edges": [], "error": f"scip_ingest decode error: {exc}"}
-    return ingest_scip_json(_index_to_ingest_shape(index))
+    result = ingest_scip_json(_index_to_ingest_shape(index))
+    return {"nodes": result["nodes"], "edges": result["edges"]}
 
 
-def _index_to_ingest_shape(index: dict[str, Any]) -> dict[str, Any]:
+def _index_to_ingest_shape(index: ScipIndex) -> _IngestShape:
     """Move each document's occurrences under the symbols it defines (see ``ingest_scip_index``)."""
-    documents = []
-    for document in index.get("documents", []):
-        by_symbol: dict[str, list[dict[str, Any]]] = {}
-        for occurrence in document.get("occurrences", []):
-            rng = occurrence.get("range") or []
-            symbol = occurrence.get("symbol", "")
+    documents: list[_IngestDocument] = []
+    for document in index["documents"]:
+        by_symbol: dict[str, list[ScipOccurrence]] = {}
+        for occurrence in document["occurrences"]:
+            rng, symbol = occurrence["range"], occurrence["symbol"]
             if not symbol or not rng:
                 continue
             by_symbol.setdefault(symbol, []).append(
-                {**occurrence, "range": [rng[0] + 1, *rng[1:]]}  # zero-based SCIP line -> one-based
+                {
+                    "range": [rng[0] + 1, *rng[1:]],  # zero-based SCIP line -> one-based
+                    "symbol": symbol,
+                    "symbol_roles": occurrence["symbol_roles"],
+                }
             )
-        symbols = []
-        for info in document.get("symbols", []):
-            symbol = info.get("symbol", "")
+        symbols: list[_IngestSymbol] = []
+        for info in document["symbols"]:
+            symbol = info["symbol"]
             if not symbol or symbol.startswith("local "):
                 continue
             occurrences = sorted(
                 by_symbol.get(symbol, []),
-                key=lambda o: (not o.get("symbol_roles", 0) & _SCIP_ROLE_DEFINITION, o["range"]),
+                key=lambda o: (not o["symbol_roles"] & _SCIP_ROLE_DEFINITION, o["range"]),
             )
-            label = info.get("display_name") or symbol_display_name(symbol)
-            symbols.append({**info, "display_name": label, "occurrences": occurrences})
+            ingest_symbol: _IngestSymbol = {
+                "symbol": symbol,
+                "kind": info["kind"],
+                "documentation": info["documentation"],
+                "relationships": info["relationships"],
+                "display_name": info.get("display_name") or symbol_display_name(symbol),
+                "occurrences": occurrences,
+            }
+            if "enclosing_symbol" in info:
+                ingest_symbol["enclosing_symbol"] = info["enclosing_symbol"]
+            symbols.append(ingest_symbol)
         documents.append(
             {
-                "relative_path": document.get("relative_path", ""),
+                "relative_path": document["relative_path"],
                 "language": document.get("language", ""),
                 "symbols": symbols,
             }
