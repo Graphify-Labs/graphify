@@ -63,6 +63,7 @@ from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
     bare_csharp_method_labels_in_nodes,
+    is_csharp_constructor_node,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
@@ -6310,6 +6311,7 @@ def _csharp_overload_index(nodes: list[dict], edges: list[dict]) -> dict:
             e.get("target"): e.get("source") for e in edges
             if e.get("relation") == "method"
             and "arity" in ((node_by_id.get(e.get("target")) or {}).get("metadata") or {})
+            and not is_csharp_constructor_node(node_by_id.get(e.get("target")) or {})
         },
     }
 
@@ -6412,6 +6414,8 @@ def _resolve_csharp_member_calls(
         if tnode is None:
             continue
         enclosing_type.setdefault(tgt, src)
+        if is_csharp_constructor_node(tnode):
+            continue  # owns its calls (enclosing_type), but is never `x.Name()`
         # Overloads share a key: the first declared one stands for the name,
         # and the call's argument count picks among them below (#4584).
         method_key = (src, _key(tnode.get("label", "")))
@@ -7740,6 +7744,127 @@ def _resolve_c_include_edges(
             e.pop("target_file", None)
 
 
+def _resolve_csharp_constructor_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Link a C# construction to the constructor overload it runs.
+
+    `new X(a, b)` already has a `calls` edge to the type X (in-file or from
+    the shared/qualified passes). This adds one to the X constructor whose
+    parameter count fits two arguments, and links a constructor's
+    `: this(...)` to its own type's overload and `: base(...)` to its base
+    type's. Additive: the edge to the type stays.
+
+    Fail closed, never a guess across types or overloads:
+      * the type is the one the caller's own `calls` edges already bound for
+        that name; none, or two types with the name, gives no edge;
+      * `: base(...)` needs exactly one resolvable `inherits` target, and no
+        unresolved (out-of-corpus) base;
+      * exactly one non-static constructor (explicit or primary) must accept
+        the argument count (``_csharp_pick_overload``); a type with no
+        declared constructor gets no edge.
+    """
+    records = [
+        rc for result in per_file if isinstance(result, dict)
+        for rc in result.get("raw_calls", []) or []
+        if rc.get("lang") == "csharp"
+        and (rc.get("csharp_ctor_site") or rc.get("csharp_ctor_init"))
+    ]
+    if not records:
+        return
+    node_by_id = {n.get("id"): n for n in all_nodes}
+    ctors_of: dict[str, list[dict]] = {}
+    owner_of: dict[str, str] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        type_nid = e.get("source")
+        if tnode is None or not isinstance(type_nid, str) or not is_csharp_constructor_node(tnode):
+            continue
+        owner_of.setdefault(tnode["id"], type_nid)
+        bucket = ctors_of.setdefault(type_nid, [])
+        if all(c["id"] != tnode["id"] for c in bucket):
+            bucket.append(tnode)
+
+    def _pick(type_nid: str | None, argc: object) -> dict | None:
+        ctors = [
+            c for c in ctors_of.get(type_nid or "", [])
+            if (c.get("metadata") or {}).get("signature") != "static"
+        ]
+        if not ctors or not isinstance(argc, int):
+            return None
+        return _csharp_pick_overload(ctors, argc)
+
+    def _bare(label: object) -> str:
+        return re.sub(r"\W+", "", str(label or ""))
+
+    # caller -> bare type name -> {type nid: confidence of the `new` edge}
+    built: dict[str, dict[str, dict[str, str]]] = {}
+    callers = {rc.get("caller_nid") for rc in records if rc.get("csharp_ctor_site")}
+    for e in all_edges:
+        if e.get("relation") != "calls" or e.get("source") not in callers:
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        if tnode is None or tnode["id"] in owner_of or not tnode.get("source_file"):
+            continue
+        built.setdefault(e["source"], {}).setdefault(_bare(tnode.get("label")), {})[
+            tnode["id"]
+        ] = str(e.get("confidence") or "INFERRED")
+
+    bases_of: dict[str, set[str]] = {}
+    unresolved_base: set[str] = set()
+    for e in all_edges:
+        derived = e.get("source")
+        if (e.get("relation") != "inherits" or not isinstance(derived, str)
+                or not _is_cs_file(e.get("source_file"))):
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        if tnode is None or not tnode.get("source_file"):
+            unresolved_base.add(derived)
+        else:
+            bases_of.setdefault(derived, set()).add(tnode["id"])
+
+    existing = {
+        (e.get("source"), e.get("target")) for e in all_edges if e.get("relation") == "calls"
+    }
+    for rc in records:
+        caller = rc.get("caller_nid")
+        if not caller:
+            continue
+        confidence = "EXTRACTED"
+        if rc.get("csharp_ctor_site"):
+            types = built.get(caller, {}).get(rc["csharp_ctor_site"], {})
+            if len(types) != 1:
+                continue
+            type_nid, confidence = next(iter(types.items()))
+        elif rc.get("csharp_ctor_init") == "this":
+            type_nid = owner_of.get(caller)
+        else:
+            owner = owner_of.get(caller)
+            bases = bases_of.get(owner or "", set())
+            if owner is None or owner in unresolved_base or len(bases) != 1:
+                continue
+            type_nid = next(iter(bases))
+        target = _pick(type_nid, rc.get("arity"))
+        if target is None or target["id"] == caller or (caller, target["id"]) in existing:
+            continue
+        existing.add((caller, target["id"]))
+        all_edges.append({
+            "source": caller,
+            "target": target["id"],
+            "relation": "calls",
+            "context": "call",
+            "confidence": confidence,
+            "confidence_score": 1.0 if confidence == "EXTRACTED" else 0.85,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_csharp_qualified_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -8672,6 +8797,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "csharp_qualified_calls", frozenset({".cs"}), _resolve_csharp_qualified_calls
+    )
+)
+# C# constructors (`new X(a, b)`, `: base(...)`, `: this(...)`): the overload
+# that runs, picked by argument count once the constructed type is bound.
+# Runs after csharp_qualified_calls so every `new` has its type edge.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_constructor_calls", frozenset({".cs"}), _resolve_csharp_constructor_calls
     )
 )
 # C# member-level interface dispatch (#3003): a call through an injected
@@ -11529,6 +11662,9 @@ def extract(
         ]
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
+            continue
+        # A C# constructor is named like its type but never called by name.
+        if is_csharp_constructor_node(n):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")

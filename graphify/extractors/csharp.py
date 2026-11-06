@@ -18,6 +18,21 @@ from graphify.extractors.base import _make_id
 from graphify.rcfile import effective_suffix
 
 
+def is_csharp_constructor_node(node: dict) -> bool:
+    """A C# constructor node (instance, static or primary).
+
+    A constructor carries its type's name but is reached only through `new`
+    or a `: base(...)` / `: this(...)` initializer, never by that name, so the
+    name-keyed call indexes leave it out.
+    """
+    metadata = node.get("metadata") or {}
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("kind") == "constructor"
+        and effective_suffix(str(node.get("source_file") or "")) == ".cs"
+    )
+
+
 def _build_csharp_type_def_index(
     all_nodes: list[dict],
     all_edges: list[dict] | None = None,
