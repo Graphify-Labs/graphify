@@ -544,6 +544,176 @@ def test_solidity_library_call_fails_closed_when_ambiguous_or_not_a_type(tmp_pat
     assert _function_calls(result) == {("ok()", "h()", "A.sol")}
 
 
+_IERC20 = (
+    "pragma solidity ^0.8.20;\n"
+    "interface IERC20 {\n"
+    "    function transfer(address to, uint256 value) external returns (bool);\n"
+    "    function balanceOf(address who) external view returns (uint256);\n"
+    "}\n"
+)
+# Implements IERC20: a call on an IERC20 value must not be guessed to land here.
+_TOKEN = (
+    "pragma solidity ^0.8.20;\n"
+    'import {IERC20} from "./IERC20.sol";\n'
+    "contract Token is IERC20 {\n"
+    "    function transfer(address to, uint256 value) external returns (bool) { return true; }\n"
+    "    function balanceOf(address who) external view returns (uint256) { return 0; }\n"
+    "}\n"
+)
+
+
+def _typed_receiver_corpus(tmp_path: Path, vault: str) -> dict:
+    (tmp_path / "IERC20.sol").write_text(_IERC20, encoding="utf-8")
+    (tmp_path / "Token.sol").write_text(_TOKEN, encoding="utf-8")
+    (tmp_path / "Vault.sol").write_text(vault, encoding="utf-8")
+    return extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+
+@_needs_solidity
+def test_solidity_call_on_a_typed_state_variable_binds_the_interface_method(tmp_path):
+    # `token.transfer()` was parked as a qualified call on the type `token`,
+    # which names no type, so no call on a typed value got an edge
+    # (OpenZeppelin: 0 of 74 compiler-resolved calls).
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        "contract Vault {\n"
+        "    IERC20 public token;\n"
+        "    function pay(address to, uint256 v) external { token.transfer(to, v); }\n"
+        "}\n"
+    ))
+
+    # The interface's own declaration, not Token's implementation.
+    assert _function_calls(result) == {("pay()", "transfer()", "IERC20.sol")}
+
+
+@_needs_solidity
+def test_solidity_call_on_a_typed_parameter_local_or_return_variable_binds(tmp_path):
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        "contract Vault {\n"
+        "    function viaParam(IERC20 t, address to) external { t.transfer(to, 1); }\n"
+        "    function viaLocal(address a) external view returns (uint256) {\n"
+        "        IERC20 local = IERC20(a);\n"
+        "        return local.balanceOf(a);\n"
+        "    }\n"
+        "    function viaReturn(address a) external returns (IERC20 out) {\n"
+        "        out = IERC20(a);\n"
+        "        out.transfer(a, 2);\n"
+        "    }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {
+        ("viaParam()", "transfer()", "IERC20.sol"),
+        ("viaLocal()", "balanceOf()", "IERC20.sol"),
+        ("viaReturn()", "transfer()", "IERC20.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_call_on_a_type_conversion_binds_through_the_base_contract(tmp_path):
+    # `IERC20(a).transfer()` and `Ownable(x).owner()`, with `owner` declared
+    # in Ownable's base: walked through the type's linearization.
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "abstract contract OwnableBase { function owner() public view returns (address) { return address(0); } }\n"
+        "abstract contract Ownable is OwnableBase {}\n",
+        encoding="utf-8",
+    )
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        'import {Ownable} from "./Base.sol";\n'
+        "contract Vault {\n"
+        "    function pay(address a) external { IERC20(a).transfer(a, 1); }\n"
+        "    function ownerOf(address x) external view returns (address) { return Ownable(x).owner(); }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {
+        ("pay()", "transfer()", "IERC20.sol"),
+        ("ownerOf()", "owner()", "Base.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_typed_receiver_through_a_reexport_a_base_state_variable_or_a_getter(tmp_path):
+    # OpenZeppelin imports IERC20 through ERC20.sol (`import {IERC20} from
+    # "../ERC20.sol"`), tests call `hevm.prank()` on a base contract's
+    # variable, and `token().clock()` calls on a function's result.
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        "abstract contract Base {\n"
+        "    IERC20 internal constant hevm = IERC20(address(1));\n"
+        "    function token() public view returns (IERC20) { return hevm; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {Base, IERC20} from "./Base.sol";\n'
+        "contract Vault is Base {\n"
+        "    function viaBase(address a) external { hevm.transfer(a, 1); }\n"
+        "    function viaResult(address a) external view returns (uint256) { return token().balanceOf(a); }\n"
+        "    function viaReexport(address a) external { IERC20(a).transfer(a, 3); }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {
+        ("viaBase()", "transfer()", "IERC20.sol"),
+        ("viaResult()", "token()", "Base.sol"),  # the inherited call itself
+        ("viaResult()", "balanceOf()", "IERC20.sol"),
+        ("viaReexport()", "transfer()", "IERC20.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_typed_receiver_fails_closed_when_ambiguous_or_untyped(tmp_path):
+    (tmp_path / "Over.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "interface IOver {\n"
+        "    function f(uint256 a) external;\n"
+        "    function f(bytes32 a) external;\n"
+        "    function g(uint256 a) external;\n"
+        "}\n"
+        "contract Getter { uint256 public total; }\n"
+        "contract GetterChild is Getter {}\n",
+        encoding="utf-8",
+    )
+    # A second, unrelated IERC20 makes the name ambiguous in Mixed.sol only.
+    (tmp_path / "Other.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "interface IERC20 { function transfer(address to, uint256 value) external returns (bool); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Mixed.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import "./IERC20.sol";\n'
+        'import "./Other.sol";\n'
+        "contract Mixed { function m(IERC20 t) external { t.transfer(address(0), 1); } }\n",
+        encoding="utf-8",
+    )
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IOver, GetterChild} from "./Over.sol";\n'
+        "contract Vault {\n"
+        "    function run(IOver o, GetterChild c, uint256 x) external {\n"
+        "        o.f(x);\n"  # two overloads of the same arity
+        "        o.g(x, x);\n"  # no g with two parameters
+        "        c.total();\n"  # a public state variable's getter, not a function
+        "        unknown.g(x);\n"  # not declared anywhere: no type
+        "        x.g(x);\n"  # uint256 has no member g
+        "    }\n"
+        "    function ok(IOver o) external { o.g(1); }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {("ok()", "g()", "Over.sol")}
+
+
 @_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
