@@ -338,7 +338,7 @@ else:
 
 Tell the user which files came up short and what was lost (the line counts are printed above). The nodes already extracted for those files are kept - they are still true - but the file is cached as partial and left unstamped in the manifest below, so the next `--update` re-dispatches it and replace-on-re-extract swaps the partial node set for a complete one. This is the same mechanism the library path uses for a truncated LLM response (#933, #1950), so both paths now recover instead of silently keeping a half-read file forever. A file a subagent did not report at all is not counted as partial - there is nothing to compare against - which is why the prompt rule in `references/extraction-spec.md` asks for the count in the first place.
 
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
+Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. If the host's result carries no machine-readable `usage` (Codex, for one, returns only the completion text), set that chunk's `input_tokens` and `output_tokens` to `null`, not 0: the report then says token usage was unavailable instead of claiming the work cost nothing. Then run:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json, glob
@@ -347,18 +347,20 @@ from pathlib import Path
 chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
 all_nodes, all_edges, all_hyperedges = [], [], []
 total_in, total_out = 0, 0
+usage_unknown = False  # some chunk's host reported no usage
 for c in chunks:
     d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
     all_nodes += d.get('nodes', [])
     all_edges += d.get('edges', [])
     all_hyperedges += d.get('hyperedges', [])
-    total_in += d.get('input_tokens', 0)
-    total_out += d.get('output_tokens', 0)
+    usage_unknown |= d.get('input_tokens', 0) is None or d.get('output_tokens', 0) is None
+    total_in += d.get('input_tokens', 0) or 0
+    total_out += d.get('output_tokens', 0) or 0
 Path('graphify-out/.graphify_semantic_new.json').write_text(json.dumps({
     'nodes': all_nodes, 'edges': all_edges, 'hyperedges': all_hyperedges,
-    'input_tokens': total_in, 'output_tokens': total_out,
+    'input_tokens': None if usage_unknown else total_in, 'output_tokens': None if usage_unknown else total_out,
 }, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens')
+print(f'Merged {len(chunks)} chunks: ' + ('token usage unavailable' if usage_unknown else f'{total_in:,} in / {total_out:,} out tokens'))
 "
 ```
 
@@ -686,12 +688,15 @@ cost['runs'].append({
     'output_tokens': output_tok,
     'files': detect.get('total_files', 0),
 })
-cost['total_input_tokens'] += input_tok
-cost['total_output_tokens'] += output_tok
+measured = input_tok is not None and output_tok is not None
+cost['total_input_tokens'] += input_tok if measured else 0
+cost['total_output_tokens'] += output_tok if measured else 0
+if not measured:
+    cost['unmeasured_runs'] = cost.get('unmeasured_runs', 0) + 1
 cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"utf-8\")
 
-print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
-print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
+print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens' if measured else 'This run: token usage unavailable (the host did not report it)')
+print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs' + (f', {cost[\"unmeasured_runs\"]} not measured' if cost.get('unmeasured_runs') else '') + ')')
 "
 rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_partial.txt
 find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
