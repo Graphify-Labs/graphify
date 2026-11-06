@@ -1909,6 +1909,14 @@ def _body_words(text: str) -> set[str]:
     return words
 
 
+def _decorated_def(node):
+    """The class/function a `decorated_definition` wraps, else None."""
+    if node.type != "decorated_definition":
+        return None
+    definition = node.child_by_field_name("definition")
+    return definition if definition is not None and definition.type in _BODY_DEF_TYPES else None
+
+
 def _attach_python_body_terms(root, source: bytes, stem: str, file_nid: str, nodes: list[dict]) -> None:
     """Set `body_terms` on the file, class and function nodes `_extract_generic`
     made. A node owns its own lines minus the classes and functions nested in it
@@ -1922,7 +1930,10 @@ def _attach_python_body_terms(root, source: bytes, stem: str, file_nid: str, nod
         found, stack = [], list(node.children)
         while stack:
             child = stack.pop()
-            if child.type in _BODY_DEF_TYPES:
+            if child.type in _BODY_DEF_TYPES or (
+                child.type == "decorated_definition" and _decorated_def(child) is not None
+            ):
+                # A decorated def keeps its decorator lines (`@app.route("/x")`).
                 found.append(child)
             else:
                 stack.extend(child.children)
@@ -1943,15 +1954,16 @@ def _attach_python_body_terms(root, source: bytes, stem: str, file_nid: str, nod
             target["body_terms"] = " ".join(sorted(words))
 
     def walk(node, owner_nid: str, is_function: bool) -> None:
-        cut = [] if is_function else child_defs(node)
+        cut = [] if is_function else child_defs(_decorated_def(node) or node)
         attach(owner_nid, own_text(node, cut))
         for d in cut:
-            name_node = d.child_by_field_name("name")
+            definition = _decorated_def(d) or d
+            name_node = definition.child_by_field_name("name")
             if name_node is None:
                 continue
             name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
             nid = _make_id(owner_nid, name) if owner_nid != file_nid else _make_id(stem, name)
-            walk(d, nid, d.type == "function_definition")
+            walk(d, nid, definition.type == "function_definition")
 
     walk(root, file_nid, False)
 
