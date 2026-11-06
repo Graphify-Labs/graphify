@@ -411,7 +411,10 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
     _stat_index_root = new_root
-    _stat_index_anchor = Path(root).resolve()
+    # Spell the anchor like the in-memory keys (_normalize_path): callers pass an
+    # os_long_path() root, and on Windows relpath() cannot relate "\\?\C:\..." to
+    # "C:\...", so every key stayed absolute and a moved corpus missed (#5035).
+    _stat_index_anchor = _normalize_path(Path(root).resolve())
     p = _stat_index_file(_stat_index_root)
     _stat_index_path = p
     _stat_index = {}
