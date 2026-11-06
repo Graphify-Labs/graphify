@@ -369,6 +369,26 @@ def _suppress_ambiguous_python_imports(
         except (OSError, RuntimeError):
             return False
 
+    def _root_relative_source_file(source_file: str) -> str:
+        """Scan-root-relative POSIX form of ``source_file`` for id hashing."""
+        if not source_file:
+            return ""
+        path = Path(source_file)
+        if not path.is_absolute():
+            return path.as_posix()
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            pass
+        try:
+            return path.resolve().relative_to(root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        try:
+            return os.path.relpath(str(path), str(root)).replace("\\", "/")
+        except ValueError:
+            return path.name  # different Windows drive: no relative path
+
     kept_edges: list[dict] = []
     for edge in edges:
         if not isinstance(edge, dict):
@@ -427,10 +447,16 @@ def _suppress_ambiguous_python_imports(
             continue
         # A raw dotted alias could itself belong to an unrelated real node. Use
         # a stable, node-less id so the graph builder drops the unresolved edge
-        # instead of fabricating a link to that node.
+        # instead of fabricating a link to that node. The id is hashed only
+        # from checkout-independent material: at this point source_file and the
+        # importer's node id still embed the absolute scan root, so the same
+        # commit built in two directories would mint different ids (#5044).
+        # The root-relative file, the import's location and the module name
+        # already identify the import site uniquely.
         identity = "\0".join((
-            str(module_name), str(edge.get("source_file", "")),
-            str(edge.get("source_location", "")), str(edge.get("source", "")),
+            str(module_name),
+            _root_relative_source_file(str(edge.get("source_file", ""))),
+            str(edge.get("source_location", "")),
         ))
         target = _make_id(f"ambiguous_python_import_{hashlib.sha1(identity.encode()).hexdigest()[:12]}")
         while target in node_ids:
