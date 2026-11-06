@@ -3442,6 +3442,28 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     return has_code or has_deletion
 
 
+def _watch_event_filter():
+    """Watchdog events that mean a file actually changed, not just was read.
+
+    Passing this as ``event_filter`` keeps ``IN_OPEN`` and
+    ``IN_CLOSE_NOWRITE`` out of the inotify mask. The recursive watch-setup
+    walk then produces no events of its own, so it cannot overflow the kernel
+    queue and trigger watchdog's rebuild loop (#5033).
+    """
+    from watchdog import events as we
+
+    return [
+        we.FileCreatedEvent,
+        we.FileModifiedEvent,
+        we.FileDeletedEvent,
+        we.FileMovedEvent,
+        we.FileClosedEvent,
+        we.DirCreatedEvent,
+        we.DirDeletedEvent,
+        we.DirMovedEvent,
+    ]
+
+
 _READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
 
 
