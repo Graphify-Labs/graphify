@@ -26,17 +26,27 @@ Supported (simplified) JSON shape:
 
 This shape diverges from the official SCIP protobuf (where occurrences
 live on the document, not on each symbol). We consume the simplified
-shape that LLM-generated SCIP-style JSON commonly produces. Future
-cycles may add document-level occurrence support.
+shape that LLM-generated SCIP-style JSON commonly produces.
+
+Real SCIP indexes:
+  ingest_scip_index(source: str | PathLike | bytes) -> dict[str, Any]
+
+  Reads an ``index.scip`` written by a SCIP indexer (scip-python,
+  scip-typescript, rust-analyzer, ...), decodes it with
+  ``graphify.scip_index`` (no protobuf dependency) and maps its
+  document-level occurrences onto the shape above, then runs the same
+  two passes. See ``ingest_scip_index`` for the mapping and its limits.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from typing import Any
 
-from graphify.security import sanitize_metadata
+from graphify.scip_index import ScipDecodeError, decode_scip_index, symbol_display_name
+from graphify.security import _max_graph_file_bytes, sanitize_metadata
 
 
 def ingest_scip_json(
@@ -127,6 +137,89 @@ def ingest_scip_json(
         )
 
     return {"nodes": nodes, "edges": edges}
+
+
+def ingest_scip_index(source: str | os.PathLike[str] | bytes) -> dict[str, Any]:
+    """Convert a real SCIP index (``index.scip``) into Graphify nodes and edges.
+
+    ``source`` is the path of an index file or its bytes. The index is decoded
+    by :func:`graphify.scip_index.decode_scip_index` and mapped onto the shape
+    :func:`ingest_scip_json` reads, then ingested by it:
+
+    * each symbol a document defines (its ``SymbolInformation``) gets that
+      document's occurrences of the symbol, definitions first, so the node's
+      ``source_location`` is the line of its definition;
+    * SCIP lines are zero-based; they are turned into Graphify's one-based
+      lines here, so ``L1`` is the first line of the file;
+    * document-local symbols (``local 12``) are left out: they have no
+      identity outside their file and carry no name;
+    * a symbol without a ``display_name`` (most indexers leave it out) is
+      labelled from its last descriptor: ``Square``, ``area()``;
+    * relationships become edges exactly as for the JSON shape.
+
+    References between symbols (occurrences without the Definition role) are
+    not turned into edges yet: an occurrence does not say which enclosing
+    symbol it belongs to unless the indexer writes ``enclosing_range``, and
+    guessing would create relationships the index does not state.
+
+    Returns ``{"nodes", "edges"}``. An unreadable, oversized or malformed
+    index returns the empty result with an ``"error"`` key instead of raising,
+    like ``extract_mcp_config``.
+    """
+    if isinstance(source, (bytes, bytearray)):
+        data = bytes(source)
+    else:
+        try:
+            if os.path.getsize(source) > _max_graph_file_bytes():
+                return {"nodes": [], "edges": [], "error": "scip index too large to ingest"}
+            with open(source, "rb") as handle:
+                data = handle.read()
+        except OSError as exc:
+            return {"nodes": [], "edges": [], "error": f"scip_ingest read error: {exc}"}
+    if len(data) > _max_graph_file_bytes():
+        return {"nodes": [], "edges": [], "error": "scip index too large to ingest"}
+    try:
+        index = decode_scip_index(data)
+    except ScipDecodeError as exc:
+        return {"nodes": [], "edges": [], "error": f"scip_ingest decode error: {exc}"}
+    return ingest_scip_json(_index_to_ingest_shape(index))
+
+
+def _index_to_ingest_shape(index: dict[str, Any]) -> dict[str, Any]:
+    """Move each document's occurrences under the symbols it defines (see ``ingest_scip_index``)."""
+    documents = []
+    for document in index.get("documents", []):
+        by_symbol: dict[str, list[dict[str, Any]]] = {}
+        for occurrence in document.get("occurrences", []):
+            rng = occurrence.get("range") or []
+            symbol = occurrence.get("symbol", "")
+            if not symbol or not rng:
+                continue
+            by_symbol.setdefault(symbol, []).append(
+                {**occurrence, "range": [rng[0] + 1, *rng[1:]]}  # zero-based SCIP line -> one-based
+            )
+        symbols = []
+        for info in document.get("symbols", []):
+            symbol = info.get("symbol", "")
+            if not symbol or symbol.startswith("local "):
+                continue
+            occurrences = sorted(
+                by_symbol.get(symbol, []),
+                key=lambda o: (not o.get("symbol_roles", 0) & _SCIP_ROLE_DEFINITION, o["range"]),
+            )
+            label = info.get("display_name") or symbol_display_name(symbol)
+            symbols.append({**info, "display_name": label, "occurrences": occurrences})
+        documents.append(
+            {
+                "relative_path": document.get("relative_path", ""),
+                "language": document.get("language", ""),
+                "symbols": symbols,
+            }
+        )
+    return {"documents": documents}
+
+
+_SCIP_ROLE_DEFINITION = 0x1  # SymbolRole.Definition in scip.proto
 
 
 def _emit_symbol_node(
