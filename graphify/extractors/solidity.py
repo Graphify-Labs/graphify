@@ -27,6 +27,28 @@ def _unquote(value: str) -> str:
     return value
 
 
+def _rightmost_operand(obj: Node) -> Node:
+    """The receiver of a member call whose object tree-sitter-solidity merged
+    with a preceding operator (see :func:`_callee_text`)."""
+    base = obj
+    while True:
+        unwrapped = base.named_children[0] if base.type == "expression" and base.named_children else base
+        right = (
+            unwrapped.child_by_field_name("right") if unwrapped.type == "binary_expression"
+            else unwrapped.child_by_field_name("argument") if unwrapped.type == "unary_expression"
+            else None
+        )
+        if right is None:
+            return base
+        base = right
+
+
+def _member_callee(callee: Node) -> Node | None:
+    """The ``member_expression`` of a member call ``recv.f(..)``, else ``None``."""
+    inner = callee.named_children[0] if callee.type == "expression" and callee.named_children else callee
+    return inner if inner.type == "member_expression" else None
+
+
 def _callee_text(callee: Node, source: bytes) -> str:
     """The callee as written, e.g. ``super.supportsInterface`` or ``_check``.
 
@@ -36,25 +58,88 @@ def _callee_text(callee: Node, source: bytes) -> str:
     is seen as ``super.f`` (and ``a && b.c(x)`` as ``b.c``). A prefix operator
     is swallowed the same way: ``!Lib.f(x)`` parses as ``(!Lib).f``.
     """
-    inner = callee.named_children[0] if callee.type == "expression" and callee.named_children else callee
-    if inner.type == "member_expression":
+    inner = _member_callee(callee)
+    if inner is not None:
         obj = inner.child_by_field_name("object")
         prop = inner.child_by_field_name("property")
         if obj is not None and prop is not None:
-            base = obj
-            while True:
-                unwrapped = base.named_children[0] if base.type == "expression" and base.named_children else base
-                right = (
-                    unwrapped.child_by_field_name("right") if unwrapped.type == "binary_expression"
-                    else unwrapped.child_by_field_name("argument") if unwrapped.type == "unary_expression"
-                    else None
-                )
-                if right is None:
-                    break
-                base = right
+            base = _rightmost_operand(obj)
             if base is not obj:
                 return f"{_read_text(base, source)}.{_read_text(prop, source)}"
     return _read_text(callee, source)
+
+
+# A type's written text is read in the contract it was written in (its name
+# and the structs/enums/value types it declares), see extract_solidity.qualify.
+TypeContext = tuple[str | None, frozenset[str]]
+# Variable name -> (normalized type text, context); None when ambiguous.
+VariableTypes = dict[str, tuple[str, TypeContext] | None]
+
+_ELEMENTARY_ALIASES = {"uint": "uint256", "int": "int256", "byte": "bytes1"}
+_MAPPING_VALUE_NAME = re.compile(r"(.*\S) ([A-Za-z_$][A-Za-z0-9_$]*)")
+
+
+def _normalize_type(text: str) -> str:
+    """One spelling per type: whitespace collapsed (``mapping(a => b)`` ->
+    ``mapping(a=>b)``) and the elementary aliases expanded (``uint`` ->
+    ``uint256``), so a receiver's type compares equal to a ``using`` target or
+    a parameter written differently."""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r" ?([\[\]().,]|=>) ?", r"\1", text)
+    return re.sub(r"\b(uint|int|byte)\b", lambda m: _ELEMENTARY_ALIASES[m.group(1)], text)
+
+
+def _element_type(text: str) -> str | None:
+    """The value type of ``mapping(K=>V)`` or the element type of ``T[]`` /
+    ``T[n]`` (normalized text), else ``None``."""
+    if text.startswith("mapping(") and text.endswith(")"):
+        inner = text[len("mapping("):-1]
+        depth = 0
+        for index, char in enumerate(inner):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif depth == 0 and inner.startswith("=>", index):
+                value = inner[index + 2:]
+                # A named mapping value (`mapping(address a => uint256 b)`).
+                named = _MAPPING_VALUE_NAME.fullmatch(value)
+                if named and named.group(2) != "payable":
+                    value = named.group(1)
+                return value
+        return None
+    if text.endswith("]"):
+        depth = 0
+        for index in range(len(text) - 1, -1, -1):
+            if text[index] == "]":
+                depth += 1
+            elif text[index] == "[":
+                depth -= 1
+                if depth == 0:
+                    return text[:index] or None
+    return None
+
+
+# Globals the language types itself, so `msg.sender.f()` and
+# `keccak256(b).f()` are typed like a declared variable.
+_BUILTIN_MEMBER_TYPES = {
+    "msg.sender": "address",
+    "msg.value": "uint256",
+    "tx.origin": "address",
+    "block.timestamp": "uint256",
+    "block.number": "uint256",
+    "block.chainid": "uint256",
+}
+_BUILTIN_CALL_TYPES = {
+    "keccak256": "bytes32",
+    "sha256": "bytes32",
+    "blockhash": "bytes32",
+    "abi.encode": "bytes",
+    "abi.encodePacked": "bytes",
+    "abi.encodeWithSelector": "bytes",
+    "abi.encodeWithSignature": "bytes",
+    "abi.encodeCall": "bytes",
+}
 
 
 def _inherited_call(
@@ -170,6 +255,7 @@ def resolve_solidity_inherited_calls(
     functions: dict[str, dict[str, list[tuple[str, Any]]]] = {}
     modifiers: dict[str, dict[str, list[str]]] = {}
     bases: dict[str, list[str]] = {}
+    state_variables: dict[str, dict[str, str]] = {}
     existing: set[tuple[Any, Any, Any]] = set()
     for edge in all_edges:
         source, target, relation = edge.get("source"), edge.get("target"), edge.get("relation")
@@ -190,6 +276,8 @@ def resolve_solidity_inherited_calls(
                 )
             elif member.get("kind") == "modifier":
                 modifiers.setdefault(source, {}).setdefault(name, []).append(target)
+        elif relation == "contains" and meta(target).get("kind") == "state_variable":
+            state_variables.setdefault(source, {})[str(node_by_id.get(target, {}).get("label", ""))] = target
         elif relation == "contains" and meta(target).get("kind") in {"event", "error"}:
             # An event/error is a call target too (`emit E()`, `revert Err()`).
             functions.setdefault(source, {}).setdefault(
@@ -216,7 +304,7 @@ def resolve_solidity_inherited_calls(
     types_by_file: dict[tuple[str, str], list[str]] = {}
     file_by_id: dict[Any, str] = {}
     imported: dict[str, set[str]] = {}
-    if any(rc["solidity_call"] == "qualified" for rc in calls):
+    if any(rc["solidity_call"] in {"qualified", "member"} for rc in calls):
         for node in all_nodes:
             node_file = node.get("source_file")
             if not node_file:
@@ -232,7 +320,82 @@ def resolve_solidity_inherited_calls(
                 if importer and imported_file:
                     imported.setdefault(importer, set()).add(imported_file)
 
+    reachable_cache: dict[str, list[str]] = {}
+
+    def reachable(caller_file: str) -> list[str]:
+        """Every file ``caller_file`` imports, directly or through the files
+        it imports (`import {IERC20} from "./ERC20.sol"` re-exports a type
+        ERC20.sol itself imports)."""
+        if caller_file not in reachable_cache:
+            seen: set[str] = set()
+            stack = sorted(imported.get(caller_file, set()))
+            while stack:
+                current = stack.pop()
+                if current in seen or current == caller_file:
+                    continue
+                seen.add(current)
+                stack.extend(sorted(imported.get(current, set())))
+            reachable_cache[caller_file] = sorted(seen)
+        return reachable_cache[caller_file]
+
+    def visible_types(caller_file: str, name: str, transitive: bool = False) -> list[str]:
+        """The types named ``name`` that ``caller_file`` declares or imports
+        directly; with ``transitive``, when there is none, those of every
+        file it reaches through its imports."""
+        found = types_by_file.get((caller_file, name), []) + [
+            type_id
+            for imported_file in sorted(imported.get(caller_file, set()))
+            for type_id in types_by_file.get((imported_file, name), [])
+        ]
+        if found or not transitive:
+            return found
+        return [
+            type_id
+            for reached in reachable(caller_file)
+            for type_id in types_by_file.get((reached, name), [])
+        ]
+
     linear_cache: dict[str, list[str]] = {}
+
+    def linearization(type_id: str) -> list[str]:
+        if type_id not in linear_cache:
+            linear_cache[type_id] = _c3_linearization(type_id, bases)
+        return linear_cache[type_id]
+
+    def receiver_types(rc: dict) -> list[tuple[str, str]]:
+        """``(type, file)`` readings of a member call's receiver, best first:
+        the type the extractor read (a local, parameter, own state variable
+        or conversion), a base contract's state variable of the receiver's
+        name, or the declared return type of the function ``g`` in
+        ``g(..).f()``. ``file`` is the file whose scope names the type."""
+        caller = rc.get("caller_nid")
+        readings: list[tuple[str, str]] = []
+        caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
+        if rc.get("receiver_type"):
+            readings.append((str(rc["receiver_type"]), caller_file))
+        contract = owner.get(str(caller))
+        if not contract:
+            return readings
+        linear = linearization(contract)
+        variable = rc.get("qualifier") if rc["solidity_call"] == "qualified" else None
+        if variable:
+            # Not a local or own state variable (the extractor checked), so
+            # maybe a base contract's.
+            for type_id in linear[1:]:
+                nid = state_variables.get(type_id, {}).get(str(variable))
+                if nid is not None:
+                    declared = meta(nid).get("declared_type")
+                    if declared:
+                        readings.append((str(declared), str(node_by_id[nid].get("source_file", ""))))
+                    break
+        result_of = rc.get("receiver_call")
+        if isinstance(result_of, list) and len(result_of) == 2:
+            function = find(linear, str(result_of[0]), result_of[1], "inherited")
+            returned = meta(function).get("returns") if function else None
+            if function and returned:
+                readings.append((str(returned), str(node_by_id[function].get("source_file", ""))))
+        return readings
+
     for rc in calls:
         caller = rc.get("caller_nid")
         name = rc.get("callee")
@@ -240,25 +403,21 @@ def resolve_solidity_inherited_calls(
             continue
         kind = rc["solidity_call"]
         contract = owner.get(caller)
+        if kind == "member":
+            # `recv.f()` on a typed receiver: not bound here.
+            continue
         if kind == "qualified":
             # `Lib.f()` names its type, so it needs no owning contract (a free
             # function calls libraries too).
             caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
-            qualifier = str(rc.get("qualifier", ""))
-            scope = types_by_file.get((caller_file, qualifier), []) + [
-                type_id
-                for imported_file in sorted(imported.get(caller_file, set()))
-                for type_id in types_by_file.get((imported_file, qualifier), [])
-            ]
+            scope = visible_types(caller_file, str(rc.get("qualifier", "")))
             # Fail closed when the name is not visible or is ambiguous.
             target = find(scope, name, rc.get("arity"), kind) if len(scope) == 1 else None
         elif not contract:
             continue
         else:
-            if contract not in linear_cache:
-                linear_cache[contract] = _c3_linearization(contract, bases)
             # The extractor already looked in the caller's own contract.
-            target = find(linear_cache[contract][1:], name, rc.get("arity"), kind)
+            target = find(linearization(contract)[1:], name, rc.get("arity"), kind)
         if target is None or target == caller:
             continue
         relation = "uses" if kind == "modifier" else "calls"
@@ -353,6 +512,7 @@ def extract_solidity(path: Path) -> dict:
         source_backed: bool = True,
         callable_node: bool = False,
         arity: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> str:
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -361,6 +521,8 @@ def extract_solidity(path: Path) -> dict:
                 # Parameter count, so the cross-contract pass can pick the
                 # same overload the in-contract lookup does (name, arity).
                 metadata["arity"] = arity
+            if extra:
+                metadata.update(extra)
             item: dict[str, Any] = {
                 "id": nid,
                 "label": label,
@@ -418,6 +580,20 @@ def extract_solidity(path: Path) -> dict:
         call["qualifier"] = import_aliases.get(qualifier, qualifier)
         raw_calls.append(call)
 
+    def member_call(
+        caller_id: str, member: str, arity: int, node: Node,
+        receiver: str | None, receiver_call: tuple[str, int] | None,
+    ) -> None:
+        """Park ``recv.member(..)`` for resolve_solidity_inherited_calls, with
+        the receiver's declared type and/or, for ``g(..).member()``, the call
+        whose result it is (typed there from ``g``'s return type)."""
+        call = _inherited_call(caller_id, member, arity, "member", source_file, node)
+        if receiver:
+            call["receiver_type"] = receiver
+        if receiver_call:
+            call["receiver_call"] = list(receiver_call)
+        raw_calls.append(call)
+
     def split_qualified(written: str) -> tuple[str, str] | None:
         """``("Lib", "f")`` for ``Lib.f``; ``None`` for ``a.b.f``, ``x[i].f``,
         ``f().g``, ``super.f`` or ``this.f``."""
@@ -463,6 +639,178 @@ def extract_solidity(path: Path) -> dict:
             target_file=str(target),
         )
 
+    # Receiver typing: the declared type of `recv` in `recv.f(..)`, so a call
+    # on a typed value can be bound through that type. A type is kept as its
+    # normalized text plus the contract it was written in (`TypeContext`), so
+    # a struct, enum or value type declared in a contract reads as
+    # `Contract.Name` everywhere, as callers in other files must write it.
+    file_context: TypeContext = (None, frozenset())
+    contract_contexts: dict[int, TypeContext] = {}
+    # Struct fields by qualified struct name, for `s.field.f()`.
+    struct_fields: dict[str, tuple[TypeContext, dict[str, str]]] = {}
+
+    def field_types(struct: Node) -> dict[str, str]:
+        struct_body = struct.child_by_field_name("body")
+        fields: dict[str, str] = {}
+        for field in struct_body.named_children if struct_body is not None else []:
+            field_type = field.child_by_field_name("type")
+            field_name = field.child_by_field_name("name")
+            if field.type == "struct_member" and field_type is not None and field_name is not None:
+                fields[_read_text(field_name, source)] = _normalize_type(_read_text(field_type, source))
+        return fields
+
+    for declaration in root.named_children:
+        if declaration.type == "struct_declaration":
+            name_node = declaration.child_by_field_name("name")
+            if name_node is not None:
+                struct_fields[_read_text(name_node, source)] = (file_context, field_types(declaration))
+            continue
+        if declaration.type not in _TYPE_DECLARATIONS:
+            continue
+        name_node = declaration.child_by_field_name("name")
+        body = declaration.child_by_field_name("body")
+        if name_node is None or body is None:
+            continue
+        owner_name = _read_text(name_node, source)
+        local_types = frozenset(
+            _read_text(member.child_by_field_name("name"), source)
+            for member in body.named_children
+            if member.type in {"struct_declaration", "enum_declaration", "user_defined_type_definition"}
+            and member.child_by_field_name("name") is not None
+        )
+        context: TypeContext = (owner_name, local_types)
+        contract_contexts[declaration.id] = context
+        for member in body.named_children:
+            member_name = member.child_by_field_name("name")
+            if member.type == "struct_declaration" and member_name is not None:
+                struct_fields[f"{owner_name}.{_read_text(member_name, source)}"] = (
+                    context, field_types(member),
+                )
+
+    def qualify(text: str, context: TypeContext) -> str:
+        """``text`` as written in ``context``, with its leading type name
+        qualified (``Trace208`` in library Checkpoints -> ``Checkpoints.Trace208``)
+        and an import alias replaced by the name it imports."""
+        match = _IDENTIFIER.match(text)
+        if match is None:
+            return text
+        head, rest = match.group(0), text[match.end():]
+        owner_name, local_types = context
+        if not rest.startswith(".") and owner_name and head in local_types:
+            return f"{owner_name}.{head}{rest}"
+        return import_aliases.get(head, head) + rest
+
+    def declared_types(callable_node: Node, context: TypeContext, inherited: VariableTypes) -> VariableTypes:
+        """Parameter, return and local variable types visible in a function
+        or modifier, over ``inherited`` (the contract's state variables). A
+        name declared twice with different types (sibling blocks) is
+        ambiguous and maps to ``None``."""
+        found: dict[str, set[str]] = {}
+        stack = [callable_node]
+        while stack:
+            current = stack.pop()
+            if current.type in {"parameter", "variable_declaration"}:
+                type_node = current.child_by_field_name("type")
+                name_node = current.child_by_field_name("name")
+                if type_node is not None and name_node is not None:
+                    found.setdefault(_read_text(name_node, source), set()).add(
+                        _normalize_type(_read_text(type_node, source))
+                    )
+            stack.extend(current.named_children)
+        scope: VariableTypes = dict(inherited)
+        for name, types in found.items():
+            scope[name] = (next(iter(types)), context) if len(types) == 1 else None
+        return scope
+
+    def unwrap(node: Node) -> Node:
+        while node.type in {"expression", "parenthesized_expression"} and len(node.named_children) == 1:
+            node = node.named_children[0]
+        return node
+
+    def typed_receiver(
+        callee: Node, scope: VariableTypes, context: TypeContext, local_functions: set[str],
+    ) -> str | None:
+        """The qualified declared type of the receiver of the member call
+        ``callee``: a typed variable, an element of a typed mapping/array, a
+        field of a struct declared in this file, a conversion (`IERC20(a)`,
+        `uint256(x)`) or a builtin. ``None`` (fail closed) for anything else,
+        including `super`, `this` and a type name (`Lib.f()`)."""
+        member = _member_callee(callee)
+        obj = member.child_by_field_name("object") if member is not None else None
+        if obj is None:
+            return None
+        typed = typed_expression(unwrap(_rightmost_operand(obj)), scope, context, local_functions)
+        return qualify(*typed) if typed is not None else None
+
+    def member_receiver(
+        callee: Node, scope: VariableTypes, context: TypeContext, local_functions: set[str],
+    ) -> tuple[str | None, tuple[str, int] | None] | None:
+        """``(declared type, (g, arity))`` of a member call's receiver, either
+        part ``None`` when unknown; ``None`` when both are."""
+        typed = typed_receiver(callee, scope, context, local_functions)
+        result_of = call_receiver(callee, scope)
+        return (typed, result_of) if typed or result_of else None
+
+    def call_receiver(callee: Node, scope: VariableTypes) -> tuple[str, int] | None:
+        """``(g, arity)`` when the receiver of the member call ``callee`` is
+        the result of a bare call ``g(..)``, which the resolver types from
+        ``g``'s declared return type."""
+        member = _member_callee(callee)
+        obj = member.child_by_field_name("object") if member is not None else None
+        receiver = unwrap(_rightmost_operand(obj)) if obj is not None else None
+        if receiver is None or receiver.type != "call_expression":
+            return None
+        function = receiver.child_by_field_name("function")
+        name = _read_text(unwrap(function), source) if function is not None else ""
+        if not _IDENTIFIER.fullmatch(name) or name in scope or name in _BUILTIN_CALL_TYPES:
+            return None
+        return name, sum(child.type == "call_argument" for child in receiver.named_children)
+
+    def typed_expression(
+        node: Node, scope: VariableTypes, context: TypeContext, local_functions: set[str],
+    ) -> tuple[str, TypeContext] | None:
+        if node.type == "identifier":
+            return scope.get(_read_text(node, source))
+        if node.type == "array_access":
+            base = node.child_by_field_name("base")
+            typed = typed_expression(unwrap(base), scope, context, local_functions) if base is not None else None
+            element = _element_type(typed[0]) if typed is not None else None
+            return (element, typed[1]) if typed is not None and element else None
+        if node.type == "member_expression":
+            written = _read_text(node, source)
+            if written in _BUILTIN_MEMBER_TYPES:
+                return _BUILTIN_MEMBER_TYPES[written], file_context
+            obj = node.child_by_field_name("object")
+            prop = node.child_by_field_name("property")
+            typed = typed_expression(unwrap(obj), scope, context, local_functions) if obj is not None else None
+            struct = struct_fields.get(qualify(*typed)) if typed is not None else None
+            field = struct[1].get(_read_text(prop, source)) if struct is not None and prop is not None else None
+            return (field, struct[0]) if struct is not None and field else None
+        if node.type == "type_cast_expression":
+            type_node = next((child for child in node.named_children if child.type == "primitive_type"), None)
+            return (_normalize_type(_read_text(type_node, source)), file_context) if type_node is not None else None
+        if node.type == "payable_conversion_expression":
+            return "address payable", file_context
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            if function is None:
+                return None
+            written = _normalize_type(_read_text(unwrap(function), source))
+            if written in _BUILTIN_CALL_TYPES:
+                return _BUILTIN_CALL_TYPES[written], file_context
+            arguments = sum(child.type == "call_argument" for child in node.named_children)
+            # `T(x)`: a conversion to the type `T`. A function of the caller's
+            # own contract or a variable is not a type; any other name is
+            # checked against the declared types by the resolver.
+            if (
+                arguments == 1
+                and _IDENTIFIER.fullmatch(written)
+                and written not in scope
+                and written not in local_functions
+            ):
+                return written, context
+        return None
+
     for declaration in root.named_children:
         type_kind = _TYPE_DECLARATIONS.get(declaration.type)
         if type_kind is None:
@@ -499,7 +847,9 @@ def extract_solidity(path: Path) -> dict:
         functions: dict[tuple[str, int], list[str]] = {}
         modifiers: dict[str, str] = {}
         reference_targets: dict[tuple[str, int], str] = {}
-        bodies: list[tuple[Node, str]] = []
+        bodies: list[tuple[Node, str, Node]] = []
+        type_context = contract_contexts[declaration.id]
+        state_types: VariableTypes = {}
         pending_modifiers: list[tuple[str, str, Node]] = []
 
         def add_member(
@@ -512,6 +862,7 @@ def extract_solidity(path: Path) -> dict:
             signature: str = "",
             callable_node: bool = False,
             arity: int | None = None,
+            extra: dict[str, Any] | None = None,
         ) -> str:
             # Callables carry an arity:types signature (distinguishes overloads).
             # Non-callable members (struct/enum/event/error/state-var) have no
@@ -526,6 +877,7 @@ def extract_solidity(path: Path) -> dict:
                 kind=kind,
                 callable_node=callable_node,
                 arity=arity,
+                extra=extra,
             )
             add_edge(type_id, member_id, relation, member)
             return member_id
@@ -620,7 +972,17 @@ def extract_solidity(path: Path) -> dict:
                     for child in member.named_children
                 )
                 if kind == "state_variable_declaration":
-                    reference_targets[(name, arity)] = add_member(member, name, name, "state_variable")
+                    type_node = member.child_by_field_name("type")
+                    declared: dict[str, Any] = {}
+                    if type_node is not None:
+                        state_type = _normalize_type(_read_text(type_node, source))
+                        state_types[name] = (state_type, type_context)
+                        # Read by the resolver for a receiver that is a base
+                        # contract's state variable (`hevm.prank()`).
+                        declared["declared_type"] = qualify(state_type, type_context)
+                    reference_targets[(name, arity)] = add_member(
+                        member, name, name, "state_variable", extra=declared,
+                    )
                 else:
                     # `emit E(..)`, `revert Err(..)` and `require(c, Err(..))`
                     # call the event/error, like Python's `raise Err()`: bind
@@ -659,6 +1021,20 @@ def extract_solidity(path: Path) -> dict:
                 if child.child_by_field_name("type") is not None
             )
             arity = len(parameters)
+            returned: dict[str, Any] = {}
+            return_types = [
+                parameter.child_by_field_name("type")
+                for returns in member.named_children
+                if returns.type == "return_type_definition"
+                for parameter in returns.named_children
+                if parameter.type == "parameter"
+            ]
+            if len(return_types) == 1 and return_types[0] is not None:
+                # Read by the resolver for a receiver that is this function's
+                # result (`token().clock()`).
+                returned["returns"] = qualify(
+                    _normalize_type(_read_text(return_types[0], source)), type_context,
+                )
             member_id = add_member(
                 member,
                 name,
@@ -668,6 +1044,7 @@ def extract_solidity(path: Path) -> dict:
                 signature=f"{arity}:{signature}",
                 callable_node=True,
                 arity=arity,
+                extra=returned,
             )
             if callable_kind == "modifier":
                 modifiers[name] = member_id
@@ -675,7 +1052,7 @@ def extract_solidity(path: Path) -> dict:
                 functions.setdefault((name, arity), []).append(member_id)
             member_body = member.child_by_field_name("body")
             if member_body is not None:
-                bodies.append((member_body, member_id))
+                bodies.append((member_body, member_id, member))
             if callable_kind != "modifier":
                 for child in member.named_children:
                     if child.type != "modifier_invocation":
@@ -703,7 +1080,9 @@ def extract_solidity(path: Path) -> dict:
                     caller_id, modifier_name, None, "modifier", source_file, modifier_node,
                 ))
 
-        for function_body, caller_id in bodies:
+        own_functions = {name for name, _arity in functions}
+        for function_body, caller_id, callable_node in bodies:
+            scope = declared_types(callable_node, type_context, state_types)
             stack = [function_body]
             while stack:
                 node = stack.pop()
@@ -736,6 +1115,10 @@ def extract_solidity(path: Path) -> dict:
                                 raw_calls.append(_inherited_call(
                                     caller_id, callee, arity, "super", source_file, node,
                                 ))
+                            elif callee and (
+                                receiver := member_receiver(callee_node, scope, type_context, own_functions)
+                            ):
+                                member_call(caller_id, callee, arity, node, *receiver)
                             elif callee and (qualified := split_qualified(written)):
                                 # `Lib.f(..)` / `Base.f(..)` / `Errors.Err(..)`.
                                 # A value receiver (`token.transfer()`) names no
@@ -789,7 +1172,7 @@ def extract_solidity(path: Path) -> dict:
     # type-declaration loop above only descends into named type declarations,
     # so a free function — and every call it makes — was dropped entirely.
     free_functions: dict[tuple[str, int], list[str]] = {}
-    free_bodies: list[tuple[Node, str]] = []
+    free_bodies: list[tuple[Node, str, Node]] = []
     for declaration in root.named_children:
         if declaration.type != "function_definition":
             continue
@@ -818,14 +1201,16 @@ def extract_solidity(path: Path) -> dict:
         free_functions.setdefault((name, arity), []).append(func_id)
         body = declaration.child_by_field_name("body")
         if body is not None:
-            free_bodies.append((body, func_id))
+            free_bodies.append((body, func_id, declaration))
 
     # Resolve calls made from free-function bodies. Only an unambiguous
     # same-file free function is linked directly; a qualified call (Lib.f())
     # is left for resolve_solidity_inherited_calls. Contract methods stay out
     # of scope so we never guess a relationship across a scope we cannot see
     # (fail-closed).
-    for function_body, caller_id in free_bodies:
+    free_names = {name for name, _arity in free_functions}
+    for function_body, caller_id, callable_node in free_bodies:
+        scope = declared_types(callable_node, file_context, {})
         stack = [function_body]
         while stack:
             node = stack.pop()
@@ -839,6 +1224,8 @@ def extract_solidity(path: Path) -> dict:
                         candidates = free_functions.get((callee, arity), [])
                         if len(candidates) == 1:
                             add_edge(caller_id, candidates[0], "calls", node)
+                    elif callee and (receiver := member_receiver(callee_node, scope, file_context, free_names)):
+                        member_call(caller_id, callee, arity, node, *receiver)
                     elif callee and (qualified := split_qualified(written)):
                         qualified_call(caller_id, *qualified, arity, node)
                     elif callee:
