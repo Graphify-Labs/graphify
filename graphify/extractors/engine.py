@@ -6433,6 +6433,7 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = _read_source_bytes(path) if source_override is None else source_override
+        source_bytes = path.stat().st_size if source_override is None else len(source_override)
         # In C and C++, if the .h file does not end with a newline '\n' an error
         # is throwed even if the file is valid. In order to avoid this, a new line
         # char is added only if the original file does not end with it.
@@ -11059,6 +11060,34 @@ def _extract_generic(
     # fold them in so the cross-file resolver sees them (#1668).
     if _ruby_mixin_calls:
         raw_calls.extend(_ruby_mixin_calls)
+    # #3946: inspect the already parsed JavaScript tree, including call
+    # initializers that may not have produced graph edges. A file/binding node
+    # alone does not describe the contents of a data bank. Persist the signal
+    # on the file node so cluster-only reports need no original source access.
+    if (config.ts_module == "tree_sitter_javascript" and not root.has_error
+            and path.suffix.lower() in {".js", ".jsx", ".mjs", ".cjs"}
+            and source.strip() and not raw_calls
+            and all(e.get("relation") == "contains" for e in clean_edges)):
+        structural_types = {
+            "function_declaration", "generator_function_declaration",
+            "function_expression", "generator_function", "arrow_function",
+            "method_definition", "class", "class_declaration",
+            "import_statement", "call_expression", "new_expression",
+        }
+        pending = [root]
+        has_structure = False
+        while pending:
+            current = pending.pop()
+            if current.type in structural_types:
+                has_structure = True
+                break
+            pending.extend(current.named_children)
+        if not has_structure:
+            file_node = next((n for n in nodes if n["id"] == file_nid), None)
+            if file_node is not None:
+                file_node["_no_structural_symbols"] = True
+                file_node["_source_bytes"] = source_bytes
+
     if config.ts_module == "tree_sitter_python":
         raw_calls.extend(_python_property_reads(
             function_bodies, source, str_path, python_var_types, python_attr_types, method_owner,
