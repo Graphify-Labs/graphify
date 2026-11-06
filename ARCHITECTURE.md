@@ -211,6 +211,16 @@ an unresolved base or an unbound type give no constructor edge. Constructors
 stay out of every name-keyed call index. AST cache schema 40 retires C# entries
 without them.
 
+C# property and indexer accessor bodies (and expression bodies) are walked
+with the member as the caller, and the member counts as owned by its type for
+unqualified, `this.`/`base.` and partial-type lookups, like a method. It is never
+a call target by name. An indexer is a `this[]` node (`defines`, context
+`field`) with id `_make_id(type_id, "this")`, salted per signature and away
+from a member spelled `This`. A user-defined operator or conversion is a
+`.operator +()` / `.operator int()` node owned through `method`, with id
+`_make_id(type_id, "operator", sha1(signature)[:6])`, since several conversions
+share one parameter list. Existing ids do not move. AST cache schema 40.
+
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
