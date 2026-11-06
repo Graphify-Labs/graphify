@@ -198,7 +198,8 @@ def test_i4_pending_full_and_pending_changes_keep_their_semantics(built: Path) -
     assert _drain_pending_full(out) is False
 
     _queue_pending(out, [Path("/x/a.py"), Path("/x/a.py"), Path("/y/b.py")])
-    assert [str(p) for p in _drain_pending(out)] == ["/x/a.py", "/y/b.py"]
+    # Compare Path objects so Windows separators from os.fspath do not fail the check (#5039).
+    assert _drain_pending(out) == [Path("/x/a.py"), Path("/y/b.py")]
     assert _drain_pending(out) == []
 
 
