@@ -9,6 +9,7 @@ from typing import Any
 from tree_sitter import Node
 
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
+from graphify.extractors.engine import _underscore_salted_nid
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
@@ -55,6 +56,65 @@ def _callee_text(callee: Node, source: bytes) -> str:
             if base is not obj:
                 return f"{_read_text(base, source)}.{_read_text(prop, source)}"
     return _read_text(callee, source)
+
+
+_SIMPLE_MEMBERS = {
+    "struct_declaration": "struct",
+    "enum_declaration": "enum",
+    "event_definition": "event",
+    "error_declaration": "error",
+    "state_variable_declaration": "state_variable",
+}
+
+
+def _callable_signature(declaration: Node, source: bytes) -> str:
+    """``arity:types`` of a function, modifier or constructor, the part of its
+    id that keeps overloads apart."""
+    parameters = [
+        child for child in declaration.named_children
+        if child.type in {"parameter", "fallback_receive_parameter"}
+    ]
+    types = ",".join(
+        _read_text(child.child_by_field_name("type"), source)
+        for child in parameters
+        if child.child_by_field_name("type") is not None
+    )
+    return f"{len(parameters)}:{types}"
+
+
+def _member_identity(member: Node, source: bytes) -> tuple[str, str, str] | None:
+    """``(kind, name, signature)`` a contract member's node id is made from,
+    as extract_solidity's ``add_member`` mints it; ``None`` for a member that
+    gets no id there."""
+    if member.type in _SIMPLE_MEMBERS:
+        name_node = member.child_by_field_name("name")
+        if name_node is None:
+            return None
+        name = _read_text(name_node, source)
+        return _SIMPLE_MEMBERS[member.type], name, name
+    if member.type == "constructor_definition":
+        return "constructor", "constructor", _callable_signature(member, source)
+    if member.type == "fallback_receive_definition":
+        name = "receive" if _read_text(member, source).lstrip().startswith("receive") else "fallback"
+        return name, name, _callable_signature(member, source)
+    if member.type in {"function_definition", "modifier_definition"}:
+        name_node = member.child_by_field_name("name")
+        if name_node is None:
+            return None
+        kind = "modifier" if member.type == "modifier_definition" else "function"
+        return kind, _read_text(name_node, source), _callable_signature(member, source)
+    return None
+
+
+def _collision_groups(declared: list[tuple[str, str]]) -> dict[str, set[str]]:
+    """``{plain id: {names}}`` for the plain ids two or more distinct names
+    would share. ``make_id`` drops a leading ``_`` and folds case, so
+    ``_grantRole(bytes32,address)`` and ``grantRole(bytes32,address)`` in one
+    contract mint ONE id; an overload is one name, never a collision."""
+    groups: dict[str, set[str]] = {}
+    for plain, name in declared:
+        groups.setdefault(plain, set()).add(name)
+    return {plain: names for plain, names in groups.items() if len(names) >= 2}
 
 
 def _inherited_call(
@@ -463,6 +523,16 @@ def extract_solidity(path: Path) -> dict:
             target_file=str(target),
         )
 
+    # `contract Pair` / `contract _Pair` in one file would share an id too.
+    type_groups = _collision_groups([
+        (_make_id(stem, _TYPE_DECLARATIONS[declaration.type], _read_text(name_node, source)),
+         _read_text(name_node, source))
+        for declaration in root.named_children
+        if declaration.type in _TYPE_DECLARATIONS
+        and (name_node := declaration.child_by_field_name("name")) is not None
+        and declaration.child_by_field_name("body") is not None
+    ])
+
     for declaration in root.named_children:
         type_kind = _TYPE_DECLARATIONS.get(declaration.type)
         if type_kind is None:
@@ -473,7 +543,7 @@ def extract_solidity(path: Path) -> dict:
             continue
         type_name = _read_text(name_node, source)
         type_id = add_node(
-            _make_id(stem, type_kind, type_name),
+            _underscore_salted_nid(_make_id(stem, type_kind, type_name), type_name, type_groups),
             type_name,
             declaration,
             kind=type_kind,
@@ -502,6 +572,17 @@ def extract_solidity(path: Path) -> dict:
         bodies: list[tuple[Node, str]] = []
         pending_modifiers: list[tuple[str, str, Node]] = []
 
+        # Members whose names differ only by a leading `_` (or by case) share a
+        # plain id; the one public name keeps it and the others are salted,
+        # as Python and C# do (#3302, #4415). A member that collides with
+        # nothing keeps its id.
+        member_groups = _collision_groups([
+            (_make_id(type_id, kind, name, signature), name)
+            for member in body.named_children
+            if (identity := _member_identity(member, source)) is not None
+            for kind, name, signature in [identity]
+        ])
+
         def add_member(
             member: Node,
             name: str,
@@ -518,7 +599,9 @@ def extract_solidity(path: Path) -> dict:
             # signature; discriminate on the name — which is unique per kind
             # within a contract scope — rather than the line number, so a node's
             # id stays stable when the member moves (avoids incremental id churn).
-            member_id = _make_id(type_id, kind, name, signature or name)
+            member_id = _underscore_salted_nid(
+                _make_id(type_id, kind, name, signature or name), name, member_groups,
+            )
             add_node(
                 member_id,
                 label,
@@ -789,6 +872,13 @@ def extract_solidity(path: Path) -> dict:
     # type-declaration loop above only descends into named type declarations,
     # so a free function — and every call it makes — was dropped entirely.
     free_functions: dict[tuple[str, int], list[str]] = {}
+    free_groups = _collision_groups([
+        (_make_id(stem, "function", _read_text(name_node, source), _callable_signature(declaration, source)),
+         _read_text(name_node, source))
+        for declaration in root.named_children
+        if declaration.type == "function_definition"
+        and (name_node := declaration.child_by_field_name("name")) is not None
+    ])
     free_bodies: list[tuple[Node, str]] = []
     for declaration in root.named_children:
         if declaration.type != "function_definition":
@@ -808,7 +898,7 @@ def extract_solidity(path: Path) -> dict:
         )
         arity = len(parameters)
         func_id = add_node(
-            _make_id(stem, "function", name, f"{arity}:{signature}"),
+            _underscore_salted_nid(_make_id(stem, "function", name, f"{arity}:{signature}"), name, free_groups),
             f"{name}()",
             declaration,
             kind="function",

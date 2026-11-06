@@ -544,6 +544,99 @@ def test_solidity_library_call_fails_closed_when_ambiguous_or_not_a_type(tmp_pat
     assert _function_calls(result) == {("ok()", "h()", "A.sol")}
 
 
+_ROLES = (
+    "pragma solidity ^0.8.20;\n"
+    "contract Roles {\n"
+    "    event RoleGranted(bytes32 role, address account);\n"
+    "    function hasRole(bytes32 role, address account) public view returns (bool) { return false; }\n"
+    "    function grantRole(bytes32 role, address account) public { _grantRole(role, account); }\n"
+    "    function _grantRole(bytes32 role, address account) internal returns (bool) {\n"
+    "        if (hasRole(role, account)) return false;\n"
+    "        emit RoleGranted(role, account);\n"
+    "        return true;\n"
+    "    }\n"
+    "}\n"
+)
+
+
+def _calls_by_line(result: dict) -> set[tuple[str, str, str, str]]:
+    """(caller, caller line, target, target line) for every `calls` edge."""
+    nodes = {node["id"]: node for node in result["nodes"]}
+    return {
+        (nodes[e["source"]]["label"], nodes[e["source"]]["source_location"],
+         nodes[e["target"]]["label"], nodes[e["target"]]["source_location"])
+        for e in result["edges"]
+        if e["relation"] == "calls" and e["source"] in nodes and e["target"] in nodes
+    }
+
+
+@_needs_solidity
+def test_solidity_underscore_member_gets_its_own_node_and_calls(tmp_path):
+    # make_id drops the leading `_`, so `_grantRole(bytes32,address)` and
+    # `grantRole(bytes32,address)` shared one id: `_grantRole` vanished and
+    # its calls were credited to `grantRole` (OpenZeppelin: 38 functions).
+    source = tmp_path / "Roles.sol"
+    source.write_text(_ROLES, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    functions = {n["label"]: n for n in result["nodes"] if n["metadata"]["kind"] == "function"}
+    assert {"grantRole()", "_grantRole()", "hasRole()"} <= set(functions)
+    assert functions["grantRole()"]["id"] != functions["_grantRole()"]["id"]
+    assert _calls_by_line(result) == {
+        ("grantRole()", "L5", "_grantRole()", "L6"),
+        ("_grantRole()", "L6", "hasRole()", "L4"),
+        ("_grantRole()", "L6", "RoleGranted", "L3"),
+    }
+
+
+@_needs_solidity
+def test_solidity_underscore_salt_changes_only_the_clashing_id(tmp_path):
+    # Only the `_` spelling is salted, as C# does (#4415): the public name and
+    # every member that clashes with nothing keep the id they had.
+    source = tmp_path / "Roles.sol"
+    source.write_text(_ROLES, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    ids = {n["label"]: n["id"] for n in result["nodes"]}
+    contract = ids["Roles"]
+    assert ids["grantRole()"] == f"{contract}_function_grantrole_2_bytes32_address"
+    assert ids["hasRole()"] == f"{contract}_function_hasrole_2_bytes32_address"
+    assert ids["RoleGranted"] == f"{contract}_event_rolegranted_rolegranted"
+    assert ids["_grantRole()"].startswith(f"{contract}_function_grantrole_2_bytes32_address_")
+
+
+@_needs_solidity
+def test_solidity_underscore_free_function_and_inherited_call_land_right(tmp_path):
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "function _scale(uint256 x) pure returns (uint256) { return x * 2; }\n"
+        "function scale(uint256 x) pure returns (uint256) { return _scale(x); }\n"
+        "abstract contract Base {\n"
+        "    function mint(address to) public { _mint(to); }\n"
+        "    function _mint(address to) internal {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Token.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {Base} from "./Base.sol";\n'
+        "contract Token is Base {\n"
+        "    function airdrop(address to) external { _mint(to); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _calls_by_line(result) == {
+        ("scale()", "L3", "_scale()", "L2"),
+        ("mint()", "L5", "_mint()", "L6"),
+        ("airdrop()", "L4", "_mint()", "L6"),
+    }
+
+
 @_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
