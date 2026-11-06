@@ -59,6 +59,29 @@ def test_function_class_and_module_nodes_store_their_own_body_words(tmp_path):
     assert method == set(sorted(method))  # stored once each
 
 
+def test_decorator_words_belong_to_the_decorated_definition(tmp_path):
+    nodes = _extract(tmp_path, '''
+        @app.route("/invoices/export")
+        def export_view(request):
+            return render(request)
+
+        @dataclass(frozen=True)
+        class Refund:
+            amount: int
+
+            @property
+            @audit_trail("ledger")
+            def balance(self):
+                return 0
+        ''')
+    view = set(nodes["export_view()"]["body_terms"].split())
+    assert {"invoices", "route"} <= view
+    assert {"dataclass", "frozen"} <= set(nodes["Refund"]["body_terms"].split())
+    assert {"audit", "trail", "ledger"} <= set(nodes[".balance()"]["body_terms"].split())
+    module = set(nodes["mod.py"]["body_terms"].split()) if "body_terms" in nodes["mod.py"] else set()
+    assert not {"invoices", "dataclass", "ledger"} & module
+    assert "ledger" not in set(nodes["Refund"]["body_terms"].split())
+
 def test_short_long_and_credential_words_are_not_stored(tmp_path):
     secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
     nodes = _extract(tmp_path, f'''
