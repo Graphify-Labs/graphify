@@ -341,6 +341,23 @@ def extract_js(path: Path) -> dict:
                                 function_bodies.append((func_nid, body))
             return
 
+        if t in ("arrow_function", "function", "function_expression"):
+            # Anonymous function shapes with no named anchor — bare callback
+            # arguments like `router.get('/x', (req, res) => {...})`. The other
+            # three anchor cases (function_declaration, method_definition,
+            # lexical_declaration) return early above, so no double
+            # registration; their body calls are attributed to the anonymous
+            # caller node instead of being silently dropped.
+            line = node.start_point[0] + 1
+            anon_nid = _make_id(stem, "anonymous", str(line))
+            add_node(anon_nid, "anonymous()", line)
+            add_edge(file_nid, anon_nid, "contains", line)
+            body = node.child_by_field_name("body")
+            if body:
+                function_bodies.append((anon_nid, body))
+            # Keep recursing: named declarations nested inside the callback
+            # body should still get their own caller nodes.
+
         for child in node.children:
             walk(child, parent_class_nid=None)
 
@@ -691,7 +708,7 @@ def extract_rust(path: Path) -> dict:
             return
 
         for child in node.children:
-            walk(child, parent_impl_nid=None)
+            walk(child, parent_class_nid=None)
 
     walk(root)
 
