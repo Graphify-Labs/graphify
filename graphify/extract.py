@@ -6405,6 +6405,13 @@ def _resolve_csharp_member_calls(
     method_peers: dict[tuple[str, str], list[dict]] = {}
     enclosing_type: dict[str, str] = {}
     for e in all_edges:
+        if e.get("relation") == "defines" and e.get("context") == "field":
+            # A property/indexer whose accessors make calls is a caller in
+            # its type, like a method; it is never a method_index target.
+            owner, member = e.get("source"), e.get("target")
+            if _is_cs_file(e.get("source_file")) and isinstance(owner, str) and isinstance(member, str):
+                enclosing_type.setdefault(member, owner)
+            continue
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
@@ -6412,6 +6419,8 @@ def _resolve_csharp_member_calls(
         if tnode is None:
             continue
         enclosing_type.setdefault(tgt, src)
+        if (tnode.get("metadata") or {}).get("kind") == "operator":
+            continue  # `operator +` is never written as a call name
         # Overloads share a key: the first declared one stands for the name,
         # and the call's argument count picks among them below (#4584).
         method_key = (src, _key(tnode.get("label", "")))
@@ -11678,6 +11687,7 @@ def extract(
             )
     _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
     _csharp_method_owner: dict[str, str] | None = None  # method nid -> type nid, built on first use
+    _csharp_member_owner: dict[str, str] | None = None  # property/indexer nid -> type nid, ditto
     _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
     _csharp_overload_cache: dict = {}  # filled on first use (#4584)
     _jvm_index = None  # built on first Kotlin/Java bare call (#4935)
@@ -11921,7 +11931,15 @@ def extract(
                     e["target"]: e["source"] for e in all_edges
                     if e.get("relation") == "method"
                 }
-            caller_owner = _csharp_method_owner.get(rc.get("caller_nid", ""))
+            if _csharp_member_owner is None:
+                # A property/indexer accessor's call: its type is the owner.
+                _csharp_member_owner = {
+                    e["target"]: e["source"] for e in all_edges
+                    if e.get("relation") == "defines" and e.get("context") == "field"
+                }
+            caller_owner = _csharp_method_owner.get(
+                rc.get("caller_nid", ""), _csharp_member_owner.get(rc.get("caller_nid", ""))
+            )
             if caller_owner is not None:
                 own_type_matches = [
                     c for c in candidates if _csharp_method_owner.get(c) == caller_owner
