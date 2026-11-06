@@ -87,6 +87,7 @@ The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `label` — human-readable name
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
 - `source_file` — where it came from
+- `body_terms` — optional, Python file/class/function nodes only: the unique words of the node's own source lines (identifier parts, string and comment words; 3–40 characters, credential-shaped text redacted), space-joined. Only `query` reads it: a body tier below the name tiers, plus a body ranking that adds start nodes after the name seeds and is fused into the answer's file order. `path` and `explain` ignore it. On nine Python repositories it added 11–35% to `graph.json` and no measurable build time.
 
 See [RFC: file-level node summaries](node-summaries-rfc.md) for two proposed
 ways to add compact optional summaries for AI navigation.
