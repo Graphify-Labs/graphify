@@ -144,7 +144,9 @@ def test_element_access_without_element_type_gives_no_edge(tmp_path):
     assert not {t for s, t in calls if s == save}
 
 
-def test_constructor_calls_are_attributed_to_the_type(tmp_path):
+def test_constructor_calls_are_attributed_to_the_constructor(tmp_path):
+    # A constructor is its own node, so its body's calls are its calls, not
+    # the type's (#4246 credited them to the type before constructors had nodes).
     calls, r = _calls(tmp_path, {
         "Bound.cs": (
             "namespace Demo\n{\n"
@@ -159,7 +161,9 @@ def test_constructor_calls_are_attributed_to_the_type(tmp_path):
             "    }\n}\n"
         ),
     })
-    assert (_find(r, "BoundFunc", "boundfunc"), _find(r, ".GameObjectOf()", "bound")) in calls
+    game_object_of = _find(r, ".GameObjectOf()", "bound")
+    assert (_find(r, ".BoundFunc()", "boundfunc"), game_object_of) in calls
+    assert (_find(r, "BoundFunc", "boundfunc"), game_object_of) not in calls
 
 
 def test_constructor_typed_parameter_and_this_calls_resolve(tmp_path):
@@ -173,7 +177,7 @@ def test_constructor_typed_parameter_and_this_calls_resolve(tmp_path):
             "    }\n}\n"
         ),
     })
-    holder = _find(r, "Holder", "holder")
+    holder = _find(r, ".Holder()", "holder")
     assert (holder, _find(r, ".Apply()", "sequence")) in calls
     assert (holder, _find(r, ".Apply()", "decoy")) not in calls
     assert (holder, _find(r, ".Ping()", "basesvc")) in calls
