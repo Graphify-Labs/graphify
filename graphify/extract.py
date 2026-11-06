@@ -147,6 +147,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _package_entry_candidates,
     _parse_js_tree,
     _parse_python_tree,
+    _parse_python_tree_cached,
     _pascal_class_stem_cache,
     _pascal_project_root,
     _pascal_resolve_class,
@@ -10640,6 +10641,7 @@ def extract(
     max_workers: int | None = None,
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
+    release_parse_memo: bool = False,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -10679,6 +10681,9 @@ def extract(
             Read-only, same contract as
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
+        release_parse_memo: clear the Python parse memo once both resolution
+            passes are done. One-shot callers (`graphify extract`) set it to
+            cut peak RAM; long-lived callers keep the memo for the next run.
     """
     paths = [Path(p) for p in paths]
     if resolution_context_nodes:
@@ -11682,6 +11687,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+    if release_parse_memo:
+        # Both Python resolution passes are done; the memo pins every tree.
+        _parse_python_tree_cached.cache_clear()
     # An incremental build re-extracts only the changed files, so the rewire also
     # needs the unchanged ones as candidates, or it resolves less than a full build.
     _fresh_ids = {n.get("id") for n in all_nodes}
