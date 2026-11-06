@@ -141,6 +141,22 @@ def test_root_level_ref_alone_is_skipped(tmp_path):
     assert r["nodes"] == []
 
 
+def test_schema_stays_fully_invisible_while_plain_data_json_gets_its_bare_node(tmp_path):
+    """#2108 added a bare file node for skipped data JSON, but reused the
+    same skip branch a JSON Schema document also falls through. A schema
+    must stay at zero nodes exactly as #2255 pinned it; a plain data file in
+    the same run must still get its one bare node, so the two skip reasons
+    now sharing one return branch do not quietly end up sharing one result."""
+    schema_result = extract_json(_write(tmp_path, "events-v1.json", SCHEMA_WITH_DEFS))
+    assert _is_skipped(schema_result), schema_result
+    assert schema_result["nodes"] == []
+
+    data_result = extract_json(_write(tmp_path, "cases.json", '{"a": 1, "b": {"c": 2}}'))
+    assert _is_skipped(data_result), data_result
+    assert len(data_result["nodes"]) == 1
+    assert data_result["nodes"][0]["label"] == "cases.json"
+
+
 def test_schema_produces_no_keyword_nodes(tmp_path):
     # The actual symptom: bare schema keywords became graph nodes.
     r = extract_json(_write(tmp_path, "events-v1.json", SCHEMA_WITH_DEFS))
