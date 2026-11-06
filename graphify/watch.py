@@ -3634,7 +3634,23 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     handler = Handler()
     # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
     observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
+    # Ask the kernel only for events the handler treats as changes. Without
+    # this filter the recursive setup walk floods the inotify queue with
+    # IN_OPEN/IN_CLOSE_NOWRITE, overflows it around 4,000 directories, and
+    # watchdog 7 then re-walks the tree forever (#5033).
+    if _observer_accepts_event_filter(observer):
+        observer.schedule(
+            handler,
+            str(watch_root_for_ignore),
+            recursive=True,
+            event_filter=_watch_event_filter(),
+        )
+    else:
+        logger.warning(
+            "watchdog does not declare event_filter; read-only inotify events "
+            "may overflow the queue and lose changes (#5033)"
+        )
+        observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
