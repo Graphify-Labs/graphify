@@ -30,7 +30,7 @@ _MD_REF_DEF_RE = re.compile(
 
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
-_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc"}
 
 # Inline code spans, single or double backtick delimited. Fenced blocks are
 # skipped before this runs, so a span here is prose citing a symbol by name.
@@ -64,6 +64,13 @@ _MD_NS_NON_SYMBOL_RE = re.compile(r'^(?:class|[A-Z][A-Z0-9_]*)$')
 # while `## C#` and `## Trailing \#` keep their `#`.
 _MD_ATX_HEADING_RE = re.compile(r'^ {0,3}(#{1,6})[ \t]+(.+)$')
 _MD_ATX_CLOSING_RE = re.compile(r'(?:^|[ \t]+)#+[ \t]*$')
+
+# An AsciiDoc section title: up to three spaces of indent, 1-6 `=`, then
+# whitespace and the text. Only consulted for .adoc/.asciidoc files (#3238).
+# The text is required, so a bare `====` underline or `=====` block rule mints
+# no node.
+_ADOC_SUFFIXES = frozenset({".adoc", ".asciidoc"})
+_ADOC_ATX_HEADING_RE = re.compile(r'^ {0,3}(={1,6})[ \t]+(.+)$')
 
 # A fenced code block line: a run of 3+ backticks or 3+ tildes, then the rest of
 # the line (an info string on an opener). Leading whitespace is accepted at any
@@ -434,7 +441,8 @@ def extract_markdown(path: Path) -> dict:
     Produces nodes for:
     - The file itself, tagged ``node_kind: "page"``, carrying any YAML
       frontmatter under ``frontmatter``
-    - Each heading (# / ## / ### etc.), tagged ``node_kind: "heading"``
+    - Each heading (Markdown ``#`` / ``##`` / ``###`` etc., and AsciiDoc
+      ``=`` / ``==`` / ``===`` etc.), tagged ``node_kind: "heading"``
 
     ``node_kind`` exists because ``file_type`` cannot carry this distinction:
     it is a closed enum (build.py rewrites anything outside
@@ -591,6 +599,7 @@ def extract_markdown(path: Path) -> dict:
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
     fence: "tuple[str, int] | None" = None  # (char, length) of the open fence
+    is_asciidoc = path.suffix.lower() in _ADOC_SUFFIXES
 
     for line_num_0, line_text in enumerate(lines):
         line_num = line_num_0 + 1
@@ -624,9 +633,15 @@ def extract_markdown(path: Path) -> dict:
         if line_num_0 < body_start:
             continue
 
-        # Detect headings: # Heading, ## Heading, etc.
+        # Detect headings: # Heading, ## Heading, etc. AsciiDoc documents also
+        # use their own section titles (= Heading, == Heading, ...), which nest
+        # exactly like `#` levels. Both forms require text after the marker, so
+        # a bare `=====` rule or setext underline mints no node.
         heading_match = _MD_ATX_HEADING_RE.match(line_text)
         title = _MD_ATX_CLOSING_RE.sub("", heading_match.group(2).strip()) if heading_match else ""
+        if heading_match is None and is_asciidoc:
+            heading_match = _ADOC_ATX_HEADING_RE.match(line_text)
+            title = heading_match.group(2).strip() if heading_match else ""
         if heading_match and title:
             level = len(heading_match.group(1))
             h_nid = _make_id(stem, title)
