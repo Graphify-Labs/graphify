@@ -47,7 +47,7 @@ export function create() {
   return handler;
 }
 export async function load() { return import("./runtime"); }
-''')
+''', encoding='utf-8')
     (tmp_path / 'runtime.ts').write_text('export const value = 1;')
     result = extract_js(path)
     labels = {n['id']: n['label'] for n in result['nodes']}
