@@ -20,3 +20,11 @@ repos:
     hooks:
       - id: ruff
         args: ["--config", "pyproject.toml"]
+  
+  - repo: https://github.com/codespell-project/codespell
+    # Configuration for codespell is in pyproject.toml
+    rev: v2.4.2
+    hooks:
+    - id: codespell
+      additional_dependencies:
+      - tomli; python_version<'3.11'
