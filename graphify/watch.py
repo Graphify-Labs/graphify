@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextlib
 import errno
+import inspect
 import json
 import logging
 import os
@@ -3462,6 +3463,20 @@ def _watch_event_filter():
         we.DirDeletedEvent,
         we.DirMovedEvent,
     ]
+
+
+def _observer_accepts_event_filter(observer) -> bool:
+    """True when this watchdog's ``schedule()`` declares ``event_filter``.
+
+    ``event_filter`` was added in watchdog 4.0. Graphify does not pin a minimum
+    watchdog version, so detect support instead of raising TypeError on older
+    installs. Introspection failures are treated as unsupported; the caller
+    warns on that path so a future signature change is visible.
+    """
+    try:
+        return "event_filter" in inspect.signature(observer.schedule).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 _READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
