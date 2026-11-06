@@ -23,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from graphify.extract import extract  # noqa: E402
 from tools.skillgen import gen  # noqa: E402
 
-_CALL = "extract(code_files, cache_root="
+_CALL = "extract(ast_files, cache_root="
 
 
 def _split_hosts() -> list[gen.Platform]:
@@ -67,7 +67,7 @@ def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
     ).replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
     assert in_place != relocated
 
-    scope = {"extract": extract, "Path": Path, "code_files": [module]}
+    scope = {"extract": extract, "Path": Path, "ast_files": [module]}
     ids_in_place = sorted(n["id"] for n in eval(in_place, dict(scope))["nodes"])
     ids_relocated = sorted(n["id"] for n in eval(relocated, dict(scope))["nodes"])
 
