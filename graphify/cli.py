@@ -4794,7 +4794,8 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            # One extract() per process here, so free its parse memo when done.
+            ast_kwargs: dict = {"cache_root": out_root, "root": target, "release_parse_memo": True}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -4940,10 +4941,13 @@ def dispatch_command(cmd: str) -> None:
                         _ctx_edges.append(_ctx_edge)
                 except Exception:
                     _ctx_nodes, _ctx_edges = [], []
+                # Only the context lists are needed; free the full parse.
+                _ctx_graph = None
                 if _ctx_nodes:
                     ast_kwargs["resolution_context_nodes"] = _ctx_nodes
                 if _ctx_edges:
                     ast_kwargs["resolution_context_edges"] = _ctx_edges
+                del _ctx_nodes, _ctx_edges
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
@@ -4958,6 +4962,9 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+            # Only extract() reads the resolution context; free it before the
+            # semantic pass and graph build.
+            del ast_kwargs
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -5574,6 +5581,11 @@ def dispatch_command(cmd: str) -> None:
         else:
             G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
         stages.mark("build")
+        # G holds its own copy of every node and edge now. Drop the raw
+        # extraction lists so cluster/analyze/export can reuse that memory.
+        ast_result = sem_result = pg_result = cargo_result = fresh = {}
+        cached_nodes = cached_edges = cached_hyperedges = []
+        merged = {"input_tokens": merged["input_tokens"], "output_tokens": merged["output_tokens"]}
         if G.number_of_nodes() == 0:
             print(
                 "[graphify extract] graph is empty — extraction produced no nodes. "
