@@ -503,11 +503,12 @@ def test_rust_forward_type_reference_resolves_to_local_declaration(tmp_path):
 
 
 def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path):
-    """#3782: only struct/enum/trait declarations become nodes, so only they may
-    resolve a forward reference. A `type` alias, a `union`, a struct declared in a
-    function body, a name declared nowhere in the file and a generic type that only
-    an `impl` names produce no node of that name here; references to them must keep
-    their sourceless stub instead of being dropped."""
+    """#3782: only file-level type declarations (struct/enum/trait, and since
+    #4285 `type` aliases and unions) become nodes, so only they may resolve a
+    forward reference. A struct declared in a function body, a name declared
+    nowhere in the file and a generic type that only an `impl` names produce no
+    node of that name here; references to them must keep their sourceless stub
+    instead of being dropped."""
     p = tmp_path / "shapes.rs"
     p.write_text(
         "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere, w: &Wrapper<u8>) {}\n"
@@ -534,6 +535,9 @@ def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path)
     }
     for name in ("Alias", "Bits", "Local", "Elsewhere", "Wrapper"):
         assert name in targets, f"reference to {name} was dropped"
+    for name in ("Alias", "Bits"):
+        assert targets[name]["source_file"] == str(p), name
+    for name in ("Local", "Elsewhere", "Wrapper"):
         assert targets[name]["source_file"] == "", name
 
 
@@ -587,23 +591,47 @@ def test_rust_forward_reference_skips_items_in_const_and_static_initializers(tmp
     assert targets == {"Hidden": "", "Guarded": ""}
 
 
-def test_rust_forward_reference_to_a_casefold_colliding_type_keeps_its_stub(tmp_path):
+def test_rust_forward_reference_to_a_casefold_colliding_type_resolves_to_it(tmp_path):
     """#3782: ids are casefolded, so `fn handle` (also in an `extern` block),
-    `const HANDLE`, `struct HANDLE` or an `impl` for `HANDLE` share the id of
-    `struct Handle` and walk() keeps whichever comes first, and a `type HANDLE`
-    alias shares it without being a node. A reference above the declarations must
-    keep the sourceless stub v8's extractor gives it, instead of binding to another
-    item."""
+    `const HANDLE`, `struct HANDLE` or an `impl` for `HANDLE` fold to the id of
+    `struct Handle`. Those items now get ids of their own (#3302's rule), so the
+    struct owns its id and a reference above the declarations resolves to it, as
+    a reference below already did, instead of to a sourceless stub."""
     extern_fn = 'extern "C" {\n    fn handle();\n}'
     impl_for_alias = "type HANDLE = usize;\n\ntrait Tr {}\n\nimpl Tr for HANDLE {}"
-    for name, user, other, label in (
-        ("fn_collision.rs", "fn user(h: &Handle) {}", "fn handle() {}", "Handle"),
-        ("extern_fn_collision.rs", "fn user(h: &Handle) {}", extern_fn, "Handle"),
-        ("const_collision.rs", "fn user(h: &Handle) {}", "const HANDLE: u32 = 0;", "Handle"),
-        ("static_collision.rs", "fn user(h: &Handle) {}", "static HANDLE: u32 = 0;", "Handle"),
-        ("type_collision.rs", "fn user(h: &Handle) {}", "struct HANDLE;", "Handle"),
-        ("impl_collision.rs", "fn user(h: &Handle) {}", impl_for_alias, "Handle"),
-        ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE"),
+    for name, other in (
+        ("fn_collision.rs", "fn handle() {}"),
+        ("extern_fn_collision.rs", extern_fn),
+        ("const_collision.rs", "const HANDLE: u32 = 0;"),
+        ("static_collision.rs", "static HANDLE: u32 = 0;"),
+        ("type_collision.rs", "struct HANDLE;"),
+        ("impl_collision.rs", impl_for_alias),
+    ):
+        p = tmp_path / name
+        p.write_text(
+            f"fn user(h: &Handle) {{}}\n\n{other}\n\nstruct Handle {{\n    n: u32,\n}}\n",
+            encoding="utf-8",
+        )
+        r = extract_rust(p)
+        by_id = {n["id"]: n for n in r["nodes"]}
+        handle = next(n for n in r["nodes"] if n["label"] == "Handle")
+        targets = [
+            e["target"] for e in r["edges"]
+            if e["relation"] == "references" and e["target"] in by_id
+        ]
+        assert targets == [handle["id"]], name
+        assert handle["source_file"] == str(p), name
+
+
+def test_rust_forward_reference_keeps_its_stub_when_a_non_type_shares_the_name(tmp_path):
+    """#3782: `fn Handle()` beside `struct Handle {}` has the type's exact name,
+    so the two still share one node that walk() gives to whichever comes first.
+    A reference above the declarations keeps the sourceless stub v8's extractor
+    gives it. A `type HANDLE` alias is a type node of its own since #4285 (the
+    two types are salted apart), so a reference to it lands on it."""
+    for name, user, other, label, sourced in (
+        ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE", True),
+        ("same_name_fn.rs", "fn user(h: &Handle) {}", "fn Handle() {}", "Handle", False),
     ):
         p = tmp_path / name
         p.write_text(
@@ -616,7 +644,7 @@ def test_rust_forward_reference_to_a_casefold_colliding_type_keeps_its_stub(tmp_
             for e in r["edges"]
             if e["relation"] == "references" and e["target"] in by_id
         ]
-        assert targets == [(label, "")], name
+        assert targets == [(label, str(p) if sourced else "")], name
 
 
 def test_rust_forward_reference_resolves_when_no_other_item_shares_the_id(tmp_path):
@@ -670,6 +698,89 @@ def test_rust_forward_reference_to_ambiguous_type_name_stays_local(tmp_path):
         refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
         assert (before, local) in refs
         assert (after, local) in refs
+
+
+def test_rust_cross_file_reference_skips_impl_blocks_in_other_files(tmp_path):
+    """#4283: an `impl Thing` block in another file adds a second `Thing` node,
+    but only the struct is a declaration. A cross-file reference must bind to
+    that declaration instead of being left on a sourceless stub. Checked cold,
+    then from the warm cache."""
+    (tmp_path / "a.rs").write_text("pub struct Thing {\n    pub n: u32,\n}\n", encoding="utf-8")
+    (tmp_path / "b.rs").write_text(
+        "use crate::a::Thing;\n\nimpl Thing {\n    pub fn new() -> Self {\n"
+        "        Thing { n: 0 }\n    }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.rs").write_text(
+        "use crate::a::Thing;\n\npub fn make(t: Thing) -> u32 {\n    t.n\n}\n",
+        encoding="utf-8",
+    )
+    files = sorted(tmp_path.glob("*.rs"))
+    for _ in range(2):
+        r = extract(files, cache_root=tmp_path, parallel=False)
+        things = [n for n in r["nodes"] if n["label"] == "Thing"]
+        assert all(n["source_file"] for n in things), "sourceless Thing stub left behind"
+        declared = next(n["id"] for n in things if Path(n["source_file"]).name == "a.rs")
+        make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+        refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+        assert (make, declared) in refs
+
+
+def test_rust_cross_file_reference_to_twice_declared_type_keeps_its_stub(tmp_path):
+    """#4283: impl blocks are only skipped in favour of a SINGLE declaration. With
+    two real `struct Thing` declarations a cross-file reference has no one
+    correct target, so it must stay on its sourceless stub (fail closed)."""
+    (tmp_path / "a.rs").write_text("pub struct Thing;\n", encoding="utf-8")
+    (tmp_path / "b.rs").write_text(
+        "pub struct Thing;\n\nimpl Thing {\n    pub fn new() -> Self {\n        Thing\n    }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.rs").write_text("pub fn make(t: Thing) {}\n", encoding="utf-8")
+    r = extract(sorted(tmp_path.glob("*.rs")), cache_root=tmp_path, parallel=False)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+    targets = [
+        by_id[e["target"]] for e in r["edges"]
+        if e["relation"] == "references" and e["source"] == make
+    ]
+    assert [t["source_file"] for t in targets if t["label"] == "Thing"] == [""]
+
+
+def _thing_targets_of_make(tmp_path, files):
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    r = extract(sorted(tmp_path.iterdir()), cache_root=tmp_path, parallel=False)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    make = next(n["id"] for n in r["nodes"] if n["label"] == "make()")
+    return [
+        by_id[e["target"]]["source_file"] for e in r["edges"]
+        if e["relation"] == "references" and e["source"] == make
+        and by_id[e["target"]]["label"] == "Thing"
+    ]
+
+
+def test_rust_declaration_tiebreak_keeps_stub_beside_another_language(tmp_path):
+    """#4283: `_rust_declaration_count` only tells a Rust declaration from a Rust
+    impl block. A same-named TypeScript class is a declaration too, so a Rust
+    declaration plus a TS class is still ambiguous and the stub stays."""
+    targets = _thing_targets_of_make(tmp_path, {
+        "a.rs": "pub struct Thing;\n",
+        "b.ts": "export class Thing {}\n",
+        "c.rs": "pub fn make(t: Thing) {}\n",
+    })
+    assert targets == [""]
+
+
+def test_rust_declaration_tiebreak_keeps_stub_for_declarations_folded_in_one_node(tmp_path):
+    """#4283: two inline modules declaring `Thing` in one file fold into a single
+    node with `_rust_declaration_count == 2`. That is two declarations, so an
+    impl block elsewhere must not let the reference bind to the folded node."""
+    targets = _thing_targets_of_make(tmp_path, {
+        "a.rs": "mod x {\n    pub struct Thing;\n}\nmod y {\n    pub struct Thing;\n}\n",
+        "b.rs": "impl Thing {\n    pub fn new() {}\n}\n",
+        "c.rs": "pub fn make(t: Thing) {}\n",
+    })
+    assert targets == [""]
 
 
 # ── extract() dispatch ────────────────────────────────────────────────────────
@@ -859,6 +970,57 @@ def test_sql_clean_trigger_links_to_its_on_table(tmp_path):
     assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
 
 
+def test_sql_trigger_links_to_the_function_it_executes(tmp_path):
+    """A trigger exists to run a function, yet the EXECUTE FUNCTION/PROCEDURE
+    target was never linked. Only the ON table got an edge, so the trigger's
+    whole reason to exist — the routine it fires — was dropped from the graph.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE FUNCTION log_it() RETURNS TRIGGER AS 'SELECT 1';\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users\n"
+        "  FOR EACH ROW EXECUTE FUNCTION log_it();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "audit_ins" in by_label and "log_it()" in by_label
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    # The trigger fires on its ON table ...
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
+    # ... and executes the function it names.
+    assert (by_label["audit_ins"]["id"], "executes", by_label["log_it()"]["id"]) in edges
+    # Nothing dangles.
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_trigger_executing_an_undefined_function_fails_closed(tmp_path):
+    """When the executed routine is not defined in this file, link nothing
+    rather than mint a bare-name stub that could never rewire onto the real
+    `name()` function node. The ON-table edge is unaffected.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users EXECUTE FUNCTION elsewhere();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in {
+        (e["source"], e["relation"], e["target"]) for e in r["edges"]
+    }
+    # No executes edge, and the unresolved routine was not minted as a node.
+    assert not any(e["relation"] == "executes" for e in r["edges"])
+    assert "elsewhere()" not in by_label
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
 def test_sql_procedural_body_trigger_is_recovered(tmp_path):
     """A trigger with a `FOR EACH ROW BEGIN ... END` body has no grammar parse,
     so the statement lands in ERROR recovery. TRIGGER was excluded from the
@@ -889,6 +1051,61 @@ def test_sql_procedural_body_trigger_is_recovered(tmp_path):
     assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
 
 
+def test_sql_mysql_current_timestamp_parens_table_is_recovered(tmp_path):
+    """MySQL/MariaDB `DEFAULT current_timestamp()` / `ON UPDATE
+    current_timestamp()`: tree-sitter-sql rejects the parentheses, so the
+    whole CREATE TABLE lands in an ERROR node and the table was dropped —
+    the only trace left was the sourceless stub minted by other tables'
+    REFERENCES to it (#4613).
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "repro.sql"
+    p.write_text(
+        "CREATE TABLE foo (\n"
+        "  created_at datetime NOT NULL DEFAULT current_timestamp(),\n"
+        "  updated_at datetime DEFAULT NULL ON UPDATE current_timestamp(),\n"
+        "  KEY idx_x (created_by)\n"
+        ");\n"
+        "\n"
+        "CREATE TABLE after_table (\n"
+        "  id int NOT NULL,\n"
+        "  foo_id int REFERENCES foo (id)\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert sorted(by_label) == ["after_table", "foo", "repro.sql"], sorted(by_label)
+    # The recovered table is a real sourced node, not the sourceless stub a
+    # REFERENCES would otherwise mint for it.
+    assert by_label["foo"]["source_file"] == str(p)
+    # ... so the FK from after_table resolves onto it.
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    assert (by_label["after_table"]["id"], "references", by_label["foo"]["id"]) in edges
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_commented_out_create_table_is_not_recovered(tmp_path):
+    """The table recovery runs over the comment-masked source: a commented-out
+    CREATE TABLE in an error-bearing file must not fabricate a node.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "-- CREATE TABLE ghost (\n"
+        "--   id int\n"
+        "-- );\n"
+        "CREATE TABLE foo (\n"
+        "  created_at datetime NOT NULL DEFAULT current_timestamp()\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    labels = sorted(n["label"] for n in r["nodes"])
+    assert labels == ["foo", "schema.sql"], labels
+
+
 def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.
 
@@ -910,8 +1127,8 @@ def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
         "END;\n"
     )
     r = extract_sql(p)
-    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[usp_LoadDebtors]()"], routine
+    routine = [n["label"] for n in r["nodes"] if n["label"].endswith("()")]
+    assert routine == ["dbo.usp_LoadDebtors()"], routine
 
 
 def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
@@ -925,7 +1142,7 @@ def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
+    assert labels == ["Utils.ValidateSourceView()", "usp_Bare()"], labels
 
 
 def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
@@ -938,7 +1155,7 @@ def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
     p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[a]]b]()"], routine
+    assert routine == ["dbo.a]b()"], routine
 
 
 def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
@@ -956,7 +1173,7 @@ def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
     p.write_text("CREATE PROCEDURE dbo.[usp_Mixed] AS\nBEGIN\n SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["dbo.[usp_Mixed]()"], routine
+    assert routine == ["dbo.usp_Mixed()"], routine
 
 
 def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
@@ -971,7 +1188,7 @@ def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[dbo].[usp_Short]()", "usp_BareShort()"], labels
+    assert labels == ["dbo.usp_Short()", "usp_BareShort()"], labels
 
 
 def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
@@ -994,7 +1211,7 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     assert not any("Comment" in l for l in labels), (
         f"commented-out DDL fabricated a node: {labels}"
     )
@@ -1027,8 +1244,8 @@ def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "strings.sql"]
-    assert "[dbo].[usp_AfterLineString]()" in labels, labels
-    assert "[dbo].[usp_AfterBlockString]()" in labels, labels
+    assert "dbo.usp_AfterLineString()" in labels, labels
+    assert "dbo.usp_AfterBlockString()" in labels, labels
 
 
 def test_mask_sql_comments_literal_and_comment_handling():
@@ -1348,7 +1565,7 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     fabricated = [
         label for label in labels
         if any(k in label for k in ("Dynamic", "Nested", "Bracketed", "Unterminated"))
@@ -1375,7 +1592,7 @@ def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "alias.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
@@ -1394,7 +1611,7 @@ def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "bare.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):

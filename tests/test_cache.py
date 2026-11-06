@@ -639,6 +639,38 @@ def test_ast_cache_schema_rejects_same_version_legacy_collision(
     assert not old_dir.exists()
 
 
+def test_python_receiver_shadow_schema_retires_same_version_raw_calls(
+    tmp_path, monkeypatch,
+):
+    """Schema-4 raw calls lack the lexical fact required by external resolution."""
+    import graphify.cache as cache_mod
+    from graphify.extract import extract
+
+    target = tmp_path / "caller.py"
+    target.write_text("import requests\n\ndef fetch():\n    return requests.get('/data')\n")
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 4)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    save_cached(target, {"nodes": [], "edges": [], "raw_calls": [
+        {"caller_nid": "old", "receiver": "requests", "callee": "get"}
+    ]}, root=tmp_path, kind="ast")
+    old_dir = cache_dir(tmp_path, "ast")
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 5)
+    assert load_cached(target, root=tmp_path, kind="ast") is None
+    assert not old_dir.exists()
+    cold = extract([target], cache_root=tmp_path, root=tmp_path)
+    fresh = load_cached(target, root=tmp_path, kind="ast")
+    assert fresh is not None
+    assert any(rc.get("_python_receiver_shadowed") is False
+               for rc in fresh.get("raw_calls", []))
+    warm = extract([target], cache_root=tmp_path, root=tmp_path)
+    assert len([e for e in cold["edges"] if e["relation"] == "calls"]) == 1
+    assert [e for e in cold["edges"] if e["relation"] == "calls"] == [
+        e for e in warm["edges"] if e["relation"] == "calls"
+    ]
+
+
 def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):
     """Upgrading removes AST entries left behind by previous versions so the
     cache directory does not grow one full copy per release."""

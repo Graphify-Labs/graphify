@@ -28,7 +28,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 
 | Vector | Mitigation |
 |--------|-----------|
-| SSRF via URL fetch | `security.validate_url()` allows only `http` and `https` schemes, blocks private/loopback/link-local IPs, and blocks cloud metadata endpoints. Redirect targets are re-validated. All fetch paths including tweet oEmbed go through `safe_fetch()`. |
+| SSRF via URL fetch | `security.validate_url()` allows only `http` and `https` schemes, blocks private/loopback/link-local IPs, and blocks cloud metadata endpoints. It also rejects embedded credentials, port 0, and missing hostnames. Redirect targets are re-validated. All fetch paths including tweet oEmbed go through `safe_fetch()`. |
 | Oversized downloads | `safe_fetch()` streams responses and aborts at 50 MB. `safe_fetch_text()` aborts at 10 MB. |
 | Non-2xx HTTP responses | `safe_fetch()` raises `HTTPError` on non-2xx status codes - error pages are not silently treated as content. |
 | Path traversal in MCP server | `security.validate_graph_path()` resolves paths and requires them to be inside `graphify-out/`. Also requires the `graphify-out/` directory to exist. |
@@ -38,6 +38,9 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 | YAML frontmatter injection | `_yaml_str()` escapes backslashes, double quotes, and newlines before embedding user-controlled strings (webpage titles, query questions) in YAML frontmatter. |
 | Encoding crashes on source files | All tree-sitter byte slices decoded with `errors="replace"` - non-UTF-8 source files degrade gracefully instead of crashing extraction. |
 | Symlink traversal | `os.walk(..., followlinks=False)` is parameterized to avoid unchecked traversal where appropriate. |
+| Symlink escape during ingest | `ingest` writes through `lstat` and refuses to replace an existing directory entry, including a symlink, so a crafted source tree cannot redirect writes outside the output directory. |
+| Credentials in persisted text | `security.redact_secrets()` replaces credential-shaped substrings in labels and rationale text before they are written to `graph.json`. |
+| Destructive uninstall | `uninstall --purge` refuses to delete the project folder, the home directory, or a filesystem root, including when `GRAPHIFY_OUT` points outside the project. |
 | Corrupted graph.json | `_load_graph()` in `serve.py` wraps `json.JSONDecodeError` and prints a clear recovery message instead of crashing. |
 
 ### What graphify does NOT do

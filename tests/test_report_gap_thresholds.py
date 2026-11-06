@@ -22,6 +22,9 @@ from __future__ import annotations
 import re
 
 import networkx as nx
+import pytest
+
+from graphify.analyze import suggest_questions
 
 from graphify.report import generate
 
@@ -168,3 +171,122 @@ def test_community_listing_excludes_rationale_and_concept_nodes():
     assert "Nodes (3):" in text, text
     assert "Names exist largely" not in text
     assert "Some Concept" not in text
+
+
+def test_contains_only_ast_declarations_are_not_knowledge_gaps():
+    """#4205: TS type aliases / enum members / local consts whose only edge
+    is the structural contains edge from their own file are working as
+    designed, so they must not be reported as weakly-connected gaps."""
+    G = nx.Graph()
+    G.add_node("tabs", label="tabs.ts", file_type="code", source_file="src/tabs.ts")
+    for name in ("TabRow", "ContributionRow", "TabRecognition"):
+        G.add_node(name, label=name, file_type="code",
+                   source_file="src/tabs.ts", source_location="L1",
+                   _origin="ast")
+        G.add_edge("tabs", name, relation="contains", confidence="EXTRACTED")
+    communities = {0: ["tabs", "TabRow", "ContributionRow", "TabRecognition"]}
+
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 1, "total_words": 10}, {},
+        root="proj", min_community_size=1,
+    )
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0] if "## Knowledge Gaps" in text else ""
+    assert "TabRow" not in gaps
+    assert "ContributionRow" not in gaps
+
+    from graphify.analyze import suggest_questions
+    qs = suggest_questions(G, communities, {})
+    assert all(q["type"] != "isolated_nodes" for q in qs)
+
+
+def test_semantic_contains_only_node_still_flags_as_gap():
+    """The #4205 fix must not hide the semantic side of gap detection: a
+    non-AST node whose only edge is contains stays isolated."""
+    G = nx.Graph()
+    G.add_node("doc", label="guide.md", file_type="document", source_file="docs/guide.md")
+    G.add_node("concept", label="OnboardingChecklist", file_type="document",
+               source_file="docs/guide.md", source_location=None, _origin="semantic")
+    G.add_edge("doc", "concept", relation="contains", confidence="EXTRACTED")
+    communities = {0: ["doc", "concept"]}
+
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 1, "total_words": 10}, {},
+        root="proj", min_community_size=1,
+    )
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0] if "## Knowledge Gaps" in text else ""
+    assert "OnboardingChecklist" in gaps
+
+
+def test_ast_node_with_non_contains_single_edge_still_flags():
+    """The exclusion is specifically for contains-only AST nodes: an AST
+    node whose one edge is a different relation is still a gap."""
+    G = nx.Graph()
+    G.add_node("a", label="a.ts", file_type="code", source_file="src/a.ts")
+    G.add_node("loose", label="LooseHelper", file_type="code",
+               source_file="src/a.ts", source_location="L1", _origin="ast")
+    G.add_edge("a", "loose", relation="calls", confidence="AMBIGUOUS")
+    communities = {0: ["a", "loose"]}
+
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 1, "total_words": 10}, {},
+        root="proj", min_community_size=1,
+    )
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0] if "## Knowledge Gaps" in text else ""
+    assert "LooseHelper" in gaps
+
+
+def _suggested_questions_report(graph, communities):
+    questions = suggest_questions(graph, communities, {})
+    report = generate(
+        graph, communities, {}, {}, [], [],
+        {"total_files": 3, "total_words": 100}, {},
+        root="proj", suggested_questions=questions,
+    )
+    section = report.split("## Suggested Questions", 1)[1].split("\n## ", 1)[0]
+    return questions, section
+
+
+def test_code_only_isolated_question_explains_missing_edges():
+    graph, communities = _graph_and_communities()
+    questions, section = _suggested_questions_report(graph, communities)
+    isolated = [q for q in questions if q["type"] == "isolated_nodes"]
+
+    assert len(isolated) == 1
+    question = isolated[0]
+    assert question["question"] == (
+        "What connects `big0`, `big5`, `mid0` to the rest of the system?"
+    )
+    assert question["why"].endswith(" - possible missing edges.")
+    assert "documentation gaps" not in question["why"]
+    assert question["why"] in section
+    assert "documentation gaps" not in section
+
+
+@pytest.mark.parametrize("file_type,source_name", [
+    ("document", "guide.md"),
+    ("paper", "paper.pdf"),
+    ("image", "diagram.png"),
+])
+def test_isolated_question_keeps_documentation_reason_with_semantic_layer(
+    file_type, source_name,
+):
+    graph, communities = _graph_and_communities()
+    baseline_questions, _ = _suggested_questions_report(graph, communities)
+    baseline_isolated = next(q for q in baseline_questions if q["type"] == "isolated_nodes")
+    graph.add_node(
+        "semantic", label=source_name, file_type=file_type,
+        source_file=f"docs/{source_name}",
+    )
+    questions, section = _suggested_questions_report(graph, communities)
+    isolated = next(q for q in questions if q["type"] == "isolated_nodes")
+
+    assert [q["type"] for q in questions] == [q["type"] for q in baseline_questions]
+    assert [{k: v for k, v in q.items() if k != "why"} for q in questions] == [
+        {k: v for k, v in q.items() if k != "why"} for q in baseline_questions
+    ]
+    assert isolated["why"].split(" - ", 1)[0] == baseline_isolated["why"].split(" - ", 1)[0]
+    assert isolated["why"].endswith(" - possible documentation gaps or missing edges.")
+    assert isolated["why"] in section

@@ -312,6 +312,25 @@ def test_extraction_warning_breakdown_by_cause(capsys):
     assert "3x missing required field 'relation'" in err
 
 
+def test_build_drops_edge_still_missing_relation(capsys):
+    """#4809: after aliases are folded, an edge with no relation must not
+    enter the graph because the relationship semantics cannot be reconstructed."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "document", "source_file": "a.md"},
+        {"id": "n2", "label": "B", "file_type": "document", "source_file": "b.md"},
+    ], "edges": [
+        # No relation, and no alias from which relation can be recovered.
+        {"source": "n1", "target": "n2", "confidence": "INFERRED", "source_file": "a.md"},
+    ], "input_tokens": 0, "output_tokens": 0}
+
+    G = build_from_json(ext)
+
+    assert not G.has_edge("n1", "n2")
+    err = capsys.readouterr().err
+    assert "missing required field 'relation'" in err
+    assert "dropped 1 schema-invalid edge(s)" in err
+
+
 def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
     """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
     source_file (Windows detect() emits them) must re-key to the canonical
@@ -610,6 +629,41 @@ def test_ghost_merge_wrong_source_file_resolved_by_label():
     assert "app" not in G.nodes() and "customer_app_index" not in G.nodes()
     assert G.has_edge("some_query_node", "apps_customer_app_app")
     assert G.has_edge("some_query_node", "apps_customer_app_index")
+
+
+def test_label_only_file_fold_preserves_distinct_semantic_evidence():
+    """#4896: two source documents can discuss the same file differently.
+
+    Their independent explanations must not disappear just because an AST file
+    with the same basename is present; ordinary evidence-free mentions still
+    fold as before.
+    """
+    ext = {
+        "nodes": [
+            {"id": "ast_file", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "ast",
+             "source_file": "src/validate_canonical_load.py", "source_location": "L1"},
+            {"id": "sem_a", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/a.md", "rationale": "EVIDENCE_ALPHA"},
+            {"id": "sem_b", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/b.yaml", "rationale": "EVIDENCE_BETA"},
+            {"id": "mention_only", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "README.md"},
+        ],
+        "edges": [
+            {"source": "sem_a", "target": "sem_b", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "memory/plan/archive/a.md"},
+        ],
+    }
+    graph = build_from_json(ext)
+    assert {"ast_file", "sem_a", "sem_b"} <= set(graph.nodes())
+    assert "mention_only" not in graph
+    assert graph.nodes["sem_a"]["rationale"] == "EVIDENCE_ALPHA"
+    assert graph.nodes["sem_b"]["rationale"] == "EVIDENCE_BETA"
+    assert graph.has_edge("sem_a", "sem_b")
 
 
 def test_ghost_merge_wrong_source_file_ambiguous_basename_left_alone():
@@ -1063,6 +1117,44 @@ def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
     }
     G = build_from_json(extraction, root=root)
     assert G.has_edge("dev_poker_server", "dev_monitoring_utility")
+
+
+def test_build_from_json_unambiguous_old_stem_alias_still_needs_language_match(tmp_path):
+    """#4941: an unambiguous old-stem alias is not enough on its own — the
+    candidate must also be in the SAME language family as the edge naming it.
+
+    A Dart file at the corpus root has no directory prefix, so its old-stem
+    form is identical to its current id and never registers an alias; nest it
+    one directory deep (matching the real report) so it does. A bare `type`
+    reference inside it to a same-named `PunchType` enum, left dangling by the
+    extractor because the enum is declared in a DIFFERENT Dart file not shown
+    to the resolver here, must not ride the bare "punchtype" alias onto an
+    unrelated Java file of the same name just because that Java file is the
+    alias's only claimant — the alias is unambiguous, but the language is
+    wrong, and that must still block it from resolving."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "mobile_punch", "label": "punch.dart", "file_type": "code",
+             "source_file": "mobile/punch.dart"},
+            {
+                "id": "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+                "label": "PunchType.java", "file_type": "code",
+                "source_file": "backend/src/main/java/ec/smartlocalizador/attendance/PunchType.java",
+            },
+        ],
+        "edges": [
+            {"source": "mobile_punch", "target": "punchtype", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "mobile/punch.dart",
+             "context": "variable_type"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge(
+        "mobile_punch",
+        "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+    )
 
 
 def test_build_from_json_relative_source_file_unchanged(tmp_path):
@@ -1599,6 +1691,46 @@ def test_doc_twin_merge_does_not_touch_code_symbols():
     assert {"m_foo", "m_foo_doc"} <= set(G.nodes())
 
 
+def test_marked_cross_document_stubs_survive_issue_4738_collisions():
+    """The complete build keeps every marked reference stub and the definition.
+
+    This covers the three collision shapes reported in #4738, including a
+    stub whose ID also looks like an entity defined in its citing file.
+    """
+    logging = "specifications_20_architecture_operational_logging_document"
+    runtime = "functional_agent_runtime_doc"
+    license_schedule = "company_license_schedule_c"
+    stub = {"graphify_reference_stub": True}
+    extraction = {"nodes": [
+        {"id": logging, "label": "Logging", "file_type": "document",
+         "source_file": "specifications/20-architecture/delivery/change-policy.md",
+         "metadata": stub},
+        {"id": logging, "label": "Logging specification", "file_type": "document",
+         "source_file": ".github/instructions/rust.instructions.md",
+         "metadata": stub},
+        {"id": runtime, "label": "Agent runtime", "file_type": "document",
+         "source_file": "functional/agents/agent-operator.md", "metadata": stub},
+        {"id": runtime, "label": "Agent Runtime and Subagent Contract", "file_type": "document",
+         "source_file": "delivery/developer-interaction.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license-schedule-c.md"},
+    ], "edges": []}
+
+    graph = build([extraction])
+
+    assert graph.number_of_nodes() == 6
+    assert {data["source_file"] for _, data in graph.nodes(data=True)} == {
+        "specifications/20-architecture/delivery/change-policy.md",
+        ".github/instructions/rust.instructions.md",
+        "functional/agents/agent-operator.md",
+        "delivery/developer-interaction.md",
+        "company/license.md",
+        "company/license-schedule-c.md",
+    }
+
+
 def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     """#1916: build_from_json used to copy hyperedges into G.graph["hyperedges"]
     verbatim without validating members, so a dangling member reached graph.json
@@ -2081,3 +2213,34 @@ def test_method_ghost_ambiguous_same_name_in_one_file_is_not_merged_3705():
     assert not G.has_edge("doc", "svc_a_save_state")
     assert not G.has_edge("doc", "svc_b_save_state")
 
+
+
+def test_has_parallel_links_detects_repeated_pairs():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "contains"},
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    assert has_parallel_links(links) is True
+
+
+def test_has_parallel_links_false_without_repeats():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    assert has_parallel_links(links) is False
+    assert has_parallel_links([]) is False
+    assert has_parallel_links(None) is False
+
+
+def test_has_parallel_links_antiparallel_is_not_parallel_when_directed():
+    from graphify.build import has_parallel_links
+    links = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "b", "target": "a", "relation": "calls"},
+    ]
+    assert has_parallel_links(links, directed=True) is False
+    assert has_parallel_links(links, directed=False) is True

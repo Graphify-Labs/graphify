@@ -345,7 +345,7 @@ def test_kotlin_partial_parse_warns_with_file_and_line(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "syntax errors" in err
     assert "Broken.kt" in err
-    assert re.search(r"first error at line \d+", err)
+    assert re.search(r"error region at line \d+", err)
     # The marker must survive the per-file AST cache: a warm re-run (same
     # cache_root) warns again.
     old = os.getcwd()
@@ -753,3 +753,26 @@ def test_kotlin_annotation_class_literal(tmp_path):
              if e["relation"] == "references" and e.get("context") == "attribute"}
     assert (order, customer) in attrs
     assert (order, order_line) in attrs
+
+
+def test_kotlin_annotation_fully_qualified_class_literal(tmp_path):
+    r = _extract(tmp_path, {
+        "Order.kt": "@Ann(target = com.example.Customer::class)\nclass Order\nclass Customer\n",
+    })
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, customer) in attrs
+
+
+def test_kotlin_annotation_builtin_class_literal_is_filtered(tmp_path):
+    r = _extract(tmp_path, {
+        "Order.kt": "@Ann(target = String::class)\nclass Order\n",
+    })
+    order = _find(r, "Order")
+    attrs = [e for e in r["edges"] if e["source"] == order
+             and e["relation"] == "references" and e.get("context") == "attribute"]
+    annotation = _find(r, "Ann")
+    assert any(e["target"] == annotation for e in attrs)
+    assert not any(n["label"] == "String" for n in r["nodes"])

@@ -4,13 +4,13 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_source_text
 
 
 def extract_sln(path: Path) -> dict:
     """Extract projects and inter-project dependencies from a .sln file."""
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
 

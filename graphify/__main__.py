@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -118,6 +119,11 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_JS,
     _OPENCODE_PLUGIN_PATH,
     _OPENCODE_CONFIG_PATH,
+    _OPENCODE_PLUGIN_HEADER,
+    _drop_opencode_config_entry,
+    _opencode_config_names_plugin,
+    _opencode_dir,
+    _opencode_plugin_is_v1_only,
     _PLATFORM_CONFIG,
     _skill_lock,
 )
@@ -378,6 +384,122 @@ def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
     for line in captured.getvalue().splitlines():
         if str(backup) in line:
             print(line, file=sys.stderr)
+
+
+def _opencode_loads_current_plugin() -> bool:
+    """True when the ``opencode`` on PATH can load the plugin graphify writes now.
+
+    That plugin is a default export, which OpenCode reads from 1.3.4 on. Older
+    OpenCode 1 releases call every export as a function and fail on it, while
+    the plugin they already have keeps working, so it must be left alone.
+    Unknown (no ``opencode`` on PATH, no version in its output) counts as no:
+    the refresh is a convenience, ``graphify opencode install`` still rewrites.
+    """
+    exe = shutil.which("opencode")
+    if exe is None:
+        return False
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    found = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return found is not None and tuple(int(part) for part in found.groups()) >= (1, 3, 4)
+
+
+def _refresh_v1_opencode_plugins() -> None:
+    """Rewrite OpenCode plugins an older release left behind (#3554, #3732).
+
+    Releases up to 0.9.74 wrote a plugin only OpenCode 1 can load, and an
+    opencode.json entry OpenCode 2 fails on. Upgrading OpenCode to 2 turns both
+    into a load error on every start, and upgrading graphify touches neither.
+    So on a CLI run, replace such a plugin with the current one and drop the
+    entry.
+
+    Two directories are checked: the working directory, where the install
+    writes the plugin, and the home directory, where it lands when the install
+    was run from there (OpenCode then loads it for every project below home).
+    Only a plugin graphify wrote is touched. The entry is dropped beside a
+    current plugin too: a checkout or a failed write can bring it back alone.
+
+    An old plugin is replaced only when the installed OpenCode can load the new
+    one (see _opencode_loads_current_plugin), and under the directory's lock,
+    without waiting: when another graphify process is already at it, this one
+    leaves it to them. ``GRAPHIFY_NO_AUTO_REFRESH=1`` opts out, as it does for
+    skills.
+    """
+    if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+        return
+    try:
+        # The cwd and home .opencode dirs are where installs before #3398 wrote,
+        # ~/.config/opencode is the global install's dir since.
+        directories = dict.fromkeys(
+            d.resolve()
+            for d in (
+                _opencode_dir(project=True, project_dir=Path.cwd()),
+                _opencode_dir(project=True, project_dir=Path.home()),
+                _opencode_dir(project=False),
+            )
+        )
+    except (OSError, RuntimeError):
+        return
+    loadable: "bool | None" = None  # asked once, and only when an old plugin is found
+    for directory in directories:
+        plugin_file = directory / _OPENCODE_PLUGIN_PATH.relative_to(".opencode")
+
+        def pending() -> "bool | None":
+            """True for an old plugin, False for a stale entry only, None for neither."""
+            try:
+                body = plugin_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return None  # no plugin here
+            if not body.startswith(_OPENCODE_PLUGIN_HEADER):
+                return None  # not graphify's
+            if _opencode_plugin_is_v1_only(body):
+                return True
+            return False if _opencode_config_names_plugin(directory) else None
+
+        stale = pending()
+        if stale is None:
+            continue
+        if stale:
+            if loadable is None:
+                loadable = _opencode_loads_current_plugin()
+            if not loadable:
+                continue
+        with _skill_lock(plugin_file.parent, wait=False) as owned:
+            # Look again under the lock: a process that held it may have finished the job.
+            stale = pending() if owned else None
+            if stale is None:
+                continue
+            captured = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(captured):
+                    if stale:
+                        _install_opencode_plugin(directory)
+                        dropped = False
+                    else:
+                        dropped = _drop_opencode_config_entry(directory)
+            except Exception as exc:
+                # A refresh must never take the user's actual command down with it.
+                print(f"graphify: could not refresh {plugin_file}: {exc}", file=sys.stderr)
+                continue
+        if stale:
+            print(
+                f"graphify: refreshed {plugin_file} so OpenCode 2 can load it; "
+                f"set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+            # Of the install's own lines, only the one asking for a manual edit matters here.
+            for line in captured.getvalue().splitlines():
+                if "by hand" in line:
+                    print(line, file=sys.stderr)
+        elif dropped:
+            print(
+                f"graphify: removed the stale graphify entry from "
+                f"{directory / _OPENCODE_CONFIG_PATH.name}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+
 
 
 
@@ -719,11 +841,21 @@ def _run_cli() -> None:
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
+    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
+    _help_flags = {"-h", "--help", "-?"}
+    # Version and help only report, so they leave installed files alone (#4545).
+    _informational = (
+        len(sys.argv) < 2
+        or sys.argv[1] in {"-v", "--version", "version", *_help_flags}
+        or (sys.argv[1] not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]))
+    )
     if not any(arg in _silent_cmds for arg in sys.argv):
         # A package upgrade leaves every installed skill at the old version;
         # refresh them first, so the check below only fires for copies the
         # refresh could not or must not touch (#1805).
-        _refresh_stale_skills()
+        if not _informational:
+            _refresh_stale_skills()
+            _refresh_v1_opencode_plugins()
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
@@ -739,12 +871,20 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        # Derive the list from the same source as `graphify install` usage
+        # (_print_install_usage) so the two can never drift apart, rather than
+        # hand-maintaining it (amp, copilot, antigravity-windows had been missed, #4655).
+        _platform_values = "|".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
+        print(f"  install [--platform P]  copy skill to platform config dir ({_platform_values})")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --directed              force a directed search (the default;")
+        print("                            the JSON 'directed' flag is NOT consulted)")
+        print("    --undirected            ignore edge direction")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
+        print("    --all                   list every connection (default: the 20 most connected)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  diagnose multigraph    report same-endpoint edge collapse risk in graph.json")
         print("    --graph <path>          path to graph/extraction JSON")
@@ -760,6 +900,9 @@ def _run_cli() -> None:
         print("  merge-driver <base> <current> <other>  git merge driver: union-merge two graph.json files (set up via hook install)")
         print("  merge-graphs <g1> <g2>  merge two or more graph.json files into one cross-repo graph")
         print("    --out <path>            output path (default: graphify-out/merged-graph.json)")
+        print("    --previous <path>       restore the previous merged clustering's community ids")
+        print("                            (by node id) instead of each input's own per-source ids,")
+        print("                            so a later cluster-only run reuses labels correctly")
         print("    --branch <branch>       checkout a specific branch (default: repo default)")
         print("    --out <dir>             clone to a custom directory (default: ~/.graphify/repos/<owner>/<repo>)")
         print("  add <url>               fetch a URL and save it to ./raw, then update the graph")
@@ -776,20 +919,27 @@ def _run_cli() -> None:
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
-        print("    --model=<name>          model to use for community naming")
+        print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
         print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
-        print("    --batch-size=N          communities per labeling LLM call (default 100)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100, sized for ~16k context; use 40 for 8k)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
         print("    --missing-only         keep existing labels and only name missing/placeholder communities")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
-        print("    --model=<name>          model to use for community naming")
+        print("    --model=<name>          model to use for community naming (claude-cli also reads GRAPHIFY_CLAUDE_CLI_MODEL)")
         print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
         print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
-        print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --seed X                start at node X (id, label or file path; repeatable)")
+        print("                            instead of the question's keyword matches")
+        print("    --budget N, --budget=N  cap output at N tokens (default 2000)")
+        print("    --depth N, --depth=N    traversal depth 1-6 (default 2)")
+        print("                            absent options use the selected graph project's .graphifyrc")
+        print("                            query_budget / query_depth. Explicit options override project values.")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("  query, path and explain exit 0 with an answer, 3 when a name is ambiguous")
+        print("  (the candidates are listed), 4 when no node matches")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
@@ -832,6 +982,8 @@ def _run_cli() -> None:
         print("                            and OPENAI_MODEL to the model name your server serves")
         print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
+        print("                            GRAPHIFY_CLAUDE_PROMPT_CACHE=0 disables Claude system-prompt caching")
+        print("                            (default: enabled; set 1 to explicitly enable)")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --force                 full re-scan and re-dispatch: skip the incremental")
@@ -858,7 +1010,7 @@ def _run_cli() -> None:
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
-        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]")
+        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N, default 5000] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
         print("                          [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]")
@@ -870,7 +1022,7 @@ def _run_cli() -> None:
         print("                          (or set NEO4J_PASSWORD instead of --password to keep it off argv)")
         print("  export falkordb         emit Cypher or push to FalkorDB [--graph PATH] [--push URI] [--user U] [--password P]")
         print("                          (or set FALKORDB_PASSWORD instead of --password to keep it off argv)")
-        print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
+        print("  hook install            install post-commit/post-checkout/post-merge/post-rewrite git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
         print("  hook status             check if git hooks are installed")
         print(
@@ -899,6 +1051,8 @@ def _run_cli() -> None:
         )
         print("  aider install           write graphify section to AGENTS.md (Aider)")
         print("  aider uninstall         remove graphify section from AGENTS.md")
+        print("  amp install             copy graphify skill + write AGENTS.md section (Amp)")
+        print("  amp uninstall           remove graphify skill + AGENTS.md section (Amp)")
         print(
             "  copilot install         copy graphify skill to ~/.copilot/skills (GitHub Copilot CLI)"
         )
@@ -935,6 +1089,9 @@ def _run_cli() -> None:
         print("  kiro uninstall          remove skill + steering file")
         print("  pi install              write skill to ~/.pi/agent/skills/graphify/ (Pi coding agent)")
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
+        print("  pi guard install        register the native Pi guard extension via `pi install`")
+        print("  pi guard uninstall      unregister it via `pi remove`")
+        print("  pi guard path           print the guard package path (e.g. for `omp plugin install`)")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
         print()
@@ -950,8 +1107,7 @@ def _run_cli() -> None:
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
-    if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
+    if cmd not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return
 

@@ -1,13 +1,17 @@
 """Structural extraction for Solidity source files."""
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
+
+_IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 
 _TYPE_DECLARATIONS = {
     "contract_declaration": "contract",
@@ -21,6 +25,255 @@ def _unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         return value[1:-1]
     return value
+
+
+def _callee_text(callee: Node, source: bytes) -> str:
+    """The callee as written, e.g. ``super.supportsInterface`` or ``_check``.
+
+    tree-sitter-solidity parses ``a || super.f(x)`` as a call of the member
+    ``(a || super).f``: the binary expression is swallowed into the member's
+    object. Read the right-most operand as the receiver instead, so the call
+    is seen as ``super.f`` (and ``a && b.c(x)`` as ``b.c``). A prefix operator
+    is swallowed the same way: ``!Lib.f(x)`` parses as ``(!Lib).f``.
+    """
+    inner = callee.named_children[0] if callee.type == "expression" and callee.named_children else callee
+    if inner.type == "member_expression":
+        obj = inner.child_by_field_name("object")
+        prop = inner.child_by_field_name("property")
+        if obj is not None and prop is not None:
+            base = obj
+            while True:
+                unwrapped = base.named_children[0] if base.type == "expression" and base.named_children else base
+                right = (
+                    unwrapped.child_by_field_name("right") if unwrapped.type == "binary_expression"
+                    else unwrapped.child_by_field_name("argument") if unwrapped.type == "unary_expression"
+                    else None
+                )
+                if right is None:
+                    break
+                base = right
+            if base is not obj:
+                return f"{_read_text(base, source)}.{_read_text(prop, source)}"
+    return _read_text(callee, source)
+
+
+def _inherited_call(
+    caller_id: str, callee: str, arity: int | None, kind: str, source_file: str, node: Node,
+) -> dict[str, Any]:
+    """A call or modifier the contract itself does not declare, for
+    :func:`resolve_solidity_inherited_calls`. ``kind`` is ``inherited`` (bare
+    ``f()`` / ``this.f()``, ``emit E()``, ``revert Err()``), ``super``
+    (``super.f()``), ``modifier`` or ``qualified`` (``Lib.f()``,
+    ``revert Errors.Err()``, with a ``qualifier``)."""
+    return {
+        "caller_nid": caller_id,
+        "callee": callee,
+        "arity": arity,
+        "solidity_call": kind,
+        "language": "solidity",
+        "source_file": source_file,
+        "source_location": f"L{node.start_point[0] + 1}",
+    }
+
+
+def _c3_linearization(type_id: str, bases: dict[str, list[str]]) -> list[str]:
+    """Solidity's C3 linearization of ``type_id``, most derived first.
+
+    ``bases`` lists each type's direct bases in declaration order
+    (``contract C is A, B`` -> ``[A, B]``); Solidity treats the LAST one as
+    the most derived, so they are merged right to left. Falls back to a
+    right-to-left depth-first order when the bases cannot be merged (a cycle
+    or an inconsistent hierarchy), so a broken graph still resolves.
+    """
+    memo: dict[str, list[str]] = {}
+
+    def linearize(tid: str, active: frozenset[str]) -> list[str] | None:
+        if tid in memo:
+            return memo[tid]
+        if tid in active:
+            return None
+        parents = list(reversed(bases.get(tid, [])))
+        sequences: list[list[str]] = []
+        for parent in parents:
+            lin = linearize(parent, active | {tid})
+            if lin is None:
+                return None
+            sequences.append(list(lin))
+        sequences.append(list(parents))
+        result = [tid]
+        while any(sequences):
+            head = None
+            for seq in sequences:
+                if seq and not any(seq[0] in other[1:] for other in sequences):
+                    head = seq[0]
+                    break
+            if head is None:
+                return None
+            result.append(head)
+            for seq in sequences:
+                if seq and seq[0] == head:
+                    del seq[0]
+        memo[tid] = result
+        return result
+
+    linear = linearize(type_id, frozenset())
+    if linear is not None:
+        return linear
+    order: list[str] = []
+    stack = [type_id]
+    while stack:
+        tid = stack.pop()
+        if tid in order:
+            continue
+        order.append(tid)
+        stack.extend(bases.get(tid, []))
+    return order
+
+
+def resolve_solidity_inherited_calls(
+    per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]
+) -> None:
+    """Bind calls, ``super`` calls and modifiers a contract inherits.
+
+    The extractor binds ``f()`` and ``onlyX`` only inside the declaring
+    contract, so a call to a function or modifier declared in a base contract
+    (often in another file) got no edge. Runs after
+    :func:`resolve_solidity_type_references` has bound each ``inherits`` edge
+    to the base's real node, and walks the caller contract's C3 linearization
+    as the compiler does: the first contract that declares a matching member
+    wins (``super.f()`` starts after the caller's own contract, as the plain
+    lookup does once the extractor found nothing there); several same-arity
+    overloads in that contract are ambiguous and get no edge.
+
+    A qualified call (``Lib.f()``, ``Base.f()``, ``revert Errors.Err()``) binds
+    to the member of the one library/contract/interface of that name the
+    caller's file declares or imports directly; no edge when the name or the
+    (name, arity) is ambiguous.
+    """
+    calls = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", []) or []
+        if rc.get("solidity_call")
+    ]
+    if not calls:
+        return
+    node_by_id = {node.get("id"): node for node in all_nodes}
+
+    def meta(nid: Any) -> dict:
+        node = node_by_id.get(nid)
+        value = node.get("metadata") if node else None
+        return value if isinstance(value, dict) else {}
+
+    type_kinds = set(_TYPE_DECLARATIONS.values())
+    owner: dict[str, str] = {}
+    functions: dict[str, dict[str, list[tuple[str, Any]]]] = {}
+    modifiers: dict[str, dict[str, list[str]]] = {}
+    bases: dict[str, list[str]] = {}
+    existing: set[tuple[Any, Any, Any]] = set()
+    for edge in all_edges:
+        source, target, relation = edge.get("source"), edge.get("target"), edge.get("relation")
+        existing.add((source, target, relation))
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        source_meta = meta(source)
+        if source_meta.get("language") != "solidity" or source_meta.get("kind") not in type_kinds:
+            continue
+        if relation == "method":
+            member = meta(target)
+            name = str(node_by_id.get(target, {}).get("label", ""))
+            name = name[:-2] if name.endswith("()") else name
+            owner[target] = source
+            if member.get("kind") == "function":
+                functions.setdefault(source, {}).setdefault(name, []).append(
+                    (target, member.get("arity"))
+                )
+            elif member.get("kind") == "modifier":
+                modifiers.setdefault(source, {}).setdefault(name, []).append(target)
+        elif relation == "contains" and meta(target).get("kind") in {"event", "error"}:
+            # An event/error is a call target too (`emit E()`, `revert Err()`).
+            functions.setdefault(source, {}).setdefault(
+                str(node_by_id.get(target, {}).get("label", "")), []
+            ).append((target, meta(target).get("arity")))
+        elif relation == "inherits" and meta(target).get("kind") in type_kinds:
+            bases.setdefault(source, []).append(target)
+
+    def find(linear: list[str], name: str, arity: Any, kind: str) -> str | None:
+        for type_id in linear:
+            if kind == "modifier":
+                found = modifiers.get(type_id, {}).get(name, [])
+            else:
+                found = [
+                    nid for nid, declared in functions.get(type_id, {}).get(name, [])
+                    if arity is None or declared is None or declared == arity
+                ]
+            if found:
+                return found[0] if len(found) == 1 else None
+        return None
+
+    # `Errors.Err` names a type the caller's file declares or imports directly,
+    # the scope resolve_solidity_type_references binds base names in.
+    types_by_file: dict[tuple[str, str], list[str]] = {}
+    file_by_id: dict[Any, str] = {}
+    imported: dict[str, set[str]] = {}
+    if any(rc["solidity_call"] == "qualified" for rc in calls):
+        for node in all_nodes:
+            node_file = node.get("source_file")
+            if not node_file:
+                continue
+            if node.get("label") == Path(str(node_file)).name:
+                file_by_id[node.get("id")] = str(node_file)
+            elif meta(node.get("id")).get("kind") in type_kinds:
+                types_by_file.setdefault((str(node_file), str(node.get("label", ""))), []).append(node["id"])
+        for edge in all_edges:
+            if edge.get("relation") == "imports_from":
+                importer = file_by_id.get(edge.get("source"))
+                imported_file = file_by_id.get(edge.get("target"))
+                if importer and imported_file:
+                    imported.setdefault(importer, set()).add(imported_file)
+
+    linear_cache: dict[str, list[str]] = {}
+    for rc in calls:
+        caller = rc.get("caller_nid")
+        name = rc.get("callee")
+        if not caller or not name:
+            continue
+        kind = rc["solidity_call"]
+        contract = owner.get(caller)
+        if kind == "qualified":
+            # `Lib.f()` names its type, so it needs no owning contract (a free
+            # function calls libraries too).
+            caller_file = str(node_by_id.get(caller, {}).get("source_file", ""))
+            qualifier = str(rc.get("qualifier", ""))
+            scope = types_by_file.get((caller_file, qualifier), []) + [
+                type_id
+                for imported_file in sorted(imported.get(caller_file, set()))
+                for type_id in types_by_file.get((imported_file, qualifier), [])
+            ]
+            # Fail closed when the name is not visible or is ambiguous.
+            target = find(scope, name, rc.get("arity"), kind) if len(scope) == 1 else None
+        elif not contract:
+            continue
+        else:
+            if contract not in linear_cache:
+                linear_cache[contract] = _c3_linearization(contract, bases)
+            # The extractor already looked in the caller's own contract.
+            target = find(linear_cache[contract][1:], name, rc.get("arity"), kind)
+        if target is None or target == caller:
+            continue
+        relation = "uses" if kind == "modifier" else "calls"
+        if (caller, target, relation) in existing:
+            continue
+        existing.add((caller, target, relation))
+        all_edges.append({
+            "source": caller,
+            "target": target,
+            "relation": relation,
+            "confidence": "EXTRACTED",
+            "source_file": rc.get("source_file"),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
 
 
 def resolve_solidity_type_references(
@@ -77,7 +330,7 @@ def extract_solidity(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-solidity not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(Language(tree_sitter_solidity.language())).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"Solidity grammar failed to load: {exc}"}
@@ -99,15 +352,21 @@ def extract_solidity(path: Path) -> dict:
         kind: str,
         source_backed: bool = True,
         callable_node: bool = False,
+        arity: int | None = None,
     ) -> str:
         if nid not in seen_ids:
             seen_ids.add(nid)
+            metadata: dict[str, Any] = {"language": "solidity", "kind": kind}
+            if arity is not None:
+                # Parameter count, so the cross-contract pass can pick the
+                # same overload the in-contract lookup does (name, arity).
+                metadata["arity"] = arity
             item: dict[str, Any] = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_location": f"L{node.start_point[0] + 1}",
-                "metadata": {"language": "solidity", "kind": kind},
+                "metadata": metadata,
             }
             if source_backed:
                 item["source_file"] = source_file
@@ -152,16 +411,50 @@ def extract_solidity(path: Path) -> dict:
         add_node(nid, name, node, kind="external_type", source_backed=False)
         return nid
 
+    def qualified_call(caller_id: str, qualifier: str, member: str, arity: int, node: Node) -> None:
+        """Park ``Qualifier.member(..)`` for resolve_solidity_inherited_calls,
+        which binds it through a type the file declares or imports."""
+        call = _inherited_call(caller_id, member, arity, "qualified", source_file, node)
+        call["qualifier"] = import_aliases.get(qualifier, qualifier)
+        raw_calls.append(call)
+
+    def split_qualified(written: str) -> tuple[str, str] | None:
+        """``("Lib", "f")`` for ``Lib.f``; ``None`` for ``a.b.f``, ``x[i].f``,
+        ``f().g``, ``super.f`` or ``this.f``."""
+        qualifier, _, member = written.partition(".")
+        if (
+            qualifier in {"super", "this"}
+            or not _IDENTIFIER.fullmatch(qualifier)
+            or not _IDENTIFIER.fullmatch(member)
+        ):
+            return None
+        return qualifier, member
+
+    # `import {A as B} from "./A.sol";` makes `B.f()` call `A.f`.
+    import_aliases: dict[str, str] = {}
     for declaration in root.named_children:
         if declaration.type != "import_directive":
             continue
+        imported_name: str | None = None
+        for index, child in enumerate(declaration.children):
+            field = declaration.field_name_for_child(index)
+            if field == "import_name":
+                imported_name = _read_text(child, source)
+            elif field == "alias" and imported_name is not None:
+                # A namespace alias (`import "./x.sol" as X;`) has no
+                # import_name before it and is not a type.
+                import_aliases[_read_text(child, source)] = imported_name
+                imported_name = None
+            elif child.type == ",":
+                imported_name = None
         source_node = declaration.child_by_field_name("source")
         if source_node is None:
             continue
         relative = _unquote(_read_text(source_node, source))
         if not relative or relative.startswith(("http:", "https:")):
             continue
-        target = path.parent / relative
+        # `../utils/Errors.sol` must name the real file, not `proxy/utils/Errors.sol`.
+        target = Path(os.path.normpath(path.parent / relative))
         add_edge(
             file_id,
             _make_id(str(target)),
@@ -218,6 +511,7 @@ def extract_solidity(path: Path) -> dict:
             relation: str = "contains",
             signature: str = "",
             callable_node: bool = False,
+            arity: int | None = None,
         ) -> str:
             # Callables carry an arity:types signature (distinguishes overloads).
             # Non-callable members (struct/enum/event/error/state-var) have no
@@ -231,6 +525,7 @@ def extract_solidity(path: Path) -> dict:
                 member,
                 kind=kind,
                 callable_node=callable_node,
+                arity=arity,
             )
             add_edge(type_id, member_id, relation, member)
             return member_id
@@ -238,15 +533,25 @@ def extract_solidity(path: Path) -> dict:
         for member in body.named_children:
             kind = member.type
             if kind == "using_directive":
-                alias = next(
-                    (
-                        _read_text(child, source)
-                        for child in member.named_children
-                        if child.type in {"type_alias", "identifier", "user_defined_type"}
-                    ),
-                    "",
-                )
-                if alias:
+                # `using Lib for T;` names the library directly as a child.
+                # `using {f1, f2} for T;` (free functions bound as members,
+                # legal since 0.8.13) wraps each one in its own `using_alias`
+                # child instead, so the direct-child scan below saw nothing
+                # and silently dropped the whole directive.
+                alias_nodes = [
+                    child for child in member.named_children
+                    if child.type in {"type_alias", "identifier", "user_defined_type"}
+                ]
+                for child in member.named_children:
+                    if child.type == "using_alias":
+                        alias_nodes.extend(
+                            grandchild for grandchild in child.named_children
+                            if grandchild.type in {"type_alias", "identifier", "user_defined_type"}
+                        )
+                for alias_node in alias_nodes:
+                    alias = _read_text(alias_node, source)
+                    if not alias:
+                        continue
                     name = alias.split(".")[-1]
                     add_edge(
                         type_id,
@@ -291,7 +596,13 @@ def extract_solidity(path: Path) -> dict:
                         value_name = _read_text(value, source)
                         value_id = _make_id(enum_id, value_name)
                         add_node(value_id, value_name, value, kind="enum_value")
-                        add_edge(enum_id, value_id, "contains", value)
+                        # An enum value is a discriminant case, not a declared
+                        # field, so it gets `case_of` like every other language
+                        # with enums (Java #1719, C#, Swift, Rust, VB.NET). The
+                        # relation also matters to resolution: `case_of` targets
+                        # are excluded from constructor binding, so an enum value
+                        # named like a type can no longer be mistaken for one.
+                        add_edge(enum_id, value_id, "case_of", value)
                 continue
 
             simple_kinds = {
@@ -304,9 +615,18 @@ def extract_solidity(path: Path) -> dict:
                 if member_name_node is None:
                     continue
                 name = _read_text(member_name_node, source)
-                member_id = add_member(member, name, name, simple_kinds[kind])
-                arity = sum(child.type in {"event_parameter", "parameter"} for child in member.named_children)
-                reference_targets[(name, arity)] = member_id
+                arity = sum(
+                    child.type in {"event_parameter", "error_parameter", "parameter"}
+                    for child in member.named_children
+                )
+                if kind == "state_variable_declaration":
+                    reference_targets[(name, arity)] = add_member(member, name, name, "state_variable")
+                else:
+                    # `emit E(..)`, `revert Err(..)` and `require(c, Err(..))`
+                    # call the event/error, like Python's `raise Err()`: bind
+                    # it as a call target by (name, arity).
+                    member_id = add_member(member, name, name, simple_kinds[kind], arity=arity)
+                    functions.setdefault((name, arity), []).append(member_id)
                 continue
 
             if kind not in {
@@ -347,6 +667,7 @@ def extract_solidity(path: Path) -> dict:
                 relation="method",
                 signature=f"{arity}:{signature}",
                 callable_node=True,
+                arity=arity,
             )
             if callable_kind == "modifier":
                 modifiers[name] = member_id
@@ -355,7 +676,7 @@ def extract_solidity(path: Path) -> dict:
             member_body = member.child_by_field_name("body")
             if member_body is not None:
                 bodies.append((member_body, member_id))
-            if callable_kind == "function":
+            if callable_kind != "modifier":
                 for child in member.named_children:
                     if child.type != "modifier_invocation":
                         continue
@@ -374,6 +695,13 @@ def extract_solidity(path: Path) -> dict:
             target = modifiers.get(modifier_name)
             if target:
                 add_edge(caller_id, target, "uses", modifier_node)
+            else:
+                # Declared in a base contract (`onlyOwner` from Ownable), or a
+                # base-constructor call (`ERC20("n", "s")`), which the
+                # inheritance pass finds no modifier for and drops.
+                raw_calls.append(_inherited_call(
+                    caller_id, modifier_name, None, "modifier", source_file, modifier_node,
+                ))
 
         for function_body, caller_id in bodies:
             stack = [function_body]
@@ -382,7 +710,7 @@ def extract_solidity(path: Path) -> dict:
                 if node.type == "call_expression":
                     callee_node = node.child_by_field_name("function")
                     if callee_node is not None:
-                        written = _read_text(callee_node, source)
+                        written = _callee_text(callee_node, source)
                         callee = written.split(".")[-1]
                         arity = sum(child.type == "call_argument" for child in node.named_children)
                         candidates: list[str] = []
@@ -394,6 +722,25 @@ def extract_solidity(path: Path) -> dict:
                             referenced = reference_targets.get((callee, arity))
                             if referenced is not None and "." not in written:
                                 add_edge(caller_id, referenced, "references", node)
+                            elif not candidates and callee and (
+                                "." not in written or written.startswith("this.")
+                            ):
+                                # Not declared in this contract: an inherited
+                                # function (`_msgSender()` from Context), bound
+                                # by resolve_solidity_inherited_calls through
+                                # the contract's linearized bases.
+                                raw_calls.append(_inherited_call(
+                                    caller_id, callee, arity, "inherited", source_file, node,
+                                ))
+                            elif written.startswith("super.") and written.count(".") == 1:
+                                raw_calls.append(_inherited_call(
+                                    caller_id, callee, arity, "super", source_file, node,
+                                ))
+                            elif callee and (qualified := split_qualified(written)):
+                                # `Lib.f(..)` / `Base.f(..)` / `Errors.Err(..)`.
+                                # A value receiver (`token.transfer()`) names no
+                                # type, so the resolver binds nothing for it.
+                                qualified_call(caller_id, *qualified, arity, node)
                             elif callee and "." in written:
                                 raw_calls.append({
                                     "caller_nid": caller_id,
@@ -403,6 +750,38 @@ def extract_solidity(path: Path) -> dict:
                                     "source_file": source_file,
                                     "source_location": f"L{node.start_point[0] + 1}",
                                 })
+                elif node.type in {"emit_statement", "revert_statement"}:
+                    # `emit E(..)` / `revert Err(..)` are statements, not
+                    # call_expressions; `revert()` / `revert("msg")` name none.
+                    emitted = node.child_by_field_name(
+                        "name" if node.type == "emit_statement" else "error"
+                    )
+                    if emitted is not None and emitted.type == "expression" and emitted.named_children:
+                        emitted = emitted.named_children[0]
+                    args = node if node.type == "emit_statement" else next(
+                        (child for child in node.named_children if child.type == "revert_arguments"), None,
+                    )
+                    arity = sum(child.type == "call_argument" for child in args.named_children) if args else 0
+                    if emitted is not None and emitted.type == "identifier":
+                        callee = _read_text(emitted, source)
+                        candidates = functions.get((callee, arity), [])
+                        if len(candidates) == 1:
+                            add_edge(caller_id, candidates[0], "calls", node)
+                        elif not candidates:
+                            # Declared in a base contract (an interface's event,
+                            # a base's error): bound through the linearization.
+                            raw_calls.append(_inherited_call(
+                                caller_id, callee, arity, "inherited", source_file, node,
+                            ))
+                    elif emitted is not None and emitted.type == "member_expression":
+                        qualifier = emitted.child_by_field_name("object")
+                        prop = emitted.child_by_field_name("property")
+                        if qualifier is not None and prop is not None and qualifier.type == "identifier":
+                            # `revert Errors.Err(..)`: declared in a library or
+                            # contract the file declares or imports.
+                            qualified_call(
+                                caller_id, _read_text(qualifier, source), _read_text(prop, source), arity, node,
+                            )
                 stack.extend(reversed(node.named_children))
 
     # Free (file-level) functions live at source-unit scope, outside any
@@ -442,9 +821,10 @@ def extract_solidity(path: Path) -> dict:
             free_bodies.append((body, func_id))
 
     # Resolve calls made from free-function bodies. Only an unambiguous
-    # same-file free function is linked directly; a member call (Lib.f()) is
-    # left for cross-file resolution. Contract methods stay out of scope so we
-    # never guess a relationship across a scope we cannot see (fail-closed).
+    # same-file free function is linked directly; a qualified call (Lib.f())
+    # is left for resolve_solidity_inherited_calls. Contract methods stay out
+    # of scope so we never guess a relationship across a scope we cannot see
+    # (fail-closed).
     for function_body, caller_id in free_bodies:
         stack = [function_body]
         while stack:
@@ -452,13 +832,15 @@ def extract_solidity(path: Path) -> dict:
             if node.type == "call_expression":
                 callee_node = node.child_by_field_name("function")
                 if callee_node is not None:
-                    written = _read_text(callee_node, source)
+                    written = _callee_text(callee_node, source)
                     callee = written.split(".")[-1]
                     arity = sum(child.type == "call_argument" for child in node.named_children)
                     if "." not in written:
                         candidates = free_functions.get((callee, arity), [])
                         if len(candidates) == 1:
                             add_edge(caller_id, candidates[0], "calls", node)
+                    elif callee and (qualified := split_qualified(written)):
+                        qualified_call(caller_id, *qualified, arity, node)
                     elif callee:
                         raw_calls.append({
                             "caller_nid": caller_id,

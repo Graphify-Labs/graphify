@@ -91,6 +91,16 @@ def test_code_span_mentions_are_classified():
     pinned = ("src/widget.py", ["Widget", "render"])
     assert _code_span_mention("src/widget.py::Widget::render") == pinned
     assert _code_span_mention("src/widget.py::Widget::render()") == pinned
+    # `\` and `::` are qualifier separators too (#4610): PHP namespaces and the
+    # type-qualified member form PHP, Rust and C++ docs write.
+    assert _code_span_mention("App\\Services\\Mailer") == (
+        None, ["App", "Services", "Mailer"])
+    assert _code_span_mention("Mailer::send") == (None, ["Mailer", "send"])
+    assert _code_span_mention("Mailer::send()") == (None, ["Mailer", "send"])
+    # `Foo::CONST` and `Foo::class` have no node to land on, and a bare
+    # namespace root (`App\`) names no symbol at all.
+    for span in ("Foo::CONST", "Foo::class", "App\\", "C:\\Users\\me"):
+        assert _code_span_mention(span) is None, span
     # Files, commands, expressions and prose are not symbol mentions.
     for span in ("setup.py", "README.md", "notes.txt", "git revert", "x = 1", "a-b",
                  "--flag", "", "src/widget.py"):
@@ -235,6 +245,30 @@ def test_dotted_mentions_need_qualifier_evidence(tmp_path):
     assert cited == {widget["id"], gadget["id"], widget_render["id"]}
 
 
+def test_namespace_and_member_chains_resolve(tmp_path):
+    """``App\\Services\\Mailer`` and ``Mailer::send()`` reach the same nodes the
+    dotted and bare forms do (#4610)."""
+    r = _extract(tmp_path, {
+        "mailer.py": "class Mailer:\n    def send(self):\n        return 1\n",
+        "gadget.py": "class Gadget:\n    def send(self):\n        return 2\n",
+        "README.md": (
+            "# Mail\n\n"
+            "See `App\\Services\\Mailer` and `Mailer::send()`.\n\n"
+            "## Constants\n\n"
+            "`Foo::CONST` and `Foo::class` land on nothing.\n"
+        ),
+    })
+    mail = _node(r, "Mail")
+    constants = _node(r, "Constants")
+    mailer = _node(r, "Mailer", "mailer.py")
+    send = next(n for n in r["nodes"] if n["label"] == ".send()" and "mailer" in n["id"])
+    # The PSR-4 root `App\` has no path segment to match and is dropped; the
+    # `Mailer` qualifier still picks the right `send` over the one in Gadget.
+    assert (mail["id"], mailer["id"]) in _references(r)
+    assert (mail["id"], send["id"]) in _references(r)
+    assert {t for (s, t) in _references(r) if s == constants["id"]} == set()
+
+
 def test_mentions_survive_a_rebuild_over_an_existing_graph(tmp_path):
     """The watch reconcile owns authored ``[link](file)`` edges, not mentions.
 
@@ -287,3 +321,124 @@ def test_mentions_survive_the_extraction_cache(tmp_path):
     guide = _node(second, "Guide")
     widget = _node(second, "Widget", "widget.py")
     assert (guide["id"], widget["id"]) in _pairs(second)
+
+
+def test_bare_lowercase_word_does_not_link_to_an_unrelated_method(tmp_path):
+    """`redis` the server is prose, not a reference to whichever method is named redis (#4609)."""
+    r = _extract(tmp_path, {
+        "cache.py": "class Cache:\n    def redis(self):\n        return 'connection'\n",
+        "README.md": "# Queue\n\nJobs run on `redis` (the server, not our code).\n",
+    })
+
+    queue = _node(r, "Queue")
+    assert {t for (s, t) in _references(r) if s == queue["id"]} == set()
+
+
+def test_bare_method_mention_survives_when_the_document_cites_its_class(tmp_path):
+    """`successWithWarnings` next to `HandlerResult` is a real reference (#4609)."""
+    r = _extract(tmp_path, {
+        "handler.py": "class HandlerResult:\n    def successWithWarnings(self):\n        return 1\n",
+        "notes.md": "# Notes\n\n`HandlerResult` returns `successWithWarnings`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    method = _node(r, ".successWithWarnings()")
+    assert (notes["id"], method["id"]) in _references(r)
+
+
+def test_bare_method_with_parentheses_still_resolves(tmp_path):
+    """A trailing () is explicit evidence, so the owner does not have to be cited (#4609)."""
+    r = _extract(tmp_path, {
+        "cache.py": "class Cache:\n    def redis(self):\n        return 'connection'\n",
+        "notes.md": "# Notes\n\nCall `redis()` on the cache.\n",
+    })
+
+    notes = _node(r, "Notes")
+    method = _node(r, ".redis()")
+    assert (notes["id"], method["id"]) in _references(r)
+
+
+def test_bare_function_mention_still_resolves_without_its_owner(tmp_path):
+    """The extra owner test is scoped to methods; a free function label stays evidence (#4609)."""
+    r = _extract(tmp_path, {
+        "deploy.py": "def deploy():\n    pass\n",
+        "notes.md": "# Notes\n\nRun `deploy` after the tests.\n",
+    })
+
+    notes = _node(r, "Notes")
+    deploy = _node(r, "deploy()", "deploy.py")
+    assert (notes["id"], deploy["id"]) in _references(r)
+
+
+def test_owner_cited_in_another_document_does_not_count(tmp_path):
+    """The owner evidence is per document: one doc's mention cannot license another's (#4609)."""
+    r = _extract(tmp_path, {
+        "handler.py": "class HandlerResult:\n    def successWithWarnings(self):\n        return 1\n",
+        "a.md": "# A\n\n`HandlerResult` is the result type.\n",
+        "b.md": "# B\n\nReads `successWithWarnings`.\n",
+    })
+
+    b = _node(r, "B")
+    assert {t for (s, t) in _references(r) if s == b["id"]} == set()
+
+
+def test_owner_evidence_survives_an_edge_that_already_exists():
+    """A mention whose edge is already in the graph still counts as citing its target.
+
+    The resolver skips an edge that is already there, but the document has still
+    cited that symbol, so the evidence must stay on record for a later method
+    mention in the same document (#4609, review finding on the PR).
+    """
+    from graphify.markdown_resolution import resolve_markdown_mentions
+
+    per_file = [{"raw_calls": [
+        {"caller_nid": "doc_notes", "callee": "HandlerResult", "language": "markdown",
+         "context": "HandlerResult", "source_file": "notes.md", "source_location": "L3"},
+        {"caller_nid": "doc_notes", "callee": "successWithWarnings", "language": "markdown",
+         "context": "successWithWarnings", "source_file": "notes.md", "source_location": "L3"},
+    ]}]
+    nodes = [
+        {"id": "doc_notes", "label": "Notes", "file_type": "document",
+         "source_file": "notes.md"},
+        {"id": "handler_handlerresult", "label": "HandlerResult", "file_type": "code",
+         "_callable": True, "_callable_class": True, "source_file": "handler.py"},
+        {"id": "handler_handlerresult_successwithwarnings", "label": ".successWithWarnings()",
+         "file_type": "code", "_callable": True, "source_file": "handler.py"},
+    ]
+    edges = [
+        {"source": "handler_handlerresult",
+         "target": "handler_handlerresult_successwithwarnings", "relation": "method"},
+        # The class reference edge is already in the graph.
+        {"source": "doc_notes", "target": "handler_handlerresult", "relation": "references"},
+    ]
+
+    resolve_markdown_mentions(per_file, nodes, edges)
+
+    assert ("doc_notes", "handler_handlerresult_successwithwarnings") in {
+        (e["source"], e["target"]) for e in edges if e.get("relation") == "references"}
+
+
+def test_dotted_mention_resolves_when_method_name_is_a_builtin(tmp_path):
+    # A dotted mention whose method name collides with a language builtin
+    # (open/get/list/...) must still resolve via its qualifier evidence; only a
+    # *bare* builtin-named mention should be skipped.
+    r = _extract(tmp_path, {
+        "src/repo.py": (
+            "class Repository:\n"
+            "    def open(self):\n"
+            "        return 1\n"
+            "    def connect(self):\n"
+            "        return 2\n"
+        ),
+        "docs/notes.md": "# Notes\n\nSee `Repository.open` and `Repository.connect`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    repo_open = next(
+        n for n in r["nodes"] if n["label"] == ".open()" and "repo" in n["id"])
+    repo_connect = next(
+        n for n in r["nodes"] if n["label"] == ".connect()" and "repo" in n["id"])
+    # The builtin-named `.open()` must resolve just like `.connect()`.
+    assert repo_open["id"] in cited
+    assert repo_connect["id"] in cited

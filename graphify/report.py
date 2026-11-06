@@ -1,6 +1,5 @@
 # generate GRAPH_REPORT.md - the human-readable audit trail
 from __future__ import annotations
-import re
 from datetime import date
 from pathlib import Path
 import networkx as nx
@@ -31,10 +30,26 @@ def _portable_root_label(root: str) -> str:
 
 
 def _safe_community_name(label: str) -> str:
-    """Mirrors export.safe_name so community hub filenames and report wikilinks always agree."""
-    cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
-    cleaned = re.sub(r"\.(md|mdx|markdown)$", "", cleaned, flags=re.IGNORECASE)
-    return cleaned or "unnamed"
+    """The community hub wikilink target, computed the same way the actual
+    `_COMMUNITY_*.md` filename is (`export._obsidian_safe_stem`).
+
+    This used to be a separate, partial reimplementation here, and it had
+    drifted from the real one: it never stripped a `.qmd` suffix (so a
+    community whose hub label happens to be a source file like
+    `report.qmd` kept the extension in the wikilink while the export
+    dropped it from the filename), never fell back to `unnamed` for a
+    punctuation only label, never added the `dot-` prefix for a label
+    starting with `.`, never capped an overlong label the same way, and
+    folded only `\\r`/`\\n` rather than every C0 control character to a
+    space. Any one of those left the wikilink pointing at a file the
+    `--obsidian` export never actually wrote. Delegating here keeps the two
+    from ever drifting apart again; the one case this cannot match exactly
+    is the MAX_PATH-aware length budget export computes from the real
+    output directory, which `generate()` has no path to recover (a longer
+    standing, separately tracked limitation, not something this changes).
+    """
+    from graphify.export import _obsidian_safe_stem
+    return _obsidian_safe_stem(label)
 
 
 def load_learning_for_report(graph_path) -> dict | None:
@@ -152,8 +167,16 @@ def generate(
                 f"- Unclassified: {len(unclassified)} file(s) not represented in "
                 f"the graph (top: {top})"
             )
+        # #2942: the plain count above reads as routine (lockfiles, binaries)
+        # even when it is most of the corpus. Say plainly, right next to the
+        # "large enough to be worth graphing" verdict, that this graph may
+        # look complete while actually missing a structurally significant
+        # part of the codebase.
+        unclassified_warning = detection_result.get("unclassified_warning")
+        if unclassified_warning:
+            lines.append(f"- WARNING: {unclassified_warning}")
 
-    from .analyze import _is_file_node, _is_concept_node
+    from .analyze import _is_file_node, _is_concept_node, _is_contains_only_ast_node
 
     def _real_node(n) -> bool:
         # The one definition of "real" (structural, not file/concept/
@@ -324,7 +347,10 @@ def generate(
             ]
 
     # --- Gaps section ---
-    isolated = [n for n in G.nodes() if G.degree(n) <= 1 and _real_node(n)]
+    isolated = [
+        n for n in G.nodes()
+        if G.degree(n) <= 1 and _real_node(n) and not _is_contains_only_ast_node(G, n)
+    ]
     # Same threshold the Summary and Communities headers used (#3148): this
     # was a hardcoded 3, so with --min-community-size anything else the count
     # here disagreed with the label text beside it, which already printed
@@ -377,16 +403,29 @@ def generate(
     _learning_section(lines, learning)
 
     if suggested_questions:
-        lines += ["", "## Suggested Questions"]
         no_signal = len(suggested_questions) == 1 and suggested_questions[0].get("type") == "no_signal"
+        # #4199 — split AMBIGUOUS-tagged questions out of the main list so
+        # low-confidence hints do not crowd EXTRACTED/INFERRED bridges.
+        high_conf = [q for q in suggested_questions if not q.get("low_confidence")]
+        low_conf = [q for q in suggested_questions if q.get("low_confidence")]
+
+        lines += ["", "## Suggested Questions"]
         if no_signal:
             lines.append(f"_{suggested_questions[0]['why']}_")
         else:
             lines.append("_Questions this graph is uniquely positioned to answer:_")
             lines.append("")
-            for q in suggested_questions:
+            for q in high_conf:
                 if q.get("question"):
                     lines.append(f"- **{q['question']}**")
                     lines.append(f"  _{q['why']}_")
+            if low_conf:
+                lines += ["", "### Low-confidence Hints"]
+                lines.append("_AMBIGUOUS edges — the extractor was unsure. Verify before acting on these._")
+                lines.append("")
+                for q in low_conf:
+                    if q.get("question"):
+                        lines.append(f"- **{q['question']}**")
+                        lines.append(f"  _{q['why']}_")
 
     return "\n".join(lines)

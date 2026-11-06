@@ -6,14 +6,27 @@ import os
 import unicodedata
 
 from pathlib import Path
+from urllib.parse import unquote
 from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
-_MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)')
+# A link destination is either <bracketed>, the only CommonMark form that may
+# contain spaces ([t](<My Note.md>)), or a bare run without whitespace. The
+# bracketed form is tried first so a spaced name is captured whole instead of
+# being cut at the first space; callers take whichever group matched. After the
+# `>` it only accepts a CommonMark title ("..", '..' or (..) without a nested
+# paren), so an unclosed `<` falls back to the bare form rather than swallowing
+# the links that follow on the line.
+_MD_INLINE_LINK_RE = re.compile(
+    r'(?<!\!)\[[^\]]*\]\(\s*(?:'
+    r'<([^<>\n]+)>\s*(?:"[^"\n]*"|\'[^\'\n]*\'|\([^()\n]*\))?\s*'
+    r'|<?([^)\s>]+)>?(?:\s+[^)]*)?'
+    r')\)')
 
-_MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
+_MD_REF_DEF_RE = re.compile(
+    r'^\s{0,3}\[[^\]]+\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["\'(]|$))|<?([^\s>]+)>?)')
 
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
@@ -35,6 +48,58 @@ _MD_PATH_MENTION_RE = re.compile(
 _MD_BARE_MENTION_RE = re.compile(
     r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
 )
+# The namespace/member chain the other languages' docs write: ``App\Services\Mailer``
+# (PHP namespaces) and ``Mailer::send()`` (PHP, Rust, C++ type-qualified members).
+# Each segment is a plain identifier; the separators are ``\`` and ``::`` (#4610).
+_MD_NS_MENTION_RE = re.compile(
+    r'^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$'
+)
+# ``Foo::CONST`` names a constant and ``Foo::class`` a keyword: neither has a
+# node to land on, so the chain is not a mention.
+_MD_NS_NON_SYMBOL_RE = re.compile(r'^(?:class|[A-Z][A-Z0-9_]*)$')
+
+# An ATX heading (CommonMark): up to three spaces of indent (four is an indented
+# code block), 1-6 `#`, then whitespace and the text. An optional closing run of
+# `#` preceded by whitespace is not part of the text: `## Setup ##` is "Setup",
+# while `## C#` and `## Trailing \#` keep their `#`.
+_MD_ATX_HEADING_RE = re.compile(r'^ {0,3}(#{1,6})[ \t]+(.+)$')
+_MD_ATX_CLOSING_RE = re.compile(r'(?:^|[ \t]+)#+[ \t]*$')
+
+# A fenced code block line: a run of 3+ backticks or 3+ tildes, then the rest of
+# the line (an info string on an opener). Leading whitespace is accepted at any
+# depth, as before, so a fence inside a nested list item still counts.
+_MD_FENCE_RE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+
+
+def _fence_open(line: str) -> "tuple[str, int] | None":
+    """(fence char, run length) when ``line`` opens a fenced code block.
+
+    CommonMark: a backtick fence's info string may not contain a backtick, so
+    a line that starts with an inline ```` ```code``` ```` span is prose, not a
+    fence. Tilde fences have no such restriction.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return None
+    run, rest = m.group(1), m.group(2)
+    if run[0] == "`" and "`" in rest:
+        return None
+    return run[0], len(run)
+
+
+def _fence_closes(line: str, fence: "tuple[str, int]") -> bool:
+    """True when ``line`` closes the block opened by ``fence``.
+
+    CommonMark: the closing run uses the opener's character, is at least as
+    long, and carries nothing but whitespace after it. So ``` does not close a
+    ~~~ block, ``` does not close a ```` block (the usual way a doc shows a
+    fenced example), and ``` followed by text is content.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return False
+    run, rest = m.group(1), m.group(2)
+    return run[0] == fence[0] and len(run) >= fence[1] and not rest.strip()
 
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
@@ -126,15 +191,11 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
 _MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
 
 
-def _active_scan_root() -> "Path | None":
-    """The scan root of the extraction in flight, or None outside extract().
-
-    _safe_extract_with_xaml_root sets this for every extraction despite its
-    XAML-era name; a direct extract_markdown() call has no root and the
-    fallback stays off.
-    """
-    import graphify.extract as _extract
-    return getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+# The in-flight scan root now lives on extractors.base (correct import
+# direction: extract.py -> extractors/, never back), so a rename can no longer
+# silently disable link resolution the way the old getattr(graphify.extract, …,
+# None) could (#3666).
+from graphify.extractors.base import active_scan_root as _active_scan_root
 
 
 def _nfc(s: str) -> str:
@@ -203,8 +264,48 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
         if c[1] == suffix or c[1].endswith("/" + suffix)
     ]
     if not matches:
+        # Obsidian writes vault-relative paths, so scanning a folder below the
+        # vault root meets links that start with that folder's own path
+        # ([[Corp/wiki/Fox]] from inside Corp/, #4559). Drop the longest such
+        # leading run and match the rest from the scan root.
+        root_parts = [_nfc(p) for p in Path(root).parts]
+        for k in range(len(parts) - 1, 0, -1):
+            if parts[:k] == root_parts[-k:]:
+                rest = "/".join(parts[k:])
+                matches = [c for c in candidates if c[1] == rest]
+                break
+    if not matches:
         return None
     return min(matches)[2]
+
+
+def _percent_decoded(target: str, source_dir: Path) -> str:
+    """Decode a URL-style link destination such as ``My%20Note.md``.
+
+    Inline and reference links are URLs, so a space or a non-ASCII character
+    in a file name is written percent-encoded (the form Obsidian writes when
+    wikilinks are turned off). A file whose name literally contains the
+    escape keeps precedence (``[x](100%25)`` beside ``100%25.md``), so a
+    link that resolved before still resolves to the same file. Wikilinks
+    carry the note name verbatim and never come through here.
+    """
+    if "%" not in target:
+        return target
+    decoded = unquote(target)
+    if decoded == target:
+        return target
+    literal = target if Path(target).suffix else target + ".md"
+    try:
+        if (source_dir / literal).is_file():
+            return target
+    except OSError:
+        pass
+    return decoded
+
+
+def _is_external_link(target: str) -> bool:
+    low = target.lower()
+    return "://" in target or low.startswith(("mailto:", "tel:", "//", "data:"))
 
 
 def _resolve_markdown_link(raw: str, source_dir: Path,
@@ -219,7 +320,9 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
 
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
-    Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    Inline and reference destinations are percent-decoded (``My%20Note.md``),
+    see _percent_decoded. Extension-less targets (typical of wikilinks) are
+    treated as sibling ``.md``.
     A wikilink whose note name itself contains a dot (``[[note.en]]``,
     ``[[v1.2 release]]``) gets the same ``.md`` completion, but only when that
     document exists and no file graphify indexes sits at the literal target;
@@ -238,9 +341,14 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     target = target.split("#", 1)[0].split("?", 1)[0].strip()
     if not target:
         return None
-    low = target.lower()
-    if "://" in target or low.startswith(("mailto:", "tel:", "//", "data:")):
+    if _is_external_link(target):
         return None
+    if not wikilink:
+        # Decoding can reveal a scheme or a protocol-relative prefix
+        # (%2F%2Fhost), so the external-link guard runs again.
+        target = _percent_decoded(target, source_dir)
+        if _is_external_link(target):
+            return None
     suffix = Path(target).suffix.lower()
     if suffix == "":
         target = target + ".md"
@@ -296,18 +404,28 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
     if m:
         return m.group(1), m.group(2).split("::")
     m = _MD_BARE_MENTION_RE.match(text)
-    if not m:
-        return None
-    if "." in text:
-        # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
-        # are files. A dotted span whose last segment is a code or document
-        # extension is the latter. Other file-like spans (``pyproject.toml``)
-        # classify as a mention and are rejected at resolution, where the
-        # qualifier ``pyproject`` matches no callable's file or owner.
-        if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
+    if m:
+        if "." in text:
+            # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
+            # are files. A dotted span whose last segment is a code or document
+            # extension is the latter. Other file-like spans (``pyproject.toml``)
+            # classify as a mention and are rejected at resolution, where the
+            # qualifier ``pyproject`` matches no callable's file or owner.
+            if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
+                return None
+            return None, text.rstrip("()").split(".")
+        return None, [m.group(1)]
+    # ``App\Services\Mailer`` and ``Mailer::send()``: a namespace/member chain,
+    # split on ``\`` and ``::`` the way the dotted form splits on ``.``. A span
+    # that is only a namespace root (``App\``) is dropped: it names no symbol.
+    m = _MD_NS_MENTION_RE.match(text)
+    if m:
+        body = text[:-2] if text.endswith("()") else text
+        parts = re.split(r"::|\\", body)
+        if _MD_NS_NON_SYMBOL_RE.match(parts[-1]):
             return None
-        return None, text.rstrip("()").split(".")
-    return None, [m.group(1)]
+        return None, parts
+    return None
 
 
 def extract_markdown(path: Path) -> dict:
@@ -351,8 +469,9 @@ def extract_markdown(path: Path) -> dict:
     cross-file call pass skips these raw_calls, so a mention never becomes a
     ``calls`` edge.
 
-    Fenced code blocks (``` ... ```) are skipped during parsing so their
-    contents don't get treated as headings, but no node is emitted for
+    Fenced code blocks (``` ... ``` or ~~~ ... ~~~, closed by a run of the
+    same character at least as long, per CommonMark) are skipped during
+    parsing so their contents don't get treated as headings, but no node is emitted for
     them — they were always orphans (only a single contains edge to the
     parent doc) and inflated the disconnected-component count (#1077).
 
@@ -364,7 +483,7 @@ def extract_markdown(path: Path) -> dict:
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -398,6 +517,12 @@ def extract_markdown(path: Path) -> dict:
             raw_call["path"] = cited_path
         if len(names) > 1:
             raw_call["qualifiers"] = names[:-1]
+        if cited_path is None and _MD_NS_MENTION_RE.match(span.strip()):
+            # A `\`/`::` chain carries its namespace root as a qualifier the way
+            # a dotted mention does, but a PSR-4 root (`App\`) maps to the scan
+            # directory and has no path segment: the resolver may drop leading
+            # qualifiers a candidate cannot account for (#4610).
+            raw_call["ns_qualified"] = True
         raw_calls.append(raw_call)
 
     def add_node(nid: str, label: str, line: int, file_type: str = "document",
@@ -465,31 +590,32 @@ def extract_markdown(path: Path) -> dict:
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
-    in_code_block = False
+    fence: "tuple[str, int] | None" = None  # (char, length) of the open fence
 
     for line_num_0, line_text in enumerate(lines):
         line_num = line_num_0 + 1
 
         # Skip over fenced code blocks so their contents are not parsed as
         # headings, but do not emit nodes/edges for them (#1077).
-        stripped = line_text.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
+        if fence is not None:
+            if _fence_closes(line_text, fence):
+                fence = None
             continue
-
-        if in_code_block:
+        opened = _fence_open(line_text)
+        if opened is not None:
+            fence = opened
             continue
 
         # Markdown links -> document references (#1376). Scanned on every
         # non-fenced line (including heading lines, which the heading branch
         # below `continue`s past) so links anywhere in the doc are captured.
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num)
+            add_link(m.group(1) or m.group(2), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
             add_link(m.group(1), line_num, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
-            add_link(ref_def.group(1), line_num)
+            add_link(ref_def.group(1) or ref_def.group(2), line_num)
 
         # Inside the frontmatter block a leading `#` is a YAML comment, not an
         # H1. Links above are still scanned there on purpose: review workflows
@@ -499,10 +625,10 @@ def extract_markdown(path: Path) -> dict:
             continue
 
         # Detect headings: # Heading, ## Heading, etc.
-        heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
-        if heading_match:
+        heading_match = _MD_ATX_HEADING_RE.match(line_text)
+        title = _MD_ATX_CLOSING_RE.sub("", heading_match.group(2).strip()) if heading_match else ""
+        if heading_match and title:
             level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
             h_nid = _make_id(stem, title)
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:

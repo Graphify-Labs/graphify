@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 
 
 def extract_apex(path: Path) -> dict:
@@ -11,7 +11,7 @@ def extract_apex(path: Path) -> dict:
     Apex .cls and .trigger files using regex (no tree-sitter grammar on PyPI)."""
     import re as _re
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except OSError:
         return {"nodes": [], "edges": []}
 

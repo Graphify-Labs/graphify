@@ -197,3 +197,32 @@ def test_extract_astro_scripts_on_one_line_do_not_merge(tmp_path):
     result = extract_astro(page)
     assert result.get("parse_errors") is None
     assert "b()" in _labels(result)
+
+
+def test_extract_astro_trailing_comment_does_not_hide_next_script(tmp_path):
+    """A comment at the closing tag must end before the next script (#4072)."""
+    page = _write(
+        tmp_path / "inline-comment.astro",
+        "<script>const a = 1 // trailing comment</script>"
+        "<script>function visible() {}</script>\n",
+    )
+    result = extract_astro(page)
+    assert result.get("parse_errors") is None
+    assert _labels(result)["visible()"] == "L1"
+
+
+def test_astro_mask_preserves_bytes_and_newlines_after_comment():
+    from graphify.extract import _astro_mask_non_script
+
+    source = (
+        "---\nconst title = 'hello';\n---\n"
+        "<script>const a = 1 // comment</script>"
+        "<script>function visible() {}</script>\r\n"
+    )
+    masked = _astro_mask_non_script(source).encode("utf-8")
+    original = source.encode("utf-8")
+    assert len(masked) == len(original)
+    assert masked.index(b"function visible") == original.index(b"function visible")
+    assert [(i, c) for i, c in enumerate(masked) if c in (10, 13)] == [
+        (i, c) for i, c in enumerate(original) if c in (10, 13)
+    ]

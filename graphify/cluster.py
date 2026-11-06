@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import io
 import json
+import os
 import sys
 import networkx as nx
 
@@ -233,6 +234,7 @@ def cluster(
     G: nx.Graph,
     resolution: float = 1.0,
     exclude_hubs_percentile: float | None = None,
+    ambiguous_scale: float = 0.5,
 ) -> dict[int, list[str]]:
     """Run Leiden community detection. Returns {community_id: [node_ids]}.
 
@@ -250,6 +252,15 @@ def cluster(
         majority-vote neighbour community afterwards. Nodes whose only
         neighbours are excluded hubs follow them, by the same vote. Useful for
         staging/utility super-hubs that inflate god-node rankings (#919).
+    ambiguous_scale: multiplier applied to the ``weight`` attribute of
+        ``AMBIGUOUS`` edges before partitioning. Default 0.5 — halves the
+        modularity contribution of low-confidence edges so they do not
+        glue otherwise-independent clusters together. Set to 1.0 to disable
+        (treat AMBIGUOUS edges identically to EXTRACTED/INFERRED), or 0.0
+        to drop them from clustering entirely (they still appear in the
+        graph and in `/graphify path`/`explain` output — only partitioning
+        is affected). Overridden by ``GRAPHIFY_AMBIGUOUS_SCALE`` env var
+        when that is set to a parseable float. See #4199.
     """
     if G.number_of_nodes() == 0:
         return {}
@@ -257,6 +268,24 @@ def cluster(
         G = G.to_undirected()
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
+
+    # #4199 — scale AMBIGUOUS edge weights so they do not warp partitioning.
+    # Env override lets `GRAPHIFY_AMBIGUOUS_SCALE=1.0 graphify ...` restore the
+    # pre-fix behavior without a code change. Malformed values are ignored.
+    env_scale = os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE")
+    if env_scale is not None:
+        try:
+            ambiguous_scale = float(env_scale)
+        except ValueError:
+            pass
+    if ambiguous_scale != 1.0 and any(
+        d.get("confidence") == "AMBIGUOUS" for _, _, d in G.edges(data=True)
+    ):
+        G = G.copy()
+        for u, v, d in G.edges(data=True):
+            if d.get("confidence") == "AMBIGUOUS":
+                base = float(d.get("weight", 1.0))
+                d["weight"] = base * ambiguous_scale
 
     # Compute hub exclusion set before removing anything so degree is based on full graph
     hub_nodes: set[str] = set()
@@ -451,3 +480,28 @@ def remap_communities_to_previous(
     for new_cid, nodes in communities.items():
         remapped[new_to_final[new_cid]] = sorted(nodes)
     return dict(sorted(remapped.items(), key=lambda kv: kv[0]))
+
+
+def label_still_applies(
+    cid: int,
+    current_members: list[str],
+    previous_node_community: dict[str, int],
+    saved_sig: str | None,
+    current_sig: str | None,
+) -> bool:
+    """Whether a saved label still names this community (#2298).
+
+    An equal membership signature keeps the label. Otherwise the label stays
+    only when the nodes shared with the previous assignment are a strict
+    majority of both the previous set and the current set. A one-node fragment
+    of a large community fails that test, so remap reusing the old id is not
+    enough to keep the name.
+    """
+    if saved_sig is not None and current_sig is not None and saved_sig == current_sig:
+        return True
+    saved = {str(node) for node, old in previous_node_community.items() if old == cid}
+    current = {str(node) for node in current_members}
+    if not saved or not current:
+        return False
+    overlap = len(saved & current)
+    return overlap * 2 > len(saved) and overlap * 2 > len(current)
