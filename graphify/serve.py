@@ -1,5 +1,6 @@
 # MCP stdio server - exposes graph query tools to Claude and other agents
 from __future__ import annotations
+import functools
 import json
 import math
 import os
@@ -264,11 +265,18 @@ def _node_arg(arguments: dict) -> str:
 
 
 def _strip_diacritics(text: str | None) -> str:
-    import unicodedata
     if not isinstance(text, str):
         text = "" if text is None else str(text)
+    if text.isascii():  # NFKD leaves ASCII unchanged and it has no combining marks
+        return text
+    import unicodedata
     nfkd = unicodedata.normalize("NFKD", text)
+    if nfkd.isascii():  # e.g. "…" decomposes to "..."; nothing left to strip
+        return nfkd
     return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+_SEARCH_TOKEN_RE = re.compile(r"[^\W_]+")
 
 
 def _search_tokens(text: str) -> list[str]:
@@ -282,7 +290,17 @@ def _search_tokens(text: str) -> list[str]:
     (their tokens simply match the same way). Found 2026-07-29: the graph could
     not find the underscore spelling of its own `local_id`.
     """
-    return re.findall(r"[^\W_]+", _strip_diacritics(str(text)).lower())
+    if isinstance(text, str):
+        return list(_search_tokens_of(text))
+    return _SEARCH_TOKEN_RE.findall(_strip_diacritics(str(text)).lower())
+
+
+@functools.lru_cache(maxsize=1 << 17)
+def _search_tokens_of(text: str) -> tuple[str, ...]:
+    # Labels and paths are tokenized by the trigram index, the scorer and the
+    # body ranking alike, and many labels repeat (`.save()`), so results are
+    # cached; callers get a fresh list each time.
+    return tuple(_SEARCH_TOKEN_RE.findall(_strip_diacritics(text).lower()))
 
 
 def _has_chinese(text: str) -> bool:
@@ -401,6 +419,23 @@ _SOURCE_MATCH_BONUS = 0.5
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
 _ATTRIBUTE_MATCH_BONUS = 0.75
+# Body tier (`query` only): a query word found among the words of a node's own
+# source lines (`body_terms`, written at extraction). Below every name tier, so
+# per term a name match still outranks a body match; it feeds the per-term seed
+# score like the other tiers (weighted by how rare the word is among bodies) and
+# never counts toward term coverage.
+_BODY_MATCH_BONUS = 0.9
+# Body ranking (`query` only, see `_body_rank_files`): BM25 over each node's
+# words, pooled per file. It adds `_QUERY_BODY_SEEDS` start nodes after the name
+# seeds, and the answer's file order fuses the name and body file rankings by
+# reciprocal rank (constant `_QUERY_FUSE_K`). Chosen on the 114 SWE-bench Lite
+# Django questions only; the 179 other questions were held out.
+_QUERY_BODY_SEEDS = 3
+_QUERY_FUSE_K = 10.0
+_BODY_FILE_POOL = 0.1
+_BODY_FILE_WEIGHT = 1.0
+_BODY_BM25_K1 = 1.2
+_BODY_BM25_B = 0.75
 
 # A label may carry a leading qualifier that the query never repeats: a SQL
 # function is `public.sweep_widget_state()`, a namespaced symbol is
@@ -535,6 +570,215 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
         for t in uncached:
             cache[t] = math.log(1 + N / (1 + df[t]))
     return {t: cache.get(t, math.log(1 + N)) for t in terms}
+
+
+def _get_body_index(G: nx.Graph) -> dict:
+    """Every node's `body_terms` in one string (" words  words "), cached on
+    `G.graph` like the trigram index (a hot reload swaps in a fresh `G`). A query
+    word's nodes are found by substring search (`_body_word_nodes`), so a new
+    process never builds an index over every body word: every `graphify query`
+    from the CLI is a new process. `body_terms` is unique words joined by single
+    spaces, as extraction writes it."""
+    idx = G.graph.get("_body_index")
+    if idx is not None:
+        return idx
+    ids: list[str] = []
+    offsets: list[int] = []
+    parts: list[str] = []
+    pos = 1
+    for nid, data in G.nodes(data=True):
+        raw = data.get("body_terms")
+        if not raw or not isinstance(raw, str):
+            continue
+        ids.append(nid)
+        offsets.append(pos)
+        parts.append(raw)
+        pos += len(raw) + 2
+    idx = {"ids": ids, "offsets": offsets, "parts": parts, "text": " " + "  ".join(parts) + " ",
+           "words": {}, "n": max(G.number_of_nodes(), 1)}
+    G.graph["_body_index"] = idx
+    return idx
+
+
+# A substring search finds one word's nodes in a few milliseconds; an index over
+# every body word costs about forty such searches to build. A one-shot CLI query
+# looks up a handful of words, so it only searches; a long-running process
+# (the MCP server) builds the index once it has looked up this many words.
+_BODY_WORD_INDEX_AFTER = 32
+
+
+def _body_word_nodes(bidx: dict, word: str) -> frozenset[str]:
+    """Ids of the nodes whose `body_terms` hold `word`, memoized per index."""
+    found = bidx["words"].get(word)
+    if found is not None:
+        return found
+    ids = bidx["ids"]
+    postings = bidx.get("postings")
+    if postings is None and len(bidx["words"]) >= _BODY_WORD_INDEX_AFTER:
+        postings = bidx["postings"] = {}
+        for i, raw in enumerate(bidx["parts"]):
+            for w in raw.split():
+                postings.setdefault(w, []).append(i)
+    if postings is not None:
+        found = frozenset(ids[i] for i in postings.get(word, ()))
+    else:
+        from bisect import bisect_right
+        text, offsets = bidx["text"], bidx["offsets"]
+        needle = f" {word} "
+        hits = set()
+        i = text.find(needle)
+        while i != -1:
+            hits.add(ids[bisect_right(offsets, i + 1) - 1])
+            i = text.find(needle, i + 1)
+        found = frozenset(hits)
+    bidx["words"][word] = found
+    return found
+
+
+def _body_doc_stats(G: nx.Graph, bidx: dict) -> dict:
+    """Lengths for `_body_rank_files`' BM25, computed once per graph: a node's
+    document is its label and path words plus its `body_terms`, each word once.
+    Path words are tokenized and posted once per file."""
+    stats = G.graph.get("_body_doc_stats")
+    if stats is not None:
+        return stats
+    text, start = bidx["text"], dict(zip(bidx["ids"], bidx["offsets"]))
+    needles: dict[str, str] = {}
+    path_words: dict[str, frozenset[str]] = {}
+    path_post: dict[str, list[str]] = {}
+    file_nodes: dict[str, list[str]] = {}
+    doc_len: dict[str, int] = {}
+    file_len: dict[str, int] = {}
+    file_of: dict[str, str] = {}
+    for nid, data in G.nodes(data=True):
+        f = file_of[nid] = str(data.get("source_file") or "")
+        pw = path_words.get(f)
+        if pw is None:
+            pw = path_words[f] = frozenset(_search_tokens(f))
+            for w in pw:
+                path_post.setdefault(w, []).append(f)
+        file_nodes.setdefault(f, []).append(nid)
+        words = pw.union(_search_tokens(data.get("label") or ""))
+        n = len(words)
+        at = start.get(nid)
+        if at is not None:
+            # + its body words, - those already counted (found in its own span)
+            raw = data["body_terms"]
+            n += raw.count(" ") + 1
+            end = at + len(raw) + 1
+            for w in words:
+                needle = needles.get(w)
+                if needle is None:
+                    needle = needles[w] = f" {w} "
+                if text.find(needle, at - 1, end) != -1:
+                    n -= 1
+        if not n:
+            continue
+        doc_len[nid] = n
+        if f:
+            file_len[f] = file_len.get(f, 0) + n
+    avg = sum(doc_len.values()) / max(len(doc_len), 1)
+    favg = sum(file_len.values()) / max(len(file_len), 1)
+    k1, b = _BODY_BM25_K1, _BODY_BM25_B
+    stats = {"path_post": path_post, "file_nodes": file_nodes, "name_words": {},
+             "doc_len": doc_len, "file_len": file_len, "file_of": file_of,
+             # BM25 length terms, the same expressions `_body_rank_files` would evaluate per word
+             "node_den": {nid: 1 + k1 * (1 - b + b * n / avg) for nid, n in doc_len.items()},
+             "file_norm": {f: k1 * (1 - b + b * n / favg) for f, n in file_len.items()}}
+    G.graph["_body_doc_stats"] = stats
+    return stats
+
+
+def _name_word_nodes(G: nx.Graph, stats: dict, word: str) -> frozenset[str]:
+    """Nodes whose label or path words hold `word`, memoized per graph. Label
+    matches come from the trigram index's candidates (a superset: a label's
+    words are part of the text it indexes), checked exactly; path matches from
+    the per-file path words."""
+    found = stats["name_words"].get(word)
+    if found is not None:
+        return found
+    candidates = _trigram_candidates(G, [word])
+    nodes = G.nodes
+    hits = {nid for nid in (G.nodes if candidates is None else candidates)
+            if word in _search_tokens(nodes[nid].get("label") or "")}
+    for f in stats["path_post"].get(word, ()):
+        hits.update(stats["file_nodes"][f])
+    found = stats["name_words"][word] = frozenset(hits)
+    return found
+
+
+def _body_rank_files(G: nx.Graph, terms: list[str], path_weight) -> list[tuple[str, str]]:
+    """Body ranking for `query`: BM25 over each node's words (label, path and
+    `body_terms`, each word counted once), demoted like the name ranking, pooled
+    per file: best node + `_BODY_FILE_POOL` x its next five, plus
+    `_BODY_FILE_WEIGHT` x the file's own BM25 over all its nodes' words, so a file
+    whose words are spread over many functions still ranks. Returns
+    [(file, best node)], best first."""
+    bidx = _get_body_index(G)
+    stats = _body_doc_stats(G, bidx)
+    doc_len, file_len, file_of = stats["doc_len"], stats["file_len"], stats["file_of"]
+    node_den, file_norm = stats["node_den"], stats["file_norm"]
+    k1 = _BODY_BM25_K1
+    q = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    n_docs = max(len(doc_len), 1)
+    n_files = max(len(file_len), 1)
+    node_score: dict[str, float] = {}
+    file_bm: dict[str, float] = {}
+    for t in q:
+        plist = _name_word_nodes(G, stats, t) | _body_word_nodes(bidx, t)
+        if not plist:
+            continue
+        idf = math.log(1 + (n_docs - len(plist) + 0.5) / (len(plist) + 0.5))
+        tf: dict[str, int] = {}
+        for nid in plist:
+            node_score[nid] = node_score.get(nid, 0.0) + idf * (k1 + 1) / node_den[nid]
+            f = file_of[nid]
+            if f:
+                tf[f] = tf.get(f, 0) + 1
+        fidf = math.log(1 + (n_files - len(tf) + 0.5) / (len(tf) + 0.5))
+        for f, n in tf.items():
+            file_bm[f] = file_bm.get(f, 0.0) + fidf * n * (k1 + 1) / (n + file_norm[f])
+    # Each file's nodes, best first ((-score, node id) order, one built-in sort).
+    nodes = G.nodes
+    order = sorted((-(sc * (path_weight(nodes[nid]) if path_weight is not None else 1.0)), nid)
+                   for nid, sc in node_score.items())
+    per_file: dict[str, list[tuple[float, str]]] = {}
+    for neg, nid in order:
+        per_file.setdefault(file_of[nid], []).append((-neg, nid))
+    ranked = []
+    for f, vals in per_file.items():
+        wgt = path_weight(nodes[vals[0][1]]) if path_weight is not None else 1.0
+        fs = vals[0][0] + _BODY_FILE_POOL * sum(v for v, _ in vals[1:6]) + _BODY_FILE_WEIGHT * file_bm.get(f, 0.0) * wgt
+        ranked.append((fs, f, vals[0][1]))
+    ranked.sort(key=lambda r: (-r[0], r[1]))
+    return [(f, nid) for _, f, nid in ranked]
+
+
+def _fused_file_scores(G: nx.Graph, ranked: list[tuple[float, str]], body_files: list[tuple[str, str]]) -> dict[str, float]:
+    """Render scores whose file-first order is the reciprocal-rank fusion of the
+    name ranking (files by their best-scoring node in `ranked`) and the body
+    ranking. Each node gets its file's fused score; a vanishing tie-break keeps
+    nodes inside one file in name-score order, and each body-ranked file's best
+    node just ahead of them. Only the top 200 files of each ranking count."""
+    file_of = _body_doc_stats(G, _get_body_index(G))["file_of"]
+    name_files: dict[str, int] = {}
+    for _sc, nid in ranked:
+        f = file_of[nid]
+        if f not in name_files:
+            name_files[f] = len(name_files)
+            if len(name_files) >= 200:
+                break
+    fused: dict[str, float] = {}
+    for f, r in name_files.items():
+        fused[f] = fused.get(f, 0.0) + 1.0 / (_QUERY_FUSE_K + r)
+    for r, (f, _nid) in enumerate(body_files[:200]):
+        fused[f] = fused.get(f, 0.0) + 1.0 / (_QUERY_FUSE_K + r)
+    best = max((sc for sc, _ in ranked), default=1.0) or 1.0
+    scores = {nid: fused.get(file_of[nid], 0.0) + 1e-9 * sc / best
+              for sc, nid in ranked}
+    for f, nid in body_files[:200]:
+        scores[nid] = max(scores.get(nid, 0.0), fused.get(f, 0.0) + 2e-9)
+    return scores
 
 
 def _trigrams(text: str) -> set[str]:
@@ -709,29 +953,57 @@ _QUERY_TEST_WORDS = frozenset({"test", "tests", "testing", "testcase", "unittest
 _QUERY_DOC_WORDS = frozenset({"doc", "docs", "documentation", "readme"})
 _QUERY_DOC_SUFFIXES = (".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".json")
 _QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
+# Third-party code copied into a repo (jQuery in a theme's static folder,
+# urllib3 under requests/packages/) repeats common words in hundreds of
+# functions and crowds out the project's own source. A `packages` folder counts
+# only when nested: a top-level `packages/` is a monorepo's own source.
+_QUERY_VENDOR_DIRS = frozenset({"vendor", "vendored", "_vendor", "third_party", "thirdparty",
+                                "node_modules", "bower_components", "site-packages"})
+_QUERY_VENDOR_FILE_RE = re.compile(r"(\.min\.(js|css)$)|(-\d+(\.\d+)+(\.min)?\.js$)")
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _query_path_weight_of(source_file, file_type, keep_tests: bool, keep_docs: bool) -> float:
+    """`_query_path_weight`'s multiplier for one (source file, file type) pair."""
+    path = str(source_file or "").replace("\\", "/")
+    parts = path.lower().split("/")
+    if not keep_tests and (_is_test_path(path) or "testing" in parts[:-1] or parts[-1] == "conftest.py"):
+        return _QUERY_DEMOTE_WEIGHT
+    if (
+        any(p in _QUERY_VENDOR_DIRS for p in parts[:-1])
+        or "packages" in parts[1:-1]
+        or _QUERY_VENDOR_FILE_RE.search(parts[-1])
+    ):
+        return _QUERY_DEMOTE_WEIGHT
+    if not keep_docs and (
+        not path
+        or file_type in ("document", "paper")
+        or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
+        or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
+    ):
+        return _QUERY_DEMOTE_WEIGHT
+    return 1.0
 
 
 def _query_path_weight(terms: list[str], demote_docs: bool = True):
-    """Score multiplier per node for `query`: tests, docs, config files and nodes
-    without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
-    asks about tests (or docs); everything else counts 1.0."""
+    """Score multiplier per node for `query`: vendored third-party files count
+    `_QUERY_DEMOTE_WEIGHT`; so do tests, docs, config files and nodes without a
+    source file, unless the question itself asks about tests (or docs);
+    everything else counts 1.0."""
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
     keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
-
+    # The weight depends only on `source_file`, `file_type` and the two flags, so
+    # it is cached across queries (`_query_path_weight_of`): _is_test_path
+    # parses the path, and one query asks for thousands of nodes.
     def weight(data: dict) -> float:
-        path = str(data.get("source_file") or "").replace("\\", "/")
-        parts = path.lower().split("/")
-        if not keep_tests and (_is_test_path(path) or "testing" in parts[:-1] or parts[-1] == "conftest.py"):
-            return _QUERY_DEMOTE_WEIGHT
-        if not keep_docs and (
-            not path
-            or data.get("file_type") in ("document", "paper")
-            or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
-            or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
-        ):
-            return _QUERY_DEMOTE_WEIGHT
-        return 1.0
+        source_file = data.get("source_file") or ""
+        file_type = data.get("file_type")
+        return _query_path_weight_of(
+            source_file if isinstance(source_file, str) else str(source_file),
+            file_type if isinstance(file_type, str) else None,  # only compared to strings
+            keep_tests, keep_docs,
+        )
 
     return weight
 
@@ -753,6 +1025,7 @@ def _score_query(
     *,
     collect_per_term_seeds: bool,
     path_weight=None,
+    body: bool = False,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -797,6 +1070,22 @@ def _score_query(
     # identical either way — the per-node scoring below is unchanged and a
     # non-candidate node always scores 0. (IDF above stays a whole-graph statistic.)
     candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
+    # Body tier (`query` only): nodes whose body words hold a query word are
+    # candidates too; the trigram index covers names, paths and attributes only.
+    # A body-only candidate (one the trigram index did not select) can score on
+    # the body tier alone, so it is scored after the loop below without running
+    # the name tiers (same sums, same order, same result).
+    body_nodes: dict[str, frozenset[str]] = {}
+    body_w: dict[str, float] = {}
+    body_only: set[str] = set()
+    if body:
+        bidx = _get_body_index(G)
+        for t in norm_terms:
+            body_nodes[t] = _body_word_nodes(bidx, t)
+            body_w[t] = math.log(1 + bidx["n"] / (1 + len(body_nodes[t])))
+        if candidate_ids is not None:
+            seen = set(candidate_ids)
+            body_only = {nid for t in norm_terms for nid in body_nodes[t] if nid not in seen}
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
@@ -832,6 +1121,7 @@ def _score_query(
         # the combined score and the per-term singleton alike, so the per-term
         # seed guarantee still holds but prefers a source node for each term.
         weight = path_weight(data) if path_weight is not None else 1.0
+        body_hits = [t for t in norm_terms if nid in body_nodes[t]] if body_nodes else []
         score = 0.0
         # Full-query tier: a multi-word query that equals (or prefixes) the whole
         # label must dominate the per-token bag-of-words sums below, so `path`/
@@ -908,6 +1198,10 @@ def _score_query(
             if attr_norm and (t in attr_norm or t in attr_tokens):
                 attr_value = _ATTRIBUTE_MATCH_BONUS * w
                 score += attr_value
+            body_value = 0.0
+            if body_hits and t in body_hits:
+                body_value = _BODY_MATCH_BONUS * body_w.get(t, 1.0)
+                score += body_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -927,6 +1221,7 @@ def _score_query(
                 else:
                     singleton = 0.0
                 singleton += tier_value + substr_value + source_value + rationale_value + attr_value
+                singleton += body_value
                 singleton *= weight
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
@@ -940,6 +1235,32 @@ def _score_query(
         if tiered:
             score += tiered * (matched / n_terms) ** 2
         score *= weight
+        if score > 0:
+            scored.append((score, nid))
+    # Body-only candidates: per word over its nodes (the sums still run in term
+    # order per node). A word's singleton is the same body value times the
+    # node's path weight, so only the nodes with the highest weight can hold its
+    # best key, and only when that can beat the word's current best.
+    body_score: dict[str, float] = {}
+    body_weight = {nid: (path_weight(G.nodes[nid]) if path_weight is not None else 1.0) for nid in body_only}
+    for t in norm_terms:
+        hits = body_nodes[t] & body_only if body_only else ()
+        if not hits:
+            continue
+        body_value = _BODY_MATCH_BONUS * body_w.get(t, 1.0)
+        for nid in hits:
+            body_score[nid] = body_score.get(nid, 0.0) + body_value
+        if collect_per_term_seeds and best_by_term is not None:
+            top_w = max(body_weight[nid] for nid in hits)
+            singleton = body_value * top_w
+            cur = best_by_term.get(t)
+            if singleton > 0 and (cur is None or -singleton <= cur[0][0]):
+                key, nid = min(((-singleton, -G.degree(n), len(G.nodes[n].get("label") or n), n), n)
+                               for n in hits if body_weight[n] == top_w)
+                if cur is None or key < cur[0]:
+                    best_by_term[t] = (key, nid)
+    for nid, score in body_score.items():
+        score *= body_weight[nid]
         if score > 0:
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
@@ -1735,6 +2056,7 @@ def _query_graph_text(
         terms,
         collect_per_term_seeds=True,
         path_weight=_query_path_weight(terms, demote_docs=demote_docs),
+        body=True,
     )
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
@@ -1752,9 +2074,18 @@ def _query_graph_text(
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term, term_order=qs.term_order)
     if not start_nodes:
         return _QUERY_NO_MATCH
+    render_scores = {nid: sc for sc, nid in qs.ranked}
+    body_files = _body_rank_files(G, terms, _query_path_weight(terms)) if _get_body_index(G)["ids"] else []
+    if body_files:
+        # Name seeds (and the per-term guarantee) come first; the best node of
+        # each of the top body-ranked files is added after them.
+        for _f, nid in body_files[:_QUERY_BODY_SEEDS]:
+            if nid not in start_nodes:
+                start_nodes.append(nid)
+        render_scores = _fused_file_scores(G, qs.ranked, body_files)
     return _render_query(G, question, start_nodes, mode=mode, depth=depth, token_budget=token_budget,
                          context_filters=context_filters, graph_path=graph_path,
-                         scores={nid: sc for sc, nid in qs.ranked})
+                         scores=render_scores)
 
 
 def _render_query(
