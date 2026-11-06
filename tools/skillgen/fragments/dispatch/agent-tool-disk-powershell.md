@@ -2,7 +2,7 @@
 
 Call the Agent tool multiple times IN THE SAME RESPONSE - one call per chunk. This is the only way they run in parallel. If you make one Agent call, wait, then make another, you are doing it sequentially and defeating the purpose.
 
-**IMPORTANT - subagent type:** Always use `subagent_type="general-purpose"`. Do NOT use `Explore` - it is read-only and cannot write chunk files to disk, which silently drops extraction results. General-purpose has Write and Bash access which the subagent needs.
+**IMPORTANT - subagent type:** the extraction subagent MUST have Write and Bash access - it builds the chunk file on disk itself. Default to `subagent_type="general-purpose"`. Do NOT use `Explore` - it is read-only and cannot write chunk files to disk, which silently drops extraction results. If this host's dispatch policy restricts or refuses `general-purpose` (an org policy hook, a curated persona registry), dispatch any available type that lists Write and Bash access instead - that is a host policy constraint, not a graphify requirement. Never downgrade to a read-only type to satisfy a policy; that trades a loud failure for a silent one.
 
 Concrete example for 3 chunks:
 ```
