@@ -487,6 +487,7 @@ from graphify.detect import (
     IMAGE_EXTENSIONS,
     _load_graphifyignore,
     _is_ignored,
+    ignored_predicate,
 )
 from graphify.rcfile import (
     RC_FILENAME,
@@ -3581,7 +3582,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     try:
         from watchdog.observers import Observer
         from watchdog.observers.polling import PollingObserver
-        from watchdog.events import FileSystemEventHandler
+        from watchdog.events import FileCreatedEvent, FileSystemEventHandler
     except ImportError as e:
         raise ImportError("watchdog not installed. Run: pip install watchdog") from e
 
@@ -3596,10 +3597,12 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     # without this short-circuit a busy volume can saturate a CPU core
     # discarding events one extension at a time. (gh-928)
     watch_root_for_ignore = watch_path.resolve()
+    ignore_gitignore = _read_build_gitignore(watch_path / _GRAPHIFY_OUT)
     ignore_patterns = _load_graphifyignore(
         watch_root_for_ignore,
-        gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
+        gitignore=ignore_gitignore,
     )
+    ignored = ignored_predicate(watch_root_for_ignore, gitignore=ignore_gitignore)
 
     # Observer and dispatch threads need the same root-specific snapshot.
     root_config_path = watch_root_for_ignore / RC_FILENAME
@@ -3609,7 +3612,20 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending, override_snapshot, config_changed
-            if event.is_directory or _is_read_only_event(event):
+            if event.is_directory:
+                if not _is_read_only_event(event):
+                    path = Path(os.fsdecode(event.src_path)).resolve()
+                    if event.event_type == "created":
+                        add_tree(path, emit_existing=True)
+                    elif event.event_type == "deleted":
+                        remove_tree(path)
+                    elif event.event_type == "moved":
+                        remove_tree(path)
+                        dest = Path(os.fsdecode(event.dest_path)).resolve()
+                        if under_root(dest):
+                            add_tree(dest, emit_existing=True)
+                return
+            if _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
             # Atomic replacement reports the new root config in dest_path.
@@ -3644,13 +3660,77 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             changed.add(path)
 
     handler = Handler()
-    # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
-    observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    # Ask the kernel only for events the handler treats as changes. Without
-    # this filter the recursive setup walk floods the inotify queue with
-    # IN_OPEN/IN_CLOSE_NOWRITE, overflows it around 4,000 directories, and
-    # watchdog 7 then re-walks the tree forever (#5033).
-    if _observer_accepts_event_filter(observer):
+    manual = sys.platform.startswith("linux")
+    observer = (
+        Observer()
+        if manual
+        else (PollingObserver() if sys.platform == "darwin" else Observer())
+    )
+    watched: dict[Path, object] = {}
+    warned_no_filter = False
+
+    def under_root(path: Path) -> bool:
+        try:
+            path.resolve().relative_to(watch_root_for_ignore)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def schedule_one(path: Path) -> None:
+        nonlocal warned_no_filter
+        path = path.resolve()
+        if path in watched or not under_root(path):
+            return
+        if path != watch_root_for_ignore and ignored(path):
+            return
+        if path == watch_root_for_ignore / _GRAPHIFY_OUT:
+            return
+        kwargs = {"recursive": False}
+        if _observer_accepts_event_filter(observer):
+            kwargs["event_filter"] = _watch_event_filter()
+        elif not warned_no_filter:
+            warned_no_filter = True
+            logger.warning(
+                "watchdog does not declare event_filter; read-only inotify "
+                "events may overflow the queue and lose changes (#5033)"
+            )
+        watched[path] = observer.schedule(handler, str(path), **kwargs)
+
+    def remove_tree(path: Path) -> None:
+        path = path.resolve()
+        prefix = str(path) + os.sep
+        for key in [p for p in watched if str(p) == str(path) or str(p).startswith(prefix)]:
+            watch = watched.pop(key)
+            try:
+                observer.unschedule(watch)
+            except Exception:
+                pass
+
+    def add_tree(path: Path, *, emit_existing: bool) -> None:
+        path = path.resolve()
+        stack = [path]
+        while stack:
+            current = stack.pop()
+            if not under_root(current):
+                continue
+            if current != watch_root_for_ignore and ignored(current):
+                continue
+            if current == watch_root_for_ignore / _GRAPHIFY_OUT:
+                continue
+            schedule_one(current)
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                elif emit_existing and entry.is_file(follow_symlinks=False):
+                    handler.on_any_event(FileCreatedEvent(entry.path))
+
+    if manual:
+        add_tree(watch_root_for_ignore, emit_existing=False)
+    elif _observer_accepts_event_filter(observer):
         observer.schedule(
             handler,
             str(watch_root_for_ignore),
