@@ -37,6 +37,12 @@ DEFAULT_AFFECTED_RELATIONS = (
     # its defining file and then continues through `imports` to consumers.
     "defines",
     "requires",
+    # Blade `@include` partials and `<x-…>` / `<livewire:…>` components (EJS
+    # `include()` and Dart `part` files share `includes`). Without them every view
+    # that renders a shared partial or component was invisible to blast-radius
+    # queries on it (`extends` above already covers `@extends`).
+    "includes",
+    "uses_component",
 )
 
 
