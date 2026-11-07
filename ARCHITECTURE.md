@@ -79,6 +79,11 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+JS/TS calls through default imports of directly default-exported object literals reuse existing static method nodes.
+Members match the imported module path, exact label and source line. Lexically shadowed receivers, constructor calls,
+spread, computed keys, accessors, duplicate keys and dynamic aliases are not inferred. These files bypass the per-file
+AST cache, so resolving these cross-file calls does not require an AST cache schema bump.
+
 
 ## Semantic provenance during file-node folding
 
@@ -112,6 +117,11 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 | `INFERRED` | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
 | `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md |
 
+Go member calls, including same-file calls, resolve through declared receiver types and
+carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRACTED`;
+unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
+retires Go entries created before these receiver-binding rules.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
@@ -119,6 +129,14 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` and `_WATCHED_EXTENSIONS` in `watch.py`.
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
+
+## Search hook scope
+
+The search hook omits project hints when a structured Grep path or every literal
+target of a simple grep/rg command resolves outside the project. Mixed targets,
+implicit paths, shell composition/expansion, wrappers, unknown options and
+unmapped Windows shell drive paths retain the advisory hint. It does not execute
+shell input or change search permissions.
 
 ## Security
 
@@ -161,6 +179,15 @@ ambiguous return references emit no inferred call. Resulting call edges remain
 `INFERRED`. Changed-caller rebuilds carry unchanged methods' return-type references
 as resolver context. Changes to a producer's return annotation require a full
 rebuild to recompute unchanged callers' inferred relationships.
+
+Python direct module-level constructor assignments (`g = Service()`) retain the
+class for member-call resolution inside functions, including an imported alias
+or a lowercase class rebound to its instance. The constructor must be declared
+or imported before the assignment and resolve to a unique visible class by exact
+spelling. Local shadowing, other module bindings, conditional assignments and
+dynamic namespace mutation leave these calls unresolved. Qualified constructors
+and decorated classes are not inferred by this pass. Edges remain `INFERRED`;
+AST cache schema 37 retires Python entries without the instance marker.
 
 C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one

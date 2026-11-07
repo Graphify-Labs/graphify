@@ -237,6 +237,14 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "pi":
+        # Pi reads project skills from ./.pi/skills; ~/.pi/agent/skills is the
+        # user-scope path only. Writing the $HOME shape into a project left the
+        # skill where Pi never looks, with no error (#5011).
+        if project:
+            return (project_dir or Path(".")) / ".pi" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / _PLATFORM_CONFIG["pi"]["skill_dst"]
+
     if platform_name == "agents":
         # The generic Agent-Skills target: project ./.agents/skills, global the
         # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
@@ -438,29 +446,111 @@ def _project_scope_root(path: Path, project_dir: Path) -> Path:
     except ValueError:
         return path
     return project_dir / rel.parts[0] if rel.parts else path
+def _is_graphify_skill_registration(section: "list[str]") -> bool:
+    """Whether a `# graphify` section is the registration graphify writes.
+
+    Every version of the registration has had the bullet naming the graphify
+    skill and the `/graphify` trigger, which a hand-written section has no
+    reason to repeat.
+    """
+    return any(
+        line.strip().startswith("- **graphify** (`") and "Trigger: `/graphify`" in line
+        for line in section
+    )
+def _skill_registration_sections(content: str) -> "list[list[str]]":
+    """The body of each exact `# graphify` section, bounded as
+    _remove_marker_section bounds it: up to the next H1."""
+    lines = content.split("\n")
+    sections = []
+    for start, line in enumerate(lines):
+        if line.strip() == _SKILL_REGISTRATION_MARKER:
+            end = next(
+                (j for j in range(start + 1, len(lines)) if lines[j].startswith("# ")),
+                len(lines),
+            )
+            sections.append(lines[start + 1:end])
+    return sections
+def _remove_skill_registration(target: Path, prefix: str, *, only_graphify_written: bool = False) -> None:
+    """Remove the skill registration _register_always_on_block wrote into *target*.
+
+    *only_graphify_written* is for the user's global CLAUDE.md / CODEBUDDY.md,
+    which every `graphify uninstall` visits, also for users who never installed
+    the skill there. Only a `# graphify` section carrying graphify's
+    registration bullet goes; a hand-written `# graphify` section stays, and a
+    file holding both is left as is, with a hint, rather than guessed at.
+
+    Degrades instead of raising, as the install side does (#3474): a CLAUDE.md
+    that nix/home-manager links into a read-only store must not abort an
+    uninstall halfway, with later platforms not yet cleaned.
+    """
+    try:
+        if not target.exists():
+            return
+        # A file without the heading is never decoded or rewritten, so an
+        # unrelated non-UTF-8 file draws no warning.
+        if _SKILL_REGISTRATION_MARKER.encode("utf-8") not in target.read_bytes():
+            return
+        content, newline = _read_keep_newline(target)
+        # A BOM would hide a heading on the first line; it is written back as found.
+        bom = "﻿" if content.startswith("﻿") else ""
+        content = content[len(bom):]
+        if only_graphify_written:
+            written = [_is_graphify_skill_registration(s) for s in _skill_registration_sections(content)]
+            if not any(written):
+                return
+            if not all(written):
+                print(
+                    f"{prefix}left as is: {_shown_path(target)} also has a "
+                    f"`{_SKILL_REGISTRATION_MARKER}` section graphify did not write",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  hint: remove graphify's own `{_SKILL_REGISTRATION_MARKER}` block "
+                    "(the one naming the graphify skill) by hand",
+                    file=sys.stderr,
+                )
+                return
+        # Match the exact H1 `# graphify` registration heading, never a substring of a
+        # user's `## graphify`/`### graphify` (#2062). Section runs to the next H1.
+        # _SKILL_REGISTRATION_MARKER is the single source of truth for this heading,
+        # shared with _register_always_on_block so an insert and its removal always
+        # agree on what they're matching (#3668).
+        cleaned = _remove_marker_section(content, _SKILL_REGISTRATION_MARKER, boundary_prefix="# ")
+        if cleaned is None:
+            return
+        # A symlink stays: writing through it cleans the file it points to.
+        if cleaned or target.is_symlink():
+            # The file's own line ending is restored, so the rest of its content is
+            # never re-translated on write (#3668/#4360).
+            _write_keep_newline(target, bom + cleaned + "\n", newline)
+            print(f"{prefix}graphify skill registration removed from {_shown_path(target)}")
+        else:
+            target.unlink()
+            print(f"{prefix}deleted {target}")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(
+            f"  hint: remove the `{_SKILL_REGISTRATION_MARKER}` block from {target} "
+            "manually to finish the uninstall",
+            file=sys.stderr,
+        )
 def _remove_claude_skill_registration(project_dir: Path) -> None:
     """Remove the project-scoped Claude skill registration file/section."""
-    claude_md = project_dir / ".claude" / "CLAUDE.md"
-    if not claude_md.exists():
-        return
-    content, newline = _read_keep_newline(claude_md)
-    # Match the exact H1 `# graphify` registration heading, never a substring of a
-    # user's `## graphify`/`### graphify` (#2062). Section runs to the next H1.
-    # _SKILL_REGISTRATION_MARKER is the single source of truth for this heading,
-    # shared with _register_always_on_block so an insert and its removal always
-    # agree on what they're matching (#3668).
-    cleaned = _remove_marker_section(content, _SKILL_REGISTRATION_MARKER, boundary_prefix="# ")
-    if cleaned is None:
-        return
-    # A symlink stays: writing through it cleans the file it points to.
-    if cleaned or claude_md.is_symlink():
-        # The file's own line ending is restored, so the rest of its content is
-        # never re-translated on write (#3668/#4360).
-        _write_keep_newline(claude_md, cleaned + "\n", newline)
-        print(f"  CLAUDE.md        ->  graphify skill registration removed from {_shown_path(claude_md)}")
-    else:
-        claude_md.unlink()
-        print(f"  CLAUDE.md        ->  deleted {claude_md}")
+    _remove_skill_registration(project_dir / ".claude" / "CLAUDE.md", "  CLAUDE.md        ->  ")
+def _claude_global_registration() -> "tuple[Path, str]":
+    """The CLAUDE.md a global (non-project) Claude install registers the skill in,
+    and the skill path that registration names: the same choice install() makes.
+
+    CLAUDE_CONFIG_DIR relocates both, as it does the skill copy (#527, #2694).
+    """
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config:
+        config_dir = Path(config)
+        return config_dir / "CLAUDE.md", str(config_dir / "skills" / "graphify" / "SKILL.md")
+    return Path.home() / ".claude" / "CLAUDE.md", "~/.claude/skills/graphify/SKILL.md"
+def _codebuddy_global_registration() -> Path:
+    """The CODEBUDDY.md `install --platform codebuddy` registers the skill in."""
+    return Path.home() / ".codebuddy" / "CODEBUDDY.md"
 def _print_project_git_add_hint(paths: list[Path]) -> None:
     unique: list[str] = []
     for path in paths:
@@ -488,9 +578,9 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     content search through its dedicated Grep tool, not Bash (#1986) — a
     Bash-only matcher never fired on the agent's primary search path.
 
-    When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
-    first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
-    var can force it on or off at runtime without a reinstall.
+    When ``strict`` is set, both hooks carry ``--strict`` so Read and dedicated
+    Grep share one block per session; Bash and Glob remain advisory. The
+    ``GRAPHIFY_HOOK_STRICT`` env var can force it on or off without a reinstall.
 
     Each entry carries a ``timeout`` (#3314): unset, Claude Code defaults a
     command hook to 600s, so a single wedged guard (a stuck filesystem, a
@@ -504,11 +594,29 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     if " " in exe and not exe.startswith('"'):
         exe = f'"{exe}"'
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
+    search_cmd = f"{exe} hook-guard search" + (" --strict" if strict else "")
     return [
         {"matcher": "Bash|Grep",
-         "hooks": [{"type": "command", "command": f"{exe} hook-guard search", "timeout": 10}]},
+         "hooks": [{"type": "command", "command": search_cmd, "timeout": 10}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd, "timeout": 10}]},
+    ]
+def _claude_sessionstart_hooks(project: bool = False) -> "list[dict]":
+    """graphify's Claude Code SessionStart hook: matcher "compact" only.
+
+    Claude Code fires SessionStart with source "compact" after an auto or manual
+    compaction, keeping the session id. The model has lost the earlier nudges by
+    then, but their per-session budget is spent, so `hook-guard compact` resets
+    it (and the strict-mode deny marker) and restates the graph in one line.
+    Same command form and timeout as _claude_pretooluse_hooks; the command
+    carries "hook-guard", so the install/uninstall filters recognise it.
+    """
+    exe = _resolve_graphify_exe(project=project)
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return [
+        {"matcher": "compact",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard compact", "timeout": 10}]},
     ]
 # Tokens that only ever appear in a command graphify itself writes: its
 # `hook-guard <search|read|gemini>` and `hook-check` subcommands. Legacy
@@ -1028,8 +1136,9 @@ def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
     print(f"Platforms: {platforms}")
-    print("  --strict  block the first raw file read per session until one "
-          "`graphify query` runs (Claude Code project hook only; needs --project)")
+    print("  --strict  block the first raw Read or dedicated Grep per session "
+          "unless recently oriented with `graphify query` "
+          "(Claude Code project hooks only; needs --project; Bash/Glob stay advisory)")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -2236,8 +2345,9 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     print("Claude Code will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
     if strict:
-        print("Strict mode: the first raw file read per session is blocked until")
-        print("one `graphify query` runs (toggle with GRAPHIFY_HOOK_STRICT=0).")
+        print("Strict mode: Read and dedicated Grep share one block per session")
+        print("unless recently oriented with `graphify query`; Bash/Glob stay advisory.")
+        print("Toggle with GRAPHIFY_HOOK_STRICT=0.")
 def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json.
 
@@ -2256,11 +2366,18 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
+    session_start = hooks.setdefault("SessionStart", [])
+    if not isinstance(session_start, list):
+        _refuse_to_modify(settings_path)
+
     hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool)
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
+    hooks["SessionStart"] = _strip_graphify_hooks(session_start)
+    hooks["SessionStart"].extend(_claude_sessionstart_hooks(project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
     print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
+    print("  .claude/settings.json  ->  SessionStart hook registered (compact: resets the nudge budget)")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the graphify PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -2272,22 +2389,31 @@ def _uninstall_claude_hook(project_dir: Path) -> None:
     for name in ("settings.json", "settings.local.json"):
         _strip_graphify_hook(claude_dir / name)
 def _strip_graphify_hook(settings_path: Path) -> None:
-    """Drop graphify PreToolUse hooks from a single Claude settings file, if present."""
+    """Drop graphify PreToolUse and SessionStart hooks from a single Claude
+    settings file, if present."""
     if not settings_path.exists():
         return
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return
-    pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    if not isinstance(pre_tool, list):
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
         return
-    filtered = _strip_graphify_hooks(pre_tool)
-    if filtered == pre_tool:
+    removed = []
+    for event in ("PreToolUse", "SessionStart"):
+        groups = hooks.get(event, [])
+        if not isinstance(groups, list):
+            continue
+        filtered = _strip_graphify_hooks(groups)
+        if filtered != groups:
+            hooks[event] = filtered
+            removed.append(event)
+    if not removed:
         return
-    settings["hooks"]["PreToolUse"] = filtered
     _write_settings_with_backup(settings_path, settings)
-    print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
+    for event in removed:
+        print(f"  .claude/{settings_path.name}  ->  {event} hook removed")
 
 
 def _unsafe_purge_reason(out: Path, project_dir: Path) -> str | None:
@@ -2393,6 +2519,11 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         _remove_skill_file("claude", project=True, project_dir=project_dir)
     if remove_user_skill:
         _remove_skill_file("claude", project=False)
+        # Without the skill, the global registration names a file that no longer
+        # exists, and Claude Code reads it in every session.
+        _remove_skill_registration(
+            _claude_global_registration()[0], "  CLAUDE.md        ->  ", only_graphify_written=True
+        )
 
     md_targets = [
         project_dir / "CLAUDE.md",
@@ -2515,6 +2646,10 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         _remove_skill_file("codebuddy", project=True, project_dir=project_dir)
     if remove_user_skill:
         _remove_skill_file("codebuddy", project=False)
+        # Before the project-file checks below, which return early.
+        _remove_skill_registration(
+            _codebuddy_global_registration(), "  CODEBUDDY.md     ->  ", only_graphify_written=True
+        )
     target = project_dir / "CODEBUDDY.md"
 
     if not target.exists():

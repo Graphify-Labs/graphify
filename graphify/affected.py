@@ -453,7 +453,8 @@ def load_graph(path: Path) -> nx.Graph:
     from networkx.readwrite import json_graph
 
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        from graphify.paths import consumed, read_graph_json
+        raw = read_graph_json(path)
     except (json.JSONDecodeError, OSError) as exc:
         raise RuntimeError(
             f"Cannot read graph file {path}: {exc}. "
@@ -468,7 +469,5 @@ def load_graph(path: Path) -> nx.Graph:
     # (__main__.py) already normalizes this (#738; same class as #1198).
     if "links" not in raw and "edges" in raw:
         raw = dict(raw, links=raw["edges"])
-    try:
-        return json_graph.node_link_graph(raw, edges="links")
-    except TypeError:
-        return json_graph.node_link_graph(raw)
+    raw = dict(raw, nodes=consumed(raw["nodes"]), links=consumed(raw["links"]))
+    return json_graph.node_link_graph(raw, edges="links")

@@ -3053,6 +3053,8 @@ def extract_corpus_parallel(
         p = _resolve_against_root(sf)
         return p.is_file() and p not in _dispatched_resolved
 
+    _scope_buckets = ("nodes", "edges", "hyperedges")
+    _scope_items_before = sum(len(merged[k]) for k in _scope_buckets)
     dropped_ids: set = set()
     dropped_files: set[str] = set()
     kept_nodes: list[dict] = []
@@ -3100,6 +3102,13 @@ def extract_corpus_parallel(
             "excluded from the graph (#1895).",
             file=sys.stderr,
         )
+
+    # Keep diagnostics for callers that apply an additional scope filter later.
+    # out_of_scope_dropped retains its existing node-only API contract.
+    merged["out_of_scope_dropped_items"] = (
+        _scope_items_before - sum(len(merged[k]) for k in _scope_buckets)
+    )
+    merged["out_of_scope_dropped_files"] = sorted(dropped_files)
 
     covered: set[Path] = set()
     for n in merged.get("nodes", []):

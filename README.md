@@ -253,7 +253,9 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design: use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
 
-Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native Pi extension (via Pi's own `pi install <package directory>`) that runs the installed `graphify hook-guard` before Pi's `read`, `grep`, `find` and search-style `bash` calls. Fresh/stale graph decisions and the `GRAPHIFY_HOOK_STRICT=1` once-per-session indexed-read denial come from that same policy, so Pi matches Claude Code's hook behavior; guidance arrives as a `<system-reminder source="graphify">` steering message. It needs Pi 0.58.4 or newer: earlier versions let a steering message skip the rest of a parallel tool-call batch. The package ships inside the Graphify installation, so install Graphify persistently (`uv tool install graphifyy` or `pipx install graphifyy`, not `uvx`), restart Pi after installing or upgrading, and remove it with `graphify pi guard uninstall`. Only local file targets are inspected; the hook needs `graphify` on an absolute `PATH` entry outside the project, is bounded to a two-second, 256 KiB-in/64 KiB-out call, and fails open. The same package also loads in [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. The registered path contains the Python version and venv, so re-run `graphify pi guard install` after changing either, and remove the old entry with `pi remove <old path>`.
+Claude Code's `graphify install --project --strict` makes Read and dedicated Grep share one denial per session unless a recent graph query has oriented the agent (default 30 minutes). A Grep over a directory needs no indexed-file match; a Grep pinned to a single file is denied only when the graph indexes that file, as with Read. External and graph-output Grep targets produce neither a deny nor a nudge, in soft mode as well as strict mode, matching Read's scope. A graph marked `needs_update` never triggers a Grep denial. Bash searches and Glob stay advisory. `GRAPHIFY_HOOK_STRICT=1` enables the policy without reinstalling; `GRAPHIFY_HOOK_STRICT=0` disables it even when installed with `--strict`. Existing strict installs need a reinstall to add the search hook's `--strict` flag, or the environment override. Soft nudges are capped per session (`GRAPHIFY_HOOK_NUDGE_CAP`, default 5). After a context compaction, a `SessionStart` hook (matcher `compact`) resets that budget, the subagents' budgets and the strict denial, since the compacted context no longer holds the earlier nudges.
+
+Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native Pi extension (via Pi's own `pi install <package directory>`) that runs the installed `graphify hook-guard` before Pi's `read`, `grep`, `find` and search-style `bash` calls. Fresh/stale graph decisions and the `GRAPHIFY_HOOK_STRICT=1` once-per-session denial shared by indexed Read and dedicated Grep come from that same policy, so Pi matches Claude Code's hook behavior; Bash and file listing remain advisory. Guidance arrives as a `<system-reminder source="graphify">` steering message. It needs Pi 0.58.4 or newer: earlier versions let a steering message skip the rest of a parallel tool-call batch. The package ships inside the Graphify installation, so install Graphify persistently (`uv tool install graphifyy` or `pipx install graphifyy`, not `uvx`), restart Pi after installing or upgrading, and remove it with `graphify pi guard uninstall`. Only local file targets are inspected; the hook needs `graphify` on an absolute `PATH` entry outside the project, is bounded to a two-second, 256 KiB-in/64 KiB-out call, and fails open. The same package also loads in [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. The registered path contains the Python version and venv, so re-run `graphify pi guard install` after changing either, and remove the old entry with `pi remove <old path>`.
 
 > Codex uses `$graphify` instead of `/graphify`.
 
@@ -303,7 +305,7 @@ Run `graphify <platform> install` once in your project, for example `graphify cl
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools, or via `cat`, `head`, `tail`, `sed -n` and similar readers in Bash) and nudges your assistant toward the graph path.
 - **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
@@ -385,6 +387,12 @@ See the [full command reference](#full-command-reference) below.
 
 graphify honors `.gitignore` and supports `--exclude` patterns and a project `.graphifyignore`. Details: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+`graphify extract` reports paths skipped by ignore rules, with up to three sorted examples relative to
+the scan root. Each pruned directory counts once; its contents are not enumerated. Default noise
+directories such as `node_modules` are excluded from this summary. If source is missing, review the
+ignore rules. `--no-gitignore` bypasses VCS ignore rules only; `.graphifyignore` and `--exclude`
+remain effective.
+
 
 ## Project configuration
 
@@ -404,6 +412,20 @@ viz_node_limit=0
 
 The declaration flows through classification, extractor selection, grammar and resolution, imports, `graphify watch`, and the AST cache (a file re-parsed under a different language never reuses the old entry), and the same `.graphifyrc` is read by `extract`, `update`, the hooks, the MCP server, and the `/graphify` skill. A typo is reported once on stderr and the scan continues with the defaults. How declarations interact with caching, incremental rebuilds, and import resolution: **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
+
+**Query defaults.** Set `query_budget` to a positive integer and `query_depth` to an integer from 1 to 6:
+
+```ini
+query_budget=4000
+query_depth=3
+```
+
+For `graphify query`, explicit `--budget N` / `--budget=N` and `--depth N` / `--depth=N` override these settings independently. Without a project setting or explicit option, the defaults remain budget 2000 and depth 2. These keys do not change the MCP server's defaults.
+
+Settings come from the project owning the selected `--graph`, even when the command runs from another directory. An existing absolute directory in the graph's sibling `.graphify_root` marker identifies that project. Otherwise a matching relative `GRAPHIFY_OUT` suffix identifies it; absolute, empty, traversal-containing or nonmatching output paths fall back to the graph file's directory. Relative markers are ignored.
+
+The query command always reads that project's `.graphifyrc`. An invalid recognized setting or an unreadable file produces one stderr warning and discards all project settings for that query; explicit options still apply. The settings parser stays strict for its other callers. Existing explicit budget values retain their behavior; persisted `query_budget` values must be positive.
+
 ---
 
 ## Team setup
@@ -414,6 +436,11 @@ A started `graphify extract` also writes `graphify-out/last_run.json`, a
 machine-readable summary of the latest run. Check its `ok` field and
 `wrote_graph`/`refused_reason` fields in automation instead of scraping extraction
 logs; `ok` is false when content was missing even if a partial graph was written.
+`unverified_semantic_sources` names sources whose semantic output shrank; these
+keep `incomplete` true even with `--allow-partial`. `nodes_existing` is the
+pre-run count, and `wrote_graph` includes exclusion-only pruning. `dropped_items`
+counts removed nodes, edges and hyperedges across both scope filters, including
+dependent relationships; `dropped` lists their out-of-scope source attributions.
 
 ---
 

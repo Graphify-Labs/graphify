@@ -119,7 +119,11 @@ def _mapping_pairs(node: Any) -> list[tuple[str, Any, Any]]:
     for key_node, value_node in node.value:
         if key_node.tag == _MERGE_TAG:
             sources = value_node.value if isinstance(value_node, yaml.SequenceNode) else [value_node]
-            for src in sources:
+            # Per the YAML merge spec, an earlier map in a ``<<: [a, b]`` sequence
+            # overrides a later one. Because the dict below is last-write-wins, feed
+            # the sources in reverse so the earliest keeps the final value/line —
+            # matching PyYAML's ``flatten_mapping`` (which reverses the submerge).
+            for src in reversed(sources):
                 if isinstance(src, yaml.MappingNode):
                     merged.extend(_mapping_pairs(src))
         elif isinstance(key_node, yaml.ScalarNode):
