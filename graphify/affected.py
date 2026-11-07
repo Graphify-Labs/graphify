@@ -556,7 +556,7 @@ def affected_payload(
             "source": "graph",
             "id": hit.node_id,
             "label": _node_label(graph, hit.node_id),
-            "file": data.get("source_file"),
+            "file": _as_repo_relative(str(data.get("source_file") or ""), root) or None,
             "relation": hit.via_relation,
             "depth": hit.depth,
             "location": (
@@ -566,7 +566,7 @@ def affected_payload(
         })
     return {
         "seed": {"id": seed, "label": _node_label(graph, seed),
-                 "file": graph.nodes[seed].get("source_file")},
+                 "file": _seed_file(graph, seed, root) or None},
         "relations": list(relation_list),
         "depth": depth,
         "cochange": info,

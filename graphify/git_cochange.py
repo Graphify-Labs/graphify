@@ -91,6 +91,10 @@ def _unavailable(reason: str) -> dict[str, Any]:
     return {"version": FORMAT_VERSION, "status": "unavailable", "reason": reason}
 
 
+
+def _is_shallow(root: Path) -> bool:
+    return _git(root, "rev-parse", "--is-shallow-repository").stdout.decode().strip() == "true"
+
 def mine_cochange(
     repo_root: str | os.PathLike[str],
     *,
@@ -127,7 +131,7 @@ def mine_cochange(
     sha = head.stdout.decode().strip()
     anchor = int(_git(root, "log", "-1", "--format=%ct", sha).stdout.decode().strip() or 0)
     since = anchor - years * _YEAR_SECONDS
-    shallow = _git(root, "rev-parse", "--is-shallow-repository").stdout.decode().strip() == "true"
+    shallow = _is_shallow(root)
 
     # Files at `rev`, relative to root (ls-tree is cwd-relative like --relative).
     tracked_out = _git(root, "ls-tree", "-r", "-z", "--name-only", sha)
@@ -291,8 +295,8 @@ def refresh_cochange(
     corpus = _corpus_key(root, extra_excludes, gitignore)
     old = load_cochange(target) if head.returncode == 0 else None
     if (old is not None and old.get("rev") == head.stdout.decode().strip()
-            and old.get("corpus") == corpus):
-        return old, None  # same HEAD and same corpus rules: already current
+            and old.get("corpus") == corpus and not (old.get("shallow") and not _is_shallow(root))):
+        return old, None  # same HEAD, corpus rules and depth of history: already current
     data = mine_cochange(
         root, out_name=out_dir.name,
         keep=corpus_filter(root, extra_excludes=extra_excludes, gitignore=gitignore),

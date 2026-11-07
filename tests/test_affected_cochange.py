@@ -463,3 +463,36 @@ def test_json_output_tags_every_item(tmp_path, monkeypatch, capsys):
     assert {r["source"] for r in off["results"]} == {"graph"}
     assert off["cochange"] == {"state": "off"}
     assert off["results"] == graph_items
+
+
+def test_unshallow_re_mines_at_the_same_head(tmp_path):
+    from graphify.git_cochange import refresh_cochange
+
+    src = _init(tmp_path / "src")
+    for i in range(4):
+        _commit(src, ["a.py", "b.py"], f"m{i}")
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--depth", "2", f"file://{src}", str(clone)],
+                   check=True, capture_output=True, env={**os.environ, **GIT_ENV})
+    first, _ = refresh_cochange(clone, clone / "graphify-out")
+    assert first is not None and first["shallow"] is True and first["commits_used"] == 2
+    subprocess.run(["git", "-C", str(clone), "fetch", "-q", "--unshallow"],
+                   check=True, capture_output=True, env={**os.environ, **GIT_ENV})
+    again, note = refresh_cochange(clone, clone / "graphify-out")  # HEAD did not move
+    assert again is not None and again["shallow"] is False and again["commits_used"] == 4
+    assert note is None
+
+
+def test_json_file_fields_are_repo_relative_for_an_absolute_path_graph(tmp_path):
+    from graphify.affected import affected_payload
+
+    g = nx.DiGraph()
+    for node, rel, line in [("pricing", "pkg/pricing.py", "L1"), ("checkout", "pkg/checkout.py", "L1")]:
+        g.add_node(node, label=Path(rel).name, source_file=str(tmp_path / rel), source_location=line)
+    g.add_edge("checkout", "pricing", relation="imports_from", source_location="L1")
+    payload = affected_payload(g, "pricing", root=tmp_path, cochange=COCHANGE, cochange_state="ok")
+    assert payload["seed"]["file"] == "pkg/pricing.py"
+    files = {r["source"]: r["file"] for r in payload["results"] if r["file"] == "pkg/checkout.py"}
+    assert files == {"graph": "pkg/checkout.py", "cochange": "pkg/checkout.py"}
+    assert [r["also_code_link"] for r in payload["results"]
+            if r["source"] == "cochange" and r["file"] == "pkg/checkout.py"] == [True]
