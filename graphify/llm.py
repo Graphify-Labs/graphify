@@ -22,6 +22,7 @@ from graphify.file_slice import (
     FileSlice,
     bisect_slice,
     expand_oversized_files,
+    make_full_slice,
     read_slice_text,
     unit_path,
 )
@@ -2575,10 +2576,17 @@ def _extract_with_adaptive_retry(
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
-        # When a single-unit chunk is a slice, bisect the slice so we can retry
-        # on a smaller range rather than give up (#1369).
-        if len(chunk) == 1 and isinstance(chunk[0], FileSlice) and _depth < max_depth:
-            return bisect_slice(chunk[0])
+        # When a single-unit chunk is a slice (or an eligible splittable text file
+        # below the char cap), bisect the slice so we can retry on a smaller
+        # range rather than give up (#1369, #5072).
+        if len(chunk) == 1 and _depth < max_depth:
+            unit = chunk[0]
+            if isinstance(unit, FileSlice):
+                return bisect_slice(unit)
+            if isinstance(unit, (Path, str)):
+                fs = make_full_slice(Path(unit))
+                if fs is not None:
+                    return bisect_slice(fs)
         return None
 
     try:
