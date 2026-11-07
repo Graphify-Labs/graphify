@@ -84,10 +84,7 @@ if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     # Resolve env [-S], strip the pipx arg (`.../python -E`), trust only an absolute allowlisted path, else python3 (#2629).
     case "$_SHEBANG" in */env\ -S\ *) _SHEBANG="${_SHEBANG#*/env -S }" ;; */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
     _SHEBANG="${_SHEBANG%% *}"
-    case "$_SHEBANG" in
-        /*[!a-zA-Z0-9/_.@-]*) ;;
-        /*) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
-    esac
+    case "$_SHEBANG" in /*[!a-zA-Z0-9/_.@-]*) ;; /*) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;; esac
 fi
 # 3. Fall back to python3
 if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
@@ -754,9 +751,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
         case "$PYTHON" in */env\ -S\ *) PYTHON="${PYTHON#*/env -S }" ;; */env\ *) PYTHON="${PYTHON#*/env }" ;; esac
         case "${PYTHON%% *}" in /*[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; /*) PYTHON="${PYTHON%% *}" ;; *) PYTHON="python3" ;; esac
         if [ "$PYTHON" != "python3" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then PYTHON="python3"; fi
-    else
-        PYTHON="python3"
-    fi
+    else PYTHON="python3"; fi
     mkdir -p graphify-out
     "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
 fi
