@@ -79,6 +79,30 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+JS/TS calls through default imports of directly default-exported object literals reuse existing static method nodes.
+Members match the imported module path, exact label and source line. Lexically shadowed receivers, constructor calls,
+spread, computed keys, accessors, duplicate keys and dynamic aliases are not inferred. These files bypass the per-file
+AST cache, so resolving these cross-file calls does not require an AST cache schema bump.
+
+
+## Semantic provenance during file-node folding
+
+`build_from_json()` normally folds an evidence-free semantic mention of a
+filename into its unique AST file-self node (Pass 2b, #3344); references to
+that mention are rewired to the AST node. A cross-source semantic record that
+contains its own `rationale`, source URL, author/contributor, capture time,
+or metadata is **not** a disposable mention: a label-only fold would discard
+its explanation or attribution. Such records remain separate even when their
+label matches a unique AST file node. This is intentionally conservative:
+a richly annotated mention may remain distinct until an explicit
+provenance-preserving merge is available. The saved-semantic-node shrink guard
+uses the same rule and still rejects any unexplained loss. Same-source AST/semantic twins that are evidence-free keep their
+existing exact-path merge rule (#4389/#4391), but an independently evidenced
+semantic YAML/document record is retained across a later AST extractor
+upgrade. If AST disambiguation path-qualifies a file-node label, the shrink
+guard accounts for a plain same-source fold using the exact source identity
+instead of accepting a mere basename collision.
+
 ## Edge direction in graph.json
 
 `graph.json` is written `"directed": false`, but every link is directed: **arc order is the direction** (`source` → `target`, #563). Older canonicalized files carry it in `_src`/`_tgt` markers instead, and those win where present (#2309).
@@ -93,6 +117,11 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 | `INFERRED` | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
 | `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md |
 
+Go member calls, including same-file calls, resolve through declared receiver types and
+carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRACTED`;
+unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
+retires Go entries created before these receiver-binding rules.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
@@ -100,6 +129,14 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` and `_WATCHED_EXTENSIONS` in `watch.py`.
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
+
+## Search hook scope
+
+The search hook omits project hints when a structured Grep path or every literal
+target of a simple grep/rg command resolves outside the project. Mixed targets,
+implicit paths, shell composition/expansion, wrappers, unknown options and
+unmapped Windows shell drive paths retain the advisory hint. It does not execute
+shell input or change search permissions.
 
 ## Security
 
@@ -143,6 +180,15 @@ ambiguous return references emit no inferred call. Resulting call edges remain
 as resolver context. Changes to a producer's return annotation require a full
 rebuild to recompute unchanged callers' inferred relationships.
 
+Python direct module-level constructor assignments (`g = Service()`) retain the
+class for member-call resolution inside functions, including an imported alias
+or a lowercase class rebound to its instance. The constructor must be declared
+or imported before the assignment and resolve to a unique visible class by exact
+spelling. Local shadowing, other module bindings, conditional assignments and
+dynamic namespace mutation leave these calls unresolved. Qualified constructors
+and decorated classes are not inferred by this pass. Edges remain `INFERRED`;
+AST cache schema 37 retires Python entries without the instance marker.
+
 C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
 assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
@@ -156,3 +202,18 @@ When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
 underscore separators cannot collide with an ordinary normalized binding ID. Local
 call resolution stops if malformed scope metadata cycles.
+
+### Same-ID AST / semantic provenance during extractor upgrades (#4896)
+
+A newly supported AST extractor can mint an ID that is already owned by an
+independently evidenced semantic node in a saved graph, even when the two nodes
+refer to the same file. Watch reconciliation retains the saved semantic ID and
+its rationale/attribution, assigns the fresh AST record a deterministic
+ID-derived AST suffix, and rewrites only fresh AST edge/hyperedge
+references. This applies to full and incremental re-extractions; incrementally
+rebuilt sources are not positive evidence of semantic deletion. The shrink
+guard refuses same-ID losses of semantic provenance even when the total node
+count grows, preventing the ordinary missing-ID guard from being bypassed.
+If multiple new AST records already share that ID, all use one deterministic
+AST successor ID: this retains their preexisting AST coalescing behavior while
+ensuring they cannot overwrite independent semantic provenance.

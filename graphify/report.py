@@ -167,6 +167,14 @@ def generate(
                 f"- Unclassified: {len(unclassified)} file(s) not represented in "
                 f"the graph (top: {top})"
             )
+        # #2942: the plain count above reads as routine (lockfiles, binaries)
+        # even when it is most of the corpus. Say plainly, right next to the
+        # "large enough to be worth graphing" verdict, that this graph may
+        # look complete while actually missing a structurally significant
+        # part of the codebase.
+        unclassified_warning = detection_result.get("unclassified_warning")
+        if unclassified_warning:
+            lines.append(f"- WARNING: {unclassified_warning}")
 
     from .analyze import _is_file_node, _is_concept_node, _is_contains_only_ast_node
 

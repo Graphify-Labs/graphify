@@ -6313,6 +6313,57 @@ def test_3252_metadata_preservation(tmp_path):
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
 
 
+def test_3252_repoint_visits_only_the_importing_files_edges(tmp_path, monkeypatch):
+    """#4980: the #3252 repoint pass must not scan every edge once per file.
+
+    It used to loop over all of ``all_edges`` for each Python file with import
+    targets, so the pass cost files x edges. Counting full passes over
+    ``all_edges`` shows the count no longer grows with the number of importing
+    files, and every consumer's reference is still repointed.
+    """
+    import graphify.extract as extract_mod
+
+    (tmp_path / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    consumers = [tmp_path / f"service_{i}.py" for i in range(8)]
+    for i, path in enumerate(consumers):
+        path.write_text(
+            f"from models import User\ndef get_user_{i}(u: User) -> User:\n    pass\n",
+            encoding="utf-8",
+        )
+
+    class _CountingEdges(list):
+        full_passes = 0
+
+        def __iter__(self):
+            self.full_passes += 1
+            return super().__iter__()
+
+    passes: list[int] = []
+    real_resolve = extract_mod._resolve_cross_file_imports
+
+    def counting_resolve(per_file, paths, all_nodes=None, all_edges=None, **kwargs):
+        edges = _CountingEdges(all_edges or [])
+        result = real_resolve(per_file, paths, all_nodes, edges, **kwargs)
+        passes.append(edges.full_passes)
+        return result
+
+    monkeypatch.setattr(extract_mod, "_resolve_cross_file_imports", counting_resolve)
+    res = extract([tmp_path / "models.py", *consumers], root=tmp_path, cache_root=tmp_path)
+
+    assert passes, "cross-file import resolution did not run"
+    # One pass builds the per-file index; two more collect the still-referenced ids.
+    # The old code added one full pass per importing file (8 here).
+    assert max(passes) <= 3, passes
+
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+    param_refs = [
+        e for e in res["edges"]
+        if e.get("relation") == "references" and e.get("context") == "parameter_type"
+    ]
+    assert len(param_refs) == len(consumers)
+    assert all(node_by_id[e["target"]]["source_file"] == "models.py" for e in param_refs)
+
+
 def test_python_external_calls_survive_real_incremental_context(tmp_path):
     """A changed caller shares an external stub with an unchanged caller."""
     import subprocess
