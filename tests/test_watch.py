@@ -4938,7 +4938,7 @@ def test_watch_schedules_change_only_event_filter(tmp_path, monkeypatch):
 
     _run_watch_with_fake_observer(tmp_path, monkeypatch, FakeObserver())
 
-    assert captured["recursive"] is True
+    assert captured["recursive"] is False
     assert captured["event_filter"] == _watch_event_filter()
     assert we.FileOpenedEvent not in captured["event_filter"]
     if hasattr(we, "FileClosedNoWriteEvent"):
@@ -4957,7 +4957,7 @@ def test_watch_falls_back_when_watchdog_lacks_event_filter(tmp_path, monkeypatch
 
     _run_watch_with_fake_observer(tmp_path, monkeypatch, OldObserver())
 
-    assert captured == {"recursive": True, "called": True}
+    assert captured == {"recursive": False, "called": True}
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
@@ -4994,7 +4994,7 @@ def test_watch_warns_when_observer_hides_event_filter_in_kwargs(
     with caplog.at_level(logging.WARNING, logger="graphify.watch"):
         _run_watch_with_fake_observer(tmp_path, monkeypatch, KwargsObserver())
 
-    assert captured == {"recursive": True}
+    assert captured == {"recursive": False}
     assert any("event_filter" in r.getMessage() for r in caplog.records)
 
 
