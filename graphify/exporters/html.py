@@ -5,6 +5,7 @@ from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
+from graphify.exporters.html_path import PATH_PAGE_NAME, write_path_page
 from graphify.paths import write_text_atomic
 import json
 import networkx as nx
@@ -51,6 +52,11 @@ def _html_styles() -> str:
   #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid var(--border); display: none; }
   .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .search-item:hover { background: var(--border); }
+  #path-link { display: block; margin-top: 8px; font-size: 12px; color: #6db89a; text-decoration: none; }
+  #focus-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-2); }
+  #focus-bar[hidden] { display: none; }
+  #focus-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #focus-clear { background: #4E79A7; border: 1px solid #4E79A7; border-radius: 4px; color: #fff; padding: 3px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0; }
   #info-panel { padding: 14px; border-bottom: 1px solid var(--border); min-height: 140px; }
   #info-panel h3 { font-size: 13px; color: var(--text-2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
   #info-content { font-size: 13px; color: var(--text-3); line-height: 1.6; }
@@ -113,6 +119,7 @@ function convexHull(pts) {{
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
         const positions = h.nodes
+            .filter(nid => !(nodesDS.get(nid) || {{}}).hidden)
             .map(nid => network.getPositions([nid])[nid])
             .filter(p => p !== undefined);
         if (positions.length < 2) return;
@@ -296,7 +303,9 @@ function focusNode(nodeId) {{
 // recreates #neighbors-list on each showInfo().
 document.addEventListener('click', e => {{
   const el = e.target.closest('.neighbor-link');
-  if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
+  if (!el || el.dataset.nid === undefined) return;
+  if (focusedNodeId !== null) enterFocus(el.dataset.nid);
+  else focusNode(el.dataset.nid);
 }});
 
 // Sidebar tooltips reuse vis-network's .vis-tooltip style and 100ms tooltipDelay.
@@ -385,9 +394,7 @@ searchInput.addEventListener('input', () => {{
     el.style.borderLeft = `3px solid ${{n.color.background}}`;
     el.style.paddingLeft = '8px';
     el.onclick = () => {{
-      network.focus(n.id, {{ scale: 1.5, animation: true }});
-      network.selectNodes([n.id]);
-      showInfo(n.id);
+      enterFocus(n.id);
       searchResults.style.display = 'none';
       searchInput.value = '';
     }};
@@ -400,6 +407,80 @@ document.addEventListener('click', e => {{
 }});
 
 const hiddenCommunities = new Set();
+
+// Focus mode: a searched node and its direct neighbors are the only nodes shown.
+// The focused node stays visible even when its community is unchecked. Neighbors
+// are scattered across the full layout, so they are placed in rings around the
+// node to keep labels readable; the full layout and view return on exit.
+const FOCUS_RING_GAP = 150;
+const FOCUS_NODE_SPACING = 120;
+const FOCUS_VIEW_PADDING = 120;
+const FOCUS_MAX_SCALE = 1.5;
+let focusedNodeId = null;
+let focusedNodeIds = null;
+let savedPositions = null;
+let savedView = null;
+const focusBar = document.getElementById('focus-bar');
+const focusLabel = document.getElementById('focus-label');
+
+function applyVisibility() {{
+  nodesDS.update(RAW_NODES.map(n => ({{
+    id: n.id,
+    hidden: n.id !== focusedNodeId && (
+      hiddenCommunities.has(n.community) ||
+      (focusedNodeIds !== null && !focusedNodeIds.has(n.id))
+    ),
+  }})));
+}}
+
+// Returns the radius of the outermost ring used.
+function placeInRings(center, nodeIds) {{
+  let placed = 0;
+  let radius = 0;
+  while (placed < nodeIds.length) {{
+    radius += FOCUS_RING_GAP;
+    const capacity = Math.floor(2 * Math.PI * radius / FOCUS_NODE_SPACING);
+    const count = Math.min(capacity, nodeIds.length - placed);
+    for (let i = 0; i < count; i++) {{
+      const angle = 2 * Math.PI * i / count;
+      network.moveNode(nodeIds[placed + i], center.x + radius * Math.cos(angle), center.y + radius * Math.sin(angle));
+    }}
+    placed += count;
+  }}
+  return radius;
+}}
+
+function enterFocus(nodeId) {{
+  network.setOptions({{ physics: {{ enabled: false }} }});
+  if (savedPositions === null) {{
+    savedPositions = network.getPositions();
+    savedView = {{ position: network.getViewPosition(), scale: network.getScale() }};
+  }}
+  const neighborIds = network.getConnectedNodes(nodeId);
+  focusedNodeId = nodeId;
+  focusedNodeIds = new Set([nodeId, ...neighborIds]);
+  applyVisibility();
+  network.selectNodes([nodeId]);
+  showInfo(nodeId);
+  focusLabel.textContent = `${{nodesDS.get(nodeId).label}} + ${{neighborIds.length}} related`;
+  focusBar.hidden = false;
+  const center = network.getPosition(nodeId);
+  const radius = placeInRings(center, neighborIds);
+  const viewSize = Math.min(container.clientWidth, container.clientHeight);
+  const scale = Math.min(FOCUS_MAX_SCALE, viewSize / (2 * (radius + FOCUS_VIEW_PADDING)));
+  network.moveTo({{ position: center, scale }});
+}}
+
+function exitFocus() {{
+  focusedNodeId = null;
+  focusedNodeIds = null;
+  Object.entries(savedPositions).forEach(([id, p]) => network.moveNode(id, p.x, p.y));
+  savedPositions = null;
+  applyVisibility();
+  focusBar.hidden = true;
+  network.moveTo(savedView);
+}}
+document.getElementById('focus-clear').addEventListener('click', exitFocus);
 
 const selectAllCb = document.getElementById('select-all-cb');
 
@@ -420,8 +501,7 @@ function toggleAllCommunities(hide) {{
   LEGEND.forEach(c => {{
     if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
   }});
-  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
-  nodesDS.update(updates);
+  applyVisibility();
   updateSelectAllState();
 }}
 
@@ -442,10 +522,7 @@ LEGEND.forEach(c => {{
       hiddenCommunities.add(c.cid);
       item.classList.add('dimmed');
     }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
-    nodesDS.update(updates);
+    applyVisibility();
     updateSelectAllState();
   }});
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
@@ -581,6 +658,7 @@ def to_html(
                               community_labels=community_labels, member_counts=mc)
             if not written:
                 return False
+            write_path_page(G, output_path)
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
             return True
@@ -758,6 +836,11 @@ def to_html(
   <div id="search-wrap">
     <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
     <div id="search-results"></div>
+    <div id="focus-bar" hidden>
+      <span id="focus-label"></span>
+      <button type="button" id="focus-clear">Show all</button>
+    </div>
+    <a id="path-link" href="{PATH_PAGE_NAME}">Find a path between two nodes &rarr;</a>
   </div>
   <div id="info-panel">
     <h3>Node Info</h3>
@@ -778,4 +861,7 @@ def to_html(
 </html>"""
 
     write_text_atomic(output_path, html)
+    # member_counts marks the aggregated view; its caller writes the page from the full graph.
+    if member_counts is None:
+        write_path_page(G, output_path)
     return True
