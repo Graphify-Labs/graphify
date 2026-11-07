@@ -3612,6 +3612,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending, override_snapshot, config_changed
+            nonlocal ignore_patterns, ignored
             if event.is_directory:
                 if not _is_read_only_event(event):
                     path = Path(os.fsdecode(event.src_path)).resolve()
@@ -3631,6 +3632,16 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             path = Path(os.fsdecode(event.src_path))
             if path.parent not in watched or not path.parent.exists():
+                return
+            if path.name in {".graphifyignore", ".gitignore"}:
+                ignore_patterns = _load_graphifyignore(
+                    watch_root_for_ignore, gitignore=ignore_gitignore
+                )
+                ignored = ignored_predicate(
+                    watch_root_for_ignore, gitignore=ignore_gitignore
+                )
+                remove_tree(watch_root_for_ignore)
+                add_tree(watch_root_for_ignore, emit_existing=False)
                 return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
