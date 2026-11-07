@@ -1,6 +1,8 @@
 """Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
 from __future__ import annotations
 from pathlib import Path
+import shutil
+
 import pytest
 from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
@@ -2854,6 +2856,42 @@ def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
     assert stub["source_file"] == ""
 
 
+def test_fortran_capital_F_source_location_maps_through_cpp():
+    """#2092: cpp blanks the `#define`/`#ifdef` lines and renumbers the output, so
+    every symbol used to be reported at the wrong line. The linemarkers are now
+    consumed to map each location back to the original file. In
+    sample_preprocessed.F90 `module shapes` is on L3 and `compute_volume` on L11
+    (these hold whether or not cpp is installed — the raw fallback keeps them too)."""
+    r = extract_fortran(FIXTURES / "sample_preprocessed.F90")
+    locs = {n["label"]: n["source_location"] for n in r["nodes"]}
+    assert locs.get("shapes") == "L3"
+    assert locs.get("compute_volume()") == "L11"
+
+
+def test_fortran_capital_F_blank_lines_do_not_shift_location(tmp_path):
+    """#2092: `cpp -P` also collapsed runs of blank lines, so a directive-free .F90
+    was mislocated too. A subroutine after five blank lines must report L6, not L1."""
+    src = tmp_path / "z.F90"
+    src.write_text("\n\n\n\n\nsubroutine zebrafunc()\nend subroutine\n")
+    r = extract_fortran(src)
+    locs = {n["label"]: n["source_location"] for n in r["nodes"]}
+    assert locs.get("zebrafunc()") == "L6"
+
+
+@pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_fortran") is None or not shutil.which("cpp"),
+    reason="tree-sitter-fortran or cpp not available",
+)
+def test_fortran_capital_F_line_directive_keeps_scanned_source_identity(tmp_path):
+    """A logical #line filename changes the location, never the scanned source file."""
+    src = tmp_path / "actual.F90"
+    src.write_text('#line 40 "other.F90"\nsubroutine relocated()\nend subroutine\n')
+
+    r = extract_fortran(src)
+    node = next(n for n in r["nodes"] if n["label"] == "relocated()")
+
+    assert node["source_location"] == "L40"
+    assert node["source_file"] == str(src)
 def test_fortran_subroutine_call_to_another_module_is_sourceless(tmp_path):
     """A `call` to a subroutine implemented in another module resolves to a
     sourceless stub the corpus rewire can collapse, never a dangling edge.
