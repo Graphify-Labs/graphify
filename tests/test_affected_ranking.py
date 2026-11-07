@@ -118,3 +118,18 @@ def test_cli_text_lists_hits_in_ranked_order(tmp_path, monkeypatch, capsys):
     mainmod.main()
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("- ")]
     assert [ln.split(" [")[0][2:] for ln in lines] == ["m.py", "h()", "z.py", "g()", "a.py", "y.py", "b.py"]
+
+
+def test_a_seed_without_a_file_does_not_count_links_to_unfiled_nodes():
+    g = nx.DiGraph()
+    g.add_node("s", label="seed")  # no source_file
+    g.add_node("u", label="other")  # unrelated, also no source_file
+    g.add_node("a1", label="a1()", source_file="a.py", source_location="L1")
+    for n in ("b1", "b2", "b3"):
+        g.add_node(n, label=f"{n}()", source_file="b.py", source_location=f"L{n[1]}")
+    g.add_edge("a1", "s", relation="calls")
+    g.add_edge("b1", "s", relation="calls")
+    g.add_edge("b2", "u", relation="calls")
+    g.add_edge("b3", "u", relation="calls")
+    hits = affected_nodes(g, "s", depth=1)
+    assert [h.node_id for h in hits] == ["a1", "b1"]  # tie broken by path, not by b.py's calls to "u"

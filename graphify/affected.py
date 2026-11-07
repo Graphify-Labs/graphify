@@ -447,7 +447,7 @@ def rank_hits(
     for f, d in wanted:
         if not f:
             continue
-        targets = closer(d)
+        targets = closer(d) - {""}  # a seed with no file must not match every unfiled node
         n = 0
         for node in nodes_of.get(f, []):
             edges = (graph.out_edges(node, data=True) if isinstance(graph, nx.DiGraph)
