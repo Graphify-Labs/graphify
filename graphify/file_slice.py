@@ -41,6 +41,7 @@ _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
     ".qmd", ".skill", ".html",
     ".j2", ".jinja", ".jinja2",
+    ".yaml", ".yml",
 })
 
 # Document types whose BYTES are not what the model is shown. `llm._file_to_text`
@@ -248,3 +249,18 @@ def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
     left = FileSlice(fs.path, fs.start, cut, fs.index, fs.total)
     right = FileSlice(fs.path, cut, fs.end, fs.index, fs.total)
     return left, right
+
+
+def make_full_slice(path: Path) -> FileSlice | None:
+    """Create a full-range ``FileSlice`` for an eligible splittable text file (#5072).
+
+    Returns None for non-splittable files (code, binary, unreadable).
+    """
+    if not is_splittable_text(path):
+        return None
+    try:
+        text = unit_source_text(path)
+    except Exception:
+        return None
+    return FileSlice(path=path, start=0, end=len(text), index=0, total=1)
+
