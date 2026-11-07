@@ -16,8 +16,18 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **tests** the TypeScript unicode fixture is written as UTF-8 on every platform, so byte offsets match the extractor on Windows (cp1252) hosts (#5064, thanks @ayushcodes10).
 - Fix: **tests** the hook-freshness source mock is normalized through `os_long_path`, so the read-error/stale branch is actually exercised on Windows (#5065, thanks @ayushcodes10).
 - Fix: **tests** the watch pending-queue test compares `Path` objects so `/` and `\` separators compare equal on Windows (#5039, thanks @Yi-111-a).
+- Fix: **extract** an ambiguous Python import's placeholder node id is hashed from checkout-independent data (module name, scan-root-relative source file, location) instead of the absolute path, so the same project at a different path or a moved cache gets the same ids (#5045, thanks @Fardin7798).
+- Fix: **yaml** a template using CloudFormation intrinsic tags (`!Ref`, `!GetAtt`, `!Sub`) no longer fails to parse: a scoped permissive loader rebuilds each `!`-tagged node's shape without evaluating it, while `!!python/...` tags still raise and never execute (#5077, thanks @ayushcodes10).
+- Fix: **watch** a `--watch` incremental update rebuilds the full corpus when `graph.json` is missing, instead of writing a partial graph from the manifest alone (#5020, thanks @azizur100389).
+- Fix: **watch** a change to a JS/TS resolution input (`tsconfig.json`, `jsconfig.json`, a lockfile) triggers a full rebuild so importers pick up the new resolution, instead of leaving stale `imports_from` edges (#5020, thanks @azizur100389).
+- Fix: **ingest** two concurrent `graphify add` captures for the same URL no longer clobber each other: the capture file is created exclusively (`O_EXCL`) and a collision retries a fresh name, with the payload fetched once (#5020, thanks @azizur100389).
+- Fix: **reflect** a malformed entry in the learning overlay is skipped instead of crashing the whole load, and a legacy null-source entry is preserved as a source-less annotation (#5020, thanks @azizur100389).
+- Fix: **global** a malformed repo entry in the global manifest is dropped on its own, keeping the other tracked repos, and only a non-object root or repos map is backed up and reset (#5020, thanks @azizur100389).
+- Fix: **query** a graph freshly built on a subfolder is no longer flagged as a pre-#1504 build (which nagged a no-op `extract --force`): the legacy-id probe strips the `.graphify_root` offset before deriving file stems, and a genuine legacy graph is still caught (#5019, thanks @neumannpeter1231-lang).
+- Fix: **tree** `graphify export tree` recognises the `src` node alias (and `file`/`path`/`filepath`) so a graph carrying those keys renders a populated tree instead of an empty one; a concept-only graph still reports empty (#5030, thanks @Adityakk9031).
+- Fix: **cli** `graphify provider add` accepts `--pricing-input=VALUE`/`--pricing-output=VALUE` equals-syntax and rejects a non-numeric, non-finite or negative price with a clean error instead of a traceback or a poisoned cost estimate (#5031, thanks @Adityakk9031).
 
-The AST cache schema is bumped to 40; warm caches re-run the affected Solidity and C# extractions.
+The AST cache schema is bumped to 40; warm caches re-run the affected Solidity and C# extractions. The Python and YAML fixes above need no bump (placeholder ids are resolved after the per-file cache, and previously-failing YAML was never cached).
 
 ## 0.9.103 (2026-11-05)
 
