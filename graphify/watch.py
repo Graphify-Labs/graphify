@@ -3615,6 +3615,8 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             if event.is_directory:
                 if not _is_read_only_event(event):
                     path = Path(os.fsdecode(event.src_path)).resolve()
+                    if path.parent not in watched:
+                        return
                     if event.event_type == "created":
                         add_tree(path, emit_existing=True)
                     elif event.event_type == "deleted":
@@ -3628,6 +3630,8 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             if _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
+            if path.parent not in watched or not path.parent.exists():
+                return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
             dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
