@@ -61,6 +61,25 @@ def test_ts_no_dangling_edges():
             assert e["source"] in node_ids
 
 
+def test_ts_bare_callback_caller_nodes():
+    """Anonymous callbacks passed as bare arguments get caller nodes (#5048)."""
+    r = extract_js(FIXTURES / "callback_route.ts")
+    labels = _labels(r)
+    assert labels.count("anonymous()") >= 2
+
+def test_ts_bare_callback_calls_emitted():
+    r = extract_js(FIXTURES / "callback_route.ts")
+    calls = _call_pairs(r)
+    assert any("anonymous" in src and "sendReply" in tgt for src, tgt in calls)
+    assert any("anonymous" in src and "logMessage" in tgt for src, tgt in calls)
+
+def test_ts_named_anchors_not_registered_twice():
+    """const-bound arrows stay anchored to their name, not duplicated as anonymous."""
+    r = extract_js(FIXTURES / "sample.ts")
+    labels = _labels(r)
+    assert labels.count("anonymous()") == 0
+
+
 # ── Go ────────────────────────────────────────────────────────────────────────
 
 def test_go_finds_struct():
