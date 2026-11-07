@@ -708,7 +708,7 @@ def extract_rust(path: Path) -> dict:
             return
 
         for child in node.children:
-            walk(child, parent_class_nid=None)
+            walk(child, parent_impl_nid=None)
 
     walk(root)
 
