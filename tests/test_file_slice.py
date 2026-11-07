@@ -10,6 +10,7 @@ from graphify.file_slice import (
     bisect_slice,
     expand_oversized_files,
     is_splittable_text,
+    make_full_slice,
     read_slice_text,
     slice_boundaries,
     unit_path,
@@ -163,3 +164,21 @@ def test_bisect_slice_splits_at_newline(tmp_path):
 def test_bisect_slice_returns_none_for_tiny(tmp_path):
     f = _write(tmp_path / "a.md", "ab")
     assert bisect_slice(FileSlice(f, 0, 1, 0, 1)) is None
+
+
+def test_make_full_slice(tmp_path):
+    f_md = _write(tmp_path / "doc.md", "# Hello\n\nWorld\n")
+    fs = make_full_slice(f_md)
+    assert fs is not None
+    assert fs.path == f_md
+    assert fs.start == 0
+    assert fs.end == len(f_md.read_text(encoding="utf-8"))
+    assert fs.index == 0
+    assert fs.total == 1
+
+    f_py = _write(tmp_path / "code.py", "x = 1\n")
+    assert make_full_slice(f_py) is None
+
+    f_none = tmp_path / "nonexistent.md"
+    assert make_full_slice(f_none) is None
+
