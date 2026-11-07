@@ -3709,7 +3709,16 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 "watchdog does not declare event_filter; read-only inotify "
                 "events may overflow the queue and lose changes (#5033)"
             )
-        watched[path] = observer.schedule(handler, str(path), **kwargs)
+        try:
+            watched[path] = observer.schedule(handler, str(path), **kwargs)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                logger.warning(
+                    "inotify watch limit reached while watching %s; "
+                    "changes below it will be missed", path
+                )
+                return
+            raise
 
     def remove_tree(path: Path) -> None:
         path = path.resolve()
