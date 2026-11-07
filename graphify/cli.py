@@ -7,12 +7,23 @@ import of main to avoid a cli<->__main__ import cycle.
 """
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+
+def _valid_price(value: float) -> float:
+    """A provider price flag must be a finite, non-negative number. A NaN, inf
+    or negative value parses as a float but flows into cost estimation (price x
+    tokens), producing NaN/inf/negative cost reports (#5031), so reject it the
+    same way a non-numeric value is rejected."""
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("price must be finite and non-negative")
+    return value
 
 
 # Hook reminders arrive inside the agent's tool-result stream, where commands
@@ -1874,32 +1885,32 @@ def dispatch_command(cmd: str) -> None:
                     env_key = a.split("=", 1)[1]; i += 1
                 elif a == "--pricing-input" and i + 1 < len(args):
                     try:
-                        pricing_input = float(args[i + 1])
+                        pricing_input = _valid_price(float(args[i + 1]))
                     except ValueError:
-                        print(f"Error: invalid float for --pricing-input: '{args[i + 1]}'", file=sys.stderr)
+                        print(f"Error: invalid price for --pricing-input: '{args[i + 1]}' (expected a finite, non-negative number)", file=sys.stderr)
                         sys.exit(1)
                     i += 2
                 elif a.startswith("--pricing-input="):
                     val = a.split("=", 1)[1]
                     try:
-                        pricing_input = float(val)
+                        pricing_input = _valid_price(float(val))
                     except ValueError:
-                        print(f"Error: invalid float for --pricing-input: '{val}'", file=sys.stderr)
+                        print(f"Error: invalid price for --pricing-input: '{val}' (expected a finite, non-negative number)", file=sys.stderr)
                         sys.exit(1)
                     i += 1
                 elif a == "--pricing-output" and i + 1 < len(args):
                     try:
-                        pricing_output = float(args[i + 1])
+                        pricing_output = _valid_price(float(args[i + 1]))
                     except ValueError:
-                        print(f"Error: invalid float for --pricing-output: '{args[i + 1]}'", file=sys.stderr)
+                        print(f"Error: invalid price for --pricing-output: '{args[i + 1]}' (expected a finite, non-negative number)", file=sys.stderr)
                         sys.exit(1)
                     i += 2
                 elif a.startswith("--pricing-output="):
                     val = a.split("=", 1)[1]
                     try:
-                        pricing_output = float(val)
+                        pricing_output = _valid_price(float(val))
                     except ValueError:
-                        print(f"Error: invalid float for --pricing-output: '{val}'", file=sys.stderr)
+                        print(f"Error: invalid price for --pricing-output: '{val}' (expected a finite, non-negative number)", file=sys.stderr)
                         sys.exit(1)
                     i += 1
                 else:

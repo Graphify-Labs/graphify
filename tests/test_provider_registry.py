@@ -209,4 +209,31 @@ def test_dispatch_command_provider_add_invalid_pricing_float(tmp_path, monkeypat
         cli.dispatch_command("provider")
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert "invalid float for --pricing-input" in err
+    assert "invalid price for --pricing-input" in err
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "1e999", "-5"])
+def test_dispatch_command_provider_add_rejects_non_finite_or_negative_pricing(
+    tmp_path, monkeypatch, capsys, bad
+):
+    """A price that parses as a float but is NaN/inf/negative is rejected: it
+    would otherwise flow into cost estimation as NaN/inf/negative (#5031)."""
+    import sys
+    from graphify import cli, llm
+
+    providers_file = tmp_path / "providers.json"
+    monkeypatch.setattr(llm, "_custom_providers_path", lambda global_=True: providers_file)
+
+    test_args = [
+        "graphify", "provider", "add", "mycustom",
+        "--base-url=http://localhost:8080/v1",
+        "--default-model=model-x",
+        "--env-key=MY_KEY",
+        f"--pricing-input={bad}",
+    ]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with pytest.raises(SystemExit) as exc:
+        cli.dispatch_command("provider")
+    assert exc.value.code == 1
+    assert "invalid price for --pricing-input" in capsys.readouterr().err
+    assert not providers_file.exists()
