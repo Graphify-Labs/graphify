@@ -91,6 +91,16 @@ def test_code_span_mentions_are_classified():
     pinned = ("src/widget.py", ["Widget", "render"])
     assert _code_span_mention("src/widget.py::Widget::render") == pinned
     assert _code_span_mention("src/widget.py::Widget::render()") == pinned
+    # `\` and `::` are qualifier separators too (#4610): PHP namespaces and the
+    # type-qualified member form PHP, Rust and C++ docs write.
+    assert _code_span_mention("App\\Services\\Mailer") == (
+        None, ["App", "Services", "Mailer"])
+    assert _code_span_mention("Mailer::send") == (None, ["Mailer", "send"])
+    assert _code_span_mention("Mailer::send()") == (None, ["Mailer", "send"])
+    # `Foo::CONST` and `Foo::class` have no node to land on, and a bare
+    # namespace root (`App\`) names no symbol at all.
+    for span in ("Foo::CONST", "Foo::class", "App\\", "C:\\Users\\me"):
+        assert _code_span_mention(span) is None, span
     # Files, commands, expressions and prose are not symbol mentions.
     for span in ("setup.py", "README.md", "notes.txt", "git revert", "x = 1", "a-b",
                  "--flag", "", "src/widget.py"):
@@ -233,6 +243,30 @@ def test_dotted_mentions_need_qualifier_evidence(tmp_path):
     widget_render = next(
         n for n in r["nodes"] if n["label"] == ".render()" and "widget" in n["id"])
     assert cited == {widget["id"], gadget["id"], widget_render["id"]}
+
+
+def test_namespace_and_member_chains_resolve(tmp_path):
+    """``App\\Services\\Mailer`` and ``Mailer::send()`` reach the same nodes the
+    dotted and bare forms do (#4610)."""
+    r = _extract(tmp_path, {
+        "mailer.py": "class Mailer:\n    def send(self):\n        return 1\n",
+        "gadget.py": "class Gadget:\n    def send(self):\n        return 2\n",
+        "README.md": (
+            "# Mail\n\n"
+            "See `App\\Services\\Mailer` and `Mailer::send()`.\n\n"
+            "## Constants\n\n"
+            "`Foo::CONST` and `Foo::class` land on nothing.\n"
+        ),
+    })
+    mail = _node(r, "Mail")
+    constants = _node(r, "Constants")
+    mailer = _node(r, "Mailer", "mailer.py")
+    send = next(n for n in r["nodes"] if n["label"] == ".send()" and "mailer" in n["id"])
+    # The PSR-4 root `App\` has no path segment to match and is dropped; the
+    # `Mailer` qualifier still picks the right `send` over the one in Gadget.
+    assert (mail["id"], mailer["id"]) in _references(r)
+    assert (mail["id"], send["id"]) in _references(r)
+    assert {t for (s, t) in _references(r) if s == constants["id"]} == set()
 
 
 def test_mentions_survive_a_rebuild_over_an_existing_graph(tmp_path):
@@ -382,3 +416,29 @@ def test_owner_evidence_survives_an_edge_that_already_exists():
 
     assert ("doc_notes", "handler_handlerresult_successwithwarnings") in {
         (e["source"], e["target"]) for e in edges if e.get("relation") == "references"}
+
+
+def test_dotted_mention_resolves_when_method_name_is_a_builtin(tmp_path):
+    # A dotted mention whose method name collides with a language builtin
+    # (open/get/list/...) must still resolve via its qualifier evidence; only a
+    # *bare* builtin-named mention should be skipped.
+    r = _extract(tmp_path, {
+        "src/repo.py": (
+            "class Repository:\n"
+            "    def open(self):\n"
+            "        return 1\n"
+            "    def connect(self):\n"
+            "        return 2\n"
+        ),
+        "docs/notes.md": "# Notes\n\nSee `Repository.open` and `Repository.connect`.\n",
+    })
+
+    notes = _node(r, "Notes")
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    repo_open = next(
+        n for n in r["nodes"] if n["label"] == ".open()" and "repo" in n["id"])
+    repo_connect = next(
+        n for n in r["nodes"] if n["label"] == ".connect()" and "repo" in n["id"])
+    # The builtin-named `.open()` must resolve just like `.connect()`.
+    assert repo_open["id"] in cited
+    assert repo_connect["id"] in cited

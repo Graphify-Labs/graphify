@@ -52,6 +52,32 @@ def test_report_omits_unclassified_line_when_none():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
     assert "Unclassified:" not in report
 
+
+def test_report_surfaces_the_unclassified_warning_next_to_the_count():
+    """#2942: a bare count reads as routine even when it is most of the
+    corpus. When detect() decided the share was large enough to warn about,
+    the report must say so right in the Corpus Check section, not bury it."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {
+        **detection,
+        "unclassified": ["a.xml", "b.xml", "c.xml"],
+        "unclassified_warning": (
+            "3 of 4 files seen (75%) have no supported extractor and are "
+            "missing from this graph entirely."
+        ),
+    }
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "WARNING: 3 of 4 files seen (75%)" in report
+
+
+def test_report_omits_the_unclassified_warning_when_detect_did_not_set_one():
+    """Backward compatible: detect() decided the share was routine (or the
+    key is simply absent, matching old cached detection dicts), no new line."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {**detection, "unclassified": ["a.toml"]}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "WARNING:" not in report
+
 def test_report_contains_god_nodes():
     G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
