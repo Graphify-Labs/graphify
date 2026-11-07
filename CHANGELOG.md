@@ -2,6 +2,23 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.104 (2026-11-07)
+
+- Fix: **solidity** a call on a receiver of a contract or interface type (`IERC20 token; token.transfer()`, `IERC20(a).transfer()`, `token().balanceOf()`) binds by name and arity through that type's linearization to the type's own declaration, instead of producing no edge; gated to a single visible contract/interface and fail-closed on an unknown or ambiguous type (#5060, thanks @rohit-jsfreaky).
+- Fix: **solidity** a call attached by a `using A for T` directive (`using SafeCast for uint256; x.toUint48()`) binds to the library or free function it attaches, matched by the receiver's type and an arity one greater than the call; fail-closed when the receiver type is unknown, the library is ambiguous, or two functions fit (#5062, thanks @rohit-jsfreaky).
+- Fix: **solidity** members, free functions and types in one scope whose names differ only by a leading `_` or by case (`_grantRole` / `grantRole`) get separate node ids, so the `_` symbol no longer vanishes into its twin and its calls land on the right node (#5027, thanks @rohit-jsfreaky).
+- Fix: **csharp** a constructor (instance, static or primary) is its own node owned by its type, with its body and `: base(...)`/`: this(...)` calls credited to it; `new X(...)`, `: base(...)` and `: this(...)` additively link the arity-correct overload, and two fitting overloads or an unresolved base give no constructor edge (#5054, thanks @rohit-jsfreaky).
+- Fix: **csharp** calls inside a property or indexer accessor, an expression body, or an operator/conversion body are credited to that member instead of being lost; an indexer becomes a `this[]` node and an operator a `.operator +()` node (#5056, thanks @rohit-jsfreaky).
+- Fix: **query** a same-label node that is the only match for a query term is kept as a seed instead of being dropped by the per-label cap, so every distinct term keeps at least one seed while generic-label flooding stays capped (#5027, thanks @Vaibhav2824).
+- Fix: **watch** read-only events are kept out of the inotify mask via a change-only `event_filter`, so a large tree no longer drives watchdog into a self-sustaining queue-overflow loop; falls back with a warning on watchdog versions without `event_filter` support (#5033, thanks @Deepjyoti-Sarmah).
+- Fix: **cache** the `\\?\` long-path spelling is kept out of cache identity, so the same file reached through `\\?\C:\...` and `C:\...` shares one entry; also fixes empty stat-index writes under UNC shares, a spurious "stat index switched" warning on Windows, and a junction/symlink alias wrongly sharing its target's digest (#5035, thanks @Bortlesboat).
+- Fix: **cache** stat-index keys stay root-relative under a Windows long-path root, so a moved or cloned corpus keeps the portable-key fastpath (#5035, thanks @Vaibhav2824).
+- Fix: **tests** the TypeScript unicode fixture is written as UTF-8 on every platform, so byte offsets match the extractor on Windows (cp1252) hosts (#5064, thanks @ayushcodes10).
+- Fix: **tests** the hook-freshness source mock is normalized through `os_long_path`, so the read-error/stale branch is actually exercised on Windows (#5065, thanks @ayushcodes10).
+- Fix: **tests** the watch pending-queue test compares `Path` objects so `/` and `\` separators compare equal on Windows (#5039, thanks @Yi-111-a).
+
+The AST cache schema is bumped to 40; warm caches re-run the affected Solidity and C# extractions.
+
 ## 0.9.103 (2026-11-05)
 
 - Fix: **markdown** a code span written as a backslash namespace (`\Foo\Bar`) or a type-qualified member (`Type::member`) is recognised as a symbol mention and resolves to the real node when one exists, instead of being silently dropped; an absent chain mints nothing (#4610, #4695, thanks @viwe-monai).
