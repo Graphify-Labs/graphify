@@ -56,5 +56,9 @@ def test_extract_no_cluster_omits_run_only_keys(tmp_path: Path):
     root = _corpus(tmp_path / "alice_home" / "proj")
     graph = _run(root, "extract", ".", "--code-only", "--no-cluster")
     assert not RUN_ONLY_EXTRACTION_KEYS & set(graph)
+    status = json.loads((root / "graphify-out" / "last_run.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert status["wrote_graph"] is True
+    assert status["nodes_written"] == len(graph["nodes"])
     graph = _run(root, "extract", ".", "--code-only", "--no-cluster", "--force")
     assert not RUN_ONLY_EXTRACTION_KEYS & set(graph)
